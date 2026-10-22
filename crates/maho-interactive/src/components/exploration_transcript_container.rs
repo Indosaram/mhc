@@ -88,6 +88,10 @@ impl ExplorationTranscriptContainer {
         }
     }
 
+    pub fn is_fully_hydrated(&self) -> bool {
+        self.display.is_fully_hydrated()
+    }
+
     pub fn add_child(&mut self, child: TranscriptChild) {
         self.children.push(child);
     }

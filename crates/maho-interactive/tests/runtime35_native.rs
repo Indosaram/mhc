@@ -1619,6 +1619,27 @@ async fn compaction_and_retry_events_mount_status_indicators() {
 }
 
 #[tokio::test]
+async fn idle_mode_skips_frame_rebuilds_until_a_state_change() {
+    use maho_ext_api::AgentSessionEvent;
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    // The host loop renders every frame that asks for a rebuild; transcript warm-up advances on paint.
+    let frame = |mode: &mut maho_interactive::interactive_mode::InteractiveMode, now_ms: f64| {
+        let rebuild = mode.take_frame_rebuild(now_ms);
+        if rebuild { mode.render(120); }
+        rebuild
+    };
+    assert!(frame(&mut mode, 0.0), "the first frame is rebuilt");
+    assert!(!frame(&mut mode, 16.0), "an idle mode with no change asks for no rebuild");
+    mode.handle_session_event(&AgentSessionEvent::AutoRetryStart { attempt: 1, max_attempts: 3, delay_ms: 2000, error_message: "boom".into() });
+    assert!(frame(&mut mode, 32.0), "a session event asks for a rebuild");
+    assert!(frame(&mut mode, 48.0), "the running retry countdown keeps animating");
+    mode.handle_session_event(&AgentSessionEvent::AutoRetryEnd { success: true, attempt: 1, final_error: None });
+    assert!(frame(&mut mode, 64.0), "the end event repaints the cleared indicator");
+    assert!(!frame(&mut mode, 80.0), "idle again once the indicator is gone");
+}
+
+#[tokio::test]
 async fn native_shell_submission_renders_and_persists_without_model_turn() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();

@@ -11,6 +11,10 @@ use super::shared_host::{
     shared_host_setting_enabled, should_join_shared_host,
 };
 
+/// Longest an idle frame loop goes without rebuilding the mode's lines, for a change that reached
+/// the mode without a repaint signal.
+const IDLE_REBUILD_BACKSTOP_MS: u64 = 1_000;
+
 struct EditorHost {
     rows: Cell<usize>,
     render: Cell<bool>,
@@ -395,6 +399,7 @@ pub async fn run(
         // senpi `applyTerminalTitle` / `setProgress`: written only when the value changes.
         let mut applied_title: Option<String> = None;
         let mut last_size = (terminal.columns(), terminal.rows());
+        let mut last_rebuild_ms = 0_u64;
         let mut right_click_target: Option<Rc<RefCell<dyn Component>>> = None;
         while !mode.shutdown_requested {
             #[cfg(unix)]
@@ -512,6 +517,7 @@ pub async fn run(
                 screen.base_mut().after_terminal_start(&mut terminal);
                 mode.resume_question_mouse_capture(&mut screen, &mut terminal);
                 screen.base_mut().invalidate();
+                mode.mark_frame_dirty();
                 screen.base_mut().request_render(true, now);
             }
             mode.sync_question_mouse_capture(&mut screen, &mut terminal);
@@ -544,6 +550,7 @@ pub async fn run(
                     mode.resume_question_mouse_capture(&mut screen, &mut terminal);
                     mode.rebind_terminal_theme(&mut screen, &mut terminal);
                     screen.base_mut().invalidate();
+                    mode.mark_frame_dirty();
                     // senpi `switchTuiMode` only calls `nextUi.start()`, whose render is unforced.
                     screen.base_mut().request_render(false, now);
                 }
@@ -561,21 +568,29 @@ pub async fn run(
             if progress != *progress_active { terminal.set_progress(progress); *progress_active = progress; }
             let title = mode.terminal_window_title();
             if applied_title.as_deref() != Some(title.as_str()) { terminal.set_title(&title); applied_title = Some(title); }
-            // Only frames whose content changed are requested; an idle loop skips the layout pass.
-            let mut content_changed = false;
-            if fullscreen {
-                let (document, dock) = mode.render_split(usize::from(terminal.columns()));
-                if *document_lines.borrow() != document { *document_lines.borrow_mut() = document; content_changed = true; }
-                if *dock_lines.borrow() != dock { *dock_lines.borrow_mut() = dock; content_changed = true; }
-            } else {
-                let lines = mode.render(usize::from(terminal.columns()));
-                let mut rendered = rendered.borrow_mut();
-                if rendered.0 != lines { rendered.0 = lines; content_changed = true; }
-            }
+            // senpi repaints only on `requestRender`: the mode's lines are rebuilt when input, a
+            // resize, a host repaint request or a mode state change asks for it, or while a
+            // time-driven element runs. A long idle transcript is not re-laid-out every frame; a
+            // once-per-second rebuild backs up any change that reached the mode without a signal.
             let size = (terminal.columns(), terminal.rows());
             let resized = size != last_size;
             last_size = size;
             let host_requested = host.render.replace(false);
+            let backstop = now.saturating_sub(last_rebuild_ms) >= IDLE_REBUILD_BACKSTOP_MS;
+            let mode_requested = mode.take_frame_rebuild(clock.elapsed().as_secs_f64() * 1000.0);
+            let mut content_changed = false;
+            if had_input || resized || host_requested || mode_requested || backstop {
+                last_rebuild_ms = now;
+                if fullscreen {
+                    let (document, dock) = mode.render_split(usize::from(terminal.columns()));
+                    if *document_lines.borrow() != document { *document_lines.borrow_mut() = document; content_changed = true; }
+                    if *dock_lines.borrow() != dock { *dock_lines.borrow_mut() = dock; content_changed = true; }
+                } else {
+                    let lines = mode.render(usize::from(terminal.columns()));
+                    let mut rendered = rendered.borrow_mut();
+                    if rendered.0 != lines { rendered.0 = lines; content_changed = true; }
+                }
+            }
             // senpi `applySmoothStreamingRenderFps` + `requestRender(false, "input")`: the frame
             // cap follows the smooth-streaming FPS, and keystroke frames skip the throttle.
             screen.poll_timers(now);

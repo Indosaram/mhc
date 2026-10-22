@@ -894,6 +894,11 @@ pub struct InteractiveMode {
     footer_data: Arc<maho_core::footer_data_provider::FooterDataProvider>,
     /// When `tick` last polled the footer's git branch and provider count.
     footer_poll_ms: Option<f64>,
+    /// A state change the next host frame must show (senpi `requestRender`); taken by
+    /// [`InteractiveMode::take_frame_rebuild`].
+    frame_dirty: bool,
+    /// Whether an editor autocomplete request was outstanding at the last poll.
+    autocomplete_pending: bool,
     /// Bumped on every session event so the memoized local footer stats follow the session.
     footer_event_generation: u64,
     /// Local footer stats (cache read, cache write, cost) and context usage, keyed by what they derive from.
@@ -1206,6 +1211,54 @@ impl InteractiveMode {
     pub(crate) fn clock_ms(&self) -> u64 {
         u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
+    /// Whether the host must rebuild the mode's lines this frame. senpi repaints only when
+    /// something calls `requestRender`: here a state change the frame reads sets `frame_dirty`,
+    /// footer sources and UI intervals are polled, and a running time-driven element (working row,
+    /// spinners, reveal pacing, dialogs, animations, transcript warm-up) repaints every frame.
+    pub fn take_frame_rebuild(&mut self, now_ms: f64) -> bool {
+        if self.poll_footer_sources(now_ms) {
+            self.frame_dirty = true;
+        }
+        if maho_tui::ui_intervals::run_due_ui_intervals(std::time::Instant::now()) {
+            self.frame_dirty = true;
+        }
+        std::mem::take(&mut self.frame_dirty) || self.frame_animating()
+    }
+    /// Ask the next host frame to rebuild the mode's lines.
+    pub fn mark_frame_dirty(&mut self) {
+        self.frame_dirty = true;
+    }
+    fn frame_animating(&self) -> bool {
+        !self.agent_idle
+            || self.provisional_working
+            || self.working_started_ms.is_some()
+            || self.pending_turn.is_some()
+            || self.pending_abort.is_some()
+            || self.pending_bash.is_some()
+            || self.pending_compact.is_some()
+            || self.pending_compaction_flush.is_some()
+            || self.active_status_indicator.is_some()
+            || self.share.is_some()
+            || self.reload_box.is_some()
+            || self.login_dialog.is_some()
+            || self.ui_dialog.is_some()
+            || self.question.is_some()
+            || self.async_question_widget.is_some()
+            || self.dialog_countdown.is_some()
+            || !self.custom_ui_builds.is_empty()
+            || !self.armin_animations.is_empty()
+            || !self.daxnuts_animations.is_empty()
+            || self.reveal.timer_fps.is_some()
+            || self.tool_args_reveal.timer_fps.is_some()
+            || self.tool_reveal.timer_fps.is_some()
+            || !self.chat.is_fully_hydrated()
+            || self.ulw_turn_glow
+            || crate::components::neon_border::has_ulw_keyword(&self.editor.editor.get_text())
+            || self
+                .tool_cards
+                .iter()
+                .any(|card| card.borrow().is_animating())
+    }
     pub(crate) fn tick_now(&mut self) {
         self.tick(self.clock.elapsed().as_secs_f64() * 1000.0);
     }
@@ -1214,6 +1267,7 @@ impl InteractiveMode {
         name: String,
         renderers: Arc<maho_ext_api::ToolRenderers<S, serde_json::Value>>,
     ) {
+        self.frame_dirty = true;
         self.native_tool_renderer_snapshots.insert(
             name,
             Rc::new(RefCell::new(
@@ -1720,6 +1774,7 @@ impl InteractiveMode {
     }
 
     fn install_theme(&mut self, theme: Theme) {
+        self.frame_dirty = true;
         let recolor = theme.get_color_mode() != self.theme.get_color_mode()
             || theme.resolved_colors() != self.theme.resolved_colors()
             || theme.export_colors() != self.theme.export_colors();
@@ -2814,6 +2869,8 @@ impl InteractiveMode {
             extension_editor_dialog: None,
             pending_dialog_external_edit: Default::default(),
             footer_poll_ms: None,
+            frame_dirty: true,
+            autocomplete_pending: false,
             footer_event_generation: 0,
             footer_stats_cache: RefCell::new(None),
             footer_subscription_cache: RefCell::new(None),
@@ -2864,6 +2921,7 @@ impl InteractiveMode {
             }
             if let Ok(value) = result {
                 self.remote_stats = Some(session_stats_from_wire(&value));
+                self.frame_dirty = true;
             }
         }
     }
@@ -2899,6 +2957,7 @@ impl InteractiveMode {
                 continue;
             }
             if let Ok(models) = result {
+                self.frame_dirty = true;
                 self.remote_models = Some(
                     models
                         .iter()
@@ -2932,6 +2991,7 @@ impl InteractiveMode {
             }
             match result {
                 Ok(messages) => {
+                    self.frame_dirty = true;
                     self.remote_history = Some(
                         messages
                             .iter()
@@ -7640,6 +7700,7 @@ impl InteractiveMode {
             };
             self.parked_actions.pop_front();
             self.applying_parked = true;
+            self.frame_dirty = true;
             apply(self);
             self.applying_parked = false;
         }
@@ -7782,6 +7843,7 @@ impl InteractiveMode {
         };
         if let Some(result) = turn_result {
             self.pending_turn = None;
+            self.frame_dirty = true;
             if let Err(error) = result {
                 self.ulw_turn_glow = false;
                 self.show_status(error);
@@ -7801,6 +7863,7 @@ impl InteractiveMode {
                 self.route_bash_event(&component, &event);
             }
             self.finish_bash(component, result);
+            self.frame_dirty = true;
         }
         if self
             .pending_compact
@@ -7808,6 +7871,7 @@ impl InteractiveMode {
             .is_some_and(|compact| compact.as_mut().poll(&mut context).is_ready())
         {
             self.pending_compact = None;
+            self.frame_dirty = true;
         }
         let flush_result = self.pending_compaction_flush.as_mut().and_then(|flush| {
             match flush.as_mut().poll(&mut context) {
@@ -7817,6 +7881,7 @@ impl InteractiveMode {
         });
         if let Some(failure) = flush_result {
             self.pending_compaction_flush = None;
+            self.frame_dirty = true;
             if let Some(failure) = failure {
                 self.show_error(&failure);
             }
@@ -8186,6 +8251,7 @@ impl InteractiveMode {
     }
 
     fn show_status(&mut self, text: String) {
+        self.frame_dirty = true;
         let raw = text;
         let text = self.theme.fg(crate::theme::ThemeColor::Dim, &raw);
         if let Some((count, component, last)) = &mut self.last_status
@@ -8275,7 +8341,9 @@ impl InteractiveMode {
             }
             self.submissions
                 .borrow_mut()
-                .push_back(internal_command(format!("/login-provider {provider_id} {method}")));
+                .push_back(internal_command(format!(
+                    "/login-provider {provider_id} {method}"
+                )));
             return Ok(true);
         }
         if text == "/login-auth-type" {
@@ -10089,10 +10157,16 @@ impl InteractiveMode {
     pub fn drain_events(&mut self) {
         self.drain_ui_requests();
         // senpi resolves debounced/asynchronous autocomplete requests on its event loop.
-        self.editor.editor.poll_autocomplete();
-        if let Some(editor) = self.custom_editor.as_mut() {
-            editor.poll_autocomplete();
+        // A request that was outstanding at the last poll may have resolved into new suggestions.
+        let pending = self.editor.editor.poll_autocomplete()
+            | self
+                .custom_editor
+                .as_mut()
+                .is_some_and(|editor| editor.poll_autocomplete());
+        if pending || self.autocomplete_pending {
+            self.frame_dirty = true;
         }
+        self.autocomplete_pending = pending;
         self.drain_remote_history();
         self.drain_remote_models();
         self.drain_remote_stats();
@@ -10410,13 +10484,13 @@ impl InteractiveMode {
                 &title,
                 vec![CONTINUE.into(), "Cancel".into()],
                 Box::new(move |choice| {
-                    submissions.borrow_mut().push_back(internal_command(
-                        if choice == CONTINUE {
+                    submissions
+                        .borrow_mut()
+                        .push_back(internal_command(if choice == CONTINUE {
                             command.clone()
                         } else {
                             "/login-consent-cancel".to_owned()
-                        },
-                    ));
+                        }));
                     selected.borrow_mut().take();
                 }),
                 Box::new(move || {
@@ -10772,6 +10846,7 @@ impl InteractiveMode {
 
     /// senpi `showWarning`.
     pub fn show_warning(&mut self, message: &str) {
+        self.frame_dirty = true;
         self.chat.add_component(Rc::new(RefCell::new(
             maho_tui::components::spacer::Spacer::new(1),
         )));
@@ -10795,6 +10870,7 @@ impl InteractiveMode {
         action: &str,
         changelog_url: &str,
     ) {
+        self.frame_dirty = true;
         use crate::components::earendil_announcement::{NoticeLine, NoticeSpec, build_notice_box};
         let link = if maho_tui::terminal_image::get_capabilities().hyperlinks {
             maho_tui::terminal_image::hyperlink(changelog_url, changelog_url)
@@ -10882,6 +10958,7 @@ impl InteractiveMode {
     }
 
     fn show_error(&mut self, message: &str) {
+        self.frame_dirty = true;
         let text = self.theme.fg(
             crate::theme::ThemeColor::Error,
             &format!(
@@ -10934,6 +11011,7 @@ impl InteractiveMode {
     }
 
     fn handle_auth_ui_event(&mut self, event: AuthUiEvent) {
+        self.frame_dirty = true;
         match event {
             AuthUiEvent::Prompt(prompt, reply) => self.show_auth_prompt(prompt, reply),
             AuthUiEvent::Notify(event) => self.notify_auth_dialog(event),
@@ -11352,6 +11430,7 @@ impl InteractiveMode {
 
     pub fn handle_session_event(&mut self, event: &maho_ext_api::AgentSessionEvent) {
         self.footer_event_generation = self.footer_event_generation.wrapping_add(1);
+        self.frame_dirty = true;
         use crate::components::status_indicator::StatusIndicatorKind;
         use maho_ext_api::AgentSessionEvent;
         match event {
@@ -11741,6 +11820,7 @@ impl InteractiveMode {
 
     pub fn handle_ui_request(&mut self, request: crate::interactive_extension_ui::UiRequest) {
         use crate::interactive_extension_ui::UiRequest;
+        self.frame_dirty = true;
         match request {
             UiRequest::SideColumn(column) => {
                 if let Some(renderer) = self
@@ -13426,7 +13506,10 @@ impl InteractiveMode {
         }
     }
 
-    pub fn tick(&mut self, now_ms: f64) {
+    /// Refresh the footer's cwd, provider count and (at the watcher cadence) git branch; `true`
+    /// when the provider count or branch changed.
+    fn poll_footer_sources(&mut self, now_ms: f64) -> bool {
+        let mut changed = false;
         self.footer_data.set_cwd(&self.host_cwd());
         // senpi `updateAvailableProviderCount` runs on catalog/auth changes, not per frame; walking
         // the provider auth status every frame stat'ed credential files in an idle loop.
@@ -13454,6 +13537,7 @@ impl InteractiveMode {
             };
             self.footer_data
                 .set_available_provider_count(provider_count);
+            changed = true;
         }
         // The git branch is polled at senpi's watcher cadence, not every frame.
         if self
@@ -13461,8 +13545,15 @@ impl InteractiveMode {
             .is_none_or(|last| now_ms < last || now_ms - last >= FOOTER_POLL_INTERVAL_MS)
         {
             self.footer_poll_ms = Some(now_ms);
+            let before = self.footer_data.git_branch();
             self.footer_data.refresh_branch();
+            changed |= self.footer_data.git_branch() != before;
         }
+        changed
+    }
+
+    pub fn tick(&mut self, now_ms: f64) {
+        self.poll_footer_sources(now_ms);
         for (id, value) in self.tool_args_reveal.tick(now_ms) {
             if let Some(component) = self.pending_tools.get(&id) {
                 component.borrow_mut().update_args(value);
