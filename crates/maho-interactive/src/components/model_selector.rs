@@ -97,8 +97,8 @@ impl ModelItem {
     }
 }
 
-/// Test-only count of per-model search-row conversions: the work a8ac6196 repeated for every catalog
-/// entry on every keystroke and the current code does once per `active_models` change.
+// Test-only count of per-model search-row conversions: the work a8ac6196 repeated for every catalog
+// entry on every keystroke and the current code does once per `active_models` change.
 #[cfg(test)]
 thread_local! {
     static SEARCH_ITEM_CONVERSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -723,7 +723,6 @@ mod tests {
     use crate::model_search::ModelSearchItem;
     use crate::model_search_rank::rank_model_search_items;
     use maho_tui::tui::Component;
-    use std::future::Future;
 
     fn entry(provider: &str, id: &str, name: &str) -> ModelEntry {
         ModelEntry {
