@@ -14,8 +14,8 @@ use serde_json::{json, Value};
 use maho_rpc::custom_capability::{QUESTION_CAPABILITY, RENDERED_COMPONENTS_CAPABILITY};
 use maho_rpc::host_ensure::{ensure_host, EnsureHostError, EnsureHostOptions, EnsuredHostInfo};
 use maho_rpc::rpc_client::{
-    classify_rpc_client_event, default_rpc_socket_path, is_provider_account_event, RpcClient,
-    RpcClientEventKind, RpcClientOptions, RpcClientUnsubscribe, RpcClientError, RpcEventListener,
+    classify_rpc_client_event, default_rpc_socket_path, is_provider_account_event, RpcClient, RpcClientError,
+    RpcClientEventKind, RpcClientOptions, RpcClientUnsubscribe, RpcEventListener,
 };
 
 /// senpi's `HOST_CLIENT_CAPABILITIES`.
@@ -279,7 +279,7 @@ pub enum HostRuntimeState {
 /// order counter, the host UI handler and its pending-request queue, and the transport
 /// subscription that feeds wire events in.
 pub struct RemoteSessionProxy {
-    client: Arc<tokio::sync::Mutex<RpcClient>>,
+    client: Arc<RpcClient>,
     state: Arc<Mutex<RemoteSessionState>>,
     listeners: Arc<Mutex<Vec<RpcEventListener>>>,
     session_listeners: Arc<Mutex<Vec<SessionEventListener>>>,
@@ -293,7 +293,7 @@ pub struct RemoteSessionProxy {
 }
 
 impl RemoteSessionProxy {
-    pub fn new(state: RemoteSessionState, client: Arc<tokio::sync::Mutex<RpcClient>>, on_warning: Option<InteractiveHostWarningHandler>) -> Self {
+    pub fn new(state: RemoteSessionState, client: Arc<RpcClient>, on_warning: Option<InteractiveHostWarningHandler>) -> Self {
         let next_order = state.next_queued_input_order();
         Self {
             client,
@@ -367,14 +367,11 @@ impl RemoteSessionProxy {
         let Ok(handle) = tokio::runtime::Handle::try_current() else { return; };
         let client = self.client.clone();
         handle.spawn(async move {
-            let result = {
-                let mut client = client.lock().await;
-                client
-                    .get_messages()
-                    .await
-                    .map_err(|error| error.to_string())
-                    .and_then(|data| data.get("messages").and_then(Value::as_array).cloned().ok_or_else(|| "RPC get_messages returned no messages array".to_owned()))
-            };
+            let result = client
+                .get_messages()
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|data| data.get("messages").and_then(Value::as_array).cloned().ok_or_else(|| "RPC get_messages returned no messages array".to_owned()));
             let _ = sender.send((generation, result));
         });
     }
@@ -385,14 +382,11 @@ impl RemoteSessionProxy {
         let Ok(handle) = tokio::runtime::Handle::try_current() else { return; };
         let client = self.client.clone();
         handle.spawn(async move {
-            let result = {
-                let mut client = client.lock().await;
-                client
-                    .get_available_models()
-                    .await
-                    .map_err(|error| error.to_string())
-                    .and_then(|data| data.get("models").and_then(Value::as_array).cloned().ok_or_else(|| "RPC get_available_models returned no models array".to_owned()))
-            };
+            let result = client
+                .get_available_models()
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|data| data.get("models").and_then(Value::as_array).cloned().ok_or_else(|| "RPC get_available_models returned no models array".to_owned()));
             let _ = sender.send((generation, result));
         });
     }
@@ -402,7 +396,7 @@ impl RemoteSessionProxy {
     pub fn spawn_clear_queue(&self, abort_will_follow: bool) {
         let Ok(handle) = tokio::runtime::Handle::try_current() else { return; };
         let client = self.client.clone();
-        handle.spawn(async move { let _ = client.lock().await.clear_queue(Some(abort_will_follow)).await; });
+        handle.spawn(async move { let _ = client.clear_queue(Some(abort_will_follow)).await; });
     }
 
     /// senpi's `setFavoriteModels` proxy arm: the mirror updates synchronously, then the frame is
@@ -428,7 +422,7 @@ impl RemoteSessionProxy {
         let Ok(handle) = tokio::runtime::Handle::try_current() else { return; };
         let client = self.client.clone();
         handle.spawn(async move {
-            let result = { let mut client = client.lock().await; client.get_session_stats().await.map_err(|error| error.to_string()) };
+            let result = client.get_session_stats().await.map_err(|error| error.to_string());
             let _ = sender.send((generation, result));
         });
     }
@@ -607,43 +601,43 @@ impl RemoteSessionProxy {
 
     /// senpi's `prompt`.
     pub async fn prompt(&self, message: &str, options: Value) -> Result<(), RpcClientError> {
-        let result = self.client.lock().await.prompt(message, options, |_| {}, |_| {}).await;
+        let result = self.client.prompt(message, options).await;
         self.settle_unit("prompt", result)
     }
 
     /// senpi's `abort`.
     pub async fn abort(&self) -> Result<(), RpcClientError> {
-        let result = self.client.lock().await.abort().await;
+        let result = self.client.abort().await;
         self.settle_unit("abort", result)
     }
 
     /// senpi's `abortCompaction`.
     pub async fn abort_compaction(&self) -> Result<(), RpcClientError> {
-        let result = self.client.lock().await.abort_compaction().await;
+        let result = self.client.abort_compaction().await;
         self.settle_unit("abortCompaction", result)
     }
 
     /// senpi's `abortBranchSummary`.
     pub async fn abort_branch_summary(&self) -> Result<(), RpcClientError> {
-        let result = self.client.lock().await.abort_branch_summary().await;
+        let result = self.client.abort_branch_summary().await;
         self.settle_unit("abortBranchSummary", result)
     }
 
     /// senpi's `abortRetry`.
     pub async fn abort_retry(&self) -> Result<(), RpcClientError> {
-        let result = self.client.lock().await.abort_retry().await;
+        let result = self.client.abort_retry().await;
         self.settle_unit("abortRetry", result)
     }
 
     /// senpi's `abortBash`.
     pub async fn abort_bash(&self) -> Result<(), RpcClientError> {
-        let result = self.client.lock().await.abort_bash().await;
+        let result = self.client.abort_bash().await;
         self.settle_unit("abortBash", result)
     }
 
     /// senpi's `waitForIdle`.
     pub async fn wait_for_idle(&self, timeout: std::time::Duration) -> Result<(), RpcClientError> {
-        let result = self.client.lock().await.wait_for_idle(timeout).await;
+        let result = self.client.wait_for_idle(timeout).await;
         self.settle_unit("waitForIdle", result)
     }
 
@@ -655,7 +649,7 @@ impl RemoteSessionProxy {
             state.ordered.push(json!({"text": message, "mode": "steer", "enqueueOrder": order}));
             state.pending_message_count += 1.;
         });
-        let result = self.client.lock().await.steer(message, images, Some(order)).await;
+        let result = self.client.steer(message, images, Some(order)).await;
         self.settle_unit("steer", result)
     }
 
@@ -667,172 +661,172 @@ impl RemoteSessionProxy {
             state.ordered.push(json!({"text": message, "mode": "followUp", "enqueueOrder": order}));
             state.pending_message_count += 1.;
         });
-        let result = self.client.lock().await.follow_up(message, images, Some(order)).await;
+        let result = self.client.follow_up(message, images, Some(order)).await;
         self.settle_unit("followUp", result)
     }
 
     /// senpi's `setModel` / `setSessionModel`.
     pub async fn set_model(&self, provider: &str, model_id: &str) -> Result<Value, RpcClientError> {
-        let result = self.client.lock().await.set_model(provider, model_id).await;
+        let result = self.client.set_model(provider, model_id).await;
         self.settle("setModel", result, Value::Null)
     }
 
     /// senpi's `cycleModel`.
     pub async fn cycle_model(&self, direction: &str) -> Result<Value, RpcClientError> {
-        let result = self.client.lock().await.cycle_model(direction).await;
+        let result = self.client.cycle_model(direction).await;
         self.settle("cycleModel", result, Value::Null)
     }
 
     /// senpi's `setThinkingLevel`.
     pub async fn set_thinking_level(&self, level: &str, scope: Option<&str>) -> Result<Value, RpcClientError> {
-        let result = self.client.lock().await.set_thinking_level(level, scope).await;
+        let result = self.client.set_thinking_level(level, scope).await;
         self.settle("setThinkingLevel", result, Value::Null)
     }
 
     /// senpi's `cycleThinkingLevel`.
     pub async fn cycle_thinking_level(&self) -> Result<Value, RpcClientError> {
-        let result = self.client.lock().await.cycle_thinking_level().await;
+        let result = self.client.cycle_thinking_level().await;
         self.settle("cycleThinkingLevel", result, Value::Null)
     }
 
     /// senpi's `getAvailableThinkingLevels`.
     pub async fn get_available_thinking_levels(&self) -> Result<Value, RpcClientError> {
-        let result = self.client.lock().await.get_available_thinking_levels().await;
+        let result = self.client.get_available_thinking_levels().await;
         self.settle("getAvailableThinkingLevels", result, Value::Array(Vec::new()))
     }
 
     /// senpi's `setFastMode`.
     pub async fn set_fast_mode(&self, enabled: bool) -> Result<Value, RpcClientError> {
-        let result = self.client.lock().await.set_fast_mode(enabled).await;
+        let result = self.client.set_fast_mode(enabled).await;
         self.settle("setFastMode", result, Value::Null)
     }
 
     /// senpi's `setAutoRetryEnabled`.
     pub async fn set_auto_retry(&self, enabled: bool) -> Result<(), RpcClientError> {
-        let result = self.client.lock().await.set_auto_retry(enabled).await;
+        let result = self.client.set_auto_retry(enabled).await;
         self.settle_unit("setAutoRetryEnabled", result)
     }
 
     /// senpi's `setSteeringMode`.
     pub async fn set_steering_mode(&self, mode: &str) -> Result<(), RpcClientError> {
-        let result = self.client.lock().await.set_steering_mode(mode).await;
+        let result = self.client.set_steering_mode(mode).await;
         self.settle_unit("setSteeringMode", result)
     }
 
     /// senpi's `setFollowUpMode`.
     pub async fn set_follow_up_mode(&self, mode: &str) -> Result<(), RpcClientError> {
-        let result = self.client.lock().await.set_follow_up_mode(mode).await;
+        let result = self.client.set_follow_up_mode(mode).await;
         self.settle_unit("setFollowUpMode", result)
     }
 
     /// senpi's `setAutoCompactionEnabled`.
     pub async fn set_auto_compaction(&self, enabled: bool) -> Result<(), RpcClientError> {
-        let result = self.client.lock().await.set_auto_compaction(enabled).await;
+        let result = self.client.set_auto_compaction(enabled).await;
         self.settle_unit("setAutoCompaction", result)
     }
 
     /// senpi's `setFavoriteModels`: the mirror is updated before the frame goes out.
     pub async fn set_favorite_models(&self, models: Value) -> Result<(), RpcClientError> {
         self.update(|state| state.favorite_models = models.clone());
-        let result = self.client.lock().await.set_favorite_models(models).await;
+        let result = self.client.set_favorite_models(models).await;
         self.settle_unit("setFavoriteModels", result)
     }
 
     /// senpi's `setScopedModels`.
     pub async fn set_scoped_models(&self, models: Value) -> Result<(), RpcClientError> {
         self.update(|state| state.scoped_models = models.clone());
-        let result = self.client.lock().await.set_scoped_models(models).await;
+        let result = self.client.set_scoped_models(models).await;
         self.settle_unit("setScopedModels", result)
     }
 
     /// senpi's `setSessionName`.
     pub async fn set_session_name(&self, name: &str) -> Result<(), RpcClientError> {
-        let result = self.client.lock().await.set_session_name(name).await;
+        let result = self.client.set_session_name(name).await;
         self.settle_unit("setSessionName", result)
     }
 
     /// senpi's `compact`.
     pub async fn compact(&self, instructions: Option<&str>) -> Result<Value, RpcClientError> {
-        let result = self.client.lock().await.compact(instructions).await;
+        let result = self.client.compact(instructions).await;
         self.settle("compact", result, Value::Null)
     }
 
     /// senpi's `navigateTree`.
     pub async fn navigate_tree(&self, target_id: &str, options: Value) -> Result<Value, RpcClientError> {
-        let result = self.client.lock().await.navigate_tree(target_id, options).await;
+        let result = self.client.navigate_tree(target_id, options).await;
         self.settle("navigateTree", result, json!({"cancelled": true}))
     }
 
     /// senpi's `reload`.
     pub async fn reload(&self) -> Result<Value, RpcClientError> {
-        let result = self.client.lock().await.reload().await;
+        let result = self.client.reload().await;
         self.settle("reload", result, json!({"cancelled": true}))
     }
 
     /// senpi's `checkReloadVeto`.
     pub async fn check_reload_veto(&self) -> Result<Value, RpcClientError> {
-        let result = self.client.lock().await.check_reload_veto().await;
+        let result = self.client.check_reload_veto().await;
         self.settle("checkReloadVeto", result, json!({"cancelled": true}))
     }
 
     /// senpi's `getSessionStats`.
     pub async fn get_session_stats(&self) -> Result<Value, RpcClientError> {
-        let result = self.client.lock().await.get_session_stats().await;
+        let result = self.client.get_session_stats().await;
         self.settle("getSessionStats", result, Value::Null)
     }
 
     /// senpi's `getUserMessagesForForking`.
     pub async fn get_user_messages_for_forking(&self) -> Result<Value, RpcClientError> {
-        let result = self.client.lock().await.get_fork_messages().await;
+        let result = self.client.get_fork_messages().await;
         self.settle("getUserMessagesForForking", result, Value::Array(Vec::new()))
     }
 
     /// senpi's `editAssistantMessage` proxy arm: forward the edit, then refresh the mirror.
     pub async fn edit_assistant_message(&self, entry_id: &str, text: &str, options: Value) -> Result<Value, RpcClientError> {
-        let result = { self.client.lock().await.edit_assistant_message(entry_id, text, options).await? };
+        let result = { self.client.edit_assistant_message(entry_id, text, options).await? };
         self.refresh().await;
         Ok(result)
     }
 
     /// senpi's proxy `refresh()`: re-read the host session state into the mirror.
     pub async fn refresh(&self) {
-        if let Ok(state) = self.client.lock().await.get_state().await {
+        if let Ok(state) = self.client.get_state().await {
             self.set_state(RemoteSessionState::from_rpc(&state));
         }
     }
 
     /// senpi's `executeBash` proxy arm (host-side execution; no local chunk callbacks here).
     pub async fn bash(&self, command: &str, options: Value) -> Result<Value, RpcClientError> {
-        self.client.lock().await.bash(command, options).await
+        self.client.bash(command, options).await
     }
 
     /// senpi's `exportToJsonl`.
     pub async fn export_jsonl(&self, output_path: Option<&str>) -> Result<Value, RpcClientError> {
-        let result = self.client.lock().await.export_jsonl(output_path).await;
+        let result = self.client.export_jsonl(output_path).await;
         self.settle("exportToJsonl", result, Value::Null)
     }
 
     /// senpi's `exportToHtml`.
     pub async fn export_html(&self, output_path: Option<&str>, theme_name: Option<&str>) -> Result<Value, RpcClientError> {
-        let result = self.client.lock().await.export_html(output_path, theme_name).await;
+        let result = self.client.export_html(output_path, theme_name).await;
         self.settle("exportToHtml", result, Value::Null)
     }
 
     /// senpi's `recordBashResult`.
     pub async fn record_bash_result(&self, command: &str, result: Value, exclude_from_context: Option<bool>) -> Result<(), RpcClientError> {
-        let outcome = self.client.lock().await.record_bash_result(command, result, exclude_from_context).await;
+        let outcome = self.client.record_bash_result(command, result, exclude_from_context).await;
         self.settle_unit("recordBashResult", outcome)
     }
 
     /// senpi's `appendLabelChange` (the remote SessionManager shim).
     pub async fn set_label(&self, entry_id: &str, label: Option<&str>) -> Result<(), RpcClientError> {
-        let result = self.client.lock().await.set_label(entry_id, label).await;
+        let result = self.client.set_label(entry_id, label).await;
         self.settle_unit("appendLabelChange", result)
     }
 
     /// senpi's `sendMessage` (`sendCustomMessage`).
     pub async fn send_custom_message(&self, message: Value, options: Option<Value>) -> Result<(), RpcClientError> {
-        let result = self.client.lock().await.send_custom_message(message, options).await;
+        let result = self.client.send_custom_message(message, options).await;
         self.settle_unit("sendMessage", result)
     }
 
@@ -844,7 +838,7 @@ impl RemoteSessionProxy {
             "followUp": state.follow_up,
             "ordered": state.ordered,
         }));
-        let result = self.client.lock().await.clear_queue(abort_will_follow).await;
+        let result = self.client.clear_queue(abort_will_follow).await;
         if let Err(error) = result { self.report_action_failure("clearQueue", &error); }
         snapshot
     }
@@ -887,7 +881,7 @@ pub type RebindSessionFn = Arc<
 
 /// senpi's `RemoteInteractiveRuntime`.
 pub struct RemoteInteractiveRuntime {
-    client: Arc<tokio::sync::Mutex<RpcClient>>,
+    client: Arc<RpcClient>,
     proxy: Arc<RemoteSessionProxy>,
     binding: HostSessionBinding,
     state: Mutex<HostRuntimeState>,
@@ -900,7 +894,7 @@ pub struct RemoteInteractiveRuntime {
 
 impl RemoteInteractiveRuntime {
     pub fn new(
-        client: Arc<tokio::sync::Mutex<RpcClient>>,
+        client: Arc<RpcClient>,
         proxy: Arc<RemoteSessionProxy>,
         binding: HostSessionBinding,
         options: InteractiveHostRuntimeOptions,
@@ -998,7 +992,7 @@ impl RemoteInteractiveRuntime {
 
     /// senpi's `sendHostUiProgress`.
     pub async fn send_host_ui_progress(&self, progress: Value) {
-        let _ = self.client.lock().await.send_extension_ui_progress(progress).await;
+        let _ = self.client.send_extension_ui_progress(progress).await;
     }
 
     /// senpi's `setClientInfo`; capabilities ride the first frame only.
@@ -1010,13 +1004,13 @@ impl RemoteInteractiveRuntime {
             *sent = true;
             capabilities
         };
-        let _ = self.client.lock().await.set_client_info(width, capabilities).await;
+        let _ = self.client.set_client_info(width, capabilities).await;
     }
 
     /// senpi's `reRegisterClientInfo`.
     pub async fn re_register_client_info(&self) {
         let width = *self.last_client_width.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _ = self.client.lock().await.set_client_info(width, Some(client_capabilities())).await;
+        let _ = self.client.set_client_info(width, Some(client_capabilities())).await;
     }
 
     /// senpi's `newSession`.
@@ -1024,7 +1018,7 @@ impl RemoteInteractiveRuntime {
         if self.is_fallback() {
             return Ok(true);
         }
-        let result = { self.client.lock().await.new_session(parent_session).await? };
+        let result = { self.client.new_session(parent_session).await? };
         if is_cancelled(&result) {
             return Ok(true);
         }
@@ -1037,7 +1031,7 @@ impl RemoteInteractiveRuntime {
         if self.is_fallback() {
             return Ok(true);
         }
-        let result = { self.client.lock().await.switch_session(session_path, cwd_override).await? };
+        let result = { self.client.switch_session(session_path, cwd_override).await? };
         if is_cancelled(&result) {
             return Ok(true);
         }
@@ -1050,7 +1044,7 @@ impl RemoteInteractiveRuntime {
         if self.is_fallback() {
             return Ok(true);
         }
-        let result = { self.client.lock().await.fork(entry_id, position).await? };
+        let result = { self.client.fork(entry_id, position).await? };
         if is_cancelled(&result) {
             return Ok(true);
         }
@@ -1063,7 +1057,7 @@ impl RemoteInteractiveRuntime {
         if self.is_fallback() {
             return Ok(true);
         }
-        let result = { self.client.lock().await.import_jsonl(input_path, cwd_override).await? };
+        let result = { self.client.import_jsonl(input_path, cwd_override).await? };
         if is_cancelled(&result) {
             return Ok(true);
         }
@@ -1075,7 +1069,7 @@ impl RemoteInteractiveRuntime {
         if let Some(callback) = self.before_session_invalidate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
             callback();
         }
-        if let Ok(state) = self.client.lock().await.get_state().await {
+        if let Ok(state) = self.client.get_state().await {
             self.proxy.set_state(RemoteSessionState::from_rpc(&state));
         }
         let rebind = self.rebind_session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
@@ -1095,9 +1089,8 @@ impl RemoteInteractiveRuntime {
             }
             *state = HostRuntimeState::Disposed;
         }
-        let mut client = self.client.lock().await;
-        let _ = client.close_session(None).await;
-        client.stop().await;
+        let _ = self.client.close_session(None).await;
+        self.client.stop().await;
     }
 
     /// senpi's `scheduleReconnect` loop.
@@ -1119,7 +1112,7 @@ impl RemoteInteractiveRuntime {
                 }
                 Err(error) => {
                     cause = error;
-                    self.client.lock().await.stop().await;
+                    self.client.stop().await;
                 }
             }
         }
@@ -1137,11 +1130,9 @@ impl RemoteInteractiveRuntime {
                 request.run().await.map_err(|error| error.to_string())?;
             }
         }
-        let mut client = self.client.lock().await;
-        client.start().await.map_err(|error| error.to_string())?;
-        client.open_session(open_session_options(&self.binding)).await.map_err(|error| error.to_string())?;
-        drop(client);
-        let state = { self.client.lock().await.get_state().await.map_err(|error| error.to_string())? };
+        self.client.start().await.map_err(|error| error.to_string())?;
+        self.client.open_session(open_session_options(&self.binding)).await.map_err(|error| error.to_string())?;
+        let state = { self.client.get_state().await.map_err(|error| error.to_string())? };
         self.proxy.set_state(RemoteSessionState::from_rpc(&state));
         Ok(())
     }
@@ -1213,14 +1204,7 @@ pub async fn create_interactive_host_runtime(
         return InteractiveHostRuntimeOutcome::Fallback(warn_fallback(&cause));
     }
 
-    let mut client = RpcClient::new(RpcClientOptions {
-        socket_path: Some(PathBuf::from(&socket)),
-        agent_dir: options.agent_dir.clone(),
-        cwd: Some(binding.cwd.clone()),
-        provider: binding.provider.clone(),
-        model: binding.model.clone(),
-        ..Default::default()
-    });
+    let client = Arc::new(RpcClient::new(RpcClientOptions { socket_path: Some(PathBuf::from(&socket)), ..Default::default() }));
     if let Err(error) = client.start().await {
         return InteractiveHostRuntimeOutcome::Fallback(warn_fallback(&error.to_string()));
     }
@@ -1239,15 +1223,11 @@ pub async fn create_interactive_host_runtime(
             return InteractiveHostRuntimeOutcome::Fallback(warn_fallback(&error.to_string()));
         }
     };
-    let client = Arc::new(tokio::sync::Mutex::new(client));
     let proxy = Arc::new(RemoteSessionProxy::new(state, client.clone(), options.on_warning.clone()));
-    let subscription = client
-        .lock()
-        .await
-        .on_event(Arc::new({
-            let proxy = proxy.clone();
-            move |event| proxy.handle_wire_event(event)
-        }));
+    let subscription = client.on_event(Arc::new({
+        let proxy = proxy.clone();
+        move |event| proxy.handle_wire_event(event)
+    }));
     proxy.hold_subscription(subscription);
     let runtime = Arc::new(RemoteInteractiveRuntime::new(client, proxy, binding, options));
     InteractiveHostRuntimeOutcome::Remote(runtime)
@@ -1321,9 +1301,9 @@ mod tests {
 
     /// A client on a socket whose host end is dropped: reads and mirror-only tests never write,
     /// and a fire-and-forget write fails as a swallowed transport loss.
-    fn detached_client() -> Arc<tokio::sync::Mutex<RpcClient>> {
+    fn detached_client() -> Arc<RpcClient> {
         let (client_stream, _host) = tokio::net::UnixStream::pair().expect("socket pair");
-        Arc::new(tokio::sync::Mutex::new(RpcClient::from_stream(client_stream, RpcClientOptions::default())))
+        Arc::new(RpcClient::from_stream(client_stream, RpcClientOptions::default()))
     }
 
     #[test]
@@ -1631,7 +1611,7 @@ mod tests {
     async fn client_info_sends_capabilities_once_then_width_only() {
         use tokio::io::{AsyncBufReadExt, BufReader};
         let (client_stream, host) = tokio::net::UnixStream::pair().expect("socket pair");
-        let client = Arc::new(tokio::sync::Mutex::new(RpcClient::from_stream(client_stream, RpcClientOptions::default())));
+        let client = Arc::new(RpcClient::from_stream(client_stream, RpcClientOptions::default()));
         let proxy = Arc::new(RemoteSessionProxy::new(RemoteSessionState::default(), client.clone(), None));
         let runtime = RemoteInteractiveRuntime::new(client, proxy, binding(None), InteractiveHostRuntimeOptions::default());
         let reader = tokio::spawn(async move {
@@ -1659,7 +1639,7 @@ mod tests {
     async fn proxy_fire_and_forget_commands_forward_frames_and_mirror_queued_input() {
         use tokio::io::{AsyncBufReadExt, BufReader};
         let (client_stream, host) = tokio::net::UnixStream::pair().expect("socket pair");
-        let client = Arc::new(tokio::sync::Mutex::new(RpcClient::from_stream(client_stream, RpcClientOptions::default())));
+        let client = Arc::new(RpcClient::from_stream(client_stream, RpcClientOptions::default()));
         let proxy = RemoteSessionProxy::new(RemoteSessionState::default(), client, None);
         let reader = tokio::spawn(async move {
             let (read, _write) = host.into_split();
@@ -1693,7 +1673,7 @@ mod tests {
     async fn proxy_request_commands_return_the_host_data_and_swallow_transport_loss() {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         let (client_stream, host) = tokio::net::UnixStream::pair().expect("socket pair");
-        let client = Arc::new(tokio::sync::Mutex::new(RpcClient::from_stream(client_stream, RpcClientOptions::default())));
+        let client = Arc::new(RpcClient::from_stream(client_stream, RpcClientOptions::default()));
         let proxy = RemoteSessionProxy::new(RemoteSessionState::default(), client, None);
         let responder = tokio::spawn(async move {
             let (read, mut write) = host.into_split();
@@ -1720,7 +1700,7 @@ mod tests {
         let types = responder.await.expect("responder");
         assert_eq!(types, ["set_model", "get_available_thinking_levels", "compact", "clear_queue"]);
         // A transport loss yields the cancelled value instead of an error.
-        proxy.client.lock().await.stop().await;
+        proxy.client.stop().await;
         assert_eq!(proxy.compact(None).await.expect("cancelled"), Value::Null);
     }
 
@@ -1732,5 +1712,28 @@ mod tests {
 
     fn block_on<F: std::future::Future>(future: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime").block_on(future)
+    }
+
+    /// A prompt whose reply never arrives must not keep the transport locked. One poll of
+    /// `set_client_info` has to finish while that prompt future is still pending.
+    #[test]
+    fn parked_prompt_does_not_block_set_client_info() {
+        block_on(async {
+            let (client_stream, _host) = tokio::net::UnixStream::pair().expect("socket pair");
+            let client = Arc::new(RpcClient::from_stream(client_stream, RpcClientOptions::default()));
+            let proxy = Arc::new(RemoteSessionProxy::new(RemoteSessionState::default(), client.clone(), None));
+            let runtime = RemoteInteractiveRuntime::new(client, proxy.clone(), binding(None), InteractiveHostRuntimeOptions::default());
+            let mut prompt = std::pin::pin!(proxy.prompt("hello", json!({})));
+            let mut info = std::pin::pin!(runtime.set_client_info(40.));
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(
+                matches!(std::future::Future::poll(prompt.as_mut(), &mut cx), std::task::Poll::Pending),
+                "a prompt with no reply stays pending"
+            );
+            assert!(
+                matches!(std::future::Future::poll(info.as_mut(), &mut cx), std::task::Poll::Ready(())),
+                "set_client_info completes while the prompt future is still pending"
+            );
+        });
     }
 }

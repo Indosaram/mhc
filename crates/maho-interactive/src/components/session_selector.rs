@@ -8,6 +8,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 
 use maho_core::paths::canonicalize_path;
@@ -34,12 +35,55 @@ pub enum SessionScope {
 /// senpi's SessionListProgress.
 pub use maho_core::session_discovery::SessionListProgress;
 /// senpi's SessionsLoader.
-pub type SessionsLoader = Box<dyn FnMut(Option<SessionListProgress<'_>>) -> Vec<SessionInfo>>;
+pub type SessionsLoader = Box<dyn FnMut(Option<SessionListProgress<'_>>) -> Vec<SessionInfo> + Send>;
 
 pub type SessionPathHandler = Box<dyn FnMut(&str)>;
 pub type VoidHandler = Box<dyn FnMut()>;
 pub type BoolHandler = Box<dyn FnMut(bool)>;
 pub type OptionalPathHandler = Box<dyn FnMut(Option<&str>)>;
+
+enum LoadUpdate {
+    Progress {
+        scope: SessionScope,
+        seq: Option<u64>,
+        loaded: usize,
+        total: usize,
+    },
+    Finished {
+        scope: SessionScope,
+        seq: Option<u64>,
+        sessions: Vec<SessionInfo>,
+    },
+}
+
+fn idle_loader() -> SessionsLoader {
+    Box::new(|_progress| Vec::new())
+}
+
+fn spawn_session_load(work: impl FnOnce() + Send + 'static) {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        drop(handle.spawn_blocking(work));
+        return;
+    }
+    drop(std::thread::spawn(work));
+}
+
+std::thread_local! {
+    static NEXT_LOAD_FINISHED: RefCell<Option<Sender<()>>> = const { RefCell::new(None) };
+}
+
+/// One-shot test seam for the next [`SessionSelectorComponent::load_scope`].
+///
+/// `tx` is sent on the loader thread after that load's result is queued and before the
+/// loader thread exits. Render after `recv` to apply it. Production frames drain in
+/// `render` / `handle_input` and do not arm this.
+pub fn arm_session_load_finished(tx: Sender<()>) {
+    NEXT_LOAD_FINISHED.with(|slot| *slot.borrow_mut() = Some(tx));
+}
+
+fn take_load_finished_hook() -> Option<Sender<()>> {
+    NEXT_LOAD_FINISHED.with(|slot| slot.borrow_mut().take())
+}
 
 /// senpi's shortenPath.
 pub fn shorten_path(path: &str, home: Option<&str>) -> String {
@@ -888,6 +932,15 @@ pub struct SessionSelectorComponent {
     current_sessions_loader: SessionsLoader,
     all_sessions_loader: SessionsLoader,
     all_load_seq: u64,
+    load_tx: Sender<LoadUpdate>,
+    load_rx: Receiver<LoadUpdate>,
+    /// Signals [`Self::wait_for_load`]. Test-only: production frames drain `load_rx`.
+    #[cfg(test)]
+    load_done_tx: Sender<()>,
+    #[cfg(test)]
+    load_done_rx: Receiver<()>,
+    current_load_inflight: bool,
+    all_load_inflight: bool,
     can_rename: bool,
     rename_input: Input,
     mode: SessionSelectorMode,
@@ -931,6 +984,9 @@ impl SessionSelectorComponent {
         let mut header =
             SessionSelectorHeader::new(theme, SessionScope::Current, SortMode::Threaded, NameFilter::All);
         header.set_show_rename_hint(show_rename_hint.unwrap_or(can_rename));
+        let (load_tx, load_rx) = mpsc::channel();
+        #[cfg(test)]
+        let (load_done_tx, load_done_rx) = mpsc::channel();
         let mut component = Self {
             theme: theme.clone(),
             session_list,
@@ -944,6 +1000,14 @@ impl SessionSelectorComponent {
             current_sessions_loader,
             all_sessions_loader,
             all_load_seq: 0,
+            load_tx,
+            load_rx,
+            #[cfg(test)]
+            load_done_tx,
+            #[cfg(test)]
+            load_done_rx,
+            current_load_inflight: false,
+            all_load_inflight: false,
             can_rename,
             rename_input: Input::new(InputOptions::default()),
             mode: SessionSelectorMode::List,
@@ -1025,47 +1089,114 @@ impl SessionSelectorComponent {
     }
 
     /// Load one scope through its loader (senpi's loadScope).
+    ///
+    /// Returns immediately with the header in the loading state. The loader runs on
+    /// `spawn_blocking` (or a worker thread when no runtime is entered) and the result is applied
+    /// from [`Self::drain_load_updates`], which render and handle_input call.
     pub fn load_scope(&mut self, scope: SessionScope) {
-        let show_cwd = scope == SessionScope::All;
+        self.header.set_scope(scope);
+        self.header.set_loading(true);
+        (self.request_render)();
+        if self.load_inflight(scope) {
+            return;
+        }
         let seq = (scope == SessionScope::All).then(|| {
             self.all_load_seq += 1;
             self.all_load_seq
         });
-        self.header.set_scope(scope);
-        self.header.set_loading(true);
-        (self.request_render)();
+        self.set_load_inflight(scope, true);
+        let mut loader = self.take_loader(scope);
+        let tx = self.load_tx.clone();
+        #[cfg(test)]
+        let done = self.load_done_tx.clone();
+        let finished = take_load_finished_hook();
+        spawn_session_load(move || {
+            let progress_tx = tx.clone();
+            let mut on_progress = move |loaded: usize, total: usize| {
+                let _ = progress_tx.send(LoadUpdate::Progress {
+                    scope,
+                    seq,
+                    loaded,
+                    total,
+                });
+            };
+            let sessions = loader(Some(&mut on_progress));
+            let _ = tx.send(LoadUpdate::Finished { scope, seq, sessions });
+            if let Some(finished) = finished {
+                let _ = finished.send(());
+            }
+            #[cfg(test)]
+            let _ = done.send(());
+        });
+    }
 
-        let (active_scope, all_load_seq) = (self.scope, self.all_load_seq);
-        let header = &mut self.header;
-        let request_render = &mut self.request_render;
-        let mut on_progress = |loaded: usize, total: usize| {
-            if scope != active_scope {
-                return;
-            }
-            if seq.is_some_and(|seq| seq != all_load_seq) {
-                return;
-            }
-            header.set_progress(loaded, total);
-            request_render();
-        };
-        let loader = match scope {
-            SessionScope::Current => &mut self.current_sessions_loader,
-            SessionScope::All => &mut self.all_sessions_loader,
-        };
-        let sessions = loader(Some(&mut on_progress));
+    fn load_inflight(&self, scope: SessionScope) -> bool {
         match scope {
-            SessionScope::Current => self.current_sessions = Some(sessions.clone()),
-            SessionScope::All => self.all_sessions = Some(sessions.clone()),
+            SessionScope::Current => self.current_load_inflight,
+            SessionScope::All => self.all_load_inflight,
         }
-        if scope != self.scope {
+    }
+
+    fn set_load_inflight(&mut self, scope: SessionScope, inflight: bool) {
+        match scope {
+            SessionScope::Current => self.current_load_inflight = inflight,
+            SessionScope::All => self.all_load_inflight = inflight,
+        }
+    }
+
+    fn take_loader(&mut self, scope: SessionScope) -> SessionsLoader {
+        match scope {
+            SessionScope::Current => std::mem::replace(&mut self.current_sessions_loader, idle_loader()),
+            SessionScope::All => std::mem::replace(&mut self.all_sessions_loader, idle_loader()),
+        }
+    }
+
+    fn load_update_applies(&self, scope: SessionScope, seq: Option<u64>) -> bool {
+        scope == self.scope && seq.is_none_or(|seq| seq == self.all_load_seq)
+    }
+
+    /// Apply loader progress and results that arrived since the last frame. Does not run the loader.
+    fn drain_load_updates(&mut self) {
+        let updates: Vec<LoadUpdate> = self.load_rx.try_iter().collect();
+        if updates.is_empty() {
             return;
         }
-        if seq.is_some_and(|seq| seq != self.all_load_seq) {
-            return;
+        let mut changed = false;
+        for update in updates {
+            match update {
+                LoadUpdate::Progress { scope, seq, loaded, total } => {
+                    if self.load_update_applies(scope, seq) {
+                        self.header.set_progress(loaded, total);
+                        changed = true;
+                    }
+                }
+                LoadUpdate::Finished { scope, seq, sessions } => {
+                    self.set_load_inflight(scope, false);
+                    match scope {
+                        SessionScope::Current => self.current_sessions = Some(sessions.clone()),
+                        SessionScope::All => self.all_sessions = Some(sessions.clone()),
+                    }
+                    if self.load_update_applies(scope, seq) {
+                        self.header.set_loading(false);
+                        self.session_list
+                            .borrow_mut()
+                            .set_sessions(sessions, scope == SessionScope::All);
+                        changed = true;
+                    }
+                }
+            }
         }
-        self.header.set_loading(false);
-        self.session_list.borrow_mut().set_sessions(sessions, show_cwd);
-        (self.request_render)();
+        if changed {
+            (self.request_render)();
+        }
+    }
+
+    /// Block until the spawned loader has queued its result. Unit tests call this; frames drain
+    /// from `render` / `handle_input` instead. `#[cfg(test)]` so the non-test lib build (integration
+    /// tests) does not see an unused private method.
+    #[cfg(test)]
+    fn wait_for_load(&mut self) {
+        let _ = self.load_done_rx.recv();
     }
 
     /// Report a loader failure in the header (senpi's catch branch).
@@ -1115,9 +1246,12 @@ impl SessionSelectorComponent {
             SessionScope::All => {
                 self.scope = SessionScope::Current;
                 self.header.set_scope(self.scope);
-                self.session_list
-                    .borrow_mut()
-                    .set_sessions(self.current_sessions.clone().unwrap_or_default(), false);
+                if let Some(sessions) = self.current_sessions.clone() {
+                    self.header.set_loading(false);
+                    self.session_list.borrow_mut().set_sessions(sessions, false);
+                } else {
+                    self.header.set_loading(true);
+                }
                 (self.request_render)();
             }
         }
@@ -1174,6 +1308,7 @@ impl SessionSelectorComponent {
 
 impl Component for SessionSelectorComponent {
     fn render(&mut self, width: usize) -> Vec<String> {
+        self.drain_load_updates();
         let mut lines = vec![
             String::new(),
             dynamic_border(&self.theme, ThemeColor::Accent, width),
@@ -1204,6 +1339,7 @@ impl Component for SessionSelectorComponent {
     }
 
     fn handle_input(&mut self, data: &str) {
+        self.drain_load_updates();
         if self.mode == SessionSelectorMode::Rename {
             if self.keybindings.matches(data, "tui.select.cancel") {
                 self.exit_rename_mode();
@@ -1242,5 +1378,108 @@ impl Focusable for SessionSelectorComponent {
     fn set_focused(&mut self, value: bool) {
         self.focused = value;
         self.session_list.borrow_mut().set_focused(value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::session_selector_search::SessionInfo;
+    use crate::theme::theme::Theme;
+    use maho_tui::keybindings::KeybindingsManager;
+    use maho_tui::tui::Component;
+    use std::future::Future;
+    use std::sync::mpsc::{self, Sender};
+    use std::sync::Arc;
+
+    struct Release(Option<Sender<()>>);
+
+    impl Drop for Release {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    fn keybindings() -> Arc<KeybindingsManager> {
+        Arc::new(KeybindingsManager::new(
+            maho_core::keybindings::keybindings().clone(),
+            maho_tui::keybindings::KeybindingsConfig::default(),
+        ))
+    }
+
+    fn theme() -> Theme {
+        Theme::builtin("dark", crate::theme::ColorMode::Truecolor).expect("builtin dark theme")
+    }
+
+    fn loaded_session() -> SessionInfo {
+        SessionInfo {
+            path: "/s/loaded.jsonl".to_owned(),
+            id: "loaded".to_owned(),
+            cwd: "/work".to_owned(),
+            name: Some("SESSION-LOADED-MARKER".to_owned()),
+            parent_session_path: None,
+            modified_ms: 1_000,
+            message_count: 1,
+            first_message: "SESSION-LOADED-MARKER".to_owned(),
+            all_messages_text: String::new(),
+        }
+    }
+
+    /// On a8ac6196 `SessionSelectorComponent::new` calls `load_scope`, which runs the loader inline
+    /// before returning. A never-released loader gate therefore never lets the open poll become
+    /// Ready, and the loading line cannot paint first.
+    #[test]
+    fn session_picker_paints_loading_before_loader_is_released() {
+        let runtime = tokio::runtime::Builder::new_current_thread().build().expect("runtime");
+        let _entered = runtime.enter();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let mut release = Release(Some(release_tx));
+        let loader: SessionsLoader = Box::new(move |_progress| {
+            let _ = release_rx.recv();
+            vec![loaded_session()]
+        });
+        let mut opened = std::pin::pin!(async {
+            SessionSelectorComponent::new(
+                &theme(),
+                keybindings(),
+                loader,
+                idle_loader(),
+                Box::new(|_| {}),
+                Box::new(|| {}),
+                Box::new(|| {}),
+                Box::new(|| {}),
+                None,
+                None,
+                None,
+                None,
+            )
+        });
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let mut component = match opened.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(component) => component,
+            std::task::Poll::Pending => panic!("picker open awaited the session loader before paint"),
+        };
+        let loading = component.render(120).join("\n");
+        assert!(
+            loading.contains("Loading"),
+            "loading line must paint before the loader gate is released: {loading}"
+        );
+        assert!(
+            !loading.contains("SESSION-LOADED-MARKER"),
+            "loader result painted before the gate was released: {loading}"
+        );
+        let sender = release.0.take();
+        if let Some(sender) = sender {
+            let _ = sender.send(());
+        }
+        component.wait_for_load();
+        let loaded = component.render(120).join("\n");
+        assert!(
+            loaded.contains("SESSION-LOADED-MARKER"),
+            "later frame did not apply the loader result: {loaded}"
+        );
+        assert!(!loaded.contains("Loading"), "{loaded}");
     }
 }
