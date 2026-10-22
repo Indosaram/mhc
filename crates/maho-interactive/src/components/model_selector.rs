@@ -127,6 +127,10 @@ pub struct ModelSelectorComponent {
     scope: ModelScope,
     terminal_rows: Option<usize>,
     runtime_key: u64,
+    /// Search rows for `active_models`, rebuilt only when that vec changes.
+    search_items: Vec<ModelSearchItem>,
+    #[cfg(test)]
+    search_index_builds: u32,
     focused: bool,
     closed: bool,
     on_select: Box<dyn FnMut(&ModelEntry)>,
@@ -182,6 +186,9 @@ impl ModelSelectorComponent {
             scope,
             terminal_rows,
             runtime_key,
+            search_items: Vec::new(),
+            #[cfg(test)]
+            search_index_builds: 0,
             focused: false,
             closed: false,
             on_select,
@@ -275,6 +282,7 @@ impl ModelSelectorComponent {
             .iter()
             .position(|item| item.matches(self.current_model.as_ref()))
             .unwrap_or_else(|| self.selected_index.min(self.filtered_models.len().saturating_sub(1)));
+        self.rebuild_search_items();
     }
 
     /// senpi's `refreshModels`: shared refresh with a 15s timeout, then reload and re-filter.
@@ -397,6 +405,7 @@ impl ModelSelectorComponent {
             ModelScope::Narrowed => self.scoped_model_items.clone(),
             ModelScope::All => self.all_models.clone(),
         };
+        self.rebuild_search_items();
         self.selected_index = self
             .active_models
             .iter()
@@ -406,18 +415,26 @@ impl ModelSelectorComponent {
         self.filter_models(&query);
     }
 
+    fn rebuild_search_items(&mut self) {
+        #[cfg(test)]
+        {
+            self.search_index_builds = self.search_index_builds.saturating_add(1);
+        }
+        self.search_items = self.active_models.iter().map(ModelItem::as_search_item).collect();
+    }
+
     fn filter_models(&mut self, query: &str) {
-        self.filtered_models = if query.is_empty() {
+        let ranked = if query.is_empty() {
             self.active_models.clone()
         } else {
-            let search_items: Vec<ModelSearchItem> =
-                self.active_models.iter().map(|item| item.as_search_item()).collect();
+            let favorites_first = self.scope == ModelScope::All;
+            let favorite_ids = &self.favorite_ids_at_open;
             rank_model_search_items(
-                &search_items,
+                &self.search_items,
                 query,
                 Clone::clone,
-                self.scope == ModelScope::All,
-                |item| is_favorite_model(&self.favorite_ids_at_open, &get_model_full_id(item)),
+                favorites_first,
+                |item| is_favorite_model(favorite_ids, &get_model_full_id(item)),
             )
             .into_iter()
             .map(|item| ModelItem {
@@ -428,6 +445,7 @@ impl ModelSelectorComponent {
             })
             .collect()
         };
+        self.filtered_models = ranked;
         self.selected_index = if query.is_empty() {
             self.selected_index.min(self.filtered_models.len().saturating_sub(1))
         } else {
@@ -694,5 +712,135 @@ impl Focusable for ModelSelectorComponent {
     fn set_focused(&mut self, value: bool) {
         self.focused = value;
         self.search_input.set_focused(value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::favorite_model_ids::{FavoriteModelIds, get_model_full_id, is_favorite_model};
+    use crate::model_search::ModelSearchItem;
+    use crate::model_search_rank::rank_model_search_items;
+    use maho_tui::tui::Component;
+    use std::future::Future;
+
+    fn entry(provider: &str, id: &str, name: &str) -> ModelEntry {
+        ModelEntry {
+            provider: provider.to_owned(),
+            id: id.to_owned(),
+            name: name.to_owned(),
+        }
+    }
+
+    fn selector(
+        models: Vec<ModelEntry>,
+        favorites: FavoriteModelIds,
+        scoped: Vec<ScopedModelItem>,
+    ) -> ModelSelectorComponent {
+        ModelSelectorComponent::new(
+            &crate::theme::Theme::builtin("dark", crate::theme::ColorMode::Truecolor).expect("dark theme"),
+            std::sync::Arc::new(maho_tui::keybindings::KeybindingsManager::new(
+                maho_core::keybindings::keybindings().clone(),
+                maho_tui::keybindings::KeybindingsConfig::default(),
+            )),
+            0,
+            &models,
+            None,
+            scoped,
+            Box::new(|_| {}),
+            Box::new(|| {}),
+            None,
+            ModelSelectorFavoriteOptions {
+                favorite_model_ids: favorites,
+                on_favorite_change: None,
+            },
+            Some(24),
+        )
+    }
+
+    fn ranked_ids(selector: &ModelSelectorComponent, query: &str) -> Vec<String> {
+        let items: Vec<ModelSearchItem> = selector
+            .active_models
+            .iter()
+            .map(|item| ModelSearchItem {
+                id: item.id.clone(),
+                provider: item.provider.clone(),
+                name: Some(item.name.clone()),
+            })
+            .collect();
+        if query.is_empty() {
+            return selector.active_models.iter().map(|item| item.full_id.clone()).collect();
+        }
+        rank_model_search_items(
+            &items,
+            query,
+            Clone::clone,
+            selector.scope == ModelScope::All,
+            |item| is_favorite_model(&selector.favorite_ids_at_open, &get_model_full_id(item)),
+        )
+        .into_iter()
+        .map(get_model_full_id)
+        .collect()
+    }
+
+    /// a8ac6196 builds a fresh `Vec<ModelSearchItem>` inside `filter_models` on every non-empty
+    /// query. Keystrokes must rank the vec built when `active_models` last changed, and that order
+    /// must match `rank_model_search_items` on the same rows.
+    #[test]
+    fn model_keystroke_reuses_precomputed_search_index() {
+        let models = vec![
+            entry("Anthropic", "Claude-Opus", "Opus"),
+            entry("OpenAI", "gpt-4o", "GPT-4o"),
+            entry("openai", "o3", "o3"),
+            entry("Google", "gemini-2.5-pro", "Gemini"),
+        ];
+        let mut component = selector(models.clone(), Some(vec!["OpenAI/gpt-4o".to_owned()]), Vec::new());
+        let builds = component.search_index_builds;
+        assert_eq!(builds, 1, "new() must build the search vec once");
+        assert_eq!(component.search_items.len(), component.active_models.len());
+        let index_ptr = component.search_items.as_ptr();
+        let queries = ["", "opus", "GPT", "openai/o3", "gemini pro", "zzz", "  ", "Claude-Opus"];
+        for query in queries {
+            let expected = ranked_ids(&component, query);
+            component.filter_models(query);
+            assert_eq!(component.filtered_model_ids(), expected, "query {query:?}");
+            assert_eq!(component.search_index_builds, builds, "filtering {query:?} rebuilt the search vec");
+            assert_eq!(component.search_items.as_ptr(), index_ptr, "filtering {query:?} replaced the search vec");
+        }
+        {
+            let mut keystroke = std::pin::pin!(async {
+                component.handle_input("g");
+            });
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(
+                keystroke.as_mut().poll(&mut cx).is_ready(),
+                "model keystroke did not return before paint"
+            );
+        }
+        assert_eq!(component.search_index_builds, builds);
+        assert_eq!(component.search_items.as_ptr(), index_ptr);
+        assert_eq!(
+            component.filtered_model_ids(),
+            ranked_ids(&component, component.search_input.get_value())
+        );
+
+        let scoped = vec![ScopedModelItem {
+            model: entry("OpenAI", "gpt-4o", "GPT-4o"),
+            thinking_level: None,
+        }];
+        let mut narrowed = selector(models, Some(vec!["OpenAI/gpt-4o".to_owned()]), scoped);
+        assert_eq!(narrowed.scope(), ModelScope::Narrowed);
+        let narrowed_builds = narrowed.search_index_builds;
+        assert_eq!(narrowed_builds, 1);
+        narrowed.filter_models("gpt");
+        assert_eq!(narrowed.search_index_builds, narrowed_builds);
+        assert_eq!(narrowed.filtered_model_ids(), ranked_ids(&narrowed, "gpt"));
+        narrowed.set_scope(ModelScope::All);
+        assert_eq!(narrowed.search_index_builds, narrowed_builds + 1, "scope change must rebuild once");
+        narrowed.set_scope(ModelScope::All);
+        assert_eq!(narrowed.search_index_builds, narrowed_builds + 1, "unchanged scope must not rebuild");
+        narrowed.filter_models("opus");
+        assert_eq!(narrowed.search_index_builds, narrowed_builds + 1);
+        assert_eq!(narrowed.filtered_model_ids(), ranked_ids(&narrowed, "opus"));
     }
 }

@@ -36,6 +36,25 @@ impl Component for RenderedMode {
     fn invalidate(&mut self) {}
 }
 
+/// Poll both native-renderer snapshot futures once. `None` when either is not ready: the runner
+/// lock is not free, so the frame keeps the installed snapshot instead of awaiting it.
+fn native_snapshots_if_lock_free<T, U>(
+    native: impl std::future::Future<Output = T>,
+    patch: impl std::future::Future<Output = U>,
+) -> Option<(T, U)> {
+    let native = poll_now(native)?;
+    Some((native, poll_now(patch)?))
+}
+
+fn poll_now<T>(fut: impl std::future::Future<Output = T>) -> Option<T> {
+    let mut fut = std::pin::pin!(fut);
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match fut.as_mut().poll(&mut context) {
+        std::task::Poll::Ready(value) => Some(value),
+        std::task::Poll::Pending => None,
+    }
+}
+
 /// A leaf component that renders a line buffer the render loop refreshes each frame. The fullscreen
 /// chat viewport mounts two: the transcript document (inside its follow-end scroll view) and the
 /// fixed input dock (pinned below it), so the dock stays visible once the document exceeds the
@@ -282,6 +301,7 @@ pub async fn run(
         // senpi `applyTerminalTitle` / `setProgress`: written only when the value changes.
         let mut applied_title: Option<String> = None;
         let mut last_size = (terminal.columns(), terminal.rows());
+        let mut right_click_target: Option<Rc<RefCell<dyn Component>>> = None;
         while !mode.shutdown_requested {
             #[cfg(unix)]
             {
@@ -318,15 +338,20 @@ pub async fn run(
             // walking every extension's tools and renderers each frame kept an idle session busy.
             // `None` (no runner yet, or its lock is held this tick) keeps the installed set.
             if let Some(revision) = session.tool_renderers_revision() && installed_renderer_revision != Some(revision) {
-                installed_renderer_revision = Some(revision);
-                let native = session.native_tool_renderers_snapshot::<(), serde_json::Value>().await;
-                let patch = session.native_tool_renderers_snapshot::<maho_ext_gpt_apply_patch::preview_format::ApplyPatchRenderState, serde_json::Value>().await;
-                let inventory: Vec<_> = native.iter().map(|(name, renderers)| (name.clone(), Arc::as_ptr(renderers) as usize))
-                    .chain(patch.iter().map(|(name, renderers)| (name.clone(), Arc::as_ptr(renderers) as usize))).collect();
-                if inventory != installed_native_renderers {
-                    mode.install_native_tool_renderer_snapshot(native);
-                    for (name, renderers) in patch { mode.install_native_tool_renderers(name, renderers); }
-                    installed_native_renderers = inventory;
+                // Do not await the snapshot when the runner lock is not free. A pending poll means
+                // the lock was taken after the revision try_lock; keep the installed set and retry.
+                if let Some((native, patch)) = native_snapshots_if_lock_free(
+                    session.native_tool_renderers_snapshot::<(), serde_json::Value>(),
+                    session.native_tool_renderers_snapshot::<maho_ext_gpt_apply_patch::preview_format::ApplyPatchRenderState, serde_json::Value>(),
+                ) {
+                    installed_renderer_revision = Some(revision);
+                    let inventory: Vec<_> = native.iter().map(|(name, renderers)| (name.clone(), Arc::as_ptr(renderers) as usize))
+                        .chain(patch.iter().map(|(name, renderers)| (name.clone(), Arc::as_ptr(renderers) as usize))).collect();
+                    if inventory != installed_native_renderers {
+                        mode.install_native_tool_renderer_snapshot(native);
+                        for (name, renderers) in patch { mode.install_native_tool_renderers(name, renderers); }
+                        installed_native_renderers = inventory;
+                    }
                 }
             }
             host.rows.set(usize::from(terminal.rows()));
@@ -341,14 +366,21 @@ pub async fn run(
             }
             // senpi `handleRightClickPaste`: paste into the component that was focused at the
             // press, unless focus moved while the clipboard was read.
+            if let Some(text) = mode.take_parked_clipboard_text() {
+                let target = right_click_target.take();
+                if let (Some(text), Some(target)) = (text, target)
+                    && screen.base().get_focused_component().is_some_and(|focused| Rc::ptr_eq(&focused, &target))
+                {
+                    let paste = format!("\x1b[200~{text}\x1b[201~");
+                    if Rc::ptr_eq(&target, &component) { mode.handle_filtered_runtime_input(&paste, now).await?; } else { target.borrow_mut().handle_input(&paste); }
+                    screen.base_mut().request_render(false, now);
+                }
+            }
             if right_click_paste.replace(false)
                 && let Some(target) = screen.base().get_focused_component()
-                && let Some(text) = crate::utils::clipboard::read_clipboard_text().await
-                && screen.base().get_focused_component().is_some_and(|focused| Rc::ptr_eq(&focused, &target))
             {
-                let paste = format!("\x1b[200~{text}\x1b[201~");
-                if Rc::ptr_eq(&target, &component) { mode.handle_filtered_runtime_input(&paste, now).await?; } else { target.borrow_mut().handle_input(&paste); }
-                screen.base_mut().request_render(false, now);
+                right_click_target = Some(target);
+                mode.park_external_clipboard_text(crate::utils::clipboard::read_clipboard_text());
             }
             // senpi `handleCopyCommand({ preferSelection: true })`: the selection copy needs the terminal.
             if mode.take_pending_selection_copy() { screen.copy_active_selection_to_clipboard(&mut terminal); }
@@ -451,6 +483,9 @@ pub async fn run(
                 screen.do_render(&mut terminal);
                 host.full_redraws.set(screen.base_mut().full_redraws());
             }
+            // First poll of a turn started this iteration, and any action parked so this frame
+            // could paint, run only after paint. Input is read next (`terminal.pump`).
+            mode.poll_after_paint(std::task::Waker::noop());
             match terminal.pump(screen.base().min_render_interval_ms()) {
                 Ok(()) => {}
                 // The terminal closed without a SIGHUP reaching this process (the PTY master went
@@ -946,5 +981,38 @@ mod tests {
             disk.get_global().get("themes").is_none(),
             "a disk-create manager cannot see the unsaved global theme source"
         );
+    }
+
+    #[test]
+    fn r14_pending_native_snapshot_is_not_awaited() {
+        let root = tempfile::tempdir().expect("temp root");
+        let session = theme_session(maho_core::settings_manager::Settings::new(), root.path());
+        // The futures the frame loop passes. A free runner lock is Ready in one poll.
+        let free = super::native_snapshots_if_lock_free(
+            session.native_tool_renderers_snapshot::<(), serde_json::Value>(),
+            session.native_tool_renderers_snapshot::<maho_ext_gpt_apply_patch::preview_format::ApplyPatchRenderState, serde_json::Value>(),
+        );
+        assert!(free.is_some(), "a free runner lock still returns both snapshots");
+
+        // `AgentSession`'s runner mutex is private and no public method holds it across an await,
+        // so this test holds a std mutex and makes the snapshot future the loop passes return
+        // Pending while that lock is held. The helper must poll once and keep the installed set.
+        let hold = std::sync::Arc::new(std::sync::Mutex::new(()));
+        let guard = hold.lock().expect("hold");
+        let hold_for_native = std::sync::Arc::clone(&hold);
+        let native_session = session.clone();
+        let held = super::native_snapshots_if_lock_free(
+            async move {
+                if hold_for_native.try_lock().is_err() {
+                    std::future::pending().await
+                } else {
+                    native_session.native_tool_renderers_snapshot::<(), serde_json::Value>().await
+                }
+            },
+            session.native_tool_renderers_snapshot::<maho_ext_gpt_apply_patch::preview_format::ApplyPatchRenderState, serde_json::Value>(),
+        );
+        assert!(held.is_none(), "a held lock's pending snapshot poll is not awaited");
+        drop(guard);
+        assert_eq!(super::poll_now(std::future::ready(7)), Some(7));
     }
 }

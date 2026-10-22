@@ -191,8 +191,10 @@ async fn login_api_key_saves_credential_and_logout_removes_it() {
     let mut events = mode.subscribe_auth_lifecycle();
     mode.enqueue_submission("/logout", None);
     assert_eq!(mode.dispatch_submission().await.expect("logout"), Some(maho_core::agent_session::PromptDisposition::Handled));
+    mode.poll_after_paint(std::task::Waker::noop());
     mode.handle_input("\r");
     assert_eq!(mode.dispatch_submission().await.expect("logout provider"), Some(maho_core::agent_session::PromptDisposition::Handled));
+    mode.poll_after_paint(std::task::Waker::noop());
     assert!(matches!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::LogoutCompleted { .. })).await,
         AuthLifecycleEvent::LogoutCompleted { provider_name, auth_type: maho_interactive::components::oauth_selector::AuthSelectorAuthType::ApiKey, outcome: Ok(()) }
             if provider_name == "faux"));
@@ -2242,6 +2244,8 @@ async fn pump_until(gated: &mut GatedMode, predicate: impl Fn(&GatedMode) -> boo
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             gated.mode.pump_turn_with(&waker).await;
+            // The production loop polls a newly started turn only after paint.
+            gated.mode.poll_after_paint(&waker);
             if predicate(gated) { return; }
             let _ = gated.wake.recv().await;
         }
@@ -2330,6 +2334,8 @@ async fn real_loop_steer_while_provider_held_queues_without_replacing_the_turn()
     gated.mode.handle_input("\r");
     let waker = turn_waker(&gated);
     gated.mode.pump_turn_with(&waker).await;
+    // The enqueue is parked until after paint, then applied in order.
+    gated.mode.poll_after_paint(&waker);
     assert!(gated.mode.has_pending_turn(), "the steer is queued into the running turn");
     assert!(!gated.mode.agent_idle, "the running turn is not replaced");
     let _ = gated.gate.send(true);
@@ -2359,15 +2365,23 @@ async fn real_loop_pumps_startup_initial_prompt_without_freezing_the_first_frame
 }
 
 
-#[test]
-fn double_escape_on_empty_editor_opens_tree_within_the_window() {
+#[tokio::test]
+async fn double_escape_on_empty_editor_opens_tree_within_the_window() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
     let opened = |frame: String| frame.contains("Session Tree") || frame.contains("No entries in session");
     mode.handle_input_at("\x1b", 1000);
     assert!(!opened(mode.render(80).join("\n")), "a single escape only arms the window");
     mode.handle_input_at("\x1b", 1499);
-    assert!(opened(mode.render(80).join("\n")), "the second escape inside 500ms runs /tree");
+    // /tree loads the session tree in spawn_blocking; the selector mounts when the parked load settles.
+    assert!(!opened(mode.render(80).join("\n")), "the tree load is parked, not run inline");
+    let (wake_tx, mut wake) = tokio::sync::mpsc::unbounded_channel();
+    let waker = std::task::Waker::from(std::sync::Arc::new(TurnWaker { wake: wake_tx }));
+    loop {
+        mode.poll_after_paint(&waker);
+        if opened(mode.render(80).join("\n")) { break; }
+        tokio::time::timeout(std::time::Duration::from_secs(10), wake.recv()).await.expect("the second escape inside 500ms runs /tree and the parked load settles within 10s").expect("the parked tree load wakes the frame");
+    }
 }
 
 #[test]
@@ -2399,6 +2413,8 @@ async fn alt_enter_while_streaming_queues_a_follow_up() {
     gated.mode.handle_input("later");
     gated.mode.handle_runtime_input(if cfg!(windows) { "\x11" } else { "\x1b\r" }, 0).await.expect("follow-up key");
     assert!(gated.mode.editor.editor.get_text().is_empty(), "the draft is cleared");
+    // The enqueue is parked so the cleared editor can paint before `prompt` runs.
+    gated.mode.poll_after_paint(std::task::Waker::noop());
     assert_eq!(gated.session.get_follow_up_messages(), ["later"]);
     let _ = gated.gate.send(true);
     pump_until(&mut gated, |gated| !gated.mode.has_pending_turn()).await;
@@ -2457,4 +2473,462 @@ fn tui_mode_change_is_saved_only_when_the_host_accepts_it() {
     assert!(mode.commit_terminal_setting());
     assert_eq!(session.with_settings_manager(|settings| settings.get_string("tuiMode")).as_deref(), Some("fullscreen"));
     assert!(mode.render(80).join("\n").contains("TUI mode: fullscreen"));
+}
+
+/// Poll `fut` exactly once with a noop waker. A `Pending` result means the UI entry awaited slow work.
+fn poll_once<T>(fut: &mut std::pin::Pin<&mut impl std::future::Future<Output = T>>) -> std::task::Poll<T> {
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    fut.as_mut().poll(&mut context)
+}
+
+/// Host whose prompt, set_model, and cycle_model pend forever once polled. `entered` flips only when
+/// that future is actually polled, so a UI entry that parks the call leaves it false.
+struct NeverReadyHost {
+    entered: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    polls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    models: Vec<serde_json::Value>,
+    listener: std::sync::Arc<std::sync::Mutex<Option<maho_interactive::interactive_host_runtime::SessionEventListener>>>,
+}
+
+impl maho_interactive::interactive_session::InteractiveSession for NeverReadyHost {
+    fn session_id(&self) -> Option<String> { None }
+    fn session_file(&self) -> Option<String> { None }
+    fn cwd(&self) -> String { String::new() }
+    fn is_reconnecting(&self) -> bool { false }
+    fn is_fallback(&self) -> bool { false }
+    fn remote_state(&self) -> Option<maho_interactive::interactive_host_runtime::RemoteSessionState> { None }
+    fn subscribe_session_events(&self, listener: maho_interactive::interactive_host_runtime::SessionEventListener) -> Option<maho_interactive::interactive_host_runtime::SessionSubscription> {
+        *self.listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(listener);
+        None
+    }
+    fn request_remote_history(&self, _generation: u64, _sender: tokio::sync::mpsc::UnboundedSender<(u64, Result<Vec<serde_json::Value>, String>)>) {}
+    fn request_remote_models(&self, generation: u64, sender: tokio::sync::mpsc::UnboundedSender<(u64, Result<Vec<serde_json::Value>, String>)>) {
+        let _ = sender.send((generation, Ok(self.models.clone())));
+    }
+    fn prompt(&self, _message: String, _options: maho_core::agent_session::PromptOptions) -> maho_interactive::interactive_session::SessionFuture<'_, Result<(), String>> {
+        let entered = self.entered.clone();
+        let polls = self.polls.clone();
+        Box::pin(async move {
+            entered.store(true, std::sync::atomic::Ordering::SeqCst);
+            polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::future::pending::<()>().await;
+            Ok(())
+        })
+    }
+    fn set_model(&self, _provider: String, _id: String) -> maho_interactive::interactive_session::SessionFuture<'_, Result<(), String>> {
+        let entered = self.entered.clone();
+        Box::pin(async move {
+            entered.store(true, std::sync::atomic::Ordering::SeqCst);
+            std::future::pending::<()>().await;
+            Ok(())
+        })
+    }
+    fn cycle_model(&self, _forward: bool) -> maho_interactive::interactive_session::SessionFuture<'_, Result<Option<String>, String>> {
+        let entered = self.entered.clone();
+        Box::pin(async move {
+            entered.store(true, std::sync::atomic::Ordering::SeqCst);
+            std::future::pending::<()>().await;
+            Ok(Some("cycled".into()))
+        })
+    }
+    fn new_session(&self, _parent_session: Option<String>) -> maho_interactive::interactive_session::SessionFuture<'_, Result<maho_interactive::interactive_session::ReplacementOutcome, String>> {
+        Box::pin(async { Ok(maho_interactive::interactive_session::ReplacementOutcome::Cancelled) })
+    }
+    fn switch_session(&self, _session_path: String) -> maho_interactive::interactive_session::SessionFuture<'_, Result<maho_interactive::interactive_session::ReplacementOutcome, String>> {
+        Box::pin(async { Ok(maho_interactive::interactive_session::ReplacementOutcome::Cancelled) })
+    }
+    fn fork(&self, _entry_id: String, _include_entry: bool) -> maho_interactive::interactive_session::SessionFuture<'_, Result<maho_interactive::interactive_session::ForkOutcome, String>> {
+        Box::pin(async { Ok(maho_interactive::interactive_session::ForkOutcome { outcome: maho_interactive::interactive_session::ReplacementOutcome::Cancelled, editor_text: None }) })
+    }
+    fn execute_bash(&self, _command: String, _exclude_from_context: bool) -> maho_interactive::interactive_session::SessionFuture<'_, Result<serde_json::Value, String>> {
+        let entered = self.entered.clone();
+        Box::pin(async move {
+            entered.store(true, std::sync::atomic::Ordering::SeqCst);
+            std::future::pending::<()>().await;
+            Ok(serde_json::json!({"exitCode": 0}))
+        })
+    }
+    fn navigate_tree(&self, _entry_id: String, _options: maho_core::agent_session::TreeNavigationOptions) -> maho_interactive::interactive_session::SessionFuture<'_, Result<maho_core::agent_session::AssistantEditResult, String>> {
+        let entered = self.entered.clone();
+        Box::pin(async move {
+            entered.store(true, std::sync::atomic::Ordering::SeqCst);
+            std::future::pending::<()>().await;
+            Ok(maho_core::agent_session::AssistantEditResult::default())
+        })
+    }
+    fn dispose(&self) -> maho_interactive::interactive_session::SessionFuture<'_, ()> { Box::pin(async {}) }
+}
+
+fn never_ready_mode() -> (maho_interactive::interactive_mode::InteractiveMode, std::sync::Arc<std::sync::atomic::AtomicBool>, std::sync::Arc<std::sync::atomic::AtomicUsize>, tempfile::TempDir) {
+    let (mode, directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    let entered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let polls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let model = serde_json::to_value(session.model()).expect("model json");
+    let mut mode = mode;
+    mode.set_session_host(std::sync::Arc::new(NeverReadyHost {
+        entered: entered.clone(),
+        polls: polls.clone(),
+        models: vec![model],
+        listener: std::sync::Arc::new(std::sync::Mutex::new(None)),
+    }));
+    mode.drain_events();
+    (mode, entered, polls, directory)
+}
+
+#[tokio::test]
+#[allow(clippy::unused_async)]
+async fn r2_new_turn_paints_echo_and_working_before_the_first_poll() {
+    use maho_tui::tui::Component;
+    let (mut mode, entered, _polls, _directory) = never_ready_mode();
+    mode.enqueue_submission("echo-me", None);
+    let first = {
+        let mut step = std::pin::pin!(mode.pump_turn_with(std::task::Waker::noop()));
+        poll_once(&mut step)
+    };
+    assert!(first.is_ready(), "pump_turn must not poll the new turn before paint");
+    assert!(!entered.load(std::sync::atomic::Ordering::SeqCst), "the prompt future is still parked");
+    let frame = mode.render(80).join("\n");
+    assert!(frame.contains("echo-me"), "the user echo paints before the first poll: {frame}");
+    assert!(mode.working_frame(0.0).is_some(), "the working row paints before the first poll");
+}
+
+#[tokio::test]
+#[allow(clippy::unused_async)]
+async fn r5_model_confirm_paints_provisional_status_before_set_model() {
+    use maho_tui::tui::Component;
+    let (mut mode, entered, _polls, _directory) = never_ready_mode();
+    mode.enqueue_submission(&maho_interactive::interactive_mode::internal_command("/model-select faux/faux-1"), None);
+    let first = {
+        let mut step = std::pin::pin!(mode.dispatch_submission());
+        poll_once(&mut step)
+    };
+    assert!(first.is_ready(), "model confirm must not await set_model");
+    assert!(!entered.load(std::sync::atomic::Ordering::SeqCst), "set_model is parked");
+    let frame = mode.render(80).join("\n");
+    assert!(frame.contains("Model: faux-1"), "provisional Model status paints before set_model: {frame}");
+}
+
+#[tokio::test]
+#[allow(clippy::unused_async)]
+async fn r5b_cycle_key_paints_provisional_status_before_cycle() {
+    use maho_tui::tui::Component;
+    let (mut mode, entered, _polls, _directory) = never_ready_mode();
+    let first = {
+        let mut step = std::pin::pin!(mode.handle_filtered_runtime_input("\x10", 0));
+        poll_once(&mut step)
+    };
+    assert!(first.is_ready(), "cycle must not await host_cycle_model");
+    assert!(!entered.load(std::sync::atomic::Ordering::SeqCst), "cycle_model is parked");
+    let frame = mode.render(80).join("\n");
+    assert!(frame.contains("Model:"), "provisional Model status paints before the cycle: {frame}");
+}
+
+#[tokio::test]
+#[allow(clippy::unused_async)]
+async fn r8_follow_up_while_a_turn_runs_parks_the_enqueue() {
+    let (mut mode, entered, polls, _directory) = never_ready_mode();
+    mode.enqueue_submission("first", None);
+    let first = {
+        let mut step = std::pin::pin!(mode.dispatch_submission());
+        poll_once(&mut step)
+    };
+    assert!(first.is_ready(), "starting the turn does not await it");
+    assert!(mode.has_pending_turn(), "the first prompt is parked as the turn");
+    mode.enqueue_submission("second", None);
+    let second = {
+        let mut step = std::pin::pin!(mode.dispatch_submission());
+        poll_once(&mut step)
+    };
+    assert!(second.is_ready(), "a second Enter must not await prompt");
+    mode.enqueue_submission("third", None);
+    let third = {
+        let mut step = std::pin::pin!(mode.dispatch_submission());
+        poll_once(&mut step)
+    };
+    assert!(third.is_ready(), "a later Enter must not await prompt either");
+    assert!(!entered.load(std::sync::atomic::Ordering::SeqCst), "neither prompt was polled before paint");
+    assert_eq!(polls.load(std::sync::atomic::Ordering::SeqCst), 0, "nothing is polled before paint");
+    mode.poll_after_paint(std::task::Waker::noop());
+    // The in-flight turn and the first parked enqueue are polled; the later enqueue waits.
+    assert_eq!(polls.load(std::sync::atomic::Ordering::SeqCst), 2, "park order: the later enqueue is not polled while the earlier one is pending");
+}
+
+#[tokio::test]
+async fn r4_default_model_write_is_not_on_the_ui_task_before_paint() {
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    // The selector lists only models with configured auth; without a key it is empty and Enter selects nothing.
+    session.model_registry().auth_storage.set_runtime_api_key("faux", "test-key");
+    let open = {
+        let mut step = std::pin::pin!(mode.handle_filtered_runtime_input("\x0c", 0));
+        poll_once(&mut step)
+    };
+    assert!(open.is_ready(), "opening the selector does not write settings");
+    let confirm = {
+        let mut step = std::pin::pin!(mode.handle_filtered_runtime_input("\r", 1));
+        poll_once(&mut step)
+    };
+    assert!(confirm.is_ready(), "confirm must return before the settings write");
+    let written = session.with_settings_manager(|settings| settings.get_string("defaultModel"));
+    assert!(written.is_none(), "defaultModel is not written before paint: {written:?}");
+    let (wake_tx, mut wake) = tokio::sync::mpsc::unbounded_channel();
+    let waker = std::task::Waker::from(std::sync::Arc::new(TurnWaker { wake: wake_tx }));
+    let mut wakes = 0usize;
+    loop {
+        mode.poll_after_paint(&waker);
+        let model = session.with_settings_manager(|settings| settings.get_string("defaultModel"));
+        if model.as_deref() == Some("faux-1") { break; }
+        wakes += 1;
+        assert!(wakes < 8, "the parked settings write did not settle");
+        tokio::time::timeout(std::time::Duration::from_secs(10), wake.recv()).await.expect("the parked settings write must wake the frame within 10s").expect("the parked settings write wakes the frame");
+    }
+    assert_eq!(session.with_settings_manager(|settings| settings.get_string("defaultProvider")).as_deref(), Some("faux"));
+    assert_eq!(session.with_settings_manager(|settings| settings.get_string("defaultModel")).as_deref(), Some("faux-1"));
+}
+
+#[tokio::test]
+#[allow(clippy::unused_async)]
+async fn r1_matching_renderer_revision_does_not_await_the_snapshot() {
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    mode.enqueue_submission("/rename kept-name", None);
+    let install = {
+        let mut step = std::pin::pin!(mode.dispatch_submission());
+        poll_once(&mut step)
+    };
+    assert!(install.is_ready(), "submitting parks the snapshot instead of awaiting it");
+    mode.poll_after_paint(std::task::Waker::noop());
+    assert!(!mode.has_parked_action_for_test(), "the uncontended snapshot settles after paint");
+    // The runner mutex is private, so this oneshot is the only way to keep a mismatched snapshot
+    // pending. A matching revision must not take it: one poll stays Ready while the receiver is held.
+    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    mode.arm_renderer_refresh_gate_for_test(gate_rx);
+    mode.enqueue_submission("hi-again", None);
+    let again = {
+        let mut step = std::pin::pin!(mode.dispatch_submission());
+        poll_once(&mut step)
+    };
+    assert!(again.is_ready(), "a matching revision must not await the snapshot");
+    assert!(!mode.has_parked_action_for_test(), "a matching revision does not park another snapshot");
+    let mut snapshot = std::pin::pin!(session.tool_renderers_snapshot());
+    assert!(poll_once(&mut snapshot).is_ready(), "with the runner lock free the real snapshot is already Ready");
+    drop(gate_tx);
+}
+
+/// Provider whose catalog refresh never resolves. `entered` flips only when `refresh_models` is polled.
+struct StalledCatalog {
+    entered: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl maho_ai::models::Provider for StalledCatalog {
+    fn id(&self) -> &str { "stalled-catalog" }
+    fn name(&self) -> &str { "stalled-catalog" }
+    fn get_models(&self) -> Vec<maho_ai::types::Model> { Vec::new() }
+    fn supports_refresh(&self) -> bool { true }
+    fn refresh_models<'a>(&'a self, _context: maho_ai::models::RefreshModelsContext) -> maho_ai::types::BoxFuture<'a, Result<(), maho_ai::models::ModelsError>> {
+        let entered = self.entered.clone();
+        Box::pin(async move {
+            entered.store(true, std::sync::atomic::Ordering::SeqCst);
+            std::future::pending::<()>().await;
+            Ok(())
+        })
+    }
+    fn stream(&self, _model: &maho_ai::types::Model, _context: &maho_ai::types::Context, _options: Option<maho_ai::types::StreamOptions>) -> maho_ai::types::AssistantMessageEventStream {
+        maho_ai::types::AssistantMessageEventStream::assistant()
+    }
+    fn stream_simple(&self, _model: &maho_ai::types::Model, _context: &maho_ai::types::Context, _options: Option<maho_ai::types::SimpleStreamOptions>) -> maho_ai::types::AssistantMessageEventStream {
+        maho_ai::types::AssistantMessageEventStream::assistant()
+    }
+}
+
+fn mode_with_stalled_catalog(entered: std::sync::Arc<std::sync::atomic::AtomicBool>) -> (maho_interactive::interactive_mode::InteractiveMode, tempfile::TempDir) {
+    use std::sync::Arc;
+    use maho_ai::models::Provider;
+    use maho_ai::providers::faux::{FauxAssistantMessageOptions, FauxModelDefinition, RegisterFauxProviderOptions, faux_assistant_message, faux_provider, faux_streams};
+    use maho_core::agent_session::{AgentSession, AgentSessionConfig};
+    let directory = tempfile::tempdir().expect("directory");
+    let cwd = directory.path().to_string_lossy().into_owned();
+    let provider = faux_provider(RegisterFauxProviderOptions { api: Some("faux".into()), provider: Some("faux".into()), models: Some(vec![FauxModelDefinition { id: "faux-1".into(), ..Default::default() }]), tokens_per_second: Some(0.0), ..Default::default() }).expect("valid faux provider");
+    let model = provider.get_model(Some("faux-1")).expect("model");
+    provider.set_responses(vec![faux_assistant_message("hello", FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into()]);
+    let streams = faux_streams(provider.core.clone());
+    let stream_fn: maho_agent::types::StreamFn = Arc::new(move |model, context, options| {
+        let mut context = context.clone();
+        context.system_prompt = context.system_prompt.filter(|prompt| !prompt.is_empty());
+        streams.stream_simple(model, &context, options.map(|options| options.simple))
+    });
+    let stalled: Arc<dyn Provider> = Arc::new(StalledCatalog { entered });
+    let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
+        models_path: Some(directory.path().join("models.json")), auth_path: Some(directory.path().join("auth.json")),
+        providers: Some(vec![provider.provider.clone(), stalled]), ..Default::default()
+    }).expect("valid model runtime");
+    let session = AgentSession::new(AgentSessionConfig {
+        agent: maho_agent::Agent::new(maho_agent::AgentOptions {
+            initial_state: Some(maho_agent::agent::PartialAgentState { model: Some(model), ..Default::default() }),
+            stream_fn: Some(stream_fn), ..Default::default()
+        }),
+        session_manager: maho_core::session_manager::SessionManager::in_memory(&cwd, None, None),
+        settings_manager: maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()), false),
+        cwd: cwd.clone(), agent_dir: Some(cwd), fallback_now: Some(Arc::new(|| 0.0)), retry_random: Some(Arc::new(|| 0.5)),
+        scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: Default::default(), custom_tools: Vec::new(),
+        model_runtime: Some(runtime), model_registry: None, uses_default_stream_function: Some(false), initial_active_tool_names: None,
+        default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: None, base_tools_override: None,
+        session_start_event: None, auto_title_sessions: Some(false),
+    }).expect("session");
+    let mode = maho_interactive::interactive_mode::InteractiveMode::new(Arc::new(session), maho_interactive::theme::Theme::builtin("dark", maho_interactive::theme::ColorMode::Truecolor).expect("theme"), std::rc::Rc::new(EditorHost));
+    (mode, directory)
+}
+
+#[tokio::test]
+#[allow(clippy::unused_async)]
+async fn r6_model_cache_miss_paints_the_selector_before_catalog_refresh() {
+    use maho_tui::tui::Component;
+    let entered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (mut mode, _directory) = mode_with_stalled_catalog(entered.clone());
+    mode.enqueue_submission("/model no-such-model", None);
+    let first = {
+        let mut step = std::pin::pin!(mode.dispatch_submission());
+        poll_once(&mut step)
+    };
+    assert!(first.is_ready(), "/model miss must not await the catalog refresh");
+    assert!(!entered.load(std::sync::atomic::Ordering::SeqCst), "the provider refresh has not been polled");
+    let rendered = mode.render(80).join("\n");
+    assert!(rendered.contains("Refreshing model catalogs…"), "the refresh status paints immediately: {rendered}");
+    let plain = maho_tools::ansi::strip_ansi(&rendered);
+    assert!(plain.contains("> no-such-model"), "the cached selector paints before the refresh: {plain}");
+}
+
+fn poll_dispatch(mode: &mut maho_interactive::interactive_mode::InteractiveMode) -> std::task::Poll<Result<Option<maho_core::agent_session::PromptDisposition>, String>> {
+    let mut step = std::pin::pin!(mode.dispatch_submission());
+    poll_once(&mut step)
+}
+
+#[tokio::test]
+#[allow(clippy::unused_async)]
+async fn r9_new_session_parks_the_replacement() {
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    let before = session.session_id();
+    mode.enqueue_submission("/new", None);
+    assert!(poll_dispatch(&mut mode).is_ready(), "/new must not await new_session");
+    assert_eq!(session.session_id(), before, "the replacement has not run");
+    assert!(mode.has_parked_action_for_test(), "new_session stays parked until after paint");
+}
+
+#[tokio::test]
+#[allow(clippy::unused_async)]
+async fn r10_tree_navigate_parks_the_host_call() {
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &[("branchSummary".into(), serde_json::json!({"skipPrompt": true}))].into_iter().collect())).expect("skip prompt");
+    let entered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let model = serde_json::to_value(session.model()).expect("model json");
+    mode.set_session_host(std::sync::Arc::new(NeverReadyHost {
+        entered: entered.clone(),
+        polls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        models: vec![model],
+        listener: std::sync::Arc::new(std::sync::Mutex::new(None)),
+    }));
+    mode.drain_events();
+    mode.enqueue_submission(&maho_interactive::interactive_mode::internal_command("/tree not-the-leaf"), None);
+    assert!(poll_dispatch(&mut mode).is_ready(), "tree navigate must return before navigate_tree");
+    assert!(!entered.load(std::sync::atomic::Ordering::SeqCst), "navigate_tree is parked, not polled");
+}
+
+#[tokio::test]
+#[allow(clippy::unused_async)]
+async fn r11_paste_and_tree_copy_park_the_clipboard() {
+    use maho_tui::tui::Component;
+    // Clipboard helpers are free functions with no seam to substitute a pending future. The
+    // regression is the side effect a8ac6196 has already applied when the dispatch poll returns:
+    // an immediately-ready copy (OSC 52 on a headless or SSH session) has already shown its status,
+    // and a paste that returned text has already landed in the editor.
+    let (mut mode, _directory) = native_mode();
+    mode.enqueue_submission(&maho_interactive::interactive_mode::internal_command("/paste-clipboard"), None);
+    assert!(poll_dispatch(&mut mode).is_ready(), "paste must not await the clipboard");
+    assert!(mode.editor.editor.get_text().is_empty(), "the paste is not applied before paint");
+
+    let (mut mode, _directory) = native_mode();
+    mode.queue_tree_copy_for_test(Some("copied-row".into()));
+    mode.enqueue_submission("after-copy", None);
+    assert!(poll_dispatch(&mut mode).is_ready(), "tree-copy drain must not await the clipboard");
+    assert!(mode.has_parked_action_for_test(), "the copy stays parked");
+    assert!(!mode.has_pending_turn(), "the queued submission waits until the copy settles");
+    let rendered = mode.render(80).join("\n");
+    assert!(!rendered.contains("Copied selected message"), "the copy status is not applied before paint: {rendered}");
+    assert!(!rendered.contains("after-copy"), "the queued prompt has not started: {rendered}");
+}
+
+#[tokio::test]
+#[allow(clippy::unused_async)]
+async fn r12_keybindings_routes_through_external_editor() {
+    let (mut mode, directory) = native_mode();
+    mode.arm_keybindings_editor_for_test("this-editor-must-not-launch".into());
+    mode.enqueue_submission("/keybindings", None);
+    assert!(poll_dispatch(&mut mode).is_ready(), "/keybindings must not await the editor");
+    assert_eq!(mode.take_terminal_request(), Some(maho_interactive::interactive_mode::TerminalRequest::ExternalEditor));
+    assert!(!directory.path().join("keybindings.json").exists(), "the editor is not launched before the terminal stops");
+}
+
+#[tokio::test]
+#[allow(clippy::unused_async)]
+async fn r13_command_tails_park_before_paint() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.enqueue_submission("/reload", None);
+    assert!(poll_dispatch(&mut mode).is_ready(), "/reload must not await the veto");
+    assert!(mode.render(120).join("\n").contains("Reloading keybindings"), "the reload box paints before the veto");
+    assert!(matches!(poll_dispatch(&mut mode), std::task::Poll::Ready(Ok(None))), "/reload-run is not queued until the veto settles");
+
+    let (mut mode, directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    let path = directory.path().join("out.jsonl");
+    mode.enqueue_submission(&format!("/export {}", path.display()), None);
+    assert!(poll_dispatch(&mut mode).is_ready(), "/export must not write before paint");
+    assert!(!path.exists(), "the export file is not written yet");
+    assert!(mode.has_parked_action_for_test());
+
+    mode.enqueue_submission("/rename parked-name", None);
+    assert!(poll_dispatch(&mut mode).is_ready(), "/rename must not await set_session_name");
+    assert!(session.session_name().is_none(), "the name is not set before paint");
+
+    // `list_credentials` returns immediately. a8ac6196 has already shown the empty-list status
+    // when the dispatch poll returns; the parked list has not.
+    let (mut mode, _directory) = native_mode();
+    mode.enqueue_submission("/logout", None);
+    assert!(poll_dispatch(&mut mode).is_ready(), "/logout must not await the credential list");
+    let logged_out = mode.render(80).join("\n");
+    assert!(!logged_out.contains("No stored credentials"), "the list result is not applied yet: {logged_out}");
+    assert!(mode.has_parked_action_for_test());
+
+    // `gh auth status` cannot be substituted. If it is still running, a8ac6196's dispatch poll is
+    // Pending; if it has already returned, the auth or gist line is already on screen.
+    let (mut mode, _directory) = native_mode();
+    mode.enqueue_submission("/share", None);
+    assert!(poll_dispatch(&mut mode).is_ready(), "/share must not await gh auth");
+    let rendered = mode.render(80).join("\n");
+    assert!(!rendered.contains("Creating gist"), "the loader waits for auth and export: {rendered}");
+    assert!(!rendered.contains("GitHub CLI"), "auth has not finished: {rendered}");
+    assert!(mode.has_parked_action_for_test());
+
+    let (mut mode, entered, _polls, _directory) = never_ready_mode();
+    mode.enqueue_submission("!echo parked", None);
+    assert!(poll_dispatch(&mut mode).is_ready(), "host ! must not await execute_bash");
+    assert!(!entered.load(std::sync::atomic::Ordering::SeqCst), "execute_bash is parked");
+}
+
+#[tokio::test]
+#[allow(clippy::unused_async)]
+async fn r16_tree_and_fork_open_mount_on_a_later_frame() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.enqueue_submission("/tree", None);
+    assert!(poll_dispatch(&mut mode).is_ready(), "/tree must not walk the session on the UI task");
+    let rendered = mode.render(80).join("\n");
+    assert!(!rendered.contains("Session Tree"), "the selector is not mounted yet: {rendered}");
+    assert!(!rendered.contains("No entries in session"), "the walk has not finished");
+    assert!(mode.has_parked_action_for_test());
+
+    let (mut mode, _directory) = native_mode();
+    mode.enqueue_submission("/fork", None);
+    assert!(poll_dispatch(&mut mode).is_ready(), "/fork must not walk the session on the UI task");
+    let rendered = mode.render(80).join("\n");
+    assert!(!rendered.contains("Fork from Message"), "the selector is not mounted yet: {rendered}");
+    assert!(!rendered.contains("No messages to fork from"));
+    assert!(mode.has_parked_action_for_test());
 }

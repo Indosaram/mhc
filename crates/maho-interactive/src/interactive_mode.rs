@@ -53,6 +53,84 @@ type CompactionFlush = Pin<Box<dyn Future<Output = Option<String>>>>;
 /// presented by the `compaction_end` event, so the future resolves to nothing.
 type CompactFuture = Pin<Box<dyn Future<Output = ()>>>;
 
+/// Apply step a parked future resolves to. Runs on the UI task after paint.
+type ParkedApply = Box<dyn FnOnce(&mut InteractiveMode)>;
+/// The parked future itself. Not `Send`: it is polled on the UI task.
+type ParkedFuture = Pin<Box<dyn Future<Output = ParkedApply>>>;
+
+/// Work the UI task must not run before the frame that queued it has painted.
+///
+/// `park_action` stores the future. `poll_turn_with` polls an action only after
+/// `poll_after_paint` (the production loop calls that after `do_render`) marks it painted.
+/// Completions run in park order: a later action is not polled until the earlier one settles.
+/// The future is polled on the UI task, after paint, the same way `pending_compact` and
+/// `pending_bash` are; it does not need to be `Send`. Part 2 (R9-R16) should call
+/// `park_action` instead of awaiting the slow tail on the UI task. A chained `park_action`
+/// from a completion is already past the paint barrier (`applying_parked`).
+struct ParkedAction {
+    painted: bool,
+    future: ParkedFuture,
+}
+
+type RendererSnapshot = std::collections::BTreeMap<String, std::sync::Arc<dyn maho_ext_api::ErasedToolRenderers>>;
+/// Shortcuts plus renderer map captured after a non-cancelled reload.
+type ReloadShortcutSnapshot = (
+    std::collections::BTreeMap<String, maho_ext_api::ExtensionShortcut>,
+    Vec<String>,
+);
+type ReloadFollowup = Option<(ReloadShortcutSnapshot, RendererSnapshot)>;
+
+enum SwitchTail {
+    Prompt(maho_core::session_cwd::SessionCwdIssue),
+    Replaced(RendererSnapshot),
+    Local,
+    Cancelled,
+    Failed(String),
+}
+
+enum ImportTail {
+    Prompt(maho_core::session_cwd::SessionCwdIssue),
+    Replaced(RendererSnapshot),
+    Local,
+    Cancelled,
+    Failed(String),
+}
+
+enum ForkTail {
+    Replaced { editor_text: Option<String>, snapshot: RendererSnapshot },
+    Local(maho_core::agent_session::AssistantEditResult),
+    Cancelled,
+    Failed(String),
+}
+
+enum SharePrep {
+    NotLoggedIn,
+    NotInstalled,
+    ExportFailed(String),
+    Ready(std::path::PathBuf),
+}
+
+enum CopyFlash {
+    Status(String),
+    Fullscreen { renderer: Rc<RefCell<crate::tui_renderer::InteractiveTui>>, now_ms: u64 },
+}
+
+enum PasteOutcome {
+    Image(Vec<u8>, String),
+    Text(Option<String>),
+}
+
+enum CopyOutcome {
+    Copied(Option<String>),
+    Empty,
+}
+
+/// A default-model settings write queued by the selector. `SettingsManager::set` can
+/// `thread::sleep` on the file lock; it runs in `spawn_blocking` only after paint.
+struct PendingSettingsWrite {
+    values: maho_core::settings_manager::Settings,
+}
+
 /// senpi `compactionQueuedMessages` / `compactionInFlightMessages`, shared with the running flush.
 #[derive(Default)]
 struct CompactionQueueState {
@@ -537,6 +615,38 @@ pub struct InteractiveMode {
     queued_compaction_flushes: std::collections::VecDeque<crate::compaction_queue_transfer::TransferOptions>,
     /// The local `!` command in flight (senpi `bashComponent` + `session.isBashRunning`).
     pending_bash: Option<PendingBash>,
+    /// Renderer-snapshot revision last installed into `tool_renderer_snapshots`.
+    /// `None` means this mode has not installed one. `Some(revision)` matches
+    /// `AgentSession::tool_renderers_revision` (`None` when no runner is bound or its lock is held).
+    installed_tool_renderer_revision: Option<Option<(u64, u64)>>,
+    /// See [`ParkedAction`]. Part 2 appends here via `park_action`.
+    parked_actions: std::collections::VecDeque<ParkedAction>,
+    /// True while a parked completion is running, so a follow-up `park_action` is already past paint.
+    applying_parked: bool,
+    /// A turn started in this frame must not be polled until after `do_render`.
+    defer_turn_poll: bool,
+    /// User row painted before the prompt future's first poll. Removed when `MessageStart` arrives.
+    provisional_user_echo: Option<Rc<RefCell<dyn Component>>>,
+    /// Working indicator painted before `AgentStart`. Cleared if the turn fails first.
+    provisional_working: bool,
+    /// `/model <term>` whose cached selector is on screen while a catalog refresh is parked.
+    model_search_term: Option<String>,
+    /// Default-model writes deferred off the UI thread. See [`PendingSettingsWrite`].
+    pending_settings_writes: Rc<RefCell<std::collections::VecDeque<PendingSettingsWrite>>>,
+    /// Test gate for the renderer snapshot. `AgentSession`'s runner mutex is private, and no public
+    /// method holds it across an await, so a test in this crate cannot make `tool_renderers_snapshot`
+    /// itself pend. Production leaves this empty.
+    renderer_refresh_gate: Option<tokio::sync::oneshot::Receiver<()>>,
+    /// `/keybindings` resolved editor, handed to the terminal owner via `TerminalRequest::ExternalEditor`.
+    pending_keybindings_edit: Option<(std::path::PathBuf, String)>,
+    /// Test override for the `/keybindings` editor command. Production uses `$VISUAL` / `$EDITOR`.
+    keybindings_editor_override: Option<String>,
+    /// Right-click paste text, set when the parked clipboard read settles. `None` until then.
+    parked_clipboard_text: Option<Option<String>>,
+    /// Tree-copy clipboard work is parked; do not start the next editor submission until it settles.
+    clipboard_blocks_submission: bool,
+    /// Error a parked tail wants `submit` to return. The production loop shows it from the completion.
+    parked_submit_error: Option<String>,
     /// senpi `pendingBashComponents`: `!` cards started while streaming, shown above the editor
     /// until the next ordinary submission moves them into the chat.
     pending_bash_components: Vec<Rc<RefCell<crate::components::bash_execution::BashExecutionComponent>>>,
@@ -1305,7 +1415,7 @@ impl InteractiveMode {
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
         let invalidate_ui = Arc::downgrade(&extension_ui);
         session.set_before_session_invalidate(Some(Arc::new(move || { if let Some(ui) = invalidate_ui.upgrade() { ui.reset_before_session_invalidate(); } })));
-        Self { side_column_widget_bounds:None, side_column:None, mounted_side_column:None, ulw_turn_glow:false, provider_count_key:None, footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, pending_compact:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, pending_theme_applied:false, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, pending_selection_copy:false, selection_copy_available:false, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, fatal_runtime_error: false, pending_question_click_submit: None, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, provider_errors:None, reload_box:None, history_cache_misses:Vec::new(), external_owner_compaction_notice_shown:false, compaction_delegated:false, fallback_applied_before_retry_start:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None, extension_editor_dialog: None, pending_dialog_external_edit: Default::default(), footer_poll_ms: None, footer_event_generation: 0, footer_stats_cache: RefCell::new(None), footer_subscription_cache: RefCell::new(None), keybindings_cache: RefCell::new(None), assistant_segment_seen: BTreeMap::new() }
+        Self { side_column_widget_bounds:None, side_column:None, mounted_side_column:None, ulw_turn_glow:false, provider_count_key:None, footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, pending_compact:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, pending_theme_applied:false, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, pending_selection_copy:false, selection_copy_available:false, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, fatal_runtime_error: false, pending_question_click_submit: None, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, pending_bell: false, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), daxnuts_animations:Vec::new(), anthropic_subscription_warning_shown:false, provider_errors:None, reload_box:None, history_cache_misses:Vec::new(), external_owner_compaction_notice_shown:false, compaction_delegated:false, fallback_applied_before_retry_start:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, installed_tool_renderer_revision:None, parked_actions:std::collections::VecDeque::new(), applying_parked:false, defer_turn_poll:false, provisional_user_echo:None, provisional_working:false, model_search_term:None, pending_settings_writes:Rc::new(RefCell::new(std::collections::VecDeque::new())), renderer_refresh_gate:None, pending_keybindings_edit:None, keybindings_editor_override:None, parked_clipboard_text:None, clipboard_blocks_submission:false, parked_submit_error:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None, active_tool_executions: Vec::new(), active_tool_execution_terminal_title: None, blocking_question_header: None, extension_editor_dialog: None, pending_dialog_external_edit: Default::default(), footer_poll_ms: None, footer_event_generation: 0, footer_stats_cache: RefCell::new(None), footer_subscription_cache: RefCell::new(None), keybindings_cache: RefCell::new(None), assistant_segment_seen: BTreeMap::new() }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -1486,20 +1596,7 @@ impl InteractiveMode {
         match self.session_host.clone() { Some(host) => host.follow_up(text.to_owned()).await, None => self.session.follow_up(text, None, Default::default()).await }
     }
 
-    async fn host_navigate_tree(&mut self, entry_id: &str, options: maho_core::agent_session::TreeNavigationOptions) -> Result<maho_core::agent_session::AssistantEditResult, String> {
-        match self.session_host.clone() {
-            Some(host) => { let result = host.navigate_tree(entry_id.to_owned(), options).await?; self.request_remote_history(); Ok(result) }
-            None => self.session.navigate_tree(entry_id, options).await,
-        }
-    }
-
-    async fn host_edit_assistant_message(&mut self, entry_id: &str, text: &str, options: maho_core::agent_session::TreeNavigationOptions) -> Result<maho_core::agent_session::AssistantEditResult, String> {
-        match self.session_host.clone() {
-            Some(host) => { let result = host.edit_assistant_message(entry_id.to_owned(), text.to_owned(), options).await?; self.request_remote_history(); Ok(result) }
-            None => self.session.edit_assistant_message(entry_id, text, options).await,
-        }
-    }
-
+    #[allow(dead_code)] // `/reload-run` parks `park_reload_run`.
     async fn host_reload(&self) -> Result<maho_ext_api::ReloadVetoDecision, String> {
         match self.session_host.clone() { Some(host) => host.reload().await, None => self.session.reload().await }
     }
@@ -1525,22 +1622,23 @@ impl InteractiveMode {
         ordered
     }
 
-    async fn host_set_model(&self, provider: &str, id: &str) -> Result<Option<String>, String> {
-        match self.session_host.clone() { Some(host) => host.set_model(provider.to_owned(), id.to_owned()).await.map(|()| None), None => { let model = self.session.model_registry().find(provider, id).ok_or_else(|| format!("Model not found: {provider}/{id}"))?; self.session.set_model(model).await.map(|change| change.and_then(|change| change.system_prompt_name)) } }
-    }
-
-    /// senpi `findExactModelMatch`: the scoped (else available) snapshot first; with no scope and
-    /// no cached hit, refresh the catalogs under a 15s timeout and search the refreshed snapshot.
-    async fn find_exact_model_match(&mut self, search_term: &str) -> Option<maho_ai::model::Model> {
+    /// senpi `findExactModelMatch`'s synchronous half: the scoped (else available) snapshot.
+    fn cached_exact_model_match(&self, search_term: &str) -> Option<maho_ai::model::Model> {
         let scoped = self.host_scoped_models();
         let narrowed = !scoped.is_empty();
         let cached: Vec<_> = if narrowed { scoped.into_iter().map(|entry| entry.model).collect() } else { self.host_available_models() };
         let cached_match = maho_core::model_resolver::find_exact_model_reference_match(search_term, &cached).cloned();
-        if cached_match.is_some() || narrowed { return cached_match; }
-        // A mounted host owns its catalog; only the local runtime is refreshed here.
-        if self.session_host.is_none() {
-            self.show_status("Refreshing model catalogs…".into());
-            let runtime = self.session.model_registry().model_runtime.clone();
+        if cached_match.is_some() || narrowed { cached_match } else { None }
+    }
+
+    /// A cache miss with no scope and no mounted host: the 15s catalog refresh, applied on a later
+    /// frame (same shape as `ScopedModelsRefreshDialog::try_recv`). The selector is already painted.
+    fn park_catalog_refresh(&mut self, search_term: String) {
+        let runtime = self.session.model_registry().model_runtime.clone();
+        let session = self.session.clone();
+        let runtime_key = Arc::as_ptr(&self.session) as usize as u64;
+        self.model_search_term = Some(search_term.clone());
+        self.park_action(async move {
             let controller = maho_ai::utils::abort::AbortController::new();
             let signal = controller.signal();
             let start = move |signal: maho_ai::utils::abort::AbortSignal| async move {
@@ -1548,23 +1646,54 @@ impl InteractiveMode {
                 runtime.refresh(maho_ai::models::ModelsRefreshOptions { signal: Some(signal), ..Default::default() }).await
             };
             let timer = tokio::spawn(async move { tokio::time::sleep(std::time::Duration::from_secs(15)).await; controller.abort(None); });
-            let outcome = crate::model_catalog_refresh::refresh_model_catalogs(Arc::as_ptr(&self.session) as usize as u64, &signal, start).await;
+            let outcome = crate::model_catalog_refresh::refresh_model_catalogs(runtime_key, &signal, start).await;
             timer.abort();
             let timed_out = signal.aborted();
-            match outcome {
-                Ok(result) if result.aborted && timed_out => self.show_warning("Model refresh timed out; searching cached models."),
-                Ok(result) if !result.errors.is_empty() => self.show_warning(&format!("Could not refresh {}; searching cached models.", result.errors.keys().cloned().collect::<Vec<_>>().join(", "))),
-                Ok(_) => {}
-                Err(_) if timed_out => self.show_warning("Model refresh timed out; searching cached models."),
-                Err(error) => self.show_warning(&format!("Could not refresh model catalogs: {error}")),
-            }
-        }
-        maho_core::model_resolver::find_exact_model_reference_match(search_term, &self.host_available_models()).cloned()
+            let models = session.model_registry().get_available();
+            (outcome, timed_out, models)
+        }, move |mode, (outcome, timed_out, models)| mode.apply_catalog_refresh(&search_term, outcome, timed_out, models));
     }
 
-    /// senpi `selectModelFromUi`: switch, then report `Model: <id>` with the optimized-prompt suffix.
-    async fn select_model_from_ui(&mut self, model: maho_ai::model::Model) {
-        match self.host_set_model(&model.provider, &model.id).await {
+    fn apply_catalog_refresh(&mut self, search_term: &str, outcome: Result<maho_ai::models::ModelsRefreshResult, maho_ai::utils::abort::AbortReason>, timed_out: bool, models: Vec<maho_ai::model::Model>) {
+        match &outcome {
+            Ok(result) if result.aborted && timed_out => self.show_warning("Model refresh timed out; searching cached models."),
+            Ok(result) if !result.errors.is_empty() => self.show_warning(&format!("Could not refresh {}; searching cached models.", result.errors.keys().cloned().collect::<Vec<_>>().join(", "))),
+            Ok(_) => {}
+            Err(_) if timed_out => self.show_warning("Model refresh timed out; searching cached models."),
+            Err(error) => self.show_warning(&format!("Could not refresh model catalogs: {error}")),
+        }
+        // A newer `/model` or a cancelled selector owns the screen; do not steal it.
+        if self.model_search_term.as_deref() != Some(search_term) || self.ui_dialog.is_none() { return; }
+        self.model_search_term = None;
+        let Some(model) = maho_core::model_resolver::find_exact_model_reference_match(search_term, &models).cloned() else { return; };
+        self.ui_reply.borrow_mut().take();
+        if let Some(mut dialog) = self.ui_dialog.take() { dialog.dispose(); }
+        self.local_dialog_reply = None;
+        self.begin_model_select(model);
+    }
+
+    /// senpi `selectModelFromUi`: paint `Model: <id>` now, and park `set_model` (local and host)
+    /// until after this frame paints. The completion adds the optimized-prompt suffix or the error.
+    fn begin_model_select(&mut self, model: maho_ai::model::Model) {
+        self.show_status(format!("Model: {}", model.id));
+        if let Some(footer) = &mut self.footer { footer.invalidate(); }
+        let host = self.session_host.clone();
+        let session = self.session.clone();
+        let provider = model.provider.clone();
+        let id = model.id.clone();
+        self.park_action(async move {
+            match host {
+                Some(host) => host.set_model(provider, id).await.map(|()| None),
+                None => match session.model_registry().find(&provider, &id) {
+                    Some(found) => session.set_model(found).await.map(|change| change.and_then(|change| change.system_prompt_name)),
+                    None => Err(format!("Model not found: {provider}/{id}")),
+                },
+            }
+        }, move |mode, result| mode.finish_model_select(model, result));
+    }
+
+    fn finish_model_select(&mut self, model: maho_ai::model::Model, result: Result<Option<String>, String>) {
+        match result {
             Ok(system_prompt_name) => {
                 if let Some(footer) = &mut self.footer { footer.invalidate(); }
                 self.update_editor_border_color();
@@ -1640,14 +1769,12 @@ impl InteractiveMode {
         });
     }
 
-    async fn host_cycle_model(&self, forward: bool) -> Result<Option<String>, String> {
-        match self.session_host.clone() { Some(host) => host.cycle_model(forward).await, None => Ok(self.session.cycle_model(forward).await?.map(|result| result.model.name)) }
-    }
-
+    #[allow(dead_code)] // `/export` parks `park_export`.
     async fn host_export_jsonl(&self, output_path: Option<&str>) -> Result<Option<String>, String> {
         match self.session_host.clone() { Some(host) => host.export_jsonl(output_path.map(str::to_owned)).await, None => self.session.export_to_jsonl(output_path).map(Some).map_err(|error| error.to_string()) }
     }
 
+    #[allow(dead_code)] // `/export` and `/share` park their export.
     async fn host_export_html(&self, output_path: Option<&str>, theme_name: &str) -> Result<Option<String>, String> {
         if let Some(host) = self.session_host.clone() {
             return host.export_html(output_path.map(str::to_owned), Some(theme_name.to_owned())).await;
@@ -1668,6 +1795,7 @@ impl InteractiveMode {
     }
 
     /// senpi's `applySessionName`: await the rename, then report the value the session kept.
+    #[allow(dead_code)] // typed `/rename` parks `park_session_rename` instead of awaiting this.
     async fn apply_session_name(&mut self, name: &str) {
         let host = self.session_host.clone();
         match host {
@@ -1742,6 +1870,7 @@ impl InteractiveMode {
         mode
     }
 
+    #[allow(dead_code)] // `/new` parks `park_new_session`.
     async fn host_new_session(&mut self, parent_session: Option<String>) -> Result<bool, String> {
         match self.session_host.clone() {
             Some(host) => match host.new_session(parent_session).await? {
@@ -1753,6 +1882,7 @@ impl InteractiveMode {
         }
     }
 
+    #[allow(dead_code)]
     async fn host_switch_session(&mut self, path: String, cwd_override: Option<String>) -> Result<bool, String> {
         match self.session_host.clone() {
             Some(host) => match host.switch_session_with_cwd(path.clone(), cwd_override.clone()).await? {
@@ -1765,6 +1895,7 @@ impl InteractiveMode {
     }
 
     /// senpi `runtimeHost.importFromJsonl(path, cwdOverride)`.
+    #[allow(dead_code)]
     async fn host_import_from_jsonl(&mut self, path: String, cwd_override: Option<String>) -> Result<bool, String> {
         match self.session_host.clone() {
             Some(host) => match host.import_from_jsonl(path.clone(), cwd_override.clone()).await? {
@@ -1791,6 +1922,7 @@ impl InteractiveMode {
 
     /// senpi `handleResumeSession`: switch, prompting to continue in the current cwd when the
     /// session's recorded cwd no longer exists.
+    #[allow(dead_code)] // resume parks `park_session_switch`.
     async fn handle_resume_session(&mut self, path: String, cwd_override: Option<String>) -> Result<(), String> {
         self.clear_status_indicator(None);
         if cwd_override.is_none() && let Some(issue) = missing_session_cwd_issue(&path, &self.host_cwd()) {
@@ -1820,6 +1952,7 @@ impl InteractiveMode {
 
     /// senpi `handleImportCommand` after its confirm: import through the runtime host, prompting
     /// to continue in the current cwd when the imported session's cwd no longer exists.
+    #[allow(dead_code)] // import parks `park_import`.
     async fn handle_import_session(&mut self, path: String, cwd_override: Option<String>) -> Result<(), String> {
         self.clear_status_indicator(None);
         if cwd_override.is_none() && let Some(issue) = missing_session_cwd_issue(&path, &self.host_cwd()) {
@@ -1835,6 +1968,7 @@ impl InteractiveMode {
         }
     }
 
+    #[allow(dead_code)] // fork and clone park `park_fork`.
     async fn host_fork(&mut self, entry_id: String, include_entry: bool) -> Result<maho_core::agent_session::AssistantEditResult, String> {
         match self.session_host.clone() {
             Some(host) => match host.fork(entry_id.clone(), include_entry).await? {
@@ -2157,6 +2291,10 @@ impl InteractiveMode {
     async fn setup_extension_shortcuts(&mut self) {
         let effective = maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir())).get_effective_config();
         let (shortcuts, diagnostics) = self.session.extension_shortcuts(&effective).await;
+        self.apply_extension_shortcuts(shortcuts, diagnostics);
+    }
+
+    fn apply_extension_shortcuts(&mut self, shortcuts: std::collections::BTreeMap<String, maho_ext_api::ExtensionShortcut>, diagnostics: Vec<String>) {
         for diagnostic in diagnostics { self.show_status(diagnostic); }
         self.extension_shortcut_rows = shortcuts.iter().map(|(key, shortcut)| (key.clone(), shortcut.description.clone().unwrap_or_else(|| shortcut.extension_path.clone()))).collect();
         let shortcuts: Vec<(String, maho_ext_api::ExtensionShortcut)> = shortcuts.into_iter().collect();
@@ -2282,16 +2420,7 @@ impl InteractiveMode {
     /// Pop the next queued editor submission (draining any pending tree copies first), paired with
     /// the pinned steer options. `None` when nothing is queued.
     async fn next_submission(&mut self) -> Option<(String, PromptOptions)> {
-        loop {
-            let copy=self.tree_copies.borrow_mut().pop_front();
-            let Some(copy)=copy else {break;};
-            if let Some(text)=copy.filter(|text|!text.is_empty()) {
-                match crate::interactive_clipboard::copy(&text).await {
-                    Ok(sequence)=>{if let Some(sequence)=sequence {maho_tui::process_stdio::stdout_write(&sequence);}self.show_status("Copied selected message to clipboard".into());}
-                    Err(error)=>self.show_error(&error),
-                }
-            }else{self.show_error("Selected entry has no text to copy");}
-        }
+        if self.clipboard_blocks_submission || self.park_tree_copies() { return None; }
         let text = self.submissions.borrow_mut().pop_front();
         let text = text?;
         // senpi `onSubmit`: built-in commands return before `addToHistory`, and the selector/dialog
@@ -2388,14 +2517,7 @@ impl InteractiveMode {
     /// senpi's `handleClipboardPaste`: attach a clipboard bitmap behind an atomic marker, else fall
     /// through to the plain-text clipboard path.
     pub async fn handle_clipboard_paste(&mut self) {
-        if let Some((bytes, mime_type)) = crate::interactive_clipboard::read_image().await
-            && self.attach_clipboard_image(bytes, mime_type)
-        {
-            return;
-        }
-        if let Some(text) = crate::interactive_clipboard::read_text().await {
-            self.editor.editor.insert_text_at_cursor(&text);
-        }
+        self.park_clipboard_paste(false);
     }
 
     /// senpi's `attachClipboardImage`: the `blockImages` gate, the compaction drop, and the marker
@@ -2428,13 +2550,26 @@ impl InteractiveMode {
         let keys = self.keybindings();
         if self.editor.on_extension_shortcut.as_mut().is_some_and(|shortcut| shortcut(data)) { return Ok(()); }
         if keys.matches(data, "app.model.cycleForward") || keys.matches(data, "app.model.cycleBackward") {
-            if let Some(name) = self.host_cycle_model(keys.matches(data, "app.model.cycleForward")).await? {
-                self.show_status(format!("Switched to {name}"));
-                let model = self.host_model();
-                self.show_risky_main_model_warning(&model);
-                self.maybe_warn_about_anthropic_subscription_auth(model);
-            }
-            else { self.show_status("No other models available for cycling".into()); }
+            // Paint a provisional Model line, then park the cycle (local and host) until after paint.
+            let forward = keys.matches(data, "app.model.cycleForward");
+            self.show_status("Model: ...".into());
+            let host = self.session_host.clone();
+            let session = self.session.clone();
+            self.park_action(async move {
+                match host {
+                    Some(host) => host.cycle_model(forward).await,
+                    None => session.cycle_model(forward).await.map(|result| result.map(|result| result.model.name)),
+                }
+            }, |mode, result| match result {
+                Ok(Some(name)) => {
+                    mode.show_status(format!("Switched to {name}"));
+                    let model = mode.host_model();
+                    mode.show_risky_main_model_warning(&model);
+                    mode.maybe_warn_about_anthropic_subscription_auth(model);
+                }
+                Ok(None) => mode.show_status("No other models available for cycling".into()),
+                Err(error) => mode.show_error(&error),
+            });
             return Ok(());
         }
         if keys.matches(data,"app.message.copy") {
@@ -2448,19 +2583,16 @@ impl InteractiveMode {
                 return Ok(());
             }
             if let Some(renderer) = renderer && let Some(text) = self.session.get_last_assistant_text().filter(|text|!text.is_empty()) {
-                let sequence = crate::interactive_clipboard::copy(&text).await?;
-                if let Some(sequence) = sequence { maho_tui::process_stdio::stdout_write(&sequence); }
-                renderer.borrow_mut().flash("Copied!", now_ms);
+                self.park_text_copy(text, CopyFlash::Fullscreen { renderer, now_ms });
                 return Ok(());
             }
-            self.submit("/copy",Default::default()).await?;return Ok(());
+            self.submissions.borrow_mut().push_front("/copy".into());
+            return Ok(());
         }
         if keys.matches(data,"app.clipboard.pasteImage") {
             // senpi `onPasteImage` -> `handleClipboardPaste` (image first, text fallback); a
             // replacement editor has no image markers, so it keeps the plain-text paste.
-            if let Some(editor)=&mut self.custom_editor {
-                if let Some(text)=crate::interactive_clipboard::read_text().await { editor.insert_text_at_cursor(&text); }
-            } else { self.handle_clipboard_paste().await; }
+            self.park_clipboard_paste(self.custom_editor.is_some());
             return Ok(());
         }
         if keys.matches(data, "app.history.search") {
@@ -2547,11 +2679,10 @@ impl InteractiveMode {
             self.editor.editor.add_to_history(&queued);
             self.set_active_editor_text("");
             let options = PromptOptions { streaming_behavior: Some(maho_ext_api::StreamingBehavior::FollowUp), ..Default::default() };
-            match self.session_host.clone() { Some(host) => host.prompt(queued, options).await?, None => { self.session.prompt(&queued, options).await?; } }
-            self.drain_events();
             self.show_status(if dropped > 0 {
                 format!("Queued message for after compaction; dropped {dropped} image{plural}: messages sent during compaction cannot carry images - paste again after compaction finishes")
             } else { "Queued message for after compaction".into() });
+            self.park_prompt_enqueue(queued, options);
             return Ok(());
         }
         let images = self.take_submission_images(&text);
@@ -2561,8 +2692,7 @@ impl InteractiveMode {
             let options = if self.is_extension_command(&text) { PromptOptions::default() } else {
                 PromptOptions { images: (!images.is_empty()).then_some(images), streaming_behavior: Some(maho_ext_api::StreamingBehavior::FollowUp), ..Default::default() }
             };
-            match self.session_host.clone() { Some(host) => host.prompt(text, options).await?, None => { self.session.prompt(&text, options).await?; } }
-            self.drain_events();
+            self.park_prompt_enqueue(text, options);
             return Ok(());
         }
         // Not streaming: Alt+Enter acts like Enter, with the pre-resolved images paired to the text.
@@ -2584,8 +2714,33 @@ impl InteractiveMode {
         Box::new(SharedDialog(component))
     }
 
+    /// `/keybindings`, run while the terminal is stopped (same hand-off as Ctrl+G).
+    async fn finish_keybindings_edit(&mut self, config_path: &std::path::Path, editor_command: &str) {
+        use crate::keybindings_command::KeybindingsEditOutcome;
+        let mut keybindings = maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir()));
+        match crate::keybindings_command::run_keybindings_edit(config_path, editor_command, &mut keybindings).await {
+            KeybindingsEditOutcome::Reloaded => {
+                let manager = maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir())).inner().clone();
+                maho_tui::keybindings::set_keybindings(manager.clone());
+                self.editor.set_keybindings(Arc::new(manager));
+                self.show_status("Keybindings reloaded".into());
+            }
+            KeybindingsEditOutcome::LaunchFailed { seeded } => {
+                if seeded { let _ = std::fs::remove_file(config_path); }
+                self.show_error(&format!("Could not open {} with \"{editor_command}\".", config_path.display()));
+            }
+            KeybindingsEditOutcome::Exited { code } => self.show_error(&format!("\"{editor_command}\" exited with code {code}; keybindings were not reloaded.")),
+            KeybindingsEditOutcome::Invalid { message } => self.show_error(&format!("Keybindings not reloaded - {} is not valid JSON: {message}", config_path.display())),
+            KeybindingsEditOutcome::IoError { message } => self.show_error(&format!("Could not open {} with \"{editor_command}\": {message}", config_path.display())),
+        }
+    }
+
     /// senpi `handleOpenExternalEditor`, run by the terminal owner while the terminal is stopped.
     pub async fn open_external_editor(&mut self) {
+        if let Some((config_path, editor_command)) = self.pending_keybindings_edit.take() {
+            self.finish_keybindings_edit(&config_path, &editor_command).await;
+            return;
+        }
         let dialog_content = self.pending_dialog_external_edit.borrow_mut().take();
         if let Some(content) = dialog_content {
             let Some(dialog) = self.extension_editor_dialog.as_ref().and_then(std::rc::Weak::upgrade) else { return; };
@@ -2668,14 +2823,59 @@ impl InteractiveMode {
     /// `pump_turn` with an explicit waker so an event-driven caller can re-poll exactly when the
     /// in-flight turn (or abort future) wakes, instead of on a fixed cadence.
     pub async fn pump_turn_with(&mut self, waker: &std::task::Waker) {
+        let had_turn = self.pending_turn.is_some();
         if let Err(error) = self.dispatch_submission().await { self.show_error(&error); }
+        // A turn started in this iteration is not polled here. The frame paints the user echo and
+        // working state first; `poll_after_paint` (after `do_render`) takes the first poll.
+        if !had_turn && self.pending_turn.is_some() { self.defer_turn_poll = true; }
         self.poll_turn_with(waker);
     }
+
+    /// Poll work parked so this frame could paint first, including the first poll of a turn started
+    /// in this iteration. The production loop calls this after `do_render`.
+    pub fn poll_after_paint(&mut self, waker: &std::task::Waker) {
+        self.defer_turn_poll = false;
+        self.drain_queued_settings_writes();
+        for action in &mut self.parked_actions { action.painted = true; }
+        self.poll_turn_with(waker);
+    }
+
+    /// Test seam: the next renderer-snapshot refresh awaits `gate` before taking the runner lock.
+    #[doc(hidden)]
+    pub fn arm_renderer_refresh_gate_for_test(&mut self, gate: tokio::sync::oneshot::Receiver<()>) {
+        self.renderer_refresh_gate = Some(gate);
+    }
+
+    /// Test seam: `/keybindings` uses `command` instead of `$VISUAL` / `$EDITOR`.
+    #[doc(hidden)]
+    pub fn arm_keybindings_editor_for_test(&mut self, command: String) {
+        self.keybindings_editor_override = Some(command);
+    }
+
+    /// Test seam: queue a tree-copy the way the selector's copy key does.
+    #[doc(hidden)]
+    pub fn queue_tree_copy_for_test(&mut self, text: Option<String>) {
+        self.tree_copies.borrow_mut().push_back(text);
+    }
+
+    /// Clipboard text a parked right-click read produced, if it has settled.
+    #[doc(hidden)]
+    pub fn take_parked_clipboard_text_for_test(&mut self) -> Option<Option<String>> {
+        self.parked_clipboard_text.take()
+    }
+
+    /// Whether a parked action is still waiting. Tests use this to prove the slow work was not awaited.
+    #[doc(hidden)]
+    pub fn has_parked_action_for_test(&self) -> bool { !self.parked_actions.is_empty() }
 
     /// senpi's awaited `session.prompt` for direct callers: start the turn, then wait it out.
     pub async fn submit(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
         let had_turn = self.pending_turn.is_some();
         let disposition = self.submit_start(text, options).await?;
+        // Direct callers still observe parked work to completion. The production loop does not use
+        // `submit`; it paints, then `poll_after_paint`.
+        self.finish_parked_for_direct_caller().await;
+        if let Some(error) = self.parked_submit_error.take() { return Err(error); }
         if self.pending_bash.is_some() { self.await_bash().await; }
         if self.pending_compact.is_some() { self.await_compact().await; }
         if !had_turn && self.pending_turn.is_some() { self.await_turn().await; }
@@ -2763,7 +2963,7 @@ impl InteractiveMode {
     /// Start the turn for `text` and return, or route it into a turn that is already in flight.
     async fn submit_start(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
         let (text, internal) = split_internal_command(text);
-        self.refresh_tool_renderer_snapshots().await;
+        self.queue_tool_renderer_refresh();
         if !text.trim_start().starts_with('/') && !text.trim_start().starts_with('!') && let Some(request_id) = self.questions.composer_request_id().map(str::to_owned) {
             let response = self.questions.get(&request_id).map(|entry| to_extension_response(crate::components::ask_user_async_widget::build_comment_response(&entry.request, &entry.draft, text.trim())));
             if let Some(response) = response {
@@ -2778,50 +2978,33 @@ impl InteractiveMode {
         if !internal && is_internal_only_command(text.trim()) { return self.submit_prompt(text, options).await; }
         if text.trim() == "/copy" {
             if let Some(text) = self.session.get_last_assistant_text().filter(|text|!text.is_empty()) {
-                match crate::interactive_clipboard::copy(&text).await {
-                    Ok(sequence) => {
-                        if let Some(sequence) = sequence { maho_tui::process_stdio::stdout_write(&sequence); }
-                        self.show_status("Copied last agent message to clipboard".into());
-                    }
-                    Err(error) => { self.show_error(&error); return Ok(PromptDisposition::Handled); }
-                }
+                self.park_text_copy(text, CopyFlash::Status("Copied last agent message to clipboard".into()));
             } else { self.show_error("No agent messages to copy yet."); }
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/keybindings" {
             let config_path = std::path::Path::new(&self.session.agent_dir()).join("keybindings.json");
-            let env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
-            let Some(editor_command) = crate::keybindings_command::resolve_editor_command(&env) else {
+            let editor_command = self.keybindings_editor_override.clone().or_else(|| {
+                let env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+                crate::keybindings_command::resolve_editor_command(&env)
+            });
+            let Some(editor_command) = editor_command else {
                 return Err(format!("Set $EDITOR or $VISUAL to edit {}.", config_path.display()));
             };
-            use crate::keybindings_command::KeybindingsEditOutcome;
-            let mut keybindings = maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir()));
-            match crate::keybindings_command::run_keybindings_edit(&config_path, &editor_command, &mut keybindings).await {
-                KeybindingsEditOutcome::Reloaded => {
-                    let manager = maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir())).inner().clone();
-                    maho_tui::keybindings::set_keybindings(manager.clone());
-                    self.editor.set_keybindings(Arc::new(manager));
-                    self.show_status("Keybindings reloaded".into());
-                }
-                KeybindingsEditOutcome::LaunchFailed { seeded } => {
-                    if seeded { let _ = std::fs::remove_file(&config_path); }
-                    self.show_error(&format!("Could not open {} with \"{editor_command}\".", config_path.display()));
-                }
-                KeybindingsEditOutcome::Exited { code } => self.show_error(&format!("\"{editor_command}\" exited with code {code}; keybindings were not reloaded.")),
-                KeybindingsEditOutcome::Invalid { message } => self.show_error(&format!("Keybindings not reloaded - {} is not valid JSON: {message}", config_path.display())),
-                KeybindingsEditOutcome::IoError { message } => self.show_error(&format!("Could not open {} with \"{editor_command}\": {message}", config_path.display())),
-            }
+            // The frame loop stops the terminal around ExternalEditor, the same path as Ctrl+G.
+            self.pending_keybindings_edit = Some((config_path, editor_command));
+            self.terminal_request = Some(TerminalRequest::ExternalEditor);
             return Ok(PromptDisposition::Handled);
         }
         if text.trim().starts_with("/import-confirm ") {
             let path = get_path_command_argument(text.trim(), "/import-confirm").ok_or("Usage: /import <path.jsonl>")?;
-            self.handle_import_session(path, None).await?;
+            self.clear_status_indicator(None); self.park_import(path, None);
             return Ok(PromptDisposition::Handled);
         }
         if text.trim().starts_with("/import-cwd ") {
             let path = get_path_command_argument(text.trim(), "/import-cwd").ok_or("Usage: /import <path.jsonl>")?;
             let cwd = self.host_cwd();
-            self.handle_import_session(path, Some(cwd)).await?;
+            self.clear_status_indicator(None); self.park_import(path, Some(cwd));
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/import-cancel" { self.show_status("Import cancelled".into()); return Ok(PromptDisposition::Handled); }
@@ -2836,21 +3019,8 @@ impl InteractiveMode {
             component.borrow_mut().set_expanded(self.tools_expanded);
             // senpi shows a `!` started while streaming in the pending area until the next submission.
             if self.host_is_streaming() { self.pending_bash_components.push(component.clone()); } else { self.chat.add_component(component.clone()); }
-            if let Some(host) = self.session_host.clone() {
-                let result = match host.execute_bash(command.to_owned(), excluded).await {
-                    Ok(result) => result,
-                    Err(error) => {
-                        component.borrow_mut().set_complete(None, false, None, None);
-                        self.show_error(&format!("Bash command failed: {error}"));
-                        self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
-                        return Ok(PromptDisposition::Handled);
-                    }
-                };
-                let exit_code = result.get("exitCode").and_then(serde_json::Value::as_i64).map(|code| code as i32);
-                let cancelled = result.get("cancelled").and_then(serde_json::Value::as_bool).unwrap_or(false);
-                let full_output_path = result.get("fullOutputPath").and_then(serde_json::Value::as_str).map(str::to_owned);
-                component.borrow_mut().set_complete(exit_code, cancelled, None, full_output_path);
-                self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
+            if self.session_host.is_some() {
+                self.park_host_bash(component, command.to_owned(), excluded);
                 return Ok(PromptDisposition::Handled);
             }
             // Run without blocking the frame loop: `poll_turn` drives it and streams its output.
@@ -2868,7 +3038,7 @@ impl InteractiveMode {
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/paste-clipboard" {
-            self.handle_clipboard_paste().await;
+            self.park_clipboard_paste(false);
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/reload" {
@@ -2877,67 +3047,14 @@ impl InteractiveMode {
             if self.host_is_compacting() { self.show_warning("Wait for compaction to finish before reloading."); return Ok(PromptDisposition::Handled); }
             // Pre-check the extension veto so a blocked reload warns before anything is torn down;
             // `reload` re-checks internally. A mounted host answers the veto inside its own reload.
-            if self.session_host.is_none() {
-                match self.session.check_reload_veto().await {
-                    Ok(decision) if decision.cancelled => { self.show_warning(decision.reason.as_deref().unwrap_or("Reload blocked by an extension.")); return Ok(PromptDisposition::Handled); }
-                    Ok(_) => {}
-                    Err(error) => { self.show_error(&format!("Reload failed: {error}")); return Ok(PromptDisposition::Handled); }
-                }
-            }
-            // senpi mounts the reload box in place of the editor and yields a tick so it paints before
-            // the reload runs; the port mounts it and queues the reload for the next loop iteration.
-            let mut reload_box = Container::new();
-            reload_box.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
-            reload_box.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-            reload_box.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.fg(crate::theme::ThemeColor::Muted, "Reloading keybindings, extensions, skills, prompts, themes, and context files..."), 1, 0))));
-            reload_box.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-            reload_box.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
-            self.reload_box = Some(reload_box);
-            self.editor_host.request_render();
-            self.submissions.borrow_mut().push_back(internal_command("/reload-run"));
+            // Paint the reload box before the veto. A mounted host answers the veto inside reload.
+            self.mount_reload_box();
+            if self.session_host.is_none() { self.park_reload_veto(); }
+            else { self.submissions.borrow_mut().push_back(internal_command("/reload-run")); }
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/reload-run" {
-            // `dismissReloadBox` on every outcome.
-            let reload = self.host_reload().await;
-            // senpi emits the reload's session events (settings_source_selected, system_prompt_change)
-            // synchronously inside `session.reload()`, so their status lines land BEFORE the final
-            // "Reloaded ..." status (interactive-mode.ts:9017-9024). The native session queues them on
-            // the event channel; drain it here so the reload result stays the last status line.
-            self.drain_events();
-            self.reload_box = None;
-            match reload {
-                Ok(decision) if decision.cancelled => self.show_warning(decision.reason.as_deref().unwrap_or("Reload blocked by an extension.")),
-                Ok(_) => {
-                    // senpi `resetExtensionUI` once the reload proceeds: the reloaded extensions
-                    // re-register their autocomplete wrappers (queued UI requests, drained afterwards).
-                    self.autocomplete_wrappers.clear();
-                    let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_autocomplete_max_visible()));
-                    self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible);
-                    // senpi `restoreChatBeforeSessionStart`: `hideThinkingBlock` is re-read before the rebuild.
-                    self.reveal.hide_thinking = self.session.with_settings_manager(|settings| settings.get_bool("hideThinkingBlock").unwrap_or(false));
-                    // senpi `applyRuntimeSettings`: terminal capability overrides and the smooth-streaming
-                    // settings the reveal controllers read live, plus `applySmoothStreamingRenderFps`.
-                    maho_tui::terminal_image::set_capability_overrides(self.session.with_settings_manager(|settings| settings.get_terminal_capability_overrides(&maho_core::config::current_env())));
-                    let (smooth, fps) = self.session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0)));
-                    self.reveal.smooth = smooth; self.tool_args_reveal.smooth = smooth; self.tool_reveal.smooth = smooth;
-                    self.reveal.fps = fps; self.tool_args_reveal.fps = fps; self.tool_reveal.fps = fps;
-                    self.apply_smooth_streaming_render_fps();
-                    self.rebuild_history();
-                    // `this.keybindings.reload()` and `themeController.applyFromSettings()`.
-                    // senpi reload: `keybindings.reload()` then `setupExtensionShortcuts(runner)`.
-                    let manager = maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir())).inner().clone();
-                    maho_tui::keybindings::set_keybindings(manager.clone());
-                    self.editor.set_keybindings(Arc::new(manager));
-                    self.setup_extension_shortcuts().await;
-                    self.apply_theme_from_settings();
-                    self.setup_autocomplete(); self.register_discovered_themes(); self.refresh_tool_renderer_snapshots().await; self.show_loaded_resources(false, true);
-                    self.show_model_runtime_diagnostics(false);
-                    let message = if self.maybe_save_implicit_project_trust_after_reload() { "Reloaded keybindings, extensions, skills, prompts, themes, and context files; saved project trust" } else { "Reloaded keybindings, extensions, skills, prompts, themes, and context files" };
-                    self.show_status(message.into());
-                }
-                Err(error) => self.show_error(&format!("Reload failed: {error}")),
-            }
+            self.park_reload_run();
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/compact" || text.trim().starts_with("/compact ") {
@@ -2966,43 +3083,30 @@ impl InteractiveMode {
         if text.trim() == "/new" {
             // senpi `handleClearCommand`.
             self.clear_status_indicator(None);
-            match self.host_new_session(None).await {
-                Ok(true) => {
-                    self.rebuild_history();
-                    // senpi `setRebindSession`: `themeController.applyFromSettings()`.
-                    self.apply_theme_from_settings();
-                    // senpi `handleClearCommand`: the accent confirmation, not a dim status.
-                    self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-                    self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.fg(crate::theme::ThemeColor::Accent, "✓ New session started"), 1, 1))));
-                }
-                Ok(false) => {}
-                Err(error) => self.handle_fatal_runtime_error("Failed to create session", &error),
-            }
+            self.park_new_session();
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/clone" {
             let leaf = self.session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned));
             if let Some(leaf) = leaf {
-                let result = self.host_fork(leaf, true).await?;
-                if !result.cancelled { self.rebuild_history(); self.apply_theme_from_settings(); self.editor.editor.set_text(""); self.show_status("Cloned to new session".into()); }
+                self.park_fork(leaf, true, true);
             } else { self.show_status("Nothing to clone yet".into()); }
             return Ok(PromptDisposition::Handled);
         }
         if text.trim().starts_with("/resume ") {
             let path = get_path_command_argument(text.trim(), "/resume").ok_or("Missing session path")?;
-            self.handle_resume_session(path, None).await?;
+            self.clear_status_indicator(None); self.park_session_switch(path, None, false);
             return Ok(PromptDisposition::Handled);
         }
         if text.trim().starts_with("/resume-cwd ") {
             let path = get_path_command_argument(text.trim(), "/resume-cwd").ok_or("Missing session path")?;
             let cwd = self.host_cwd();
-            self.handle_resume_session(path, Some(cwd)).await?;
+            self.clear_status_indicator(None); self.park_session_switch(path, Some(cwd), true);
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/resume-cwd-cancel" { self.show_status("Resume cancelled".into()); return Ok(PromptDisposition::Handled); }
         if let Some(id) = text.trim().strip_prefix("/fork ") {
-            let result = self.host_fork(id.trim().to_owned(), false).await?;
-            if !result.cancelled { self.rebuild_history(); self.apply_theme_from_settings(); self.editor.editor.set_text(result.editor_text.as_deref().unwrap_or("")); self.show_status("Forked to new session".into()); }
+            self.park_fork(id.trim().to_owned(), false, false);
             return Ok(PromptDisposition::Handled);
         }
         if text.trim().starts_with("/tree-edit ") {
@@ -3040,48 +3144,46 @@ impl InteractiveMode {
             // The selectors' `onSelect`: senpi calls `selectModelFromUi` with the chosen model directly.
             let Some((provider, id)) = reference.trim().split_once('/') else { return Ok(PromptDisposition::Handled); };
             match self.host_find_model(provider, id) {
-                Some(model) => self.select_model_from_ui(model).await,
+                Some(model) => self.begin_model_select(model),
                 None => self.show_error(&format!("Model not found: {provider}/{id}")),
             }
             return Ok(PromptDisposition::Handled);
         }
         if let Some(search_term) = text.trim().strip_prefix("/model ") {
             // senpi `handleModelCommand`: an exact match switches, a miss opens the pre-filtered selector.
+            // A cache miss paints the cached selector now; the 15s refresh is parked for a later frame.
             let search_term = search_term.trim().to_owned();
-            match self.find_exact_model_match(&search_term).await {
-                Some(model) => self.select_model_from_ui(model).await,
-                None => { self.dispatch_command(&format!("/model-search {search_term}"))?; }
+            if let Some(model) = self.cached_exact_model_match(&search_term) {
+                self.begin_model_select(model);
+            } else if self.session_host.is_none() && self.host_scoped_models().is_empty() {
+                self.show_status("Refreshing model catalogs…".into());
+                self.dispatch_command(&format!("/model-search {search_term}"))?;
+                self.park_catalog_refresh(search_term);
+            } else {
+                self.dispatch_command(&format!("/model-search {search_term}"))?;
             }
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/export" || text.trim().starts_with("/export ") {
             // senpi `handleExportCommand`: `.jsonl` exports JSONL, anything else (or no path) HTML.
             let path = get_path_command_argument(text.trim(), "/export");
-            let result = if path.as_deref().is_some_and(|path| path.ends_with(".jsonl")) {
-                self.host_export_jsonl(path.as_deref()).await
-            } else {
-                let theme_name = self.theme.name.clone();
-                self.host_export_html(path.as_deref(), &theme_name).await
-            };
-            match result {
-                Ok(exported) => self.show_status(format!("Session exported to: {}", exported.or(path).unwrap_or_default())),
-                Err(error) => self.show_error(&format!("Failed to export session: {error}")),
-            }
+            let jsonl = path.as_deref().is_some_and(|path| path.ends_with(".jsonl"));
+            self.park_export(path, jsonl);
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/share" {
-            self.handle_share_command().await;
             self.editor.editor.set_text("");
+            self.park_share();
             return Ok(PromptDisposition::Handled);
         }
         if let Some(name) = text.trim().strip_prefix("/rename ").or_else(|| text.trim().strip_prefix("/name ")) {
             let name = name.trim();
             if name.is_empty() { self.show_warning("Session name cannot be empty"); return Ok(PromptDisposition::Handled); }
-            self.apply_session_name(name).await;
+            self.park_session_rename(name.to_owned());
             return Ok(PromptDisposition::Handled);
         }
-        if text.trim() == "/logout" { self.show_logout_selector().await; return Ok(PromptDisposition::Handled); }
-        if let Some(provider_id) = text.trim().strip_prefix("/logout-provider ") { self.logout_provider(provider_id.trim()).await; return Ok(PromptDisposition::Handled); }
+        if text.trim() == "/logout" { self.park_logout_list(None); return Ok(PromptDisposition::Handled); }
+        if let Some(provider_id) = text.trim().strip_prefix("/logout-provider ") { self.park_logout_list(Some(provider_id.trim().to_owned())); return Ok(PromptDisposition::Handled); }
         if self.dispatch_command(text)? { return Ok(PromptDisposition::Handled); }
         self.submit_prompt(text, options).await
     }
@@ -3096,15 +3198,11 @@ impl InteractiveMode {
         }
         self.flush_pending_bash_components();
         if self.pending_turn.is_some() {
-            // A turn is already in flight: hand the submission to the session's steer/follow-up
-            // queue (the pinned `streamingBehavior` path) instead of replacing the running turn.
+            // A turn is already in flight: park the enqueue so this frame can paint the cleared
+            // editor before `prompt` runs. Order is the park order.
             self.ulw_turn_glow |= crate::components::neon_border::has_ulw_keyword(text);
-            let result = match self.session_host.clone() {
-                Some(host) => host.prompt(text.to_owned(), options).await.map(|_| PromptDisposition::Started),
-                None => self.session.prompt(text, options).await,
-            };
-            self.drain_events();
-            return result;
+            self.park_prompt_enqueue(text.to_owned(), options);
+            return Ok(PromptDisposition::Started);
         }
         self.ulw_turn_glow = crate::components::neon_border::has_ulw_keyword(text);
         self.start_turn(text.to_owned(), options);
@@ -3113,11 +3211,822 @@ impl InteractiveMode {
 
     /// Initiate a provider turn without waiting for it to finish.
     fn start_turn(&mut self, text: String, options: PromptOptions) {
+        self.paint_turn_feedback(&text);
         let turn: TurnFuture = match self.session_host.clone() {
             Some(host) => Box::pin(async move { host.prompt(text, options).await.map(|_| PromptDisposition::Started) }),
             None => { let session = self.session.clone(); Box::pin(async move { session.prompt(&text, options).await }) }
         };
         self.pending_turn = Some(turn);
+    }
+
+    /// Paint the user echo and working row before the prompt future is polled. `MessageStart`
+    /// replaces the echo so the settled transcript still has one user card.
+    fn paint_turn_feedback(&mut self, text: &str) {
+        self.agent_idle = false;
+        if self.working_started_ms.is_none() {
+            self.working_started_ms = Some(self.clock.elapsed().as_secs_f64() * 1000.0);
+            self.provisional_working = true;
+        }
+        if text.trim_start().starts_with('/') || text.trim_start().starts_with('!') { return; }
+        self.take_provisional_user_echo();
+        let component: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(UserMessageComponent::new(
+            text.to_owned(), self.theme.clone(), self.get_markdown_theme_with_settings(), self.output_pad(), self.markdown_transformers.clone(),
+        )));
+        self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(component.clone()));
+        self.provisional_user_echo = Some(component);
+    }
+
+    fn take_provisional_user_echo(&mut self) {
+        let Some(echo) = self.provisional_user_echo.take() else { return; };
+        self.chat.children_mut().retain(|child| {
+            let crate::components::exploration_transcript_container::TranscriptChild::Other(component) = child else { return true; };
+            !Rc::ptr_eq(component, &echo)
+        });
+    }
+
+    fn clear_provisional_turn_feedback(&mut self) {
+        self.take_provisional_user_echo();
+        if self.provisional_working {
+            self.provisional_working = false;
+            self.agent_idle = true;
+            self.working_started_ms = None;
+        }
+    }
+
+    /// Park `work` until the frame that queued it has painted. See [`ParkedAction`].
+    fn park_action<T, F, A>(&mut self, work: F, apply: A)
+    where
+        T: 'static,
+        F: Future<Output = T> + 'static,
+        A: FnOnce(&mut InteractiveMode, T) + 'static,
+    {
+        let painted = self.applying_parked;
+        self.parked_actions.push_back(ParkedAction {
+            painted,
+            future: Box::pin(async move {
+                let value = work.await;
+                Box::new(move |mode: &mut InteractiveMode| apply(mode, value)) as ParkedApply
+            }),
+        });
+    }
+
+    fn note_parked_submit_error(&mut self, error: String) {
+        self.show_error(&error);
+        self.parked_submit_error = Some(error);
+    }
+
+    fn install_remote_replacement(&mut self, snapshot: Option<std::collections::BTreeMap<String, std::sync::Arc<dyn maho_ext_api::ErasedToolRenderers>>>) {
+        let Some(snapshot) = snapshot else { return; };
+        self.install_tool_renderer_snapshot_map(snapshot);
+        self.request_remote_history();
+        self.request_remote_models();
+        self.request_remote_stats();
+    }
+
+    fn park_new_session(&mut self) {
+        let host = self.session_host.clone();
+        let session = self.session.clone();
+        self.park_action(async move {
+            match host {
+                Some(host) => match host.new_session(None).await {
+                    Ok(crate::interactive_session::ReplacementOutcome::Replaced) => (Ok(true), Some(session.tool_renderers_snapshot().await)),
+                    Ok(crate::interactive_session::ReplacementOutcome::Cancelled) => (Ok(false), None),
+                    Ok(crate::interactive_session::ReplacementOutcome::LocalHandoff) => (session.new_session(None).await, None),
+                    Err(error) => (Err(error), None),
+                },
+                None => (session.new_session(None).await, None),
+            }
+        }, |mode, (result, snapshot)| mode.finish_new_session(result, snapshot));
+    }
+
+    fn finish_new_session(&mut self, result: Result<bool, String>, snapshot: Option<std::collections::BTreeMap<String, std::sync::Arc<dyn maho_ext_api::ErasedToolRenderers>>>) {
+        self.install_remote_replacement(snapshot);
+        match result {
+            Ok(true) => {
+                self.rebuild_history();
+                self.apply_theme_from_settings();
+                self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+                self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.fg(crate::theme::ThemeColor::Accent, "\u{2713} New session started"), 1, 1))));
+            }
+            Ok(false) => {}
+            Err(error) => self.handle_fatal_runtime_error("Failed to create session", &error),
+        }
+    }
+
+    fn park_session_switch(&mut self, path: String, cwd_override: Option<String>, resumed_in_cwd: bool) {
+        let host = self.session_host.clone();
+        let session = self.session.clone();
+        let fallback_cwd = self.host_cwd();
+        let prompt_path = path.clone();
+        self.park_action(async move {
+            let issue = if cwd_override.is_none() {
+                let path = path.clone();
+                let joined = tokio::task::spawn_blocking(move || missing_session_cwd_issue(&path, &fallback_cwd)).await;
+                match joined {
+                    Ok(issue) => issue,
+                    Err(error) => return SwitchTail::Failed(error.to_string()),
+                }
+            } else { None };
+            if let Some(issue) = issue { return SwitchTail::Prompt(issue); }
+            match &host {
+                Some(host) => match host.switch_session_with_cwd(path.clone(), cwd_override.clone()).await {
+                    Ok(crate::interactive_session::ReplacementOutcome::Replaced) => SwitchTail::Replaced(session.tool_renderers_snapshot().await),
+                    Ok(crate::interactive_session::ReplacementOutcome::Cancelled) => SwitchTail::Cancelled,
+                    Ok(crate::interactive_session::ReplacementOutcome::LocalHandoff) => match session.switch_session_with_cwd(&path, cwd_override.as_deref()).await {
+                        Ok(true) => SwitchTail::Local,
+                        Ok(false) => SwitchTail::Cancelled,
+                        Err(error) => SwitchTail::Failed(error),
+                    },
+                    Err(error) => SwitchTail::Failed(error),
+                },
+                None => match session.switch_session_with_cwd(&path, cwd_override.as_deref()).await {
+                    Ok(true) => SwitchTail::Local,
+                    Ok(false) => SwitchTail::Cancelled,
+                    Err(error) => SwitchTail::Failed(error),
+                },
+            }
+        }, move |mode, tail| mode.finish_session_switch(tail, prompt_path, resumed_in_cwd));
+    }
+
+    fn finish_session_switch(&mut self, tail: SwitchTail, path: String, resumed_in_cwd: bool) {
+        match tail {
+            SwitchTail::Prompt(issue) => self.prompt_for_missing_session_cwd(&issue, &path, "/resume-cwd", "/resume-cwd-cancel"),
+            SwitchTail::Replaced(snapshot) => {
+                self.install_remote_replacement(Some(snapshot));
+                self.rebuild_history();
+                self.apply_theme_from_settings();
+                self.editor.editor.set_text("");
+                self.show_status(if resumed_in_cwd { "Resumed session in current cwd" } else { "Resumed session" }.into());
+            }
+            SwitchTail::Local => {
+                self.rebuild_history();
+                self.apply_theme_from_settings();
+                self.editor.editor.set_text("");
+                self.show_status(if resumed_in_cwd { "Resumed session in current cwd" } else { "Resumed session" }.into());
+            }
+            SwitchTail::Cancelled => {}
+            SwitchTail::Failed(error) => self.handle_fatal_runtime_error("Failed to resume session", &error),
+        }
+    }
+
+    fn park_import(&mut self, path: String, cwd_override: Option<String>) {
+        let host = self.session_host.clone();
+        let session = self.session.clone();
+        let fallback_cwd = self.host_cwd();
+        let status_path = path.clone();
+        self.park_action(async move {
+            let issue = if cwd_override.is_none() {
+                let checked = path.clone();
+                let joined = tokio::task::spawn_blocking(move || missing_session_cwd_issue(&checked, &fallback_cwd)).await;
+                match joined {
+                    Ok(issue) => issue,
+                    Err(error) => return ImportTail::Failed(error.to_string()),
+                }
+            } else { None };
+            if let Some(issue) = issue { return ImportTail::Prompt(issue); }
+            match &host {
+                Some(host) => match host.import_from_jsonl(path.clone(), cwd_override.clone()).await {
+                    Ok(crate::interactive_session::ReplacementOutcome::Replaced) => ImportTail::Replaced(session.tool_renderers_snapshot().await),
+                    Ok(crate::interactive_session::ReplacementOutcome::Cancelled) => ImportTail::Cancelled,
+                    Ok(crate::interactive_session::ReplacementOutcome::LocalHandoff) => match session.import_from_jsonl(&path, cwd_override.as_deref()).await {
+                        Ok(true) => ImportTail::Local,
+                        Ok(false) => ImportTail::Cancelled,
+                        Err(error) => ImportTail::Failed(error),
+                    },
+                    Err(error) => ImportTail::Failed(error),
+                },
+                None => match session.import_from_jsonl(&path, cwd_override.as_deref()).await {
+                    Ok(true) => ImportTail::Local,
+                    Ok(false) => ImportTail::Cancelled,
+                    Err(error) => ImportTail::Failed(error),
+                },
+            }
+        }, move |mode, tail| mode.finish_import(tail, status_path));
+    }
+
+    fn finish_import(&mut self, tail: ImportTail, path: String) {
+        match tail {
+            ImportTail::Prompt(issue) => self.prompt_for_missing_session_cwd(&issue, &path, "/import-cwd", "/import-cancel"),
+            ImportTail::Replaced(snapshot) => {
+                self.install_remote_replacement(Some(snapshot));
+                self.rebuild_history();
+                self.apply_theme_from_settings();
+                self.editor.editor.set_text("");
+                self.show_status(format!("Session imported from: {path}"));
+            }
+            ImportTail::Local => {
+                self.rebuild_history();
+                self.apply_theme_from_settings();
+                self.editor.editor.set_text("");
+                self.show_status(format!("Session imported from: {path}"));
+            }
+            ImportTail::Cancelled => self.show_status("Import cancelled".into()),
+            ImportTail::Failed(error) if error.starts_with("File not found: ") => {
+                self.note_parked_submit_error(format!("Failed to import session: {error}"));
+            }
+            ImportTail::Failed(error) => self.handle_fatal_runtime_error("Failed to import session", &error),
+        }
+    }
+
+    fn park_fork(&mut self, entry_id: String, include_entry: bool, cloned: bool) {
+        let host = self.session_host.clone();
+        let session = self.session.clone();
+        self.park_action(async move {
+            match &host {
+                Some(host) => match host.fork(entry_id.clone(), include_entry).await {
+                    Ok(crate::interactive_session::ForkOutcome { outcome: crate::interactive_session::ReplacementOutcome::Replaced, editor_text }) => {
+                        ForkTail::Replaced { editor_text, snapshot: session.tool_renderers_snapshot().await }
+                    }
+                    Ok(crate::interactive_session::ForkOutcome { outcome: crate::interactive_session::ReplacementOutcome::Cancelled, .. }) => ForkTail::Cancelled,
+                    Ok(crate::interactive_session::ForkOutcome { outcome: crate::interactive_session::ReplacementOutcome::LocalHandoff, .. }) => match session.fork(&entry_id, include_entry).await {
+                        Ok(result) if result.cancelled => ForkTail::Cancelled,
+                        Ok(result) => ForkTail::Local(result),
+                        Err(error) => ForkTail::Failed(error),
+                    },
+                    Err(error) => ForkTail::Failed(error),
+                },
+                None => match session.fork(&entry_id, include_entry).await {
+                    Ok(result) if result.cancelled => ForkTail::Cancelled,
+                    Ok(result) => ForkTail::Local(result),
+                    Err(error) => ForkTail::Failed(error),
+                },
+            }
+        }, move |mode, tail| mode.finish_fork(tail, cloned));
+    }
+
+    fn finish_fork(&mut self, tail: ForkTail, cloned: bool) {
+        let editor_text = match tail {
+            ForkTail::Cancelled => return,
+            ForkTail::Failed(error) => {
+                self.note_parked_submit_error(error);
+                return;
+            }
+            ForkTail::Replaced { editor_text, snapshot } => {
+                self.install_remote_replacement(Some(snapshot));
+                editor_text
+            }
+            ForkTail::Local(result) => result.editor_text,
+        };
+        self.rebuild_history();
+        self.apply_theme_from_settings();
+        if cloned {
+            self.editor.editor.set_text("");
+            self.show_status("Cloned to new session".into());
+        } else {
+            self.editor.editor.set_text(editor_text.as_deref().unwrap_or(""));
+            self.show_status("Forked to new session".into());
+        }
+    }
+
+    fn mount_reload_box(&mut self) {
+        let mut reload_box = Container::new();
+        reload_box.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
+        reload_box.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        reload_box.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.fg(crate::theme::ThemeColor::Muted, "Reloading keybindings, extensions, skills, prompts, themes, and context files..."), 1, 0))));
+        reload_box.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        reload_box.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
+        self.reload_box = Some(reload_box);
+        self.editor_host.request_render();
+    }
+
+    fn park_reload_veto(&mut self) {
+        let session = self.session.clone();
+        self.park_action(async move {
+            session.check_reload_veto().await
+        }, |mode, result| {
+            match result {
+                Ok(decision) if decision.cancelled => {
+                    mode.reload_box = None;
+                    mode.show_warning(decision.reason.as_deref().unwrap_or("Reload blocked by an extension."));
+                }
+                Ok(_) => { mode.submissions.borrow_mut().push_back(internal_command("/reload-run")); }
+                Err(error) => {
+                    mode.reload_box = None;
+                    mode.show_error(&format!("Reload failed: {error}"));
+                }
+            }
+        });
+    }
+
+    fn park_reload_run(&mut self) {
+        let host = self.session_host.clone();
+        let session = self.session.clone();
+        let renderer_gate = self.renderer_refresh_gate.take();
+        self.park_action(async move {
+            let reload = match host {
+                Some(host) => host.reload().await,
+                None => session.reload().await,
+            };
+            let followup = if matches!(&reload, Ok(decision) if !decision.cancelled) {
+                let effective = maho_core::keybindings::KeybindingsManager::create(Some(&session.agent_dir())).get_effective_config();
+                let shortcuts = session.extension_shortcuts(&effective).await;
+                if let Some(renderer_gate) = renderer_gate { let _ = renderer_gate.await; }
+                Some((shortcuts, session.tool_renderers_snapshot().await))
+            } else { None };
+            (reload, followup)
+        }, |mode, (reload, followup)| mode.finish_reload_run(reload, followup));
+    }
+
+    fn finish_reload_run(
+        &mut self,
+        reload: Result<maho_ext_api::ReloadVetoDecision, String>,
+        followup: ReloadFollowup,
+    ) {
+        self.drain_events();
+        self.reload_box = None;
+        match reload {
+            Ok(decision) if decision.cancelled => self.show_warning(decision.reason.as_deref().unwrap_or("Reload blocked by an extension.")),
+            Ok(_) => {
+                self.autocomplete_wrappers.clear();
+                let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_autocomplete_max_visible()));
+                self.editor.set_padding_x(padding as usize);
+                self.editor.editor.set_autocomplete_max_visible(max_visible);
+                self.reveal.hide_thinking = self.session.with_settings_manager(|settings| settings.get_bool("hideThinkingBlock").unwrap_or(false));
+                maho_tui::terminal_image::set_capability_overrides(self.session.with_settings_manager(|settings| settings.get_terminal_capability_overrides(&maho_core::config::current_env())));
+                let (smooth, fps) = self.session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0)));
+                self.reveal.smooth = smooth; self.tool_args_reveal.smooth = smooth; self.tool_reveal.smooth = smooth;
+                self.reveal.fps = fps; self.tool_args_reveal.fps = fps; self.tool_reveal.fps = fps;
+                self.apply_smooth_streaming_render_fps();
+                self.rebuild_history();
+                let manager = maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir())).inner().clone();
+                maho_tui::keybindings::set_keybindings(manager.clone());
+                self.editor.set_keybindings(Arc::new(manager));
+                if let Some(((shortcuts, diagnostics), snapshot)) = followup {
+                    self.apply_extension_shortcuts(shortcuts, diagnostics);
+                    self.install_tool_renderer_snapshot_map(snapshot);
+                }
+                self.apply_theme_from_settings();
+                self.setup_autocomplete();
+                self.register_discovered_themes();
+                self.show_loaded_resources(false, true);
+                self.show_model_runtime_diagnostics(false);
+                let message = if self.maybe_save_implicit_project_trust_after_reload() { "Reloaded keybindings, extensions, skills, prompts, themes, and context files; saved project trust" } else { "Reloaded keybindings, extensions, skills, prompts, themes, and context files" };
+                self.show_status(message.into());
+            }
+            Err(error) => self.show_error(&format!("Reload failed: {error}")),
+        }
+    }
+
+    fn park_host_bash(&mut self, component: Rc<RefCell<crate::components::bash_execution::BashExecutionComponent>>, command: String, excluded: bool) {
+        let host = self.session_host.clone();
+        self.park_action(async move {
+            match host {
+                Some(host) => host.execute_bash(command, excluded).await,
+                None => Err("bash host disappeared".into()),
+            }
+        }, move |mode, result| mode.finish_host_bash(component, result));
+    }
+
+    fn finish_host_bash(&mut self, component: Rc<RefCell<crate::components::bash_execution::BashExecutionComponent>>, result: Result<serde_json::Value, String>) {
+        match result {
+            Ok(result) => {
+                let exit_code = result.get("exitCode").and_then(serde_json::Value::as_i64).map(|code| code as i32);
+                let cancelled = result.get("cancelled").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                let full_output_path = result.get("fullOutputPath").and_then(serde_json::Value::as_str).map(str::to_owned);
+                component.borrow_mut().set_complete(exit_code, cancelled, None, full_output_path);
+            }
+            Err(error) => {
+                component.borrow_mut().set_complete(None, false, None, None);
+                self.show_error(&format!("Bash command failed: {error}"));
+            }
+        }
+        self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
+    }
+
+    fn park_export(&mut self, path: Option<String>, jsonl: bool) {
+        let session = self.session.clone();
+        let host = self.session_host.clone();
+        let theme_name = self.theme.name.clone();
+        let render_theme = crate::interactive_extension_ui::extension_theme(&self.theme);
+        let colors = Some((self.theme.resolved_colors(), self.theme.export_colors().clone()));
+        let status_path = path.clone();
+        self.park_action(async move {
+            if let Some(host) = host {
+                return if jsonl { host.export_jsonl(path).await } else { host.export_html(path, Some(theme_name)).await };
+            }
+            let joined = tokio::task::spawn_blocking(move || {
+                if jsonl {
+                    session.export_to_jsonl(path.as_deref()).map(Some).map_err(|error| error.to_string())
+                } else {
+                    session.export_to_html_with_theme(path.as_deref(), Some(&theme_name), render_theme, colors).map(Some)
+                }
+            }).await;
+            match joined {
+                Ok(result) => result,
+                Err(error) => Err(error.to_string()),
+            }
+        }, move |mode, result| {
+            match result {
+                Ok(exported) => mode.show_status(format!("Session exported to: {}", exported.or(status_path).unwrap_or_default())),
+                Err(error) => mode.show_error(&format!("Failed to export session: {error}")),
+            }
+        });
+    }
+
+    fn park_share(&mut self) {
+        let session = self.session.clone();
+        let host = self.session_host.clone();
+        let theme_name = self.theme.name.clone();
+        let render_theme = crate::interactive_extension_ui::extension_theme(&self.theme);
+        let colors = Some((self.theme.resolved_colors(), self.theme.export_colors().clone()));
+        self.park_action(async move {
+            match tokio::process::Command::new("gh").args(["auth", "status"]).output().await {
+                Ok(output) if output.status.success() => {}
+                Ok(_) => return SharePrep::NotLoggedIn,
+                Err(_) => return SharePrep::NotInstalled,
+            }
+            let tmp_file = std::env::temp_dir().join("session.html");
+            let exported = if let Some(host) = host {
+                host.export_html(Some(tmp_file.to_string_lossy().into_owned()), Some(theme_name)).await
+            } else {
+                let file = tmp_file.clone();
+                let joined = tokio::task::spawn_blocking(move || {
+                    session.export_to_html_with_theme(Some(file.to_string_lossy().as_ref()), Some(&theme_name), render_theme, colors).map(Some)
+                }).await;
+                match joined {
+                    Ok(result) => result,
+                    Err(error) => Err(error.to_string()),
+                }
+            };
+            match exported {
+                Ok(_) => SharePrep::Ready(tmp_file),
+                Err(error) => SharePrep::ExportFailed(error),
+            }
+        }, |mode, prep| mode.finish_share_prep(prep));
+    }
+
+    fn finish_share_prep(&mut self, prep: SharePrep) {
+        match prep {
+            SharePrep::NotLoggedIn => self.show_error("GitHub CLI is not logged in. Run 'gh auth login' first."),
+            SharePrep::NotInstalled => self.show_error("GitHub CLI (gh) is not installed. Install it from https://cli.github.com/"),
+            SharePrep::ExportFailed(error) => self.show_error(&format!("Failed to export session: {error}")),
+            SharePrep::Ready(tmp_file) => self.start_share_loader(tmp_file),
+        }
+    }
+
+    fn start_share_loader(&mut self, tmp_file: std::path::PathBuf) {
+        let now_ms = u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let hint = crate::components::keybinding_hints::key_hint("tui.select.cancel", "cancel", &self.theme);
+        let loader = crate::components::bordered_loader::BorderedLoader::new(self.theme.clone(), "Creating gist...", true, &hint, now_ms);
+        let (cancel, cancelled) = tokio::sync::oneshot::channel::<()>();
+        let (reply, result) = tokio::sync::oneshot::channel();
+        let file = tmp_file.clone();
+        tokio::spawn(async move {
+            let mut command = tokio::process::Command::new("gh");
+            command.args(["gist", "create", "--public=false"]).arg(&file).kill_on_drop(true);
+            tokio::select! {
+                output = command.output() => { let _ = reply.send(output); }
+                _ = cancelled => {}
+            }
+        });
+        self.share = Some(ShareInFlight { loader, result, _cancel: cancel, tmp_file });
+    }
+
+    fn park_session_rename(&mut self, name: String) {
+        let host = self.session_host.clone();
+        let session = self.session.clone();
+        self.park_action(async move {
+            match host {
+                Some(host) => { let _ = host.set_session_name(name.clone()).await; }
+                None => session.set_session_name(&name),
+            }
+            name
+        }, |mode, name| mode.report_session_name(&name));
+    }
+
+    fn park_logout_list(&mut self, provider_id: Option<String>) {
+        let session = self.session.clone();
+        self.park_action(async move {
+            InteractiveMode::list_logout_options(&session).await
+        }, move |mode, result| mode.finish_logout_list(provider_id, result));
+    }
+
+    fn finish_logout_list(&mut self, provider_id: Option<String>, result: Result<Vec<crate::components::oauth_selector::AuthSelectorProvider>, String>) {
+        let options = match result {
+            Ok(options) => options,
+            Err(error) => { self.show_error(&format!("Could not read stored credentials: {error}")); return; }
+        };
+        let Some(provider_id) = provider_id else {
+            if options.is_empty() {
+                self.show_status("No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.".into());
+                return;
+            }
+            let (reply, receiver) = tokio::sync::oneshot::channel();
+            self.local_dialog_reply = Some(receiver);
+            *self.ui_reply.borrow_mut() = Some(reply);
+            let selected = self.ui_reply.clone();
+            let cancelled = self.ui_reply.clone();
+            let submissions = self.submissions.clone();
+            self.ui_dialog = Some(Box::new(crate::components::oauth_selector::OAuthSelectorComponent::new(&self.theme, crate::components::oauth_selector::AuthSelectorMode::Logout, options,
+                Box::new(move |id, _| { submissions.borrow_mut().push_back(internal_command(format!("/logout-provider {id}"))); selected.borrow_mut().take(); }),
+                Box::new(move || { cancelled.borrow_mut().take(); }), None)));
+            return;
+        };
+        let Some(provider) = options.into_iter().find(|provider| provider.id == provider_id) else { return; };
+        let runtime = self.session.model_registry().model_runtime.clone();
+        let sender = self.auth_ui_sender.clone();
+        let auth_type = provider.auth_type;
+        tokio::spawn(async move {
+            let abort = maho_ai::utils::abort::AbortController::new();
+            let options = maho_ai::auth::types::AuthOperationOptions { signal: Some(abort.signal()) };
+            let result = match tokio::time::timeout(std::time::Duration::from_secs(15), runtime.logout(&provider.id, None, options)).await {
+                Ok(result) => result.map_err(|error| error.to_string()),
+                Err(_) => { abort.abort(None); Err("The operation was aborted due to timeout".to_owned()) }
+            };
+            let _ = sender.send(AuthUiEvent::LogoutFinished { provider_name: provider.name, auth_type, result });
+        });
+    }
+
+    fn park_text_copy(&mut self, text: String, flash: CopyFlash) {
+        self.park_action(async move {
+            crate::interactive_clipboard::copy(&text).await
+        }, move |mode, result| mode.finish_text_copy(result, flash));
+    }
+
+    fn finish_text_copy(&mut self, result: Result<Option<String>, String>, flash: CopyFlash) {
+        match result {
+            Ok(sequence) => {
+                if let Some(sequence) = sequence { maho_tui::process_stdio::stdout_write(&sequence); }
+                match flash {
+                    CopyFlash::Status(message) => self.show_status(message),
+                    CopyFlash::Fullscreen { renderer, now_ms } => {
+                        renderer.borrow_mut().flash("Copied!", now_ms);
+                    }
+                }
+            }
+            Err(error) => self.show_error(&error),
+        }
+    }
+
+    fn park_clipboard_paste(&mut self, text_only: bool) {
+        self.park_action(async move {
+            if !text_only && let Some((bytes, mime_type)) = crate::interactive_clipboard::read_image().await {
+                return PasteOutcome::Image(bytes, mime_type);
+            }
+            PasteOutcome::Text(crate::interactive_clipboard::read_text().await)
+        }, move |mode, outcome| mode.apply_clipboard_paste(outcome, text_only));
+    }
+
+    fn apply_clipboard_paste(&mut self, outcome: PasteOutcome, text_only: bool) {
+        match outcome {
+            PasteOutcome::Image(bytes, mime_type) => {
+                if !text_only {
+                    self.attach_clipboard_image(bytes, mime_type);
+                }
+            }
+            PasteOutcome::Text(None) => {}
+            PasteOutcome::Text(Some(text)) => {
+                if text_only {
+                    if let Some(editor) = &mut self.custom_editor { editor.insert_text_at_cursor(&text); }
+                } else {
+                    self.editor.editor.insert_text_at_cursor(&text);
+                }
+            }
+        }
+    }
+
+    /// Park a clipboard read started by the frame loop (right-click). The text is applied on a later frame.
+    pub fn park_external_clipboard_text(&mut self, read: impl std::future::Future<Output = Option<String>> + 'static) {
+        self.park_action(read, |mode, text| { mode.parked_clipboard_text = Some(text); });
+    }
+
+    pub fn take_parked_clipboard_text(&mut self) -> Option<Option<String>> { self.parked_clipboard_text.take() }
+
+    fn park_tree_copies(&mut self) -> bool {
+        let copies: Vec<_> = self.tree_copies.borrow_mut().drain(..).collect();
+        if copies.is_empty() { return false; }
+        self.clipboard_blocks_submission = true;
+        self.park_action(async move {
+            let mut applied = Vec::new();
+            for copy in copies {
+                applied.push(match copy.filter(|text| !text.is_empty()) {
+                    Some(text) => crate::interactive_clipboard::copy(&text).await.map(CopyOutcome::Copied),
+                    None => Ok(CopyOutcome::Empty),
+                });
+            }
+            applied
+        }, |mode, applied| {
+            mode.clipboard_blocks_submission = false;
+            for result in applied {
+                match result {
+                    Ok(CopyOutcome::Copied(sequence)) => {
+                        if let Some(sequence) = sequence { maho_tui::process_stdio::stdout_write(&sequence); }
+                        mode.show_status("Copied selected message to clipboard".into());
+                    }
+                    Ok(CopyOutcome::Empty) => mode.show_error("Selected entry has no text to copy"),
+                    Err(error) => mode.show_error(&error),
+                }
+            }
+        });
+        true
+    }
+
+    fn park_tree_navigation(&mut self, entry_id: String, summarize: bool, custom_instructions: Option<String>) {
+        let host = self.session_host.clone();
+        let session = self.session.clone();
+        let streaming = self.host_is_streaming();
+        let finish_id = entry_id.clone();
+        self.park_action(async move {
+            if streaming {
+                let abort = match &host {
+                    Some(host) => host.abort().await,
+                    None => { session.abort().await; Ok(()) }
+                };
+                abort?;
+            }
+            let options = maho_core::agent_session::TreeNavigationOptions { summarize: Some(summarize), custom_instructions, ..Default::default() };
+            let navigated = entry_id.clone();
+            match &host {
+                Some(host) => host.navigate_tree(navigated, options).await,
+                None => session.navigate_tree(&navigated, options).await,
+            }
+        }, move |mode, result| mode.finish_tree_navigation(result, summarize, finish_id));
+    }
+
+    fn finish_tree_navigation(&mut self, result: Result<maho_core::agent_session::AssistantEditResult, String>, summarize: bool, entry_id: String) {
+        if summarize { self.clear_status_indicator(Some(crate::components::status_indicator::StatusIndicatorKind::BranchSummary)); }
+        if self.session_host.is_some() && result.is_ok() { self.request_remote_history(); }
+        match result {
+            Err(error) => self.note_parked_submit_error(error),
+            Ok(result) if result.aborted == Some(true) => {
+                self.show_status("Branch summarization cancelled".into());
+                self.submissions.borrow_mut().push_back(internal_command(format!("/tree {entry_id}")));
+            }
+            Ok(result) if result.cancelled => self.show_status("Navigation cancelled".into()),
+            Ok(result) => {
+                self.rebuild_history();
+                if let Some(text) = result.editor_text { self.editor.editor.set_text(&text); }
+                self.show_status("Navigated to selected point".into());
+            }
+        }
+    }
+
+    fn park_tree_edit(&mut self, entry_id: String, edited: String, expected_leaf: Option<String>) {
+        let host = self.session_host.clone();
+        let session = self.session.clone();
+        let finish_id = entry_id.clone();
+        self.park_action(async move {
+            let options = maho_core::agent_session::TreeNavigationOptions { expected_leaf_id: expected_leaf, ..Default::default() };
+            let edited_id = entry_id.clone();
+            match &host {
+                Some(host) => host.edit_assistant_message(edited_id, edited, options).await,
+                None => session.edit_assistant_message(&edited_id, &edited, options).await,
+            }
+        }, move |mode, result| mode.finish_tree_edit(result, finish_id));
+    }
+
+    fn finish_tree_edit(&mut self, result: Result<maho_core::agent_session::AssistantEditResult, String>, entry_id: String) {
+        if self.session_host.is_some() && result.is_ok() { self.request_remote_history(); }
+        match result {
+            Err(error) => self.note_parked_submit_error(error),
+            Ok(result) if result.unchanged == Some(true) => self.show_status("Assistant response unchanged".into()),
+            Ok(result) if result.cancelled => self.show_status("Navigation cancelled".into()),
+            Ok(result) if result.aborted == Some(true) => {
+                self.show_status("Branch summarization cancelled".into());
+                self.submissions.borrow_mut().push_back(internal_command(format!("/tree-edit {entry_id}")));
+            }
+            Ok(_) => {
+                self.rebuild_history();
+                self.show_status("Replaced assistant response with your edit".into());
+            }
+        }
+    }
+
+    fn mount_tree_selector(&mut self, tree: Vec<maho_core::session_manager::SessionTreeNode>, leaf: Option<String>) {
+            if tree.is_empty() { self.show_status("No entries in session".into()); return; }
+            let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+            let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone(); let session = self.session.clone();
+            let filter = self.session.with_settings_manager(maho_core::settings_manager::SettingsManager::get_tree_filter_mode);
+            let filter = match filter.as_str() { "no-tools" => crate::components::tree_selector::FilterMode::NoTools, "user-only" => crate::components::tree_selector::FilterMode::UserOnly, "labeled-only" => crate::components::tree_selector::FilterMode::LabeledOnly, "all" => crate::components::tree_selector::FilterMode::All, _ => crate::components::tree_selector::FilterMode::Default };
+            let mut selector = crate::components::tree_selector::TreeSelectorComponent::new(&self.theme,
+                self.keybindings(),
+                tree, leaf.as_deref(), self.editor_host.terminal_rows(),
+                Box::new(move |id| { submissions.borrow_mut().push_back(internal_command(format!("/tree {id}"))); selected.borrow_mut().take(); }), Box::new(move || { cancelled.borrow_mut().take(); }),
+                Some(Box::new(move |id, label| if let Err(error_message) = session.with_session_manager_mut(|manager| manager.append_label(id, label)) { session.emit(maho_ext_api::AgentSessionEvent::ContinuationError { error_message }); })), None, Some(filter), std::env::var("HOME").ok());
+            let copies=self.tree_copies.clone();
+            selector.on_copy=Some(Box::new(move |text|copies.borrow_mut().push_back(text.map(str::to_owned))));
+            // senpi `selector.onEditMessage`: close the selector, then open the edit flow.
+            let edit_submissions=self.submissions.clone(); let edit_closed=self.ui_reply.clone();
+            selector.on_edit_message=Some(Box::new(move |id| { edit_submissions.borrow_mut().push_back(internal_command(format!("/tree-edit {id}"))); edit_closed.borrow_mut().take(); }));
+            self.ui_dialog=Some(Box::new(selector));
+    }
+
+    fn mount_fork_selector(&mut self, entries: Vec<(String, String)>) {
+            use crate::components::user_message_selector::{UserMessageItem, UserMessageSelectorComponent};
+            let messages: Vec<UserMessageItem> = entries.into_iter().map(|(id, text)| UserMessageItem { id, text, timestamp: None }).collect();
+            if messages.is_empty() { self.show_status("No messages to fork from".into()); return; }
+            let initial_selected_id = messages.last().map(|message| message.id.clone());
+            let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+            let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone();
+            self.ui_dialog = Some(Box::new(UserMessageSelectorComponent::new(messages,
+                Box::new(move |id| { submissions.borrow_mut().push_back(internal_command(format!("/fork {id}"))); selected.borrow_mut().take(); }),
+                Box::new(move || { cancelled.borrow_mut().take(); }), initial_selected_id.as_deref(), self.theme.clone())));
+            if self.ui_reply.borrow().is_none() { self.ui_dialog = None; self.local_dialog_reply = None; }
+    }
+
+    fn park_tree_open(&mut self) {
+        let session = self.session.clone();
+        self.park_action(async move {
+            tokio::task::spawn_blocking(move || session.with_session_manager(|manager| (manager.get_tree(), manager.leaf_id().map(str::to_owned)))).await
+        }, |mode, joined| match joined {
+            Ok((tree, leaf)) => mode.mount_tree_selector(tree, leaf),
+            Err(error) => mode.show_error(&format!("Failed to open session tree: {error}")),
+        });
+    }
+
+    fn park_fork_open(&mut self) {
+        let session = self.session.clone();
+        self.park_action(async move {
+            tokio::task::spawn_blocking(move || session.get_user_messages_for_forking()).await
+        }, |mode, joined| match joined {
+            Ok(entries) => mode.mount_fork_selector(entries),
+            Err(error) => mode.show_error(&format!("Failed to open fork selector: {error}")),
+        });
+    }
+
+    fn poll_parked(&mut self, context: &mut std::task::Context<'_>) {
+        loop {
+            let apply = {
+                let Some(front) = self.parked_actions.front_mut() else { return; };
+                if !front.painted { return; }
+                match front.future.as_mut().poll(context) {
+                    std::task::Poll::Pending => return,
+                    std::task::Poll::Ready(apply) => apply,
+                }
+            };
+            self.parked_actions.pop_front();
+            self.applying_parked = true;
+            apply(self);
+            self.applying_parked = false;
+        }
+    }
+
+    /// Direct `submit` observes parked work to completion. Does not poll a newly started turn;
+    /// `await_turn` does that.
+    async fn finish_parked_for_direct_caller(&mut self) {
+        self.drain_queued_settings_writes();
+        for action in &mut self.parked_actions { action.painted = true; }
+        std::future::poll_fn(|context| {
+            self.poll_parked(context);
+            if self.parked_actions.is_empty() { std::task::Poll::Ready(()) } else { std::task::Poll::Pending }
+        }).await;
+    }
+
+    /// Enqueue into a live turn without awaiting it on the UI task. Failures surface when the
+    /// parked future settles, in park order.
+    fn park_prompt_enqueue(&mut self, text: String, options: PromptOptions) {
+        let host = self.session_host.clone();
+        let session = self.session.clone();
+        self.park_action(async move {
+            match host {
+                Some(host) => host.prompt(text, options).await,
+                None => session.prompt(&text, options).await.map(|_| ()),
+            }
+        }, |mode, result| {
+            if let Err(error) = result { mode.show_error(&error); }
+            else { mode.drain_events(); }
+        });
+    }
+
+    /// Skip the renderer snapshot when its revision still matches the installed set. Otherwise park
+    /// the snapshot so `submit_start` does not await it before paint.
+    fn queue_tool_renderer_refresh(&mut self) {
+        let revision = self.session.tool_renderers_revision();
+        if self.installed_tool_renderer_revision == Some(revision) { return; }
+        let session = self.session.clone();
+        let gate = self.renderer_refresh_gate.take();
+        self.park_action(async move {
+            if let Some(gate) = gate { let _ = gate.await; }
+            session.tool_renderers_snapshot().await
+        }, |mode, snapshot| mode.install_tool_renderer_snapshot_map(snapshot));
+    }
+
+    fn install_tool_renderer_snapshot_map(&mut self, snapshot: std::collections::BTreeMap<String, std::sync::Arc<dyn maho_ext_api::ErasedToolRenderers>>) {
+        self.tool_renderer_snapshots = snapshot.into_iter().map(|(name, renderers)| {
+            (name, Rc::new(RefCell::new(crate::tools::renderers::registered::RegisteredToolRenderers::new(renderers))) as Rc<RefCell<dyn crate::tools::renderers::ToolRenderers>>)
+        }).collect();
+        self.installed_tool_renderer_revision = Some(self.session.tool_renderers_revision());
+    }
+
+    fn drain_queued_settings_writes(&mut self) {
+        let writes = std::mem::take(&mut *self.pending_settings_writes.borrow_mut());
+        for write in writes {
+            let session = self.session.clone();
+            let values = write.values;
+            self.park_action(async move {
+                let joined = tokio::task::spawn_blocking(move || {
+                    session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values))
+                }).await;
+                match joined {
+                    Ok(result) => result,
+                    Err(error) => Err(error.to_string()),
+                }
+            }, |mode, result| {
+                if let Err(error) = result {
+                    maho_ext_api::ExtensionUi::notify(mode.extension_ui.as_ref(), &error, maho_ext_api::NotificationType::Error);
+                }
+            });
+        }
     }
 
     /// Advance the in-flight abort request and turn one step so a running provider keeps producing
@@ -3130,13 +4039,15 @@ impl InteractiveMode {
         let mut context = std::task::Context::from_waker(waker);
         let abort_done = self.pending_abort.as_mut().is_some_and(|abort| abort.as_mut().poll(&mut context).is_ready());
         if abort_done { self.pending_abort = None; }
-        let turn_result = self.pending_turn.as_mut().and_then(|turn| match turn.as_mut().poll(&mut context) {
-            std::task::Poll::Pending => None,
-            std::task::Poll::Ready(result) => Some(result),
-        });
+        let turn_result = if self.defer_turn_poll { None } else {
+            self.pending_turn.as_mut().and_then(|turn| match turn.as_mut().poll(&mut context) {
+                std::task::Poll::Pending => None,
+                std::task::Poll::Ready(result) => Some(result),
+            })
+        };
         if let Some(result) = turn_result {
             self.pending_turn = None;
-            if let Err(error) = result { self.ulw_turn_glow = false; self.show_status(error); }
+            if let Err(error) = result { self.ulw_turn_glow = false; self.show_status(error); self.clear_provisional_turn_feedback(); }
         }
         let bash_result = self.pending_bash.as_mut().and_then(|(_, execution)| match execution.as_mut().poll(&mut context) {
             std::task::Poll::Pending => None,
@@ -3158,6 +4069,7 @@ impl InteractiveMode {
             if let Some(failure) = failure { self.show_error(&failure); }
             if let Some(next) = self.queued_compaction_flushes.pop_front() { self.start_compaction_flush(next); }
         }
+        self.poll_parked(&mut context);
         self.drain_events();
     }
 
@@ -3295,13 +4207,7 @@ impl InteractiveMode {
             self.submissions.borrow_mut().push_back(internal_command(format!("/tree-edit {entry_id}")));
             return Ok(());
         }
-        let options = maho_core::agent_session::TreeNavigationOptions { expected_leaf_id: expected_leaf, ..Default::default() };
-        let result = self.host_edit_assistant_message(&entry_id, &edited, options).await?;
-        if result.unchanged == Some(true) { self.show_status("Assistant response unchanged".into()); return Ok(()); }
-        if result.cancelled { self.show_status("Navigation cancelled".into()); return Ok(()); }
-        if result.aborted == Some(true) { self.show_status("Branch summarization cancelled".into()); self.submissions.borrow_mut().push_back(internal_command(format!("/tree-edit {entry_id}"))); return Ok(()); }
-        self.rebuild_history();
-        self.show_status("Replaced assistant response with your edit".into());
+        self.park_tree_edit(entry_id, edited, expected_leaf);
         Ok(())
     }
 
@@ -3349,19 +4255,10 @@ impl InteractiveMode {
 
     /// senpi `runTreeNavigation`: stop any active response, then navigate with the summary choice.
     async fn run_tree_navigation(&mut self, entry_id: &str, summarize: bool, custom_instructions: Option<String>) -> Result<(), String> {
-        if self.host_is_streaming() { self.restore_queued_messages(false); let _ = self.host_abort().await; }
+        if self.host_is_streaming() { self.restore_queued_messages(false); }
         if self.host_is_compacting() { return Err("Wait for the current compaction or tree navigation to finish before navigating the session tree.".into()); }
-        let options = maho_core::agent_session::TreeNavigationOptions { summarize: Some(summarize), custom_instructions, ..Default::default() };
-        // senpi shows `BranchSummaryStatusIndicator` while a summarizing navigation runs.
         if summarize { self.show_branch_summary_status_indicator(); }
-        let result = self.host_navigate_tree(entry_id, options).await;
-        if summarize { self.clear_status_indicator(Some(crate::components::status_indicator::StatusIndicatorKind::BranchSummary)); }
-        let result = result?;
-        if result.aborted == Some(true) { self.show_status("Branch summarization cancelled".into()); self.submissions.borrow_mut().push_back(internal_command(format!("/tree {entry_id}"))); return Ok(()); }
-        if result.cancelled { self.show_status("Navigation cancelled".into()); return Ok(()); }
-        self.rebuild_history();
-        if let Some(text) = result.editor_text { self.editor.editor.set_text(&text); }
-        self.show_status("Navigated to selected point".into());
+        self.park_tree_navigation(entry_id.to_owned(), summarize, custom_instructions);
         Ok(())
     }
 
@@ -3659,39 +4556,11 @@ impl InteractiveMode {
             return Ok(true);
         }
         if text == "/tree" {
-            let (tree, leaf) = self.session.with_session_manager(|manager| {
-                (manager.get_tree(), manager.leaf_id().map(str::to_owned))
-            });
-            if tree.is_empty() { self.show_status("No entries in session".into()); return Ok(true); }
-            let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
-            let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone(); let session = self.session.clone();
-            let filter = self.session.with_settings_manager(maho_core::settings_manager::SettingsManager::get_tree_filter_mode);
-            let filter = match filter.as_str() { "no-tools" => crate::components::tree_selector::FilterMode::NoTools, "user-only" => crate::components::tree_selector::FilterMode::UserOnly, "labeled-only" => crate::components::tree_selector::FilterMode::LabeledOnly, "all" => crate::components::tree_selector::FilterMode::All, _ => crate::components::tree_selector::FilterMode::Default };
-            let mut selector = crate::components::tree_selector::TreeSelectorComponent::new(&self.theme,
-                self.keybindings(),
-                tree, leaf.as_deref(), self.editor_host.terminal_rows(),
-                Box::new(move |id| { submissions.borrow_mut().push_back(internal_command(format!("/tree {id}"))); selected.borrow_mut().take(); }), Box::new(move || { cancelled.borrow_mut().take(); }),
-                Some(Box::new(move |id, label| if let Err(error_message) = session.with_session_manager_mut(|manager| manager.append_label(id, label)) { session.emit(maho_ext_api::AgentSessionEvent::ContinuationError { error_message }); })), None, Some(filter), std::env::var("HOME").ok());
-            let copies=self.tree_copies.clone();
-            selector.on_copy=Some(Box::new(move |text|copies.borrow_mut().push_back(text.map(str::to_owned))));
-            // senpi `selector.onEditMessage`: close the selector, then open the edit flow.
-            let edit_submissions=self.submissions.clone(); let edit_closed=self.ui_reply.clone();
-            selector.on_edit_message=Some(Box::new(move |id| { edit_submissions.borrow_mut().push_back(internal_command(format!("/tree-edit {id}"))); edit_closed.borrow_mut().take(); }));
-            self.ui_dialog=Some(Box::new(selector));
+            self.park_tree_open();
             return Ok(true);
         }
         if text == "/fork" {
-            use crate::components::user_message_selector::{UserMessageItem, UserMessageSelectorComponent};
-            let entries = self.session.get_user_messages_for_forking();
-            let messages: Vec<UserMessageItem> = entries.into_iter().map(|(id, text)| UserMessageItem { id, text, timestamp: None }).collect();
-            if messages.is_empty() { self.show_status("No messages to fork from".into()); return Ok(true); }
-            let initial_selected_id = messages.last().map(|message| message.id.clone());
-            let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
-            let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone();
-            self.ui_dialog = Some(Box::new(UserMessageSelectorComponent::new(messages,
-                Box::new(move |id| { submissions.borrow_mut().push_back(internal_command(format!("/fork {id}"))); selected.borrow_mut().take(); }),
-                Box::new(move || { cancelled.borrow_mut().take(); }), initial_selected_id.as_deref(), self.theme.clone())));
-            if self.ui_reply.borrow().is_none() { self.ui_dialog = None; self.local_dialog_reply = None; }
+            self.park_fork_open();
             return Ok(true);
         }
         let model_search = if text == "/model" { Some(None) } else { text.strip_prefix("/model-search ").map(|term| Some(term.trim().to_owned())) };
@@ -3724,10 +4593,12 @@ impl InteractiveMode {
                 Box::new(move |model| { submissions.borrow_mut().push_back(internal_command(format!("/model-select {}/{}", model.provider, model.id))); selected.borrow_mut().take(); }),
                 Box::new(move || { cancelled.borrow_mut().take(); }), initial_search.as_deref(),
                 ModelSelectorFavoriteOptions { favorite_model_ids:favorite_ids, on_favorite_change:Some(favorite_callback) }, None);
-            let session = self.session.clone(); let ui = self.extension_ui.clone();
+            let pending_settings = self.pending_settings_writes.clone();
             selector.set_default_model_change_handler(Box::new(move |model| {
                 let values = [("defaultProvider".into(), serde_json::json!(model.provider)), ("defaultModel".into(), serde_json::json!(model.id))].into_iter().collect();
-                if let Err(error) = session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) { maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error); }
+                // `SettingsManager::set` can sleep on the settings lock. Queue the same keys; the
+                // write runs in `spawn_blocking` after this frame paints. Errors still notify.
+                pending_settings.borrow_mut().push_back(PendingSettingsWrite { values });
             }));
             self.ui_dialog = Some(Box::new(selector));
             return Ok(true);
@@ -3992,6 +4863,7 @@ impl InteractiveMode {
 
     /// senpi `handleShareCommand`: check `gh auth status`, export the session to a temp HTML file,
     /// then create a secret gist behind a cancellable bordered loader that replaces the editor.
+    #[allow(dead_code)] // `/share` parks `park_share`.
     async fn handle_share_command(&mut self) {
         match tokio::process::Command::new("gh").args(["auth", "status"]).output().await {
             Ok(output) if output.status.success() => {}
@@ -4088,16 +4960,16 @@ impl InteractiveMode {
     }
 
     /// senpi `getLogoutProviderOptions`: the stored credentials, listed under a 15 s abort.
-    async fn get_logout_provider_options(&self) -> Result<Vec<crate::components::oauth_selector::AuthSelectorProvider>, String> {
+    async fn list_logout_options(session: &AgentSession) -> Result<Vec<crate::components::oauth_selector::AuthSelectorProvider>, String> {
         use crate::components::oauth_selector::{AuthSelectorAuthType, AuthSelectorProvider};
-        let runtime = self.session.model_registry().model_runtime.clone();
+        let runtime = session.model_registry().model_runtime.clone();
         let abort = maho_ai::utils::abort::AbortController::new();
         let options = maho_ai::auth::types::AuthOperationOptions { signal: Some(abort.signal()) };
         let credentials = match tokio::time::timeout(std::time::Duration::from_secs(15), runtime.list_credentials(Some(options))).await {
             Ok(result) => result.map_err(|error| error.to_string())?,
             Err(_) => { abort.abort(None); return Err("The operation was aborted due to timeout".to_owned()); }
         };
-        let registry = self.session.model_registry();
+        let registry = session.model_registry();
         let mut options = credentials.into_iter().map(|credential| {
             let auth_type = match credential.credential_type { maho_ai::auth::types::CredentialType::OAuth => AuthSelectorAuthType::OAuth, maho_ai::auth::types::CredentialType::ApiKey => AuthSelectorAuthType::ApiKey };
             AuthSelectorProvider {
@@ -4107,42 +4979,6 @@ impl InteractiveMode {
         }).collect::<Vec<_>>();
         options.sort_by(|left, right| locale_compare(&left.name, &right.name));
         Ok(options)
-    }
-
-    /// senpi `showOAuthSelector("logout")`.
-    async fn show_logout_selector(&mut self) {
-        let options = match self.get_logout_provider_options().await {
-            Ok(options) => options,
-            Err(error) => { self.show_error(&format!("Could not read stored credentials: {error}")); return; }
-        };
-        if options.is_empty() { self.show_status("No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.".into()); return; }
-        let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
-        let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone(); let submissions = self.submissions.clone();
-        self.ui_dialog = Some(Box::new(crate::components::oauth_selector::OAuthSelectorComponent::new(&self.theme, crate::components::oauth_selector::AuthSelectorMode::Logout, options,
-            Box::new(move |id, _| { submissions.borrow_mut().push_back(internal_command(format!("/logout-provider {id}"))); selected.borrow_mut().take(); }),
-            Box::new(move || { cancelled.borrow_mut().take(); }), None)));
-    }
-
-    /// senpi's logout selector callback: remove the chosen provider's stored credential.
-    async fn logout_provider(&mut self, provider_id: &str) {
-        let options = match self.get_logout_provider_options().await {
-            Ok(options) => options,
-            Err(error) => { self.show_error(&format!("Could not read stored credentials: {error}")); return; }
-        };
-        let Some(provider) = options.into_iter().find(|provider| provider.id == provider_id) else { return; };
-        let runtime = self.session.model_registry().model_runtime.clone();
-        let sender = self.auth_ui_sender.clone();
-        let auth_type = provider.auth_type;
-        tokio::spawn(async move {
-            // senpi bounds logout with `AbortSignal.timeout(15_000)`.
-            let abort = maho_ai::utils::abort::AbortController::new();
-            let options = maho_ai::auth::types::AuthOperationOptions { signal: Some(abort.signal()) };
-            let result = match tokio::time::timeout(std::time::Duration::from_secs(15), runtime.logout(&provider.id, None, options)).await {
-                Ok(result) => result.map_err(|error| error.to_string()),
-                Err(_) => { abort.abort(None); Err("The operation was aborted due to timeout".to_owned()) }
-            };
-            let _ = sender.send(AuthUiEvent::LogoutFinished { provider_name: provider.name, auth_type, result });
-        });
     }
 
     /// senpi `showLoginAuthTypeSelector`.
@@ -5338,10 +6174,11 @@ impl InteractiveMode {
 
     pub fn handle_event(&mut self, event: &AgentEvent) {
         match event {
-            AgentEvent::AgentStart => { self.agent_idle = false; self.active_tool_executions.clear(); self.refresh_active_tool_execution_terminal_title(); self.pending_tools.clear(); self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.working_started_ms = Some(self.clock.elapsed().as_secs_f64() * 1000.0); }
+            AgentEvent::AgentStart => { self.provisional_working = false; self.agent_idle = false; self.active_tool_executions.clear(); self.refresh_active_tool_execution_terminal_title(); self.pending_tools.clear(); self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.working_started_ms = Some(self.clock.elapsed().as_secs_f64() * 1000.0); }
             AgentEvent::AgentEnd { .. } => { self.agent_idle = true; self.ulw_turn_glow = false; self.active_tool_executions.clear(); self.refresh_active_tool_execution_terminal_title(); self.pending_tools.clear(); self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.tool_reveal.stop(); self.working_started_ms = None; }
             AgentEvent::MessageStart { message } => {
                 if message.role() == "user" {
+                    self.take_provisional_user_echo();
                     let value = serde_json::to_value(message).expect("serializable agent message");
                     let text = value["content"].as_str().map(str::to_owned).unwrap_or_else(|| value["content"].as_array().map(|parts| parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default());
                     // senpi `addMessageToChat` user case: a non-empty transcript gets one blank row first.
@@ -5614,15 +6451,9 @@ impl InteractiveMode {
     /// (extension binding, submission, reload, host replacement) because the synchronous card path
     /// cannot await the accessor.
     pub async fn refresh_tool_renderer_snapshots(&mut self) {
-        self.tool_renderer_snapshots = self
-            .session
-            .tool_renderers_snapshot()
-            .await
-            .into_iter()
-            .map(|(name, renderers)| {
-                (name, Rc::new(RefCell::new(crate::tools::renderers::registered::RegisteredToolRenderers::new(renderers))) as Rc<RefCell<dyn crate::tools::renderers::ToolRenderers>>)
-            })
-            .collect();
+        if let Some(gate) = self.renderer_refresh_gate.take() { let _ = gate.await; }
+        let snapshot = self.session.tool_renderers_snapshot().await;
+        self.install_tool_renderer_snapshot_map(snapshot);
     }
 
     fn tool_result(value: &serde_json::Value, is_error: bool) -> ToolExecutionResult {
@@ -5858,6 +6689,7 @@ impl Component for InteractiveMode {
         self.chat.dispose();
         self.native_tool_renderer_snapshots.clear();
         self.tool_renderer_snapshots.clear();
+        self.installed_tool_renderer_revision = None;
         self.session_host_subscription = None;
     }
 }

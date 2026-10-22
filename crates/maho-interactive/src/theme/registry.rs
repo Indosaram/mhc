@@ -1,7 +1,9 @@
 use super::{ColorMode, Theme, theme_json::ThemeError};
 use std::{
+    cell::RefCell,
     collections::BTreeMap,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 #[derive(Debug, Clone)]
 pub struct ThemeInfo {
@@ -20,7 +22,24 @@ pub struct ThemeRegistry {
     /// senpi `themeWatcher`: the OS watch on the custom themes directory and the file names it
     /// reported, drained by [`ThemeRegistry::poll_theme_watcher`].
     watcher: Option<(notify::RecommendedWatcher, std::sync::mpsc::Receiver<Option<PathBuf>>)>,
+    /// Directory listing plus parsed custom theme names. Reused while the directory mtime,
+    /// builtin directory, and registered sources are unchanged. Dropped when the watcher reports
+    /// a change and when a debounced reload runs, so an in-place json edit cannot keep a stale name.
+    theme_list_cache: RefCell<Option<ThemeListCache>>,
 }
+
+#[derive(Clone, PartialEq, Eq)]
+struct ThemeListCacheKey {
+    dir_mtime: Option<SystemTime>,
+    builtin_directory: Option<PathBuf>,
+    registered: Vec<(String, Option<PathBuf>)>,
+}
+
+struct ThemeListCache {
+    key: ThemeListCacheKey,
+    themes: Vec<ThemeInfo>,
+}
+
 impl ThemeRegistry {
     pub fn new(custom_directory: PathBuf, name: &str, mode: ColorMode) -> Result<Self, ThemeError> {
         let theme = Theme::builtin("dark", mode)?;
@@ -33,6 +52,7 @@ impl ThemeRegistry {
             watched_name: None,
             reload_at: None,
             watcher: None,
+            theme_list_cache: RefCell::new(None),
         };
         registry.init_theme(name, false)?;
         Ok(registry)
@@ -69,6 +89,39 @@ impl ThemeRegistry {
         }
     }
     pub fn get_available_themes_with_paths(&self) -> Vec<ThemeInfo> {
+        let key = self.theme_list_cache_key();
+        if let Some(themes) = self
+            .theme_list_cache
+            .borrow()
+            .as_ref()
+            .filter(|cached| cached.key == key)
+            .map(|cached| cached.themes.clone())
+        {
+            return themes;
+        }
+        let themes = self.scan_available_themes();
+        *self.theme_list_cache.borrow_mut() = Some(ThemeListCache {
+            key,
+            themes: themes.clone(),
+        });
+        themes
+    }
+
+    fn theme_list_cache_key(&self) -> ThemeListCacheKey {
+        ThemeListCacheKey {
+            dir_mtime: std::fs::metadata(&self.custom_directory)
+                .and_then(|metadata| metadata.modified())
+                .ok(),
+            builtin_directory: self.builtin_directory.clone(),
+            registered: self
+                .registered
+                .iter()
+                .map(|(name, theme)| (name.clone(), theme.source_path.clone()))
+                .collect(),
+        }
+    }
+
+    fn scan_available_themes(&self) -> Vec<ThemeInfo> {
         let mut themes: BTreeMap<String, Option<PathBuf>> =
             ["dark", "light", "grok-day", "grok-night"]
                 .into_iter()
@@ -197,11 +250,20 @@ impl ThemeRegistry {
             .as_ref()
             .map(|(_, receiver)| receiver.try_iter().collect())
             .unwrap_or_default();
+        // Any reported path, not only the watched theme file: the settings list parses every json.
+        if !changes.is_empty() {
+            self.invalidate_theme_list_cache();
+        }
         for change in changes {
             self.on_file_change(change.as_deref(), now);
         }
         self.reload_due(now)
     }
+
+    fn invalidate_theme_list_cache(&self) {
+        *self.theme_list_cache.borrow_mut() = None;
+    }
+
     pub fn on_file_change(&mut self, filename: Option<&Path>, now: u64) {
         let Some(name) = self.watched_name.as_deref() else {
             return;
@@ -216,6 +278,10 @@ impl ThemeRegistry {
             return false;
         }
         self.reload_at = None;
+        // The debounced reload is the other path that observes an in-place edit. Drop the list
+        // even when the watched name no longer matches, so a failed or skipped apply cannot
+        // leave the parsed name cached.
+        self.invalidate_theme_list_cache();
         let Some(name) = self
             .watched_name
             .as_ref()
@@ -232,5 +298,177 @@ impl ThemeRegistry {
             }
             Err(_) => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// On a8ac6196 `get_available_themes_with_paths` `read_dir`s and parses every custom theme
+    /// json on each call, so rewriting a theme file changes the returned name before this function
+    /// returns. The cache must keep the previous list until the directory mtime changes.
+    /// Directory mtime is restored and bumped with `set_modified` so the test does not depend on
+    /// whether the filesystem bumps a directory when a child file is rewritten.
+    #[test]
+    fn theme_list_cache_ignores_json_rewrites_until_directory_mtime_changes() {
+        let dir = tempfile::tempdir().expect("temp themes dir");
+        let mut document: serde_json::Value =
+            serde_json::from_str(include_str!("dark.json")).expect("dark theme json");
+        document["name"] = serde_json::json!("alpha");
+        let path = dir.path().join("alpha.json");
+        std::fs::write(&path, serde_json::to_string(&document).expect("theme json"))
+            .expect("write theme");
+        let before = std::fs::metadata(dir.path())
+            .expect("dir metadata")
+            .modified()
+            .expect("dir mtime");
+        let registry = ThemeRegistry::new(
+            dir.path().to_path_buf(),
+            "dark",
+            crate::theme::ColorMode::Truecolor,
+        )
+        .expect("theme registry");
+        let first = registry.get_available_themes_with_paths();
+        assert!(first.iter().any(|theme| theme.name == "alpha"), "{first:?}");
+
+        document["name"] = serde_json::json!("beta");
+        std::fs::write(&path, serde_json::to_string(&document).expect("theme json"))
+            .expect("rewrite theme");
+        set_dir_mtime(dir.path(), before);
+        let second = registry.get_available_themes_with_paths();
+        assert!(
+            second.iter().any(|theme| theme.name == "alpha"),
+            "cached theme list was re-parsed on the UI thread: {second:?}"
+        );
+        assert!(second.iter().all(|theme| theme.name != "beta"), "{second:?}");
+
+        let bumped = before
+            .checked_add(std::time::Duration::from_secs(1))
+            .expect("directory mtime bump");
+        set_dir_mtime(dir.path(), bumped);
+        let third = registry.get_available_themes_with_paths();
+        assert!(third.iter().any(|theme| theme.name == "beta"), "{third:?}");
+        assert!(third.iter().all(|theme| theme.name != "alpha"), "{third:?}");
+    }
+
+    /// On a8ac6196 the second `get_available_themes_with_paths` has already parsed `beta` (there is
+    /// no list cache), so the name is not still `alpha` when `poll_theme_watcher` is called.
+    #[test]
+    fn watcher_reported_change_invalidates_theme_list_cache() {
+        let dir = tempfile::tempdir().expect("temp themes dir");
+        let mut document: serde_json::Value =
+            serde_json::from_str(include_str!("dark.json")).expect("dark theme json");
+        document["name"] = serde_json::json!("alpha");
+        let path = dir.path().join("alpha.json");
+        std::fs::write(&path, serde_json::to_string(&document).expect("theme json"))
+            .expect("write theme");
+        let before = std::fs::metadata(dir.path())
+            .expect("dir metadata")
+            .modified()
+            .expect("dir mtime");
+        let mut registry = ThemeRegistry::new(
+            dir.path().to_path_buf(),
+            "dark",
+            crate::theme::ColorMode::Truecolor,
+        )
+        .expect("theme registry");
+        assert!(
+            registry
+                .get_available_themes_with_paths()
+                .iter()
+                .any(|theme| theme.name == "alpha")
+        );
+
+        document["name"] = serde_json::json!("beta");
+        std::fs::write(&path, serde_json::to_string(&document).expect("theme json"))
+            .expect("rewrite theme");
+        set_dir_mtime(dir.path(), before);
+        let cached = registry.get_available_themes_with_paths();
+        assert!(
+            cached.iter().any(|theme| theme.name == "alpha"),
+            "a8ac6196 already re-parsed the rewritten json before any watcher poll: {cached:?}"
+        );
+        assert!(cached.iter().all(|theme| theme.name != "beta"), "{cached:?}");
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let watcher = notify::recommended_watcher(|_event: notify::Result<notify::Event>| {})
+            .expect("theme watcher");
+        registry.watcher = Some((watcher, receiver));
+        sender
+            .send(Some(std::path::PathBuf::from("alpha.json")))
+            .expect("report theme change");
+        // now=0 and watched_name is unset, so this must not take the debounced reload path.
+        assert!(!registry.poll_theme_watcher(0));
+        let refreshed = registry.get_available_themes_with_paths();
+        assert!(
+            refreshed.iter().any(|theme| theme.name == "beta"),
+            "watcher-reported change left the cached theme name: {refreshed:?}"
+        );
+        assert!(refreshed.iter().all(|theme| theme.name != "alpha"), "{refreshed:?}");
+    }
+
+    /// On a8ac6196 the list read after the rewrite has already parsed `beta`, before `reload_due`.
+    /// The registered entry is seeded first so a successful reload does not change the cache key
+    /// (same name and source path); only dropping the cache can surface `beta`.
+    #[test]
+    fn reload_due_invalidates_theme_list_cache() {
+        let dir = tempfile::tempdir().expect("temp themes dir");
+        let mut document: serde_json::Value =
+            serde_json::from_str(include_str!("dark.json")).expect("dark theme json");
+        document["name"] = serde_json::json!("alpha");
+        let path = dir.path().join("alpha.json");
+        std::fs::write(&path, serde_json::to_string(&document).expect("theme json"))
+            .expect("write theme");
+        let before = std::fs::metadata(dir.path())
+            .expect("dir metadata")
+            .modified()
+            .expect("dir mtime");
+        let mut registry = ThemeRegistry::new(
+            dir.path().to_path_buf(),
+            "dark",
+            crate::theme::ColorMode::Truecolor,
+        )
+        .expect("theme registry");
+        let loaded = registry.load_theme("alpha").expect("load alpha");
+        registry.registered.insert("alpha".into(), loaded);
+        assert!(
+            registry
+                .get_available_themes_with_paths()
+                .iter()
+                .any(|theme| theme.name == "alpha")
+        );
+
+        document["name"] = serde_json::json!("beta");
+        std::fs::write(&path, serde_json::to_string(&document).expect("theme json"))
+            .expect("rewrite theme");
+        set_dir_mtime(dir.path(), before);
+        let cached = registry.get_available_themes_with_paths();
+        assert!(
+            cached.iter().all(|theme| theme.name != "beta"),
+            "a8ac6196 already re-parsed the rewritten json before reload_due: {cached:?}"
+        );
+
+        registry.current_name = "alpha".into();
+        registry.watched_name = Some("alpha".into());
+        registry.on_file_change(Some(std::path::Path::new("alpha.json")), 0);
+        assert!(registry.reload_due(100));
+        let refreshed = registry.get_available_themes_with_paths();
+        assert!(
+            refreshed.iter().any(|theme| theme.name == "beta"),
+            "debounced reload left the cached theme name: {refreshed:?}"
+        );
+    }
+
+    fn set_dir_mtime(dir: &std::path::Path, mtime: std::time::SystemTime) {
+        std::fs::File::open(dir)
+            .expect("open themes dir")
+            .set_modified(mtime)
+            .expect("set directory mtime");
+        let restored = std::fs::metadata(dir)
+            .expect("dir metadata")
+            .modified()
+            .expect("dir mtime");
+        assert_eq!(mtime, restored, "directory mtime must stick so the cache key is deterministic");
     }
 }
