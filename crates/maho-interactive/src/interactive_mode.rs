@@ -6175,7 +6175,8 @@ impl InteractiveMode {
             context_window: model.context_window as f64, context_percent: usage.and_then(|usage| usage.percent),
             context_tokens: usage.and_then(|usage| usage.tokens).map(|tokens| tokens as f64),
             model_id: Some(model.id), provider: Some(model.provider), reasoning: model.reasoning,
-            thinking_level: Some(self.host_thinking_level().as_str().into()), subscription, ..Default::default()
+            thinking_level: Some(self.host_thinking_level().as_str().into()), subscription,
+            provider_count: self.footer_data.available_provider_count(), ..Default::default()
         }
     }
 
