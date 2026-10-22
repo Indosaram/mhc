@@ -106,8 +106,8 @@ impl MemoryReflectionLiveWiring{
         let context=MemoryIdentityContext::new("agent".into(),paths,crate::binding::MemorySessionBinding{identity:"agent".into(),repo_path_hash:"hash".into(),bound_at:0.0});let api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("memory",Default::default(),Default::default()),Default::default(),Default::default(),Default::default());
         let events=std::sync::Arc::new(std::sync::Mutex::new(vec![]));let captured=events.clone();let _subscription=api.events.on("senpi:extension-rpc-event",std::sync::Arc::new(move |value|{match captured.lock(){Ok(mut events)=>events.push(value.clone()),Err(error)=>panic!("capture lock poisoned: {error}")}}));
         let mut wiring=MemoryReflectionLiveWiring::default();let mut ui=Ui::default();wiring.attach("session");wiring.bind("session",context,&api,now,Some(&mut ui),None).unwrap();
-        wiring.on_reflection_launched("agent","run",ActiveReflectionRunDetails{trigger:"manual".into(),category:"quick".into(),model:Some("p/m".into()),started_at:"now".into()},&api,now,Some(&mut ui)).unwrap();assert!(ui.0.last().unwrap().ends_with("reflecting"));
-        wiring.on_live_reflection_completed("agent","run",&api,now,Some(&mut ui)).unwrap();assert_eq!(ui.0.last().unwrap(),"mem:agent just now");let events=events.lock().unwrap();assert_eq!(events.len(),3);assert_eq!(events[1]["data"]["reflection"]["activeRun"]["runId"],"run");assert!(events[2]["data"]["reflection"].get("activeRun").is_none());drop(events);
+        wiring.on_reflection_launched("agent","run",ActiveReflectionRunDetails{trigger:"manual".into(),category:"quick".into(),model:Some("p/m".into()),started_at:"now".into()},&api,now,Some(&mut ui)).unwrap();assert!(ui.0.last().unwrap().ends_with("reflecting]"));
+        wiring.on_live_reflection_completed("agent","run",&api,now,Some(&mut ui)).unwrap();assert_eq!(ui.0.last().unwrap(),"[mem:agent just now]");let events=events.lock().unwrap();assert_eq!(events.len(),3);assert_eq!(events[1]["data"]["reflection"]["activeRun"]["runId"],"run");assert!(events[2]["data"]["reflection"].get("activeRun").is_none());drop(events);
         wiring.shutdown(Some("agent"));assert!(!wiring.active_runs.lock().unwrap().is_active("agent"));let before=ui.0.len();wiring.footer.tick(&mut ui);assert_eq!(before,ui.0.len());
     }
     #[test]fn session_attached_after_shutdown_animates_footer_again(){
@@ -117,7 +117,7 @@ impl MemoryReflectionLiveWiring{
         wiring.shutdown(Some("agent"));assert!(wiring.footer.is_disposed());
         wiring.attach("two");wiring.bind("two",context,&api,now,Some(&mut ui),None).unwrap();
         wiring.on_reflection_launched("agent","run",ActiveReflectionRunDetails{trigger:"manual".into(),category:"quick".into(),model:None,started_at:"now".into()},&api,now,Some(&mut ui)).unwrap();
-        assert!(wiring.footer.is_animating());assert_eq!(ui.0.last().unwrap(),"mem:agent ⠋ reflecting");
-        wiring.footer.tick(&mut ui);assert_eq!(ui.0.last().unwrap(),"mem:agent ⠙ reflecting");
+        assert!(wiring.footer.is_animating());assert_eq!(ui.0.last().unwrap(),"[mem:agent ⠋ reflecting]");
+        wiring.footer.tick(&mut ui);assert_eq!(ui.0.last().unwrap(),"[mem:agent ⠙ reflecting]");
     }
 }
