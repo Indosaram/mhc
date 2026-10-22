@@ -33,6 +33,43 @@ pub fn failed_stream(model: &Model, at: i64, message: &str) -> AssistantMessageE
     mapper.stream.end(None);
     mapper.stream
 }
+fn user_message_text(content: &maho_ai::types::UserContent) -> String {
+    match content {
+        maho_ai::types::UserContent::Text(s) => s.clone(),
+        maho_ai::types::UserContent::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text(t) if !t.text.is_empty() => Some(t.text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+/// The prompt for this turn: every user-role message after the last non-user message, in order.
+/// A turn can carry more than the request - hidden extension messages reach providers as user
+/// messages after it - and the CLI takes a single prompt, so sending only the last one dropped
+/// the request itself (senpi#2139).
+pub fn turn_prompt(messages: &[maho_ai::types::Message]) -> Option<String> {
+    use maho_ai::types::Message;
+    let mut trailing: Vec<String> = messages
+        .iter()
+        .rev()
+        .map_while(|m| match m {
+            Message::User(u) => Some(user_message_text(&u.content)),
+            _ => None,
+        })
+        .filter(|t| !t.is_empty())
+        .collect();
+    if !trailing.is_empty() {
+        trailing.reverse();
+        return Some(trailing.join("\n\n"));
+    }
+    messages.iter().rev().find_map(|m| match m {
+        Message::User(u) => Some(user_message_text(&u.content)),
+        _ => None,
+    })
+}
 pub fn stream_cursor_cli(
     model: Model,
     context: maho_ai::types::Context,
@@ -70,10 +107,7 @@ pub fn stream_cursor_cli(
                     .or_else(|| o.stream.session_id.clone())
             })
             .unwrap_or_else(|| crate::affinity::DEFAULT_CURSOR_AFFINITY_KEY.into());
-        let prompt = context.messages.iter().rev().find_map(|m| match m {
-            Message::User(u) => Some(user_text(&u.content)),
-            _ => None,
-        });
+        let prompt = turn_prompt(&context.messages);
         let recent: Vec<_> = context
             .messages
             .iter()
@@ -482,5 +516,42 @@ mod tests {
                 .iter()
                 .any(|b| matches!(b, ContentBlock::ToolCall(_)))
         );
+    }
+    fn user(text: &str) -> maho_ai::types::Message {
+        maho_ai::types::Message::User(maho_ai::types::UserMessage {
+            content: maho_ai::types::UserContent::Text(text.into()),
+            timestamp: 0,
+        })
+    }
+    fn assistant(text: &str) -> maho_ai::types::Message {
+        let mut message = StreamMapper::new(&model(), 0).output;
+        message.content = vec![ContentBlock::Text(TextContent {
+            text: text.into(),
+            ..TextContent::default()
+        })];
+        maho_ai::types::Message::Assistant(Box::new(message))
+    }
+    #[test]
+    fn turn_prompt_joins_trailing_user_messages_so_the_request_survives_notices() {
+        let messages = [
+            user("old"),
+            assistant("answer"),
+            user("where did the space go?"),
+            user("<memory_notice/>"),
+            user(""),
+            user("<omo-senpi-task/>"),
+        ];
+        assert_eq!(
+            turn_prompt(&messages).as_deref(),
+            Some("where did the space go?\n\n<memory_notice/>\n\n<omo-senpi-task/>")
+        );
+    }
+    #[test]
+    fn turn_prompt_falls_back_to_last_user_message_and_none_without_one() {
+        assert_eq!(
+            turn_prompt(&[user("request"), assistant("reply")]).as_deref(),
+            Some("request")
+        );
+        assert_eq!(turn_prompt(&[assistant("reply")]), None);
     }
 }
