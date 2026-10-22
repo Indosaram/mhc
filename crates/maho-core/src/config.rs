@@ -70,6 +70,12 @@ pub fn resolve_agent_dir(cwd: &str, home_dir: &str, env_dir: Option<&str>) -> St
         );
     }
     let config_dir = config_dir_name();
+    // Standalone mhc shares omo's `.omo` home, and omo pins its agent dir to `~/.omo/agent`
+    // (launcher `canonicalAgentDir`). Projects keep omo state under `.omo/` too, so a project
+    // `.omo/agent` (e.g. project skills) must not be taken for a separate, login-less agent home.
+    if crate::brand::injected_brand_profile().is_none() {
+        return join(&join(home_dir, &config_dir), "agent");
+    }
     if config_flat_layout() {
         let flat = crate::nearest_parent_config::find_nearest_parent_config_dir(
             cwd,
@@ -219,13 +225,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_override_discovers_project_config() {
+    fn empty_override_falls_back_to_the_home_agent_dir() {
         // Given
         let root = tempfile::tempdir().expect("tempdir");
         let home = root.path().join("home");
         let project = root.path().join("project");
-        let agent = project.join(config_dir_name()).join("agent");
-        std::fs::create_dir_all(&agent).expect("agent");
+        std::fs::create_dir_all(project.join(config_dir_name()).join("agent")).expect("agent");
         // When
         let resolved = resolve_agent_dir(
             &project.to_string_lossy(),
@@ -233,7 +238,7 @@ mod tests {
             Some(""),
         );
         // Then
-        assert_eq!(resolved, agent.to_string_lossy());
+        assert_eq!(resolved, home.join(config_dir_name()).join("agent").to_string_lossy());
     }
 
     #[test]
@@ -266,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn finds_a_parent_project_config_dir() {
+    fn a_project_omo_agent_dir_does_not_replace_the_home_agent_dir() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let home = tmp.path().join("home");
         let project = tmp.path().join("proj");
@@ -280,10 +285,7 @@ mod tests {
         );
         assert_eq!(
             resolved,
-            project
-                .join(config_dir_name())
-                .join("agent")
-                .to_string_lossy()
+            home.join(config_dir_name()).join("agent").to_string_lossy()
         );
     }
 
