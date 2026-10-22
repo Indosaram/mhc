@@ -47,8 +47,7 @@ pub const TASK_MANAGEMENT_SECTION:&str="
 <Task_Management>
 ## Todo Management
 
-Use a todo list for a multi-step plan, especially when it has three or more distinct steps.
-Use the todo tool for multi-step work; its description carries the operations, anatomy, and rules. Mark each item done the moment it finishes and reconcile the list against the newest user message before ending a turn.
+A request with three or more distinct steps gets a phased todo before the first edit - investigation, implementation, verification, final report - in the todo tool; its description carries the operations, anatomy, and rules. Mark each item done the moment it finishes and reconcile the list against the newest user message before ending a turn.
 
 ## Evidence
 - File edit: inspect the changed files and diagnostics.

@@ -1,7 +1,7 @@
 use serde_json::Value;
 use crate::todo_types::{TodoAsk,TodoPhase,TodoState};
 pub struct NativeTodotoolsExtension {pub actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,pub copy_markdown:crate::commands::CopyTodoMarkdown,pub widget_sender:tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>}
-struct NativeTodoAccessors {branch:std::sync::Mutex<Vec<Value>>,phases:std::sync::Mutex<Vec<TodoPhase>>,ask:std::sync::Mutex<Option<TodoAsk>>,ui:std::sync::Mutex<Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>>,widget_sender:tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>}
+struct NativeTodoAccessors {branch:std::sync::Mutex<Vec<Value>>,phases:std::sync::Mutex<Vec<TodoPhase>>,ask:std::sync::Mutex<Option<TodoAsk>>,surface:std::sync::Mutex<maho_ext_api::PromptSurface>,ui:std::sync::Mutex<Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>>,widget_sender:tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>}
 impl crate::tools_todo::TodoAccessors for NativeTodoAccessors {
     fn get_current_phases(&self)->Vec<TodoPhase>{self.phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()}
     fn set_current_phases(&self,phases:Vec<TodoPhase>){*self.phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=phases;}
@@ -9,16 +9,18 @@ impl crate::tools_todo::TodoAccessors for NativeTodoAccessors {
     fn set_current_ask(&self,ask:Option<TodoAsk>){*self.ask.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=ask;}
     fn get_current_state(&self)->TodoState{TodoState{phases:self.get_current_phases(),ask:self.get_current_ask()}}
     fn branch_entries(&self)->Vec<Value>{self.branch.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()}
+    fn prompt_surface(&self)->maho_ext_api::PromptSurface{*self.surface.lock().unwrap_or_else(std::sync::PoisonError::into_inner)}
     fn sync_widget(&self,_:&dyn maho_ext_api::ToolContext,completed:&[crate::todo_types::TodoCompletionTransition])->Result<(),maho_ext_api::ExtensionFailure>{
-        if let Some(ui)=self.ui.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref(){ui.set_widget("todo-sidebar",crate::todo_widget_component::widget_content_with_ask(&self.phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner),self.ask.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref(),completed,self.widget_sender.clone()),Default::default());}Ok(())
+        if let Some(ui)=self.ui.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref(){ui.set_widget("todo-sidebar",crate::todo_widget_component::widget_content(&self.phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner),completed,self.widget_sender.clone()),Default::default());}Ok(())
     }
 }
 impl maho_ext_api::Extension for NativeTodotoolsExtension {
     fn register(&self,api:&mut maho_ext_api::ExtensionApi){
-        let accessors=std::sync::Arc::new(NativeTodoAccessors {branch:Default::default(),phases:Default::default(),ask:Default::default(),ui:Default::default(),widget_sender:self.widget_sender.clone()});
+        let accessors=std::sync::Arc::new(NativeTodoAccessors {branch:Default::default(),phases:Default::default(),ask:Default::default(),surface:Default::default(),ui:Default::default(),widget_sender:self.widget_sender.clone()});
         for event in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::SessionTree]{let captured=accessors.clone();api.on(event,std::sync::Arc::new(move |_,ctx|{let captured=captured.clone();Box::pin(async move {*captured.ui.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=ctx.has_ui.then(||ctx.ui.clone());Ok(maho_ext_api::EventResult::None)})}));}
         {let captured=accessors.clone();api.on(maho_ext_api::EventKind::TurnStart,std::sync::Arc::new(move |_,ctx|{let captured=captured.clone();Box::pin(async move {
             *captured.branch.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=ctx.session_manager.get_branch().into_iter().map(|entry|entry.data).collect();
+            *captured.surface.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=ctx.get_system_prompt_options().surface;
             Ok(maho_ext_api::EventResult::None)
         })}));}
         TodotoolsExtension {actions:self.actions.clone(),accessors:accessors.clone(),copy_markdown:self.copy_markdown.clone()}.register(api);
@@ -34,6 +36,7 @@ impl maho_ext_api::Extension for TodotoolsExtension {
     fn register(&self,api:&mut maho_ext_api::ExtensionApi) {
         register_state_hooks(api,self.actions.clone(),self.accessors.clone());
         register_prompt_hook(api);
+        register_first_turn_hooks(api);
         crate::tools_todo::register_todo_tool(api,self.actions.clone(),self.accessors.clone());
         crate::commands::register_todo_command(api,self.actions.clone(),self.accessors.clone(),self.copy_markdown.clone());
     }
@@ -70,9 +73,48 @@ pub fn register_state_hooks(api:&mut maho_ext_api::ExtensionApi,actions:std::syn
     }));
 }
 pub fn register_prompt_hook(api:&mut maho_ext_api::ExtensionApi) {
-    api.on(maho_ext_api::EventKind::BeforeAgentStart,std::sync::Arc::new(|event,_ctx|Box::pin(async move {
+    api.on_with_options(maho_ext_api::EventKind::BeforeAgentStart,std::sync::Arc::new(|event,_ctx|Box::pin(async move {
         Ok(prompt_hook_result(event))
-    })));
+    })),maho_ext_api::ExtensionHandlerOptions{preview_safe:true,..Default::default()});
+}
+/// senpi `pendingForce`: armed by the first-turn opener, cleared when that run's first assistant
+/// message lands or the run ends.
+#[derive(Clone,Copy)]
+struct PendingForce {force_named:bool,logged:bool}
+pub fn register_first_turn_hooks(api:&mut maho_ext_api::ExtensionApi) {
+    let pending=std::sync::Arc::new(std::sync::Mutex::new(None::<PendingForce>));
+    let runtime=api.runtime.clone();
+    {let pending=pending.clone();api.on_with_options(maho_ext_api::EventKind::BeforeAgentStart,std::sync::Arc::new(move |event,ctx|{let pending=pending.clone();let runtime=runtime.clone();Box::pin(async move {
+        let maho_ext_api::ExtensionEvent::BeforeAgentStart(event)=event else {return Ok(maho_ext_api::EventResult::None)};
+        if event.preview {return Ok(maho_ext_api::EventResult::None);}
+        let branch=ctx.session_manager.get_branch().into_iter().map(|entry|entry.data).collect::<Vec<_>>();
+        let home=std::env::var("HOME").or_else(|_|std::env::var("USERPROFILE")).unwrap_or_default();
+        let setting=maho_core::settings_manager::SettingsManager::create(&ctx.cwd.to_string_lossy(),&ctx.agent_dir.to_string_lossy(),&home,ctx.is_project_trusted()).get_todo_first_turn_plan();
+        let todo_active=runtime.session_actions().and_then(|actions|actions.get_active_tools()).is_ok_and(|tools|tools.iter().any(|tool|tool=="todo"));
+        let armed=crate::first_turn::should_arm_first_turn(&crate::first_turn::FirstTurnInput{preview:event.preview,trigger:&event.trigger,prompt:&event.prompt,branch_entries:&branch,todo_active,setting,mode:ctx.mode});
+        if !armed {return Ok(maho_ext_api::EventResult::None);}
+        *pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(PendingForce{force_named:setting=="force",logged:false});
+        Ok(maho_ext_api::EventResult::BeforeAgentStart(maho_ext_api::BeforeAgentStartEventResult{system_prompt:None,message:Some(maho_ext_api::CustomMessage{custom_type:crate::first_turn::FIRST_TURN_CUSTOM_TYPE.into(),content:vec![maho_ext_api::ToolContent::text(crate::first_turn::FIRST_TURN_REMINDER)],display:false,details:None})}))
+    })}),maho_ext_api::ExtensionHandlerOptions{preview_safe:true,..Default::default()});}
+    {let pending=pending.clone();api.on(maho_ext_api::EventKind::BeforeProviderRequest,std::sync::Arc::new(move |event,ctx|{let pending=pending.clone();Box::pin(async move {
+        let maho_ext_api::ExtensionEvent::BeforeProviderRequest{payload,model,..}=event else {return Ok(maho_ext_api::EventResult::None)};
+        let Some(force)=*pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner) else {return Ok(maho_ext_api::EventResult::None)};
+        let forced=force.force_named.then(||crate::first_turn::with_forced_todo_choice(payload,model.as_ref().or(ctx.model.as_ref()))).flatten();
+        if !force.logged {
+            if let Some(slot)=pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut(){slot.logged=true;}
+            let data=serde_json::Map::from_iter([("mode".to_owned(),Value::from(if forced.is_some(){"forced"}else{"reminder-only"}))]);
+            maho_core::session_log::SessionLogger::create(Some(&ctx.agent_dir.to_string_lossy()),Default::default()).info("todo_first_turn",Some(&data));
+        }
+        Ok(forced.map_or(maho_ext_api::EventResult::None,maho_ext_api::EventResult::ProviderPayload))
+    })}));}
+    for event in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::SessionTree,maho_ext_api::EventKind::AgentEnd,maho_ext_api::EventKind::SessionAbort,maho_ext_api::EventKind::SessionShutdown,maho_ext_api::EventKind::MessageEnd] {
+        let pending=pending.clone();
+        api.on(event,std::sync::Arc::new(move |event,_ctx|{let pending=pending.clone();Box::pin(async move {
+            let clears=match event {maho_ext_api::ExtensionEvent::MessageEnd{message}=>message.as_assistant().is_some(),_=>true};
+            if clears {pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();}
+            Ok(maho_ext_api::EventResult::None)
+        })}));
+    }
 }
 fn prompt_hook_result(event:&maho_ext_api::ExtensionEvent)->maho_ext_api::EventResult {
     match event {
