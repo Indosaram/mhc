@@ -1125,8 +1125,20 @@ impl InteractiveMode {
     /// senpi's startup header phase: load the changelog, then mount the welcome header and its tip
     /// sibling. Call once after construction (senpi does this inside `initialize`).
     pub fn initialize_startup_header(&mut self) {
+        self.mount_startup_chrome();
+        self.initialize_startup_resources();
+    }
+
+    /// The part of the startup header that needs no bound extensions: the changelog and the
+    /// welcome header, so the first frame can paint before history and extensions load.
+    pub fn mount_startup_chrome(&mut self) {
         self.load_startup_changelog();
         self.mount_startup_header();
+    }
+
+    /// The part of the startup header that reads bound extensions: the loaded-resources listing
+    /// and the models.json diagnostics. Call after `bind_extensions`.
+    pub fn initialize_startup_resources(&mut self) {
         self.show_loaded_resources(false, true);
         self.show_model_runtime_diagnostics(true);
     }

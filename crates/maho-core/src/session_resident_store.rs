@@ -122,14 +122,20 @@ impl ResidentStringStore {
     }
 
     pub fn externalize(&self, value: &Value) -> Value {
+        if !contains_string(value, &|text| text.len() >= RESIDENT_STRING_MIN_BYTES) {
+            return value.clone();
+        }
         transform_json(value, &|text| self.externalize_string(text))
     }
 
     pub fn materialize(&self, value: &Value) -> Value {
-        transform_json(value, &|text| self.materialize_string(text, None))
+        self.materialize_with(value, None)
     }
 
     pub fn materialize_with(&self, value: &Value, on_missing: Option<MissingStringCallback<'_>>) -> Value {
+        if !contains_string(value, &|text| text.starts_with(RESIDENT_STRING_PREFIX)) {
+            return value.clone();
+        }
         transform_json(value, &|text| self.materialize_string(text, on_missing))
     }
 
@@ -223,6 +229,15 @@ fn content_hash(text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+fn contains_string(value: &Value, predicate: &dyn Fn(&str) -> bool) -> bool {
+    match value {
+        Value::String(text) => predicate(text),
+        Value::Array(items) => items.iter().any(|item| contains_string(item, predicate)),
+        Value::Object(object) => object.values().any(|item| contains_string(item, predicate)),
+        _ => false,
+    }
 }
 
 fn transform_json(value: &Value, transform: &dyn Fn(&str) -> String) -> Value {
