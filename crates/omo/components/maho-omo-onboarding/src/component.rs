@@ -24,7 +24,7 @@ fn eligible(ctx: &ExtensionContext, session_kind: SessionKind, runtime: &Extensi
 
 fn show_welcome(ctx: &ExtensionContext) {
     ctx.ui.set_widget("omo-onboarding", Some(WidgetContent::Lines(vec![
-        "Welcome to OmO. Ask anything.".into(),
+        format!("Welcome to {}. Ask anything.", maho_core::config::app_command()),
         "Use ulw for full workflows.".into(),
     ])), ExtensionWidgetOptions::default());
 }

@@ -1699,7 +1699,7 @@ async fn startup_header_mounts_the_welcome_content_with_a_tip_and_follows_the_to
     let (mut mode,_directory) = native_mode();
     mode.mount_startup_header_at(0);
     let collapsed = mode.render(80).join("\n");
-    let app = maho_core::config::app_name();
+    let app = maho_core::config::app_command();
     assert!(!app.is_empty());
     assert!(collapsed.contains(app.as_str()), "the welcome logo names the app: {collapsed}");
     assert!(collapsed.contains("can explain its own features"), "onboarding: {collapsed}");
