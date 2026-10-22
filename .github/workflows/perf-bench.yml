@@ -1,0 +1,68 @@
+name: perf-bench
+
+on:
+  push:
+    branches: ["bench/after-*"]
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  PROTOC_VERSION: "29.3"
+  AST_GREP_VERSION: "0.45.0"
+  SENPI_PIN: 903b83367545bea516f35fc7f7c7cb692847988d
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: true
+      matrix:
+        variant: [before, after]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.variant == 'before' && 'bench/before-20261022' || github.ref }}
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: release
+      - name: build bench binary
+        run: |
+          exe=$(cargo test --release -p maho-senpi-task --lib --no-run --message-format=json \
+            | jq -r 'select(.executable != null and (.target.kind | index("lib"))) | .executable' | tail -1)
+          test -x "$exe"
+          mkdir -p out && cp "$exe" out/bench-${{ matrix.variant }}
+          git rev-parse HEAD > out/rev-${{ matrix.variant }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bench-${{ matrix.variant }}
+          path: out/
+          retention-days: 3
+
+  run:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: bins
+          merge-multiple: true
+      - name: run alternating rounds
+        run: |
+          sudo apt-get install -y -qq time >/dev/null
+          chmod +x bins/bench-*
+          cat bins/rev-*
+          nproc; lscpu | grep 'Model name'
+          for round in 1 2 3 4 5; do
+            for variant in before after; do
+              /usr/bin/time -f "MAXRSS_KB %M" bins/bench-$variant perf_bench --ignored --nocapture --test-threads=1 2>&1 \
+                | grep -E '^(BENCH|MAXRSS_KB|test result)' | sed "s/^/$variant $round /" | tee -a results.txt
+            done
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bench-results
+          path: results.txt
+          retention-days: 3
