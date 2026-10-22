@@ -19,6 +19,10 @@ pub trait TodoAccessors: Send + Sync {
     fn branch_entries(&self) -> Vec<serde_json::Value> {
         Vec::new()
     }
+    /// senpi `ctx.getSystemPromptOptions().surface`; a chat surface gets no handoff cue.
+    fn prompt_surface(&self) -> maho_ext_api::PromptSurface {
+        maho_ext_api::PromptSurface::default()
+    }
     fn sync_widget(
         &self,
         ctx: &dyn maho_tools::definition::ToolContext,
@@ -204,9 +208,15 @@ pub fn create_todo_tool(
                 } else {
                     current_ask.clone()
                 };
-                let (text, mut details) =
-                    plan_execution_with_ask(&call.params, &previous, next_ask.as_ref(), storage)
-                        .map_err(ToolError::Message)?;
+                let (text, mut details) = plan_execution_with_ask(
+                    &call.params,
+                    &previous,
+                    current_ask.as_ref(),
+                    next_ask.as_ref(),
+                    accessors.prompt_surface() != maho_ext_api::PromptSurface::Chat,
+                    storage,
+                )
+                .map_err(ToolError::Message)?;
                 details.ask = next_ask;
                 if details.op != Some(TodoOperation::View) {
                     let entry = crate::todo_types::TodoStateEntry {
@@ -323,12 +333,27 @@ pub fn plan_execution(
     previous: &[crate::todo_types::TodoPhase],
     storage: crate::todo_types::TodoStorage,
 ) -> Result<(String, crate::todo_types::TodoToolDetails), String> {
-    plan_execution_with_ask(raw, previous, None, storage)
+    plan_execution_with_ask(raw, previous, None, None, true, storage)
+}
+/// senpi `formatSummary(phases, errors, readOnly, ask)`: the Ask/Now/Next header, then the list.
+fn summary_with_header(
+    phases: &[crate::todo_types::TodoPhase],
+    errors: &[String],
+    read_only: bool,
+    ask: Option<&crate::todo_types::TodoAsk>,
+) -> String {
+    format!(
+        "{}{}",
+        crate::todo_format::format_ask_now_next_header(phases, ask),
+        crate::todo_format::format_summary(phases, errors, read_only)
+    )
 }
 pub fn plan_execution_with_ask(
     raw: &serde_json::Value,
     previous: &[crate::todo_types::TodoPhase],
+    previous_ask: Option<&crate::todo_types::TodoAsk>,
     ask: Option<&crate::todo_types::TodoAsk>,
+    handoff_cue: bool,
     storage: crate::todo_types::TodoStorage,
 ) -> Result<(String, crate::todo_types::TodoToolDetails), String> {
     let normalized = crate::normalize::normalize_todo_params(raw, previous);
@@ -336,26 +361,29 @@ pub fn plan_execution_with_ask(
         (Some(error), _) => {
             return Err(format!(
                 "{error}\n\n{}",
-                crate::todo_format::format_summary(previous, &[], true)
+                summary_with_header(previous, &[], true, previous_ask)
             ));
         }
         (_, Some(entry)) => entry,
         _ => {
             return Err(format!(
                 "Missing \"op\". Example: {{\"op\":\"init\",\"list\":[{{\"phase\":\"Setup\",\"items\":[\"...\"]}}]}}\n\n{}",
-                crate::todo_format::format_summary(previous, &[], true)
+                summary_with_header(previous, &[], true, previous_ask)
             ));
         }
     };
     let mut corrections = normalized.corrections;
     let read_only = entry.op == TodoOperation::View;
+    let creates_list = entry.op == TodoOperation::Init
+        || entry.op == TodoOperation::Append && previous.iter().all(|phase| phase.tasks.is_empty());
     let applied =
         crate::todo_operations::apply_params(previous.to_vec(), &entry, Some(&mut corrections));
     if !applied.errors.is_empty() {
-        return Err(crate::todo_format::format_summary(
+        return Err(summary_with_header(
             previous,
             &applied.errors,
             read_only,
+            previous_ask,
         ));
     }
     let completed = if read_only {
@@ -363,11 +391,14 @@ pub fn plan_execution_with_ask(
     } else {
         crate::todo_query::get_completion_transitions(previous, &applied.phases)
     };
-    let summary = crate::todo_format::format_summary(&applied.phases, &[], read_only);
+    // A chat surface posts replies to a conversation, which has no handoff block to cue (senpi#2398).
+    let moment = (!read_only && handoff_cue)
+        .then(|| crate::todo_format::handoff_moment_of(previous, &applied.phases, creates_list))
+        .flatten();
     let summary = format!(
         "{}{}",
-        crate::todo_format::format_ask_now_next_header(&applied.phases, ask),
-        summary
+        summary_with_header(&applied.phases, &[], read_only, ask),
+        crate::todo_format::format_handoff_cue(moment)
     );
     let text = if corrections.is_empty() {
         summary
@@ -843,12 +874,9 @@ mod tests {
                 target_session_file: None,
                 signal: None,
             });
-        (api.registered.handlers[&maho_ext_api::EventKind::SessionShutdown][0])(
-            &mut shutdown,
-            &ctx,
-        )
-        .await
-        .unwrap();
+        for handler in &api.registered.handlers[&maho_ext_api::EventKind::SessionShutdown] {
+            handler(&mut shutdown, &ctx).await.unwrap();
+        }
         let widgets = ui.1.lock().unwrap();
         assert_eq!(widgets.last().unwrap().0, "todo-sidebar");
         assert!(widgets.last().unwrap().1.is_none());
@@ -989,14 +1017,18 @@ mod tests {
         maho_ext_api::Extension::register(&extension, &mut api);
         assert_eq!(api.registered.tools.len(), 1);
         assert_eq!(api.registered.commands.len(), 1);
-        assert_eq!(api.registered.handlers.len(), 4);
-        for event in [
-            maho_ext_api::EventKind::SessionStart,
-            maho_ext_api::EventKind::SessionTree,
-            maho_ext_api::EventKind::MessageEnd,
-            maho_ext_api::EventKind::BeforeAgentStart,
+        assert_eq!(api.registered.handlers.len(), 8);
+        for (event, count) in [
+            (maho_ext_api::EventKind::SessionStart, 2),
+            (maho_ext_api::EventKind::SessionTree, 2),
+            (maho_ext_api::EventKind::MessageEnd, 2),
+            (maho_ext_api::EventKind::BeforeAgentStart, 2),
+            (maho_ext_api::EventKind::BeforeProviderRequest, 1),
+            (maho_ext_api::EventKind::AgentEnd, 1),
+            (maho_ext_api::EventKind::SessionAbort, 1),
+            (maho_ext_api::EventKind::SessionShutdown, 1),
         ] {
-            assert_eq!(api.registered.handlers[&event].len(), 1);
+            assert_eq!(api.registered.handlers[&event].len(), count);
         }
     }
     #[tokio::test]
@@ -1174,6 +1206,22 @@ mod tests {
         .unwrap();
         assert_eq!(details.completed_tasks, None);
         assert_eq!(details.storage, crate::todo_types::TodoStorage::Session);
+    }
+    #[test]
+    fn results_cue_the_handoff_except_on_chat_and_view() {
+        let init = serde_json::json!({"op":"init","list":[{"phase":"A","items":["a"]},{"phase":"B","items":["b"]}]});
+        let memory = crate::todo_types::TodoStorage::Memory;
+        let (text, details) = plan_execution(&init, &[], memory).unwrap();
+        assert!(text.starts_with("Ask: "));
+        assert!(text.ends_with(crate::todo_format::handoff_cue_text(crate::todo_format::HandoffMoment::ListCreated)));
+        let (chat, _) = plan_execution_with_ask(&init, &[], None, None, false, memory).unwrap();
+        assert!(!chat.contains("Handoff due"));
+        let (closed, _) = plan_execution(&serde_json::json!({"op":"done","task":"a"}), &details.phases, memory).unwrap();
+        assert!(closed.ends_with(crate::todo_format::handoff_cue_text(crate::todo_format::HandoffMoment::PhaseClosed)));
+        let (view, _) = plan_execution(&serde_json::json!({"op":"view"}), &details.phases, memory).unwrap();
+        assert!(!view.contains("Handoff due"));
+        let error = plan_execution(&serde_json::json!({"op":"done","task":"missing"}), &details.phases, memory).unwrap_err();
+        assert!(error.starts_with("Ask: "));
     }
     #[test]
     fn omitted_operation_renders_before_execute_inference() {

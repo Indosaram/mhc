@@ -18,7 +18,8 @@ fn native_todo_factory_registers_state_command_renderers_and_cleanup() {
     assert!(extension.tools.iter().any(|tool|tool.definition.name=="todo"));
     assert!(extension.tool_renderers.contains_key("todo"));
     assert!(extension.commands.iter().any(|command|command.name=="todo"));
-    assert_eq!(extension.handlers[&EventKind::SessionStart].len(),2);
-    assert_eq!(extension.handlers[&EventKind::SessionTree].len(),2);
-    for event in [EventKind::MessageEnd,EventKind::BeforeAgentStart,EventKind::SessionShutdown] {assert_eq!(extension.handlers[&event].len(),1);}
+    assert_eq!(extension.handlers[&EventKind::SessionStart].len(),3);
+    assert_eq!(extension.handlers[&EventKind::SessionTree].len(),3);
+    for event in [EventKind::MessageEnd,EventKind::BeforeAgentStart,EventKind::SessionShutdown] {assert_eq!(extension.handlers[&event].len(),2);}
+    for event in [EventKind::BeforeProviderRequest,EventKind::AgentEnd,EventKind::SessionAbort] {assert_eq!(extension.handlers[&event].len(),1);}
 }
