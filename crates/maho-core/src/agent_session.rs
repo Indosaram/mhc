@@ -4990,6 +4990,12 @@ impl AgentSession {
         self.extension_runner.lock().await.as_ref().map(|runner| runner.native_tool_renderers_snapshot()).unwrap_or_default()
     }
 
+    /// Test seam: hold the real extension-runner lock so a test can prove a path does not await it.
+    #[doc(hidden)]
+    pub async fn hold_extension_runner_lock_for_test(&self) -> tokio::sync::MutexGuard<'_, Option<ExtensionRunner>> {
+        self.extension_runner.lock().await
+    }
+
     /// A cheap key that changes whenever [`Self::native_tool_renderers_snapshot`] could change: a
     /// new runner was installed or its runtime's live tool registrations moved. `None` while no
     /// runner is bound. Callers poll this every frame and rebuild the snapshot only on a change.
