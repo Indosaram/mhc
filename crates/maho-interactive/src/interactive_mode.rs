@@ -5344,6 +5344,8 @@ impl InteractiveMode {
                 if message.role() == "user" {
                     let value = serde_json::to_value(message).expect("serializable agent message");
                     let text = value["content"].as_str().map(str::to_owned).unwrap_or_else(|| value["content"].as_array().map(|parts| parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default());
+                    // senpi `addMessageToChat` user case: a non-empty transcript gets one blank row first.
+                    if !text.is_empty() && !self.chat.children().is_empty() { self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))))); }
                     if let Some(block) = maho_core::skill_invocation::parse_skill_block(&text) {
                         let mut component = crate::components::skill_invocation_message::SkillInvocationMessageComponent::new(block.skills.into_iter().map(|skill| crate::components::skill_invocation_message::InvokedSkill { name:skill.name, content:skill.content }).collect(), self.theme.clone(), self.get_markdown_theme_with_settings(), crate::components::keybinding_hints::key_display_text("app.tools.expand"));
                         component.set_expanded(self.tools_expanded);
