@@ -87,12 +87,21 @@ impl ModelItem {
     }
 
     fn as_search_item(&self) -> ModelSearchItem {
+        #[cfg(test)]
+        SEARCH_ITEM_CONVERSIONS.with(|count| count.set(count.get() + 1));
         ModelSearchItem {
             id: self.id.clone(),
             provider: self.provider.clone(),
             name: Some(self.name.clone()),
         }
     }
+}
+
+/// Test-only count of per-model search-row conversions: the work a8ac6196 repeated for every catalog
+/// entry on every keystroke and the current code does once per `active_models` change.
+#[cfg(test)]
+thread_local! {
+    static SEARCH_ITEM_CONVERSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// senpi's `onFavoriteChange`.
@@ -129,8 +138,6 @@ pub struct ModelSelectorComponent {
     runtime_key: u64,
     /// Search rows for `active_models`, rebuilt only when that vec changes.
     search_items: Vec<ModelSearchItem>,
-    #[cfg(test)]
-    search_index_builds: u32,
     focused: bool,
     closed: bool,
     on_select: Box<dyn FnMut(&ModelEntry)>,
@@ -187,8 +194,6 @@ impl ModelSelectorComponent {
             terminal_rows,
             runtime_key,
             search_items: Vec::new(),
-            #[cfg(test)]
-            search_index_builds: 0,
             focused: false,
             closed: false,
             on_select,
@@ -416,10 +421,6 @@ impl ModelSelectorComponent {
     }
 
     fn rebuild_search_items(&mut self) {
-        #[cfg(test)]
-        {
-            self.search_index_builds = self.search_index_builds.saturating_add(1);
-        }
         self.search_items = self.active_models.iter().map(ModelItem::as_search_item).collect();
     }
 
@@ -783,64 +784,49 @@ mod tests {
         .collect()
     }
 
-    /// a8ac6196 builds a fresh `Vec<ModelSearchItem>` inside `filter_models` on every non-empty
-    /// query. Keystrokes must rank the vec built when `active_models` last changed, and that order
-    /// must match `rank_model_search_items` on the same rows.
+    fn conversions() -> usize {
+        SEARCH_ITEM_CONVERSIONS.with(std::cell::Cell::get)
+    }
+
+    /// a8ac6196 converted every catalog entry via `as_search_item` inside `filter_models` on each
+    /// non-empty query (O(catalog) per keystroke). Keystrokes must do no per-model conversion; the
+    /// conversion happens once per `active_models` change (construction, scope switch).
     #[test]
-    fn model_keystroke_reuses_precomputed_search_index() {
+    fn model_keystroke_does_not_reconvert_the_catalog() {
         let models = vec![
             entry("Anthropic", "Claude-Opus", "Opus"),
             entry("OpenAI", "gpt-4o", "GPT-4o"),
             entry("openai", "o3", "o3"),
             entry("Google", "gemini-2.5-pro", "Gemini"),
         ];
+        let before_new = conversions();
         let mut component = selector(models.clone(), Some(vec!["OpenAI/gpt-4o".to_owned()]), Vec::new());
-        let builds = component.search_index_builds;
-        assert_eq!(builds, 1, "new() must build the search vec once");
-        assert_eq!(component.search_items.len(), component.active_models.len());
-        let index_ptr = component.search_items.as_ptr();
+        assert_eq!(conversions() - before_new, component.active_models.len(), "new() converts the catalog once");
         let queries = ["", "opus", "GPT", "openai/o3", "gemini pro", "zzz", "  ", "Claude-Opus"];
         for query in queries {
+            // Compute the expected order first: `ranked_ids` converts rows itself, so reset after.
             let expected = ranked_ids(&component, query);
+            let before = conversions();
             component.filter_models(query);
+            assert_eq!(conversions(), before, "filtering {query:?} re-converted catalog entries");
             assert_eq!(component.filtered_model_ids(), expected, "query {query:?}");
-            assert_eq!(component.search_index_builds, builds, "filtering {query:?} rebuilt the search vec");
-            assert_eq!(component.search_items.as_ptr(), index_ptr, "filtering {query:?} replaced the search vec");
         }
-        {
-            let mut keystroke = std::pin::pin!(async {
-                component.handle_input("g");
-            });
-            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-            assert!(
-                keystroke.as_mut().poll(&mut cx).is_ready(),
-                "model keystroke did not return before paint"
-            );
-        }
-        assert_eq!(component.search_index_builds, builds);
-        assert_eq!(component.search_items.as_ptr(), index_ptr);
-        assert_eq!(
-            component.filtered_model_ids(),
-            ranked_ids(&component, component.search_input.get_value())
-        );
+        let before = conversions();
+        component.handle_input("g");
+        component.handle_input("p");
+        assert_eq!(conversions(), before, "keystrokes re-converted catalog entries");
 
         let scoped = vec![ScopedModelItem {
             model: entry("OpenAI", "gpt-4o", "GPT-4o"),
             thinking_level: None,
         }];
-        let mut narrowed = selector(models, Some(vec!["OpenAI/gpt-4o".to_owned()]), scoped);
+        let mut narrowed = selector(models.clone(), Some(vec!["OpenAI/gpt-4o".to_owned()]), scoped);
         assert_eq!(narrowed.scope(), ModelScope::Narrowed);
-        let narrowed_builds = narrowed.search_index_builds;
-        assert_eq!(narrowed_builds, 1);
-        narrowed.filter_models("gpt");
-        assert_eq!(narrowed.search_index_builds, narrowed_builds);
-        assert_eq!(narrowed.filtered_model_ids(), ranked_ids(&narrowed, "gpt"));
+        let before = conversions();
         narrowed.set_scope(ModelScope::All);
-        assert_eq!(narrowed.search_index_builds, narrowed_builds + 1, "scope change must rebuild once");
-        narrowed.set_scope(ModelScope::All);
-        assert_eq!(narrowed.search_index_builds, narrowed_builds + 1, "unchanged scope must not rebuild");
+        assert_eq!(conversions() - before, narrowed.active_models.len(), "a scope change converts the new catalog once");
+        let before = conversions();
         narrowed.filter_models("opus");
-        assert_eq!(narrowed.search_index_builds, narrowed_builds + 1);
-        assert_eq!(narrowed.filtered_model_ids(), ranked_ids(&narrowed, "opus"));
+        assert_eq!(conversions(), before, "filtering after a scope change does not re-convert");
     }
 }

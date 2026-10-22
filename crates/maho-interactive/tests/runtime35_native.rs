@@ -2686,7 +2686,6 @@ async fn r4_default_model_write_is_not_on_the_ui_task_before_paint() {
 }
 
 #[tokio::test]
-#[allow(clippy::unused_async)]
 async fn r1_matching_renderer_revision_does_not_await_the_snapshot() {
     let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
     mode.enqueue_submission("/rename kept-name", None);
@@ -2697,20 +2696,19 @@ async fn r1_matching_renderer_revision_does_not_await_the_snapshot() {
     assert!(install.is_ready(), "submitting parks the snapshot instead of awaiting it");
     mode.poll_after_paint(std::task::Waker::noop());
     assert!(!mode.has_parked_action_for_test(), "the uncontended snapshot settles after paint");
-    // The runner mutex is private, so this oneshot is the only way to keep a mismatched snapshot
-    // pending. A matching revision must not take it: one poll stays Ready while the receiver is held.
-    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
-    mode.arm_renderer_refresh_gate_for_test(gate_rx);
+    // Hold the real runner lock. The old path awaited `tool_renderers_snapshot` (the runner lock) on
+    // every submission, so it would be Pending here; a matching revision must not touch it.
+    let guard = session.hold_extension_runner_lock_for_test().await;
     mode.enqueue_submission("hi-again", None);
     let again = {
         let mut step = std::pin::pin!(mode.dispatch_submission());
         poll_once(&mut step)
     };
-    assert!(again.is_ready(), "a matching revision must not await the snapshot");
+    assert!(again.is_ready(), "a matching revision must not await the runner-lock snapshot");
     assert!(!mode.has_parked_action_for_test(), "a matching revision does not park another snapshot");
     let mut snapshot = std::pin::pin!(session.tool_renderers_snapshot());
-    assert!(poll_once(&mut snapshot).is_ready(), "with the runner lock free the real snapshot is already Ready");
-    drop(gate_tx);
+    assert!(poll_once(&mut snapshot).is_pending(), "the real snapshot is Pending while the runner lock is held");
+    drop(guard);
 }
 
 /// Provider whose catalog refresh never resolves. `entered` flips only when `refresh_models` is polled.

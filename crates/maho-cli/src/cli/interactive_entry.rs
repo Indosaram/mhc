@@ -994,24 +994,14 @@ mod tests {
         );
         assert!(free.is_some(), "a free runner lock still returns both snapshots");
 
-        // `AgentSession`'s runner mutex is private and no public method holds it across an await,
-        // so this test holds a std mutex and makes the snapshot future the loop passes return
-        // Pending while that lock is held. The helper must poll once and keep the installed set.
-        let hold = std::sync::Arc::new(std::sync::Mutex::new(()));
-        let guard = hold.lock().expect("hold");
-        let hold_for_native = std::sync::Arc::clone(&hold);
-        let native_session = session.clone();
+        // Hold the REAL runner lock (the one the old frame loop awaited through these exact
+        // futures). The helper must poll once, see Pending, and keep the installed set.
+        let guard = super::poll_now(session.hold_extension_runner_lock_for_test()).expect("the free runner lock is acquired in one poll");
         let held = super::native_snapshots_if_lock_free(
-            async move {
-                if hold_for_native.try_lock().is_err() {
-                    std::future::pending().await
-                } else {
-                    native_session.native_tool_renderers_snapshot::<(), serde_json::Value>().await
-                }
-            },
+            session.native_tool_renderers_snapshot::<(), serde_json::Value>(),
             session.native_tool_renderers_snapshot::<maho_ext_gpt_apply_patch::preview_format::ApplyPatchRenderState, serde_json::Value>(),
         );
-        assert!(held.is_none(), "a held lock's pending snapshot poll is not awaited");
+        assert!(held.is_none(), "a held runner lock's pending snapshot poll is not awaited");
         drop(guard);
         assert_eq!(super::poll_now(std::future::ready(7)), Some(7));
     }
