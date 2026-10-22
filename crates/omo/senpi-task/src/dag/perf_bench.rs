@@ -222,7 +222,8 @@ fn run_once(fixture: &Fixture, definition: DagDefinition) -> DagRunId {
 fn perf_bench_dag() {
     const WARMUP: usize = 2;
     const ITERS: usize = 15;
-    let scenarios: [(&str, fn(&str) -> DagDefinition); 3] = [("dag_wide64", wide), ("dag_layered8x8", layered), ("dag_chain64", chain)];
+    type Scenario = (&'static str, fn(&str) -> DagDefinition);
+    let scenarios: [Scenario; 3] = [("dag_wide64", wide), ("dag_layered8x8", layered), ("dag_chain64", chain)];
     for (name, build) in scenarios {
         let mut samples = Vec::new();
         for iteration in 0..WARMUP + ITERS {
