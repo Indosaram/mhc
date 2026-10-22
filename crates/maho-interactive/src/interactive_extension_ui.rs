@@ -224,6 +224,9 @@ impl ExtensionUi for InteractiveExtensionUi {
     fn set_status(&self, key: &str, text: Option<&str>) {
         let mut statuses = self.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(text) = text { statuses.insert(key.into(), text.into()); } else { statuses.remove(key); }
+        drop(statuses);
+        // The footer reads the shared map; ask the host frame to show the change.
+        self.send(UiRequest::WidgetFrame);
     }
     fn set_widget(&self, key: &str, content: Option<WidgetContent>, options: ExtensionWidgetOptions) { self.send(UiRequest::Widget(key.into(), content, options)); }
     fn set_header(&self, factory: Option<ComponentFactory>) { self.send(UiRequest::Header(factory)); }

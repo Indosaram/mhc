@@ -209,6 +209,12 @@ impl ToolExecutionComponent {
         self.on_change = callback;
     }
 
+    /// Whether the next frame must repaint this card: a spinner or todo-strike animation is
+    /// running, or a custom renderer asked for a repaint.
+    pub fn is_animating(&self) -> bool {
+        self.spinner_frame.is_some() || self.todo_strike_frames_left.is_some() || self.renderer_invalidated.get()
+    }
+
     /// The clock the progress line reads its elapsed time from; senpi uses `Date.now()` here.
     pub fn set_now_ms(&mut self, now_ms: f64) {
         self.now_ms = now_ms;
