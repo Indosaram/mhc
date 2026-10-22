@@ -47,7 +47,16 @@ pub fn register_state_hooks(api:&mut maho_ext_api::ExtensionApi,actions:std::syn
         api.on(event,std::sync::Arc::new(move |_event,ctx| {
             let accessors=accessors.clone();
             Box::pin(async move {
-                let entries=ctx.session_manager.get_branch().into_iter().map(|entry|entry.data).collect::<Vec<_>>();
+                // Each state entry replaces the previous state wholesale, so the newest entry that parses is the whole answer.
+                let (_,tail)=ctx.session_manager.get_branch_tail(0,&mut |data:&Value|{
+                    let payload=match data.get("type").and_then(Value::as_str) {
+                        Some("custom")=>if data.get("customType").and_then(Value::as_str)==Some(crate::todo_types::TODO_STATE_ENTRY_TYPE){data.get("data")}else{None},
+                        Some("message")=>data.get("message").filter(|message|message.get("role").and_then(Value::as_str)==Some("toolResult")&&matches!(message.get("toolName").and_then(Value::as_str),Some("todo"|"todowrite"))).and_then(|message|message.get("details")),
+                        _=>None,
+                    };
+                    payload.and_then(crate::todo_storage::read_todo_state_payload).is_some()
+                });
+                let entries=tail.into_iter().map(|entry|entry.data).collect::<Vec<_>>();
                 let state=crate::todo_storage::get_latest_state_from_branch_entries(&entries);
                 accessors.set_current_phases(state.phases);
                 accessors.set_current_ask(state.ask);
