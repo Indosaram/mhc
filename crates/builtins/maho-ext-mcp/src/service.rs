@@ -320,9 +320,9 @@ impl McpService {
     }
     pub async fn dispose(&mut self)->Result<(),McpServiceError> {
         let connections=std::mem::take(&mut self.connections);
-        for connection in connections.values(){
-            dispose_entry_connection(connection,&self.registry,self.owner).await?;
-        }
+        // Mirrors upstream `await Promise.all(entries.map(disposeEntryConnection))`: every dispose runs to completion, first error wins.
+        let results=futures::future::join_all(connections.values().map(|connection|dispose_entry_connection(connection,&self.registry,self.owner))).await;
+        for result in results{result?;}
         self.output_artifacts.cleanup()?;
         self.config=None;self.agent_dir=None;self.session_cwd=None;self.session_env.clear();self.deferred.clear();self.pending_auth.clear();self.registration=None;self.tier_b_registry=Default::default();self.native_tool_search_gate.publish(None);self.registration_inputs=None;self.self_weak=None;Ok(())
     }

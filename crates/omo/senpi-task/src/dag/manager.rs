@@ -976,7 +976,8 @@ fn skip_duplicate_terminal_transition(record: &DagRunRecordV1, payload: &DagRunE
 
 #[cfg(unix)]
 fn process_is_alive(pid: i64) -> bool {
-    std::process::Command::new("kill").arg("-0").arg(pid.to_string()).status().is_ok_and(|status| status.success())
+    // Same answer as `kill -0 <pid>` (EPERM and ESRCH both read as not alive) via a syscall instead of a fork.
+    i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw).is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
 }
 
 #[cfg(not(unix))]

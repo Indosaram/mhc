@@ -84,7 +84,11 @@ pub async fn shutdown_mcp_transport(connection:&McpTransportConnection)->Result<
             tokio::time::sleep(Duration::from_millis(100)).await;
             if let Some(pid)=client.root_pid {crate::process_tree::reap_process_tree(pid,Duration::from_millis(400),Duration::from_millis(500)).await;}
         };
-        let (result,())=tokio::join!(client.close(),cleanup);result?;
+        // Mirrors upstream: close runs concurrently, then is bounded to 400 ms after the reap (Promise.race).
+        let mut close=Box::pin(client.close());tokio::pin!(cleanup);let mut closed=None;
+        loop {tokio::select!{result=&mut close,if closed.is_none()=>{closed=Some(result);},()=&mut cleanup=>break}}
+        let result=match closed {Some(result)=>result,None=>tokio::time::timeout(Duration::from_millis(400),close).await.unwrap_or(Ok(()))};
+        result?;
     }else{tokio::time::sleep(Duration::from_millis(100)).await;}
     *shutdown=true;Ok(())
 }

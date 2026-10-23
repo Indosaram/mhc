@@ -559,8 +559,9 @@ impl MemoryWiring {
         now: &(dyn Fn() -> f64 + Sync),
         warn: &mut (dyn FnMut(&str, Option<&str>) + Send),
     ) {
+        // Upstream `onSessionShutdown` calls `w.dispose()` synchronously and never awaits `settled()`: an in-flight
+        // maintenance run is cancelled and winds down in the background instead of being joined on the shutdown path.
         self.maintenance.dispose();
-        self.maintenance.settled().await;
         // pin `wiring.ts` raceDetached "recall-store-settle": after "status-settle", before the reflection-live shutdown,
         // so the recall term-store save finishes. A save that outlives the deadline is left running.
         if let Some(settle) = self.seams.recall_store_settle.clone() {

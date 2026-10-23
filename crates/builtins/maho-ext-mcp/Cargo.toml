@@ -30,6 +30,9 @@ reqwest = { workspace = true, features = ["rustls-tls", "json", "stream"] }
 futures = "=0.3.34"
 icu_collator = "=2.3.1"
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "=1.1.4", features = ["process"] }
+
 [dev-dependencies]
 tempfile = "=3.27.0"
 reqwest = { workspace = true, features = ["rustls-tls", "rustls-tls-native-roots"] }
