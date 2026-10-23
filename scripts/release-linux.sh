@@ -49,6 +49,6 @@ test -x "$stage/mhc-launcher"
 bun tools/package-native.mjs --verify-only "$stage"
 "$stage/mhc" --version
 
-tar -C "$work/dist" -czf "$outdir/$name.tar.gz" "$name"
-(cd "$outdir" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+scripts/package-archive.sh "$work/dist" "$name"
+mv "$work/dist/$name.tar.gz" "$work/dist/$name.tar.gz.sha256" "$outdir/"
 echo "wrote $outdir/$name.tar.gz"

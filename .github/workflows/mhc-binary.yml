@@ -54,12 +54,7 @@ jobs:
           bun tools/package-native.mjs --verify-only "dist/$name"
           test -x "dist/$name/mhc" && test -x "dist/$name/mhc-launcher"
           test "$("dist/$name/mhc" --version)" = "$MHC_BUILD_VERSION"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
-          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
-          listing=$(tar -tzf "dist/$name.tar.gz")
-          for exe in mhc mhc-launcher; do
-            printf '%s\n' "$listing" | grep -Fx "$name/$exe" > /dev/null || { echo "dist/$name.tar.gz lacks $name/$exe" >&2; exit 1; }
-          done
+          scripts/package-archive.sh dist "$name"
 
       - uses: actions/upload-artifact@v7
         with:
