@@ -84,3 +84,16 @@ async fn two_services_share_the_transport_and_detach_independently() {
     let env=BTreeMap::from([("MCP_TEST_OWNER".into(),"changed".into())]);second.attach_session(cwd.path(),root.path(),&env,true,&[declaration]).await.unwrap();assert!(!Arc::ptr_eq(&second_connection,&second.connections["shared"].entry.lock().await.connection));
     second.dispose().await.unwrap();registry.dispose().await.unwrap();assert!(!maho_ext_mcp::process_tree::is_process_alive(pid).await);
 }
+#[tokio::test]
+async fn attach_returns_at_the_startup_race_deadline_while_a_hung_connect_is_still_pending() {
+    // Accepts TCP but never answers, so the HTTP initialize hangs until connectTimeoutMs.
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let address=listener.local_addr().unwrap();
+    let accept=tokio::spawn(async move {let mut held=Vec::new();while let Ok((socket,_))=listener.accept().await {held.push(socket);}});
+    let root=tempfile::tempdir().unwrap();let cwd=tempfile::tempdir().unwrap();let registry=Arc::new(HostMcpRegistry::default());let mut service=McpService::new(registry.clone(),1);
+    let declaration=maho_ext_api::RegisteredMcpServerDeclaration {name:"hung".into(),config:maho_ext_api::McpServerDeclaration {transport:Some(maho_ext_api::McpTransport::Http),url:Some(format!("http://{address}/mcp")),auth:Some(maho_ext_api::McpAuth::Disabled),lifecycle:Some(maho_ext_api::McpLifecycle::Eager),startup_timeout_ms:Some(100.0),connect_timeout_ms:Some(3000.0),..Default::default()},extension_path:"fixture-extension".into(),registration_cwd:cwd.path().into()};
+    let attach=tokio::time::timeout(std::time::Duration::from_millis(1500),service.attach_session(cwd.path(),root.path(),&BTreeMap::new(),true,&[declaration])).await;
+    assert!(attach.expect("attach blocked past the startup race on the hung connect").is_ok());
+    assert_eq!(service.wait_for_deferred_attach(std::time::Duration::ZERO).await,maho_ext_mcp::startup_race::McpStartupRaceResult::Timeout);
+    assert_eq!(service.wait_for_deferred_attach(std::time::Duration::from_secs(10)).await,maho_ext_mcp::startup_race::McpStartupRaceResult::Settled);
+    service.dispose().await.unwrap();registry.dispose().await.unwrap();accept.abort();
+}
