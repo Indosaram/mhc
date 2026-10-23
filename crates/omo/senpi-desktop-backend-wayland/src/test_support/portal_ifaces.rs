@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use zbus::message::Header;
 use zbus::zvariant::{ObjectPath, OwnedFd, OwnedObjectPath, OwnedValue, Value};
-use zbus::{fdo, interface, Connection};
+use zbus::{Connection, fdo, interface};
 
 use super::fake_portal::{Reply, State};
 
@@ -68,7 +68,10 @@ async fn create_session(
         sender_segment(header)?,
         token(options, "session_handle_token")?
     );
-    connection.object_server().at(path.as_str(), FakeSession).await?;
+    connection
+        .object_server()
+        .at(path.as_str(), FakeSession)
+        .await?;
     Ok(path)
 }
 
@@ -155,7 +158,11 @@ impl RemoteDesktopPortal {
     }
 
     #[zbus(name = "ConnectToEIS")]
-    fn connect_to_eis(&self, _session_handle: ObjectPath<'_>, _options: Options) -> fdo::Result<OwnedFd> {
+    fn connect_to_eis(
+        &self,
+        _session_handle: ObjectPath<'_>,
+        _options: Options,
+    ) -> fdo::Result<OwnedFd> {
         self.present()?;
         let stream = self
             .0
@@ -225,7 +232,10 @@ impl GlobalShortcutsPortal {
             self.0.recorded().bound.push((id.clone(), trigger.clone()));
             let info = HashMap::from([
                 ("description", Value::from("stop")),
-                ("trigger_description", Value::from(trigger.unwrap_or_default())),
+                (
+                    "trigger_description",
+                    Value::from(trigger.unwrap_or_default()),
+                ),
             ]);
             bound.push((id.clone(), info));
         }

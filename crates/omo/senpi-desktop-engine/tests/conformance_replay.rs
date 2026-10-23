@@ -14,7 +14,7 @@ mod common;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use common::{fake_backend, Engine};
+use common::{Engine, fake_backend};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -60,12 +60,22 @@ fn matches(expected: &Expected, actual: &Value) -> bool {
 }
 
 fn replay(name: &str, case: &Case) -> Result<(), String> {
-    let scenario = Path::new(REPO_ROOT).join(case.scenario.strip_prefix("crates/").unwrap_or(&case.scenario));
+    let scenario = Path::new(REPO_ROOT).join(
+        case.scenario
+            .strip_prefix("crates/")
+            .unwrap_or(&case.scenario),
+    );
     if !scenario.is_file() {
         return Err(format!("{name}: scenario {} does not exist", case.scenario));
     }
-    let mut env = vec![fake_backend(scenario.to_str().expect("repo paths are UTF-8"))];
-    env.extend(case.env.iter().map(|(key, value)| (key.as_str(), value.clone())));
+    let mut env = vec![fake_backend(
+        scenario.to_str().expect("repo paths are UTF-8"),
+    )];
+    env.extend(
+        case.env
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.clone())),
+    );
     let mut engine = Engine::spawn(&env);
     for (index, step) in case.steps.iter().enumerate() {
         engine.send(&step.send);
@@ -93,7 +103,10 @@ fn corpus() -> Vec<(String, Case)> {
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
         .unwrap_or_else(|error| panic!("corpus {} is readable: {error}", dir.display()))
         .map(|entry| entry.expect("corpus entry is readable").path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "json"))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
         .collect();
     paths.sort();
     paths
@@ -105,7 +118,8 @@ fn corpus() -> Vec<(String, Case)> {
                 .unwrap_or_default()
                 .to_owned();
             let text = std::fs::read_to_string(&path).expect("fixture is readable");
-            let case = serde_json::from_str(&text).unwrap_or_else(|error| panic!("{name}: {error}"));
+            let case =
+                serde_json::from_str(&text).unwrap_or_else(|error| panic!("{name}: {error}"));
             (name, case)
         })
         .collect()

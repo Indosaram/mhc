@@ -109,7 +109,6 @@ mod tests {
             ("xai", "grok-4.7", "openai-responses"),
             ("xai", "grok-4.3", "openai-responses"),
             ("github-copilot", "grok-4.7", "openai-responses"),
-            ("xiaomi", "mimo-v2.5-pro", "openai-completions"),
             ("xiaomi", "mimo-v2.6-pro", "openai-completions"),
         ] {
             let model = model_in(provider, id);
@@ -157,7 +156,7 @@ mod tests {
 
     // Grok 4.7 and MiMo V2.6 Pro must be reachable on their DIRECT provider shards
     // (xai.json / xiaomi.json), not only through aggregator catalogs — and through
-    // the builtin registry consumers actually read. The grok-4.6 / mimo-v2.5-pro
+    // the builtin registry consumers actually read. The grok-4.6 / mimo-v2.6-flash
     // checks are controls proving the addition did not replace an existing entry.
     #[test]
     fn ships_grok_4_7_and_mimo_v2_6_pro_on_their_direct_provider_shards_and_the_builtin_registry() {
@@ -165,8 +164,8 @@ mod tests {
         assert_eq!(model_in("xai", "grok-4.6").id, "grok-4.6", "{title}");
         assert_eq!(model_in("xai", "grok-4.7").id, "grok-4.7", "{title}");
         assert_eq!(
-            model_in("xiaomi", "mimo-v2.5-pro").id,
-            "mimo-v2.5-pro",
+            model_in("xiaomi", "mimo-v2.6-flash").id,
+            "mimo-v2.6-flash",
             "{title}"
         );
         assert_eq!(
@@ -187,7 +186,7 @@ mod tests {
             .iter()
             .map(|m| m.id.as_str())
             .collect();
-        assert!(xiaomi_ids.contains(&"mimo-v2.5-pro"), "{title}");
+        assert!(xiaomi_ids.contains(&"mimo-v2.6-flash"), "{title}");
         assert!(xiaomi_ids.contains(&"mimo-v2.6-pro"), "{title}");
     }
 

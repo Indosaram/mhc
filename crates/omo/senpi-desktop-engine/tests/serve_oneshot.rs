@@ -8,7 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const BINARY: &str = env!("CARGO_BIN_EXE_senpi-desktop-engine");
 const TWO_DISPLAYS: &str = concat!(
@@ -107,8 +107,15 @@ fn serve_oneshot_daemon_session_shared_frames_stop_resume_and_host_only_guard() 
         "desktop.click",
         json!({"target": "desktop", "x": 10.0, "y": 10.0}),
     );
-    assert_eq!(refused["error"]["data"]["code"], json!("Suspended"), "{refused}");
-    let resumed = daemon.command(&["--resume"]).output().expect("--resume runs");
+    assert_eq!(
+        refused["error"]["data"]["code"],
+        json!("Suspended"),
+        "{refused}"
+    );
+    let resumed = daemon
+        .command(&["--resume"])
+        .output()
+        .expect("--resume runs");
     assert!(resumed.status.success(), "{resumed:?}");
     // And: the Global path keeps beating; past the 2 s freshness window input is still admitted.
     std::thread::sleep(std::time::Duration::from_millis(2_500));
@@ -131,7 +138,8 @@ fn serve_oneshot_daemon_session_shared_frames_stop_resume_and_host_only_guard() 
             "{method}: {rejected}"
         );
     }
-    let echoed = daemon.oneshot(&json!({"jsonrpc": "2.0", "id": "1", "method": "desktop.capabilities"}));
+    let echoed =
+        daemon.oneshot(&json!({"jsonrpc": "2.0", "id": "1", "method": "desktop.capabilities"}));
     assert_eq!(echoed["id"], json!("1"));
     let stopped = daemon.call(8, "desktop.stop", json!({}));
     assert!(stopped.get("error").is_none(), "{stopped}");

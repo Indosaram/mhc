@@ -37,6 +37,8 @@ pub struct FactsPayloadEnvelope {
     pub known_people: Vec<FactsKnownPerson>,
     #[serde(rename = "primaryHuman")]
     pub primary_human: FactsPrimaryHuman,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agreements: Option<Vec<crate::agreements::FactsKnownAgreement>>,
 }
 
 impl FactsPayloadEnvelope {
@@ -48,6 +50,7 @@ impl FactsPayloadEnvelope {
             today: self.today.clone(),
             known_people: self.known_people.clone(),
             primary_human: self.primary_human.clone(),
+            agreements: self.agreements.clone(),
             entries,
         }
     }
@@ -63,6 +66,8 @@ pub struct FactsPayload {
     pub known_people: Vec<FactsKnownPerson>,
     #[serde(rename = "primaryHuman")]
     pub primary_human: FactsPrimaryHuman,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agreements: Option<Vec<crate::agreements::FactsKnownAgreement>>,
     pub entries: Vec<FactsQueueEntry>,
 }
 
@@ -245,8 +250,7 @@ fn group_by_conversation<'a, T: AsRef<FactsQueueEntry>>(
     entries: impl IntoIterator<Item = &'a T>,
 ) -> Vec<(String, Vec<&'a T>)> {
     let mut order = Vec::new();
-    let mut map: std::collections::HashMap<String, Vec<&'a T>> =
-        std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<String, Vec<&'a T>> = std::collections::HashMap::new();
 
     for entry in entries {
         let conv_id = entry.as_ref().conversation_id.clone();
@@ -280,8 +284,14 @@ fn order_conversations<T: AsRef<FactsQueueEntry>>(
 ) -> Vec<Vec<&T>> {
     let mut buckets: Vec<Vec<&T>> = groups.into_iter().map(|(_, b)| b).collect();
     buckets.sort_by(|left, right| {
-        let left_wait = left.first().map(|e| waited_ms(e.as_ref(), now_millis)).unwrap_or(0);
-        let right_wait = right.first().map(|e| waited_ms(e.as_ref(), now_millis)).unwrap_or(0);
+        let left_wait = left
+            .first()
+            .map(|e| waited_ms(e.as_ref(), now_millis))
+            .unwrap_or(0);
+        let right_wait = right
+            .first()
+            .map(|e| waited_ms(e.as_ref(), now_millis))
+            .unwrap_or(0);
         let left_starved = left_wait >= starvation_ms;
         let right_starved = right_wait >= starvation_ms;
 

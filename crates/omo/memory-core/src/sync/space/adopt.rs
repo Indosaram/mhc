@@ -109,7 +109,7 @@ pub fn plan_adoption_with_merge(
     let mut removal_candidates = Vec::new();
     let mut retained_sources = Vec::new();
     for side in sides {
-        match first_missing_fact(&rendered, &normalize_input(&side.text), Some(&registers)) {
+        match first_missing_fact(&rendered, &normalize_input(&side.text), &registers) {
             None => removal_candidates.push(side.path.clone()),
             Some(reason) => retained_sources.push(RetainedSource {
                 path: side.path.clone(),

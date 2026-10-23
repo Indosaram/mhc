@@ -201,12 +201,20 @@ pub fn current_env() -> HashMap<String, String> {
     std::env::vars().collect()
 }
 
-/// senpi `getShareViewerUrl`: the share viewer URL for a gist id.
-pub fn get_share_viewer_url(gist_id: &str) -> String {
-    let base = env_value("SHARE_VIEWER_URL", &current_env())
+/// senpi `getShareViewerBase`: the configured share viewer base (`<PREFIX>_SHARE_VIEWER_URL`, trimmed),
+/// `None` when unset or empty. There is no default viewer: a gist link is all `/share` shows then.
+pub fn get_share_viewer_base() -> Option<String> {
+    env_value("SHARE_VIEWER_URL", &current_env())
+        .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "https://pi.dev/session/".to_owned());
-    format!("{base}#{gist_id}")
+}
+
+/// senpi `isShareDisabledByEnvironment`: `<PREFIX>_DISABLE_SHARE` set to anything but empty, `0` or `false`.
+pub fn is_share_disabled_by_environment() -> bool {
+    env_value("DISABLE_SHARE", &current_env()).is_some_and(|value| {
+        let value = value.trim().to_lowercase();
+        !value.is_empty() && value != "0" && value != "false"
+    })
 }
 
 /// A brand profile's display version, else the engine version.
@@ -238,7 +246,10 @@ mod tests {
             Some(""),
         );
         // Then
-        assert_eq!(resolved, home.join(config_dir_name()).join("agent").to_string_lossy());
+        assert_eq!(
+            resolved,
+            home.join(config_dir_name()).join("agent").to_string_lossy()
+        );
     }
 
     #[test]

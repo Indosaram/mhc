@@ -9,17 +9,19 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use maho_rpc::custom_capability::{QUESTION_CAPABILITY, RENDERED_COMPONENTS_CAPABILITY};
-use maho_rpc::host_ensure::{ensure_host, EnsureHostError, EnsureHostOptions, EnsuredHostInfo};
+use maho_rpc::host_ensure::{EnsureHostError, EnsureHostOptions, EnsuredHostInfo, ensure_host};
 use maho_rpc::rpc_client::{
-    classify_rpc_client_event, default_rpc_socket_path, is_provider_account_event, RpcClient, RpcClientError,
-    RpcClientEventKind, RpcClientOptions, RpcClientUnsubscribe, RpcEventListener,
+    RpcClient, RpcClientError, RpcClientEventKind, RpcClientOptions, RpcClientUnsubscribe,
+    RpcEventListener, classify_rpc_client_event, default_rpc_socket_path,
+    is_provider_account_event,
 };
 
 /// senpi's `HOST_CLIENT_CAPABILITIES`.
-pub const HOST_CLIENT_CAPABILITIES: [&str; 2] = [RENDERED_COMPONENTS_CAPABILITY, QUESTION_CAPABILITY];
+pub const HOST_CLIENT_CAPABILITIES: [&str; 2] =
+    [RENDERED_COMPONENTS_CAPABILITY, QUESTION_CAPABILITY];
 
 pub const INTERACTIVE_HOST_FALLBACK_WARNING: &str =
     "Warning: shared interactive host unavailable; continuing locally";
@@ -99,6 +101,9 @@ pub struct RemoteSessionState {
     pub service_tier: Option<String>,
     pub fast_mode: bool,
     pub is_streaming: bool,
+    pub paused: bool,
+    pub paused_notice_count: f64,
+    pub holds: Vec<Value>,
     pub is_compacting: bool,
     pub retry_attempt: f64,
     pub is_bash_running: bool,
@@ -136,6 +141,13 @@ impl RemoteSessionState {
             is_compacting: bool_field(state, "isCompacting"),
             retry_attempt: number_field(state, "retryAttempt"),
             is_bash_running: bool_field(state, "isBashRunning"),
+            paused: bool_field(state, "paused"),
+            paused_notice_count: number_field(state, "pausedNoticeCount"),
+            holds: state
+                .get("holds")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
             steering_mode: string_field(state, "steeringMode"),
             follow_up_mode: string_field(state, "followUpMode"),
             session_file: string_field(state, "sessionFile"),
@@ -148,7 +160,11 @@ impl RemoteSessionState {
             scoped_models: state.get("scopedModels").cloned().unwrap_or(Value::Null),
             steering: string_list(state, "steering"),
             follow_up: string_list(state, "followUp"),
-            ordered: state.get("ordered").and_then(Value::as_array).cloned().unwrap_or_default(),
+            ordered: state
+                .get("ordered")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
             auto_compaction_enabled: bool_field(state, "autoCompactionEnabled"),
             message_count: number_field(state, "messageCount"),
             pending_message_count: number_field(state, "pendingMessageCount"),
@@ -186,29 +202,56 @@ fn string_list(value: &Value, key: &str) -> Vec<String> {
     value
         .get(key)
         .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
 /// senpi's `hydrateMessageUpdate`; mutates the mirrored streaming message in place.
 pub fn hydrate_message_update(event: &Value, streaming: Option<&mut Value>) -> Value {
-    let Some(streaming) = streaming else { return event.clone(); };
+    let Some(streaming) = streaming else {
+        return event.clone();
+    };
     if event.get("type").and_then(Value::as_str) != Some("message_update") {
         return event.clone();
     }
-    let Some(update) = event.get("assistantMessageEvent") else { return event.clone(); };
-    let kind = update.get("type").and_then(Value::as_str).unwrap_or_default();
+    let Some(update) = event.get("assistantMessageEvent") else {
+        return event.clone();
+    };
+    let kind = update
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if !matches!(kind, "text_delta" | "thinking_delta" | "toolcall_delta") {
         return event.clone();
     }
-    let index = update.get("contentIndex").and_then(Value::as_u64).unwrap_or(0) as usize;
-    let delta = update.get("delta").and_then(Value::as_str).unwrap_or_default();
-    if let Some(block) = streaming.get_mut("content").and_then(|content| content.get_mut(index)) {
+    let index = update
+        .get("contentIndex")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let delta = update
+        .get("delta")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if let Some(block) = streaming
+        .get_mut("content")
+        .and_then(|content| content.get_mut(index))
+    {
         match (kind, block.get("type").and_then(Value::as_str)) {
             ("text_delta", Some("text")) => append_str(block, "text", delta),
             ("thinking_delta", Some("thinking")) => append_str(block, "thinking", delta),
             ("toolcall_delta", Some("toolCall")) => {
-                let raw = format!("{}{delta}", block.get("arguments").map_or_else(|| "{}".to_owned(), Value::to_string));
+                let raw = format!(
+                    "{}{delta}",
+                    block
+                        .get("arguments")
+                        .map_or_else(|| "{}".to_owned(), Value::to_string)
+                );
                 if let Ok(parsed) = serde_json::from_str::<Value>(&raw)
                     && parsed.is_object()
                 {
@@ -230,7 +273,11 @@ pub fn hydrate_message_update(event: &Value, streaming: Option<&mut Value>) -> V
 }
 
 fn append_str(block: &mut Value, key: &str, delta: &str) {
-    let existing = block.get(key).and_then(Value::as_str).unwrap_or_default().to_owned();
+    let existing = block
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     block[key] = Value::String(format!("{existing}{delta}"));
 }
 
@@ -249,7 +296,10 @@ pub fn reconcile_entries(
         return None;
     }
     if mirror.len() == authoritative.len()
-        && mirror.iter().zip(authoritative).all(|(left, right)| left.get("id") == right.get("id"))
+        && mirror
+            .iter()
+            .zip(authoritative)
+            .all(|(left, right)| left.get("id") == right.get("id"))
     {
         return None;
     }
@@ -293,7 +343,11 @@ pub struct RemoteSessionProxy {
 }
 
 impl RemoteSessionProxy {
-    pub fn new(state: RemoteSessionState, client: Arc<RpcClient>, on_warning: Option<InteractiveHostWarningHandler>) -> Self {
+    pub fn new(
+        state: RemoteSessionState,
+        client: Arc<RpcClient>,
+        on_warning: Option<InteractiveHostWarningHandler>,
+    ) -> Self {
         let next_order = state.next_queued_input_order();
         Self {
             client,
@@ -311,7 +365,10 @@ impl RemoteSessionProxy {
     }
 
     pub fn state(&self) -> RemoteSessionState {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Read the mirrored state under the lock without cloning it. `f` must not call back into the proxy.
@@ -321,20 +378,37 @@ impl RemoteSessionProxy {
 
     /// senpi's `performRefresh` state commit.
     pub fn set_state(&self, state: RemoteSessionState) {
-        *self.next_queued_input_order.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = state.next_queued_input_order();
-        *self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = state;
+        *self
+            .next_queued_input_order
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = state.next_queued_input_order();
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = state;
     }
 
     /// Keeps the transport subscription alive for as long as the proxy is.
     pub fn hold_subscription(&self, subscription: RpcClientUnsubscribe) {
-        *self.subscription.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(subscription);
+        *self
+            .subscription
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(subscription);
     }
 
     pub fn set_host_ui_handler(&self, handler: Option<HostUiHandler>) {
-        let pending = handler
-            .as_ref()
-            .map(|_| std::mem::take(&mut *self.pending_ui_requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner)));
-        *self.host_ui_handler.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = handler.clone();
+        let pending = handler.as_ref().map(|_| {
+            std::mem::take(
+                &mut *self
+                    .pending_ui_requests
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+        });
+        *self
+            .host_ui_handler
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = handler.clone();
         if let (Some(handler), Some(pending)) = (handler, pending) {
             for request in pending {
                 self.queue_ui_response(&handler, &request);
@@ -344,49 +418,87 @@ impl RemoteSessionProxy {
 
     /// senpi's `setHostUiHandler` drain of responses the mode produced.
     pub fn take_ui_responses(&self) -> Vec<Value> {
-        std::mem::take(&mut *self.pending_ui_responses.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+        std::mem::take(
+            &mut *self
+                .pending_ui_responses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     fn queue_ui_response(&self, handler: &HostUiHandler, request: &Value) {
         if let Some(response) = handler(request) {
-            self.pending_ui_responses.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(response);
+            self.pending_ui_responses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(response);
         }
     }
 
     /// senpi's `subscribe`.
     pub fn subscribe(&self, listener: RpcEventListener) -> RemoteSubscription {
-        self.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(listener.clone());
-        RemoteSubscription { listeners: self.listeners.clone(), listener: Some(listener) }
+        self.listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(listener.clone());
+        RemoteSubscription {
+            listeners: self.listeners.clone(),
+            listener: Some(listener),
+        }
     }
 
     /// Fetch the host's authoritative message history off the transport, delivering it
     /// generation-tagged to `sender`. Spawned so the synchronous UI loop is never blocked; a task
     /// that finishes after a newer request or a replacement is discarded by the caller's generation
     /// check.
-    pub fn spawn_fetch_messages(&self, generation: u64, sender: tokio::sync::mpsc::UnboundedSender<(u64, Result<Vec<Value>, String>)>) {
-        let Ok(handle) = tokio::runtime::Handle::try_current() else { return; };
+    pub fn spawn_fetch_messages(
+        &self,
+        generation: u64,
+        sender: tokio::sync::mpsc::UnboundedSender<(u64, Result<Vec<Value>, String>)>,
+    ) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
         let client = self.client.clone();
         handle.spawn(async move {
             let result = client
                 .get_messages()
                 .await
                 .map_err(|error| error.to_string())
-                .and_then(|data| data.get("messages").and_then(Value::as_array).cloned().ok_or_else(|| "RPC get_messages returned no messages array".to_owned()));
+                .and_then(|data| {
+                    data.get("messages")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .ok_or_else(|| "RPC get_messages returned no messages array".to_owned())
+                });
             let _ = sender.send((generation, result));
         });
     }
 
     /// Fetch the host's available-model catalog off the transport, generation-tagged like the
     /// history fetch, so the model selectors read the remote catalog without a stale local value.
-    pub fn spawn_fetch_models(&self, generation: u64, sender: tokio::sync::mpsc::UnboundedSender<(u64, Result<Vec<Value>, String>)>) {
-        let Ok(handle) = tokio::runtime::Handle::try_current() else { return; };
+    pub fn spawn_fetch_models(
+        &self,
+        generation: u64,
+        sender: tokio::sync::mpsc::UnboundedSender<(u64, Result<Vec<Value>, String>)>,
+    ) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
         let client = self.client.clone();
         handle.spawn(async move {
             let result = client
                 .get_available_models()
                 .await
                 .map_err(|error| error.to_string())
-                .and_then(|data| data.get("models").and_then(Value::as_array).cloned().ok_or_else(|| "RPC get_available_models returned no models array".to_owned()));
+                .and_then(|data| {
+                    data.get("models")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .ok_or_else(|| {
+                            "RPC get_available_models returned no models array".to_owned()
+                        })
+                });
             let _ = sender.send((generation, result));
         });
     }
@@ -394,43 +506,74 @@ impl RemoteSessionProxy {
     /// senpi's `clearQueue` proxy arm: fire the RPC clear without awaiting; the caller reads the
     /// mirrored queue synchronously.
     pub fn spawn_clear_queue(&self, abort_will_follow: bool) {
-        let Ok(handle) = tokio::runtime::Handle::try_current() else { return; };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
         let client = self.client.clone();
-        handle.spawn(async move { let _ = client.clear_queue(Some(abort_will_follow)).await; });
+        handle.spawn(async move {
+            let _ = client.clear_queue(Some(abort_will_follow)).await;
+        });
     }
 
     /// senpi's `setFavoriteModels` proxy arm: the mirror updates synchronously, then the frame is
     /// fired and a failure reported.
     pub fn spawn_set_favorite_models(self: &Arc<Self>, models: Value) {
         self.update(|state| state.favorite_models = models.clone());
-        let Ok(handle) = tokio::runtime::Handle::try_current() else { return; };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
         let proxy = self.clone();
-        handle.spawn(async move { if let Err(error) = proxy.set_favorite_models(models).await { proxy.report_action_failure("setFavoriteModels", &error); } });
+        handle.spawn(async move {
+            if let Err(error) = proxy.set_favorite_models(models).await {
+                proxy.report_action_failure("setFavoriteModels", &error);
+            }
+        });
     }
 
     /// senpi's `setScopedModels` proxy arm: the mirror updates synchronously, then the frame is
     /// fired and a failure reported.
     pub fn spawn_set_scoped_models(self: &Arc<Self>, models: Value) {
         self.update(|state| state.scoped_models = models.clone());
-        let Ok(handle) = tokio::runtime::Handle::try_current() else { return; };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
         let proxy = self.clone();
-        handle.spawn(async move { if let Err(error) = proxy.set_scoped_models(models).await { proxy.report_action_failure("setScopedModels", &error); } });
+        handle.spawn(async move {
+            if let Err(error) = proxy.set_scoped_models(models).await {
+                proxy.report_action_failure("setScopedModels", &error);
+            }
+        });
     }
 
     /// Fetch the host's session stats off the transport, generation-tagged.
-    pub fn spawn_fetch_stats(&self, generation: u64, sender: tokio::sync::mpsc::UnboundedSender<(u64, Result<Value, String>)>) {
-        let Ok(handle) = tokio::runtime::Handle::try_current() else { return; };
+    pub fn spawn_fetch_stats(
+        &self,
+        generation: u64,
+        sender: tokio::sync::mpsc::UnboundedSender<(u64, Result<Value, String>)>,
+    ) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
         let client = self.client.clone();
         handle.spawn(async move {
-            let result = client.get_session_stats().await.map_err(|error| error.to_string());
+            let result = client
+                .get_session_stats()
+                .await
+                .map_err(|error| error.to_string());
             let _ = sender.send((generation, result));
         });
     }
 
     /// Subscribe to decoded `AgentSessionEvent`s; the returned guard removes the listener on drop.
     pub fn subscribe_session_events(&self, listener: SessionEventListener) -> SessionSubscription {
-        self.session_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(listener.clone());
-        SessionSubscription { listeners: self.session_listeners.clone(), listener: Some(listener) }
+        self.session_listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(listener.clone());
+        SessionSubscription {
+            listeners: self.session_listeners.clone(),
+            listener: Some(listener),
+        }
     }
 
     /// senpi's `handleWireEvent`: hydrate, mirror the state, and fan out to listeners.
@@ -440,36 +583,73 @@ impl RemoteSessionProxy {
         }
         match classify_rpc_client_event(event) {
             Some(RpcClientEventKind::ExtensionUiRequest) => {
-                let handler = self.host_ui_handler.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+                let handler = self
+                    .host_ui_handler
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
                 match handler {
                     Some(handler) => self.queue_ui_response(&handler, event),
-                    None => self.pending_ui_requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone()),
+                    None => self
+                        .pending_ui_requests
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(event.clone()),
                 }
                 return;
             }
             Some(RpcClientEventKind::MessageStart)
-                if event.get("message").and_then(|message| message.get("role")).and_then(Value::as_str) == Some("assistant") =>
+                if event
+                    .get("message")
+                    .and_then(|message| message.get("role"))
+                    .and_then(Value::as_str)
+                    == Some("assistant") =>
             {
-                *self.streaming_assistant.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = event.get("message").cloned();
+                *self
+                    .streaming_assistant
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    event.get("message").cloned();
             }
             Some(RpcClientEventKind::MessageEnd)
-                if event.get("message").and_then(|message| message.get("role")).and_then(Value::as_str) == Some("assistant") =>
+                if event
+                    .get("message")
+                    .and_then(|message| message.get("role"))
+                    .and_then(Value::as_str)
+                    == Some("assistant") =>
             {
-                *self.streaming_assistant.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = event.get("message").cloned();
+                *self
+                    .streaming_assistant
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    event.get("message").cloned();
             }
             _ => {}
         }
         self.apply_state_event(event);
         let hydrated = {
-            let mut streaming = self.streaming_assistant.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut streaming = self
+                .streaming_assistant
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             hydrate_message_update(event, streaming.as_mut())
         };
-        let listeners = self.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let listeners = self
+            .listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         for listener in listeners {
             listener(&hydrated);
         }
-        if let Some(session_event) = maho_rpc::session_event_decode::session_event_from_record(event) {
-            let listeners = self.session_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if let Some(session_event) =
+            maho_rpc::session_event_decode::session_event_from_record(event)
+        {
+            let listeners = self
+                .session_listeners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             for listener in listeners {
                 listener(&session_event);
             }
@@ -479,7 +659,10 @@ impl RemoteSessionProxy {
     /// senpi's `handleWireEvent` state mirroring.
     pub fn apply_state_event(&self, event: &Value) {
         let kind = classify_rpc_client_event(event);
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match kind {
             Some(RpcClientEventKind::AgentStart) => state.is_streaming = true,
             Some(RpcClientEventKind::AgentSettled) => {
@@ -488,7 +671,9 @@ impl RemoteSessionProxy {
             }
             Some(RpcClientEventKind::CompactionStart) => state.is_compacting = true,
             Some(RpcClientEventKind::CompactionEnd) => state.is_compacting = false,
-            Some(RpcClientEventKind::AutoRetryStart) => state.retry_attempt = number_field(event, "attempt"),
+            Some(RpcClientEventKind::AutoRetryStart) => {
+                state.retry_attempt = number_field(event, "attempt")
+            }
             Some(RpcClientEventKind::AutoRetryEnd) => state.retry_attempt = 0.,
             Some(RpcClientEventKind::BashStart) => state.is_bash_running = true,
             Some(RpcClientEventKind::BashEnd) => state.is_bash_running = false,
@@ -504,7 +689,9 @@ impl RemoteSessionProxy {
                 state.model = event.get("model").cloned();
                 state.thinking_level = string_field(event, "thinkingLevel");
             }
-            Some(RpcClientEventKind::ThinkingLevelChanged) => state.thinking_level = string_field(event, "level"),
+            Some(RpcClientEventKind::ThinkingLevelChanged) => {
+                state.thinking_level = string_field(event, "level")
+            }
             Some(RpcClientEventKind::ServiceTierChanged) => {
                 state.service_tier = string_field(event, "tier");
                 state.fast_mode = bool_field(event, "fastMode");
@@ -514,16 +701,24 @@ impl RemoteSessionProxy {
                 state.follow_up_mode = string_field(event, "followUpMode");
                 state.auto_compaction_enabled = bool_field(event, "autoCompactionEnabled");
             }
-            Some(RpcClientEventKind::SessionInfoChanged) => state.session_name = string_field(event, "name"),
+            Some(RpcClientEventKind::SessionInfoChanged) => {
+                state.session_name = string_field(event, "name")
+            }
             _ => {}
         }
         let order = state.next_queued_input_order();
-        *self.next_queued_input_order.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = order;
+        *self
+            .next_queued_input_order
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = order;
     }
 
     /// senpi's `reserveQueuedInputOrder`.
     pub fn reserve_queued_input_order(&self) -> f64 {
-        let mut order = self.next_queued_input_order.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut order = self
+            .next_queued_input_order
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *order += 1.;
         *order
     }
@@ -552,7 +747,12 @@ impl RemoteSessionProxy {
 
     /// senpi's `transportCall` fallback: a transport loss is reported and yields the cancelled
     /// value; a command refusal propagates to the caller.
-    fn settle<T>(&self, action: &str, result: Result<T, RpcClientError>, cancelled: T) -> Result<T, RpcClientError> {
+    fn settle<T>(
+        &self,
+        action: &str,
+        result: Result<T, RpcClientError>,
+        cancelled: T,
+    ) -> Result<T, RpcClientError> {
         match result {
             Ok(value) => Ok(value),
             Err(error) if error.is_transport_gone() => {
@@ -564,40 +764,92 @@ impl RemoteSessionProxy {
     }
 
     /// senpi's fire-and-forget setters: report a transport loss, propagate a refusal.
-    fn settle_unit(&self, action: &str, result: Result<(), RpcClientError>) -> Result<(), RpcClientError> {
+    fn settle_unit(
+        &self,
+        action: &str,
+        result: Result<(), RpcClientError>,
+    ) -> Result<(), RpcClientError> {
         self.settle(action, result, ())
     }
 
     fn read<R>(&self, f: impl FnOnce(&RemoteSessionState) -> R) -> R {
-        f(&self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+        f(&self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 
     fn update<R>(&self, f: impl FnOnce(&mut RemoteSessionState) -> R) -> R {
-        f(&mut self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+        f(&mut self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 
     // senpi's mirrored reads (`isStreaming`, `sessionId`, `model`, ...).
-    pub fn is_streaming(&self) -> bool { self.read(|state| state.is_streaming) }
-    pub fn is_idle(&self) -> bool { !self.is_streaming() }
-    pub fn is_compacting(&self) -> bool { self.read(|state| state.is_compacting) }
-    pub fn pending_message_count(&self) -> f64 { self.read(|state| state.pending_message_count) }
-    pub fn retry_attempt(&self) -> f64 { self.read(|state| state.retry_attempt) }
-    pub fn is_bash_running(&self) -> bool { self.read(|state| state.is_bash_running) }
-    pub fn is_fast_mode_active(&self) -> bool { self.read(|state| state.fast_mode) }
-    pub fn session_file(&self) -> Option<String> { self.read(|state| state.session_file.clone()) }
-    pub fn session_id(&self) -> Option<String> { self.read(|state| state.session_id.clone()) }
-    pub fn session_name(&self) -> Option<String> { self.read(|state| state.session_name.clone()) }
-    pub fn service_tier(&self) -> Option<String> { self.read(|state| state.service_tier.clone()) }
-    pub fn steering_mode(&self) -> Option<String> { self.read(|state| state.steering_mode.clone()) }
-    pub fn follow_up_mode(&self) -> Option<String> { self.read(|state| state.follow_up_mode.clone()) }
-    pub fn auto_compaction_enabled(&self) -> bool { self.read(|state| state.auto_compaction_enabled) }
-    pub fn model(&self) -> Option<Value> { self.read(|state| state.model.clone()) }
-    pub fn thinking_level(&self) -> Option<String> { self.read(|state| state.thinking_level.clone()) }
-    pub fn context_usage(&self) -> Option<Value> { self.read(|state| state.context_usage.clone()) }
-    pub fn favorite_models(&self) -> Value { self.read(|state| state.favorite_models.clone()) }
-    pub fn scoped_models(&self) -> Value { self.read(|state| state.scoped_models.clone()) }
-    pub fn steering_messages(&self) -> Vec<String> { self.read(|state| state.steering.clone()) }
-    pub fn follow_up_messages(&self) -> Vec<String> { self.read(|state| state.follow_up.clone()) }
+    pub fn is_streaming(&self) -> bool {
+        self.read(|state| state.is_streaming)
+    }
+    pub fn is_idle(&self) -> bool {
+        !self.is_streaming()
+    }
+    pub fn is_compacting(&self) -> bool {
+        self.read(|state| state.is_compacting)
+    }
+    pub fn pending_message_count(&self) -> f64 {
+        self.read(|state| state.pending_message_count)
+    }
+    pub fn retry_attempt(&self) -> f64 {
+        self.read(|state| state.retry_attempt)
+    }
+    pub fn is_bash_running(&self) -> bool {
+        self.read(|state| state.is_bash_running)
+    }
+    pub fn is_fast_mode_active(&self) -> bool {
+        self.read(|state| state.fast_mode)
+    }
+    pub fn session_file(&self) -> Option<String> {
+        self.read(|state| state.session_file.clone())
+    }
+    pub fn session_id(&self) -> Option<String> {
+        self.read(|state| state.session_id.clone())
+    }
+    pub fn session_name(&self) -> Option<String> {
+        self.read(|state| state.session_name.clone())
+    }
+    pub fn service_tier(&self) -> Option<String> {
+        self.read(|state| state.service_tier.clone())
+    }
+    pub fn steering_mode(&self) -> Option<String> {
+        self.read(|state| state.steering_mode.clone())
+    }
+    pub fn follow_up_mode(&self) -> Option<String> {
+        self.read(|state| state.follow_up_mode.clone())
+    }
+    pub fn auto_compaction_enabled(&self) -> bool {
+        self.read(|state| state.auto_compaction_enabled)
+    }
+    pub fn model(&self) -> Option<Value> {
+        self.read(|state| state.model.clone())
+    }
+    pub fn thinking_level(&self) -> Option<String> {
+        self.read(|state| state.thinking_level.clone())
+    }
+    pub fn context_usage(&self) -> Option<Value> {
+        self.read(|state| state.context_usage.clone())
+    }
+    pub fn favorite_models(&self) -> Value {
+        self.read(|state| state.favorite_models.clone())
+    }
+    pub fn scoped_models(&self) -> Value {
+        self.read(|state| state.scoped_models.clone())
+    }
+    pub fn steering_messages(&self) -> Vec<String> {
+        self.read(|state| state.steering.clone())
+    }
+    pub fn follow_up_messages(&self) -> Vec<String> {
+        self.read(|state| state.follow_up.clone())
+    }
 
     /// senpi's `prompt`.
     pub async fn prompt(&self, message: &str, options: Value) -> Result<(), RpcClientError> {
@@ -642,11 +894,19 @@ impl RemoteSessionProxy {
     }
 
     /// senpi's `steer`: the mirror records the queued input before the frame goes out.
-    pub async fn steer(&self, message: &str, images: Option<Value>, enqueue_order: Option<f64>) -> Result<(), RpcClientError> {
-        let order = enqueue_order.unwrap_or_else(|| self.read(|state| state.next_queued_input_order()) + 1.);
+    pub async fn steer(
+        &self,
+        message: &str,
+        images: Option<Value>,
+        enqueue_order: Option<f64>,
+    ) -> Result<(), RpcClientError> {
+        let order = enqueue_order
+            .unwrap_or_else(|| self.read(|state| state.next_queued_input_order()) + 1.);
         self.update(|state| {
             state.steering.push(message.to_owned());
-            state.ordered.push(json!({"text": message, "mode": "steer", "enqueueOrder": order}));
+            state
+                .ordered
+                .push(json!({"text": message, "mode": "steer", "enqueueOrder": order}));
             state.pending_message_count += 1.;
         });
         let result = self.client.steer(message, images, Some(order)).await;
@@ -654,11 +914,19 @@ impl RemoteSessionProxy {
     }
 
     /// senpi's `followUp`.
-    pub async fn follow_up(&self, message: &str, images: Option<Value>, enqueue_order: Option<f64>) -> Result<(), RpcClientError> {
-        let order = enqueue_order.unwrap_or_else(|| self.read(|state| state.next_queued_input_order()) + 1.);
+    pub async fn follow_up(
+        &self,
+        message: &str,
+        images: Option<Value>,
+        enqueue_order: Option<f64>,
+    ) -> Result<(), RpcClientError> {
+        let order = enqueue_order
+            .unwrap_or_else(|| self.read(|state| state.next_queued_input_order()) + 1.);
         self.update(|state| {
             state.follow_up.push(message.to_owned());
-            state.ordered.push(json!({"text": message, "mode": "followUp", "enqueueOrder": order}));
+            state
+                .ordered
+                .push(json!({"text": message, "mode": "followUp", "enqueueOrder": order}));
             state.pending_message_count += 1.;
         });
         let result = self.client.follow_up(message, images, Some(order)).await;
@@ -678,7 +946,11 @@ impl RemoteSessionProxy {
     }
 
     /// senpi's `setThinkingLevel`.
-    pub async fn set_thinking_level(&self, level: &str, scope: Option<&str>) -> Result<Value, RpcClientError> {
+    pub async fn set_thinking_level(
+        &self,
+        level: &str,
+        scope: Option<&str>,
+    ) -> Result<Value, RpcClientError> {
         let result = self.client.set_thinking_level(level, scope).await;
         self.settle("setThinkingLevel", result, Value::Null)
     }
@@ -692,7 +964,11 @@ impl RemoteSessionProxy {
     /// senpi's `getAvailableThinkingLevels`.
     pub async fn get_available_thinking_levels(&self) -> Result<Value, RpcClientError> {
         let result = self.client.get_available_thinking_levels().await;
-        self.settle("getAvailableThinkingLevels", result, Value::Array(Vec::new()))
+        self.settle(
+            "getAvailableThinkingLevels",
+            result,
+            Value::Array(Vec::new()),
+        )
     }
 
     /// senpi's `setFastMode`.
@@ -752,7 +1028,11 @@ impl RemoteSessionProxy {
     }
 
     /// senpi's `navigateTree`.
-    pub async fn navigate_tree(&self, target_id: &str, options: Value) -> Result<Value, RpcClientError> {
+    pub async fn navigate_tree(
+        &self,
+        target_id: &str,
+        options: Value,
+    ) -> Result<Value, RpcClientError> {
         let result = self.client.navigate_tree(target_id, options).await;
         self.settle("navigateTree", result, json!({"cancelled": true}))
     }
@@ -778,12 +1058,25 @@ impl RemoteSessionProxy {
     /// senpi's `getUserMessagesForForking`.
     pub async fn get_user_messages_for_forking(&self) -> Result<Value, RpcClientError> {
         let result = self.client.get_fork_messages().await;
-        self.settle("getUserMessagesForForking", result, Value::Array(Vec::new()))
+        self.settle(
+            "getUserMessagesForForking",
+            result,
+            Value::Array(Vec::new()),
+        )
     }
 
     /// senpi's `editAssistantMessage` proxy arm: forward the edit, then refresh the mirror.
-    pub async fn edit_assistant_message(&self, entry_id: &str, text: &str, options: Value) -> Result<Value, RpcClientError> {
-        let result = { self.client.edit_assistant_message(entry_id, text, options).await? };
+    pub async fn edit_assistant_message(
+        &self,
+        entry_id: &str,
+        text: &str,
+        options: Value,
+    ) -> Result<Value, RpcClientError> {
+        let result = {
+            self.client
+                .edit_assistant_message(entry_id, text, options)
+                .await?
+        };
         self.refresh().await;
         Ok(result)
     }
@@ -807,25 +1100,45 @@ impl RemoteSessionProxy {
     }
 
     /// senpi's `exportToHtml`.
-    pub async fn export_html(&self, output_path: Option<&str>, theme_name: Option<&str>) -> Result<Value, RpcClientError> {
+    pub async fn export_html(
+        &self,
+        output_path: Option<&str>,
+        theme_name: Option<&str>,
+    ) -> Result<Value, RpcClientError> {
         let result = self.client.export_html(output_path, theme_name).await;
         self.settle("exportToHtml", result, Value::Null)
     }
 
     /// senpi's `recordBashResult`.
-    pub async fn record_bash_result(&self, command: &str, result: Value, exclude_from_context: Option<bool>) -> Result<(), RpcClientError> {
-        let outcome = self.client.record_bash_result(command, result, exclude_from_context).await;
+    pub async fn record_bash_result(
+        &self,
+        command: &str,
+        result: Value,
+        exclude_from_context: Option<bool>,
+    ) -> Result<(), RpcClientError> {
+        let outcome = self
+            .client
+            .record_bash_result(command, result, exclude_from_context)
+            .await;
         self.settle_unit("recordBashResult", outcome)
     }
 
     /// senpi's `appendLabelChange` (the remote SessionManager shim).
-    pub async fn set_label(&self, entry_id: &str, label: Option<&str>) -> Result<(), RpcClientError> {
+    pub async fn set_label(
+        &self,
+        entry_id: &str,
+        label: Option<&str>,
+    ) -> Result<(), RpcClientError> {
         let result = self.client.set_label(entry_id, label).await;
         self.settle_unit("appendLabelChange", result)
     }
 
     /// senpi's `sendMessage` (`sendCustomMessage`).
-    pub async fn send_custom_message(&self, message: Value, options: Option<Value>) -> Result<(), RpcClientError> {
+    pub async fn send_custom_message(
+        &self,
+        message: Value,
+        options: Option<Value>,
+    ) -> Result<(), RpcClientError> {
         let result = self.client.send_custom_message(message, options).await;
         self.settle_unit("sendMessage", result)
     }
@@ -833,13 +1146,17 @@ impl RemoteSessionProxy {
     /// senpi's `clearQueue`: the mirrored snapshot is what the caller restores, and the frame
     /// only tells the host to drop its queue.
     pub async fn clear_queue(&self, abort_will_follow: Option<bool>) -> Value {
-        let snapshot = self.read(|state| json!({
-            "steering": state.steering,
-            "followUp": state.follow_up,
-            "ordered": state.ordered,
-        }));
+        let snapshot = self.read(|state| {
+            json!({
+                "steering": state.steering,
+                "followUp": state.follow_up,
+                "ordered": state.ordered,
+            })
+        });
         let result = self.client.clear_queue(abort_will_follow).await;
-        if let Err(error) = result { self.report_action_failure("clearQueue", &error); }
+        if let Err(error) = result {
+            self.report_action_failure("clearQueue", &error);
+        }
         snapshot
     }
 }
@@ -861,15 +1178,25 @@ pub struct SessionSubscription {
 
 impl Drop for SessionSubscription {
     fn drop(&mut self) {
-        let Some(listener) = self.listener.take() else { return; };
-        self.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|current| !Arc::ptr_eq(current, &listener));
+        let Some(listener) = self.listener.take() else {
+            return;
+        };
+        self.listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|current| !Arc::ptr_eq(current, &listener));
     }
 }
 
 impl Drop for RemoteSubscription {
     fn drop(&mut self) {
-        let Some(listener) = self.listener.take() else { return; };
-        self.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|current| !Arc::ptr_eq(current, &listener));
+        let Some(listener) = self.listener.take() else {
+            return;
+        };
+        self.listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|current| !Arc::ptr_eq(current, &listener));
     }
 }
 
@@ -921,7 +1248,10 @@ impl RemoteInteractiveRuntime {
     }
 
     pub fn state(&self) -> HostRuntimeState {
-        *self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn is_reconnecting(&self) -> bool {
@@ -934,22 +1264,38 @@ impl RemoteInteractiveRuntime {
 
     fn warn(&self, kind: InteractiveHostWarningKind, message: &str, cause: String) {
         if let Some(handler) = &self.options.on_warning {
-            handler(InteractiveHostWarning { kind, message: message.to_owned(), cause });
+            handler(InteractiveHostWarning {
+                kind,
+                message: message.to_owned(),
+                cause,
+            });
         }
     }
 
     /// senpi's `enterConnected`.
     pub fn enter_connected(&self) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !matches!(*state, HostRuntimeState::Disposed | HostRuntimeState::Fallback) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !matches!(
+            *state,
+            HostRuntimeState::Disposed | HostRuntimeState::Fallback
+        ) {
             *state = HostRuntimeState::Connected;
         }
     }
 
     /// senpi's `enterReconnecting`.
     pub fn enter_reconnecting(&self) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !matches!(*state, HostRuntimeState::Disposed | HostRuntimeState::Fallback) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !matches!(
+            *state,
+            HostRuntimeState::Disposed | HostRuntimeState::Fallback
+        ) {
             *state = HostRuntimeState::Reconnecting;
         }
     }
@@ -957,32 +1303,61 @@ impl RemoteInteractiveRuntime {
     /// senpi's `enterFallback`.
     pub async fn enter_fallback(&self, cause: String) {
         {
-            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if matches!(*state, HostRuntimeState::Disposed | HostRuntimeState::Fallback) {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if matches!(
+                *state,
+                HostRuntimeState::Disposed | HostRuntimeState::Fallback
+            ) {
                 return;
             }
             *state = HostRuntimeState::Fallback;
         }
-        if let Some(callback) = self.before_session_invalidate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
+        if let Some(callback) = self
+            .before_session_invalidate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
             callback();
         }
-        let rebind = self.rebind_session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let rebind = self
+            .rebind_session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         if let Some(rebind) = rebind
             && let Err(error) = rebind().await
         {
-            self.warn(InteractiveHostWarningKind::InteractiveHostActionFailed, &format!("Warning: {error}"), error);
+            self.warn(
+                InteractiveHostWarningKind::InteractiveHostActionFailed,
+                &format!("Warning: {error}"),
+                error,
+            );
         }
-        self.warn(InteractiveHostWarningKind::InteractiveHostFallback, INTERACTIVE_HOST_FALLBACK_WARNING, cause);
+        self.warn(
+            InteractiveHostWarningKind::InteractiveHostFallback,
+            INTERACTIVE_HOST_FALLBACK_WARNING,
+            cause,
+        );
     }
 
     /// senpi's `setRebindSession`.
     pub fn set_rebind_session(&self, callback: Option<RebindSessionFn>) {
-        *self.rebind_session.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = callback;
+        *self
+            .rebind_session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = callback;
     }
 
     /// senpi's `setBeforeSessionInvalidate`.
     pub fn set_before_session_invalidate(&self, callback: Option<Box<dyn Fn() + Send + Sync>>) {
-        *self.before_session_invalidate.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = callback;
+        *self
+            .before_session_invalidate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = callback;
     }
 
     /// senpi's `setHostUiHandler`.
@@ -997,9 +1372,15 @@ impl RemoteInteractiveRuntime {
 
     /// senpi's `setClientInfo`; capabilities ride the first frame only.
     pub async fn set_client_info(&self, width: f64) {
-        *self.last_client_width.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = width;
+        *self
+            .last_client_width
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = width;
         let capabilities = {
-            let mut sent = self.client_info_sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut sent = self
+                .client_info_sent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let capabilities = (!*sent).then(client_capabilities);
             *sent = true;
             capabilities
@@ -1009,8 +1390,14 @@ impl RemoteInteractiveRuntime {
 
     /// senpi's `reRegisterClientInfo`.
     pub async fn re_register_client_info(&self) {
-        let width = *self.last_client_width.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _ = self.client.set_client_info(width, Some(client_capabilities())).await;
+        let width = *self
+            .last_client_width
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _ = self
+            .client
+            .set_client_info(width, Some(client_capabilities()))
+            .await;
     }
 
     /// senpi's `newSession`.
@@ -1027,11 +1414,19 @@ impl RemoteInteractiveRuntime {
     }
 
     /// senpi's `switchSession`.
-    pub async fn switch_session(&self, session_path: &str, cwd_override: Option<&str>) -> Result<bool, RpcClientError> {
+    pub async fn switch_session(
+        &self,
+        session_path: &str,
+        cwd_override: Option<&str>,
+    ) -> Result<bool, RpcClientError> {
         if self.is_fallback() {
             return Ok(true);
         }
-        let result = { self.client.switch_session(session_path, cwd_override).await? };
+        let result = {
+            self.client
+                .switch_session(session_path, cwd_override)
+                .await?
+        };
         if is_cancelled(&result) {
             return Ok(true);
         }
@@ -1040,7 +1435,11 @@ impl RemoteInteractiveRuntime {
     }
 
     /// senpi's `fork`.
-    pub async fn fork(&self, entry_id: &str, position: Option<&str>) -> Result<bool, RpcClientError> {
+    pub async fn fork(
+        &self,
+        entry_id: &str,
+        position: Option<&str>,
+    ) -> Result<bool, RpcClientError> {
         if self.is_fallback() {
             return Ok(true);
         }
@@ -1053,7 +1452,11 @@ impl RemoteInteractiveRuntime {
     }
 
     /// senpi's `importFromJsonl`.
-    pub async fn import_jsonl(&self, input_path: &str, cwd_override: Option<&str>) -> Result<bool, RpcClientError> {
+    pub async fn import_jsonl(
+        &self,
+        input_path: &str,
+        cwd_override: Option<&str>,
+    ) -> Result<bool, RpcClientError> {
         if self.is_fallback() {
             return Ok(true);
         }
@@ -1066,24 +1469,40 @@ impl RemoteInteractiveRuntime {
     }
 
     async fn after_replacement(&self) {
-        if let Some(callback) = self.before_session_invalidate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
+        if let Some(callback) = self
+            .before_session_invalidate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
             callback();
         }
         if let Ok(state) = self.client.get_state().await {
             self.proxy.set_state(RemoteSessionState::from_rpc(&state));
         }
-        let rebind = self.rebind_session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let rebind = self
+            .rebind_session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         if let Some(rebind) = rebind
             && let Err(error) = rebind().await
         {
-            self.warn(InteractiveHostWarningKind::InteractiveHostActionFailed, &format!("Warning: {error}"), error);
+            self.warn(
+                InteractiveHostWarningKind::InteractiveHostActionFailed,
+                &format!("Warning: {error}"),
+                error,
+            );
         }
     }
 
     /// senpi's `dispose`.
     pub async fn dispose(&self) {
         {
-            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if *state == HostRuntimeState::Disposed {
                 return;
             }
@@ -1099,7 +1518,11 @@ impl RemoteInteractiveRuntime {
             return false;
         }
         self.enter_reconnecting();
-        self.warn(InteractiveHostWarningKind::InteractiveHostActionFailed, INTERACTIVE_HOST_RECONNECTING_WARNING, String::new());
+        self.warn(
+            InteractiveHostWarningKind::InteractiveHostActionFailed,
+            INTERACTIVE_HOST_RECONNECTING_WARNING,
+            String::new(),
+        );
         let mut cause = String::new();
         for _ in 0..RECONNECT_ATTEMPTS {
             if self.state() == HostRuntimeState::Disposed {
@@ -1121,7 +1544,10 @@ impl RemoteInteractiveRuntime {
     }
 
     async fn try_reopen(&self) -> Result<(), String> {
-        let request = EnsureHostRequest { socket: self.options.socket.clone(), agent_dir: self.options.agent_dir.clone() };
+        let request = EnsureHostRequest {
+            socket: self.options.socket.clone(),
+            agent_dir: self.options.agent_dir.clone(),
+        };
         match &self.options.ensure_host {
             Some(handler) => {
                 handler(request)?;
@@ -1130,16 +1556,30 @@ impl RemoteInteractiveRuntime {
                 request.run().await.map_err(|error| error.to_string())?;
             }
         }
-        self.client.start().await.map_err(|error| error.to_string())?;
-        self.client.open_session(open_session_options(&self.binding)).await.map_err(|error| error.to_string())?;
-        let state = { self.client.get_state().await.map_err(|error| error.to_string())? };
+        self.client
+            .start()
+            .await
+            .map_err(|error| error.to_string())?;
+        self.client
+            .open_session(open_session_options(&self.binding))
+            .await
+            .map_err(|error| error.to_string())?;
+        let state = {
+            self.client
+                .get_state()
+                .await
+                .map_err(|error| error.to_string())?
+        };
         self.proxy.set_state(RemoteSessionState::from_rpc(&state));
         Ok(())
     }
 }
 
 fn client_capabilities() -> Vec<String> {
-    HOST_CLIENT_CAPABILITIES.iter().map(|value| (*value).to_owned()).collect()
+    HOST_CLIENT_CAPABILITIES
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect()
 }
 
 fn is_cancelled(result: &Value) -> bool {
@@ -1171,7 +1611,9 @@ impl InteractiveHostRuntimeOutcome {
     /// mount fell back to the local session.
     pub fn session_host(&self) -> Option<Arc<dyn crate::interactive_session::InteractiveSession>> {
         match self {
-            Self::Remote(runtime) => Some(runtime.clone() as Arc<dyn crate::interactive_session::InteractiveSession>),
+            Self::Remote(runtime) => {
+                Some(runtime.clone() as Arc<dyn crate::interactive_session::InteractiveSession>)
+            }
             Self::Fallback(_) => None,
         }
     }
@@ -1188,27 +1630,44 @@ pub async fn create_interactive_host_runtime(
         cause: cause.to_owned(),
     };
     if binding.session_path.is_none() {
-        return InteractiveHostRuntimeOutcome::Fallback(warn_fallback("session has no file on disk"));
+        return InteractiveHostRuntimeOutcome::Fallback(warn_fallback(
+            "session has no file on disk",
+        ));
     }
     let socket = if options.socket.is_empty() {
-        default_rpc_socket_path(&binding.agent_dir).to_string_lossy().into_owned()
+        default_rpc_socket_path(&binding.agent_dir)
+            .to_string_lossy()
+            .into_owned()
     } else {
         options.socket.clone()
     };
-    let ensure_request = EnsureHostRequest { socket: socket.clone(), agent_dir: options.agent_dir.clone() };
+    let ensure_request = EnsureHostRequest {
+        socket: socket.clone(),
+        agent_dir: options.agent_dir.clone(),
+    };
     let ensured = match &options.ensure_host {
         Some(handler) => handler(ensure_request.clone()).map(|_| ()),
-        None => ensure_request.run().await.map(|_| ()).map_err(|error| error.to_string()),
+        None => ensure_request
+            .run()
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
     };
     if let Err(cause) = ensured {
         return InteractiveHostRuntimeOutcome::Fallback(warn_fallback(&cause));
     }
 
-    let client = Arc::new(RpcClient::new(RpcClientOptions { socket_path: Some(PathBuf::from(&socket)), ..Default::default() }));
+    let client = Arc::new(RpcClient::new(RpcClientOptions {
+        socket_path: Some(PathBuf::from(&socket)),
+        ..Default::default()
+    }));
     if let Err(error) = client.start().await {
         return InteractiveHostRuntimeOutcome::Fallback(warn_fallback(&error.to_string()));
     }
-    if let Err(error) = client.set_client_info(80., Some(client_capabilities())).await {
+    if let Err(error) = client
+        .set_client_info(80., Some(client_capabilities()))
+        .await
+    {
         client.stop().await;
         return InteractiveHostRuntimeOutcome::Fallback(warn_fallback(&error.to_string()));
     }
@@ -1223,13 +1682,19 @@ pub async fn create_interactive_host_runtime(
             return InteractiveHostRuntimeOutcome::Fallback(warn_fallback(&error.to_string()));
         }
     };
-    let proxy = Arc::new(RemoteSessionProxy::new(state, client.clone(), options.on_warning.clone()));
+    let proxy = Arc::new(RemoteSessionProxy::new(
+        state,
+        client.clone(),
+        options.on_warning.clone(),
+    ));
     let subscription = client.on_event(Arc::new({
         let proxy = proxy.clone();
         move |event| proxy.handle_wire_event(event)
     }));
     proxy.hold_subscription(subscription);
-    let runtime = Arc::new(RemoteInteractiveRuntime::new(client, proxy, binding, options));
+    let runtime = Arc::new(RemoteInteractiveRuntime::new(
+        client, proxy, binding, options,
+    ));
     InteractiveHostRuntimeOutcome::Remote(runtime)
 }
 
@@ -1243,7 +1708,10 @@ pub fn queue_snapshot(state: &RemoteSessionState) -> BTreeMap<String, Value> {
     BTreeMap::from([
         ("steering".to_owned(), json!(state.steering)),
         ("followUp".to_owned(), json!(state.follow_up)),
-        ("pendingMessageCount".to_owned(), json!(state.pending_message_count)),
+        (
+            "pendingMessageCount".to_owned(),
+            json!(state.pending_message_count),
+        ),
     ])
 }
 
@@ -1303,7 +1771,10 @@ mod tests {
     /// and a fire-and-forget write fails as a swallowed transport loss.
     fn detached_client() -> Arc<RpcClient> {
         let (client_stream, _host) = tokio::net::UnixStream::pair().expect("socket pair");
-        Arc::new(RpcClient::from_stream(client_stream, RpcClientOptions::default()))
+        Arc::new(RpcClient::from_stream(
+            client_stream,
+            RpcClientOptions::default(),
+        ))
     }
 
     #[test]
@@ -1328,7 +1799,12 @@ mod tests {
         assert_eq!(state.message_count, 4.);
         assert_eq!(state.next_queued_input_order(), 3.);
         assert_eq!(
-            state.entries.as_ref().and_then(|entries| entries.get(0)).and_then(|entry| entry.get("id")).and_then(Value::as_str),
+            state
+                .entries
+                .as_ref()
+                .and_then(|entries| entries.get(0))
+                .and_then(|entry| entry.get("id"))
+                .and_then(Value::as_str),
             Some("e1")
         );
         assert!(state.usage_totals.is_some());
@@ -1337,7 +1813,8 @@ mod tests {
 
     #[test]
     fn session_state_defaults_missing_keys_without_panicking() {
-        let state = RemoteSessionState::from_rpc(&json!({"thinkingLevel": "off", "sessionId": "s"}));
+        let state =
+            RemoteSessionState::from_rpc(&json!({"thinkingLevel": "off", "sessionId": "s"}));
         assert_eq!(state.thinking_level.as_deref(), Some("off"));
         assert!(!state.is_streaming);
         assert!(!state.is_bash_running);
@@ -1349,17 +1826,22 @@ mod tests {
 
     #[test]
     fn hydrate_applies_text_deltas_and_tracks_usage() {
-        let mut streaming = json!({"role": "assistant", "content": [{"type": "text", "text": "he"}]});
+        let mut streaming =
+            json!({"role": "assistant", "content": [{"type": "text", "text": "he"}]});
         let event = json!({"type": "message_update", "usage": {"input": 5}, "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "llo"}});
         let hydrated = hydrate_message_update(&event, Some(&mut streaming));
         assert_eq!(hydrated["message"]["content"][0]["text"], "hello");
         assert_eq!(hydrated["message"]["usage"]["input"], 5);
-        assert_eq!(hydrated["assistantMessageEvent"]["partial"]["content"][0]["text"], "hello");
+        assert_eq!(
+            hydrated["assistantMessageEvent"]["partial"]["content"][0]["text"],
+            "hello"
+        );
     }
 
     #[test]
     fn hydrate_retains_toolcall_arguments_and_hydrates_usage_and_partial() {
-        let mut streaming = json!({"content": [{"type": "toolCall", "id": "c", "name": "read", "arguments": {}}]});
+        let mut streaming =
+            json!({"content": [{"type": "toolCall", "id": "c", "name": "read", "arguments": {}}]});
         // Pinned senpi's hydrateMessageUpdate appends a toolcall delta to the JSON text of the
         // accumulated arguments and re-parses it (`JSON.stringify(content.arguments) + delta`). A
         // fragment appended to the `{}` seed's text is not valid JSON, so the last valid arguments
@@ -1368,14 +1850,33 @@ mod tests {
             &json!({"type": "message_update", "usage": {"input": 5}, "assistantMessageEvent": {"type": "toolcall_delta", "contentIndex": 0, "delta": "{\"path\":\"a\"}"}}),
             Some(&mut streaming),
         );
-        assert_eq!(streaming["content"][0]["arguments"], json!({}), "a malformed fragment keeps the last valid arguments");
-        assert_eq!(hydrated["message"]["content"][0]["arguments"], json!({}), "the mirrored message keeps the last valid arguments");
-        assert_eq!(hydrated["assistantMessageEvent"]["partial"]["content"][0]["arguments"], json!({}), "the partial mirrors the retained arguments");
-        assert_eq!(hydrated["message"]["usage"]["input"], 5, "the delta still hydrates usage onto the mirrored message");
+        assert_eq!(
+            streaming["content"][0]["arguments"],
+            json!({}),
+            "a malformed fragment keeps the last valid arguments"
+        );
+        assert_eq!(
+            hydrated["message"]["content"][0]["arguments"],
+            json!({}),
+            "the mirrored message keeps the last valid arguments"
+        );
+        assert_eq!(
+            hydrated["assistantMessageEvent"]["partial"]["content"][0]["arguments"],
+            json!({}),
+            "the partial mirrors the retained arguments"
+        );
+        assert_eq!(
+            hydrated["message"]["usage"]["input"], 5,
+            "the delta still hydrates usage onto the mirrored message"
+        );
         // A non-delta update (the complete toolCall, arguments included) is returned untouched: the
         // end of the toolcall supplies the real arguments with the message, not through this helper.
         let end = json!({"type": "message_update", "assistantMessageEvent": {"type": "toolcall_end", "contentIndex": 0}});
-        assert_eq!(hydrate_message_update(&end, Some(&mut streaming)), end, "a non-delta update is returned unchanged");
+        assert_eq!(
+            hydrate_message_update(&end, Some(&mut streaming)),
+            end,
+            "a non-delta update is returned unchanged"
+        );
     }
 
     #[test]
@@ -1384,7 +1885,10 @@ mod tests {
         let event = json!({"type": "agent_start"});
         assert_eq!(hydrate_message_update(&event, Some(&mut streaming)), event);
         let unknown = json!({"type": "message_update", "assistantMessageEvent": {"type": "start"}});
-        assert_eq!(hydrate_message_update(&unknown, Some(&mut streaming)), unknown);
+        assert_eq!(
+            hydrate_message_update(&unknown, Some(&mut streaming)),
+            unknown
+        );
         let none = json!({"type": "message_update"});
         assert_eq!(hydrate_message_update(&none, None), none);
     }
@@ -1392,15 +1896,29 @@ mod tests {
     #[test]
     fn reconcile_entries_only_rebuilds_on_a_mismatch_and_keeps_late_arrivals() {
         let authoritative = vec![json!({"id": "e1"}), json!({"id": "e2"})];
-        assert!(reconcile_entries(&authoritative, &authoritative.clone(), &Default::default()).is_none(), "a matching mirror needs no rebuild");
+        assert!(
+            reconcile_entries(&authoritative, &authoritative.clone(), &Default::default())
+                .is_none(),
+            "a matching mirror needs no rebuild"
+        );
         let mirror = vec![json!({"id": "e1"})];
-        let rebuilt = reconcile_entries(&authoritative, &mirror, &Default::default()).expect("rebuild");
+        let rebuilt =
+            reconcile_entries(&authoritative, &mirror, &Default::default()).expect("rebuild");
         assert_eq!(rebuilt.len(), 2);
         let late = json!({"id": "late"});
         let start: std::collections::BTreeSet<String> = ["e1".to_owned()].into_iter().collect();
-        let rebuilt = reconcile_entries(&authoritative, &[json!({"id": "e1"}), late.clone()], &start).expect("rebuild");
-        assert_eq!(rebuilt.last(), Some(&late), "an entry that crossed the refresh is kept");
-        assert!(reconcile_entries(&[], &mirror, &Default::default()).is_none(), "an empty authoritative list never rebuilds");
+        let rebuilt =
+            reconcile_entries(&authoritative, &[json!({"id": "e1"}), late.clone()], &start)
+                .expect("rebuild");
+        assert_eq!(
+            rebuilt.last(),
+            Some(&late),
+            "an entry that crossed the refresh is kept"
+        );
+        assert!(
+            reconcile_entries(&[], &mirror, &Default::default()).is_none(),
+            "an empty authoritative list never rebuilds"
+        );
     }
 
     #[test]
@@ -1408,16 +1926,30 @@ mod tests {
         assert!(is_interactive_host_event(&json!({"type": "agent_start"})));
         assert!(!is_interactive_host_event(&json!({"no": "type"})));
         assert!(!is_interactive_host_event(&json!([1, 2])));
-        assert!(is_connection_level_event(&json!({"type": "account_failover"})));
+        assert!(is_connection_level_event(
+            &json!({"type": "account_failover"})
+        ));
         assert!(!is_connection_level_event(&json!({"type": "agent_start"})));
     }
 
     #[test]
     fn warnings_and_capabilities_match_the_pinned_strings() {
-        assert_eq!(INTERACTIVE_HOST_FALLBACK_WARNING, "Warning: shared interactive host unavailable; continuing locally");
-        assert_eq!(INTERACTIVE_HOST_RECONNECTING_WARNING, "Warning: shared interactive host connection lost; reconnecting");
-        assert_eq!(HOST_CLIENT_CAPABILITIES, ["rendered_components", "question"]);
-        assert_eq!(client_capabilities(), vec!["rendered_components".to_owned(), "question".to_owned()]);
+        assert_eq!(
+            INTERACTIVE_HOST_FALLBACK_WARNING,
+            "Warning: shared interactive host unavailable; continuing locally"
+        );
+        assert_eq!(
+            INTERACTIVE_HOST_RECONNECTING_WARNING,
+            "Warning: shared interactive host connection lost; reconnecting"
+        );
+        assert_eq!(
+            HOST_CLIENT_CAPABILITIES,
+            ["rendered_components", "question"]
+        );
+        assert_eq!(
+            client_capabilities(),
+            vec!["rendered_components".to_owned(), "question".to_owned()]
+        );
     }
 
     #[test]
@@ -1451,7 +1983,15 @@ mod tests {
         proxy.apply_state_event(&json!({"type": "auto_retry_start", "attempt": 3}));
         assert_eq!(proxy.state().retry_attempt, 3.);
         proxy.apply_state_event(&json!({"type": "model_changed", "model": {"provider": "x", "id": "y"}, "thinkingLevel": "low"}));
-        assert_eq!(proxy.state().model.as_ref().and_then(|model| model.get("id")).and_then(Value::as_str), Some("y"));
+        assert_eq!(
+            proxy
+                .state()
+                .model
+                .as_ref()
+                .and_then(|model| model.get("id"))
+                .and_then(Value::as_str),
+            Some("y")
+        );
         assert_eq!(proxy.state().thinking_level.as_deref(), Some("low"));
         proxy.apply_state_event(&json!({"type": "session_settings_changed", "steeringMode": "all", "followUpMode": "all", "autoCompactionEnabled": true}));
         assert_eq!(proxy.state().steering_mode.as_deref(), Some("all"));
@@ -1465,26 +2005,54 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
         let captured = seen.clone();
         let proxy = proxy();
-        let _subscription = proxy.subscribe(Arc::new(move |event| captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone())));
+        let _subscription = proxy.subscribe(Arc::new(move |event| {
+            captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event.clone())
+        }));
         proxy.handle_wire_event(&json!({"type": "message_start", "message": {"role": "assistant", "content": [{"type": "text", "text": ""}]}}));
         proxy.handle_wire_event(&json!({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "hi"}}));
-        let events = seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let update = events.iter().find(|event| event["type"] == "message_update").expect("update");
+        let events = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let update = events
+            .iter()
+            .find(|event| event["type"] == "message_update")
+            .expect("update");
         assert_eq!(update["message"]["content"][0]["text"], "hi");
         drop(events);
-        proxy.handle_wire_event(&json!({"type": "extension_ui_request", "id": "ui", "request": "select"}));
-        assert!(proxy.take_ui_responses().is_empty(), "no handler yet, the request is held");
+        proxy.handle_wire_event(
+            &json!({"type": "extension_ui_request", "id": "ui", "request": "select"}),
+        );
+        assert!(
+            proxy.take_ui_responses().is_empty(),
+            "no handler yet, the request is held"
+        );
         let answered = Arc::new(Mutex::new(Vec::<Value>::new()));
         let captured = answered.clone();
         proxy.set_host_ui_handler(Some(Arc::new(move |request| {
-            captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(request.clone());
+            captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(request.clone());
             Some(json!({"type": "extension_ui_response", "id": request["id"]}))
         })));
-        assert_eq!(answered.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(), 1, "the held request is replayed to the new handler");
+        assert_eq!(
+            answered
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            1,
+            "the held request is replayed to the new handler"
+        );
         let responses = proxy.take_ui_responses();
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0]["id"], "ui");
-        assert!(proxy.take_ui_responses().is_empty(), "responses are drained once");
+        assert!(
+            proxy.take_ui_responses().is_empty(),
+            "responses are drained once"
+        );
     }
 
     #[tokio::test]
@@ -1492,12 +2060,27 @@ mod tests {
         let count = Arc::new(Mutex::new(0usize));
         let captured = count.clone();
         let proxy = proxy();
-        let subscription = proxy.subscribe(Arc::new(move |_| *captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1));
+        let subscription = proxy.subscribe(Arc::new(move |_| {
+            *captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) += 1
+        }));
         proxy.handle_wire_event(&json!({"type": "agent_start"}));
-        assert_eq!(*count.lock().unwrap_or_else(std::sync::PoisonError::into_inner), 1);
+        assert_eq!(
+            *count
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            1
+        );
         drop(subscription);
         proxy.handle_wire_event(&json!({"type": "agent_settled"}));
-        assert_eq!(*count.lock().unwrap_or_else(std::sync::PoisonError::into_inner), 1, "a dropped subscription stops delivery");
+        assert_eq!(
+            *count
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            1,
+            "a dropped subscription stops delivery"
+        );
     }
 
     #[tokio::test]
@@ -1505,15 +2088,32 @@ mod tests {
         let received = Arc::new(Mutex::new(Vec::<maho_ext_api::AgentSessionEvent>::new()));
         let captured = received.clone();
         let proxy = proxy();
-        let subscription = proxy.subscribe_session_events(Arc::new(move |event| captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone())));
+        let subscription = proxy.subscribe_session_events(Arc::new(move |event| {
+            captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event.clone())
+        }));
         proxy.handle_wire_event(&json!({"type": "continuation_error", "errorMessage": "bridge"}));
         proxy.handle_wire_event(&json!({"type": "not_a_real_event"}));
-        let events = received.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let events = received
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(events.len(), 1, "an unknown record is not delivered");
-        assert!(matches!(&events[0], maho_ext_api::AgentSessionEvent::ContinuationError { error_message } if error_message.as_str() == "bridge"));
+        assert!(
+            matches!(&events[0], maho_ext_api::AgentSessionEvent::ContinuationError { error_message } if error_message.as_str() == "bridge")
+        );
         drop(subscription);
         proxy.handle_wire_event(&json!({"type": "agent_idle"}));
-        assert_eq!(received.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(), 1, "a dropped session subscription stops delivery");
+        assert_eq!(
+            received
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            1,
+            "a dropped session subscription stops delivery"
+        );
     }
 
     #[tokio::test]
@@ -1523,22 +2123,53 @@ mod tests {
         let proxy = RemoteSessionProxy::new(
             RemoteSessionState::default(),
             detached_client(),
-            Some(Arc::new(move |warning| captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(warning))),
+            Some(Arc::new(move |warning| {
+                captured
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(warning)
+            })),
         );
-        proxy.report_action_failure("setModel", &RpcClientError::Transport(std::io::Error::other("gone")));
-        assert!(seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty(), "transport loss is the event stream's business");
-        proxy.report_action_failure("setModel", &RpcClientError::Command(maho_rpc::rpc_client::RpcCommandError { message: "refused".into(), error_code: None, error_data: None }));
-        let warnings = seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        proxy.report_action_failure(
+            "setModel",
+            &RpcClientError::Transport(std::io::Error::other("gone")),
+        );
+        assert!(
+            seen.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty(),
+            "transport loss is the event stream's business"
+        );
+        proxy.report_action_failure(
+            "setModel",
+            &RpcClientError::Command(maho_rpc::rpc_client::RpcCommandError {
+                message: "refused".into(),
+                error_code: None,
+                error_data: None,
+            }),
+        );
+        let warnings = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].kind, InteractiveHostWarningKind::InteractiveHostActionFailed);
+        assert_eq!(
+            warnings[0].kind,
+            InteractiveHostWarningKind::InteractiveHostActionFailed
+        );
         assert!(warnings[0].message.contains("setModel failed: refused"));
     }
 
     #[test]
     fn fallback_without_a_session_file_never_starts_a_host() {
-        match block_on(create_interactive_host_runtime(binding(None), InteractiveHostRuntimeOptions::default())) {
+        match block_on(create_interactive_host_runtime(
+            binding(None),
+            InteractiveHostRuntimeOptions::default(),
+        )) {
             InteractiveHostRuntimeOutcome::Fallback(warning) => {
-                assert_eq!(warning.kind, InteractiveHostWarningKind::InteractiveHostFallback);
+                assert_eq!(
+                    warning.kind,
+                    InteractiveHostWarningKind::InteractiveHostFallback
+                );
                 assert_eq!(warning.message, INTERACTIVE_HOST_FALLBACK_WARNING);
                 assert_eq!(warning.cause, "session has no file on disk");
             }
@@ -1553,8 +2184,13 @@ mod tests {
             ensure_host: Some(Arc::new(|_| Err("host_busy".into()))),
             ..Default::default()
         };
-        match block_on(create_interactive_host_runtime(binding(Some("/sessions/one.jsonl")), options)) {
-            InteractiveHostRuntimeOutcome::Fallback(warning) => assert_eq!(warning.cause, "host_busy"),
+        match block_on(create_interactive_host_runtime(
+            binding(Some("/sessions/one.jsonl")),
+            options,
+        )) {
+            InteractiveHostRuntimeOutcome::Fallback(warning) => {
+                assert_eq!(warning.cause, "host_busy")
+            }
             InteractiveHostRuntimeOutcome::Remote(_) => panic!("the injected ensure refused"),
         }
     }
@@ -1569,14 +2205,21 @@ mod tests {
         assert!(!runtime.is_reconnecting());
         runtime.enter_fallback("closed".into()).await;
         assert!(runtime.is_fallback());
-        assert!(!runtime.reconnect().await, "a fallen-back runtime does not reconnect");
+        assert!(
+            !runtime.reconnect().await,
+            "a fallen-back runtime does not reconnect"
+        );
         assert_eq!(runtime.state(), HostRuntimeState::Fallback);
         runtime.dispose().await;
         assert_eq!(runtime.state(), HostRuntimeState::Disposed);
         runtime.dispose().await;
         assert_eq!(runtime.state(), HostRuntimeState::Disposed);
         runtime.enter_connected();
-        assert_eq!(runtime.state(), HostRuntimeState::Disposed, "a disposed runtime never reconnects");
+        assert_eq!(
+            runtime.state(),
+            HostRuntimeState::Disposed,
+            "a disposed runtime never reconnects"
+        );
     }
 
     #[tokio::test]
@@ -1584,36 +2227,74 @@ mod tests {
         let order = Arc::new(Mutex::new(Vec::<&'static str>::new()));
         let runtime = detached_runtime();
         let invalidate = order.clone();
-        runtime.set_before_session_invalidate(Some(Box::new(move || invalidate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("invalidate"))));
+        runtime.set_before_session_invalidate(Some(Box::new(move || {
+            invalidate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push("invalidate")
+        })));
         let rebind = order.clone();
         runtime.set_rebind_session(Some(Arc::new(move || {
             let rebind = rebind.clone();
             Box::pin(async move {
-                rebind.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("rebind");
+                rebind
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("rebind");
                 Ok(())
             })
         })));
         runtime.enter_fallback("transport gone".into()).await;
-        assert_eq!(*order.lock().unwrap_or_else(std::sync::PoisonError::into_inner), ["invalidate", "rebind"]);
+        assert_eq!(
+            *order
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ["invalidate", "rebind"]
+        );
     }
 
     #[tokio::test]
     async fn replacement_calls_short_circuit_once_fallen_back() {
         let runtime = detached_runtime();
         runtime.enter_fallback("gone".into()).await;
-        assert!(runtime.new_session(None).await.expect("local handoff"), "a fallen-back runtime reports the local handoff");
-        assert!(runtime.switch_session("/sessions/two.jsonl", None).await.expect("local handoff"));
+        assert!(
+            runtime.new_session(None).await.expect("local handoff"),
+            "a fallen-back runtime reports the local handoff"
+        );
+        assert!(
+            runtime
+                .switch_session("/sessions/two.jsonl", None)
+                .await
+                .expect("local handoff")
+        );
         assert!(runtime.fork("e1", None).await.expect("local handoff"));
-        assert!(runtime.import_jsonl("/tmp/import.jsonl", None).await.expect("local handoff"));
+        assert!(
+            runtime
+                .import_jsonl("/tmp/import.jsonl", None)
+                .await
+                .expect("local handoff")
+        );
     }
 
     #[tokio::test]
     async fn client_info_sends_capabilities_once_then_width_only() {
         use tokio::io::{AsyncBufReadExt, BufReader};
         let (client_stream, host) = tokio::net::UnixStream::pair().expect("socket pair");
-        let client = Arc::new(RpcClient::from_stream(client_stream, RpcClientOptions::default()));
-        let proxy = Arc::new(RemoteSessionProxy::new(RemoteSessionState::default(), client.clone(), None));
-        let runtime = RemoteInteractiveRuntime::new(client, proxy, binding(None), InteractiveHostRuntimeOptions::default());
+        let client = Arc::new(RpcClient::from_stream(
+            client_stream,
+            RpcClientOptions::default(),
+        ));
+        let proxy = Arc::new(RemoteSessionProxy::new(
+            RemoteSessionState::default(),
+            client.clone(),
+            None,
+        ));
+        let runtime = RemoteInteractiveRuntime::new(
+            client,
+            proxy,
+            binding(None),
+            InteractiveHostRuntimeOptions::default(),
+        );
         let reader = tokio::spawn(async move {
             let (read, _write) = host.into_split();
             let mut lines = BufReader::new(read).lines();
@@ -1630,16 +2311,26 @@ mod tests {
         let frames = reader.await.expect("reader");
         assert_eq!(frames[0]["type"], "set_client_info");
         assert_eq!(frames[0]["width"], json!(120.));
-        assert_eq!(frames[0]["capabilities"], json!(["rendered_components", "question"]), "capabilities ride the first frame");
+        assert_eq!(
+            frames[0]["capabilities"],
+            json!(["rendered_components", "question"]),
+            "capabilities ride the first frame"
+        );
         assert_eq!(frames[1]["width"], json!(121.));
-        assert!(frames[1].get("capabilities").is_none(), "later frames carry the width only");
+        assert!(
+            frames[1].get("capabilities").is_none(),
+            "later frames carry the width only"
+        );
     }
 
     #[tokio::test]
     async fn proxy_fire_and_forget_commands_forward_frames_and_mirror_queued_input() {
         use tokio::io::{AsyncBufReadExt, BufReader};
         let (client_stream, host) = tokio::net::UnixStream::pair().expect("socket pair");
-        let client = Arc::new(RpcClient::from_stream(client_stream, RpcClientOptions::default()));
+        let client = Arc::new(RpcClient::from_stream(
+            client_stream,
+            RpcClientOptions::default(),
+        ));
         let proxy = RemoteSessionProxy::new(RemoteSessionState::default(), client, None);
         let reader = tokio::spawn(async move {
             let (read, _write) = host.into_split();
@@ -1653,52 +2344,103 @@ mod tests {
             frames
         });
         proxy.steer("queued", None, None).await.expect("steer");
-        proxy.follow_up("later", None, None).await.expect("follow up");
-        proxy.set_auto_compaction(true).await.expect("auto compaction");
+        proxy
+            .follow_up("later", None, None)
+            .await
+            .expect("follow up");
+        proxy
+            .set_auto_compaction(true)
+            .await
+            .expect("auto compaction");
         proxy.set_steering_mode("all").await.expect("steering mode");
-        proxy.set_favorite_models(json!([{"provider": "anthropic", "id": "claude"}])).await.expect("favorites");
+        proxy
+            .set_favorite_models(json!([{"provider": "anthropic", "id": "claude"}]))
+            .await
+            .expect("favorites");
         let frames = reader.await.expect("reader");
-        let types = frames.iter().filter_map(|frame| frame["type"].as_str()).collect::<Vec<_>>();
-        assert_eq!(types, ["steer", "follow_up", "set_auto_compaction", "set_steering_mode", "set_favorite_models"]);
+        let types = frames
+            .iter()
+            .filter_map(|frame| frame["type"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            types,
+            [
+                "steer",
+                "follow_up",
+                "set_auto_compaction",
+                "set_steering_mode",
+                "set_favorite_models"
+            ]
+        );
         assert_eq!(frames[0]["message"], "queued");
-        assert_eq!(frames[0]["enqueueOrder"], json!(1.), "the first queued input takes the next order");
+        assert_eq!(
+            frames[0]["enqueueOrder"],
+            json!(1.),
+            "the first queued input takes the next order"
+        );
         assert_eq!(frames[1]["enqueueOrder"], json!(2.));
         assert_eq!(proxy.steering_messages(), ["queued"]);
         assert_eq!(proxy.follow_up_messages(), ["later"]);
         assert_eq!(proxy.pending_message_count(), 2.);
-        assert_eq!(proxy.favorite_models(), json!([{"provider": "anthropic", "id": "claude"}]));
+        assert_eq!(
+            proxy.favorite_models(),
+            json!([{"provider": "anthropic", "id": "claude"}])
+        );
     }
 
     #[tokio::test]
     async fn proxy_request_commands_return_the_host_data_and_swallow_transport_loss() {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         let (client_stream, host) = tokio::net::UnixStream::pair().expect("socket pair");
-        let client = Arc::new(RpcClient::from_stream(client_stream, RpcClientOptions::default()));
+        let client = Arc::new(RpcClient::from_stream(
+            client_stream,
+            RpcClientOptions::default(),
+        ));
         let proxy = RemoteSessionProxy::new(RemoteSessionState::default(), client, None);
         let responder = tokio::spawn(async move {
             let (read, mut write) = host.into_split();
             let mut lines = BufReader::new(read).lines();
             let mut types = Vec::new();
             for _ in 0..4 {
-                let Some(line) = lines.next_line().await.expect("read frame") else { break; };
+                let Some(line) = lines.next_line().await.expect("read frame") else {
+                    break;
+                };
                 let frame: Value = serde_json::from_str(&line).expect("frame json");
                 types.push(frame["type"].as_str().unwrap_or_default().to_owned());
                 let response = json!({"type": "response", "id": frame["id"], "success": true, "data": {"echo": frame["type"]}});
-                write.write_all(format!("{response}\n").as_bytes()).await.expect("write response");
+                write
+                    .write_all(format!("{response}\n").as_bytes())
+                    .await
+                    .expect("write response");
             }
             types
         });
-        let model = proxy.set_model("anthropic", "claude").await.expect("set model");
+        let model = proxy
+            .set_model("anthropic", "claude")
+            .await
+            .expect("set model");
         assert_eq!(model["echo"], "set_model");
         let levels = proxy.get_available_thinking_levels().await.expect("levels");
         assert_eq!(levels["echo"], "get_available_thinking_levels");
         let compacted = proxy.compact(Some("tight")).await.expect("compact");
         assert_eq!(compacted["echo"], "compact");
         let snapshot = proxy.clear_queue(Some(true)).await;
-        assert_eq!(snapshot["steering"], json!([]), "clearQueue returns the mirrored queue");
+        assert_eq!(
+            snapshot["steering"],
+            json!([]),
+            "clearQueue returns the mirrored queue"
+        );
         assert_eq!(snapshot["ordered"], json!([]));
         let types = responder.await.expect("responder");
-        assert_eq!(types, ["set_model", "get_available_thinking_levels", "compact", "clear_queue"]);
+        assert_eq!(
+            types,
+            [
+                "set_model",
+                "get_available_thinking_levels",
+                "compact",
+                "clear_queue"
+            ]
+        );
         // A transport loss yields the cancelled value instead of an error.
         proxy.client.stop().await;
         assert_eq!(proxy.compact(None).await.expect("cancelled"), Value::Null);
@@ -1706,12 +2448,25 @@ mod tests {
 
     fn detached_runtime() -> RemoteInteractiveRuntime {
         let client = detached_client();
-        let proxy = Arc::new(RemoteSessionProxy::new(RemoteSessionState::default(), client.clone(), None));
-        RemoteInteractiveRuntime::new(client, proxy, binding(Some("/sessions/one.jsonl")), InteractiveHostRuntimeOptions::default())
+        let proxy = Arc::new(RemoteSessionProxy::new(
+            RemoteSessionState::default(),
+            client.clone(),
+            None,
+        ));
+        RemoteInteractiveRuntime::new(
+            client,
+            proxy,
+            binding(Some("/sessions/one.jsonl")),
+            InteractiveHostRuntimeOptions::default(),
+        )
     }
 
     fn block_on<F: std::future::Future>(future: F) -> F::Output {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime").block_on(future)
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(future)
     }
 
     /// A prompt whose reply never arrives must not keep the transport locked. One poll of
@@ -1720,18 +2475,36 @@ mod tests {
     fn parked_prompt_does_not_block_set_client_info() {
         block_on(async {
             let (client_stream, _host) = tokio::net::UnixStream::pair().expect("socket pair");
-            let client = Arc::new(RpcClient::from_stream(client_stream, RpcClientOptions::default()));
-            let proxy = Arc::new(RemoteSessionProxy::new(RemoteSessionState::default(), client.clone(), None));
-            let runtime = RemoteInteractiveRuntime::new(client, proxy.clone(), binding(None), InteractiveHostRuntimeOptions::default());
+            let client = Arc::new(RpcClient::from_stream(
+                client_stream,
+                RpcClientOptions::default(),
+            ));
+            let proxy = Arc::new(RemoteSessionProxy::new(
+                RemoteSessionState::default(),
+                client.clone(),
+                None,
+            ));
+            let runtime = RemoteInteractiveRuntime::new(
+                client,
+                proxy.clone(),
+                binding(None),
+                InteractiveHostRuntimeOptions::default(),
+            );
             let mut prompt = std::pin::pin!(proxy.prompt("hello", json!({})));
             let mut info = std::pin::pin!(runtime.set_client_info(40.));
             let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
             assert!(
-                matches!(std::future::Future::poll(prompt.as_mut(), &mut cx), std::task::Poll::Pending),
+                matches!(
+                    std::future::Future::poll(prompt.as_mut(), &mut cx),
+                    std::task::Poll::Pending
+                ),
                 "a prompt with no reply stays pending"
             );
             assert!(
-                matches!(std::future::Future::poll(info.as_mut(), &mut cx), std::task::Poll::Ready(())),
+                matches!(
+                    std::future::Future::poll(info.as_mut(), &mut cx),
+                    std::task::Poll::Ready(())
+                ),
                 "set_client_info completes while the prompt future is still pending"
             );
         });

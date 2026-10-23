@@ -6,12 +6,12 @@
 use std::time::{Duration, Instant};
 
 use senpi_desktop_safety::HEARTBEAT_INTERVAL_MS;
-use windows_sys::Win32::Foundation::{GetLastError, ERROR_HOTKEY_ALREADY_REGISTERED, WAIT_FAILED};
+use windows_sys::Win32::Foundation::{ERROR_HOTKEY_ALREADY_REGISTERED, GetLastError, WAIT_FAILED};
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    MsgWaitForMultipleObjects, PeekMessageW, PostThreadMessageW, MSG, PM_NOREMOVE, PM_REMOVE, QS_ALLINPUT,
-    WM_APP, WM_HOTKEY,
+    MSG, MsgWaitForMultipleObjects, PM_NOREMOVE, PM_REMOVE, PeekMessageW, PostThreadMessageW,
+    QS_ALLINPUT, WM_APP, WM_HOTKEY,
 };
 
 use super::chord::{Hotkey, MOD_NOREPEAT};
@@ -119,10 +119,12 @@ fn pump(shared: &Shared) -> Run {
             shared.heartbeat();
             next_beat = now + HEARTBEAT;
         }
-        let timeout = u32::try_from(next_beat.saturating_duration_since(now).as_millis()).unwrap_or(u32::MAX);
+        let timeout =
+            u32::try_from(next_beat.saturating_duration_since(now).as_millis()).unwrap_or(u32::MAX);
         // SAFETY: [FFI] no handles (count 0, null array); wakes on any new
         // message for this thread or after `timeout` ms.
-        let woke = unsafe { MsgWaitForMultipleObjects(0, std::ptr::null(), 0, timeout, QS_ALLINPUT) };
+        let woke =
+            unsafe { MsgWaitForMultipleObjects(0, std::ptr::null(), 0, timeout, QS_ALLINPUT) };
         if woke == WAIT_FAILED {
             return Run::Died;
         }

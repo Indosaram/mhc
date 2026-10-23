@@ -10,6 +10,7 @@ impl ChildReaperSyscalls for WaitableChild {
 
 #[tokio::test(start_paused = true)]
 async fn timer_reaps_only_after_the_full_waitable_window() {
+    // An idle reaper first looks after CHILD_REAPER_IDLE_TICK_MS (5 s); the child is then waitable for the full 5 s window.
     let mut reaper = ChildReaper::new(WaitableChild { reaped: false }, 5000);
     let start = tokio::time::Instant::now();
     let (published, mut logs) = tokio::sync::mpsc::unbounded_channel();
@@ -17,7 +18,7 @@ async fn timer_reaps_only_after_the_full_waitable_window() {
         reaper.run(1000, || start.elapsed().as_millis() as u64, |message| { published.send(message).unwrap(); }).await;
     });
     let message = logs.recv().await.unwrap();
-    assert_eq!(start.elapsed(), std::time::Duration::from_millis(6000));
+    assert_eq!(start.elapsed(), std::time::Duration::from_millis(10_000));
     assert!(message.contains("reaped=1"));
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());

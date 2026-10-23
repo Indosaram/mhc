@@ -53,6 +53,8 @@ fn user(text: &str) -> AgentMessage {
 
 fn failed_assistant(stop_reason: StopReason, tool_call_id: &str) -> AgentMessage {
     AgentMessage::Llm(Message::Assistant(Box::new(AssistantMessage {
+        failure_source: None,
+        timing: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,

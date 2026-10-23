@@ -5,8 +5,8 @@ use senpi_desktop_core::backend::DeliveryMode;
 use senpi_desktop_core::error::{CoreResult, ErrorCode};
 use senpi_desktop_core::keys::parse_keys;
 use senpi_desktop_core::protocol_params::{
-    AxClickParams, AxPerformParams, AxRefParams, AxSetValueParams, DragParams, KeyChordParams, PointParams,
-    ClipboardText, RaiseWindowParams, ScrollParams, TypeTextParams,
+    AxClickParams, AxPerformParams, AxRefParams, AxSetValueParams, ClipboardText, DragParams,
+    KeyChordParams, PointParams, RaiseWindowParams, ScrollParams, TypeTextParams,
 };
 use senpi_desktop_core::types::{DesktopPoint, Target};
 use senpi_desktop_safety::{MutatingAction, StopPathId, StopSource};
@@ -14,7 +14,7 @@ use serde_json::json;
 
 use super::Mutation;
 use crate::request::Op;
-use crate::test_support::{click_window, harness, Harness};
+use crate::test_support::{Harness, click_window, harness};
 
 fn click_desktop_mutation() -> Mutation<'static> {
     Mutation::new(
@@ -43,7 +43,11 @@ fn gate_refusal_is_audited_and_touches_no_backend_state() {
         Err(ErrorCode::StopPathUnavailable)
     );
     assert_eq!(harness.sink.ops(), Vec::new());
-    let codes: Vec<_> = harness.audits().into_iter().map(|audit| audit.code).collect();
+    let codes: Vec<_> = harness
+        .audits()
+        .into_iter()
+        .map(|audit| audit.code)
+        .collect();
     assert_eq!(codes, [Some(ErrorCode::StopPathUnavailable)]);
 }
 
@@ -52,12 +56,14 @@ fn panicking_backend_releases_all_and_reports_internal() {
     // Given
     let mut harness = harness(&json!({}));
     // When
-    let result = harness
-        .worker
-        .mutate(&click_desktop_mutation(), &|| false, |worker| -> CoreResult<()> {
+    let result = harness.worker.mutate(
+        &click_desktop_mutation(),
+        &|| false,
+        |worker| -> CoreResult<()> {
             worker.backend()?;
             panic!("scripted backend panic")
-        });
+        },
+    );
     // Then
     assert_eq!(result.map_err(|error| error.code), Err(ErrorCode::Internal));
     assert!(released(&harness), "{:?}", harness.sink.ops());
@@ -78,8 +84,14 @@ fn error_path_release_failure_does_not_mask_primary() {
     let reply = harness.process(click_window(&frame, None));
     // Then: the primary survives, and the failing release was attempted
     // (its queued failure is spent).
-    assert_eq!(reply.map_err(|error| error.code), Err(ErrorCode::InputFailed));
-    let next_release = harness.worker.backend().and_then(|backend| backend.release_all());
+    assert_eq!(
+        reply.map_err(|error| error.code),
+        Err(ErrorCode::InputFailed)
+    );
+    let next_release = harness
+        .worker
+        .backend()
+        .and_then(|backend| backend.release_all());
     assert_eq!(next_release, Ok(()));
 }
 
@@ -89,12 +101,17 @@ fn suspension_observed_midflight_releases_all() {
     let mut harness = harness(&json!({}));
     let supervisor = Arc::clone(&harness.supervisor);
     // When
-    let result = harness.worker.mutate(&click_desktop_mutation(), &|| false, |_| {
-        supervisor.trigger_stop(StopSource::HostRelay);
-        Ok(())
-    });
+    let result = harness
+        .worker
+        .mutate(&click_desktop_mutation(), &|| false, |_| {
+            supervisor.trigger_stop(StopSource::HostRelay);
+            Ok(())
+        });
     // Then
-    assert_eq!(result.map_err(|error| error.code), Err(ErrorCode::Suspended));
+    assert_eq!(
+        result.map_err(|error| error.code),
+        Err(ErrorCode::Suspended)
+    );
     assert!(released(&harness), "{:?}", harness.sink.ops());
 }
 
@@ -202,7 +219,9 @@ fn cursor_warp_failure_maps_through_execute_input() {
     // Given: the backend fails the pointer move itself.
     let mut harness = harness(&json!({}));
     let frame_id = harness.capture("101");
-    harness.faults.fail_next(FakeMethod::Move, ErrorCode::InputFailed);
+    harness
+        .faults
+        .fail_next(FakeMethod::Move, ErrorCode::InputFailed);
     let op = Op::MoveMouse(PointParams {
         target: "101".to_owned(),
         x: 10.0,
@@ -213,8 +232,15 @@ fn cursor_warp_failure_maps_through_execute_input() {
     // When
     let reply = harness.process(op);
     // Then: the backend's code is the reply and the audit.
-    assert_eq!(reply.map_err(|error| error.code), Err(ErrorCode::InputFailed));
-    let codes: Vec<_> = harness.audits().into_iter().map(|audit| audit.code).collect();
+    assert_eq!(
+        reply.map_err(|error| error.code),
+        Err(ErrorCode::InputFailed)
+    );
+    let codes: Vec<_> = harness
+        .audits()
+        .into_iter()
+        .map(|audit| audit.code)
+        .collect();
     assert_eq!(codes, [Some(ErrorCode::InputFailed)]);
 }
 
@@ -227,7 +253,10 @@ fn out_of_bounds_coordinate_errors_and_releases() {
         target: "101".to_owned(),
         path: vec![
             DesktopPoint { x: 0.0, y: 0.0 },
-            DesktopPoint { x: 999_999.0, y: 0.0 },
+            DesktopPoint {
+                x: 999_999.0,
+                y: 0.0,
+            },
         ],
         frame_id: Some(frame_id),
         opts: None,

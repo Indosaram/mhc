@@ -19,6 +19,8 @@ async fn given_a_one_record_budget_when_calls_race_then_the_count_is_reserved_be
         on_failure: Some(Arc::new(move |reason| {
             failures_cb.lock().unwrap().push(reason.to_string());
         })),
+        max_calls: None,
+        on_call: None,
         state: None,
     }));
 
@@ -51,7 +53,8 @@ async fn given_a_one_record_budget_when_calls_race_then_the_count_is_reserved_be
 }
 
 #[tokio::test]
-async fn given_an_exact_jsonl_byte_budget_when_two_calls_race_then_only_one_reserves_space_and_any_rejection_invalidates_the_run() {
+async fn given_an_exact_jsonl_byte_budget_when_two_calls_race_then_only_one_reserves_space_and_any_rejection_invalidates_the_run()
+ {
     let root = tempdir().unwrap();
     let path = root.path().join("extraction.jsonl");
     std::fs::write(&path, "").unwrap();
@@ -81,6 +84,8 @@ async fn given_an_exact_jsonl_byte_budget_when_two_calls_race_then_only_one_rese
         on_failure: Some(Arc::new(move |reason| {
             failures_cb.lock().unwrap().push(reason.to_string());
         })),
+        max_calls: None,
+        on_call: None,
         state: None,
     }));
 
@@ -101,7 +106,8 @@ async fn given_an_exact_jsonl_byte_budget_when_two_calls_race_then_only_one_rese
 }
 
 #[test]
-fn given_a_bounded_extraction_append_error_when_recording_fails_then_the_owner_is_notified_instead_of_treating_a_prefix_as_success() {
+fn given_a_bounded_extraction_append_error_when_recording_fails_then_the_owner_is_notified_instead_of_treating_a_prefix_as_success()
+ {
     let failures = Arc::new(Mutex::new(Vec::new()));
     let failures_cb = Arc::clone(&failures);
     let root = tempdir().unwrap();
@@ -114,6 +120,8 @@ fn given_a_bounded_extraction_append_error_when_recording_fails_then_the_owner_i
         on_failure: Some(Arc::new(move |reason| {
             failures_cb.lock().unwrap().push(reason.to_string());
         })),
+        max_calls: None,
+        on_call: None,
         state: None,
     });
 
@@ -131,7 +139,8 @@ fn given_a_bounded_extraction_append_error_when_recording_fails_then_the_owner_i
 }
 
 #[test]
-fn given_the_registered_record_fact_schema_when_inspected_then_it_is_a_top_level_object_for_provider_tool_contracts() {
+fn given_the_registered_record_fact_schema_when_inspected_then_it_is_a_top_level_object_for_provider_tool_contracts()
+ {
     let schema = facts_record_parameters();
     assert_eq!(schema["type"], "object");
     assert!(schema.get("anyOf").is_none());
@@ -148,6 +157,8 @@ fn given_malformed_records_when_the_tool_is_called_then_it_returns_errors_and_ap
         max_records: None,
         max_bytes: None,
         on_failure: None,
+        max_calls: None,
+        on_call: None,
         state: None,
     });
 
@@ -168,7 +179,8 @@ fn given_malformed_records_when_the_tool_is_called_then_it_returns_errors_and_ap
 }
 
 #[test]
-fn given_valid_person_and_project_records_when_recorded_in_order_then_exact_jsonl_lines_are_appended() {
+fn given_valid_person_and_project_records_when_recorded_in_order_then_exact_jsonl_lines_are_appended()
+ {
     let root = tempdir().unwrap();
     let path = root.path().join("extraction.jsonl");
     std::fs::write(&path, "").unwrap();
@@ -178,6 +190,8 @@ fn given_valid_person_and_project_records_when_recorded_in_order_then_exact_json
         max_records: None,
         max_bytes: None,
         on_failure: None,
+        max_calls: None,
+        on_call: None,
         state: None,
     });
 
@@ -207,7 +221,8 @@ fn given_valid_person_and_project_records_when_recorded_in_order_then_exact_json
 }
 
 #[test]
-fn given_an_inactive_facts_run_when_a_late_call_arrives_then_it_returns_an_error_without_appending() {
+fn given_an_inactive_facts_run_when_a_late_call_arrives_then_it_returns_an_error_without_appending()
+{
     let root = tempdir().unwrap();
     let path = root.path().join("extraction.jsonl");
     std::fs::write(&path, "").unwrap();
@@ -217,6 +232,8 @@ fn given_an_inactive_facts_run_when_a_late_call_arrives_then_it_returns_an_error
         max_records: None,
         max_bytes: None,
         on_failure: None,
+        max_calls: None,
+        on_call: None,
         state: None,
     });
     tool.deactivate();
@@ -246,6 +263,8 @@ fn given_a_cancelled_facts_run_state_when_called_then_it_returns_an_error_withou
         max_records: None,
         max_bytes: None,
         on_failure: None,
+        max_calls: None,
+        on_call: None,
         state: Some(FactsRecordRunState {
             cancelled: Arc::clone(&cancelled),
         }),
@@ -262,4 +281,33 @@ fn given_a_cancelled_facts_run_state_when_called_then_it_returns_an_error_withou
 
     assert!(result.is_error);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+}
+
+#[test]
+fn given_a_call_budget_when_rejected_calls_count_then_the_limit_blocks_and_on_call_fires() {
+    let root = tempdir().unwrap();
+    let path = root.path().join("extraction.jsonl");
+    std::fs::write(&path, "").unwrap();
+    let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen_cb = Arc::clone(&seen);
+    let tool = create_facts_record_tool(FactsRecordToolInput {
+        extraction_path: path,
+        max_records: None,
+        max_bytes: None,
+        on_failure: None,
+        max_calls: Some(2),
+        on_call: Some(Arc::new(move || {
+            seen_cb.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })),
+        state: None,
+    });
+    let invalid = serde_json::json!({ "scope": "nope" });
+    assert!(tool.execute("1", &invalid).is_error);
+    assert!(tool.execute("2", &invalid).is_error);
+    let third = tool.execute("3", &invalid);
+    assert_eq!(
+        third.text,
+        "Fact rejected: the facts tool-call limit (2) has been reached"
+    );
+    assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 2);
 }

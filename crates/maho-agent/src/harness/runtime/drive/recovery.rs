@@ -34,8 +34,10 @@ pub fn interrupted_assistant_message(
         error_message: None,
         error_cause: None,
         abort_source: None,
+        failure_source: None,
         raw_stop_reason: None,
         end_turn: None,
+        timing: None,
     });
     message.usage = Usage::default();
     message.stop_reason = StopReason::Error;

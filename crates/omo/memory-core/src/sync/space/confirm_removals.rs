@@ -27,7 +27,7 @@ pub fn confirm_removals(
     for path in &plan.removal_candidates {
         let missing = match files.iter().find(|f| &f.path == path) {
             Some(source) => {
-                first_missing_fact(&committed, &normalize_input(&source.text), Some(&registers))
+                first_missing_fact(&committed, &normalize_input(&source.text), &registers)
             }
             None => Some("source not among the adopted files".into()),
         };

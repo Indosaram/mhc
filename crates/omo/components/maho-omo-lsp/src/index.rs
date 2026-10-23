@@ -204,7 +204,7 @@ impl LspComponent {
                     let result=call_packaged_daemon_tool("lsp_diagnostics",args,context,signal).await.map_err(|e|DiagnosticsRunnerError::new(e.to_string()))?;
                     Ok(crate::post_edit_outcome::post_edit_outcome_from_daemon_result(&result))
                 }},Some(&cache),Some(&locate_file)).await;
-                if let Some(result)=result {ctx.ui.set_widget(POST_EDIT_DIAGNOSTICS_WIDGET_KEY,None,ExtensionWidgetOptions {placement:WidgetPlacement::BelowEditor});if let Some(content)=result.content {return Ok(EventResult::ToolResult(ToolResultEventResult {content:Some(content),details:None,is_error:None,usage:None}));}}
+                if let Some(result)=result {ctx.ui.set_widget(POST_EDIT_DIAGNOSTICS_WIDGET_KEY,None,ExtensionWidgetOptions {placement:WidgetPlacement::BelowEditor,actions:None});if let Some(content)=result.content {return Ok(EventResult::ToolResult(ToolResultEventResult {content:Some(content),details:None,is_error:None,usage:None}));}}
                 Ok(formatted_result())
             })}));
         }

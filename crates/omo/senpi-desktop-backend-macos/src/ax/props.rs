@@ -3,7 +3,7 @@
 
 use objc2_application_services::AXUIElement;
 use objc2_core_foundation::{CFBoolean, CFString, CFType};
-use senpi_desktop_core::ax::{normalize_role_macos, AxBounds, AxProps};
+use senpi_desktop_core::ax::{AxBounds, AxProps, normalize_role_macos};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 
 use super::element::{self, copy_attribute_result};
@@ -24,8 +24,12 @@ pub(super) trait AttributeSource {
 impl AttributeSource for AXUIElement {
     fn required_string(&self, attribute: &str) -> CoreResult<String> {
         copy_attribute_result(self, attribute)
-            .map_err(|error| DesktopError::ax_failed(format!("copying {attribute} failed ({error:?})")))?
-            .ok_or_else(|| DesktopError::ax_failed(format!("copying {attribute} returned no value")))?
+            .map_err(|error| {
+                DesktopError::ax_failed(format!("copying {attribute} failed ({error:?})"))
+            })?
+            .ok_or_else(|| {
+                DesktopError::ax_failed(format!("copying {attribute} returned no value"))
+            })?
             .downcast::<CFString>()
             .map(|value| value.to_string())
             .map_err(|_| DesktopError::ax_failed(format!("{attribute} was not a string")))
@@ -53,8 +57,9 @@ impl AttributeSource for AXUIElement {
     }
 
     fn child_count(&self) -> u32 {
-        element::copy_elements(self, "AXChildren")
-            .map_or(0, |children| u32::try_from(children.len()).unwrap_or(u32::MAX))
+        element::copy_elements(self, "AXChildren").map_or(0, |children| {
+            u32::try_from(children.len()).unwrap_or(u32::MAX)
+        })
     }
 }
 

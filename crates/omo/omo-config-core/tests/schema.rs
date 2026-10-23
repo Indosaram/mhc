@@ -679,6 +679,7 @@ fn full_memory_defaults() -> Value {
             "auto_select_max_chars": 150000,
         },
         "people": { "enabled": true, "max_entries": 40, "max_entry_chars": 200 },
+        "agreements": { "enabled": true, "needs_human_threshold": 3, "max_items": 64 },
         "soul": { "edit_notice": true },
         "write_notice": { "enabled": true },
         "sync": { "enabled": true },
@@ -729,6 +730,7 @@ fn memory_settings_preserve_a_fully_specified_block() {
             "auto_select_max_chars": 100000,
         },
         "people": { "enabled": false, "max_entries": 20, "max_entry_chars": 100 },
+        "agreements": { "enabled": false, "needs_human_threshold": 5, "max_items": 32 },
         "soul": { "edit_notice": false },
         "write_notice": { "enabled": false },
         "sync": { "remote": "file:///tmp/memory-mirror.git", "enabled": true },
@@ -1392,7 +1394,7 @@ fn git_master_empty_section_defaults_attribution_off() {
     );
     assert_eq!(
         value["git_master"],
-        json!({ "commit_footer": false, "include_co_authored_by": false })
+        json!({ "commit_footer": false, "include_co_authored_by": false, "git_env_prefix": "GIT_MASTER=1" })
     );
 }
 
@@ -1452,21 +1454,21 @@ fn git_master_resolver_always_returns_both_keys() {
     let resolved = omo_config_core::resolve_omo_git_master_settings(&json!({}));
     assert_eq!(
         resolved,
-        json!({ "commit_footer": false, "include_co_authored_by": false })
+        json!({ "commit_footer": false, "include_co_authored_by": false, "git_env_prefix": "GIT_MASTER=1" })
     );
     let explicit = omo_config_core::resolve_omo_git_master_settings(
         &json!({ "git_master": { "commit_footer": true } }),
     );
     assert_eq!(
         explicit,
-        json!({ "commit_footer": true, "include_co_authored_by": false })
+        json!({ "commit_footer": true, "include_co_authored_by": false, "git_env_prefix": "GIT_MASTER=1" })
     );
     let custom = omo_config_core::resolve_omo_git_master_settings(
         &json!({ "git_master": { "commit_footer": "Shipped with omo", "include_co_authored_by": true } }),
     );
     assert_eq!(
         custom,
-        json!({ "commit_footer": "Shipped with omo", "include_co_authored_by": true })
+        json!({ "commit_footer": "Shipped with omo", "include_co_authored_by": true, "git_env_prefix": "GIT_MASTER=1" })
     );
 }
 

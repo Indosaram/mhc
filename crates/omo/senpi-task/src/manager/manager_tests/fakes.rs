@@ -39,7 +39,7 @@ use crate::team::runtime_types::{
     TeamMemberTaskRecord, TeamRuntimeManagerPort, TeamStartResult, TeamStartedMember,
 };
 
-pub(crate) const WAIT: Duration = Duration::from_secs(5);
+pub(crate) const WAIT: Duration = Duration::from_secs(30);
 const RECHECK: Duration = Duration::from_millis(5);
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

@@ -10,13 +10,13 @@ mod capture;
 mod cursor;
 mod focus;
 mod front_app;
+mod input;
 mod launch_services;
 mod responsible;
-mod input;
 mod skylight;
 mod stop_path;
 
-pub use ax::{is_trusted, MacAx};
+pub use ax::{MacAx, is_trusted};
 pub use backend::MacosBackend;
 pub use input::{CanaryMode, CanaryResult};
 pub use stop_path::{CgEventTapListener, DEFAULT_STOP_CHORD};

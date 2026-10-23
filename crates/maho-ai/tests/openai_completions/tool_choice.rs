@@ -453,11 +453,11 @@ async fn keeps_developer_messages_for_openai_reasoning_model_instructions() {
 
 #[tokio::test]
 async fn replays_xiaomi_mi_mo_assistant_tool_calls_with_empty_reasoning_content_when_thinking_is_missing() {
-    let model = catalog_model("xiaomi", "mimo-v2.5-pro");
+    let model = catalog_model("xiaomi", "mimo-v2.6-pro");
     let mut replayed = assistant(vec![tool_call("call_1", "read", json!({ "path": "README.md" }))], StopReason::ToolUse);
     if let maho_ai::types::Message::Assistant(assistant) = &mut replayed {
         assistant.provider = "xiaomi".to_owned();
-        assistant.model = "mimo-v2.5-pro".to_owned();
+        assistant.model = "mimo-v2.6-pro".to_owned();
     }
     let messages = context(
         vec![user_message("Read README.md"), replayed, tool_result("call_1", vec![text_block("contents")])],
@@ -486,7 +486,8 @@ async fn replays_xiaomi_mi_mo_assistant_tool_calls_with_empty_reasoning_content_
 
 #[tokio::test]
 async fn normalizes_open_code_go_reasoning_deltas_to_reasoning_content_for_replay() {
-    let model = catalog_model("opencode-go", "kimi-k2.6");
+    let mut model = catalog_model("opencode-go", "kimi-k2.7-code");
+    model.compat = None;
     let transport = ScriptedTransport::success([json!({
         "id": "chatcmpl-opencode-go-reasoning",
         "choices": [{ "delta": { "reasoning": "think" }, "finish_reason": "stop" }],
@@ -522,7 +523,8 @@ async fn keeps_non_open_code_go_reasoning_deltas_on_the_original_reasoning_field
 
 #[tokio::test]
 async fn replays_open_code_go_reasoning_thinking_blocks_as_reasoning_content() {
-    let mut model = catalog_model("opencode-go", "kimi-k2.6");
+    let mut model = catalog_model("opencode-go", "kimi-k2.7-code");
+    model.compat = None;
     model.api = "openai-completions".to_owned();
     let mut replayed = assistant(
         vec![thinking_block("think", Some("reasoning")), tool_call("call_1", "read", json!({ "path": "README.md" }))],
@@ -530,7 +532,7 @@ async fn replays_open_code_go_reasoning_thinking_blocks_as_reasoning_content() {
     );
     if let maho_ai::types::Message::Assistant(assistant) = &mut replayed {
         assistant.provider = "opencode-go".to_owned();
-        assistant.model = "kimi-k2.6".to_owned();
+        assistant.model = "kimi-k2.7-code".to_owned();
     }
     let resolved = maho_ai::api::openai_completions::get_compat(&model);
     let messages = convert_messages(
@@ -551,7 +553,7 @@ async fn replays_open_code_go_reasoning_thinking_blocks_as_reasoning_content() {
 
 #[tokio::test]
 async fn sends_thinking_disabled_for_open_code_go_kimi_k2_6_when_thinking_is_off() {
-    let model = catalog_model("opencode-go", "kimi-k2.6");
+    let model = catalog_model("opencode", "kimi-k2.6");
     let payload = capture_simple(&model, None, None, None).await;
 
     assert_eq!(payload.get("thinking"), Some(&json!({ "type": "disabled" })));
@@ -560,7 +562,7 @@ async fn sends_thinking_disabled_for_open_code_go_kimi_k2_6_when_thinking_is_off
 
 #[tokio::test]
 async fn sends_thinking_enabled_for_open_code_go_kimi_k2_6_when_thinking_is_enabled() {
-    let model = catalog_model("opencode-go", "kimi-k2.6");
+    let model = catalog_model("opencode", "kimi-k2.6");
     let payload = capture_simple(&model, Some(ThinkingLevel::High), None, None).await;
 
     assert_eq!(payload.get("thinking"), Some(&json!({ "type": "enabled" })));
@@ -653,7 +655,7 @@ async fn preserves_prompt_tokens_details_cache_read_write_fields_from_choice_usa
 
 #[tokio::test]
 async fn uses_openrouter_reasoning_object_instead_of_reasoning_effort() {
-    let mut model = catalog_model("openrouter", "deepseek/deepseek-r1");
+    let mut model = catalog_model("openrouter", "deepseek/deepseek-r1-0528");
     model.reasoning = true;
     let payload = capture_simple(&model, Some(ThinkingLevel::High), None, None).await;
 
@@ -714,7 +716,7 @@ async fn uses_ant_ling_compatibility_metadata() {
     assert_eq!(compat.max_tokens_field, Some(maho_ai::types::MaxTokensField::MaxTokens));
     assert_eq!(compat.thinking_format, Some(maho_ai::types::ThinkingFormat::AntLing));
     assert_eq!(compat.supports_long_cache_retention, Some(false));
-    assert_eq!(compat.supports_strict_mode, None);
+    assert_eq!(compat.supports_strict_mode, Some(true));
     assert_eq!(compat.requires_reasoning_content_on_assistant_messages, None);
 
     let (sink, hook) = payload_capture(&model);
@@ -773,7 +775,7 @@ async fn omits_ant_ling_reasoning_for_unmapped_direct_reasoning_efforts_and_non_
 
 #[tokio::test]
 async fn sends_max_tokens_for_open_code_completions_models() {
-    for (provider, id) in [("opencode-go", "kimi-k2.6"), ("opencode", "kimi-k2.6")] {
+    for (provider, id) in [("opencode-go", "kimi-k2.7-code"), ("opencode", "kimi-k2.6")] {
         let model = catalog_model(provider, id);
         assert_eq!(
             model.compat.clone().expect("compat").openai_completions().max_tokens_field,

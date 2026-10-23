@@ -24,6 +24,7 @@ maho-omo-model-profile = { path = "../components/maho-omo-model-profile" }
 maho-omo-bundled-skills = { path = "../components/maho-omo-bundled-skills" }
 maho-omo-skill-commands = { path = "../components/maho-omo-skill-commands" }
 maho-omo-git-master = { path = "../components/maho-omo-git-master" }
+maho-omo-feedback = { path = "../components/maho-omo-feedback" }
 maho-omo-builtin-mcps = { path = "../components/maho-omo-builtin-mcps" }
 maho-omo-browser-bridge = { path = "../components/maho-omo-browser-bridge" }
 maho-omo-x-search = { path = "../components/maho-omo-x-search" }
@@ -36,6 +37,7 @@ maho-omo-lsp = { path = "../components/maho-omo-lsp" }
 maho-omo-skill-pointers = { path = "../components/maho-omo-skill-pointers" }
 maho-omo-question-gates = { path = "../components/maho-omo-question-gates" }
 maho-omo-memory = { path = "../components/maho-omo-memory" }
+maho-memory-core = { path = "../memory-core" }
 maho-omo-onboarding = { path = "../components/maho-omo-onboarding" }
 maho-omo-start-work-continuation = { path = "../components/maho-omo-start-work-continuation" }
 maho-omo-telemetry = { path = "../components/maho-omo-telemetry" }

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use senpi_desktop_core::methods::Method;
 use senpi_desktop_core::protocol_params::TypeTextParams;
 use senpi_desktop_core::types::DesktopSessionOptions;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{append, append_rotating};
 use crate::audit::{AuditRecord, AuditStatus};
@@ -60,8 +60,12 @@ fn audit_writes_one_json_line_per_action() {
     open_with_audit(&mut harness, path.clone());
     let frame = harness.capture("101");
     // When
-    harness.process(click_window(&frame, None)).expect("click 1");
-    harness.process(click_window(&frame, None)).expect("click 2");
+    harness
+        .process(click_window(&frame, None))
+        .expect("click 1");
+    harness
+        .process(click_window(&frame, None))
+        .expect("click 2");
     // Then
     let lines = lines_of(&path);
     assert_eq!(lines.len(), 2);
@@ -71,7 +75,11 @@ fn audit_writes_one_json_line_per_action() {
         assert_eq!(line["target"], "101");
         assert!(line["sessionId"].as_str().is_some_and(|id| !id.is_empty()));
         assert!(line["runId"].as_str().is_some_and(|id| !id.is_empty()));
-        assert!(line["timestamp"].as_str().is_some_and(|ts| ts.ends_with('Z')));
+        assert!(
+            line["timestamp"]
+                .as_str()
+                .is_some_and(|ts| ts.ends_with('Z'))
+        );
     }
 }
 
@@ -195,7 +203,10 @@ fn audit_read_only_dir_does_not_fail_the_action() {
     assert!(reply.is_ok(), "{reply:?}");
     let warnings = take_warnings();
     assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(warnings[0].contains("audit log write failed"), "{warnings:?}");
+    assert!(
+        warnings[0].contains("audit log write failed"),
+        "{warnings:?}"
+    );
 }
 
 #[test]

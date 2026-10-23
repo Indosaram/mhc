@@ -61,6 +61,8 @@ pub enum ManagerError {
     Capacity(usize),
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
+    #[error("idScope must be letters and digits only.")]
+    InvalidIdScope,
 }
 struct Entry {
     runtime: TerminalRuntimeSession,
@@ -75,6 +77,7 @@ pub struct TerminalManager {
     max_sessions: usize,
     scrollback: usize,
     id_counters: BTreeMap<String, u64>,
+    id_scope: Option<String>,
     sequence: u64,
     reservations: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -97,9 +100,23 @@ impl TerminalManager {
             max_sessions,
             scrollback: crate::shared::DEFAULT_SCROLLBACK,
             id_counters: BTreeMap::new(),
+            id_scope: None,
             sequence: 0,
             reservations: Default::default(),
         }
+    }
+    /// `TerminalManagerOptions.idScope`: session ids become `bash_<scope>_N`, so a tool child's ids never
+    /// match the host's. Rejects a scope that is not letters and digits only (registry.ts constructor).
+    pub fn with_id_scope(mut self, scope: &str) -> Result<Self, ManagerError> {
+        if scope.is_empty()
+            || !scope
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric())
+        {
+            return Err(ManagerError::InvalidIdScope);
+        }
+        self.id_scope = Some(scope.to_owned());
+        Ok(self)
     }
     pub fn configure(&mut self, settings: &crate::settings::ResolvedTerminalSettings) {
         self.max_sessions = settings.max_sessions as usize;
@@ -166,7 +183,15 @@ impl TerminalManager {
         Ok(id)
     }
     /// registry.ts `allocateId`: per-prefix counters, skipping any id still held by an entry.
-    fn allocate_id(&mut self, prefix: &str) -> String {
+    fn allocate_id(&mut self, command_prefix: &str) -> String {
+        let scoped;
+        let prefix = match &self.id_scope {
+            Some(scope) => {
+                scoped = format!("{command_prefix}_{scope}");
+                scoped.as_str()
+            }
+            None => command_prefix,
+        };
         let mut next = self.id_counters.get(prefix).copied().unwrap_or(0) + 1;
         while self.entries.contains_key(&format!("{prefix}_{next}")) {
             next += 1;
@@ -519,6 +544,21 @@ mod tests {
         manager.teardown()?;
         assert_eq!(manager.size(), 0);
         assert_eq!(manager.resolve_id("mon_1"), None);
+        Ok(())
+    }
+    #[test]
+    fn id_scope_is_validated_and_scopes_allocated_ids() -> Result<(), ManagerError> {
+        for bad in ["", "a_b", "a-b", "a b"] {
+            assert!(matches!(
+                TerminalManager::default().with_id_scope(bad),
+                Err(ManagerError::InvalidIdScope)
+            ));
+        }
+        let mut manager = TerminalManager::default().with_id_scope("Ab12")?;
+        assert_eq!(manager.allocate_id("bash"), "bash_Ab12_1");
+        assert_eq!(manager.allocate_id("bash"), "bash_Ab12_2");
+        assert_eq!(manager.allocate_id("sh"), "sh_Ab12_1");
+        assert_eq!(TerminalManager::default().allocate_id("bash"), "bash_1");
         Ok(())
     }
     #[test]

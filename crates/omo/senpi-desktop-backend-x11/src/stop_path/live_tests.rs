@@ -7,10 +7,12 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use senpi_desktop_safety::{Chord, MonotonicClock, StopPathError, StopPathListener, StopSource, Supervisor};
+use senpi_desktop_safety::{
+    Chord, MonotonicClock, StopPathError, StopPathListener, StopSource, Supervisor,
+};
 
 use super::xi2::CONNECTION_FAILED;
-use super::{Xi2Listener, DEFAULT_STOP_CHORD};
+use super::{DEFAULT_STOP_CHORD, Xi2Listener};
 
 /// Hang guard only; the latency is printed for the evidence, not asserted.
 const HANG_GUARD: Duration = Duration::from_secs(30);
@@ -45,9 +47,10 @@ fn raw_key_chord_latches_supervisor() {
 
     // Then: the listener latches the supervisor
     let mut control = shared.control.lock();
-    let waited = shared
-        .changed
-        .wait_while_for(&mut control, |control| control.stops == 0, HANG_GUARD);
+    let waited =
+        shared
+            .changed
+            .wait_while_for(&mut control, |control| control.stops == 0, HANG_GUARD);
     let latched = Instant::now();
     drop(control);
     let status = supervisor.status();
@@ -59,7 +62,9 @@ fn raw_key_chord_latches_supervisor() {
         status.stopped_by,
         status.global_live,
         latched.duration_since(posted).as_millis(),
-        latched.saturating_duration_since(xdotool_exited).as_millis(),
+        latched
+            .saturating_duration_since(xdotool_exited)
+            .as_millis(),
     );
     assert!(xdotool.success());
     assert!(!waited.timed_out(), "hang guard expired");

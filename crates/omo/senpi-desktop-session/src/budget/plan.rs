@@ -4,10 +4,10 @@ use std::path::PathBuf;
 
 use image::RgbaImage;
 use senpi_desktop_core::error::{CoreResult, DesktopError};
-use senpi_desktop_core::frame::{apply_capture_caps, FrameGeometry};
+use senpi_desktop_core::frame::{FrameGeometry, apply_capture_caps};
 use senpi_desktop_core::types::CaptureCaps;
 
-use super::encode::{format_bytes, jpeg, png, write_artifact, JPEG_QUALITY};
+use super::encode::{JPEG_QUALITY, format_bytes, jpeg, png, write_artifact};
 use super::{Delivery, ScreenshotResult};
 
 /// Host caps when `session.open` names no size: senpi's own default, not a
@@ -50,7 +50,13 @@ impl Budget {
         let tighter = |host: Option<u32>, requested: Option<u32>, default: u32| {
             host.unwrap_or(default).min(requested.unwrap_or(u32::MAX))
         };
-        let clamp = |limit: u32, safe: u32| Some(if coordinate_safe { limit.min(safe) } else { limit });
+        let clamp = |limit: u32, safe: u32| {
+            Some(if coordinate_safe {
+                limit.min(safe)
+            } else {
+                limit
+            })
+        };
         let caps = CaptureCaps {
             max_width: clamp(
                 tighter(session.max_width, call.max_width, DEFAULT_MAX_WIDTH),

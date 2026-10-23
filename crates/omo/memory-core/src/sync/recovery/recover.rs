@@ -268,47 +268,50 @@ async fn recover_with_handle(
             )));
         }
     };
-    let rotated = input
-        .transport
-        .append_keys(rotation_append(RotationInput {
-            keyring: input.keyring,
-            head: &confirmed.head,
-            account: input.account,
-            authority: &confirmed.authority,
-            retained: &retained,
-            members: std::slice::from_ref(&device),
-            registry: std::slice::from_ref(&confirmed.used_key),
-        })?)
-        .await?;
+    let rotation = rotation_append(RotationInput {
+        keyring: input.keyring,
+        head: &confirmed.head,
+        account: input.account,
+        authority: &confirmed.authority,
+        retained: &retained,
+        members: std::slice::from_ref(&device),
+        registry: std::slice::from_ref(&confirmed.used_key),
+    })?;
+    let rotated = input.transport.append_keys(rotation.clone()).await?;
     drop(retained);
-    if let Some(event) = input.on_event {
-        event(RecoveryEvent::Recovered);
-    }
-    let read_only = || RecoverOutcome::JoinedReadOnly {
-        credential_id: recovered.credential_id.clone(),
+    let read_only = || {
+        if let Some(event) = input.on_event {
+            event(RecoveryEvent::JoinedReadOnly);
+        }
+        RecoverOutcome::JoinedReadOnly {
+            credential_id: recovered.credential_id.clone(),
+        }
     };
     if rotated.is_err() {
         return Ok(read_only());
     }
-    let stored =
-        load_served_chain(input.transport, input.account, input.rejections, anchor).await?;
     let next_epoch = confirmed
         .authority
         .epoch
         .checked_add(1)
         .ok_or(RecoveryError::InvalidInput("epoch overflow"))?;
-    let Ok(stored) = stored else {
-        return Ok(read_only());
-    };
-    if !stored.authority().is_some_and(|a| {
-        a.epoch == next_epoch
-            && a.members
-                .get(&device.id)
-                .is_some_and(|p| p.signing_public_key == device.signing_public_key)
-    }) {
+    if !rotation_stored(
+        input.transport,
+        input.account,
+        input.rejections,
+        anchor,
+        &rotation,
+        next_epoch,
+        &device,
+    )
+    .await
+    {
         return Ok(read_only());
     }
     release_write_hold(input.state_dir, input.account)?;
+    if let Some(event) = input.on_event {
+        event(RecoveryEvent::Recovered);
+    }
     Ok(RecoverOutcome::Recovered {
         epoch: next_epoch,
         credential_id: recovered.credential_id,

@@ -153,14 +153,20 @@ fn model_from_json(
         headers: None,
         cache_retention: definition.cache_retention.or(config.cache_retention),
         upstream_model_id: definition.upstream_model_id.clone(),
+        deprecated: None,
         service_tier: definition.service_tier,
         recover_text_tool_calls: definition.recover_text_tool_calls,
         compat: merge_compat(config.compat.as_ref(), definition.compat.as_ref()),
         default_thinking_level: definition.default_thinking_level,
-        input_limits: definition.input_limits.as_ref().map(crate::model_config_schema::ModelInputLimits::to_shared),
-        prompt_cache: definition.prompt_cache.as_ref().map(|cache| maho_ai::model::ModelPromptCache {
-            short: cache.short.map(std::num::NonZeroU64::get),
-            long: cache.long.map(std::num::NonZeroU64::get),
+        input_limits: definition
+            .input_limits
+            .as_ref()
+            .map(crate::model_config_schema::ModelInputLimits::to_shared),
+        prompt_cache: definition.prompt_cache.as_ref().map(|cache| {
+            maho_ai::model::ModelPromptCache {
+                short: cache.short.map(std::num::NonZeroU64::get),
+                long: cache.long.map(std::num::NonZeroU64::get),
+            }
         }),
         supports_assistant_prefill: definition.supports_assistant_prefill,
     })
@@ -209,7 +215,12 @@ pub fn compose_models(
                 merge_compat(model.compat.as_ref().map(|c| &c.0), config.compat.as_ref());
         }
         for definition in config.models.iter().flatten() {
-            if definition.model_type.is_some_and(|kind| kind != maho_ai::types::ModelType::Chat) { continue; }
+            if definition
+                .model_type
+                .is_some_and(|kind| kind != maho_ai::types::ModelType::Chat)
+            {
+                continue;
+            }
             let model = model_from_json(
                 id,
                 definition,
@@ -240,7 +251,12 @@ pub fn compose_models(
         if let Some(declared) = &extension.models {
             let mut replacement = Vec::new();
             for definition in declared {
-                if definition.model_type.is_some_and(|kind| kind != maho_ai::types::ModelType::Chat) { continue; }
+                if definition
+                    .model_type
+                    .is_some_and(|kind| kind != maho_ai::types::ModelType::Chat)
+                {
+                    continue;
+                }
                 replacement.push(model_from_json(
                     id,
                     definition,
@@ -364,74 +380,194 @@ fn compose_nonchat_models(
     extension: Option<&ProviderConfigInput>,
 ) -> Result<Vec<maho_ai::types::AnyModel>, String> {
     use maho_ai::types::{AnyModel, ModelType};
-    let mut models: Vec<_> = base.into_iter().flat_map(|base| base.get_all_models())
-        .filter(|model| !matches!(model, AnyModel::Chat(_))).collect();
+    let mut models: Vec<_> = base
+        .into_iter()
+        .flat_map(|base| base.get_all_models())
+        .filter(|model| !matches!(model, AnyModel::Chat(_)))
+        .collect();
     let defaults = models.clone();
-    if extension.is_some_and(|extension| extension.models.is_some()) { models.clear(); }
-    for (provider, definitions) in config.into_iter().map(|config| (config, config.models.as_ref()))
-        .chain(extension.into_iter().map(|extension| (&extension.config, extension.models.as_ref())))
+    if extension.is_some_and(|extension| extension.models.is_some()) {
+        models.clear();
+    }
+    for (provider, definitions) in config
+        .into_iter()
+        .map(|config| (config, config.models.as_ref()))
+        .chain(
+            extension
+                .into_iter()
+                .map(|extension| (&extension.config, extension.models.as_ref())),
+        )
     {
         for definition in definitions.into_iter().flatten() {
-            let Some(kind) = definition.model_type.filter(|kind| *kind != ModelType::Chat) else { continue; };
-            let candidates: Vec<_> = defaults.iter().filter(|model| matches!((kind, model),
-                (ModelType::Image, AnyModel::Image(_)) | (ModelType::Classifier, AnyModel::Classifier(_)))).collect();
-            let default = candidates.iter().copied().find(|model| match model {
-                AnyModel::Image(model) => model.id == definition.id,
-                AnyModel::Classifier(model) => model.id == definition.id,
-                AnyModel::Chat(_) => false,
-            })
-                .or_else(|| definition.api.as_ref().and_then(|api| candidates.iter().copied().find(|model| match model {
-                    AnyModel::Image(model) => &model.api == api,
-                    AnyModel::Classifier(model) => &model.api == api,
+            let Some(kind) = definition
+                .model_type
+                .filter(|kind| *kind != ModelType::Chat)
+            else {
+                continue;
+            };
+            let candidates: Vec<_> = defaults
+                .iter()
+                .filter(|model| {
+                    matches!(
+                        (kind, model),
+                        (ModelType::Image, AnyModel::Image(_))
+                            | (ModelType::Classifier, AnyModel::Classifier(_))
+                    )
+                })
+                .collect();
+            let default = candidates
+                .iter()
+                .copied()
+                .find(|model| match model {
+                    AnyModel::Image(model) => model.id == definition.id,
+                    AnyModel::Classifier(model) => model.id == definition.id,
                     AnyModel::Chat(_) => false,
-                })))
+                })
+                .or_else(|| {
+                    definition.api.as_ref().and_then(|api| {
+                        candidates.iter().copied().find(|model| match model {
+                            AnyModel::Image(model) => &model.api == api,
+                            AnyModel::Classifier(model) => &model.api == api,
+                            AnyModel::Chat(_) => false,
+                        })
+                    })
+                })
                 .or_else(|| candidates.first().copied());
-            let api = definition.api.as_ref().or_else(|| default.map(|model| match model {
-                AnyModel::Image(model) => &model.api, AnyModel::Classifier(model) => &model.api, AnyModel::Chat(model) => &model.api,
-            }))
-                .ok_or_else(|| format!("Provider {id}, model {}: no api specified", definition.id))?;
-            let base_url = definition.base_url.as_ref().or(provider.base_url.as_ref())
-                .or_else(|| default.map(|model| match model { AnyModel::Image(model) => &model.base_url, AnyModel::Classifier(model) => &model.base_url, AnyModel::Chat(model) => &model.base_url }))
-                .ok_or_else(|| format!("Provider {id}, model {}: no baseUrl specified", definition.id))?;
+            let api = definition
+                .api
+                .as_ref()
+                .or_else(|| {
+                    default.map(|model| match model {
+                        AnyModel::Image(model) => &model.api,
+                        AnyModel::Classifier(model) => &model.api,
+                        AnyModel::Chat(model) => &model.api,
+                    })
+                })
+                .ok_or_else(|| {
+                    format!("Provider {id}, model {}: no api specified", definition.id)
+                })?;
+            let base_url = definition
+                .base_url
+                .as_ref()
+                .or(provider.base_url.as_ref())
+                .or_else(|| {
+                    default.map(|model| match model {
+                        AnyModel::Image(model) => &model.base_url,
+                        AnyModel::Classifier(model) => &model.base_url,
+                        AnyModel::Chat(model) => &model.base_url,
+                    })
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "Provider {id}, model {}: no baseUrl specified",
+                        definition.id
+                    )
+                })?;
             let model = match kind {
                 ModelType::Image => AnyModel::Image(maho_ai::types::ImagesModel {
-                    id: definition.id.clone(), name: definition.name.clone().unwrap_or_else(|| definition.id.clone()),
-                    api: api.clone(), provider: id.into(), base_url: base_url.clone(),
-                    thinking_level_map: definition.thinking_level_map.clone(), input: definition.input.clone().unwrap_or_default(),
-                    input_limits: definition.input_limits.as_ref().map(crate::model_config_schema::ModelInputLimits::to_shared),
-                    output: definition.output.clone().filter(|output| !output.is_empty())
-                        .ok_or_else(|| format!("Provider {id}, image model {}: output is required", definition.id))?,
+                    id: definition.id.clone(),
+                    name: definition
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| definition.id.clone()),
+                    api: api.clone(),
+                    provider: id.into(),
+                    base_url: base_url.clone(),
+                    thinking_level_map: definition.thinking_level_map.clone(),
+                    input: definition.input.clone().unwrap_or_default(),
+                    input_limits: definition
+                        .input_limits
+                        .as_ref()
+                        .map(crate::model_config_schema::ModelInputLimits::to_shared),
+                    output: definition
+                        .output
+                        .clone()
+                        .filter(|output| !output.is_empty())
+                        .ok_or_else(|| {
+                            format!(
+                                "Provider {id}, image model {}: output is required",
+                                definition.id
+                            )
+                        })?,
                     cost: definition.image_cost.clone().unwrap_or_else(|| {
                         let cost = definition.cost.clone().unwrap_or_default();
-                        maho_ai::types::ImagesModelCost { input: cost.input, output: cost.output,
-                            cache_read: cost.cache_read, cache_write: cost.cache_write, tiers: cost.tiers,
-                            effective_rates: cost.effective_rates, image_input: None }
+                        maho_ai::types::ImagesModelCost {
+                            input: cost.input,
+                            output: cost.output,
+                            cache_read: cost.cache_read,
+                            cache_write: cost.cache_write,
+                            tiers: cost.tiers,
+                            effective_rates: cost.effective_rates,
+                            image_input: None,
+                        }
                     }),
-                    sampling_params: definition.sampling_params.clone(), headers: None,
+                    sampling_params: definition.sampling_params.clone(),
+                    headers: None,
                     cache_retention: definition.cache_retention.or(provider.cache_retention),
-                    upstream_model_id: definition.upstream_model_id.clone(), service_tier: definition.service_tier,
+                    upstream_model_id: definition.upstream_model_id.clone(),
+                    service_tier: definition.service_tier,
                     recover_text_tool_calls: definition.recover_text_tool_calls,
                 }),
                 ModelType::Classifier => AnyModel::Classifier(maho_ai::types::ClassifierModel {
                     model_type: maho_ai::types::ClassifierModelType::Classifier,
-                    id: definition.id.clone(), name: definition.name.clone().unwrap_or_else(|| definition.id.clone()),
-                    api: api.clone(), provider: id.into(), base_url: base_url.clone(),
-                    input: definition.input.clone().unwrap_or_default(), input_limits: definition.input_limits.as_ref().map(crate::model_config_schema::ModelInputLimits::to_shared),
-                    cost: definition.cost.clone().unwrap_or_default(), headers: None,
-                    context_window: definition.context_window.filter(|value| value.is_finite() && *value > 0.0)
-                        .ok_or_else(|| format!("Provider {id}, classifier model {}: contextWindow is required", definition.id))? as u64,
+                    id: definition.id.clone(),
+                    name: definition
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| definition.id.clone()),
+                    api: api.clone(),
+                    provider: id.into(),
+                    base_url: base_url.clone(),
+                    input: definition.input.clone().unwrap_or_default(),
+                    input_limits: definition
+                        .input_limits
+                        .as_ref()
+                        .map(crate::model_config_schema::ModelInputLimits::to_shared),
+                    cost: definition.cost.clone().unwrap_or_default(),
+                    headers: None,
+                    context_window: definition
+                        .context_window
+                        .filter(|value| value.is_finite() && *value > 0.0)
+                        .ok_or_else(|| {
+                            format!(
+                                "Provider {id}, classifier model {}: contextWindow is required",
+                                definition.id
+                            )
+                        })? as u64,
                 }),
                 ModelType::Chat => unreachable!("chat models are composed separately"),
             };
-            let model_id = |model: &AnyModel| match model { AnyModel::Chat(model) => model.id.clone(), AnyModel::Image(model) => model.id.clone(), AnyModel::Classifier(model) => model.id.clone() };
-            if let Some(slot) = models.iter_mut().find(|model| model_id(model) == definition.id) { *slot = model; }
-            else { models.push(model); }
+            let model_id = |model: &AnyModel| match model {
+                AnyModel::Chat(model) => model.id.clone(),
+                AnyModel::Image(model) => model.id.clone(),
+                AnyModel::Classifier(model) => model.id.clone(),
+            };
+            if let Some(slot) = models
+                .iter_mut()
+                .find(|model| model_id(model) == definition.id)
+            {
+                *slot = model;
+            } else {
+                models.push(model);
+            }
         }
     }
     models.retain(|model| {
-        let model_id = match model { AnyModel::Chat(model) => &model.id, AnyModel::Image(model) => &model.id, AnyModel::Classifier(model) => &model.id };
-        config.is_none_or(|config| config.whitelist.as_ref().is_none_or(|list| list.contains(model_id))
-            && config.blacklist.as_ref().is_none_or(|list| !list.contains(model_id)))
+        let model_id = match model {
+            AnyModel::Chat(model) => &model.id,
+            AnyModel::Image(model) => &model.id,
+            AnyModel::Classifier(model) => &model.id,
+        };
+        config.is_none_or(|config| {
+            config
+                .whitelist
+                .as_ref()
+                .is_none_or(|list| list.contains(model_id))
+                && config
+                    .blacklist
+                    .as_ref()
+                    .is_none_or(|list| !list.contains(model_id))
+        })
     });
     Ok(models)
 }
@@ -491,13 +627,27 @@ impl Provider for ComposedProvider {
         }
     }
     fn get_all_models(&self) -> Vec<maho_ai::types::AnyModel> {
-        self.get_models().into_iter().map(maho_ai::types::AnyModel::Chat)
-            .chain(self.refreshed_nonchat.read().unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref().unwrap_or(&self.nonchat_models).clone()).collect()
+        self.get_models()
+            .into_iter()
+            .map(maho_ai::types::AnyModel::Chat)
+            .chain(
+                self.refreshed_nonchat
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()
+                    .unwrap_or(&self.nonchat_models)
+                    .clone(),
+            )
+            .collect()
     }
     fn supports_classification(&self) -> bool {
-        self.extension.as_ref().is_some_and(|extension| !extension.classifiers.is_empty())
-            || self.base.as_ref().is_some_and(|base| base.supports_classification())
+        self.extension
+            .as_ref()
+            .is_some_and(|extension| !extension.classifiers.is_empty())
+            || self
+                .base
+                .as_ref()
+                .is_some_and(|base| base.supports_classification())
     }
     fn classify<'a>(
         &'a self,
@@ -505,7 +655,11 @@ impl Provider for ComposedProvider {
         context: &'a maho_ai::types::ClassifierContext,
         options: Option<maho_ai::types::ClassifierOptions>,
     ) -> maho_ai::types::BoxFuture<'a, maho_ai::types::ClassifierResult> {
-        if let Some(classifier) = self.extension.as_ref().and_then(|extension| extension.classifiers.get(&model.api)) {
+        if let Some(classifier) = self
+            .extension
+            .as_ref()
+            .and_then(|extension| extension.classifiers.get(&model.api))
+        {
             return classifier.classify(model, context, options);
         }
         if let Some(base) = &self.base {
@@ -513,7 +667,14 @@ impl Provider for ComposedProvider {
         }
         Box::pin(async move {
             let mut result = maho_ai::models::system_one_shared::result(model);
-            maho_ai::models::system_one_shared::fail(&mut result, &options.unwrap_or_default(), format!("Provider {} has no classifier API implementation for \"{}\"", self.id, model.api));
+            maho_ai::models::system_one_shared::fail(
+                &mut result,
+                &options.unwrap_or_default(),
+                format!(
+                    "Provider {} has no classifier API implementation for \"{}\"",
+                    self.id, model.api
+                ),
+            );
             result
         })
     }
@@ -523,12 +684,21 @@ impl Provider for ComposedProvider {
         context: &'a maho_ai::types::ImagesContext,
         options: Option<maho_ai::types::ImagesOptions>,
     ) -> maho_ai::types::BoxFuture<'a, Result<maho_ai::types::AssistantImages, String>> {
-        if let Some(images) = self.extension.as_ref().and_then(|extension| extension.images.get(&model.api)) {
+        if let Some(images) = self
+            .extension
+            .as_ref()
+            .and_then(|extension| extension.images.get(&model.api))
+        {
             return images.generate_images(model, context, options);
         }
         match &self.base {
             Some(base) => base.generate_images(model, context, options),
-            None => Box::pin(async move { Err(format!("Provider {} has no image API implementation for \"{}\"", self.id, model.api)) }),
+            None => Box::pin(async move {
+                Err(format!(
+                    "Provider {} has no image API implementation for \"{}\"",
+                    self.id, model.api
+                ))
+            }),
         }
     }
     fn stream(
@@ -652,14 +822,26 @@ impl Provider for ComposedProvider {
                         e,
                     )
                 })?;
-                let nonchat = compose_nonchat_models(&self.id, self.base.as_ref(), self.config.as_ref(), extension.as_ref())
-                    .map_err(|error| maho_ai::models::ModelsError::new(maho_ai::models::ModelsErrorCode::ModelValidation, error))?;
+                let nonchat = compose_nonchat_models(
+                    &self.id,
+                    self.base.as_ref(),
+                    self.config.as_ref(),
+                    extension.as_ref(),
+                )
+                .map_err(|error| {
+                    maho_ai::models::ModelsError::new(
+                        maho_ai::models::ModelsErrorCode::ModelValidation,
+                        error,
+                    )
+                })?;
                 let refreshed_nonchat = self.refreshed_nonchat.clone();
                 let refreshed = self.refreshed.clone();
                 publisher(maho_ai::models::ModelsPublication {
                     persist: None,
                     update: Some(Box::new(move || {
-                        *refreshed_nonchat.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(nonchat);
+                        *refreshed_nonchat
+                            .write()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(nonchat);
                         *refreshed.write().unwrap_or_else(|p| p.into_inner()) = Some(values);
                     })),
                 })
@@ -817,8 +999,12 @@ pub fn compose_model_provider(
     config: &ModelConfig,
     extension: Option<&ProviderConfigInput>,
 ) -> Result<Arc<dyn Provider>, String> {
-    if extension.is_some_and(|extension| extension.stream_simple.is_some() && extension.api.is_none()) {
-        return Err(format!("Provider {id}: \"api\" is required when registering streamSimple."));
+    if extension
+        .is_some_and(|extension| extension.stream_simple.is_some() && extension.api.is_none())
+    {
+        return Err(format!(
+            "Provider {id}: \"api\" is required when registering streamSimple."
+        ));
     }
     let models = compose_models(
         id,
@@ -826,7 +1012,8 @@ pub fn compose_model_provider(
         config.get_provider(id),
         extension,
     )?;
-    let nonchat_models = compose_nonchat_models(id, base.as_ref(), config.get_provider(id), extension)?;
+    let nonchat_models =
+        compose_nonchat_models(id, base.as_ref(), config.get_provider(id), extension)?;
     let name = extension
         .and_then(|e| e.name.clone())
         .or_else(|| config.get_provider(id).and_then(|c| c.name.clone()))
@@ -960,8 +1147,15 @@ mod tests {
             r#"{"providers":{"proxy":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"sol","promptCache":{"short":300,"long":3600}}],"modelOverrides":{"sol":{"promptCache":{"short":600}}}}}}"#,
             "memory",
         );
-        let models = compose_models("proxy", &[], config.get_provider("proxy"), None).expect("compose");
-        assert_eq!(models[0].prompt_cache, Some(maho_ai::model::ModelPromptCache { short: Some(600), long: Some(3600) }));
+        let models =
+            compose_models("proxy", &[], config.get_provider("proxy"), None).expect("compose");
+        assert_eq!(
+            models[0].prompt_cache,
+            Some(maho_ai::model::ModelPromptCache {
+                short: Some(600),
+                long: Some(3600)
+            })
+        );
         assert_eq!(models[0].supports_assistant_prefill, None);
     }
 

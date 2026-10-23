@@ -9,7 +9,7 @@ pub fn category_for_provider_code(code: &str) -> Option<Category> {
     Some(match code {
         "authentication_error" | "invalid_api_key" => Category::Auth,
         "rate_limit_error" | "rate_limit_exceeded" => Category::RateLimit,
-        "insufficient_quota" => Category::Quota,
+        "insufficient_quota" | "usage_limit_reached" | "usage_not_included" => Category::Quota,
         "context_length_exceeded" => Category::ContextLimit,
         "invalid_request_error" => Category::InvalidRequest,
         "overloaded_error" | "api_error" | "timeout_error" => Category::ProviderUnavailable,
@@ -18,12 +18,30 @@ pub fn category_for_provider_code(code: &str) -> Option<Category> {
     })
 }
 
+/// A provider error type outside the allowlist that is still safe to show: lowercase words joined
+/// by `_` or `.`. It only ever names an `unknown` failure, with no status beside it.
+pub fn is_opaque_provider_code(code: &str) -> bool {
+    if code.len() > 64 || category_for_provider_code(code).is_some() {
+        return false;
+    }
+    code.split(['_', '.'])
+        .all(|word| !word.is_empty() && word.bytes().all(|b| b.is_ascii_lowercase()))
+}
+
+/// A reset instant (epoch ms) a limit diagnostic may carry: an integer between 2000 and 2100.
+pub fn is_provider_diagnostic_resets_at(value: &serde_json::Value) -> bool {
+    value
+        .as_i64()
+        .is_some_and(|v| v > 946_684_800_000 && v < 4_102_444_800_000)
+}
+
 pub fn category_for_transport_code(code: &str) -> Option<Category> {
     let diagnostic = ProviderDiagnostic {
         category: Category::Network,
         http_status: None,
         code: Some(code.to_owned()),
         evidence: Evidence::StructuredTransport,
+        resets_at: None,
     };
     crate::types::sanitize_provider_diagnostic(&diagnostic).map(|value| value.category)
 }
@@ -46,6 +64,7 @@ pub fn is_provider_code_status_compatible(code: &str, status: u16) -> bool {
         http_status: Some(status),
         code: Some(code.to_owned()),
         evidence: Evidence::StructuredCode,
+        resets_at: None,
     })
     .is_some()
 }
@@ -72,12 +91,14 @@ pub fn classify_provider_failure(facts: ProviderFailureFacts<'_>) -> Option<Prov
             http_status: status,
             code: facts.code.map(str::to_owned),
             evidence: Evidence::StructuredCode,
+            resets_at: None,
         },
         None => ProviderDiagnostic {
             category: category_for_provider_status(status?),
             http_status: status,
             code: None,
             evidence: Evidence::StructuredStatus,
+            resets_at: None,
         },
     };
     crate::types::sanitize_provider_diagnostic(&diagnostic)

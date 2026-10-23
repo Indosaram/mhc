@@ -4,7 +4,7 @@ use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_core::types::DisplaySelector;
 
 use super::fake::{FakeServer, MASKS};
-use super::image::{clip_to_root, to_rgba, ColorMasks, Pixmap, RootRect};
+use super::image::{ColorMasks, Pixmap, RootRect, clip_to_root, to_rgba};
 use super::monitors::displays;
 use super::windows::parse_wm_class;
 
@@ -21,12 +21,22 @@ fn pixmap(width: u32, height: u32, bits_per_pixel: u8, data: Vec<u8>) -> Pixmap 
 }
 
 fn rect(x: i32, y: i32, width: u32, height: u32) -> RootRect {
-    RootRect { x, y, width, height }
+    RootRect {
+        x,
+        y,
+        width,
+        height,
+    }
 }
 
 #[test]
 fn lsb_first_32bpp_pixels_decode_to_opaque_rgba() {
-    let source = pixmap(2, 1, 32, vec![0x30, 0x20, 0x10, 0x00, 0xff, 0x00, 0x80, 0xaa]);
+    let source = pixmap(
+        2,
+        1,
+        32,
+        vec![0x30, 0x20, 0x10, 0x00, 0xff, 0x00, 0x80, 0xaa],
+    );
 
     let image = to_rgba(&source, MASKS).unwrap();
 
@@ -40,7 +50,12 @@ fn lsb_first_32bpp_pixels_decode_to_opaque_rgba() {
 fn msb_first_24bpp_rows_skip_scanline_padding() {
     let source = Pixmap {
         lsb_first: false,
-        ..pixmap(1, 2, 24, vec![0x01, 0x02, 0x03, 0xee, 0x04, 0x05, 0x06, 0xee])
+        ..pixmap(
+            1,
+            2,
+            24,
+            vec![0x01, 0x02, 0x03, 0xee, 0x04, 0x05, 0x06, 0xee],
+        )
     };
 
     let image = to_rgba(&source, MASKS).unwrap();
@@ -91,7 +106,8 @@ fn unsupported_depths_and_pixel_sizes_are_rejected() {
     };
     let packed = pixmap(1, 1, 16, vec![0; 4]);
 
-    let errors = [to_rgba(&shallow, MASKS), to_rgba(&packed, MASKS)].map(|result| result.unwrap_err().code);
+    let errors =
+        [to_rgba(&shallow, MASKS), to_rgba(&packed, MASKS)].map(|result| result.unwrap_err().code);
 
     assert_eq!(errors, [ErrorCode::CaptureFailed, ErrorCode::CaptureFailed]);
 }

@@ -7,7 +7,9 @@ pub mod agent_loop;
 pub mod assistant_terminal_state;
 pub mod empty_assistant_recovery;
 pub mod harness;
+pub mod local_failure;
 pub mod proxy;
+pub mod response_timing;
 pub mod search;
 pub mod stream_fn;
 pub mod tool_arguments;
@@ -39,8 +41,13 @@ pub use assistant_terminal_state::{
     should_finalize_idle_as_stop, should_terminate_assistant_turn,
 };
 pub use empty_assistant_recovery::with_empty_assistant_recovery;
+pub use local_failure::{LocalFailure, LocalFailurePort, is_local_failure, local_failure_port};
 pub use proxy::{
     ProxyAssistantMessageEvent, ProxySerializableStreamOptions, ProxyStreamOptions, stream_proxy,
+};
+pub use response_timing::{
+    GenerationWindowMessage, ResponseTimingRecorder, STREAMED_DELTA_TYPES,
+    create_response_timing_recorder, reasoned_before_first_delta,
 };
 pub use search::{
     EntrySearchHit, SearchQuery, SessionSearchHit, SessionSearchService, SessionSearchTop,

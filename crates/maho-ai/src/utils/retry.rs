@@ -628,6 +628,8 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: crate::utils::diagnostics::now_ms(),
+            failure_source: None,
+            timing: None,
         }
     }
 

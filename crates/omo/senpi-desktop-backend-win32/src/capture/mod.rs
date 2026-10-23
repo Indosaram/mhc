@@ -13,7 +13,7 @@ use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{DesktopDisplay, DesktopWindow, DisplaySelector, Target};
 
 pub(crate) use self::dpi::enable_per_monitor_awareness;
-pub(crate) use self::frame::{logical_bounds, physical_point, PhysicalRect};
+pub(crate) use self::frame::{PhysicalRect, logical_bounds, physical_point};
 use crate::integrity::IntegrityRid;
 
 #[derive(Debug, Clone)]
@@ -24,7 +24,10 @@ pub(crate) struct Win32Capture {
 
 impl Win32Capture {
     pub(crate) const fn new(selector: DisplaySelector, integrity: IntegrityRid) -> Self {
-        Self { selector, integrity }
+        Self {
+            selector,
+            integrity,
+        }
     }
 
     pub(crate) fn displays(&self) -> CoreResult<Vec<DesktopDisplay>> {
@@ -50,7 +53,10 @@ impl Win32Capture {
         let mut regions = Vec::new();
         for (monitor, display) in monitors::read(&self.selector)? {
             let image = monitor.capture_image().map_err(|error| {
-                DesktopError::capture_failed(format!("capture of display '{}' failed: {error}", display.id))
+                DesktopError::capture_failed(format!(
+                    "capture of display '{}' failed: {error}",
+                    display.id
+                ))
             })?;
             ensure_nonempty(&image, "display", &display.id)?;
             regions.push((display, image));
@@ -67,7 +73,9 @@ impl Win32Capture {
             .windows()?
             .into_iter()
             .find(|window| window.id == id)
-            .ok_or_else(|| DesktopError::window_not_found(format!("target window '{id}' disappeared")))?;
+            .ok_or_else(|| {
+                DesktopError::window_not_found(format!("target window '{id}' disappeared"))
+            })?;
         let geometry = FrameGeometry::for_window(&descriptor, image.width(), image.height());
         Ok((image, geometry))
     }

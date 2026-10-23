@@ -13,16 +13,20 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 
 use maho_ai::auth::types::{
-    AccountLoginOrigin, AccountLoginReceipt, AuthEvent, AuthInteraction, AuthPrompt, AuthPromptKind, Credential, OAuthAuth, OAuthCredential,
-    ProviderAuthInteraction,
+    AccountLoginOrigin, AccountLoginReceipt, AuthEvent, AuthInteraction, AuthPrompt,
+    AuthPromptKind, Credential, OAuthAuth, OAuthCredential, ProviderAuthInteraction,
 };
 use maho_ai::compat::extension_oauth_types::{
-    OAuthAuthInfo, OAuthDeviceCodeInfo, OAuthLoginCallbacks, OAuthPrompt, OAuthSelectOption, OAuthSelectPrompt,
+    OAuthAuthInfo, OAuthDeviceCodeInfo, OAuthLoginCallbacks, OAuthPrompt, OAuthSelectOption,
+    OAuthSelectPrompt,
 };
 use maho_ai::utils::abort::{AbortController, AbortSignal};
 
 use crate::config::get_agent_dir;
-use crate::lockfile_policy::{FILE_STORAGE_LOCK_RETRY_BUDGET_MS, CredentialStoreBusyError, acquire_lock_async, acquire_lock_sync, FILE_STORAGE_SYNC_LOCK_BUDGET_MS};
+use crate::lockfile_policy::{
+    CredentialStoreBusyError, FILE_STORAGE_LOCK_RETRY_BUDGET_MS, FILE_STORAGE_SYNC_LOCK_BUDGET_MS,
+    acquire_lock_async, acquire_lock_sync,
+};
 use crate::paths::{get_file_content_revision, normalize_path};
 use crate::resolve_config_value::{is_command_config_value, resolve_config_value};
 use crate::text::strip_bom;
@@ -45,6 +49,116 @@ pub fn credential_kind(credential: &Value) -> Option<CredentialKind> {
     }
 }
 
+/// A slot's kind from its own material (senpi pool `slotKind`): OAuth tokens make an OAuth login, a
+/// key alone makes an API key; a slot with neither is not classified.
+pub fn slot_kind(slot: &Value) -> Option<CredentialKind> {
+    if slot.get("access").is_some_and(|v| !v.is_null())
+        || slot.get("refresh").is_some_and(|v| !v.is_null())
+    {
+        return Some(CredentialKind::Oauth);
+    }
+    slot.get("key")
+        .is_some_and(|v| !v.is_null())
+        .then_some(CredentialKind::ApiKey)
+}
+
+/// Kinds held by a credential's slots that its top-level type cannot use (senpi `unusedSlotKinds`).
+pub fn unused_slot_kinds(credential: &Value) -> Vec<CredentialKind> {
+    if !credential.get("accounts").is_some_and(Value::is_array) {
+        return Vec::new();
+    }
+    let own = credential_kind(credential);
+    let mut kinds = Vec::new();
+    for slot in crate::credential_accounts::stored_slots(credential) {
+        if let Some(kind) = slot_kind(&slot)
+            && Some(kind) != own
+            && !kinds.contains(&kind)
+        {
+            kinds.push(kind);
+        }
+    }
+    kinds
+}
+
+/// The slots a credential can actually use: a slot of the other kind never projects (senpi `slotsOfOwnKind`).
+pub fn slots_of_own_kind(credential: &Value) -> Vec<Value> {
+    let other = match credential_kind(credential) {
+        Some(CredentialKind::Oauth) => Some(CredentialKind::ApiKey),
+        Some(CredentialKind::ApiKey) => Some(CredentialKind::Oauth),
+        None => None,
+    };
+    crate::credential_accounts::stored_slots(credential)
+        .into_iter()
+        .filter(|slot| other.is_none() || slot_kind(slot) != other)
+        .collect()
+}
+
+fn kind_label(kind: CredentialKind) -> &'static str {
+    match kind {
+        CredentialKind::Oauth => "OAuth login",
+        CredentialKind::ApiKey => "API key",
+    }
+}
+
+/// A credential problem the user should see once per change: `id` changes when the problem does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthNotice {
+    pub id: String,
+    pub provider: String,
+    pub message: String,
+}
+
+/// One notice per provider whose stored credential holds slots its type cannot use (senpi#3448).
+/// Nothing is changed: which credential pays stays the user's choice.
+pub fn unused_login_notices(data: &AuthStorageData) -> Vec<AuthNotice> {
+    let mut notices = Vec::new();
+    for (provider, credential) in data {
+        let Some(in_use_kind) = credential_kind(credential) else {
+            continue;
+        };
+        for kind in unused_slot_kinds(credential) {
+            let names: Vec<String> = crate::credential_accounts::stored_slots(credential)
+                .iter()
+                .filter(|slot| slot_kind(slot) == Some(kind))
+                .filter_map(|slot| slot.get("name").and_then(Value::as_str).map(str::to_owned))
+                .collect();
+            let in_use = kind_label(in_use_kind);
+            notices.push(AuthNotice {
+                // Slot names, never key material: a new unused login gets a new id and is shown again.
+                id: format!("{provider}:{}:{}", if kind == CredentialKind::Oauth { "oauth" } else { "api_key" }, names.join(",")),
+                provider: provider.clone(),
+                message: format!(
+                    "{provider}: an {} saved earlier is stored next to your {in_use} but is never used; the {in_use} stays in use. It is still in auth.json ({}); to switch to it, save it again with /login (the {in_use} is backed up first).",
+                    kind_label(kind),
+                    names.join(", "),
+                ),
+            });
+        }
+    }
+    notices
+}
+
+/// What a login that replaced a credential of the other kind tells the user (senpi#3448, #3486).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialReplacement {
+    pub replaced: CredentialKind,
+    pub backup_path: Option<String>,
+}
+
+pub fn describe_credential_replacement(
+    provider: &str,
+    replacement: &CredentialReplacement,
+) -> String {
+    let location = match &replacement.backup_path {
+        Some(path) => format!(" It is saved in {path}"),
+        None => " It was not backed up".to_owned(),
+    };
+    format!(
+        "Your {} for {provider} was replaced by this login.{location}; to switch back, log in with it again.",
+        kind_label(replacement.replaced)
+    )
+}
+
 pub fn credential_key(credential: &Value) -> Option<&str> {
     credential.get("key").and_then(Value::as_str)
 }
@@ -61,7 +175,9 @@ pub fn credential_env(credential: &Value) -> Option<HashMap<String, String>> {
 /// senpi validates every entry on load: an unknown type or a malformed credential is an error.
 fn validate_credential(provider_id: &str, credential: &Value) -> Result<(), String> {
     let Some(object) = credential.as_object() else {
-        return Err(format!("Invalid auth.json credential for provider \"{provider_id}\""));
+        return Err(format!(
+            "Invalid auth.json credential for provider \"{provider_id}\""
+        ));
     };
     match object.get("type").and_then(Value::as_str) {
         Some("api_key") => {
@@ -78,25 +194,36 @@ fn validate_credential(provider_id: &str, credential: &Value) -> Result<(), Stri
             if key_ok && env_ok {
                 Ok(())
             } else {
-                Err(format!("Invalid auth.json credential for provider \"{provider_id}\""))
+                Err(format!(
+                    "Invalid auth.json credential for provider \"{provider_id}\""
+                ))
             }
         }
         Some("oauth") => {
             let access_ok = object.get("access").map(Value::is_string).unwrap_or(false);
             let refresh_ok = object.get("refresh").map(Value::is_string).unwrap_or(false);
-            let expires_ok = object.get("expires").and_then(Value::as_f64).map(f64::is_finite).unwrap_or(false);
+            let expires_ok = object
+                .get("expires")
+                .and_then(Value::as_f64)
+                .map(f64::is_finite)
+                .unwrap_or(false);
             if access_ok && refresh_ok && expires_ok {
                 Ok(())
             } else {
-                Err(format!("Invalid auth.json credential for provider \"{provider_id}\""))
+                Err(format!(
+                    "Invalid auth.json credential for provider \"{provider_id}\""
+                ))
             }
         }
-        _ => Err(format!("Invalid auth.json credential for provider \"{provider_id}\""))
+        _ => Err(format!(
+            "Invalid auth.json credential for provider \"{provider_id}\""
+        )),
     }
 }
 
 pub fn parse_auth_json(content: &str) -> Result<AuthStorageData, String> {
-    let parsed: Value = serde_json::from_str(strip_bom(content)).map_err(|error| format!("Failed to read auth.json: {error}"))?;
+    let parsed: Value = serde_json::from_str(strip_bom(content))
+        .map_err(|error| format!("Failed to read auth.json: {error}"))?;
     let Some(object) = parsed.as_object() else {
         return Err("Invalid auth.json: expected an object".to_owned());
     };
@@ -134,8 +261,12 @@ fn repair_managed_sentinel_slots(provider_id: &str, credential: &Value) -> Optio
     let kept: Vec<Value> = accounts
         .iter()
         .filter(|account| {
-            !serde_json::from_value::<maho_ai::auth::pool::slots::CredentialSlot>((*account).clone())
-                .is_ok_and(|slot| maho_ai::auth::pool::slots::is_managed_sentinel_slot(provider_id, &slot))
+            !serde_json::from_value::<maho_ai::auth::pool::slots::CredentialSlot>(
+                (*account).clone(),
+            )
+            .is_ok_and(|slot| {
+                maho_ai::auth::pool::slots::is_managed_sentinel_slot(provider_id, &slot)
+            })
         })
         .cloned()
         .collect();
@@ -144,7 +275,9 @@ fn repair_managed_sentinel_slots(provider_id: &str, credential: &Value) -> Optio
     }
     let mut updated = object.clone();
     if let Some(pinned) = object.get("pinned").and_then(Value::as_str)
-        && !kept.iter().any(|slot| slot.get("name").and_then(Value::as_str) == Some(pinned))
+        && !kept
+            .iter()
+            .any(|slot| slot.get("name").and_then(Value::as_str) == Some(pinned))
     {
         updated.remove("pinned");
     }
@@ -163,11 +296,12 @@ pub fn write_auth_file(path: &str, content: &str) -> Result<(), String> {
     set_mode(&temporary, AUTH_FILE_MODE);
     #[cfg(unix)]
     if Path::new(path).exists()
-        && let Ok(metadata) = std::fs::metadata(path) {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = metadata.permissions().mode() & 0o777;
-            set_mode(&temporary, mode);
-        }
+        && let Ok(metadata) = std::fs::metadata(path)
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = metadata.permissions().mode() & 0o777;
+        set_mode(&temporary, mode);
+    }
     if let Err(error) = std::fs::rename(&temporary, path) {
         let _ = std::fs::remove_file(&temporary);
         return Err(error.to_string());
@@ -191,7 +325,9 @@ pub struct FileAuthStorageBackend {
 
 impl FileAuthStorageBackend {
     pub fn new(auth_path: &str) -> Self {
-        Self { auth_path: normalize_path(auth_path, &crate::paths::PathInputOptions::default()) }
+        Self {
+            auth_path: normalize_path(auth_path, &crate::paths::PathInputOptions::default()),
+        }
     }
 
     pub fn auth_path(&self) -> &str {
@@ -200,10 +336,11 @@ impl FileAuthStorageBackend {
 
     fn ensure_parent_dir(&self) -> Result<(), String> {
         if let Some(parent) = Path::new(&self.auth_path).parent()
-            && !parent.exists() {
-                std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-                set_mode(&parent.to_string_lossy(), 0o700);
-            }
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            set_mode(&parent.to_string_lossy(), 0o700);
+        }
         Ok(())
     }
 
@@ -214,14 +351,21 @@ impl FileAuthStorageBackend {
         Ok(())
     }
 
-    pub fn with_lock<T>(&self, action: impl FnOnce(Option<&str>) -> Result<(T, Option<String>), String>) -> Result<T, String> {
+    pub fn with_lock<T>(
+        &self,
+        action: impl FnOnce(Option<&str>) -> Result<(T, Option<String>), String>,
+    ) -> Result<T, String> {
         self.ensure_parent_dir()?;
         self.ensure_file_exists()?;
         let mut guard = acquire_lock_sync(&self.auth_path, FILE_STORAGE_SYNC_LOCK_BUDGET_MS)
             .map_err(|error: CredentialStoreBusyError| error.message())?;
         let current = std::fs::read_to_string(&self.auth_path).ok();
         let (result, next) = action(current.as_deref())?;
-        if let Some(next) = next && !guard.broker_write(&next)? { write_auth_file(&self.auth_path, &next)?; }
+        if let Some(next) = next
+            && !guard.broker_write(&next)?
+        {
+            write_auth_file(&self.auth_path, &next)?;
+        }
         Ok(result)
     }
 
@@ -239,9 +383,13 @@ impl FileAuthStorageBackend {
         if let Some(next) = next {
             let path = self.auth_path.clone();
             tokio::task::spawn_blocking(move || {
-                if !guard.broker_write(&next)? { write_auth_file(&path, &next)?; }
+                if !guard.broker_write(&next)? {
+                    write_auth_file(&path, &next)?;
+                }
                 Ok::<(), String>(())
-            }).await.map_err(|error| error.to_string())??;
+            })
+            .await
+            .map_err(|error| error.to_string())??;
         }
         Ok(result)
     }
@@ -253,7 +401,10 @@ pub struct InMemoryAuthStorageBackend {
 }
 
 impl InMemoryAuthStorageBackend {
-    pub fn with_lock<T>(&self, action: impl FnOnce(Option<&str>) -> Result<(T, Option<String>), String>) -> Result<T, String> {
+    pub fn with_lock<T>(
+        &self,
+        action: impl FnOnce(Option<&str>) -> Result<(T, Option<String>), String>,
+    ) -> Result<T, String> {
         let mut guard = self.value.lock().expect("in-memory auth lock");
         let (result, next) = action(guard.as_deref())?;
         if let Some(next) = next {
@@ -269,7 +420,11 @@ impl InMemoryAuthStorageBackend {
 
 /// One-off synchronous read of a stored credential, without resolving configured key values.
 pub fn read_stored_credential(provider_id: &str, auth_path: &str) -> Option<Value> {
-    let content = std::fs::read_to_string(normalize_path(auth_path, &crate::paths::PathInputOptions::default())).ok()?;
+    let content = std::fs::read_to_string(normalize_path(
+        auth_path,
+        &crate::paths::PathInputOptions::default(),
+    ))
+    .ok()?;
     let data = parse_auth_json(&content).ok()?;
     read_by_provider_id(&data, provider_id)
 }
@@ -289,7 +444,8 @@ pub fn read_by_provider_id(data: &AuthStorageData, provider_id: &str) -> Option<
 }
 
 pub fn serialize_auth_data(data: &AuthStorageData) -> String {
-    let mut serialized = serde_json::to_string_pretty(&Value::Object(data.clone())).unwrap_or_else(|_| "{}".to_owned());
+    let mut serialized = serde_json::to_string_pretty(&Value::Object(data.clone()))
+        .unwrap_or_else(|_| "{}".to_owned());
     serialized.push('\n');
     serialized
 }
@@ -315,16 +471,22 @@ impl AuthInteraction for LegacyInteraction {
 
     async fn prompt(&self, prompt: AuthPrompt) -> anyhow::Result<String> {
         match prompt.kind {
-            AuthPromptKind::ManualCode { message, placeholder } => {
+            AuthPromptKind::ManualCode {
+                message,
+                placeholder,
+            } => {
                 if let Some(fut) = self.callbacks.on_manual_code_input() {
                     Ok(fut.await)
                 } else {
-                    Ok(self.callbacks.on_prompt(OAuthPrompt {
-                        message,
-                        placeholder,
-                        allow_empty: None,
-                        signal: prompt.signal,
-                    }).await)
+                    Ok(self
+                        .callbacks
+                        .on_prompt(OAuthPrompt {
+                            message,
+                            placeholder,
+                            allow_empty: None,
+                            signal: prompt.signal,
+                        })
+                        .await)
                 }
             }
             AuthPromptKind::Select { message, options } => {
@@ -336,25 +498,35 @@ impl AuthInteraction for LegacyInteraction {
                         description: opt.description,
                     })
                     .collect();
-                let value = self.callbacks.on_select(OAuthSelectPrompt {
-                    message,
-                    options: select_options,
-                    signal: prompt.signal,
-                }).await;
+                let value = self
+                    .callbacks
+                    .on_select(OAuthSelectPrompt {
+                        message,
+                        options: select_options,
+                        signal: prompt.signal,
+                    })
+                    .await;
                 match value {
                     Some(v) => Ok(v),
                     None => Err(anyhow::anyhow!("Login cancelled")),
                 }
             }
-            AuthPromptKind::Text { message, placeholder }
-            | AuthPromptKind::Secret { message, placeholder } => {
-                Ok(self.callbacks.on_prompt(OAuthPrompt {
+            AuthPromptKind::Text {
+                message,
+                placeholder,
+            }
+            | AuthPromptKind::Secret {
+                message,
+                placeholder,
+            } => Ok(self
+                .callbacks
+                .on_prompt(OAuthPrompt {
                     message,
                     placeholder,
                     allow_empty: None,
                     signal: prompt.signal,
-                }).await)
-            }
+                })
+                .await),
         }
     }
 
@@ -363,7 +535,12 @@ impl AuthInteraction for LegacyInteraction {
             AuthEvent::AuthUrl { url, instructions } => {
                 self.callbacks.on_auth(OAuthAuthInfo { url, instructions });
             }
-            AuthEvent::DeviceCode { user_code, verification_uri, interval_seconds, expires_in_seconds } => {
+            AuthEvent::DeviceCode {
+                user_code,
+                verification_uri,
+                interval_seconds,
+                expires_in_seconds,
+            } => {
                 self.callbacks.on_device_code(OAuthDeviceCodeInfo {
                     user_code,
                     verification_uri,
@@ -386,7 +563,8 @@ pub struct ReadOnlyAuthStorage {
 impl ReadOnlyAuthStorage {
     pub fn new(auth_path: &str) -> Result<Self, String> {
         let auth_path = normalize_path(auth_path, &crate::paths::PathInputOptions::default());
-        let content = std::fs::read_to_string(&auth_path).map_err(|error| format!("Failed to read auth.json: {error}"))?;
+        let content = std::fs::read_to_string(&auth_path)
+            .map_err(|error| format!("Failed to read auth.json: {error}"))?;
         let data = parse_auth_json(&content)?;
         let (data, _) = repair_poisoned_pool_slots(&data);
         Ok(Self { auth_path, data })
@@ -401,9 +579,15 @@ impl ReadOnlyAuthStorage {
     }
 
     pub async fn read(&self, provider_id: &str) -> Result<Option<Value>, String> {
-        let Some(credential) = read_by_provider_id(&self.data, provider_id) else { return Ok(None) };
-        let Some(key) = credential_key(&credential) else { return Ok(Some(credential)) };
-        if credential_kind(&credential) != Some(CredentialKind::ApiKey) || !is_command_config_value(key) {
+        let Some(credential) = read_by_provider_id(&self.data, provider_id) else {
+            return Ok(None);
+        };
+        let Some(key) = credential_key(&credential) else {
+            return Ok(Some(credential));
+        };
+        if credential_kind(&credential) != Some(CredentialKind::ApiKey)
+            || !is_command_config_value(key)
+        {
             return Ok(Some(credential));
         }
         let env = credential_env(&credential);
@@ -418,7 +602,9 @@ impl ReadOnlyAuthStorage {
     pub fn list(&self) -> Vec<(String, CredentialKind)> {
         self.data
             .iter()
-            .filter_map(|(provider_id, credential)| credential_kind(credential).map(|kind| (provider_id.clone(), kind)))
+            .filter_map(|(provider_id, credential)| {
+                credential_kind(credential).map(|kind| (provider_id.clone(), kind))
+            })
             .collect()
     }
 
@@ -438,6 +624,10 @@ pub struct AuthStorage {
     runtime_overrides: std::sync::Mutex<HashMap<String, String>>,
     extension_oauth_providers: std::sync::Mutex<HashMap<String, Arc<dyn OAuthAuth>>>,
     errors: std::sync::Mutex<Vec<String>>,
+    notices: std::sync::Mutex<Vec<AuthNotice>>,
+    seen_in_memory: std::sync::Mutex<std::collections::HashSet<String>>,
+    taken_notices: std::sync::Mutex<std::collections::HashSet<String>>,
+    replacements: std::sync::Mutex<HashMap<String, CredentialReplacement>>,
     pub(crate) account_mutation: tokio::sync::Mutex<()>,
 }
 
@@ -456,6 +646,10 @@ impl AuthStorage {
             runtime_overrides: std::sync::Mutex::new(HashMap::new()),
             extension_oauth_providers: std::sync::Mutex::new(HashMap::new()),
             errors: std::sync::Mutex::new(Vec::new()),
+            notices: std::sync::Mutex::new(Vec::new()),
+            seen_in_memory: std::sync::Mutex::new(std::collections::HashSet::new()),
+            taken_notices: std::sync::Mutex::new(std::collections::HashSet::new()),
+            replacements: std::sync::Mutex::new(HashMap::new()),
             account_mutation: tokio::sync::Mutex::new(()),
         };
         storage.reload();
@@ -471,7 +665,11 @@ impl AuthStorage {
     }
 
     pub fn create_default() -> Self {
-        Self::create(&Path::new(&get_agent_dir()).join("auth.json").to_string_lossy())
+        Self::create(
+            &Path::new(&get_agent_dir())
+                .join("auth.json")
+                .to_string_lossy(),
+        )
     }
 
     pub fn in_memory(data: AuthStorageData) -> Self {
@@ -484,6 +682,10 @@ impl AuthStorage {
             runtime_overrides: std::sync::Mutex::new(HashMap::new()),
             extension_oauth_providers: std::sync::Mutex::new(HashMap::new()),
             errors: std::sync::Mutex::new(Vec::new()),
+            notices: std::sync::Mutex::new(Vec::new()),
+            seen_in_memory: std::sync::Mutex::new(std::collections::HashSet::new()),
+            taken_notices: std::sync::Mutex::new(std::collections::HashSet::new()),
+            replacements: std::sync::Mutex::new(HashMap::new()),
             account_mutation: tokio::sync::Mutex::new(()),
         };
         storage.reload();
@@ -495,16 +697,147 @@ impl AuthStorage {
     }
 
     pub fn errors(&self) -> Vec<String> {
-        self.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.errors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Take every recorded load/refresh error, leaving none behind (senpi `drainErrors`).
     pub fn drain_errors(&self) -> Vec<String> {
-        std::mem::take(&mut *self.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+        std::mem::take(
+            &mut *self
+                .errors
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
-    fn parse_storage_content(content: Option<&str>) -> Result<(AuthStorageData, bool, bool), String> {
-        let Some(content) = content else { return Ok((AuthStorageData::new(), false, false)) };
+    fn lock_set<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+        mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn seen_notices_path(&self) -> Option<std::path::PathBuf> {
+        let auth_path = self.auth_path.as_deref()?;
+        Some(
+            Path::new(auth_path)
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .join("auth-notices-seen.json"),
+        )
+    }
+
+    fn seen_notice_ids(&self) -> std::collections::HashSet<String> {
+        let Some(path) = self.seen_notices_path() else {
+            return Self::lock_set(&self.seen_in_memory).clone();
+        };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return std::collections::HashSet::new();
+        };
+        match serde_json::from_str::<Value>(&text) {
+            Ok(Value::Array(ids)) => ids
+                .iter()
+                .filter_map(|id| id.as_str().map(str::to_owned))
+                .collect(),
+            _ => std::collections::HashSet::new(),
+        }
+    }
+
+    /// Credential notices not yet marked seen; a changed problem gets a new id and shows again.
+    pub fn pending_notices(&self) -> Vec<AuthNotice> {
+        let seen = self.seen_notice_ids();
+        Self::lock_set(&self.notices)
+            .iter()
+            .filter(|notice| !seen.contains(&notice.id))
+            .cloned()
+            .collect()
+    }
+
+    /// Hands out each pending notice once per process (senpi#3486). With `persist_seen` the notices are
+    /// also recorded as seen; a run nobody reads (RPC) leaves them pending.
+    pub fn take_pending_notices(&self, persist_seen: bool) -> Vec<AuthNotice> {
+        let taken: Vec<AuthNotice> = {
+            let mut already = Self::lock_set(&self.taken_notices);
+            self.pending_notices()
+                .into_iter()
+                .filter(|notice| already.insert(notice.id.clone()))
+                .collect()
+        };
+        if persist_seen {
+            let ids: Vec<String> = taken.iter().map(|notice| notice.id.clone()).collect();
+            self.mark_notices_seen(&ids);
+        }
+        taken
+    }
+
+    /// Records notices as shown. Ids of problems that no longer exist are dropped. A failed write never
+    /// aborts startup: it is recorded as an error and the notice may be shown once more.
+    pub fn mark_notices_seen(&self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+        let Some(path) = self.seen_notices_path() else {
+            Self::lock_set(&self.seen_in_memory).extend(ids.iter().cloned());
+            return;
+        };
+        let current: std::collections::HashSet<String> = Self::lock_set(&self.notices)
+            .iter()
+            .map(|notice| notice.id.clone())
+            .collect();
+        let mut seen: Vec<String> = Vec::new();
+        for id in self
+            .seen_notice_ids()
+            .into_iter()
+            .chain(ids.iter().cloned())
+        {
+            if current.contains(&id) && !seen.contains(&id) {
+                seen.push(id);
+            }
+        }
+        seen.sort();
+        let path_text = path.to_string_lossy().into_owned();
+        let body = serde_json::to_string_pretty(&seen).unwrap_or_else(|_| "[]".to_owned());
+        if let Err(reason) = write_auth_file(&path_text, &body) {
+            Self::lock_set(&self.errors).push(format!(
+                "Could not record which credential notices were shown ({path_text}): {reason}. They may be shown again on the next start; check that the file is writable."
+            ));
+        }
+    }
+
+    /// The last replacement a login made for this provider, once; the caller shows it to the user.
+    pub fn take_replacement(&self, provider: &str) -> Option<CredentialReplacement> {
+        Self::lock_set(&self.replacements).remove(provider)
+    }
+
+    /// A login of the other kind replaces the provider's credential: back the previous bytes up first
+    /// and remember the replacement for `take_replacement`. Loading never switches which credential bills.
+    fn note_replacement(
+        &self,
+        provider: &str,
+        previous: Option<&Value>,
+        next: &Value,
+        content: Option<&str>,
+    ) -> Option<CredentialReplacement> {
+        let previous_kind = credential_kind(previous?)?;
+        if credential_kind(next) == Some(previous_kind) {
+            return None;
+        }
+        let replacement = CredentialReplacement {
+            replaced: previous_kind,
+            backup_path: backup_auth_file(self.auth_path.as_deref(), content),
+        };
+        Self::lock_set(&self.replacements).insert(provider.to_owned(), replacement.clone());
+        Some(replacement)
+    }
+
+    fn parse_storage_content(
+        content: Option<&str>,
+    ) -> Result<(AuthStorageData, bool, bool), String> {
+        let Some(content) = content else {
+            return Ok((AuthStorageData::new(), false, false));
+        };
         let parsed = parse_auth_json(content)?;
         let (repaired, repaired_flag) = repair_poisoned_pool_slots(&parsed);
         let (migrated, migrated_flag) = migrate_legacy_provider_keys(&repaired);
@@ -520,7 +853,10 @@ impl AuthStorage {
                     backup_auth_file(self.auth_path.as_deref(), current);
                 }
                 if repaired || migrated {
-                    Ok(((data.clone(), repaired, migrated), Some(serialize_auth_data(&data))))
+                    Ok((
+                        (data.clone(), repaired, migrated),
+                        Some(serialize_auth_data(&data)),
+                    ))
                 } else {
                     Ok(((data, repaired, migrated), None))
                 }
@@ -532,9 +868,17 @@ impl AuthStorage {
         };
         match result {
             Ok((data, _, _)) => {
-                *self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = data;
+                *Self::lock_set(&self.notices) = unused_login_notices(&data);
+                *self
+                    .data
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = data;
             }
-            Err(error) => self.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(error),
+            Err(error) => self
+                .errors
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(error),
         }
     }
 
@@ -571,7 +915,13 @@ impl AuthStorage {
     }
 
     pub fn get(&self, provider: &str) -> Option<Value> {
-        read_by_provider_id(&self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner), provider)
+        read_by_provider_id(
+            &self
+                .data
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            provider,
+        )
     }
 
     pub fn get_provider_env(&self, provider: &str) -> Option<HashMap<String, String>> {
@@ -580,7 +930,8 @@ impl AuthStorage {
 
     /// The API key for a provider: runtime override, then stored credential, then the environment.
     pub async fn get_api_key(&self, provider: &str) -> Option<String> {
-        if let Some(runtime) = self.runtime_overrides
+        if let Some(runtime) = self
+            .runtime_overrides
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(provider)
@@ -589,28 +940,35 @@ impl AuthStorage {
             return Some(runtime);
         }
         if let Some(credential) = self.get(provider)
-            && let Some(key) = credential_key(&credential) {
-                if !is_command_config_value(key) {
-                    return Some(key.to_owned());
-                }
-                let env = credential_env(&credential);
-                if let Some(resolved) = resolve_config_value(key, env.as_ref()).await {
-                    return Some(resolved);
-                }
+            && let Some(key) = credential_key(&credential)
+        {
+            if !is_command_config_value(key) {
+                return Some(key.to_owned());
             }
+            let env = credential_env(&credential);
+            if let Some(resolved) = resolve_config_value(key, env.as_ref()).await {
+                return Some(resolved);
+            }
+        }
         maho_ai::env_api_keys::get_env_api_key(provider, None)
     }
 
     /// senpi `list`: stored credential metadata, with every runtime-override provider reported as
     /// an api-key entry (replacing any stored entry for that provider in place).
     pub fn list(&self) -> Vec<(String, CredentialKind)> {
-        let mut entries: Vec<(String, CredentialKind)> = self.data
-            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        let mut entries: Vec<(String, CredentialKind)> = self
+            .data
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
-            .filter_map(|(provider_id, credential)| credential_kind(credential).map(|kind| (provider_id.clone(), kind)))
+            .filter_map(|(provider_id, credential)| {
+                credential_kind(credential).map(|kind| (provider_id.clone(), kind))
+            })
             .collect();
-        let mut runtime: Vec<String> = self.runtime_overrides
-            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        let mut runtime: Vec<String> = self
+            .runtime_overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .keys()
             .cloned()
             .collect();
@@ -626,42 +984,55 @@ impl AuthStorage {
 
     /// Stores a credential for a provider; a None value deletes the entry.
     pub fn set(&self, provider_id: &str, credential: Option<Value>) -> Result<(), String> {
-        let mut cached = self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let provider_id = provider_id.to_owned();
-        let credential = credential.clone();
-        let outcome: Result<AuthStorageData, String> = match &self.storage {
-            AuthStorageBackend::File(backend) => backend.with_lock(|current| {
-                let (mut data, _, _) = Self::parse_storage_content(current)?;
-                match &credential {
-                    Some(value) => {
-                        data.insert(provider_id.clone(), value.clone());
-                    }
-                    None => {
-                        data.remove(&provider_id);
-                    }
+        self.set_noting_replacement(provider_id, credential)
+            .map(|_| ())
+    }
+
+    /// `set` that reports a replaced credential of the other kind (senpi#3448): the previous bytes are
+    /// backed up first and the replacement is kept for `take_replacement`.
+    pub fn set_noting_replacement(
+        &self,
+        provider_id: &str,
+        credential: Option<Value>,
+    ) -> Result<Option<CredentialReplacement>, String> {
+        let mut cached = self
+            .data
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        type Applied = (
+            (AuthStorageData, Option<CredentialReplacement>),
+            Option<String>,
+        );
+        let apply = |current: Option<&str>| -> Result<Applied, String> {
+            let (mut data, _, _) = Self::parse_storage_content(current)?;
+            let mut replacement = None;
+            match &credential {
+                Some(value) => {
+                    replacement =
+                        self.note_replacement(provider_id, data.get(provider_id), value, current);
+                    data.insert(provider_id.to_owned(), value.clone());
                 }
-                Ok((data.clone(), Some(serialize_auth_data(&data))))
-            }),
-            AuthStorageBackend::InMemory(backend) => backend.with_lock(|current| {
-                let (mut data, _, _) = Self::parse_storage_content(current)?;
-                match &credential {
-                    Some(value) => {
-                        data.insert(provider_id.clone(), value.clone());
-                    }
-                    None => {
-                        data.remove(&provider_id);
-                    }
+                None => {
+                    data.remove(provider_id);
                 }
-                Ok((data.clone(), Some(serialize_auth_data(&data))))
-            }),
+            }
+            let serialized = serialize_auth_data(&data);
+            Ok(((data, replacement), Some(serialized)))
+        };
+        let outcome = match &self.storage {
+            AuthStorageBackend::File(backend) => backend.with_lock(apply),
+            AuthStorageBackend::InMemory(backend) => backend.with_lock(apply),
         };
         match outcome {
-            Ok(data) => {
+            Ok((data, replacement)) => {
                 *cached = data;
-                Ok(())
+                Ok(replacement)
             }
             Err(error) => {
-                self.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(error.clone());
+                self.errors
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(error.clone());
                 Err(error)
             }
         }
@@ -675,7 +1046,8 @@ impl AuthStorage {
         credential: OAuthCredential,
         signal: Option<AbortSignal>,
     ) -> Result<Option<AccountLoginReceipt>, String> {
-        self.append_login_account(provider_id, Credential::OAuth(credential), signal).await
+        self.append_login_account(provider_id, Credential::OAuth(credential), signal)
+            .await
     }
 
     /// senpi `Models.login`'s `credentials.modify(appendLoginSlot)`: appends a completed api-key
@@ -697,26 +1069,54 @@ impl AuthStorage {
                 signal.throw_if_aborted().map_err(|reason| reason.message)?;
             }
             let (mut data, _, _) = Self::parse_storage_content(current)?;
-            let current = data.get(provider_id).cloned()
-                .map(|value| serde_json::from_value::<maho_ai::auth::pool::slots::PooledCredential>(value).map_err(|error| error.to_string()))
+            let raw_content = current;
+            let stored_value = data.get(provider_id).cloned();
+            // A pool holds one kind: a login of the other kind replaces the credential instead of
+            // joining it as a slot nothing can project (senpi#3448); the replaced bytes are backed up.
+            let flat_kind = match flat {
+                Credential::OAuth(_) => CredentialKind::Oauth,
+                _ => CredentialKind::ApiKey,
+            };
+            let replaces = stored_value
+                .as_ref()
+                .and_then(credential_kind)
+                .is_some_and(|kind| kind != flat_kind);
+            if replaces {
+                let probe = serde_json::json!({ "type": if flat_kind == CredentialKind::Oauth { "oauth" } else { "api_key" } });
+                self.note_replacement(provider_id, stored_value.as_ref(), &probe, raw_content);
+            }
+            let current = stored_value
+                .filter(|_| !replaces)
+                .map(|value| {
+                    serde_json::from_value::<maho_ai::auth::pool::slots::PooledCredential>(value)
+                        .map_err(|error| error.to_string())
+                })
                 .transpose()?;
             let pooled = maho_ai::auth::pool::slots::PooledCredential::from(flat.clone());
-            let next = maho_ai::auth::pool::slots::append_login_slot(current, pooled, |name, origin| {
-                receipt = Some(AccountLoginReceipt {
-                    provider_id: provider_id.to_owned(),
-                    name: name.to_owned(),
-                    origin: match origin {
-                        maho_ai::auth::pool::slots::LoginSlotOrigin::Generated => AccountLoginOrigin::Generated,
-                        maho_ai::auth::pool::slots::LoginSlotOrigin::Provider => AccountLoginOrigin::Provider,
-                    },
-                });
-            })?;
+            let next =
+                maho_ai::auth::pool::slots::append_login_slot(current, pooled, |name, origin| {
+                    receipt = Some(AccountLoginReceipt {
+                        provider_id: provider_id.to_owned(),
+                        name: name.to_owned(),
+                        origin: match origin {
+                            maho_ai::auth::pool::slots::LoginSlotOrigin::Generated => {
+                                AccountLoginOrigin::Generated
+                            }
+                            maho_ai::auth::pool::slots::LoginSlotOrigin::Provider => {
+                                AccountLoginOrigin::Provider
+                            }
+                        },
+                    });
+                })?;
             let stored = serde_json::to_value(next.to_stored_credential())
                 .map_err(|error| error.to_string())?;
             data.insert(provider_id.to_owned(), stored);
             Ok((data.clone(), Some(serialize_auth_data(&data))))
         };
-        let mut cached = self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cached = self
+            .data
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let result: Result<AuthStorageData, String> = match &self.storage {
             AuthStorageBackend::File(backend) => backend.with_lock(apply),
             AuthStorageBackend::InMemory(backend) => backend.with_lock(apply),
@@ -727,7 +1127,10 @@ impl AuthStorage {
                 Ok(receipt)
             }
             Err(error) => {
-                self.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(error.clone());
+                self.errors
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(error.clone());
                 Err(error)
             }
         }
@@ -737,7 +1140,11 @@ impl AuthStorage {
     /// critical section under the auth.json file lock, so a credential rotated by another process
     /// between the read and the write cannot be overwritten. `f` returning `None` leaves the entry
     /// unchanged and yields the current value.
-    pub async fn modify_credential<F, Fut>(&self, provider_id: &str, f: F) -> Result<Option<Value>, String>
+    pub async fn modify_credential<F, Fut>(
+        &self,
+        provider_id: &str,
+        f: F,
+    ) -> Result<Option<Value>, String>
     where
         F: FnOnce(Option<Value>) -> Fut,
         Fut: std::future::Future<Output = Result<Option<Value>, String>>,
@@ -750,7 +1157,11 @@ impl AuthStorage {
     ///
     /// # Errors
     /// Returns storage, serialization, or callback errors without committing a callback failure.
-    pub async fn modify_or_delete_credential<F, Fut>(&self, provider_id: &str, f: F) -> Result<Option<Value>, String>
+    pub async fn modify_or_delete_credential<F, Fut>(
+        &self,
+        provider_id: &str,
+        f: F,
+    ) -> Result<Option<Value>, String>
     where
         F: FnOnce(Option<Value>) -> Fut,
         Fut: std::future::Future<Output = Result<Option<Value>, String>>,
@@ -759,7 +1170,12 @@ impl AuthStorage {
         self.mutate_credential(provider_id, f, true).await
     }
 
-    async fn mutate_credential<F, Fut>(&self, provider_id: &str, f: F, delete_on_none: bool) -> Result<Option<Value>, String>
+    async fn mutate_credential<F, Fut>(
+        &self,
+        provider_id: &str,
+        f: F,
+        delete_on_none: bool,
+    ) -> Result<Option<Value>, String>
     where
         F: FnOnce(Option<Value>) -> Fut,
         Fut: std::future::Future<Output = Result<Option<Value>, String>>,
@@ -778,6 +1194,7 @@ impl AuthStorage {
                             }
                             return Ok(((data, existing), None));
                         };
+                        self.note_replacement(provider_id, existing.as_ref(), &next, current);
                         data.insert(provider_id.to_owned(), next.clone());
                         let serialized = serialize_auth_data(&data);
                         Ok(((data, Some(next)), Some(serialized)))
@@ -795,13 +1212,23 @@ impl AuthStorage {
                             Ok(None) if delete_on_none => {
                                 data.remove(provider_id);
                                 let serialized = serialize_auth_data(&data);
-                                backend.with_lock(|_| Ok(((), Some(serialized)))).map(|()| (data, None))
+                                backend
+                                    .with_lock(|_| Ok(((), Some(serialized))))
+                                    .map(|()| (data, None))
                             }
                             Ok(None) => Ok((data, existing)),
                             Ok(Some(next)) => {
+                                self.note_replacement(
+                                    provider_id,
+                                    existing.as_ref(),
+                                    &next,
+                                    content.as_deref(),
+                                );
                                 data.insert(provider_id.to_owned(), next.clone());
                                 let serialized = serialize_auth_data(&data);
-                                backend.with_lock(|_| Ok(((), Some(serialized)))).map(|()| (data, Some(next)))
+                                backend
+                                    .with_lock(|_| Ok(((), Some(serialized))))
+                                    .map(|()| (data, Some(next)))
                             }
                         }
                     }
@@ -810,11 +1237,17 @@ impl AuthStorage {
         };
         match outcome {
             Ok((data, result)) => {
-                *self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = data;
+                *self
+                    .data
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = data;
                 Ok(result)
             }
             Err(error) => {
-                self.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(error.clone());
+                self.errors
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(error.clone());
                 Err(error)
             }
         }
@@ -838,12 +1271,17 @@ impl AuthStorage {
     }
 
     pub fn set_cached(&mut self, provider_id: &str, credential: Value) {
-        self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(provider_id.to_owned(), credential);
+        self.data
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(provider_id.to_owned(), credential);
     }
 
     /// Records the file revision the in-memory snapshot was read from.
     pub fn revision(&self) -> Option<String> {
-        self.auth_path.as_deref().and_then(get_file_content_revision)
+        self.auth_path
+            .as_deref()
+            .and_then(get_file_content_revision)
     }
 
     pub fn register_oauth_provider(&self, provider_id: &str, oauth: Arc<dyn OAuthAuth>) {
@@ -860,8 +1298,11 @@ impl AuthStorage {
             .remove(provider_id);
     }
 
-    pub fn get_oauth_providers(&self) -> Result<Vec<OAuthProviderInfo>, maho_ai::models::ModelsError> {
-        let dynamic = self.extension_oauth_providers
+    pub fn get_oauth_providers(
+        &self,
+    ) -> Result<Vec<OAuthProviderInfo>, maho_ai::models::ModelsError> {
+        let dynamic = self
+            .extension_oauth_providers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut results: Vec<OAuthProviderInfo> = dynamic
@@ -874,7 +1315,9 @@ impl AuthStorage {
         // senpi `getOAuthProviders`: builtins are every builtin provider that declares OAuth, named
         // by that OAuth method (so Radius is included and names match the login flow).
         for provider in maho_ai::providers::all::builtin_providers()? {
-            let Some(oauth) = provider.auth().and_then(|auth| auth.oauth.as_ref()) else { continue };
+            let Some(oauth) = provider.auth().and_then(|auth| auth.oauth.as_ref()) else {
+                continue;
+            };
             if !dynamic.contains_key(provider.id()) {
                 results.push(OAuthProviderInfo {
                     id: provider.id().to_owned(),
@@ -885,8 +1328,13 @@ impl AuthStorage {
         Ok(results)
     }
 
-    pub async fn login(&self, provider_id: &str, callbacks: Arc<dyn OAuthLoginCallbacks>) -> Result<(), String> {
-        let dynamic = self.extension_oauth_providers
+    pub async fn login(
+        &self,
+        provider_id: &str,
+        callbacks: Arc<dyn OAuthLoginCallbacks>,
+    ) -> Result<(), String> {
+        let dynamic = self
+            .extension_oauth_providers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(provider_id)
@@ -898,17 +1346,27 @@ impl AuthStorage {
                 .map_err(|err| err.to_string())?
                 .ok_or_else(|| format!("Unknown OAuth provider: {provider_id}"))?,
         };
-        let signal = callbacks.signal().unwrap_or_else(|| AbortController::new().signal());
+        let signal = callbacks
+            .signal()
+            .unwrap_or_else(|| AbortController::new().signal());
         let interaction = ProviderAuthInteraction::new(
             signal.clone(),
             Arc::new(LegacyInteraction { callbacks, signal }),
         );
-        let credential = oauth.login(&interaction).await.map_err(|err| err.to_string())?;
-        let val = serde_json::to_value(Credential::OAuth(credential)).map_err(|err| err.to_string())?;
+        let credential = oauth
+            .login(&interaction)
+            .await
+            .map_err(|err| err.to_string())?;
+        let val =
+            serde_json::to_value(Credential::OAuth(credential)).map_err(|err| err.to_string())?;
         self.set(provider_id, Some(val))
     }
 
-    pub async fn oauth_login(&self, provider_id: &str, callbacks: Arc<dyn OAuthLoginCallbacks>) -> Result<(), String> {
+    pub async fn oauth_login(
+        &self,
+        provider_id: &str,
+        callbacks: Arc<dyn OAuthLoginCallbacks>,
+    ) -> Result<(), String> {
         self.login(provider_id, callbacks).await
     }
 
@@ -930,7 +1388,9 @@ impl AuthStorage {
 pub fn migrate_legacy_provider_keys(data: &AuthStorageData) -> (AuthStorageData, bool) {
     let mut next: Option<AuthStorageData> = None;
     for (legacy_id, canonical_id) in maho_ai::legacy_provider_ids::LEGACY_PROVIDER_IDS {
-        let Some(legacy) = data.get(*legacy_id) else { continue };
+        let Some(legacy) = data.get(*legacy_id) else {
+            continue;
+        };
         if !legacy.is_object() {
             continue;
         }
@@ -951,7 +1411,9 @@ pub fn migrate_legacy_provider_keys(data: &AuthStorageData) -> (AuthStorageData,
 pub fn backup_auth_file(auth_path: Option<&str>, content: Option<&str>) -> Option<String> {
     let auth_path = auth_path?;
     let content = content?;
-    let stamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true).replace([':', '.'], "-");
+    let stamp = chrono::Utc::now()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        .replace([':', '.'], "-");
     let mut backup_path = format!("{auth_path}.backup-{stamp}");
     let mut attempt = 1;
     while Path::new(&backup_path).exists() {
@@ -966,8 +1428,8 @@ pub fn backup_auth_file(auth_path: Option<&str>, content: Option<&str>) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use maho_ai::auth::types::OAuthCredential;
+    use serde_json::json;
 
     fn api_key(key: &str) -> Value {
         json!({ "type": "api_key", "key": key })
@@ -991,7 +1453,10 @@ mod tests {
         });
         tokio::pin!(deletion);
         assert!(futures::poll!(deletion.as_mut()).is_pending());
-        tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx).await.expect("entry deadline").expect("entered");
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx)
+            .await
+            .expect("entry deadline")
+            .expect("entered");
         let login = writing.modify_credential("p", |current| async move {
             assert_eq!(current, None);
             Ok(Some(api_key("new")))
@@ -1000,8 +1465,17 @@ mod tests {
         assert!(futures::poll!(login.as_mut()).is_pending());
         // When the suspended deletion commits and releases the cross-instance file lock.
         release_tx.send(()).expect("release subscriber");
-        assert!(tokio::time::timeout(std::time::Duration::from_secs(5), deletion).await.expect("delete deadline").expect("delete").is_none());
-        tokio::time::timeout(std::time::Duration::from_secs(5), login).await.expect("login deadline").expect("login");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), deletion)
+                .await
+                .expect("delete deadline")
+                .expect("delete")
+                .is_none()
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), login)
+            .await
+            .expect("login deadline")
+            .expect("login");
         // Then the later login observes the deletion and survives on disk.
         assert_eq!(read_stored_credential("p", &path), Some(api_key("new")));
     }
@@ -1011,35 +1485,58 @@ mod tests {
         // Given file and memory stores with a credential and an unrelated provider.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("auth.json");
-        for storage in [AuthStorage::create(&path.to_string_lossy()), AuthStorage::in_memory(AuthStorageData::new())] {
+        for storage in [
+            AuthStorage::create(&path.to_string_lossy()),
+            AuthStorage::in_memory(AuthStorageData::new()),
+        ] {
             storage.set("p", Some(api_key("old"))).expect("seed");
-            storage.set("other", Some(api_key("keep"))).expect("seed sibling");
+            storage
+                .set("other", Some(api_key("keep")))
+                .expect("seed sibling");
             // When a no-op and a failed conditional mutation precede an explicit deletion.
-            let unchanged = storage.modify_credential("p", |_| async { Ok(None) }).await.expect("no-op");
+            let unchanged = storage
+                .modify_credential("p", |_| async { Ok(None) })
+                .await
+                .expect("no-op");
             assert_eq!(unchanged, Some(api_key("old")));
-            let failure = storage.modify_or_delete_credential("p", |_| async { Err("callback failed".to_owned()) }).await;
+            let failure = storage
+                .modify_or_delete_credential("p", |_| async { Err("callback failed".to_owned()) })
+                .await;
             assert!(failure.is_err());
             assert_eq!(storage.get("p"), Some(api_key("old")));
-            let deleted = storage.modify_or_delete_credential("p", |_| async { Ok(None) }).await.expect("delete");
+            let deleted = storage
+                .modify_or_delete_credential("p", |_| async { Ok(None) })
+                .await
+                .expect("delete");
             // Then deletion removes only its provider, in the cache and persistent backend.
             assert_eq!(deleted, None);
             assert_eq!(storage.get("p"), None);
             assert_eq!(storage.get("other"), Some(api_key("keep")));
-            let persisted = storage.modify_credential("p", |current| async move {
-                assert_eq!(current, None);
-                Ok(None)
-            }).await.expect("latest backend read");
+            let persisted = storage
+                .modify_credential("p", |current| async move {
+                    assert_eq!(current, None);
+                    Ok(None)
+                })
+                .await
+                .expect("latest backend read");
             assert_eq!(persisted, None);
         }
     }
 
     #[test]
     fn parses_a_valid_store_and_rejects_malformed_credentials() {
-        let data = parse_auth_json("{\"anthropic\":{\"type\":\"api_key\",\"key\":\"k\"}}").expect("data");
-        assert_eq!(credential_kind(&data["anthropic"]), Some(CredentialKind::ApiKey));
+        let data =
+            parse_auth_json("{\"anthropic\":{\"type\":\"api_key\",\"key\":\"k\"}}").expect("data");
+        assert_eq!(
+            credential_kind(&data["anthropic"]),
+            Some(CredentialKind::ApiKey)
+        );
         assert_eq!(credential_key(&data["anthropic"]), Some("k"));
 
-        assert_eq!(parse_auth_json("[]").expect_err("error"), "Invalid auth.json: expected an object");
+        assert_eq!(
+            parse_auth_json("[]").expect_err("error"),
+            "Invalid auth.json: expected an object"
+        );
         assert_eq!(
             parse_auth_json("{\"x\":{\"type\":\"nope\"}}").expect_err("error"),
             "Invalid auth.json credential for provider \"x\""
@@ -1047,18 +1544,37 @@ mod tests {
         assert!(parse_auth_json("{\"x\":{\"type\":\"api_key\",\"key\":5}}").is_err());
         assert!(parse_auth_json("{\"x\":{\"type\":\"api_key\",\"env\":{\"a\":1}}}").is_err());
         assert!(parse_auth_json("{\"x\":{\"type\":\"oauth\",\"access\":\"a\"}}").is_err());
-        assert!(parse_auth_json("{\"x\":{\"type\":\"oauth\",\"access\":\"a\",\"refresh\":\"r\",\"expires\":1}}").is_ok());
-        assert!(parse_auth_json("not json").expect_err("error").starts_with("Failed to read auth.json: "));
+        assert!(
+            parse_auth_json(
+                "{\"x\":{\"type\":\"oauth\",\"access\":\"a\",\"refresh\":\"r\",\"expires\":1}}"
+            )
+            .is_ok()
+        );
+        assert!(
+            parse_auth_json("not json")
+                .expect_err("error")
+                .starts_with("Failed to read auth.json: ")
+        );
     }
 
     #[test]
     fn reads_a_credential_under_the_canonical_then_the_legacy_key() {
         let mut data = AuthStorageData::new();
         data.insert("claude-sdk-oauth".to_owned(), api_key("legacy"));
-        assert_eq!(credential_key(&read_by_provider_id(&data, "anthropic-subscription").expect("credential")), Some("legacy"));
+        assert_eq!(
+            credential_key(
+                &read_by_provider_id(&data, "anthropic-subscription").expect("credential")
+            ),
+            Some("legacy")
+        );
         assert!(read_by_provider_id(&data, "missing").is_none());
         data.insert("anthropic-subscription".to_owned(), api_key("canonical"));
-        assert_eq!(credential_key(&read_by_provider_id(&data, "anthropic-subscription").expect("credential")), Some("canonical"));
+        assert_eq!(
+            credential_key(
+                &read_by_provider_id(&data, "anthropic-subscription").expect("credential")
+            ),
+            Some("canonical")
+        );
     }
 
     #[test]
@@ -1069,7 +1585,10 @@ mod tests {
         assert!(flag);
         assert!(!migrated.contains_key("openai-codex"));
         assert_eq!(migrated["chatgpt-subscription"]["pinned"], "login-1");
-        assert_eq!(migrated["chatgpt-subscription"]["accounts"][0]["name"], "login-1");
+        assert_eq!(
+            migrated["chatgpt-subscription"]["accounts"][0]["name"],
+            "login-1"
+        );
 
         let (again, flag) = migrate_legacy_provider_keys(&migrated);
         assert!(!flag);
@@ -1080,7 +1599,10 @@ mod tests {
         conflict.insert("chatgpt-subscription".to_owned(), api_key("canonical"));
         let (resolved, flag) = migrate_legacy_provider_keys(&conflict);
         assert!(flag);
-        assert_eq!(credential_key(&resolved["chatgpt-subscription"]), Some("canonical"));
+        assert_eq!(
+            credential_key(&resolved["chatgpt-subscription"]),
+            Some("canonical")
+        );
         assert!(!resolved.contains_key("openai-codex"));
 
         let mut non_object = AuthStorageData::new();
@@ -1098,11 +1620,19 @@ mod tests {
         .expect("data");
         let (repaired, flag) = repair_poisoned_pool_slots(&data);
         assert!(flag);
-        let accounts = repaired["anthropic-subscription"]["accounts"].as_array().expect("accounts");
+        let accounts = repaired["anthropic-subscription"]["accounts"]
+            .as_array()
+            .expect("accounts");
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0]["name"], "login-2");
         assert!(repaired["anthropic-subscription"].get("pinned").is_none());
-        assert_eq!(repaired["anthropic"]["accounts"].as_array().expect("accounts").len(), 1);
+        assert_eq!(
+            repaired["anthropic"]["accounts"]
+                .as_array()
+                .expect("accounts")
+                .len(),
+            1
+        );
         let (_again, flag) = repair_poisoned_pool_slots(&repaired);
         assert!(!flag);
     }
@@ -1114,10 +1644,24 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
         write_auth_file(&path, "{}").expect("write");
-        assert_eq!(std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
         set_mode(&path, 0o640);
         write_auth_file(&path, "{\"a\":1}").expect("write");
-        assert_eq!(std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777, 0o640);
+        assert_eq!(
+            std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o640
+        );
         let leftovers: Vec<String> = std::fs::read_dir(tmp.path())
             .expect("read_dir")
             .flatten()
@@ -1130,13 +1674,18 @@ mod tests {
     #[test]
     fn the_file_backend_creates_the_parent_directory_and_the_store() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("agent/auth.json").to_string_lossy().into_owned();
+        let path = tmp
+            .path()
+            .join("agent/auth.json")
+            .to_string_lossy()
+            .into_owned();
         let backend = FileAuthStorageBackend::new(&path);
-        backend.with_lock(|current| {
-            assert_eq!(current, Some("{}"));
-            Ok(((), None))
-        })
-        .expect("lock");
+        backend
+            .with_lock(|current| {
+                assert_eq!(current, Some("{}"));
+                Ok(((), None))
+            })
+            .expect("lock");
         assert!(Path::new(&path).exists());
     }
 
@@ -1156,7 +1705,11 @@ mod tests {
     fn read_stored_credential_is_a_one_off_read_without_resolution() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
-        std::fs::write(&path, "{\"anthropic\":{\"type\":\"api_key\",\"key\":\"!cmd\"}}").expect("write");
+        std::fs::write(
+            &path,
+            "{\"anthropic\":{\"type\":\"api_key\",\"key\":\"!cmd\"}}",
+        )
+        .expect("write");
         let credential = read_stored_credential("anthropic", &path).expect("credential");
         assert_eq!(credential_key(&credential), Some("!cmd"));
         assert!(read_stored_credential("missing", &path).is_none());
@@ -1167,9 +1720,16 @@ mod tests {
     fn a_read_only_store_reads_and_refuses_mutations() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
-        std::fs::write(&path, "{\"anthropic\":{\"type\":\"api_key\",\"key\":\"k\"}}").expect("write");
+        std::fs::write(
+            &path,
+            "{\"anthropic\":{\"type\":\"api_key\",\"key\":\"k\"}}",
+        )
+        .expect("write");
         let store = ReadOnlyAuthStorage::new(&path).expect("store");
-        assert_eq!(store.list(), vec![("anthropic".to_owned(), CredentialKind::ApiKey)]);
+        assert_eq!(
+            store.list(),
+            vec![("anthropic".to_owned(), CredentialKind::ApiKey)]
+        );
         assert_eq!(store.modify().expect_err("error"), READ_ONLY_ERROR);
         assert_eq!(store.delete().expect_err("error"), READ_ONLY_ERROR);
         assert!(ReadOnlyAuthStorage::new("/definitely/not/here.json").is_err());
@@ -1181,15 +1741,29 @@ mod tests {
         let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
         let storage = AuthStorage::create(&path);
         assert!(storage.get("anthropic").is_none());
-        storage.set("anthropic", Some(api_key("stored"))).expect("set");
-        assert_eq!(storage.get_api_key("anthropic").await.as_deref(), Some("stored"));
-        assert_eq!(storage.list(), vec![("anthropic".to_owned(), CredentialKind::ApiKey)]);
+        storage
+            .set("anthropic", Some(api_key("stored")))
+            .expect("set");
+        assert_eq!(
+            storage.get_api_key("anthropic").await.as_deref(),
+            Some("stored")
+        );
+        assert_eq!(
+            storage.list(),
+            vec![("anthropic".to_owned(), CredentialKind::ApiKey)]
+        );
         assert!(storage.has("anthropic"));
 
         storage.set_runtime_api_key("anthropic", "runtime");
-        assert_eq!(storage.get_api_key("anthropic").await.as_deref(), Some("runtime"));
+        assert_eq!(
+            storage.get_api_key("anthropic").await.as_deref(),
+            Some("runtime")
+        );
         storage.remove_runtime_api_key("anthropic");
-        assert_eq!(storage.get_api_key("anthropic").await.as_deref(), Some("stored"));
+        assert_eq!(
+            storage.get_api_key("anthropic").await.as_deref(),
+            Some("stored")
+        );
 
         storage.delete("anthropic").expect("delete");
         assert!(storage.get("anthropic").is_none());
@@ -1208,28 +1782,57 @@ mod tests {
             "pinned": "default"
         }))).expect("seed");
 
-        let receipt = storage.append_oauth_account(
-            "chatgpt-subscription",
-            OAuthCredential::new("second-a", "second-r", 2.0),
-            None,
-        ).await.expect("append").expect("generated account receipt");
+        let receipt = storage
+            .append_oauth_account(
+                "chatgpt-subscription",
+                OAuthCredential::new("second-a", "second-r", 2.0),
+                None,
+            )
+            .await
+            .expect("append")
+            .expect("generated account receipt");
 
         assert_eq!(receipt.provider_id, "chatgpt-subscription");
         assert_eq!(receipt.name, "login-2");
         assert_eq!(receipt.origin, AccountLoginOrigin::Generated);
-        let disk: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("read persisted auth")).expect("json");
+        let disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read persisted auth"))
+                .expect("json");
         assert_eq!(disk["chatgpt-subscription"]["pinned"], "default");
-        assert_eq!(disk["chatgpt-subscription"]["accounts"].as_array().expect("accounts").len(), 2);
-        assert_eq!(disk["chatgpt-subscription"]["accounts"][1]["access"], "second-a");
-        assert_eq!(storage.get("chatgpt-subscription").expect("cached pool")["accounts"].as_array().expect("accounts").len(), 2);
+        assert_eq!(
+            disk["chatgpt-subscription"]["accounts"]
+                .as_array()
+                .expect("accounts")
+                .len(),
+            2
+        );
+        assert_eq!(
+            disk["chatgpt-subscription"]["accounts"][1]["access"],
+            "second-a"
+        );
+        assert_eq!(
+            storage.get("chatgpt-subscription").expect("cached pool")["accounts"]
+                .as_array()
+                .expect("accounts")
+                .len(),
+            2
+        );
     }
 
     #[tokio::test]
     async fn api_key_login_preserves_pool_metadata_without_environment_relocation() {
         let initial = json!({"type":"api_key","key":"first","accounts":[{"name":"default","key":"first"}],"pinned":"default","providerMetadata":{"tenant":"t"}});
-        let storage = AuthStorage::in_memory(AuthStorageData::from_iter([("p".into(), initial.clone())]));
-        let credential = maho_ai::auth::types::ApiKeyCredential { key: Some("second".into()), ..Default::default() };
-        let receipt = storage.append_login_account("p", Credential::ApiKey(credential), None).await.expect("append").expect("receipt");
+        let storage =
+            AuthStorage::in_memory(AuthStorageData::from_iter([("p".into(), initial.clone())]));
+        let credential = maho_ai::auth::types::ApiKeyCredential {
+            key: Some("second".into()),
+            ..Default::default()
+        };
+        let receipt = storage
+            .append_login_account("p", Credential::ApiKey(credential), None)
+            .await
+            .expect("append")
+            .expect("receipt");
         let stored = storage.get("p").expect("stored pool");
         assert_eq!(receipt.name, "login-2");
         assert_eq!(stored["accounts"][1]["key"], "second");
@@ -1248,22 +1851,38 @@ mod tests {
         let controller = AbortController::new();
         controller.abort(None);
 
-        let error = storage.append_oauth_account(
-            "chatgpt-subscription",
-            OAuthCredential::new("second-a", "second-r", 2.0),
-            Some(controller.signal()),
-        ).await.expect_err("cancelled append");
+        let error = storage
+            .append_oauth_account(
+                "chatgpt-subscription",
+                OAuthCredential::new("second-a", "second-r", 2.0),
+                Some(controller.signal()),
+            )
+            .await
+            .expect_err("cancelled append");
 
         assert!(!error.is_empty());
-        assert_eq!(std::fs::read_to_string(&path).expect("read auth file"), initial);
-        assert_eq!(storage.get("chatgpt-subscription").expect("cached credential")["access"], "first-a");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read auth file"),
+            initial
+        );
+        assert_eq!(
+            storage
+                .get("chatgpt-subscription")
+                .expect("cached credential")["access"],
+            "first-a"
+        );
     }
 
     #[tokio::test]
     async fn a_command_config_key_is_resolved_at_read_time() {
         let storage = AuthStorage::in_memory(AuthStorageData::new());
-        storage.set("anthropic", Some(api_key("!echo resolved-key"))).expect("set");
-        assert_eq!(storage.get_api_key("anthropic").await.as_deref(), Some("resolved-key"));
+        storage
+            .set("anthropic", Some(api_key("!echo resolved-key")))
+            .expect("set");
+        assert_eq!(
+            storage.get_api_key("anthropic").await.as_deref(),
+            Some("resolved-key")
+        );
         crate::resolve_config_value::clear_config_value_cache();
     }
 
@@ -1273,7 +1892,10 @@ mod tests {
         data.insert("anthropic".to_owned(), api_key("stored"));
         let storage = AuthStorage::in_memory(data);
         assert!(storage.storage_path().is_none());
-        assert_eq!(storage.get_api_key("anthropic").await.as_deref(), Some("stored"));
+        assert_eq!(
+            storage.get_api_key("anthropic").await.as_deref(),
+            Some("stored")
+        );
         assert!(storage.get_api_key("not-a-provider").await.is_none());
     }
 
@@ -1281,7 +1903,8 @@ mod tests {
     fn a_migration_writes_a_timestamped_backup_before_the_rewrite() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
-        let original = "{\n  \"openai-codex\": {\n    \"type\": \"api_key\",\n    \"key\": \"k\"\n  }\n}";
+        let original =
+            "{\n  \"openai-codex\": {\n    \"type\": \"api_key\",\n    \"key\": \"k\"\n  }\n}";
         std::fs::write(&path, original).expect("write");
         let storage = AuthStorage::create(&path);
         assert!(storage.get("chatgpt-subscription").is_some());
@@ -1332,14 +1955,27 @@ mod tests {
         fn name(&self) -> &str {
             &self.name
         }
-        async fn login(&self, _interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
+        async fn login(
+            &self,
+            _interaction: &ProviderAuthInteraction,
+        ) -> anyhow::Result<OAuthCredential> {
             Ok(self.credential.clone())
         }
-        async fn refresh(&self, credential: &OAuthCredential, _signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
+        async fn refresh(
+            &self,
+            credential: &OAuthCredential,
+            _signal: &AbortSignal,
+        ) -> anyhow::Result<OAuthCredential> {
             Ok(credential.clone())
         }
-        async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<maho_ai::auth::types::ModelAuth> {
-            Ok(maho_ai::auth::types::ModelAuth { api_key: Some(credential.access.clone()), ..Default::default() })
+        async fn to_auth(
+            &self,
+            credential: &OAuthCredential,
+        ) -> anyhow::Result<maho_ai::auth::types::ModelAuth> {
+            Ok(maho_ai::auth::types::ModelAuth {
+                api_key: Some(credential.access.clone()),
+                ..Default::default()
+            })
         }
     }
 
@@ -1350,21 +1986,36 @@ mod tests {
         fn name(&self) -> &str {
             "Cancelled"
         }
-        async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
-            let res = interaction.prompt(AuthPrompt {
-                kind: AuthPromptKind::Select {
-                    message: "Choose".into(),
-                    options: vec![],
-                },
-                signal: None,
-            }).await?;
+        async fn login(
+            &self,
+            interaction: &ProviderAuthInteraction,
+        ) -> anyhow::Result<OAuthCredential> {
+            let res = interaction
+                .prompt(AuthPrompt {
+                    kind: AuthPromptKind::Select {
+                        message: "Choose".into(),
+                        options: vec![],
+                    },
+                    signal: None,
+                })
+                .await?;
             Ok(OAuthCredential::new(res, "r", 1000.0))
         }
-        async fn refresh(&self, credential: &OAuthCredential, _signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
+        async fn refresh(
+            &self,
+            credential: &OAuthCredential,
+            _signal: &AbortSignal,
+        ) -> anyhow::Result<OAuthCredential> {
             Ok(credential.clone())
         }
-        async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<maho_ai::auth::types::ModelAuth> {
-            Ok(maho_ai::auth::types::ModelAuth { api_key: Some(credential.access.clone()), ..Default::default() })
+        async fn to_auth(
+            &self,
+            credential: &OAuthCredential,
+        ) -> anyhow::Result<maho_ai::auth::types::ModelAuth> {
+            Ok(maho_ai::auth::types::ModelAuth {
+                api_key: Some(credential.access.clone()),
+                ..Default::default()
+            })
         }
     }
 
@@ -1378,7 +2029,10 @@ mod tests {
         fn on_prompt(&self, _prompt: OAuthPrompt) -> maho_ai::types::BoxFuture<'_, String> {
             Box::pin(async move { String::new() })
         }
-        fn on_select(&self, _prompt: OAuthSelectPrompt) -> maho_ai::types::BoxFuture<'_, Option<String>> {
+        fn on_select(
+            &self,
+            _prompt: OAuthSelectPrompt,
+        ) -> maho_ai::types::BoxFuture<'_, Option<String>> {
             let cancelled = self.cancelled;
             Box::pin(async move {
                 if cancelled {
@@ -1399,7 +2053,8 @@ mod tests {
         });
         storage.register_oauth_provider("anthropic-subscription", oauth);
         let providers = storage.get_oauth_providers().expect("builtin providers");
-        assert!(providers.iter().any(|p| p.id == "anthropic-subscription" && p.name == "Anthropic Subscription (Claude Pro/Max)"));
+        assert!(providers.iter().any(|p| p.id == "anthropic-subscription"
+            && p.name == "Anthropic Subscription (Claude Pro/Max)"));
     }
 
     #[tokio::test]
@@ -1414,7 +2069,10 @@ mod tests {
         });
         storage.register_oauth_provider("anthropic-subscription", oauth);
         let callbacks = Arc::new(TestCallbacks { cancelled: false });
-        storage.login("anthropic-subscription", callbacks).await.expect("login");
+        storage
+            .login("anthropic-subscription", callbacks)
+            .await
+            .expect("login");
 
         let stored = storage.get("anthropic-subscription").expect("stored");
         assert_eq!(stored.get("type").and_then(Value::as_str), Some("oauth"));
@@ -1435,7 +2093,12 @@ mod tests {
         assert!(storage.get("anthropic-subscription").is_none());
         let disk_after = std::fs::read_to_string(&path).expect("read");
         let disk_after_json: Value = serde_json::from_str(&disk_after).expect("json");
-        assert!(!disk_after_json.as_object().unwrap().contains_key("anthropic-subscription"));
+        assert!(
+            !disk_after_json
+                .as_object()
+                .unwrap()
+                .contains_key("anthropic-subscription")
+        );
     }
 
     #[test]
@@ -1443,21 +2106,35 @@ mod tests {
         let storage = AuthStorage::in_memory(AuthStorageData::new());
         storage.register_oauth_provider(
             "anthropic-subscription",
-            Arc::new(FauxOAuth { name: "x".into(), credential: OAuthCredential::new("", "", 0.0) }),
+            Arc::new(FauxOAuth {
+                name: "x".into(),
+                credential: OAuthCredential::new("", "", 0.0),
+            }),
         );
         storage.unregister_oauth_provider("anthropic-subscription");
-        let ids: Vec<String> = storage.get_oauth_providers().expect("builtin providers").into_iter().map(|p| p.id).collect();
+        let ids: Vec<String> = storage
+            .get_oauth_providers()
+            .expect("builtin providers")
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
         assert!(!ids.contains(&"anthropic-subscription".to_string()));
     }
 
     #[test]
     fn builtin_oauth_providers_come_from_provider_auth_declarations() {
-        let providers = AuthStorage::in_memory(AuthStorageData::new()).get_oauth_providers().expect("builtin providers");
+        let providers = AuthStorage::in_memory(AuthStorageData::new())
+            .get_oauth_providers()
+            .expect("builtin providers");
         // The pinned Anthropic Messages provider declares API-key auth only; subscription OAuth
         // belongs to the separately registered anthropic-subscription extension.
         assert!(!providers.iter().any(|p| p.id == "anthropic"));
         assert!(providers.iter().any(|p| p.id == "radius"));
-        assert!(providers.iter().any(|p| p.id == "devin" && p.name == "Devin"));
+        assert!(
+            providers
+                .iter()
+                .any(|p| p.id == "devin" && p.name == "Devin")
+        );
     }
 
     #[test]
@@ -1465,9 +2142,17 @@ mod tests {
         let storage = AuthStorage::in_memory(AuthStorageData::new());
         storage.register_oauth_provider(
             "anthropic-subscription",
-            Arc::new(FauxOAuth { name: "x".into(), credential: OAuthCredential::new("", "", 0.0) }),
+            Arc::new(FauxOAuth {
+                name: "x".into(),
+                credential: OAuthCredential::new("", "", 0.0),
+            }),
         );
-        let ids: Vec<String> = storage.get_oauth_providers().expect("builtin providers").into_iter().map(|p| p.id).collect();
+        let ids: Vec<String> = storage
+            .get_oauth_providers()
+            .expect("builtin providers")
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
         assert!(ids.contains(&"radius".to_string()));
         assert!(ids.contains(&"devin".to_string()));
         assert!(ids.contains(&"anthropic-subscription".to_string()));
@@ -1490,26 +2175,39 @@ mod tests {
     async fn delete_clears_the_runtime_key_and_list_reports_runtime_only_providers() {
         let storage = AuthStorage::in_memory(AuthStorageData::new());
         storage.set_runtime_api_key("openai", "runtime");
-        assert_eq!(storage.list(), vec![("openai".to_owned(), CredentialKind::ApiKey)]);
+        assert_eq!(
+            storage.list(),
+            vec![("openai".to_owned(), CredentialKind::ApiKey)]
+        );
 
         storage.delete("openai").unwrap();
         assert!(!storage.has_runtime_api_key("openai"));
         assert!(storage.list().is_empty());
-        assert_eq!(storage.get_api_key("openai").await.filter(|key| key == "runtime"), None);
+        assert_eq!(
+            storage
+                .get_api_key("openai")
+                .await
+                .filter(|key| key == "runtime"),
+            None
+        );
     }
 
     #[tokio::test]
     async fn cancelled_login_leaves_auth_json_unchanged() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
-        let initial_json = "{\n  \"existing\": {\n    \"type\": \"api_key\",\n    \"key\": \"k\"\n  }\n}\n";
+        let initial_json =
+            "{\n  \"existing\": {\n    \"type\": \"api_key\",\n    \"key\": \"k\"\n  }\n}\n";
         std::fs::write(&path, initial_json).unwrap();
 
         let storage = AuthStorage::create(&path);
         storage.register_oauth_provider("cancelled-prov", Arc::new(CancelledOAuth));
         let callbacks = Arc::new(TestCallbacks { cancelled: true });
 
-        let err = storage.login("cancelled-prov", callbacks).await.unwrap_err();
+        let err = storage
+            .login("cancelled-prov", callbacks)
+            .await
+            .unwrap_err();
         assert!(err.contains("Login cancelled"));
 
         let content_after = std::fs::read_to_string(&path).unwrap();
@@ -1522,7 +2220,10 @@ mod tests {
     async fn unknown_oauth_provider_returns_error() {
         let storage = AuthStorage::in_memory(AuthStorageData::new());
         let callbacks = Arc::new(TestCallbacks { cancelled: false });
-        let err = storage.login("unknown-provider-xyz", callbacks).await.unwrap_err();
+        let err = storage
+            .login("unknown-provider-xyz", callbacks)
+            .await
+            .unwrap_err();
         assert_eq!(err, "Unknown OAuth provider: unknown-provider-xyz");
     }
 

@@ -1,5 +1,5 @@
 use super::{
-    super::item::frontmatter::{FmValue, split_item},
+    super::item::frontmatter::{FmValue, split_header, split_item, without_bom},
     hub_trace::is_t2_header,
 };
 use std::collections::BTreeMap;
@@ -61,26 +61,39 @@ fn represented(line: &str, facts: &BTreeMap<String, ResultFact>) -> bool {
             }
         })
 }
-fn joined(line: &str, registers: Option<&BTreeMap<String, Vec<String>>>) -> bool {
-    let Some(registers) = registers else {
-        return false;
-    };
+fn joined(line: &str, registers: &BTreeMap<String, Vec<String>>) -> bool {
     match split_item(&format!("---\n{line}\n---\n")).fm.as_deref() {
         Some([entry]) => registers.get(&entry.key).is_some_and(|v| v.len() > 1),
         _ => false,
     }
 }
+/// The result's lines that count as held text: a joined register line counts for nothing, but only
+/// inside the result's own header; a body line is text, whatever key it looks like.
+fn held_lines<'a>(rendered: &'a str, registers: &BTreeMap<String, Vec<String>>) -> Vec<&'a str> {
+    let lines = lines_of(rendered);
+    if split_item(rendered).fm.is_none() {
+        return lines;
+    }
+    let Some((header, _)) = split_header(without_bom(rendered)) else {
+        return lines;
+    };
+    let header_end = 1 + lines_of(&format!("{header}\n")).len();
+    lines
+        .into_iter()
+        .enumerate()
+        .filter(|(index, line)| *index < 1 || *index >= header_end || !joined(line, registers))
+        .map(|(_, line)| line)
+        .collect()
+}
+/// `registers` is required: the space's active components per register key; a caller with no doc
+/// passes an empty map, which reads every rendered register as one whole value.
 pub fn first_missing_fact(
     rendered: &str,
     source: &str,
-    registers: Option<&BTreeMap<String, Vec<String>>>,
+    registers: &BTreeMap<String, Vec<String>>,
 ) -> Option<String> {
     let source_lines = lines_of(source);
-    let have = counts(
-        lines_of(rendered)
-            .into_iter()
-            .filter(|line| !joined(line, registers)),
-    );
+    let have = counts(held_lines(rendered, registers));
     let headers = source_lines
         .iter()
         .filter(|line| is_t2_header(line))
@@ -95,7 +108,7 @@ pub fn first_missing_fact(
                 FmValue::Set { elements, .. } => ResultFact::Set(elements),
                 FmValue::Reg { value } => ResultFact::Reg(
                     registers
-                        .and_then(|r| r.get(&entry.key))
+                        .get(&entry.key)
                         .cloned()
                         .unwrap_or_else(|| vec![value]),
                 ),

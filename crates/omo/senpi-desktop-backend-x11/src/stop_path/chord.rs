@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use senpi_desktop_core::keys::parse_key;
 use senpi_desktop_safety::{Chord, StopPathError};
 
-use crate::input::{keysym_variants, Keymap};
+use crate::input::{Keymap, keysym_variants};
 
 /// X11 spelling of the default stop chord (`computer.stopHotkey` on Linux).
 pub const DEFAULT_STOP_CHORD: &str = "ctrl+alt+shift+escape";
@@ -29,7 +29,8 @@ impl Hotkey {
         let mut trigger = None;
         let mut modifiers = Vec::new();
         for name in chord.keys() {
-            let key = parse_key(if name == "opt" { "option" } else { name }).map_err(|_| invalid())?;
+            let key =
+                parse_key(if name == "opt" { "option" } else { name }).map_err(|_| invalid())?;
             if key.is_modifier() {
                 modifiers.push(keysym_variants(key));
             } else if trigger.replace(keysym_variants(key)).is_some() {
@@ -49,7 +50,10 @@ impl Hotkey {
     /// the chord could never be typed.
     pub fn resolve(&self, keymap: &Keymap) -> Result<ChordCodes, StopPathError> {
         let codes = |keysyms: &[u32]| -> Result<BTreeSet<u8>, StopPathError> {
-            let codes: BTreeSet<u8> = keysyms.iter().flat_map(|&keysym| keymap.codes(keysym)).collect();
+            let codes: BTreeSet<u8> = keysyms
+                .iter()
+                .flat_map(|&keysym| keymap.codes(keysym))
+                .collect();
             if codes.is_empty() {
                 return Err(StopPathError::Unavailable {
                     reason: UNMAPPED_CHORD.to_owned(),

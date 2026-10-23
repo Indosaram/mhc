@@ -9,12 +9,14 @@ use std::time::{Duration, Instant};
 use senpi_desktop_core::backend::{Backend, DeliveryMode};
 use senpi_desktop_core::keys::KeyName;
 use senpi_desktop_core::types::{DisplaySelector, Target};
-use senpi_desktop_safety::{Chord, MonotonicClock, StopPathError, StopPathListener, StopSource, Supervisor};
+use senpi_desktop_safety::{
+    Chord, MonotonicClock, StopPathError, StopPathListener, StopSource, Supervisor,
+};
 
 use super::hotkey::CHORD_TAKEN;
-use super::{HotkeyListener, DEFAULT_STOP_CHORD};
-use crate::input::live_tests::LIVE_INPUT;
+use super::{DEFAULT_STOP_CHORD, HotkeyListener};
 use crate::Win32Backend;
+use crate::input::live_tests::LIVE_INPUT;
 
 /// Hang guard only; the latency is printed for the evidence, not asserted.
 const HANG_GUARD: Duration = Duration::from_secs(30);
@@ -52,9 +54,10 @@ fn registered_hotkey_latches() {
 
     // Then: the listener latches the supervisor
     let mut control = shared.control.lock();
-    let waited = shared
-        .changed
-        .wait_while_for(&mut control, |control| control.stops == 0, HANG_GUARD);
+    let waited =
+        shared
+            .changed
+            .wait_while_for(&mut control, |control| control.stops == 0, HANG_GUARD);
     let latched = posted.elapsed();
     drop(control);
     let status = supervisor.status();

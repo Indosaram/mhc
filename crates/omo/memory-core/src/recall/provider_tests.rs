@@ -13,7 +13,8 @@ fn only_markdown_outside_the_root_system_tree_is_recallable() {
 fn a_repository_without_a_commit_yields_an_empty_corpus() {
     let dir = tempfile::tempdir().expect("tempdir");
     let repo = GitMemoryRepo::open(dir.path(), "recall-agent").expect("repo");
-    repo.init(InitializeGitRepoOptions::default()).expect("init");
+    repo.init(InitializeGitRepoOptions::default())
+        .expect("init");
     let corpus = load_recall_corpus(&repo).expect("corpus");
     assert!(corpus.revision.is_some());
     assert!(corpus.documents.is_empty());
@@ -93,4 +94,51 @@ fn uncommitted_edits_never_leak_into_the_corpus() {
 
     let corpus = load_recall_corpus(&repo).expect("corpus");
     assert_eq!(corpus.documents[0].body, "committed\n");
+}
+
+fn seeded_repo(dir: &std::path::Path, description: &str) -> GitMemoryRepo {
+    let repo = GitMemoryRepo::open(dir, "recall-agent").expect("repo");
+    repo.init(Some(InitializeGitRepoOptions {
+        seed_files: vec![GitSeedFile {
+            relative_path: "reference/topic.md".to_string(),
+            content: format!("---\ndescription: {description}\n---\nBody.\n"),
+        }],
+        ..Default::default()
+    }))
+    .expect("init");
+    repo
+}
+
+#[test]
+fn shared_caches_hold_one_corpus_per_repository_even_through_another_spelling() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let repo = seeded_repo(dir.path(), "Shared topic");
+    let options = RecallCorpusCacheOptions {
+        shared: true,
+        ..Default::default()
+    };
+    let mut first = RecallCorpusCache::new(options.clone());
+    let mut second = RecallCorpusCache::new(options);
+    let a = first.load(&repo).expect("first load");
+    let spelled = GitMemoryRepo::open(dir.path().join("."), "session-b").expect("repo");
+    let b = second.load(&spelled).expect("second load");
+    assert!(Arc::ptr_eq(&a, &b));
+    first.settled();
+    first.clear();
+    let again = first.load(&repo).expect("reload");
+    assert!(
+        Arc::ptr_eq(&again, &b),
+        "second cache still keeps the shared state alive"
+    );
+}
+
+#[test]
+fn a_private_cache_does_not_share() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let repo = seeded_repo(dir.path(), "Private topic");
+    let mut first = RecallCorpusCache::default();
+    let mut second = RecallCorpusCache::default();
+    let a = first.load(&repo).expect("first load");
+    let b = second.load(&repo).expect("second load");
+    assert!(!Arc::ptr_eq(&a, &b));
 }

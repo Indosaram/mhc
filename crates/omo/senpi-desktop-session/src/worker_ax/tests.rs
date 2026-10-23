@@ -2,10 +2,10 @@ use senpi_desktop_backend_fake::{FakeMethod, SinkOp};
 use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_core::protocol_params::{AxClickParams, AxElementAtParams};
 use senpi_desktop_core::types::Target;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::request::{Op, Response};
-use crate::test_support::{harness, Harness};
+use crate::test_support::{Harness, harness};
 
 fn window(id: &str, pid: u32, x: u32) -> Value {
     json!({"id": id, "title": id, "app": "App", "pid": pid, "x": x, "y": 120,
@@ -112,7 +112,8 @@ fn ax_click_refuses_an_unknown_owner_without_geometric_fallback() {
 #[test]
 fn ax_click_refuses_when_the_owner_no_longer_contains_the_centre() {
     // Given: A has moved off its element's centre, which B still covers.
-    let mut harness = harness(&json!({"windows": [window("202", 8, 100), window("101", 4242, 1000)]}));
+    let mut harness =
+        harness(&json!({"windows": [window("202", 8, 100), window("101", 4242, 1000)]}));
     let reference = harness.focused_ref();
     // When
     let result = click(&mut harness, reference);

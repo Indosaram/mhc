@@ -9,9 +9,9 @@ mod catalog;
 use std::io::{self, BufRead, Write};
 
 use senpi_desktop_core::protocol::{MethodRejection, RequestId};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::rpc::{failure_line, reply_line, Failure};
+use crate::rpc::{Failure, failure_line, reply_line};
 use catalog::Catalog;
 
 const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -56,7 +56,7 @@ impl<X: FnMut(&Value) -> io::Result<Value>> Server<X> {
                 return Some(failure_line(
                     None,
                     Failure::Parse(format!("parse error: {error}")),
-                ))
+                ));
             }
         };
         let method = message.get("method").and_then(Value::as_str);
@@ -80,11 +80,17 @@ impl<X: FnMut(&Value) -> io::Result<Value>> Server<X> {
     }
 
     fn call(&mut self, params: &Value) -> Result<Value, Failure> {
-        let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
+        let name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let Some(method) = self.catalog.method(name).map(str::to_owned) else {
             return Err(Failure::InvalidParams(format!("unknown tool: {name}")));
         };
-        let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+        let arguments = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         call::call_tool(&method, arguments, &mut self.exchange)
     }
 }

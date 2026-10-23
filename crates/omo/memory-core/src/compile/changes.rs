@@ -1,8 +1,9 @@
 //! Projected-changes ledger between two committed memory revisions.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
-use crate::git::{GitError, GitLogOptions, GitMemoryRepo};
+use crate::git::{GitError, GitLogOptions, GitMemoryRepo, MemoryCommit};
 
 /// Trailer naming the session a commit belongs to (pin `compile/changes.ts`).
 pub const MEMORY_SESSION_TRAILER: &str = "Omo-Session";
@@ -16,9 +17,26 @@ pub struct ProjectedChanges {
 }
 
 /// Options for a projected-changes comparison.
-#[derive(Debug, Clone, Default)]
+pub type OnCommits = Arc<dyn Fn(&[MemoryCommit]) + Send + Sync>;
+
+#[derive(Clone, Default)]
 pub struct ProjectedChangesOptions {
     pub exclude_session_id: Option<String>,
+    /// Receives the commits of the range this call already read, so a caller needs no second log.
+    pub on_commits: Option<OnCommits>,
+}
+
+impl std::fmt::Debug for ProjectedChangesOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProjectedChangesOptions")
+            .field("exclude_session_id", &self.exclude_session_id)
+            .field(
+                "on_commits",
+                &self.on_commits.as_ref().map(|_| "<callback>"),
+            )
+            .finish()
+    }
 }
 
 /// True when a comparison produced no projected change at all.
@@ -52,6 +70,9 @@ pub fn projected_changes_between(
         include_paths: true,
         ..Default::default()
     }))?;
+    if let Some(on_commits) = &options.on_commits {
+        on_commits(&commits);
+    }
 
     let mut touched: BTreeSet<String> = BTreeSet::new();
     for commit in &commits {

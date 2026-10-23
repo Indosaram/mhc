@@ -2,8 +2,8 @@ mod common;
 
 use std::process::Command;
 
-use common::{error_code, fake_backend, Engine, BINARY, DELAYED_CAPTURE, TWO_DISPLAYS};
-use serde_json::{json, Value};
+use common::{BINARY, DELAYED_CAPTURE, Engine, TWO_DISPLAYS, error_code, fake_backend};
+use serde_json::{Value, json};
 
 #[test]
 fn hello_and_capabilities_report_the_abi_and_the_fake_backend_before_session_open() {
@@ -66,7 +66,10 @@ fn pipelined_requests_reach_the_session_in_arrival_order() {
 fn requests_after_session_close_fail_closed() {
     let mut engine = Engine::spawn(&[fake_backend(TWO_DISPLAYS)]);
     engine.call(1, "session.open", json!({}));
-    assert_eq!(engine.call(2, "session.close", json!({}))["result"], Value::Null);
+    assert_eq!(
+        engine.call(2, "session.close", json!({}))["result"],
+        Value::Null
+    );
     let displays = engine.call(3, "displays", json!({}));
     assert_eq!(error_code(&displays), &json!("Closed"));
     assert_eq!(displays["error"]["code"], json!(-32012));
@@ -169,5 +172,8 @@ fn selftest_prints_ok_and_exits_zero() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "engine: selftest ok\n");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "engine: selftest ok\n"
+    );
 }

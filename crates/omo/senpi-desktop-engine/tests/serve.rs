@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const HANG_GUARD: Duration = Duration::from_secs(30);
 const BINARY: &str = env!("CARGO_BIN_EXE_senpi-desktop-engine");
@@ -62,7 +62,11 @@ fn serve_shares_one_session_across_successive_clients_and_exits_when_idle() {
     );
     // Then
     assert_eq!(opened["result"]["capabilities"]["backend"], json!("fake"));
-    assert_eq!(displays["result"].as_array().map(Vec::len), Some(2), "{displays}");
+    assert_eq!(
+        displays["result"].as_array().map(Vec::len),
+        Some(2),
+        "{displays}"
+    );
     let (sender, exited) = mpsc::channel();
     thread::spawn(move || sender.send(child.wait().expect("engine exits")));
     let status = exited

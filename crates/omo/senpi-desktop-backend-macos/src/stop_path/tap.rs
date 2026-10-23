@@ -16,7 +16,8 @@ type CfRunLoopRef = *mut c_void;
 type CfStringRef = *const c_void;
 type CgEventRef = *mut c_void;
 type CgEventTapProxy = *mut c_void;
-type CgEventTapCallBack = extern "C" fn(CgEventTapProxy, u32, CgEventRef, *mut c_void) -> CgEventRef;
+type CgEventTapCallBack =
+    extern "C" fn(CgEventTapProxy, u32, CgEventRef, *mut c_void) -> CgEventRef;
 
 const SESSION_EVENT_TAP: u32 = 1; // kCGSessionEventTap
 const HEAD_INSERT: u32 = 0; // kCGHeadInsertEventTap
@@ -58,7 +59,11 @@ unsafe extern "C" {
     fn CFRunLoopGetCurrent() -> CfRunLoopRef;
     fn CFRunLoopAddSource(run_loop: CfRunLoopRef, source: CfRunLoopSourceRef, mode: CfStringRef);
     fn CFRunLoopRemoveSource(run_loop: CfRunLoopRef, source: CfRunLoopSourceRef, mode: CfStringRef);
-    fn CFRunLoopRunInMode(mode: CfStringRef, seconds: f64, return_after_source_handled: bool) -> i32;
+    fn CFRunLoopRunInMode(
+        mode: CfStringRef,
+        seconds: f64,
+        return_after_source_handled: bool,
+    ) -> i32;
     fn CFRelease(cf: *const c_void);
 }
 
@@ -92,7 +97,10 @@ pub(super) const fn classify(event_type: u32) -> TapAction {
 /// A heartbeat step keeps the path live only when the run loop is still
 /// servicing the tap and the tap is enabled.
 pub(super) const fn listener_step_is_live(run_loop_result: i32, tap_enabled: bool) -> bool {
-    matches!(run_loop_result, RUN_LOOP_TIMED_OUT | RUN_LOOP_HANDLED_SOURCE) && tap_enabled
+    matches!(
+        run_loop_result,
+        RUN_LOOP_TIMED_OUT | RUN_LOOP_HANDLED_SOURCE
+    ) && tap_enabled
 }
 
 /// What the callback reaches through `user_info`.
@@ -243,7 +251,7 @@ mod hooks {
     use std::ffi::c_void;
     use std::ptr;
 
-    use super::{tap_callback, CGEventTapEnable, Shared, TapContext, TAP_DISABLED_BY_TIMEOUT};
+    use super::{CGEventTapEnable, Shared, TAP_DISABLED_BY_TIMEOUT, TapContext, tap_callback};
 
     #[derive(Debug, Clone, Copy)]
     pub(in crate::stop_path) enum Simulate {

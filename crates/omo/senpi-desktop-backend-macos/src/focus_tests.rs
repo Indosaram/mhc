@@ -1,5 +1,5 @@
-use super::{first_front_window, hand_back, HandBack, WindowInfo};
-use crate::front_app::{restore_step, user_front_pid, RestoreStep};
+use super::{HandBack, WindowInfo, first_front_window, hand_back};
+use crate::front_app::{RestoreStep, restore_step, user_front_pid};
 
 #[test]
 fn chooses_first_visible_normal_window_of_frontmost_process() {
@@ -82,7 +82,12 @@ fn hand_back_reactivates_only_while_the_engine_activation_is_front() {
 }
 
 fn window(pid: u32, layer: i32, on_screen: bool) -> WindowInfo {
-    WindowInfo { pid, window_number: pid * 10, layer, on_screen }
+    WindowInfo {
+        pid,
+        window_number: pid * 10,
+        layer,
+        on_screen,
+    }
 }
 
 #[test]
@@ -149,7 +154,14 @@ fn a_restore_reclaims_the_front_from_the_engines_own_activation_or_an_accessory(
     ];
 
     // Then
-    assert_eq!(steps, [RestoreStep::Reclaim, RestoreStep::Reclaim, RestoreStep::Reclaim]);
+    assert_eq!(
+        steps,
+        [
+            RestoreStep::Reclaim,
+            RestoreStep::Reclaim,
+            RestoreStep::Reclaim
+        ]
+    );
 }
 
 #[test]

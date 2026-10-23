@@ -8,9 +8,9 @@ mod common;
 #[path = "headless/error_codes.rs"]
 mod error_codes;
 
-use common::scenario::{capture, headless, make_stop_path_live, snapshot_ref, Scenario};
-use common::{error_code, fake_backend, Engine, TWO_DISPLAYS};
-use serde_json::{json, Value};
+use common::scenario::{Scenario, capture, headless, make_stop_path_live, snapshot_ref};
+use common::{Engine, TWO_DISPLAYS, error_code, fake_backend};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 /// Base64 of the 8-byte PNG signature.
@@ -45,7 +45,10 @@ fn capture_reports_the_source_size_and_an_inline_base64_png() {
     let mut engine = two_displays();
     engine.invoke("session.open", json!({}));
     // When
-    let captured = engine.invoke("capture", json!({"target": "desktop", "caps": {"maxWidth": 320}}));
+    let captured = engine.invoke(
+        "capture",
+        json!({"target": "desktop", "caps": {"maxWidth": 320}}),
+    );
     // Then: the composite of both displays' pixels, downscaled to the cap
     let result = &captured["result"];
     assert_eq!(
@@ -53,7 +56,9 @@ fn capture_reports_the_source_size_and_an_inline_base64_png() {
         (&json!(4800), &json!(1800))
     );
     assert_eq!(result["width"], json!(320), "{captured}");
-    let data = result["data"].as_str().expect("inline capture carries data");
+    let data = result["data"]
+        .as_str()
+        .expect("inline capture carries data");
     assert!(
         data.starts_with(PNG_BASE64_PREFIX),
         "not a base64 PNG: {data:.32}"
@@ -132,7 +137,10 @@ fn session_close_is_idempotent_and_later_requests_fail_closed() {
         (&Value::Null, &Value::Null),
         "{second}"
     );
-    assert_eq!(error_code(&engine.invoke("windows", json!({}))), &json!("Closed"));
+    assert_eq!(
+        error_code(&engine.invoke("windows", json!({}))),
+        &json!("Closed")
+    );
     assert!(engine.finish().success());
 }
 
@@ -253,7 +261,8 @@ fn without_a_backend_capture_fails_and_every_input_stops_at_the_stop_path() {
     engine.invoke("session.open", json!({}));
     // When
     let captured = engine.invoke("capture", json!({"target": "desktop"}));
-    let inputs = error_codes::input_calls().map(|(method, params)| (method, engine.invoke(method, params)));
+    let inputs =
+        error_codes::input_calls().map(|(method, params)| (method, engine.invoke(method, params)));
     // Then: the gate refuses before any backend call
     assert_eq!(capabilities["result"]["backend"], json!("unavailable"));
     assert_eq!(error_code(&captured), &json!("CaptureFailed"));

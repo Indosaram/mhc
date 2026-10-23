@@ -5,7 +5,7 @@ use senpi_desktop_core::error::CoreResult;
 use senpi_desktop_core::protocol_params::CaptureParams;
 use senpi_desktop_core::types::{CaptureResult, DesktopSessionOptions, Target};
 
-use crate::budget::{plan_screenshot, Budget, Delivery};
+use crate::budget::{Budget, Delivery, plan_screenshot};
 use crate::request::Response;
 use crate::worker::Worker;
 
@@ -14,7 +14,12 @@ impl Worker {
         let target = Target::parse(&params.target);
         let artifact_dir = self.artifact_dir();
         let unopened = DesktopSessionOptions::default();
-        let caps = self.options.as_ref().unwrap_or(&unopened).capture_caps.clone();
+        let caps = self
+            .options
+            .as_ref()
+            .unwrap_or(&unopened)
+            .capture_caps
+            .clone();
         let budget = Budget::new(&caps, params.caps.as_ref(), artifact_dir)?;
         let (image, mut geometry) = self.backend()?.capture(&target, budget.caps())?;
         let screenshot = plan_screenshot(image, &mut geometry, &budget)?;
@@ -24,7 +29,9 @@ impl Worker {
         let mode = screenshot.delivery.mode();
         let (data, mime_type, artifact_path, note) = match screenshot.delivery {
             Delivery::InlinePng(png) => (Some(base64(&png)), "image/png", None, None),
-            Delivery::InlineJpeg { jpeg, note } => (Some(base64(&jpeg)), "image/jpeg", None, Some(note)),
+            Delivery::InlineJpeg { jpeg, note } => {
+                (Some(base64(&jpeg)), "image/jpeg", None, Some(note))
+            }
             Delivery::ArtifactOnly { path, note } => (None, "image/png", Some(path), Some(note)),
         };
         Ok(Response::Capture(CaptureResult {
@@ -52,7 +59,8 @@ fn base64(bytes: &[u8]) -> String {
     for chunk in bytes.chunks(3) {
         let [a, b, c] = [0, 1, 2].map(|index| chunk.get(index).copied().unwrap_or(0));
         let group = u32::from_be_bytes([0, a, b, c]);
-        let sextets = [18, 12, 6, 0].map(|shift| char::from(ALPHABET[usize::from(sextet(group, shift))]));
+        let sextets =
+            [18, 12, 6, 0].map(|shift| char::from(ALPHABET[usize::from(sextet(group, shift))]));
         let kept = chunk.len() + 1;
         encoded.extend(sextets.iter().take(kept));
         encoded.extend(std::iter::repeat_n('=', 4 - kept));

@@ -6,8 +6,8 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use maho_ext_api::{ToolDefinition, ToolError, ToolResult};
 use memory_core::facts::extraction::parse_facts_extraction_record;
@@ -91,12 +91,18 @@ pub struct FactsRecordToolInput {
     pub max_bytes: Option<usize>,
     pub on_failure: Option<FactsFailureCallback>,
     pub state: Option<FactsRecordRunState>,
+    /// Every call counts, rejected ones too: it bounds the model's tool turns, not only the records kept.
+    pub max_calls: Option<usize>,
+    pub on_call: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// The stateful facts record tool instance.
 pub struct FactsRecordTool {
     active: Arc<AtomicBool>,
     count: Arc<AtomicUsize>,
+    calls: Arc<AtomicUsize>,
+    max_calls: Option<usize>,
+    on_call: Option<Arc<dyn Fn() + Send + Sync>>,
     bytes: Arc<AtomicUsize>,
     extraction_path: PathBuf,
     max_records: Option<usize>,
@@ -110,7 +116,11 @@ impl FactsRecordTool {
         self.active.store(false, Ordering::Release);
     }
 
-    pub fn execute(&self, _tool_call_id: &str, params: &serde_json::Value) -> FactsRecordToolResult {
+    pub fn execute(
+        &self,
+        _tool_call_id: &str,
+        params: &serde_json::Value,
+    ) -> FactsRecordToolResult {
         if !self.active.load(Ordering::Acquire)
             || self
                 .state
@@ -127,8 +137,21 @@ impl FactsRecordTool {
             error_result(reason)
         };
 
+        if let Some(max_calls) = self.max_calls
+            && self.calls.load(Ordering::Acquire) >= max_calls
+        {
+            return reject(&format!(
+                "the facts tool-call limit ({max_calls}) has been reached"
+            ));
+        }
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        if let Some(on_call) = &self.on_call {
+            on_call();
+        }
+
         // Parse and validate using core extraction record validation
-        let record = match parse_facts_extraction_record(params, self.count.load(Ordering::Relaxed)) {
+        let record = match parse_facts_extraction_record(params, self.count.load(Ordering::Relaxed))
+        {
             Ok(rec) => rec,
             Err(err) => return reject(&err.message),
         };
@@ -226,6 +249,9 @@ pub fn create_facts_record_tool(input: FactsRecordToolInput) -> FactsRecordTool 
     FactsRecordTool {
         active: Arc::new(AtomicBool::new(true)),
         count: Arc::new(AtomicUsize::new(0)),
+        calls: Arc::new(AtomicUsize::new(0)),
+        max_calls: input.max_calls,
+        on_call: input.on_call,
         bytes: Arc::new(AtomicUsize::new(0)),
         extraction_path: input.extraction_path,
         max_records: input.max_records,
@@ -243,10 +269,7 @@ fn error_result(reason: &str) -> FactsRecordToolResult {
 }
 
 fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     file.write_all(line.as_bytes())?;
     file.flush()
 }

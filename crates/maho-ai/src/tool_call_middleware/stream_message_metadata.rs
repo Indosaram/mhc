@@ -42,6 +42,8 @@ fn clone_legacy_message(source: &AssistantMessage, content: Vec<ContentBlock>) -
         raw_stop_reason: None,
         end_turn: None,
         timestamp: source.timestamp,
+        failure_source: None,
+        timing: None,
     }
 }
 
@@ -73,6 +75,8 @@ pub fn clone_message_with_content(
         raw_stop_reason: source.raw_stop_reason.clone(),
         end_turn: source.end_turn,
         timestamp: source.timestamp,
+        failure_source: None,
+        timing: None,
     }
 }
 
@@ -161,6 +165,8 @@ mod tests {
             raw_stop_reason: Some("stop".into()),
             end_turn: Some(true),
             timestamp: 42,
+            failure_source: None,
+            timing: None,
         }
     }
 

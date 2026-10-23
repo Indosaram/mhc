@@ -86,6 +86,7 @@ impl ProviderImages for Provider {
                 background: Some(ImagesBackground::Opaque),
                 stop_reason: ImagesStopReason::Stop,
                 error_message: None,
+                provider_diagnostic: None,
                 timestamp: 0,
             })
         })

@@ -8,10 +8,10 @@ use std::mem::size_of;
 use senpi_desktop_core::backend::MouseButton;
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, SendInput, INPUT, KEYEVENTF_KEYUP,
-    KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
+    GetAsyncKeyState, INPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE,
+    MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
+    MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+    MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, SendInput,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
@@ -45,7 +45,9 @@ fn send(events: &[INPUT], target: Option<Window>) -> CoreResult<()> {
     if sent == count {
         return Ok(());
     }
-    let accepted = usize::try_from(sent).unwrap_or(usize::MAX).min(events.len());
+    let accepted = usize::try_from(sent)
+        .unwrap_or(usize::MAX)
+        .min(events.len());
     let cleanup = release_accepted_prefix(events, accepted, |release| {
         // SAFETY: [Category 8 - FFI boundary] `release` is one initialized
         // INPUT built by this module. Win32 copies it synchronously.
@@ -164,11 +166,7 @@ fn move_to((x, y): (i32, i32), target: Option<Window>) -> CoreResult<()> {
 }
 
 /// Presses (`down`) or releases `button` where the cursor is.
-pub(super) fn button(
-    button: MouseButton,
-    down: bool,
-    target: Option<Window>,
-) -> CoreResult<()> {
+pub(super) fn button(button: MouseButton, down: bool, target: Option<Window>) -> CoreResult<()> {
     let flags = match (button, down) {
         (MouseButton::Left, true) => MOUSEEVENTF_LEFTDOWN,
         (MouseButton::Left, false) => MOUSEEVENTF_LEFTUP,
@@ -181,11 +179,7 @@ pub(super) fn button(
 }
 
 /// One wheel event of `delta` (multiples of `WHEEL_DELTA`) on an axis.
-pub(super) fn wheel(
-    horizontal: bool,
-    delta: i32,
-    target: Option<Window>,
-) -> CoreResult<()> {
+pub(super) fn wheel(horizontal: bool, delta: i32, target: Option<Window>) -> CoreResult<()> {
     let flags = if horizontal {
         MOUSEEVENTF_HWHEEL
     } else {

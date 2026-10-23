@@ -4,10 +4,10 @@ use senpi_desktop_core::ax::{AxBackend, AxBounds, AxHandle};
 use senpi_desktop_core::error::{CoreResult, DesktopError, ErrorCode};
 use senpi_desktop_core::types::DesktopWindow;
 
-use super::actions::action_name;
-use super::props::{read_props, truncate_chars, AttributeSource};
-use super::tree::{bounds_matches_window, pick_by_title_and_frame};
 use super::MacAx;
+use super::actions::action_name;
+use super::props::{AttributeSource, read_props, truncate_chars};
+use super::tree::{bounds_matches_window, pick_by_title_and_frame};
 
 /// In-memory AX element: attribute name -> string or bool.
 #[derive(Default)]
@@ -30,8 +30,9 @@ impl FakeElement {
 
 impl AttributeSource for FakeElement {
     fn required_string(&self, attribute: &str) -> CoreResult<String> {
-        self.string(attribute)
-            .ok_or_else(|| DesktopError::ax_failed(format!("copying {attribute} returned no value")))
+        self.string(attribute).ok_or_else(|| {
+            DesktopError::ax_failed(format!("copying {attribute} returned no value"))
+        })
     }
 
     fn string(&self, attribute: &str) -> Option<String> {
@@ -125,7 +126,10 @@ fn props_drop_empty_strings_when_attributes_are_blank() {
         .strings
         .extend([("AXTitle", ""), ("AXValue", ""), ("AXDescription", "")]);
     let props = read_props(&element).unwrap();
-    assert_eq!((props.title, props.value, props.description), (None, None, None));
+    assert_eq!(
+        (props.title, props.value, props.description),
+        (None, None, None)
+    );
 }
 
 #[test]
@@ -161,7 +165,10 @@ fn title_and_frame_match_wins_over_an_earlier_title_only_match() {
         ("moved", "Doc".to_string(), Some(bounds(400.0, 800.0))),
         ("exact", "Doc".to_string(), Some(bounds(100.0, 800.0))),
     ];
-    assert_eq!(pick_by_title_and_frame(candidates, &window("Doc")), Some("exact"));
+    assert_eq!(
+        pick_by_title_and_frame(candidates, &window("Doc")),
+        Some("exact")
+    );
 }
 
 #[test]
@@ -170,7 +177,10 @@ fn unique_title_matches_when_frames_differ() {
         ("other", "Notes".to_string(), None),
         ("doc", "Doc".to_string(), Some(bounds(400.0, 800.0))),
     ];
-    assert_eq!(pick_by_title_and_frame(candidates, &window("Doc")), Some("doc"));
+    assert_eq!(
+        pick_by_title_and_frame(candidates, &window("Doc")),
+        Some("doc")
+    );
 }
 
 #[test]

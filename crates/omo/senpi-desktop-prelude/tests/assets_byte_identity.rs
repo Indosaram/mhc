@@ -1,7 +1,7 @@
-use std::collections::HashMap;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
-use senpi_desktop_prelude::{ComputerPreludeAssets, COMPUTER_EXPORTS};
+use senpi_desktop_prelude::{COMPUTER_EXPORTS, ComputerPreludeAssets};
 
 const FIXTURE_JSON: &str = include_str!("../test/assets.sha256.json");
 
@@ -13,7 +13,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 #[test]
 fn keeps_prelude_assets_byte_identical_to_dev() {
-    let fixture: HashMap<String, String> = serde_json::from_str(FIXTURE_JSON).expect("valid fixture JSON");
+    let fixture: HashMap<String, String> =
+        serde_json::from_str(FIXTURE_JSON).expect("valid fixture JSON");
 
     assert_eq!(
         sha256_hex(ComputerPreludeAssets::javascript().as_bytes()),

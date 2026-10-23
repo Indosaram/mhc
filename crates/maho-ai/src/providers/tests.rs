@@ -161,7 +161,7 @@ fn uses_official_kimi_k3_pricing_for_moonshot_providers() {
         assert_eq!(model.cost.input, 3.0);
         assert_eq!(model.cost.output, 15.0);
         assert_eq!(model.cost.cache_read, 0.3);
-        assert_eq!(model.cost.cache_write, 0.0);
+        assert_eq!(model.cost.cache_write, 3.0);
     }
 }
 
@@ -204,7 +204,7 @@ fn normalizes_the_anthropic_model_thinking_level_map() {
     );
     assert_eq!(
         get_builtin_model_data_generated_at(),
-        Some(1_790_168_420_361)
+        Some(1_792_653_165_108)
     );
 }
 

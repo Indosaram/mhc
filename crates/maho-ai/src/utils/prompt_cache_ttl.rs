@@ -511,6 +511,7 @@ mod tests {
             recover_text_tool_calls: None,
             compat: None,
             input_limits: None,
+            deprecated: None,
         }
     }
 

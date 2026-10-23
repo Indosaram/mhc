@@ -6,7 +6,8 @@
 
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, IsWindowVisible, SendMessageTimeoutW, DLGC_WANTCHARS, SMTO_ABORTIFHUNG, WM_GETDLGCODE,
+    DLGC_WANTCHARS, FindWindowExW, IsWindowVisible, SMTO_ABORTIFHUNG, SendMessageTimeoutW,
+    WM_GETDLGCODE,
 };
 
 use super::native::Window;
@@ -47,12 +48,15 @@ fn next_child(parent: Window, after: Option<Window>) -> Option<Window> {
     let after = after.map_or(std::ptr::null_mut(), Window::hwnd);
     // SAFETY: [FFI] both HWNDs are opaque values Win32 validates; null class
     // and title match every child.
-    Window::from_hwnd(unsafe { FindWindowExW(parent.hwnd(), after, std::ptr::null(), std::ptr::null()) })
+    Window::from_hwnd(unsafe {
+        FindWindowExW(parent.hwnd(), after, std::ptr::null(), std::ptr::null())
+    })
 }
 
 fn is_char_sink(window: Window) -> bool {
     // SAFETY: [FFI] the HWND is opaque; a stale one reads as hidden/disabled.
-    let usable = unsafe { IsWindowVisible(window.hwnd()) != 0 && IsWindowEnabled(window.hwnd()) != 0 };
+    let usable =
+        unsafe { IsWindowVisible(window.hwnd()) != 0 && IsWindowEnabled(window.hwnd()) != 0 };
     if !usable {
         return false;
     }

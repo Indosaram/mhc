@@ -6,13 +6,13 @@ use maho_ai::model::Model;
 use maho_ai::types::{ModelThinkingLevel, ThinkingLevel};
 use maho_ext_api::{
     BuildSystemPromptOptions, ComponentFactory, CredentialAccountSummary, CustomMessage,
-    CustomUiOptions, EventBus, EventKind, EventResult, ExecuteToolFuture, ExecuteToolOptions,
-    ExecOptions, ExecResult, ExtensionActions, ExtensionApi, ExtensionContext, ExtensionEvent,
-    ExtensionFailure, ExtensionFuture, ExtensionMode, ExtensionRuntime,
-    ExtensionSessionActions, ExtensionSessionProfile, ExtensionUi, ExtensionUiDialogOptions,
-    ExtensionWidgetOptions, JsonValue, LazyToolActivator, LoadedExtension, ModelRegistry,
-    NotificationType, ProviderAuthStatus, ResolvedRequestAuth, SendMessageOptions, SendUserMessageOptions, SessionEntry,
-    SessionManager, SessionReason, SlashCommandInfo, SourceInfo, Theme, ToolInfo,
+    CustomUiOptions, EventBus, EventKind, EventResult, ExecOptions, ExecResult, ExecuteToolFuture,
+    ExecuteToolOptions, ExtensionActions, ExtensionApi, ExtensionContext, ExtensionEvent,
+    ExtensionFailure, ExtensionFuture, ExtensionMode, ExtensionRuntime, ExtensionSessionActions,
+    ExtensionSessionProfile, ExtensionUi, ExtensionUiDialogOptions, ExtensionWidgetOptions,
+    JsonValue, LazyToolActivator, LoadedExtension, ModelRegistry, NotificationType,
+    ProviderAuthStatus, ResolvedRequestAuth, SendMessageOptions, SendUserMessageOptions,
+    SessionEntry, SessionManager, SessionReason, SlashCommandInfo, SourceInfo, Theme, ToolInfo,
     ToolSessionManager, UiFuture, WidgetContent,
 };
 
@@ -38,7 +38,10 @@ pub const ENGINE_BUILTIN_PROVIDER_IDS: &[&str] = &[
 /// shared with these arrays; each keep is for a leftover OpenCode-id key or a senpi extension lane.
 pub const CHAIN_PROVIDER_ID_ALLOWLIST: &[(&str, &str)] = &[
     // senpi Claude Pro/Max extension lane; not a pi-ai builtin.
-    ("anthropic-subscription", "senpi Claude subscription extension"),
+    (
+        "anthropic-subscription",
+        "senpi Claude subscription extension",
+    ),
     // OpenCode/models.dev Anthropic API-key id. setup maps it to `anthropic`; Claude rungs keep it
     // so a leftover key still matches.
     ("anthropic-api", "OpenCode anthropic API-key alias"),
@@ -46,12 +49,17 @@ pub const CHAIN_PROVIDER_ID_ALLOWLIST: &[(&str, &str)] = &[
     ("kimi-coding", "senpi Kimi coding engine lane"),
     // OpenCode/models.dev Kimi Code id. senpi-task category chains carry both `kimi-coding` (engine)
     // and this alias; builtin profiles copy that pair.
-    ("kimi-for-coding", "OpenCode kimi alias kept next to engine kimi-coding"),
+    (
+        "kimi-for-coding",
+        "OpenCode kimi alias kept next to engine kimi-coding",
+    ),
 ];
 
 pub fn is_known_provider(provider: &str) -> bool {
     ENGINE_BUILTIN_PROVIDER_IDS.contains(&provider)
-        || CHAIN_PROVIDER_ID_ALLOWLIST.iter().any(|(id, _)| *id == provider)
+        || CHAIN_PROVIDER_ID_ALLOWLIST
+            .iter()
+            .any(|(id, _)| *id == provider)
 }
 
 pub fn model(provider: &str, id: &str) -> Model {
@@ -91,7 +99,9 @@ pub fn refresh_rejected(provider: &str) -> String {
 
 // A model header whose `!command` fails: senpi quotes the command in the message.
 pub fn request_configuration_failed(provider: &str, id: &str) -> String {
-    format!("Failed to resolve model \"{provider}/{id}\" header x-token from shell command: echo {PRIVATE_MARKER} {SHORT_SECRET}")
+    format!(
+        "Failed to resolve model \"{provider}/{id}\" header x-token from shell command: echo {PRIVATE_MARKER} {SHORT_SECRET}"
+    )
 }
 
 /// senpi's `ModelsError` with code `oauth`: the typed class/code the fingerprint must read.
@@ -105,7 +115,10 @@ pub fn oauth_failure(message: impl Into<String>) -> ExtensionFailure {
 
 /// A `ModelsError` without the `oauth` code: any other resolution failure.
 pub fn credential_failure(message: impl Into<String>) -> ExtensionFailure {
-    ExtensionFailure { class: Some("ModelsError".to_owned()), ..ExtensionFailure::new(message) }
+    ExtensionFailure {
+        class: Some("ModelsError".to_owned()),
+        ..ExtensionFailure::new(message)
+    }
 }
 
 pub fn account(name: &str, pinned: bool) -> CredentialAccountSummary {
@@ -115,19 +128,26 @@ pub fn account(name: &str, pinned: bool) -> CredentialAccountSummary {
         source: maho_ext_api::CredentialAccountSource::Login,
         blocked: false,
         pinned,
+        unused: false,
     }
 }
 
 impl TestRegistry {
     pub fn new(models: Vec<Model>) -> Self {
-        Self { models, ..Default::default() }
+        Self {
+            models,
+            ..Default::default()
+        }
     }
 
     /// Every slot of the provider fails, the flat/default credential included.
     pub fn dead_provider(mut self, provider: &str) -> Self {
         self.dead_slots.insert(
             provider.to_owned(),
-            BTreeMap::from([(Option::<String>::None, oauth_failure(refresh_rejected(provider)))]),
+            BTreeMap::from([(
+                Option::<String>::None,
+                oauth_failure(refresh_rejected(provider)),
+            )]),
         );
         self
     }
@@ -137,17 +157,26 @@ impl TestRegistry {
         self.dead_slots
             .entry(provider.to_owned())
             .or_default()
-            .insert(Some(slot.to_owned()), oauth_failure(refresh_rejected(provider)));
+            .insert(
+                Some(slot.to_owned()),
+                oauth_failure(refresh_rejected(provider)),
+            );
         self
     }
 
     pub fn broken_model(mut self, provider: &str, id: &str) -> Self {
-        self.broken_models
-            .insert(selector(provider, id), credential_failure(request_configuration_failed(provider, id)));
+        self.broken_models.insert(
+            selector(provider, id),
+            credential_failure(request_configuration_failed(provider, id)),
+        );
         self
     }
 
-    pub fn with_accounts(mut self, provider: &str, accounts: Vec<CredentialAccountSummary>) -> Self {
+    pub fn with_accounts(
+        mut self,
+        provider: &str,
+        accounts: Vec<CredentialAccountSummary>,
+    ) -> Self {
         self.accounts.insert(provider.to_owned(), accounts);
         self
     }
@@ -159,7 +188,10 @@ impl TestRegistry {
     }
 
     pub fn calls(&self) -> Vec<String> {
-        self.calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -179,7 +211,10 @@ impl ModelRegistry for TestRegistry {
     fn has_configured_auth(&self, _model: &Model) -> bool {
         true
     }
-    fn get_api_key_for_provider<'a>(&'a self, _provider: &'a str) -> ExtensionFuture<'a, Option<String>> {
+    fn get_api_key_for_provider<'a>(
+        &'a self,
+        _provider: &'a str,
+    ) -> ExtensionFuture<'a, Option<String>> {
         Box::pin(async { Ok(None) })
     }
     /// senpi `runtime.getAuth(provider, { slotName })`: the probe's provider scope. A named slot
@@ -189,8 +224,12 @@ impl ModelRegistry for TestRegistry {
         provider: &'a str,
         slot_name: Option<&'a str>,
     ) -> ExtensionFuture<'a, Option<maho_ai::models::AuthResolution>> {
-        let call = slot_name.map_or_else(|| provider.to_owned(), |slot| format!("{provider}#{slot}"));
-        self.calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(call);
+        let call =
+            slot_name.map_or_else(|| provider.to_owned(), |slot| format!("{provider}#{slot}"));
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(call);
         let failure = self
             .dead_slots
             .get(provider)
@@ -211,12 +250,16 @@ impl ModelRegistry for TestRegistry {
     ) -> ExtensionFuture<'a, ResolvedRequestAuth> {
         let key = selector(&model.provider, &model.id);
         let call = slot_name.map_or_else(|| key.clone(), |slot| format!("{key}#{slot}"));
-        self.calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(call);
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(call);
         let failure = self.broken_models.get(&key).cloned();
         Box::pin(async move {
             match failure {
                 Some(error) => Err(error),
-                None => Ok(ResolvedRequestAuth { ambient: false,
+                None => Ok(ResolvedRequestAuth {
+                    ambient: false,
                     auth: maho_ai::models::ProviderAuthResult::default(),
                     extra_body: None,
                     upstream_model_id: None,
@@ -281,7 +324,12 @@ impl ExtensionSessionActions for RecordingSessionActions {
     fn set_label(&self, _: &str, _: Option<&str>) -> Result<(), ExtensionFailure> {
         Err("unused".into())
     }
-    fn execute_tool<'a>(&'a self, name: &'a str, _: JsonValue, _: ExecuteToolOptions) -> ExecuteToolFuture<'a> {
+    fn execute_tool<'a>(
+        &'a self,
+        name: &'a str,
+        _: JsonValue,
+        _: ExecuteToolOptions,
+    ) -> ExecuteToolFuture<'a> {
         Box::pin(async move {
             Err(maho_ext_api::ExecuteToolError {
                 code: maho_ext_api::ExecuteToolErrorCode::UnknownTool,
@@ -319,24 +367,42 @@ impl ExtensionSessionActions for RecordingSessionActions {
         Err("unused".into())
     }
     fn set_session_model(&self, model: Model) -> ExtensionFuture<'_, bool> {
-        self.session_models.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(model);
+        self.session_models
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(model);
         Box::pin(async { Ok(true) })
     }
     fn set_session_thinking_level(&self, _: ThinkingLevel) -> Result<(), ExtensionFailure> {
         Err("unused".into())
     }
     fn set_model_thinking_level(&self, level: ModelThinkingLevel) -> Result<(), ExtensionFailure> {
-        self.durable_thinking_levels.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(level);
+        self.durable_thinking_levels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(level);
         Ok(())
     }
-    fn set_session_model_thinking_level(&self, level: ModelThinkingLevel) -> Result<(), ExtensionFailure> {
-        self.session_thinking_levels.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(level);
+    fn set_session_model_thinking_level(
+        &self,
+        level: ModelThinkingLevel,
+    ) -> Result<(), ExtensionFailure> {
+        self.session_thinking_levels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(level);
         Ok(())
     }
     fn set_session_fast_mode(&self, _: bool) -> Result<(), ExtensionFailure> {
         Err("unused".into())
     }
-    fn exec<'a>(&'a self, _: &'a str, _: &'a [String], _: &'a Path, _: ExecOptions) -> ExtensionFuture<'a, ExecResult> {
+    fn exec<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: &'a Path,
+        _: ExecOptions,
+    ) -> ExtensionFuture<'a, ExecResult> {
         Box::pin(async { Err("unused".into()) })
     }
 }
@@ -346,11 +412,22 @@ pub struct RecordingActions {
     pub messages: Mutex<Vec<CustomMessage>>,
 }
 impl ExtensionActions for RecordingActions {
-    fn send_message(&self, message: CustomMessage, _: SendMessageOptions) -> Result<(), ExtensionFailure> {
-        self.messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(message);
+    fn send_message(
+        &self,
+        message: CustomMessage,
+        _: SendMessageOptions,
+    ) -> Result<(), ExtensionFailure> {
+        self.messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(message);
         Ok(())
     }
-    fn send_user_message(&self, _: maho_ext_api::UserMessageContent, _: SendUserMessageOptions) -> Result<(), ExtensionFailure> {
+    fn send_user_message(
+        &self,
+        _: maho_ext_api::UserMessageContent,
+        _: SendUserMessageOptions,
+    ) -> Result<(), ExtensionFailure> {
         Err("unused".into())
     }
     fn append_entry(&self, _: &str, _: Option<JsonValue>) -> Result<(), ExtensionFailure> {
@@ -363,13 +440,28 @@ impl ExtensionActions for RecordingActions {
 
 struct TestUi;
 impl ExtensionUi for TestUi {
-    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn select<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
-    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> {
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
         Box::pin(async { false })
     }
-    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+    fn input<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
     fn notify(&self, _: &str, _: NotificationType) {}
@@ -397,18 +489,30 @@ pub struct RecordingLogger {
 }
 impl maho_ext_api::ComponentLogger for RecordingLogger {
     fn info(&self, message: &str, _: Option<&JsonValue>) {
-        self.lines.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(format!("info:{message}"));
+        self.lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(format!("info:{message}"));
     }
     fn warn(&self, message: &str, _: Option<&JsonValue>) {
-        self.lines.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(format!("warn:{message}"));
+        self.lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(format!("warn:{message}"));
     }
     fn error(&self, message: &str, _: Option<&JsonValue>) {
-        self.lines.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(format!("error:{message}"));
+        self.lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(format!("error:{message}"));
     }
 }
 impl RecordingLogger {
     pub fn lines(&self) -> Vec<String> {
-        self.lines.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -437,7 +541,9 @@ pub fn context_with(
         has_ui: false,
         cwd: cwd.into(),
         agent_dir,
-        session_manager: Arc::new(TestSession { id: session_id.to_owned() }),
+        session_manager: Arc::new(TestSession {
+            id: session_id.to_owned(),
+        }),
         model_registry: registry,
         model: None,
         thinking_level: None,
@@ -453,7 +559,10 @@ pub fn context_with(
         is_project_trusted_fn: Arc::new(|| true),
         is_compacting_fn: Arc::new(|| false),
         get_system_prompt_fn: Arc::new(|| "base".into()),
-        get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions { cwd: "/tmp".into(), ..Default::default() }),
+        get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions {
+            cwd: "/tmp".into(),
+            ..Default::default()
+        }),
         registered_mcp_servers: Vec::new(),
         update_tool_hook_status: None,
         idle_coordinator: None,
@@ -485,8 +594,24 @@ pub fn harness(
     use maho_ext_api::Extension;
     component.register(&mut api);
     let logger = Arc::new(RecordingLogger::default());
-    let ctx = context_with(registry.clone(), session_id, mode, cwd, agent_dir.clone(), logger.clone());
-    Harness { api, ctx, registry, session_actions, actions, logger, agent_dir, agent_dir_guard: None }
+    let ctx = context_with(
+        registry.clone(),
+        session_id,
+        mode,
+        cwd,
+        agent_dir.clone(),
+        logger.clone(),
+    );
+    Harness {
+        api,
+        ctx,
+        registry,
+        session_actions,
+        actions,
+        logger,
+        agent_dir,
+        agent_dir_guard: None,
+    }
 }
 
 pub fn harness_in(
@@ -509,6 +634,7 @@ impl Harness {
             reason,
             initial_model_provenance: provenance.map(str::to_owned),
             previous_session_file: None,
+            attended: None,
         });
         self.api.registered.handlers[&EventKind::SessionStart][0](&mut event, &self.ctx)
             .await
@@ -516,27 +642,49 @@ impl Harness {
     }
 
     pub fn session_models(&self) -> Vec<Model> {
-        self.session_actions.session_models.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.session_actions
+            .session_models
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub fn session_thinking_levels(&self) -> Vec<ModelThinkingLevel> {
-        self.session_actions.session_thinking_levels.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.session_actions
+            .session_thinking_levels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub fn durable_thinking_levels(&self) -> Vec<ModelThinkingLevel> {
-        self.session_actions.durable_thinking_levels.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.session_actions
+            .durable_thinking_levels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub fn messages(&self) -> Vec<CustomMessage> {
-        self.actions.messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.actions
+            .messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub fn first_details(&self) -> JsonValue {
-        self.messages().first().and_then(|message| message.details.clone()).unwrap_or(JsonValue::Null)
+        self.messages()
+            .first()
+            .and_then(|message| message.details.clone())
+            .unwrap_or(JsonValue::Null)
     }
 
     pub fn first_custom_type(&self) -> String {
-        self.messages().first().map(|message| message.custom_type.clone()).unwrap_or_default()
+        self.messages()
+            .first()
+            .map(|message| message.custom_type.clone())
+            .unwrap_or_default()
     }
 }
 

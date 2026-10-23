@@ -6,11 +6,11 @@ use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_core::keys::KeyName;
 use xkeysym::Keysym;
 
-use super::fake::{keymap, KEY_A, KEY_ALT_L, KEY_ESCAPE, KEY_SHIFT_L};
+use super::fake::{KEY_A, KEY_ALT_L, KEY_ESCAPE, KEY_SHIFT_L, keymap};
 use super::held::{Held, HeldButton, HeldKey, Route};
-use super::keys::{keysym, keysym_variants, modifier_keys, modifiers_mask, Stroke};
+use super::keys::{Stroke, keysym, keysym_variants, modifier_keys, modifiers_mask};
 use super::server::Spot;
-use super::toolkit_filter::{filtering_toolkit, Toolkit};
+use super::toolkit_filter::{Toolkit, filtering_toolkit};
 
 #[test]
 fn key_names_map_to_their_x_keysyms() {
@@ -45,7 +45,10 @@ fn an_unshifted_keysym_wins_and_a_shifted_one_needs_shift() {
 
     assert_eq!(keymap.lookup(Keysym::a.raw()).unwrap(), (KEY_A, false));
     assert_eq!(keymap.lookup(Keysym::A.raw()).unwrap(), (KEY_A, true));
-    assert_eq!(keymap.lookup(Keysym::Meta_L.raw()).unwrap(), (KEY_ALT_L, true));
+    assert_eq!(
+        keymap.lookup(Keysym::Meta_L.raw()).unwrap(),
+        (KEY_ALT_L, true)
+    );
     assert_eq!(
         keymap.lookup(Keysym::F24.raw()).unwrap_err().code,
         ErrorCode::InvalidKey

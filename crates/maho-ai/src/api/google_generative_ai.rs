@@ -503,6 +503,8 @@ fn budget_for_level(budgets: &ThinkingBudgets, level: ResolvedGoogleThinkingLeve
 
 fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
+        failure_source: None,
+        timing: None,
         error_cause: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
@@ -1070,7 +1072,10 @@ fn handle_chunk(
             cache_read: cached_tokens,
             cache_write: 0,
             cache_write_1h: None,
-            reasoning: Some(thought_tokens),
+            reasoning: crate::utils::reported_count::reported_count(
+                usage_metadata.get("thoughtsTokenCount"),
+            )
+            .map(|count| count.max(0.0) as u64),
             total_tokens: usage_metadata
                 .get("totalTokenCount")
                 .and_then(Value::as_u64)

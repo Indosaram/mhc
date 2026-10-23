@@ -341,7 +341,8 @@ mod tests {
     async fn public_session_shutdown_flushes_pending_prompt_before_disposal() {
         let t = tempfile::tempdir().unwrap();
         let (component, messages) = component(t.path());
-        let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
+        let provider = maho_ai::providers::faux::faux_provider(Default::default())
+            .expect("valid faux provider");
         let model = provider.get_model(Some("faux-1")).unwrap();
         let cwd = t.path().to_string_lossy().into_owned();
         provider.set_responses(vec![
@@ -358,7 +359,8 @@ mod tests {
                 providers: Some(vec![provider.provider.clone()]),
                 ..Default::default()
             },
-        ).expect("valid model runtime");
+        )
+        .expect("valid model runtime");
         let session =
             maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
                 cwd: Some(cwd.clone()),
@@ -507,6 +509,7 @@ mod tests {
             reason: SessionReason::Startup,
             initial_model_provenance: None,
             previous_session_file: None,
+            attended: None,
         })
     }
     fn shutdown() -> ExtensionEvent {

@@ -29,6 +29,7 @@ use crate::assistant_terminal_state::{
     should_terminate_assistant_turn,
 };
 use crate::empty_assistant_recovery::with_empty_assistant_recovery;
+use crate::response_timing::create_response_timing_recorder;
 use crate::stream_fn::get_default_stream_fn;
 use crate::tool_arguments::prepare_agent_tool_call_arguments;
 use crate::tool_name_alias::{resolve_call_tool, with_tool_name_correction};
@@ -294,7 +295,7 @@ async fn run_loop(
                 if let Some(restore) = &config.restore_pending_messages {
                     restore(pending_source, pending_messages).await;
                 }
-                emit_run_failure(&config, error, &emit).await;
+                emit_run_failure(&config, error, true, &emit).await;
                 return;
             }
             {
@@ -357,7 +358,7 @@ async fn run_loop(
                 .await;
                 if let Some(update) = update {
                     if let Some(error) = update.failure {
-                        emit_run_failure(&config, error, &emit).await;
+                        emit_run_failure(&config, error, false, &emit).await;
                         return;
                     }
                     current_context = update.context.unwrap_or(current_context);
@@ -745,14 +746,19 @@ fn apply_loop_update(
 pub(crate) async fn emit_run_failure(
     config: &AgentLoopConfig,
     error: String,
+    local: bool,
     emit: &AgentEventSink,
 ) {
-    let failure = assistant_event(&create_terminal_failure_assistant_message(
+    let mut failure_message = create_terminal_failure_assistant_message(
         &config.model,
         StopReason::Error,
         &AgentStreamError::Other { message: error },
         None,
-    ));
+    );
+    if local {
+        failure_message.failure_source = Some(maho_ai::types::AssistantFailureSource::Local);
+    }
+    let failure = assistant_event(&failure_message);
     send(
         emit,
         AgentEvent::MessageStart {
@@ -951,6 +957,7 @@ async fn stream_assistant_response(
     let provider_tool_results: Arc<Mutex<Vec<ToolResultMessage>>> =
         Arc::new(Mutex::new(Vec::new()));
     let mut thinking_timing: BTreeMap<usize, ThinkingTiming> = BTreeMap::new();
+    let mut response_timing = create_response_timing_recorder();
 
     // Dedicated controller for the provider request so the loop can tear the
     // request down itself (idle timeout), not only when the caller aborts.
@@ -1018,6 +1025,7 @@ async fn stream_assistant_response(
             request_options.on_tool_result = Some(sink);
         }
 
+        response_timing.requested();
         let response = pre_stream
             .run(
                 async { stream_function(&config.model, &llm_context, Some(request_options)) },
@@ -1025,188 +1033,196 @@ async fn stream_assistant_response(
             )
             .await?;
         let consumed = async {
-        let result = || async {
-            let mut message = response.result().await.map_err(stream_error)?;
-            message.thinking_level = Some(
-                config
-                    .options
-                    .reasoning
-                    .map(Into::into)
-                    .unwrap_or(maho_ai::types::ModelThinkingLevel::Off),
+            let result = || async {
+                let mut message = response.result().await.map_err(stream_error)?;
+                message.thinking_level = Some(
+                    config
+                        .options
+                        .reasoning
+                        .map(Into::into)
+                        .unwrap_or(maho_ai::types::ModelThinkingLevel::Off),
+                );
+                Ok::<_, AgentStreamError>(message)
+            };
+
+            let idle_error: Arc<dyn Fn(AgentStreamError) + Send + Sync> = {
+                let controller = request_abort_controller.clone();
+                Arc::new(move |error: AgentStreamError| {
+                    controller.abort(Some(AbortReason::new(
+                        "StreamIdleTimeoutError",
+                        error.message(),
+                    )));
+                })
+            };
+            let mut event_reader = AssistantEventReader::new(
+                response.clone(),
+                stream_idle_timeout_ms,
+                request_abort_controller.signal(),
+                Some(idle_error),
+                pre_stream.remaining_start_ms(),
+                signal.clone(),
             );
-            Ok::<_, AgentStreamError>(message)
-        };
+            event_reader.configured_start_timeout_ms =
+                normalize_timeout_ms(config.stream_start_timeout_ms);
 
-        let idle_error: Arc<dyn Fn(AgentStreamError) + Send + Sync> = {
-            let controller = request_abort_controller.clone();
-            Arc::new(move |error: AgentStreamError| {
-                controller.abort(Some(AbortReason::new(
-                    "StreamIdleTimeoutError",
-                    error.message(),
-                )));
-            })
-        };
-        let mut event_reader = AssistantEventReader::new(
-            response.clone(),
-            stream_idle_timeout_ms,
-            request_abort_controller.signal(),
-            Some(idle_error),
-            pre_stream.remaining_start_ms(),
-            signal.clone(),
-        );
-        event_reader.configured_start_timeout_ms =
-            normalize_timeout_ms(config.stream_start_timeout_ms);
-
-        let mut finalized: Option<AssistantMessage> = None;
-        loop {
-            let next = match event_reader.next().await {
-                Ok(next) => next,
-                Err(error) => return Err(error),
-            };
-            let Some(event) = next else { break };
-            let terminal = match &event {
-                AssistantMessageEvent::Done { .. } => Some(TerminalAssistantMessageEvent::Done),
-                AssistantMessageEvent::Error { reason, .. } => {
-                    Some(TerminalAssistantMessageEvent::Error {
-                        reason: match reason {
-                            ErrorReason::Aborted => StopReason::Aborted,
-                            ErrorReason::Error => StopReason::Error,
-                        },
-                    })
-                }
-                _ => None,
-            };
-            if let Some(terminal) = terminal {
-                let final_message = normalize_terminal_assistant_message(result().await?, terminal);
-                finalized = Some(final_message);
-                break;
-            }
-            match &event {
-                AssistantMessageEvent::Start { partial } => {
-                    context.messages.push(assistant_event(partial));
-                    added_partial = true;
-                    send(
-                        emit,
-                        AgentEvent::MessageStart {
-                            message: assistant_event(partial),
-                        },
-                    )
-                    .await;
-                }
-                AssistantMessageEvent::ThinkingStart {
-                    content_index,
-                    partial,
-                } => {
-                    if added_partial {
-                        let timing =
-                            thinking_timing
-                                .entry(*content_index)
-                                .or_insert(ThinkingTiming {
-                                    started_at: now_ms(),
-                                    ended_at: None,
-                                });
-                        let (started_at, ended_at) = (timing.started_at, timing.ended_at);
-                        let mut updated = partial.clone();
-                        set_thinking_block_timing(
-                            &mut updated,
-                            *content_index,
-                            started_at,
-                            ended_at,
-                        );
-                        emit_message_update(emit, context, updated, event).await;
+            let mut finalized: Option<AssistantMessage> = None;
+            loop {
+                let next = match event_reader.next().await {
+                    Ok(next) => next,
+                    Err(error) => return Err(error),
+                };
+                let Some(event) = next else { break };
+                let terminal = match &event {
+                    AssistantMessageEvent::Done { .. } => Some(TerminalAssistantMessageEvent::Done),
+                    AssistantMessageEvent::Error { reason, .. } => {
+                        Some(TerminalAssistantMessageEvent::Error {
+                            reason: match reason {
+                                ErrorReason::Aborted => StopReason::Aborted,
+                                ErrorReason::Error => StopReason::Error,
+                            },
+                        })
                     }
+                    _ => None,
+                };
+                if let Some(terminal) = terminal {
+                    let final_message =
+                        normalize_terminal_assistant_message(result().await?, terminal);
+                    finalized = Some(final_message);
+                    break;
                 }
-                AssistantMessageEvent::ThinkingDelta {
-                    content_index,
-                    partial,
-                    ..
-                } => {
-                    if added_partial {
-                        let mut updated = partial.clone();
-                        if let Some(timing) = thinking_timing.get(content_index) {
-                            set_thinking_block_timing(
-                                &mut updated,
-                                *content_index,
-                                timing.started_at,
-                                timing.ended_at,
-                            );
-                        }
-                        emit_message_update(emit, context, updated, event).await;
+                match &event {
+                    AssistantMessageEvent::Start { partial } => {
+                        response_timing.started();
+                        context.messages.push(assistant_event(partial));
+                        added_partial = true;
+                        send(
+                            emit,
+                            AgentEvent::MessageStart {
+                                message: assistant_event(partial),
+                            },
+                        )
+                        .await;
                     }
-                }
-                AssistantMessageEvent::ThinkingEnd {
-                    content_index,
-                    partial,
-                    ..
-                } => {
-                    if added_partial {
-                        let mut updated = partial.clone();
-                        if let Some(timing) = thinking_timing.get_mut(content_index) {
-                            timing.ended_at = Some(now_ms());
+                    AssistantMessageEvent::ThinkingStart {
+                        content_index,
+                        partial,
+                    } => {
+                        if added_partial {
+                            let timing =
+                                thinking_timing
+                                    .entry(*content_index)
+                                    .or_insert(ThinkingTiming {
+                                        started_at: now_ms(),
+                                        ended_at: None,
+                                    });
                             let (started_at, ended_at) = (timing.started_at, timing.ended_at);
+                            let mut updated = partial.clone();
                             set_thinking_block_timing(
                                 &mut updated,
                                 *content_index,
                                 started_at,
                                 ended_at,
                             );
+                            emit_message_update(emit, context, updated, event).await;
                         }
-                        emit_message_update(emit, context, updated, event).await;
                     }
-                }
-                AssistantMessageEvent::TextStart { partial, .. }
-                | AssistantMessageEvent::TextDelta { partial, .. }
-                | AssistantMessageEvent::TextEnd { partial, .. }
-                | AssistantMessageEvent::ToolcallStart { partial, .. }
-                | AssistantMessageEvent::ToolcallDelta { partial, .. }
-                | AssistantMessageEvent::ToolcallEnd { partial, .. } => {
-                    if added_partial {
-                        emit_message_update(emit, context, partial.clone(), event).await;
+                    AssistantMessageEvent::ThinkingDelta {
+                        content_index,
+                        partial,
+                        ..
+                    } => {
+                        if added_partial {
+                            response_timing.observe(&event);
+                            let mut updated = partial.clone();
+                            if let Some(timing) = thinking_timing.get(content_index) {
+                                set_thinking_block_timing(
+                                    &mut updated,
+                                    *content_index,
+                                    timing.started_at,
+                                    timing.ended_at,
+                                );
+                            }
+                            emit_message_update(emit, context, updated, event).await;
+                        }
                     }
+                    AssistantMessageEvent::ThinkingEnd {
+                        content_index,
+                        partial,
+                        ..
+                    } => {
+                        if added_partial {
+                            let mut updated = partial.clone();
+                            if let Some(timing) = thinking_timing.get_mut(content_index) {
+                                timing.ended_at = Some(now_ms());
+                                let (started_at, ended_at) = (timing.started_at, timing.ended_at);
+                                set_thinking_block_timing(
+                                    &mut updated,
+                                    *content_index,
+                                    started_at,
+                                    ended_at,
+                                );
+                            }
+                            emit_message_update(emit, context, updated, event).await;
+                        }
+                    }
+                    AssistantMessageEvent::TextStart { partial, .. }
+                    | AssistantMessageEvent::TextDelta { partial, .. }
+                    | AssistantMessageEvent::TextEnd { partial, .. }
+                    | AssistantMessageEvent::ToolcallStart { partial, .. }
+                    | AssistantMessageEvent::ToolcallDelta { partial, .. }
+                    | AssistantMessageEvent::ToolcallEnd { partial, .. } => {
+                        if added_partial {
+                            response_timing.observe(&event);
+                            emit_message_update(emit, context, partial.clone(), event).await;
+                        }
+                    }
+                    AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. } => {}
                 }
-                AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. } => {}
             }
-        }
 
-        let final_message = match finalized {
-            Some(final_message) => final_message,
-            None => result().await?,
-        };
-        let mut final_message = final_message;
-        propagate_thinking_timing(&mut final_message, &thinking_timing);
-        if added_partial {
-            if let Some(last) = context.messages.last_mut() {
-                *last = assistant_event(&final_message);
+            let final_message = match finalized {
+                Some(final_message) => final_message,
+                None => result().await?,
+            };
+            let mut final_message = final_message;
+            propagate_thinking_timing(&mut final_message, &thinking_timing, &response_timing);
+            if added_partial {
+                if let Some(last) = context.messages.last_mut() {
+                    *last = assistant_event(&final_message);
+                }
+            } else {
+                context.messages.push(assistant_event(&final_message));
+                send(
+                    emit,
+                    AgentEvent::MessageStart {
+                        message: assistant_event(&final_message),
+                    },
+                )
+                .await;
             }
-        } else {
-            context.messages.push(assistant_event(&final_message));
             send(
                 emit,
-                AgentEvent::MessageStart {
+                AgentEvent::MessageEnd {
                     message: assistant_event(&final_message),
                 },
             )
             .await;
+            Ok(StreamedAssistantResponse {
+                message: final_message,
+                provider_tool_results: provider_tool_results
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone(),
+            })
         }
-        send(
-            emit,
-            AgentEvent::MessageEnd {
-                message: assistant_event(&final_message),
-            },
-        )
         .await;
-        Ok(StreamedAssistantResponse {
-            message: final_message,
-            provider_tool_results: provider_tool_results
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone(),
-        })
-        }.await;
         let cancelled = response.cancel().await.map_err(stream_error);
         match consumed {
             Err(error) => Err(error),
-            Ok(result) => { cancelled?; Ok(result) }
+            Ok(result) => {
+                cancelled?;
+                Ok(result)
+            }
         }
     }
     .await;
@@ -1268,11 +1284,13 @@ async fn stream_assistant_response(
                     error_cause: partial.as_ref().and_then(|message| message.error_cause),
                     provider_diagnostic: None,
                     abort_source: None,
+                    failure_source: None,
                     raw_stop_reason: None,
                     end_turn: None,
+                    timing: None,
                     timestamp: partial.as_ref().map(|m| m.timestamp).unwrap_or_else(now_ms),
                 };
-                propagate_thinking_timing(&mut final_message, &thinking_timing);
+                propagate_thinking_timing(&mut final_message, &thinking_timing, &response_timing);
                 if added_partial {
                     if let Some(last) = context.messages.last_mut() {
                         *last = assistant_event(&final_message);
@@ -1321,7 +1339,7 @@ async fn stream_assistant_response(
                     &error,
                     partial_message,
                 );
-                propagate_thinking_timing(&mut final_message, &thinking_timing);
+                propagate_thinking_timing(&mut final_message, &thinking_timing, &response_timing);
                 if added_partial {
                     if let Some(last) = context.messages.last_mut() {
                         *last = assistant_event(&final_message);
@@ -1369,7 +1387,7 @@ async fn stream_assistant_response(
                 &error,
                 None,
             );
-            propagate_thinking_timing(&mut final_message, &thinking_timing);
+            propagate_thinking_timing(&mut final_message, &thinking_timing, &response_timing);
             context.messages.push(assistant_event(&final_message));
             StreamedAssistantResponse {
                 message: final_message,
@@ -1416,7 +1434,9 @@ fn set_thinking_block_timing(
 fn propagate_thinking_timing(
     message: &mut AssistantMessage,
     thinking_timing: &BTreeMap<usize, ThinkingTiming>,
+    response_timing: &crate::response_timing::ResponseTimingRecorder,
 ) {
+    response_timing.stamp(message);
     if thinking_timing.is_empty() {
         return;
     }
@@ -2089,7 +2109,6 @@ pub use crate::types::AgentToolCallOutcome;
 
 type FinalizedToolCallOutcome = AgentToolCallOutcome;
 
-
 pub struct RunToolCallOptions {
     pub assistant_message: AssistantMessage,
     pub context: Arc<AgentContext>,
@@ -2462,8 +2481,9 @@ async fn execute_prepared_tool_call_with_update(
             result: create_error_tool_result("Tool execution aborted"),
             is_error: true,
         },
-        Some(Ok(result)) => {
-            ExecutedToolCallOutcome { is_error: result.is_error == Some(true), result }
+        Some(Ok(result)) => ExecutedToolCallOutcome {
+            is_error: result.is_error == Some(true),
+            result,
         },
         Some(Err(_)) => ExecutedToolCallOutcome {
             result: create_error_tool_result("Tool execution was cancelled"),
@@ -2846,21 +2866,35 @@ mod audit_gap_tests {
         let stream: StreamFn = Arc::new(move |_, _, _| {
             let stream = AssistantMessageEventStream::assistant();
             let released = released.clone();
-            stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
-                released.store(1, Ordering::SeqCst);
-                Ok(())
-            })));
+            stream.set_cancellation_handler(Box::new(move || {
+                Box::pin(async move {
+                    released.store(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            }));
             stream.push(AssistantMessageEvent::Done {
                 reason: maho_ai::types::DoneReason::Stop,
                 message: response(StopReason::Stop),
             });
             stream
         });
-        let config = AgentLoopConfig::new(crate::agent::default_model(), crate::types::identity_convert_to_llm());
-        tokio::time::timeout(Duration::from_secs(1), run_agent_loop(
-            vec![user()], AgentContext::default(), config,
-            sink(Arc::new(Mutex::new(Vec::new()))), None, Some(stream),
-        )).await.expect("loop acknowledges closure");
+        let config = AgentLoopConfig::new(
+            crate::agent::default_model(),
+            crate::types::identity_convert_to_llm(),
+        );
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            run_agent_loop(
+                vec![user()],
+                AgentContext::default(),
+                config,
+                sink(Arc::new(Mutex::new(Vec::new()))),
+                None,
+                Some(stream),
+            ),
+        )
+        .await
+        .expect("loop acknowledges closure");
         assert_eq!(closed.load(Ordering::SeqCst), 1);
     }
 
@@ -3220,13 +3254,28 @@ mod audit_gap_tests {
 
     #[test]
     fn tool_messages_copy_only_producer_supplied_nested_records() {
-        let nested_calls = Some(maho_ai::types::NestedToolCalls { calls: Vec::new(), complete: false });
+        let nested_calls = Some(maho_ai::types::NestedToolCalls {
+            calls: Vec::new(),
+            complete: false,
+        });
         let mut result = AgentToolResult::text("done");
         result.nested_calls = nested_calls.clone();
         let finalized = FinalizedToolCallOutcome {
-            tool_call: ToolCall { id: "root".into(), name: "read".into(), arguments: Default::default(), incomplete: None, error_message: None, thought_signature: None, namespace: None },
-            result, is_error: false,
+            tool_call: ToolCall {
+                id: "root".into(),
+                name: "read".into(),
+                arguments: Default::default(),
+                incomplete: None,
+                error_message: None,
+                thought_signature: None,
+                namespace: None,
+            },
+            result,
+            is_error: false,
         };
-        assert_eq!(create_tool_result_message(&finalized).nested_calls, nested_calls);
+        assert_eq!(
+            create_tool_result_message(&finalized).nested_calls,
+            nested_calls
+        );
     }
 }

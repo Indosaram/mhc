@@ -8,6 +8,7 @@ use super::{
     open::{BatchBinding, OpenOutcome, open_batch},
     rejection::RejectionCounter,
     signatures::*,
+    strict_ed25519::strict_ed25519_precheck,
     vendor::sync_format::{
         object::verify_object, object_types::*, snapshot::import_snapshot as verify_snapshot,
     },
@@ -78,6 +79,12 @@ pub fn import_snapshot(
                 true,
             )
         })?;
+        let author_key =
+            decode_b64(&snapshot.author.signing_public_key, Some(32)).unwrap_or_default();
+        let record_sig = decode_b64(&snapshot.record_sig, Some(64)).unwrap_or_default();
+        if strict_ed25519_precheck(&author_key, &record_sig).is_err() {
+            return Err(("bad_signature", true));
+        }
         let epoch = headers.first().map_or(0, |h| h.epoch);
         let key = decode_b64(&snapshot.author.signing_public_key, Some(32))
             .ok_or(("chunk_refused", true))?;

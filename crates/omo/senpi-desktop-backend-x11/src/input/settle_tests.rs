@@ -7,10 +7,10 @@ use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_core::types::Target;
 use x11rb::protocol::xproto::Window;
 
+use super::X11Input;
 use super::fake::Call;
 use super::server::FakeInput;
 use super::tests::input;
-use super::X11Input;
 
 const TERMINAL: Window = 0x40_0001;
 const EDITOR: Window = 0x80_0001;
@@ -22,8 +22,14 @@ const SCROLL_DOWN: PointerEvent = PointerEvent::Scroll {
     dy: 120.0,
 };
 
-fn scroll_terminal(input: &mut X11Input<super::fake::FakeInputServer>) -> senpi_desktop_core::error::CoreResult<()> {
-    input.pointer(&Target::Window(TERMINAL.to_string()), &SCROLL_DOWN, DeliveryMode::Foreground)
+fn scroll_terminal(
+    input: &mut X11Input<super::fake::FakeInputServer>,
+) -> senpi_desktop_core::error::CoreResult<()> {
+    input.pointer(
+        &Target::Window(TERMINAL.to_string()),
+        &SCROLL_DOWN,
+        DeliveryMode::Foreground,
+    )
 }
 
 const fn wheel(press: bool) -> Call {
@@ -73,7 +79,11 @@ fn a_pointer_that_stays_held_fails_the_scroll_as_unconfirmed_and_still_restores_
 
     // Then: no success is reported, and the previous window is active again
     assert_eq!(error.code, ErrorCode::InputFailed);
-    assert!(error.message.contains("delivery is unconfirmed"), "{}", error.message);
+    assert!(
+        error.message.contains("delivery is unconfirmed"),
+        "{}",
+        error.message
+    );
     assert_eq!(input.server.calls().last(), Some(&Call::Activate(EDITOR)));
 }
 
@@ -88,9 +98,18 @@ fn a_point_another_window_keeps_covering_gets_no_button() {
 
     // Then: no wheel click was sent to the covering window
     assert_eq!(error.code, ErrorCode::InputFailed);
-    assert!(error.message.contains("is not over window"), "{}", error.message);
+    assert!(
+        error.message.contains("is not over window"),
+        "{}",
+        error.message
+    );
     let calls = input.server.calls();
-    assert!(!calls.iter().any(|call| matches!(call, Call::Fake(FakeInput::Button { .. }))), "{calls:?}");
+    assert!(
+        !calls
+            .iter()
+            .any(|call| matches!(call, Call::Fake(FakeInput::Button { .. }))),
+        "{calls:?}"
+    );
     assert_eq!(calls.last(), Some(&Call::Activate(EDITOR)));
 }
 

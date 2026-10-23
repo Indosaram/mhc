@@ -29,7 +29,9 @@ pub struct RadiusGatewayConfig {
 }
 
 fn is_radius_gateway_model(value: &Value) -> bool {
-    let Some(model) = value.as_object() else { return false };
+    let Some(model) = value.as_object() else {
+        return false;
+    };
     model.get("id").is_some_and(Value::is_string)
         && model.get("name").is_some_and(Value::is_string)
         && model.get("reasoning").is_some_and(Value::is_boolean)
@@ -52,9 +54,17 @@ fn gateway_model(value: &Value) -> RadiusGatewayModel {
         input: model
             .get("input")
             .and_then(Value::as_array)
-            .map(|input| input.iter().filter_map(|entry| serde_json::from_value(entry.clone()).ok()).collect())
+            .map(|input| {
+                input
+                    .iter()
+                    .filter_map(|entry| serde_json::from_value(entry.clone()).ok())
+                    .collect()
+            })
             .unwrap_or_default(),
-        cost: model.get("cost").and_then(|cost| serde_json::from_value(cost.clone()).ok()).unwrap_or_default(),
+        cost: model
+            .get("cost")
+            .and_then(|cost| serde_json::from_value(cost.clone()).ok())
+            .unwrap_or_default(),
         context_window: model["contextWindow"].as_u64().unwrap_or_default(),
         max_tokens: model["maxTokens"].as_u64().unwrap_or_default(),
         raw: model.clone(),
@@ -67,7 +77,11 @@ pub fn sanitize_radius_gateway_config(config: &Value) -> Option<RadiusGatewayCon
     let models = config.get("models")?.as_array()?;
     Some(RadiusGatewayConfig {
         base_url,
-        models: models.iter().filter(|model| is_radius_gateway_model(model)).map(gateway_model).collect(),
+        models: models
+            .iter()
+            .filter(|model| is_radius_gateway_model(model))
+            .map(gateway_model)
+            .collect(),
     })
 }
 
@@ -81,11 +95,16 @@ pub fn normalize_radius_gateway_url(value: &str) -> String {
     with_scheme.trim_end_matches('/').to_owned()
 }
 
-pub fn get_radius_credential_config(credential: Option<&Credential>) -> Option<RadiusGatewayConfig> {
+pub fn get_radius_credential_config(
+    credential: Option<&Credential>,
+) -> Option<RadiusGatewayConfig> {
     sanitize_radius_gateway_config(credential?.get("gatewayConfig")?)
 }
 
-pub fn get_radius_models_from_config(provider_id: &str, config: &RadiusGatewayConfig) -> Vec<Model> {
+pub fn get_radius_models_from_config(
+    provider_id: &str,
+    config: &RadiusGatewayConfig,
+) -> Vec<Model> {
     config
         .models
         .iter()
@@ -94,12 +113,17 @@ pub fn get_radius_models_from_config(provider_id: &str, config: &RadiusGatewayCo
             spread.insert("api".to_owned(), Value::String("pi-messages".to_owned()));
             spread.insert("provider".to_owned(), Value::String(provider_id.to_owned()));
             spread.insert("baseUrl".to_owned(), Value::String(config.base_url.clone()));
-            serde_json::from_value::<Model>(Value::Object(spread)).unwrap_or_else(|_| typed_radius_model(provider_id, config, model))
+            serde_json::from_value::<Model>(Value::Object(spread))
+                .unwrap_or_else(|_| typed_radius_model(provider_id, config, model))
         })
         .collect()
 }
 
-fn typed_radius_model(provider_id: &str, config: &RadiusGatewayConfig, model: &RadiusGatewayModel) -> Model {
+fn typed_radius_model(
+    provider_id: &str,
+    config: &RadiusGatewayConfig,
+    model: &RadiusGatewayModel,
+) -> Model {
     Model {
         prompt_cache: None,
         supports_assistant_prefill: None,
@@ -123,6 +147,7 @@ fn typed_radius_model(provider_id: &str, config: &RadiusGatewayConfig, model: &R
         recover_text_tool_calls: None,
         compat: None,
         input_limits: None,
+        deprecated: None,
     }
 }
 
@@ -163,8 +188,15 @@ pub async fn load_radius_gateway_config(
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("Could not load Radius config from {gateway}: {status}: {}", truncate_http_body(&body)));
+        return Err(format!(
+            "Could not load Radius config from {gateway}: {status}: {}",
+            truncate_http_body(&body)
+        ));
     }
-    let value: Value = response.json().await.map_err(|error| format!("Invalid Radius config from {gateway}: {error}"))?;
-    sanitize_radius_gateway_config(&value).ok_or_else(|| format!("Invalid Radius config from {gateway}"))
+    let value: Value = response
+        .json()
+        .await
+        .map_err(|error| format!("Invalid Radius config from {gateway}: {error}"))?;
+    sanitize_radius_gateway_config(&value)
+        .ok_or_else(|| format!("Invalid Radius config from {gateway}"))
 }

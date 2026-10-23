@@ -1,4 +1,5 @@
 mod session;
+mod session_input;
 mod session_threads;
 mod signals;
 
@@ -48,5 +49,9 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod session_input_pty_tests;
+#[cfg(test)]
+mod session_input_tests;
 #[cfg(test)]
 mod session_tests;

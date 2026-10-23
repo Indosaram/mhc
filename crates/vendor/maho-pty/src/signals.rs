@@ -42,7 +42,11 @@ pub(crate) fn send_signal(
     if let Some(pid) = process_group.filter(|&pid| pid > 0) {
         const PROCESS_TERMINATE: u32 = 0x0001;
         unsafe extern "system" {
-            fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> *mut std::ffi::c_void;
+            fn OpenProcess(
+                desired_access: u32,
+                inherit_handle: i32,
+                process_id: u32,
+            ) -> *mut std::ffi::c_void;
             fn TerminateProcess(process: *mut std::ffi::c_void, exit_code: u32) -> i32;
             fn CloseHandle(object: *mut std::ffi::c_void) -> i32;
         }

@@ -7,7 +7,7 @@ use senpi_desktop_core::types::DesktopWindow;
 use super::composite;
 use super::lib::loadable;
 use super::pixels::to_rgba;
-use super::pod::{enum_format, parse_format, Negotiated, VideoFormat};
+use super::pod::{Negotiated, VideoFormat, enum_format, parse_format};
 use super::screencast::MonitorStream;
 use super::window::{crop_window, window_crop};
 
@@ -139,7 +139,10 @@ fn monitors_composite_at_their_logical_positions_with_their_own_scale() {
     let (canvas, displays) = (cast.image, cast.displays);
     assert_eq!((canvas.width(), canvas.height()), (8, 2));
     assert_eq!(
-        displays.iter().map(|d| (d.pixel_x, d.scale)).collect::<Vec<_>>(),
+        displays
+            .iter()
+            .map(|d| (d.pixel_x, d.scale))
+            .collect::<Vec<_>>(),
         vec![(0, 1.0), (4, 2.0)]
     );
     assert_eq!(
@@ -191,14 +194,20 @@ fn scaled_monitor_maps_screenshot_pixel_to_logical_point() {
     };
     let displays = composite(&[(monitor, RgbaImage::new(2560, 2880))], None).displays;
     let frame = FrameGeometry::for_displays(&displays);
-    assert_eq!(frame.map_point(1280.0, 1440.0, None).unwrap(), (640.0, 720.0));
+    assert_eq!(
+        frame.map_point(1280.0, 1440.0, None).unwrap(),
+        (640.0, 720.0)
+    );
 }
 
 #[test]
 fn monitor_offset_is_added_to_logical_point() {
     let (_, displays) = hidpi_monitor();
     let frame = FrameGeometry::for_displays(&displays);
-    assert_eq!(frame.map_point(1280.0, 1440.0, None).unwrap(), (740.0, 770.0));
+    assert_eq!(
+        frame.map_point(1280.0, 1440.0, None).unwrap(),
+        (740.0, 770.0)
+    );
 }
 
 #[test]
@@ -228,7 +237,13 @@ fn window_crop_rejects_window_outside_monitor() {
 fn capture_accepts_non_numeric_wayland_window_id() {
     let (canvas, displays) = hidpi_monitor();
     let id = "atspi::1.31:/org/a11y/atspi/accessible/1";
-    let (image, _) = crop_window(&canvas, &displays, vec![portal_window(id, 100, 50, 32, 24)], id).unwrap();
+    let (image, _) = crop_window(
+        &canvas,
+        &displays,
+        vec![portal_window(id, 100, 50, 32, 24)],
+        id,
+    )
+    .unwrap();
     assert_eq!(image.dimensions(), (64, 48));
 }
 

@@ -1,24 +1,40 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::{FakeClock, StopPathId, StopSource, HEARTBEAT_FRESH_MS};
+use crate::{FakeClock, HEARTBEAT_FRESH_MS, StopPathId, StopSource};
 
 struct View(bool);
 impl PermissionGate for View {
-    fn input_granted(&self) -> bool { self.0 }
+    fn input_granted(&self) -> bool {
+        self.0
+    }
 }
 impl FrameContext for View {
-    fn screen_locked(&self) -> LockState { LockState::Unlocked }
-    fn is_latest(&self, _: &FrameId) -> bool { true }
+    fn screen_locked(&self) -> LockState {
+        LockState::Unlocked
+    }
+    fn is_latest(&self, _: &FrameId) -> bool {
+        true
+    }
 }
 
 fn check(supervisor: &Supervisor, allow_relay: bool, granted: bool) -> Result<(), GateError> {
-    gate(&MutatingAction::Click, supervisor, &StopPolicy { allow_host_relay_only: allow_relay },
-        &View(granted), &View(granted), None)
+    gate(
+        &MutatingAction::Click,
+        supervisor,
+        &StopPolicy {
+            allow_host_relay_only: allow_relay,
+        },
+        &View(granted),
+        &View(granted),
+        None,
+    )
 }
 
 fn denied() -> GateError {
-    GateError::PermissionDenied { permission: TccPermission::Accessibility }
+    GateError::PermissionDenied {
+        permission: TccPermission::Accessibility,
+    }
 }
 
 fn failed_global(relay: bool) -> (Supervisor, Arc<FakeClock>) {
@@ -68,14 +84,22 @@ fn suspended_still_precedes_accessibility_denial() {
 fn stale_accepted_relay_still_reports_heartbeat_stale() {
     let (supervisor, clock) = failed_global(true);
     clock.advance(HEARTBEAT_FRESH_MS + 1);
-    assert_eq!(check(&supervisor, true, true),
-        Err(GateError::StopPathUnavailable { reason: StopPathReason::HeartbeatStale }));
+    assert_eq!(
+        check(&supervisor, true, true),
+        Err(GateError::StopPathUnavailable {
+            reason: StopPathReason::HeartbeatStale
+        })
+    );
 }
 
 #[test]
 fn unavailable_listener_retains_its_generic_classification() {
     let (supervisor, _) = failed_global(true);
     supervisor.note_global_failure(Some(StopPathFailure::Unavailable));
-    assert_eq!(check(&supervisor, false, true),
-        Err(GateError::StopPathUnavailable { reason: StopPathReason::HostRelayNotAllowed }));
+    assert_eq!(
+        check(&supervisor, false, true),
+        Err(GateError::StopPathUnavailable {
+            reason: StopPathReason::HostRelayNotAllowed
+        })
+    );
 }
