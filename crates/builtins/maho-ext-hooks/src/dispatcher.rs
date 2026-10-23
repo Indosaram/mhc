@@ -35,18 +35,19 @@ where F:Fn(ExecutableHookHandler)->Fut,Fut:std::future::Future<Output=std::io::R
         if let Some(reason)=reason {skipped.push(HookDispatchSkipped {diagnostics:if reason=="unsafe" {diagnostics} else {Vec::new()},handler:handler.clone(),reason,record});} else {executable_handlers.push(handler.clone());}
     }
     let mut pending=futures::stream::FuturesUnordered::new();
-    let progress=std::sync::Arc::new(std::sync::Mutex::new((Vec::<(usize,ExecutableHookHandler)>::new(),status,0usize)));
+    // PERF-DIVERGENCE(senpi hooks dispatcher): upstream hands the status callback a fresh copy of every running handler on each start and completion (O(n^2) clones); we keep one running list and pass a borrowed slice. Callback inputs are identical.
+    let progress=std::sync::Arc::new(std::sync::Mutex::new((Vec::<usize>::new(),Vec::<ExecutableHookHandler>::new(),status,0usize)));
     let mut starts=Vec::new();
     for (index,handler) in executable_handlers.iter().cloned().enumerate() {
-        {let mut progress=progress.lock().expect("hook progress");progress.0.push((index,handler.clone()));let running=progress.0.iter().map(|(_,handler)|handler.clone()).collect::<Vec<_>>();(progress.1)(&running);}
+        {let mut progress=progress.lock().expect("hook progress");progress.0.push(index);progress.1.push(handler.clone());let progress=&mut *progress;(progress.2)(&progress.1);}
         let future=runner(handler.clone());starts.push((index,handler,future));
     }
     for (index,handler,future) in starts {
         let progress=progress.clone();
         pending.push(tokio::spawn(async move {
             let run=future.await;
-            let mut progress=progress.lock().expect("hook progress");progress.0.retain(|(running,_)|*running!=index);let running=progress.0.iter().map(|(_,handler)|handler.clone()).collect::<Vec<_>>();(progress.1)(&running);
-            let completion_index=progress.2;if run.is_ok() {progress.2+=1;}
+            let mut progress=progress.lock().expect("hook progress");if let Some(position)=progress.0.iter().position(|running|*running==index) {progress.0.remove(position);progress.1.remove(position);}let progress=&mut *progress;(progress.2)(&progress.1);
+            let completion_index=progress.3;if run.is_ok() {progress.3+=1;}
             (index,completion_index,handler,run)
         }));
     }

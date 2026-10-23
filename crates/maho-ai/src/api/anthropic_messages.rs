@@ -591,17 +591,15 @@ fn next_line_break_index(text: &str) -> Option<usize> {
     }
 }
 
-fn consume_line(text: &str) -> Option<(String, String)> {
+// PERF-DIVERGENCE(senpi anthropic.ts): upstream slices the remaining buffer string per line (O(1) in JS); this port returns (line_end, next) offsets instead of copying the rest of the buffer per line. Lines and order are identical.
+fn consume_line(text: &str) -> Option<(usize, usize)> {
     let line_break_index = next_line_break_index(text)?;
     let mut next_index = line_break_index + 1;
     if text.as_bytes()[line_break_index] == b'\r' && text.as_bytes().get(next_index) == Some(&b'\n')
     {
         next_index += 1;
     }
-    Some((
-        text[..line_break_index].to_owned(),
-        text[next_index..].to_owned(),
-    ))
+    Some((line_break_index, next_index))
 }
 
 /// The incremental SSE decoder `iterateSseMessages` drives: feed bytes, take whole events.
@@ -615,24 +613,30 @@ impl SseDecoder {
     fn push_bytes(&mut self, chunk: &[u8]) -> Vec<ServerSentEvent> {
         self.buffer.push_str(&String::from_utf8_lossy(chunk));
         let mut events = Vec::new();
-        while let Some((line, rest)) = consume_line(&self.buffer) {
-            self.buffer = rest;
-            if let Some(event) = decode_sse_line(&line, &mut self.state) {
+        // PERF-DIVERGENCE(senpi anthropic.ts): upstream reassigns the buffer to its remainder per line; this port scans by offset and drains the consumed prefix once. Events are identical.
+        let mut pos = 0;
+        while let Some((end, next)) = consume_line(&self.buffer[pos..]) {
+            if let Some(event) = decode_sse_line(&self.buffer[pos..pos + end], &mut self.state) {
                 events.push(event);
             }
+            pos += next;
         }
+        self.buffer.drain(..pos);
         events
     }
 
     /// The stream's tail: a final unterminated line, then the trailing event.
     fn finish(&mut self) -> Vec<ServerSentEvent> {
         let mut events = Vec::new();
-        while let Some((line, rest)) = consume_line(&self.buffer) {
-            self.buffer = rest;
-            if let Some(event) = decode_sse_line(&line, &mut self.state) {
+        // PERF-DIVERGENCE(senpi anthropic.ts): upstream reassigns the buffer to its remainder per line; this port scans by offset and drains the consumed prefix once. Events are identical.
+        let mut pos = 0;
+        while let Some((end, next)) = consume_line(&self.buffer[pos..]) {
+            if let Some(event) = decode_sse_line(&self.buffer[pos..pos + end], &mut self.state) {
                 events.push(event);
             }
+            pos += next;
         }
+        self.buffer.drain(..pos);
         if !self.buffer.is_empty() {
             let line = std::mem::take(&mut self.buffer);
             if let Some(event) = decode_sse_line(&line, &mut self.state) {

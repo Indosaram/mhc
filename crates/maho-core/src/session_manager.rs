@@ -254,6 +254,11 @@ fn build_entry_index(entries: &[Value]) -> HashMap<&str, &Value> {
 }
 
 pub fn build_session_path(entries: &[Value], leaf_id: Option<&str>) -> Vec<Value> {
+    session_path_refs(entries, leaf_id).into_iter().cloned().collect()
+}
+
+// PERF-DIVERGENCE(senpi session-manager.ts): upstream walks the path once keeping object references; the public Vec<Value> wrappers still clone, but internal context building borrows the path instead of deep-cloning every entry on it (twice). Same entries, same order.
+fn session_path_refs<'a>(entries: &'a [Value], leaf_id: Option<&str>) -> Vec<&'a Value> {
     let index = build_entry_index(entries);
     let mut leaf = match leaf_id {
         None => entries.last(),
@@ -262,7 +267,7 @@ pub fn build_session_path(entries: &[Value], leaf_id: Option<&str>) -> Vec<Value
     };
     let mut path = Vec::new();
     while let Some(current) = leaf {
-        path.push(current.clone());
+        path.push(current);
         leaf = current
             .get("parentId")
             .and_then(Value::as_str)
@@ -284,7 +289,7 @@ fn normalize_provider(provider: &str) -> String {
     maho_ai::legacy_provider_ids::normalize_provider_id(provider)
 }
 
-fn get_session_context_settings(path: &[Value]) -> ContextSettings {
+fn get_session_context_settings(path: &[&Value]) -> ContextSettings {
     let mut thinking_level = "off".to_owned();
     let mut thinking_selection: Option<Value> = None;
     let mut configuration_update: Option<Value> = None;
@@ -294,7 +299,7 @@ fn get_session_context_settings(path: &[Value]) -> ContextSettings {
     let mut pre_fallback_thinking_level = thinking_level.clone();
     let mut pre_fallback_thinking_selection: Option<Value> = None;
 
-    for entry in path {
+    for entry in path.iter().copied() {
         match entry_type(entry) {
             "thinking_level_change" => {
                 thinking_level = entry
@@ -484,11 +489,18 @@ fn parse_entry_timestamp(entry: &Value) -> i64 {
 }
 
 pub fn build_context_entries(entries: &[Value], leaf_id: Option<&str>) -> Vec<Value> {
-    let path = build_session_path(entries, leaf_id);
-    let mut compaction: Option<Value> = None;
-    for entry in &path {
+    context_entry_refs(session_path_refs(entries, leaf_id))
+        .into_iter()
+        .cloned()
+        .collect()
+}
+
+// PERF-DIVERGENCE(senpi session-manager.ts): upstream selects compaction-aware entries from shared object references; this borrows from the path instead of cloning each selected entry. Same entries, same order.
+fn context_entry_refs(path: Vec<&Value>) -> Vec<&Value> {
+    let mut compaction: Option<&Value> = None;
+    for entry in path.iter().copied() {
         if entry_type(entry) == "compaction" {
-            compaction = Some(entry.clone());
+            compaction = Some(entry);
         }
     }
     let Some(compaction) = compaction else {
@@ -503,39 +515,38 @@ pub fn build_context_entries(entries: &[Value], leaf_id: Option<&str>) -> Vec<Va
     let first_kept_entry_id = compaction
         .get("firstKeptEntryId")
         .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
+        .unwrap_or_default();
     let mut context_entries = vec![compaction];
     let mut found_first_kept = false;
-    for entry in path.iter().take(compaction_index) {
+    for entry in path.iter().copied().take(compaction_index) {
         if entry_type(entry) == "compaction" {
             continue;
         }
-        if entry.get("id").and_then(Value::as_str) == Some(first_kept_entry_id.as_str()) {
+        if entry.get("id").and_then(Value::as_str) == Some(first_kept_entry_id) {
             found_first_kept = true;
         }
         if found_first_kept {
-            context_entries.push(entry.clone());
+            context_entries.push(entry);
         }
     }
-    context_entries.extend(path.iter().skip(compaction_index + 1).cloned());
+    context_entries.extend(path.iter().copied().skip(compaction_index + 1));
     context_entries
 }
 
 pub fn build_session_context(entries: &[Value], leaf_id: Option<&str>) -> SessionContext {
-    let path = build_session_path(entries, leaf_id);
+    // PERF-DIVERGENCE(senpi session-manager.ts): upstream builds the path once; the previous port built and deep-cloned it twice, this builds it once as references shared by the settings scan and the context-entry selection. Output is identical.
+    let path = session_path_refs(entries, leaf_id);
     let settings = get_session_context_settings(&path);
-    let (entry_ids, messages) = build_context_entries(entries, leaf_id)
-        .iter()
+    let (entry_ids, messages) = context_entry_refs(path)
+        .into_iter()
         .flat_map(|entry| {
             let entry_id = entry
                 .get("id")
                 .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
+                .unwrap_or_default();
             session_entry_to_context_messages(entry)
                 .into_iter()
-                .map(move |message| (entry_id.clone(), message))
+                .map(move |message| (entry_id.to_owned(), message))
         })
         .unzip();
     SessionContext {
@@ -1452,13 +1463,14 @@ impl SessionManager {
         crate::session_write_reservation::reserve_session_write(&session_file);
         let mut content = String::new();
         for entry in &self.file_entries {
-            content.push_str(&serialize_entry(&self.resident_store.materialize(entry)));
+            // PERF-DIVERGENCE(senpi session-manager.ts): upstream serializes each stored object directly; this borrows entries without resident tokens instead of deep-cloning them through materialize. Serialized text is identical.
+            content.push_str(&serialize_entry(&self.resident_store.materialize_cow(entry)));
             content.push('\n');
         }
         let _ = std::fs::write(&session_file, content);
     }
 
-    fn persist_entry(&mut self, entry: &Value) -> std::io::Result<()> {
+    fn persist_entry(&mut self, order: usize) -> std::io::Result<()> {
         self.check_session_hold().map_err(std::io::Error::other)?;
         if !self.persist {
             return Ok(());
@@ -1470,6 +1482,11 @@ impl SessionManager {
             .assert_owned(&session_file)
             .map_err(std::io::Error::other)?;
         crate::session_write_reservation::reserve_session_write(&session_file);
+        // PERF-DIVERGENCE(senpi session-manager.ts _persist): upstream scans every entry for an assistant message on each append; once flushed both branches below append the line regardless, so this skips the O(n) scan (and the materialize) then. Bytes written are identical.
+        if self.flushed {
+            let persisted_entry = self.resident_store.materialize_cow(&self.file_entries[order]);
+            return append_line(&session_file, &persisted_entry);
+        }
         let has_assistant = self.file_entries.iter().any(|candidate| {
             entry_type(candidate) == "message"
                 && candidate
@@ -1478,29 +1495,20 @@ impl SessionManager {
                     .and_then(Value::as_str)
                     == Some("assistant")
         });
-        let persisted_entry = self.resident_store.materialize(entry);
-        if !has_assistant {
-            if self.flushed {
-                append_line(&session_file, &persisted_entry)?;
-            }
-            return Ok(());
-        }
-        if !self.flushed {
+        if has_assistant {
             self.rewrite_file();
             self.flushed = true;
-        } else {
-            append_line(&session_file, &persisted_entry)?;
         }
         Ok(())
     }
 
     fn append_entry(&mut self, entry: Value) {
-        let entry = self.resident_store.externalize(&entry);
+        // PERF-DIVERGENCE(senpi session-manager.ts): upstream keeps one object per entry; the port deep-cloned each appended entry for externalize, for the push, and again for persist, so this moves the entry through externalize into file_entries and persists from there. Stored and written values are identical.
+        let entry = self.resident_store.externalize_owned(entry);
         let id = entry.get("id").and_then(Value::as_str).map(str::to_owned);
-        self.file_entries.push(entry.clone());
         self.invalidate_entries_cache();
         if let Some(id) = id {
-            self.by_id.insert(id.clone(), self.file_entries.len() - 1);
+            self.by_id.insert(id.clone(), self.file_entries.len());
             self.leaf_id = Some(id);
         }
         self.full_entry_count += 1;
@@ -1539,7 +1547,8 @@ impl SessionManager {
         }
         // senpi's appendFileSync throws to the appending caller; the append_* surface here returns
         // the entry rather than a Result, so a failed write is reported instead of dropped.
-        if let Err(error) = self.persist_entry(&entry) {
+        self.file_entries.push(entry);
+        if let Err(error) = self.persist_entry(self.file_entries.len() - 1) {
             crate::output_guard::maho_write_stderr(&format!(
                 "Failed to persist session entry to {}: {error}\n",
                 self.session_file.as_deref().unwrap_or_default()
@@ -2497,7 +2506,16 @@ impl SessionManager {
     /// roots and children sorted by timestamp (oldest first). Built iteratively so deep sessions
     /// cannot overflow the stack.
     pub fn get_tree(&self) -> Vec<SessionTreeNode> {
-        let entries = self.entries();
+        // PERF-DIVERGENCE(senpi session-manager.ts getTree): upstream reads shared entry objects; entries() deep-copied the whole materialized history, so this borrows the shared cached view unless the mirror is trimmed (then the full history is loaded as before). Same entries and order.
+        let owned_entries;
+        let shared_entries;
+        let entries: &[Value] = if self.mirror_trimmed && self.session_file.is_some() {
+            owned_entries = self.entries();
+            &owned_entries
+        } else {
+            shared_entries = self.compact_entries();
+            shared_entries.as_slice()
+        };
         let index_by_id: HashMap<&str, usize> = entries
             .iter()
             .enumerate()
@@ -2643,7 +2661,10 @@ fn append_line(session_file: &str, entry: &Value) -> std::io::Result<()> {
         .create(true)
         .append(true)
         .open(session_file)?;
-    file.write_all(format!("{}\n", serialize_entry(entry)).as_bytes())
+    // PERF-DIVERGENCE(senpi session-manager.ts): upstream appendFileSync builds the line once; the port allocated a second String via format!, this appends the newline to the serialized line. Bytes appended are identical.
+    let mut line = serialize_entry(entry);
+    line.push('\n');
+    file.write_all(line.as_bytes())
 }
 
 pub fn sessions_dir() -> String {

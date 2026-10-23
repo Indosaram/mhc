@@ -16,7 +16,7 @@ use super::tool_execution_types::ToolExecutionRenderState;
 use super::tool_renderer_boundary::ToolRendererBoundary;
 use crate::theme::{Theme, ThemeBg, ThemeColor};
 use crate::tool_progress::{format_tool_progress_line, read_tool_progress};
-use crate::tools::renderers::{ToolRenderContext, ToolRenderers, create_all_tool_renderers};
+use crate::tools::renderers::{ToolRenderContext, ToolRenderers, create_tool_renderer};
 
 pub struct ToolExecutionIdentity {
     pub tool_name: String,
@@ -81,9 +81,8 @@ impl ToolExecutionRenderer {
         theme: Theme,
         on_invalidate: Rc<dyn Fn()>,
     ) -> Self {
-        let built_in = create_all_tool_renderers()
-            .get(identity.tool_name.as_str())
-            .cloned();
+        // PERF-DIVERGENCE(senpi core/tools/renderers/index.ts): upstream shares singleton renderers; this port builds only the card's own renderer instead of all 8 and discarding 7. Same type and default state.
+        let built_in = create_tool_renderer(identity.tool_name.as_str());
         let built_in_shell = built_in_render_shell(&identity.tool_name, &identity.cwd);
         Self {
             identity,

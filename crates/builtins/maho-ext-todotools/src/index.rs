@@ -96,6 +96,8 @@ pub fn register_first_turn_hooks(api:&mut maho_ext_api::ExtensionApi) {
     {let pending=pending.clone();api.on_with_options(maho_ext_api::EventKind::BeforeAgentStart,std::sync::Arc::new(move |event,ctx|{let pending=pending.clone();let runtime=runtime.clone();Box::pin(async move {
         let maho_ext_api::ExtensionEvent::BeforeAgentStart(event)=event else {return Ok(maho_ext_api::EventResult::None)};
         if event.preview {return Ok(maho_ext_api::EventResult::None);}
+        // PERF-DIVERGENCE(senpi todotools first-turn): upstream builds the full branch and reads settings before checking the cheap arming gates; we return early on the trigger and mode gates that `should_arm_first_turn` would reject anyway, skipping the O(history) copy and settings read. The result is identical.
+        if (event.trigger!="prompt"&&event.trigger!="delivery")||matches!(ctx.mode,maho_ext_api::ExtensionMode::Print|maho_ext_api::ExtensionMode::Json) {return Ok(maho_ext_api::EventResult::None);}
         let branch=ctx.session_manager.get_branch().into_iter().map(|entry|entry.data).collect::<Vec<_>>();
         let home=std::env::var("HOME").or_else(|_|std::env::var("USERPROFILE")).unwrap_or_default();
         let setting=maho_core::settings_manager::SettingsManager::create(&ctx.cwd.to_string_lossy(),&ctx.agent_dir.to_string_lossy(),&home,ctx.is_project_trusted()).get_todo_first_turn_plan();

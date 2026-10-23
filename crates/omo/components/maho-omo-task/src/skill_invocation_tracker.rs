@@ -138,9 +138,16 @@ impl SkillInvocationTracker {
                 state.requested.insert(skill.to_owned());
             }
         }
-        let mut visible = text.to_owned();
+        // PERF-DIVERGENCE(omo skill-invocation-tracker): upstream reduces String.replace over the injected patterns, copying per pattern; we borrow the input and allocate only when a pattern actually matches. The resulting text is identical.
+        let mut visible: std::borrow::Cow<str> = std::borrow::Cow::Borrowed(text);
         for pattern in &self.injected {
-            visible = pattern.replace_all(&visible, "").into_owned();
+            let stripped = match pattern.replace_all(&visible, "") {
+                std::borrow::Cow::Owned(stripped) => Some(stripped),
+                std::borrow::Cow::Borrowed(_) => None,
+            };
+            if let Some(stripped) = stripped {
+                visible = std::borrow::Cow::Owned(stripped);
+            }
         }
         if self.requested.is_match(&visible)
             || self

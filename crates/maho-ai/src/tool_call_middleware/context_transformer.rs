@@ -157,38 +157,33 @@ pub fn get_protocol(format: ToolCallFormat) -> &'static dyn ToolCallProtocol {
 /// - Converts tool result messages to user messages with text content
 pub fn transform_context(context: &Context, protocol: &dyn ToolCallProtocol) -> Context {
     let transcript = crate::types::transcript::normalize_context(context);
-    let context = Context {
-        system_prompt: crate::types::transcript::get_current_system_message(&transcript.messages)
-            .map(|message| {
-                crate::utils::text::get_system_message_text(&message.content, &message.sections)
-            }),
-        tools: Some(crate::types::transcript::get_current_tools(
-            &transcript.messages,
-        )),
+    // PERF-DIVERGENCE(senpi context-transformer): upstream maps lazily and shares unchanged message objects; this port moves the normalized transcript and passes non-assistant/non-tool-result messages through by move instead of re-cloning the system prompt, tools and every message. The output Context is identical.
+    let system_prompt = crate::types::transcript::get_current_system_message(&transcript.messages)
+        .map(|message| {
+            crate::utils::text::get_system_message_text(&message.content, &message.sections)
+        });
+    let tools = crate::types::transcript::get_current_tools(&transcript.messages);
+    let mut transformed = Context {
+        system_prompt: system_prompt.clone(),
         messages: transcript
             .messages
             .into_iter()
             .filter(|message| !matches!(message, Message::System(_)))
-            .collect(),
-        active_tool_names: context.active_tool_names.clone(),
-    };
-    let mut transformed = Context {
-        system_prompt: context.system_prompt.clone(),
-        messages: context
-            .messages
-            .iter()
-            .map(|message| transform_message(message, protocol))
+            .map(|message| match message {
+                Message::Assistant(_) | Message::ToolResult(_) => {
+                    transform_message(&message, protocol)
+                }
+                other => other,
+            })
             .collect(),
         tools: None,
         active_tool_names: None,
     };
 
-    if let Some(tools) = &context.tools
-        && !tools.is_empty()
-    {
-        let tool_prompt = protocol.format_tools_system_prompt(tools);
+    if !tools.is_empty() {
+        let tool_prompt = protocol.format_tools_system_prompt(&tools);
         if !tool_prompt.is_empty() {
-            transformed.system_prompt = Some(match &context.system_prompt {
+            transformed.system_prompt = Some(match &system_prompt {
                 Some(existing) => format!("{tool_prompt}\n\n{existing}"),
                 None => tool_prompt,
             });

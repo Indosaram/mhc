@@ -80,12 +80,8 @@ pub fn scope_denied(
 }
 
 fn resolve_listed_task(manager: &dyn SendManager, to: &str) -> Option<ControlTaskRecord> {
-    let listed = manager.list(&ControlListScope::All);
-    listed
-        .iter()
-        .find(|record| record.task_id == to)
-        .or_else(|| listed.iter().find(|record| record.name.as_deref() == Some(to)))
-        .cloned()
+    // PERF-DIVERGENCE(senpi tools/control/send-results.ts): upstream lists every record per send; we delegate to the manager's find_task, which loads a single record for an id. Same id-then-name result.
+    manager.find_task(to)
 }
 
 pub fn map_send_outcome(outcome: SendOutcome) -> Result<SendToolResult, SendInvariantError> {

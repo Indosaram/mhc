@@ -16,6 +16,14 @@ use crate::tools::control::types::{CallerSessionResolver, serialize_task_status}
 pub trait OutputManager: Send + Sync {
     fn get(&self, task_id: &str) -> Option<TaskRecord>;
     fn list(&self, scope: &ListScope) -> Vec<ListedTask>;
+    /// Finds a task by name inside one session (first match in list order).
+    // PERF-DIVERGENCE(senpi tools/output/output.ts): upstream lists every record to resolve a name; this hook lets a manager early-exit, defaulting to the same list scan. Output is identical.
+    fn find_in_session_by_name(&self, session_id: &str, name: &str) -> Option<TaskRecord> {
+        self.list(&ListScope::ParentSession(session_id.to_string()))
+            .into_iter()
+            .map(|entry| entry.record)
+            .find(|record| record.name.as_deref() == Some(name))
+    }
 }
 
 impl OutputManager for TaskManager {
@@ -25,6 +33,11 @@ impl OutputManager for TaskManager {
 
     fn list(&self, scope: &ListScope) -> Vec<ListedTask> {
         TaskManager::list(self, scope)
+    }
+
+    // PERF-DIVERGENCE(senpi tools/output/output.ts): upstream lists every record to resolve a name; we use the store's early-exit scan. Same first match.
+    fn find_in_session_by_name(&self, session_id: &str, name: &str) -> Option<TaskRecord> {
+        TaskManager::find_in_session_by_name(self, session_id, name)
     }
 }
 

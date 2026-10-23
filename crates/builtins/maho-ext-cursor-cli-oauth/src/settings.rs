@@ -34,7 +34,9 @@ fn boolean(value: &str) -> Option<bool> {
 }
 fn positive(value: f64) -> Option<f64> { (value.is_finite() && value > 0.0).then_some(value) }
 fn iso(value: &str) -> bool {
-    regex::Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$").is_ok_and(|r| r.is_match(value))
+    // PERF-DIVERGENCE(senpi cursor-cli settings): upstream uses a regex literal compiled once; this port compiled per call, so we hoist it into a LazyLock. Matches are identical.
+    static ISO: std::sync::LazyLock<Option<regex::Regex>> = std::sync::LazyLock::new(|| regex::Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$").ok());
+    ISO.as_ref().is_some_and(|r| r.is_match(value))
         && chrono::DateTime::parse_from_rfc3339(value).is_ok()
 }
 fn apply_disk(settings: &mut CursorCliOauthProviderSettings, value: &Value) {

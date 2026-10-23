@@ -200,6 +200,16 @@ impl TaskRecordStore {
     }
 
     pub fn list(&self) -> Result<ListTaskRecordsResult, StoreError> {
+        self.list_matching(|_| true)
+    }
+
+    /// [`Self::list`] that keeps (and therefore clones) only the records `keep` accepts;
+    /// diagnostics are reported for every file exactly as `list` does.
+    // PERF-DIVERGENCE(senpi task-record-store.ts): upstream lists and clones every task record and lets callers filter afterwards; this port filters on the cached record by reference and clones only the matches to avoid an O(N) clone per admission pass. The kept records and diagnostics are identical to filtering the `list` result.
+    pub fn list_matching(
+        &self,
+        mut keep: impl FnMut(&TaskRecord) -> bool,
+    ) -> Result<ListTaskRecordsResult, StoreError> {
         let tasks_dir = self.tasks_dir();
         std::fs::create_dir_all(&tasks_dir)?;
         let mut files: Vec<PathBuf> = std::fs::read_dir(&tasks_dir)?
@@ -229,7 +239,9 @@ impl TaskRecordStore {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(cached) = cache.get(&path).filter(|cached| cached.matches(&text)) {
-                    records.push(cached.record.clone());
+                    if keep(&cached.record) {
+                        records.push(cached.record.clone());
+                    }
                     diagnostics.extend(cached.warnings.iter().map(|message| {
                         TaskRecordDiagnostic::ParseWarning {
                             path: path.clone(),
@@ -242,7 +254,9 @@ impl TaskRecordStore {
             let mut warnings = Vec::new();
             match self.parse_and_cache(&path, text, &mut warnings) {
                 Ok(Some(record)) => {
-                    records.push(record);
+                    if keep(&record) {
+                        records.push(record);
+                    }
                     diagnostics.extend(warnings.into_iter().map(|message| {
                         TaskRecordDiagnostic::ParseWarning {
                             path: path.clone(),

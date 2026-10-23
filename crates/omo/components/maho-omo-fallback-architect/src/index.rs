@@ -18,8 +18,15 @@ impl Extension for FallbackArchitectComponent {
         let message_state=Arc::clone(&state);
         api.on(EventKind::MessageEnd,Arc::new(move |event,_| { let state=Arc::clone(&message_state); Box::pin(async move {
             if let ExtensionEvent::MessageEnd{message}=event && message.role()=="assistant" {
-                let value=serde_json::to_value(message).map_err(|e|ExtensionFailure::new(e.to_string()))?;
-                state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).refusal_pending=is_refusal_like_message(&value);
+                // PERF-DIVERGENCE(omo detection.ts): upstream reads the fields straight off the message object and the earlier port serialized the whole message to a Value first; we read stopReason/stopDetails/errorMessage from the typed message and only serialize for non-LLM custom messages. The predicate is identical.
+                let refusal=match message {
+                    AgentMessage::Llm(Message::Assistant(assistant))=>is_refusal_like_assistant(assistant),
+                    other=>{
+                        let value=serde_json::to_value(other).map_err(|e|ExtensionFailure::new(e.to_string()))?;
+                        is_refusal_like_message(&value)
+                    }
+                };
+                state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).refusal_pending=refusal;
             }
             Ok(EventResult::None)
         }) }));

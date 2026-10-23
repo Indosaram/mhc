@@ -34,6 +34,10 @@ fn parse_renderable_diff_line(line: &str) -> RenderableDiffLine {
         sign: ' ',
         text: line.to_owned(),
     };
+    // PERF-DIVERGENCE(senpi tools/diff-render.ts): upstream runs the diff-line regex on every line; this port skips it for lines whose first char is not '+', '-' or ' ' (the regex requires one there), going straight to Meta. Output is identical.
+    if !line.starts_with(['+', '-', ' ']) {
+        return meta();
+    }
     let Some(captures) = LINE.captures(line) else {
         return meta();
     };

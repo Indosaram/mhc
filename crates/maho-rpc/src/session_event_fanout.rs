@@ -352,6 +352,8 @@ impl SessionEventFanout {
             .targets
             .targets(session, target, targeted, rendered, kind);
         let last = targets.len();
+        // PERF-DIVERGENCE(senpi socket-event-fanout): upstream stringifies the scrubbed/demoted record per connection; we serialize each variant once per placeholders flag and share it across targets. Bytes on the wire are identical.
+        let mut variant_lines: [Option<(String, Option<String>)>; 2] = [None, None];
         for (index, id) in targets.into_iter().enumerate() {
             // The last target takes the record itself; earlier stdio targets get a copy.
             let Some(id) = id else {
@@ -373,33 +375,39 @@ impl SessionEventFanout {
                 .any(|capability| {
                     capability == crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY
                 });
-            let selected = if placeholders {
-                crate::media_placeholders::omit_inline_media(&wire)
-            } else {
-                std::borrow::Cow::Borrowed(&wire)
-            };
-            // A borrowed `selected` is `wire` itself, whose bytes are already `line`.
-            let line = match &selected {
-                std::borrow::Cow::Owned(scrubbed) => crate::jsonl::serialize_json_line(scrubbed)
-                    .map_err(|error| error.to_string())?,
-                std::borrow::Cow::Borrowed(_) => line.clone(),
-            };
-            let keyed = selected["type"] == "message_update"
-                && !selected["message"].is_null()
-                && matches!(
-                    selected["assistantMessageEvent"]["type"].as_str(),
-                    Some("text_delta" | "thinking_delta" | "toolcall_delta")
-                )
-                && selected["assistantMessageEvent"]["contentIndex"].is_number()
-                && selected["assistantMessageEvent"]["delta"].is_string();
-            let demoted_line = if keyed {
-                Some(
-                    crate::jsonl::serialize_json_line(&demote_snapshot(&selected))
+            let slot = &mut variant_lines[usize::from(placeholders)];
+            if slot.is_none() {
+                let selected = if placeholders {
+                    crate::media_placeholders::omit_inline_media(&wire)
+                } else {
+                    std::borrow::Cow::Borrowed(&wire)
+                };
+                // A borrowed `selected` is `wire` itself, whose bytes are already `line`.
+                let line = match &selected {
+                    std::borrow::Cow::Owned(scrubbed) => crate::jsonl::serialize_json_line(scrubbed)
                         .map_err(|error| error.to_string())?,
-                )
-            } else {
-                None
-            };
+                    std::borrow::Cow::Borrowed(_) => line.clone(),
+                };
+                let keyed = selected["type"] == "message_update"
+                    && !selected["message"].is_null()
+                    && matches!(
+                        selected["assistantMessageEvent"]["type"].as_str(),
+                        Some("text_delta" | "thinking_delta" | "toolcall_delta")
+                    )
+                    && selected["assistantMessageEvent"]["contentIndex"].is_number()
+                    && selected["assistantMessageEvent"]["delta"].is_string();
+                let demoted_line = if keyed {
+                    Some(
+                        crate::jsonl::serialize_json_line(&demote_snapshot(&selected))
+                            .map_err(|error| error.to_string())?,
+                    )
+                } else {
+                    None
+                };
+                *slot = Some((line, demoted_line));
+            }
+            let (line, demoted_line) = slot.clone().unwrap_or_default();
+            let keyed = demoted_line.is_some();
             if actor
                 .enqueue(crate::socket_event_fanout::QueueEntry {
                     line,

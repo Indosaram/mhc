@@ -114,7 +114,8 @@ pub struct ModelCompat(pub Map<String, Value>);
 
 impl ModelCompat {
     fn view<T: DeserializeOwned + Default>(&self) -> T {
-        serde_json::from_value(Value::Object(self.0.clone())).unwrap_or_default()
+        // PERF-DIVERGENCE(senpi model compat): upstream reads fields off a plain JS object; this port deserializes the typed view from a borrowed Map instead of cloning the whole map first. Result and defaults are identical.
+        T::deserialize(&self.0).unwrap_or_default()
     }
 
     pub fn openai_completions(&self) -> OpenAICompletionsCompat {

@@ -36,15 +36,32 @@ fn matches_path(pattern:&str,path:&str)->bool {
         let matched=matches_path(remaining,path);
         return if bangs%2==0 { matched } else { !matched };
     }
-    if pattern.contains('(') || pattern.contains("..") || pattern.contains('[') || pattern.contains('{') {
-        let Some(fragment)=glob_fragment(pattern) else { return false; };
-        let pattern=format!("^{fragment}$");
-        let Ok(matcher)=regress::Regex::new(&pattern) else { return false; };
-        return matcher.find(path).is_some();
+    // PERF-DIVERGENCE(senpi ttsr scope matching): upstream recompiles the picomatch matcher per streamed delta; we compile each pattern once into a process-wide cache (invalid patterns cached as never-matching). Match results are identical.
+    match &*compiled_matcher(pattern) {
+        CompiledPattern::Invalid=>false,
+        CompiledPattern::Regex(matcher)=>matcher.find(path).is_some(),
+        CompiledPattern::Glob(matcher)=>{
+            if path=="."||path==".." { return false; }
+            matcher.is_match(path) || pattern.contains('*')&&path.strip_suffix('/').is_some_and(|path|matcher.is_match(path))
+        }
     }
-    let Ok(glob)=globset::GlobBuilder::new(pattern).literal_separator(true).empty_alternates(true).allow_unclosed_class(true).build() else { return false; }; let matcher=glob.compile_matcher();
-    if path=="."||path==".." { return false; }
-    matcher.is_match(path) || pattern.contains('*')&&path.strip_suffix('/').is_some_and(|path|matcher.is_match(path))
+}
+enum CompiledPattern { Invalid,Regex(regress::Regex),Glob(globset::GlobMatcher) }
+fn compiled_matcher(pattern:&str)->std::sync::Arc<CompiledPattern> {
+    static CACHE:std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String,std::sync::Arc<CompiledPattern>>>>=std::sync::LazyLock::new(Default::default);
+    let mut cache=CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(found)=cache.get(pattern) { return found.clone(); }
+    let compiled=std::sync::Arc::new(compile_pattern(pattern));
+    cache.insert(pattern.to_owned(),compiled.clone());
+    compiled
+}
+fn compile_pattern(pattern:&str)->CompiledPattern {
+    if pattern.contains('(') || pattern.contains("..") || pattern.contains('[') || pattern.contains('{') {
+        let Some(fragment)=glob_fragment(pattern) else { return CompiledPattern::Invalid; };
+        let pattern=format!("^{fragment}$");
+        return regress::Regex::new(&pattern).map_or(CompiledPattern::Invalid,CompiledPattern::Regex);
+    }
+    globset::GlobBuilder::new(pattern).literal_separator(true).empty_alternates(true).allow_unclosed_class(true).build().map_or(CompiledPattern::Invalid,|glob|CompiledPattern::Glob(glob.compile_matcher()))
 }
 fn glob_fragment(pattern:&str)->Option<String> {
     let unescaped=|index:usize|pattern[..index].chars().rev().take_while(|value|*value=='\\').count()%2==0;

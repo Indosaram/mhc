@@ -70,11 +70,10 @@ impl TurnLog {
         logged
     }
     fn turn(&mut self, thread_id: &str, turn_id: &str) -> Result<&mut LoggedTurn, TurnNotFound> {
+        // PERF-DIVERGENCE(senpi): upstream does a keyed Map lookup that may insert an empty entry; we look the thread up without allocating a key or inserting. The forward scan is kept, so with duplicate turn ids the first one is still found.
         self.turns_by_thread_id
-            .entry(thread_id.into())
-            .or_default()
-            .iter_mut()
-            .find(|turn| turn.turn_id == turn_id)
+            .get_mut(thread_id)
+            .and_then(|turns| turns.iter_mut().find(|turn| turn.turn_id == turn_id))
             .ok_or_else(|| TurnNotFound(turn_id.into()))
     }
     pub fn append_item(

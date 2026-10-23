@@ -31,16 +31,9 @@ static TOKENIZE_INCLUDING_WHITESPACE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("tokenize pattern")
 });
 
-static WHITESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!("[{JS_WHITESPACE}]")).expect("ws pattern"));
-
-static LEADING_WHITESPACE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(&format!("^[{JS_WHITESPACE}]*")).expect("leading ws pattern"));
-
-static LEADING_WHITESPACE_RUN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(&format!("^[{JS_WHITESPACE}]+")).expect("leading ws run pattern"));
-
+// PERF-DIVERGENCE(senpi jsdiff 'diff' package): upstream runs whitespace regexes per token; this port uses the equivalent char-class predicate (same code points as JS_WHITESPACE) with no regex or allocation. Output is identical.
 fn is_whitespace(text: &str) -> bool {
-    WHITESPACE.is_match(text)
+    text.chars().any(is_js_whitespace_char)
 }
 
 fn is_js_whitespace_char(character: char) -> bool {
@@ -105,7 +98,8 @@ fn join_tokens(tokens: &[String]) -> String {
         if index == 0 {
             out.push_str(token);
         } else {
-            out.push_str(&LEADING_WHITESPACE_RUN.replace(token, ""));
+            // PERF-DIVERGENCE(senpi jsdiff 'diff' package): upstream strips leading whitespace with a regex replace; this port slices with the equivalent char predicate to skip the regex and Cow allocation. Output is identical.
+            out.push_str(token.trim_start_matches(is_js_whitespace_char));
         }
     }
     out
@@ -201,17 +195,16 @@ fn maximum_overlap(left: &str, right: &str) -> String {
     right.chars().take(count).collect()
 }
 
+// PERF-DIVERGENCE(senpi jsdiff 'diff' package): upstream scans chars with a per-char regex test; this port slices with trim_end_matches instead of a Vec<char> plus a String per char. Output is identical.
 fn trailing_ws(text: &str) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let mut index = chars.len();
-    while index > 0 && is_whitespace(&chars[index - 1].to_string()) {
-        index -= 1;
-    }
-    chars[index..].iter().collect()
+    let trimmed = text.trim_end_matches(is_js_whitespace_char);
+    text[trimmed.len()..].to_owned()
 }
 
+// PERF-DIVERGENCE(senpi jsdiff 'diff' package): upstream uses a leading-whitespace regex; this port slices with trim_start_matches on the same code points. Output is identical.
 fn leading_ws(text: &str) -> String {
-    LEADING_WHITESPACE.find(text).map(|m| m.as_str().to_owned()).unwrap_or_default()
+    let rest = text.trim_start_matches(is_js_whitespace_char);
+    text[..text.len() - rest.len()].to_owned()
 }
 
 fn leading_and_trailing_ws(text: &str) -> (String, String) {

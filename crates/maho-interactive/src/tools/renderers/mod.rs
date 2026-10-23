@@ -78,6 +78,22 @@ pub trait ToolRenderers {
     ) -> Option<RenderedComponent>;
 }
 
+// PERF-DIVERGENCE(senpi core/tools/renderers/index.ts): upstream's createAllToolRenderers returns shared singletons; this port built all 8 renderers per card and kept one, so we build only the requested renderer. Each card still gets a fresh default-state instance of the same type.
+pub fn create_tool_renderer(name: &str) -> Option<Rc<RefCell<dyn ToolRenderers>>> {
+    let renderer: Rc<RefCell<dyn ToolRenderers>> = match name {
+        "read" => Rc::new(RefCell::new(read::ReadRenderers::default())),
+        "bash" => Rc::new(RefCell::new(bash::ShellRenderers::new("$"))),
+        "powershell" => Rc::new(RefCell::new(bash::ShellRenderers::new("PS>"))),
+        "edit" => Rc::new(RefCell::new(edit::EditRenderers::default())),
+        "write" => Rc::new(RefCell::new(write::WriteRenderers::default())),
+        "grep" => Rc::new(RefCell::new(grep::GrepRenderers)),
+        "find" => Rc::new(RefCell::new(find::FindRenderers)),
+        "ls" => Rc::new(RefCell::new(ls::LsRenderers)),
+        _ => return None,
+    };
+    Some(renderer)
+}
+
 pub fn create_all_tool_renderers() -> HashMap<&'static str, Rc<RefCell<dyn ToolRenderers>>> {
     HashMap::from([
         ("read", Rc::new(RefCell::new(read::ReadRenderers::default())) as Rc<RefCell<dyn ToolRenderers>>),
@@ -181,7 +197,7 @@ pub fn with_built_in_renderers(
 ) -> Option<Rc<RefCell<dyn ToolRenderers>>> {
     match definition {
         Some(definition) => Some(definition),
-        None => create_all_tool_renderers().get(tool_name).cloned(),
+        None => create_tool_renderer(tool_name),
     }
 }
 

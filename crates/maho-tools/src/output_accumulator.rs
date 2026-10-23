@@ -164,11 +164,14 @@ impl OutputAccumulator {
         Ok(())
     }
     pub fn snapshot(&mut self, persist_if_truncated: bool) -> Result<OutputSnapshot, ToolError> {
-        let text = self.tail.text().to_owned();
-        let text = if self.tail.starts_at_line_boundary() {
-            text.as_str()
+        // PERF-DIVERGENCE(senpi output-accumulator.ts): upstream copies the tail window per snapshot; this port borrows it (trim runs inside text(), boundary flag is read after) to avoid a ~50KB copy per update. Output is identical.
+        self.tail.text();
+        let at_boundary = self.tail.starts_at_line_boundary();
+        let text = self.tail.text();
+        let text = if at_boundary {
+            text
         } else {
-            text.find('\n').map_or(text.as_str(), |n| &text[n + 1..])
+            text.find('\n').map_or(text, |n| &text[n + 1..])
         };
         let mut truncation = truncate_tail(
             text,

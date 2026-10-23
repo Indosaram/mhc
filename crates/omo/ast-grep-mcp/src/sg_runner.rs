@@ -27,6 +27,7 @@ pub const MAX_TIMEOUT_MS: u64 = 300_000;
 
 const KILL_GRACE: Duration = Duration::from_millis(1_000);
 const WAIT_SLICE: Duration = Duration::from_millis(10);
+const WAIT_SLICE_INITIAL: Duration = Duration::from_millis(1);
 /// Upper bound on one main-loop park while waiting for `sg` output; the abort signal is polled at
 /// this cadence, the deadline is honoured exactly.
 const OUTPUT_WAIT_SLICE: Duration = Duration::from_millis(100);
@@ -353,6 +354,8 @@ fn wait_with_grace(
     deadline: Instant,
 ) -> Option<i32> {
     let mut term_sent_at: Option<Instant> = None;
+    // PERF-DIVERGENCE(omo ast-grep-mcp sg_runner): upstream waits on a child exit event; this port polls try_wait and, instead of a fixed 10ms sleep, backs off from 1ms up to WAIT_SLICE so short commands are reaped sooner. Exit status, timeout and abort checks are unchanged (never slower than before).
+    let mut slice = WAIT_SLICE_INITIAL;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return status.code(),
@@ -378,7 +381,8 @@ fn wait_with_grace(
                 Some(_) => {}
             }
         }
-        thread::sleep(WAIT_SLICE);
+        thread::sleep(slice);
+        slice = (slice * 2).min(WAIT_SLICE);
     }
 }
 

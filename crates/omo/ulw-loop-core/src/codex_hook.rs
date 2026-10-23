@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -86,8 +87,9 @@ pub fn parse_pre_tool_use_payload(raw: &str) -> Option<PreToolUsePayload> {
 }
 
 fn has_steering_directive_marker(prompt: &str) -> bool {
-    let re = Regex::new(r"(?:^|\s)(?:OMO_ULW_LOOP_STEER|omo\.ulw-loop\.steer|omo ulw-loop steer|ulw-loop steer):").expect("valid steering regex");
-    re.is_match(prompt)
+    // PERF-DIVERGENCE(omo codex-hook): upstream builds this RegExp per prompt; this port compiles it once in a LazyLock. Output is identical.
+    static RE_MARKER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|\s)(?:OMO_ULW_LOOP_STEER|omo\.ulw-loop\.steer|omo ulw-loop steer|ulw-loop steer):").expect("valid steering regex"));
+    RE_MARKER.is_match(prompt)
 }
 
 pub fn apply_user_prompt_ulw_loop_steering(

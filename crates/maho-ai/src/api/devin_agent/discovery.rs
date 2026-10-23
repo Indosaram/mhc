@@ -219,17 +219,17 @@ fn cost_of(config: &ClientModelConfig) -> crate::types::ModelCost {
 }
 
 fn denominator_tokens(denominator: &str) -> f64 {
-    let Some(captures) = regex::Regex::new(r"(?i)(\d+(?:\.\d+)?)\s*([kmb])?")
-        .ok()
-        .and_then(|re| {
-            re.captures(denominator).map(|captures| {
-                (
-                    captures.get(1).map(|m| m.as_str().to_owned()),
-                    captures.get(2).map(|m| m.as_str().to_lowercase()),
-                )
-            })
+    // PERF-DIVERGENCE(senpi devin-agent): upstream uses a regex literal (compiled once); this port compiled the regex per call, so it is now cached in a LazyLock. Matching is identical.
+    static DENOMINATOR_RE: std::sync::LazyLock<Option<regex::Regex>> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)(\d+(?:\.\d+)?)\s*([kmb])?").ok());
+    let Some(captures) = DENOMINATOR_RE.as_ref().and_then(|re| {
+        re.captures(denominator).map(|captures| {
+            (
+                captures.get(1).map(|m| m.as_str().to_owned()),
+                captures.get(2).map(|m| m.as_str().to_lowercase()),
+            )
         })
-    else {
+    }) else {
         return 1_000_000.0;
     };
     let (Some(number), scale) = captures else {

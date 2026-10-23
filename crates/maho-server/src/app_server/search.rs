@@ -44,7 +44,14 @@ pub fn search_window<R: SearchWindowRecord>(records: &mut Vec<R>,params: &Parsed
 /// `search_window` over records already filtered by `search_window_keeps`.
 fn search_window_kept<R: SearchWindowRecord>(records: &mut [R],params: &ParsedSearchParams) -> Result<Value,JsonRpcError> {
     let time = |record: &R|{let field = match params.sort_key.as_str() {"created_at"=>record.thread()["createdAt"].as_str(),"updated_at"=>record.thread()["updatedAt"].as_str(),_=>Some(record.recency_at())};field.and_then(super::js_semantics::date_parse_ms).unwrap_or(0)};
-    records.sort_by(|left,right|{let order = time(left).cmp(&time(right)).then_with(||super::js_semantics::locale_compare(left.thread()["id"].as_str().unwrap_or_default(),right.thread()["id"].as_str().unwrap_or_default()));if params.sort_direction == "asc" {order} else {order.reverse()}});
+    // PERF-DIVERGENCE(senpi): upstream parses both dates on every comparator call; we parse each record's date once via a stable cached-key sort with the same comparison, so the order is identical.
+    struct SortKey {time: i64,id: String,descending: bool}
+    impl PartialEq for SortKey {fn eq(&self,other: &Self) -> bool {self.cmp(other) == std::cmp::Ordering::Equal}}
+    impl Eq for SortKey {}
+    impl PartialOrd for SortKey {fn partial_cmp(&self,other: &Self) -> Option<std::cmp::Ordering> {Some(self.cmp(other))}}
+    impl Ord for SortKey {fn cmp(&self,other: &Self) -> std::cmp::Ordering {let order = self.time.cmp(&other.time).then_with(||super::js_semantics::locale_compare(&self.id,&other.id));if self.descending {order.reverse()} else {order}}}
+    let descending = params.sort_direction != "asc";
+    records.sort_by_cached_key(|record|SortKey {time:time(record),id:record.thread()["id"].as_str().unwrap_or_default().to_owned(),descending});
     let start = if let Some(value) = &params.cursor {
         let cursor: SearchCursor = serde_json::from_str(value).map_err(|_|invalid(format!("thread/search received an invalid cursor: {value}")))?;
         if !matches!(cursor.sort_direction.as_str(),"asc"|"desc") {return Err(invalid(format!("thread/search received an invalid cursor: {value}")));}

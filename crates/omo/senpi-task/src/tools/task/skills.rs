@@ -154,9 +154,38 @@ fn frontmatter_name(raw: &str) -> Option<String> {
     })
 }
 
+const FRONTMATTER_PREFIX_BYTES: usize = 4096;
+
+// PERF-DIVERGENCE(senpi skills discovery): upstream reads every whole SKILL.md just to get the frontmatter name; we read a bounded prefix and fall back to the full read when the closing marker is not inside it. Names are identical.
+fn discovered_name(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut prefix = Vec::with_capacity(FRONTMATTER_PREFIX_BYTES);
+    fs::File::open(path)
+        .ok()?
+        .take(FRONTMATTER_PREFIX_BYTES as u64)
+        .read_to_end(&mut prefix)
+        .ok()?;
+    if prefix.len() < FRONTMATTER_PREFIX_BYTES {
+        // Whole file already read; keep the strict UTF-8 behavior of `read_to_string`.
+        return frontmatter_name(&String::from_utf8(prefix).ok()?);
+    }
+    let head = match String::from_utf8(prefix) {
+        Ok(text) => text,
+        // A multi-byte char cut by the prefix boundary is fine; genuinely invalid bytes fail like `read_to_string`.
+        Err(error) if error.utf8_error().error_len().is_none() => {
+            let valid = error.utf8_error().valid_up_to();
+            String::from_utf8_lossy(&error.as_bytes()[..valid]).into_owned()
+        }
+        Err(_) => return None,
+    };
+    if split_frontmatter(&normalize_newlines(&head)).is_some() {
+        return frontmatter_name(&head);
+    }
+    frontmatter_name(&fs::read_to_string(path).ok()?)
+}
+
 fn discovered(path: &Path, fallback: Option<&str>) -> Option<DiscoveredSkill> {
-    let raw = fs::read_to_string(path).ok()?;
-    let name = frontmatter_name(&raw).or_else(|| fallback.map(str::to_string))?;
+    let name = discovered_name(path).or_else(|| fallback.map(str::to_string))?;
     Some(DiscoveredSkill {
         name,
         file_path: path.to_path_buf(),
@@ -181,7 +210,14 @@ fn collect_skills(dir: &Path, root: bool, out: &mut Vec<DiscoveredSkill>) {
             continue;
         }
         let path = entry.path();
-        if path.is_dir() {
+        // PERF-DIVERGENCE(senpi skills discovery): upstream stats every entry to test for a directory; we use the dir entry's file type and stat only symlinks. Same classification.
+        let is_dir = match entry.file_type() {
+            Ok(file_type) if file_type.is_dir() => true,
+            Ok(file_type) if file_type.is_symlink() => path.is_dir(),
+            Ok(_) => false,
+            Err(_) => path.is_dir(),
+        };
+        if is_dir {
             collect_skills(&path, false, out);
         } else if root && path.extension().is_some_and(|ext| ext == "md") {
             let stem = path.file_stem().map(|stem| stem.to_string_lossy().into_owned());

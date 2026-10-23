@@ -52,11 +52,14 @@ pub async fn enumerate_candidates(
         for name in listed {
             super::process::check(deadline, signal)?;
             let absolute = Path::new(&request.cwd).join(name);
-            let canonical = tokio::fs::canonicalize(&absolute).await;
+            // PERF-DIVERGENCE(senpi grep): upstream uses sync fs per file; this port runs canonicalize and metadata concurrently instead of two serial blocking-pool hops. Error precedence and abort checks keep the same order, so results are identical.
+            let (canonical, metadata) = tokio::join!(
+                tokio::fs::canonicalize(&absolute),
+                tokio::fs::metadata(&absolute)
+            );
             super::process::check(deadline, signal)?;
             let canonical =
                 canonical.map_err(|e| GrepEngineError::EngineUnavailable(e.to_string()))?;
-            let metadata = tokio::fs::metadata(&absolute).await;
             super::process::check(deadline, signal)?;
             let size = metadata
                 .map_err(|e| GrepEngineError::EngineUnavailable(e.to_string()))?

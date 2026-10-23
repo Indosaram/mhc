@@ -27,7 +27,9 @@ fn cached_catalog(contents: &str, now: f64, ttl: f64) -> Option<(bool, Vec<Provi
         let rebuilt = parse_models_listing(listing.as_str()?);
         return (!rebuilt.is_empty()).then_some((true, rebuilt));
     }
-    let valid = Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._/:+-]*$").expect("constant id regex");
+    // PERF-DIVERGENCE(senpi cursor-cli models): upstream uses regex literals compiled once; this port compiled them per call, so we hoist them into LazyLocks. Matches are identical.
+    static VALID: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._/:+-]*$").expect("constant id regex"));
+    let valid = &*VALID;
     let mut seen = BTreeSet::new();
     let mut raw = Vec::new();
     for entry in models {
@@ -148,15 +150,19 @@ fn normalize(raw: &[CursorCatalogRawEntry]) -> Vec<ProviderModelConfig> {
         .collect()
 }
 pub fn parse_models_listing(listing: &str) -> Vec<ProviderModelConfig> {
-    let ansi = Regex::new("\u{1b}(?:[@-Z\\-_]|\\[[0-?]*[ -/]*[@-~])").expect("constant ANSI regex");
+    // PERF-DIVERGENCE(senpi cursor-cli models): upstream uses regex literals compiled once; this port compiled them per call, so we hoist them into LazyLocks. Matches are identical.
+    static ANSI: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new("\u{1b}(?:[@-Z\\-_]|\\[[0-?]*[ -/]*[@-~])").expect("constant ANSI regex"));
+    static ERROR: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)^\s*(?:error|failed|failure)(?:\s|:|-|$)").expect("constant error regex"));
+    static LINE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"^(\S+)\s+-\s+(.+)$").expect("constant model regex"));
+    static ID: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._/:+-]*$").expect("constant id regex"));
+    let ansi = &*ANSI;
     let plain = ansi.replace_all(listing, "");
-    let error =
-        Regex::new(r"(?i)^\s*(?:error|failed|failure)(?:\s|:|-|$)").expect("constant error regex");
+    let error = &*ERROR;
     if plain.lines().any(|line| error.is_match(line)) {
         return Vec::new();
     }
-    let line = Regex::new(r"^(\S+)\s+-\s+(.+)$").expect("constant model regex");
-    let id = Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._/:+-]*$").expect("constant id regex");
+    let line = &*LINE;
+    let id = &*ID;
     let mut seen = BTreeSet::new();
     let mut raw = Vec::new();
     for value in plain.lines() {

@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::Value;
 
@@ -161,9 +162,10 @@ fn all_text(val: &Value) -> String {
 
 fn weakens(val: &Value) -> bool {
     let text = all_text(val).to_lowercase();
-    let re_weaken = Regex::new(r"\b(skip|bypass|weaken|remove|omit|auto[-\s]?complete|mark complete|complete faster)\b").expect("valid regex");
-    let re_target = Regex::new(r"\b(test|tests|verification|review|quality gate|complete|completion)\b").expect("valid regex");
-    re_weaken.is_match(&text) && re_target.is_match(&text)
+    // PERF-DIVERGENCE(omo steering): upstream builds these RegExps on every call; this port compiles them once in LazyLocks. Output is identical.
+    static RE_WEAKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(skip|bypass|weaken|remove|omit|auto[-\s]?complete|mark complete|complete faster)\b").expect("valid regex"));
+    static RE_TARGET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(test|tests|verification|review|quality gate|complete|completion)\b").expect("valid regex"));
+    RE_WEAKEN.is_match(&text) && RE_TARGET.is_match(&text)
 }
 
 fn audit_for(proposal: &Value, reasons: Vec<String>) -> UlwLoopSteeringAudit {
