@@ -278,7 +278,37 @@ pub async fn run(
     }
     screen.do_render(&mut terminal);
     mode.rebuild_history();
-    mode.bind_extensions().await;
+    // senpi `init()` awaits `rebindCurrentSession()` with the editor already focused and its
+    // event loop live, so keystrokes typed while extensions bind (the MCP startup race alone
+    // can take 250ms) echo at once. Serve input and paint here until the binding settles.
+    {
+        let binding = mode.start_extension_binding();
+        tokio::pin!(binding);
+        let clock = std::time::Instant::now();
+        loop {
+            tokio::select! { biased; () = &mut binding => break, () = tokio::task::yield_now() => {} }
+            mode.drain_events();
+            let now = u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let chunks = std::mem::take(&mut *input.borrow_mut());
+            let had_input = !chunks.is_empty();
+            for chunk in chunks {
+                if let Some(data) = route_terminal_input(&mut screen, &mut terminal, &mut mode, &component, &chunk, now) {
+                    mode.handle_filtered_runtime_input(&data, now).await?;
+                }
+            }
+            if fullscreen {
+                let (document, dock) = mode.render_split(usize::from(terminal.columns()));
+                *document_lines.borrow_mut() = document;
+                *dock_lines.borrow_mut() = dock;
+            } else {
+                rendered.borrow_mut().0 = mode.render(usize::from(terminal.columns()));
+            }
+            if had_input { screen.base_mut().request_render_from(false, "input", now); }
+            if screen.base_mut().take_due_render(now) { screen.do_render(&mut terminal); }
+            terminal.pump(screen.base().min_render_interval_ms()).map_err(|error| error.to_string())?;
+        }
+    }
+    mode.finish_extension_binding().await;
     mode.use_registered_markdown_transformers(&extensions);
     mode.initialize_startup_resources();
     mode.show_startup_model_warnings();
