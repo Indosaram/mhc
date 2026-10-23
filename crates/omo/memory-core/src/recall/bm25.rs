@@ -221,7 +221,17 @@ pub(crate) fn sha1_digest(data: &[u8]) -> DocumentKey {
 
 /// The key of `description\nbody`, the text [`recall_document_terms`] tokenizes.
 pub fn document_key(document: &RecallDocument) -> DocumentKey {
-    sha1_digest(format!("{}\n{}", document.description, document.body).as_bytes())
+    // PERF-DIVERGENCE(recall/bm25.ts): upstream hashes a concatenated `description\nbody` string; this port feeds the same bytes to an incremental SHA-1 context, skipping the full-body copy. The digest is identical.
+    let mut context = aws_lc_rs::digest::Context::new(&aws_lc_rs::digest::SHA1_FOR_LEGACY_USE_ONLY);
+    context.update(document.description.as_bytes());
+    context.update(b"\n");
+    context.update(document.body.as_bytes());
+    let digest = context.finish();
+    let mut key = [0u8; 20];
+    for (slot, byte) in key.iter_mut().zip(digest.as_ref()) {
+        *slot = *byte;
+    }
+    key
 }
 
 /// Terms no live index holds still keep their ids, so the dictionary is replaced once it holds more
@@ -575,8 +585,10 @@ pub(crate) fn rank_recall_positions_bm25(
     expansions: Option<&RecallQueryExpansions>,
 ) -> Vec<RankedRecallPosition> {
     let mut query_terms: Vec<String> = Vec::new();
+    // PERF-DIVERGENCE(recall/bm25.ts): upstream dedupes query terms with a linear includes scan; this port also tracks a HashSet so dedupe is O(1) per term while insertion order stays identical.
+    let mut seen_terms: std::collections::HashSet<String> = std::collections::HashSet::new();
     for term in queries.iter().flat_map(|query| recall_terms(query)) {
-        if !query_terms.contains(&term) {
+        if seen_terms.insert(term.clone()) {
             query_terms.push(term);
         }
     }
@@ -591,7 +603,19 @@ pub(crate) fn rank_recall_positions_bm25(
         1.0
     };
     let document_count = documents.len() as f64;
-    let term_score = |id: Option<u32>, terms: &DocumentTerms| -> f64 {
+    // PERF-DIVERGENCE(recall/bm25.ts): upstream recomputes idf per (document, term); this port computes it once per query term before the document loop using the identical f64 expression, so scores are bit-identical.
+    let idf_of = |id: Option<u32>| -> f64 {
+        let Some(id) = id else {
+            return 0.0;
+        };
+        let document_frequency = index
+            .document_frequency
+            .get(id as usize)
+            .copied()
+            .unwrap_or(0) as f64;
+        (1.0 + (document_count - document_frequency + 0.5) / (document_frequency + 0.5)).ln()
+    };
+    let term_score = |id: Option<u32>, idf: f64, terms: &DocumentTerms| -> f64 {
         let Some(id) = id else {
             return 0.0;
         };
@@ -600,23 +624,25 @@ pub(crate) fn rank_recall_positions_bm25(
             return 0.0;
         }
         let frequency = f64::from(frequency);
-        let document_frequency = index
-            .document_frequency
-            .get(id as usize)
-            .copied()
-            .unwrap_or(0) as f64;
-        let idf =
-            (1.0 + (document_count - document_frequency + 0.5) / (document_frequency + 0.5)).ln();
         (idf * frequency * (K1 + 1.0))
             / (frequency + K1 * (1.0 - B + B * terms.length as f64 / average_length))
     };
 
     let query_set: BTreeSet<String> = query_terms.iter().cloned().collect();
-    let added: Vec<(Option<u32>, f64)> = recall_expansion_weights(expansions, &query_set)
+    let added: Vec<(Option<u32>, f64, f64)> = recall_expansion_weights(expansions, &query_set)
         .into_iter()
-        .map(|(term, weight)| (index.term_id(&term), weight))
+        .map(|(term, weight)| {
+            let id = index.term_id(&term);
+            (id, weight, idf_of(id))
+        })
         .collect();
-    let query_ids: Vec<Option<u32>> = query_terms.iter().map(|term| index.term_id(term)).collect();
+    let query_ids: Vec<(Option<u32>, f64)> = query_terms
+        .iter()
+        .map(|term| {
+            let id = index.term_id(term);
+            (id, idf_of(id))
+        })
+        .collect();
     let unit_ids: Vec<Option<u32>> = if added.is_empty() {
         Vec::new()
     } else {
@@ -633,8 +659,8 @@ pub(crate) fn rank_recall_positions_bm25(
             continue;
         };
         let mut score: f64 = 0.0;
-        for id in &query_ids {
-            score += term_score(*id, terms);
+        for (id, idf) in &query_ids {
+            score += term_score(*id, *idf, terms);
         }
         if !added.is_empty() {
             if unit_ids
@@ -648,8 +674,8 @@ pub(crate) fn rank_recall_positions_bm25(
                 });
                 continue;
             }
-            for (id, weight) in &added {
-                score += weight * term_score(*id, terms);
+            for (id, weight, idf) in &added {
+                score += weight * term_score(*id, *idf, terms);
             }
         }
         if score > 0.0 {

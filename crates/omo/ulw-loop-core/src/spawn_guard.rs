@@ -5,6 +5,7 @@ use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::Value;
 
@@ -124,8 +125,9 @@ pub fn run_spawn_admission_recorder_cli_with_env<R: Read, W: Write>(mut stdin: R
         .and_then(|v| v.as_str().map(|s| s.to_string()).or_else(|| Some(v.to_string())))
         .unwrap_or_default();
 
-    let re = Regex::new(r"(?i)too many active cells|AgentLimitReached|max_threads|max_concurrent_threads_per_session").expect("valid regex");
-    if !re.is_match(&response) {
+    // PERF-DIVERGENCE(omo spawn-guard): upstream builds this RegExp on every invocation; this port compiles it once in a LazyLock. Output is identical.
+    static RE_LIMIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)too many active cells|AgentLimitReached|max_threads|max_concurrent_threads_per_session").expect("valid regex"));
+    if !RE_LIMIT.is_match(&response) {
         return;
     }
 
@@ -267,27 +269,8 @@ fn is_gate_reviewer_spawn(tool_input: &Value, get_env: impl Fn(&str) -> Option<S
     GATE_REVIEWER_AGENT_NAMES.contains(&agent_type.as_str())
 }
 
-fn review_agent_type(tool_input: &Value, get_env: impl Fn(&str) -> Option<String> + Copy) -> Option<String> {
-    let obj = tool_input.as_object()?;
-    if let Some(agent_type) = obj.get("agent_type").and_then(|v| v.as_str()) {
-        let mut all_roles = Vec::new();
-        for roles in crate::surface::all_reviewer_roles() {
-            all_roles.push(roles.gate_review);
-            all_roles.push(roles.code_review);
-            all_roles.push(roles.manual_qa);
-        }
-        for (alias, _) in crate::surface::LEGACY_REVIEWER_AGENT_ALIASES {
-            all_roles.push(alias);
-        }
-        if !all_roles.contains(&agent_type) {
-            return None;
-        }
-        return Some(active_surface_reviewer_alias(agent_type, get_env));
-    }
-
-    let message = obj.get("message").and_then(|v| v.as_str())?;
-    let normalized = message.to_lowercase();
-
+// PERF-DIVERGENCE(omo spawn-guard): upstream rebuilds the reviewer role list and per-name regexes per lookup; this port builds the list and one alternation regex once. Matching results are identical.
+static ALL_ROLES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     let mut all_roles = Vec::new();
     for roles in crate::surface::all_reviewer_roles() {
         all_roles.push(roles.gate_review);
@@ -297,37 +280,50 @@ fn review_agent_type(tool_input: &Value, get_env: impl Fn(&str) -> Option<String
     for (alias, _) in crate::surface::LEGACY_REVIEWER_AGENT_ALIASES {
         all_roles.push(alias);
     }
+    all_roles
+});
 
-    let mut explicit_assignment: Option<(&str, usize)> = None;
-    for name in &all_roles {
-        let pat = format!(r"\bact as (?:an? )?{}\b", regex::escape(name));
-        if let Ok(re) = Regex::new(&pat) {
-            if let Some(m) = re.find(&normalized) {
-                let idx = m.start();
-                if explicit_assignment.is_none() || explicit_assignment.as_ref().is_some_and(|ea| idx < ea.1) {
-                    explicit_assignment = Some((name, idx));
-                }
-            }
+// PERF-DIVERGENCE(omo spawn-guard): the leftmost match of one alternation equals the earliest per-name match (role names are distinct and none is a prefix of another), so the per-name regex loop is replaced by one cached regex.
+static RE_EXPLICIT_ROLE: LazyLock<Regex> = LazyLock::new(|| {
+    let alternation = ALL_ROLES.iter().map(|name| regex::escape(name)).collect::<Vec<_>>().join("|");
+    Regex::new(&format!(r"\bact as (?:an? )?({alternation})\b")).expect("valid regex")
+});
+
+// PERF-DIVERGENCE(omo spawn-guard): upstream recompiles this regex per call; this port compiles it once. Output is identical.
+static RE_ACT_AS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bact as (?:an? )?\S+").expect("valid regex"));
+
+// PERF-DIVERGENCE(omo spawn-guard): upstream recompiles this regex per call; this port compiles it once. Output is identical.
+static RE_GATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)lazycodex-gate-reviewer|omo-native-gate-reviewer|omo-senpi-gate-reviewer|final gate review").expect("valid regex"));
+
+fn review_agent_type(tool_input: &Value, get_env: impl Fn(&str) -> Option<String> + Copy) -> Option<String> {
+    let obj = tool_input.as_object()?;
+    if let Some(agent_type) = obj.get("agent_type").and_then(|v| v.as_str()) {
+        if !ALL_ROLES.contains(&agent_type) {
+            return None;
+        }
+        return Some(active_surface_reviewer_alias(agent_type, get_env));
+    }
+
+    let message = obj.get("message").and_then(|v| v.as_str())?;
+    let normalized = message.to_lowercase();
+
+    if let Some(caps) = RE_EXPLICIT_ROLE.captures(&normalized) {
+        if let Some(name) = caps.get(1) {
+            return Some(active_surface_reviewer_alias(name.as_str(), get_env));
         }
     }
 
-    if let Some((name, _)) = explicit_assignment {
-        return Some(active_surface_reviewer_alias(name, get_env));
-    }
-
-    let re_act_as = Regex::new(r"\bact as (?:an? )?\S+").expect("valid regex");
-    if re_act_as.is_match(&normalized) {
+    if RE_ACT_AS.is_match(&normalized) {
         return None;
     }
 
-    for name in &all_roles {
+    for name in ALL_ROLES.iter() {
         if normalized.contains(name) {
             return Some(active_surface_reviewer_alias(name, get_env));
         }
     }
 
-    let re_gate = Regex::new(r"(?i)lazycodex-gate-reviewer|omo-native-gate-reviewer|omo-senpi-gate-reviewer|final gate review").expect("valid regex");
-    if re_gate.is_match(message) {
+    if RE_GATE.is_match(message) {
         Some(reviewer_roles_for(crate::surface::resolve_toolkit_surface_with_env(get_env)).gate_review.to_string())
     } else {
         None

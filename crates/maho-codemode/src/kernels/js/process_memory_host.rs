@@ -39,7 +39,8 @@ impl JavaScriptProcessMemoryHost {
 
     pub fn settled(&mut self, mut message: Value) -> Value {
         if let Some(memory) = message.get("memory") {
-            match serde_json::from_value(memory.clone())
+            // PERF-DIVERGENCE(senpi process-memory-host): upstream mutates the footprint object in place; this port deserializes from a borrowed Value instead of cloning it first. Result is identical.
+            match serde::Deserialize::deserialize(memory)
                 .and_then(|report| serde_json::to_value(self.policy.annotate(report)))
             {
                 Ok(report) => message["memory"] = report,

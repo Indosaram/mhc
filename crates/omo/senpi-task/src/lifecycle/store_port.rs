@@ -15,6 +15,15 @@ pub trait LifecycleStore: Send + Sync {
     fn state_dir(&self) -> &Path;
     fn load(&self, task_id: &str) -> Result<Option<TaskRecord>, StoreError>;
     fn list(&self) -> Result<ListTaskRecordsResult, StoreError>;
+    // PERF-DIVERGENCE(senpi task-record-store.ts): upstream callers list every record and filter afterwards; this port lets the store filter before cloning (the default keeps the list-then-filter behavior for wrappers). Result is identical.
+    fn list_matching(
+        &self,
+        keep: &mut dyn FnMut(&TaskRecord) -> bool,
+    ) -> Result<ListTaskRecordsResult, StoreError> {
+        let mut listed = self.list()?;
+        listed.records.retain(keep);
+        Ok(listed)
+    }
     fn mutate(
         &self,
         task_id: &str,
@@ -47,6 +56,13 @@ impl LifecycleStore for TaskRecordStore {
 
     fn list(&self) -> Result<ListTaskRecordsResult, StoreError> {
         TaskRecordStore::list(self)
+    }
+
+    fn list_matching(
+        &self,
+        keep: &mut dyn FnMut(&TaskRecord) -> bool,
+    ) -> Result<ListTaskRecordsResult, StoreError> {
+        TaskRecordStore::list_matching(self, keep)
     }
 
     fn mutate(

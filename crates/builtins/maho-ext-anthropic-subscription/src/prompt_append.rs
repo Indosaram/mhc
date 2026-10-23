@@ -1,10 +1,18 @@
 pub const REGION_START:&str="<!--senpi:project-rules:1:start-->";
 pub const REGION_END:&str="<!--senpi:project-rules:1:end-->";
+// PERF-DIVERGENCE(omo anthropic-subscription prompt-append.ts): upstream builds these config-dependent regexes per call; we memoize the three compiled regexes per config directory. Matches are identical.
+fn config_regexes(config:&str)->Option<std::sync::Arc<[regex::Regex;3]>> {
+    static CACHE:std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String,std::sync::Arc<[regex::Regex;3]>>>>=std::sync::LazyLock::new(Default::default);
+    let mut cache=CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(found)=cache.get(config) {return Some(found.clone());}
+    let built=std::sync::Arc::new([regex::Regex::new(&format!(r"(?i)~/{config}\b")).ok()?,regex::Regex::new(&format!(r#"(^|[\s'"`])\.{config}/"#)).ok()?,regex::Regex::new(&format!(r"(?i)\b{config}\b")).ok()?]);
+    cache.insert(config.to_owned(),built.clone());Some(built)
+}
 pub fn agents(cwd:&std::path::Path,agent_dir:&std::path::Path,config_directory:&str)->Option<String> {
     let mut current=std::path::absolute(cwd).ok()?;
     let path=loop {let candidate=current.join("AGENTS.md");if candidate.exists() {break candidate;}
         if !current.pop() {break agent_dir.join("AGENTS.md");}};
-    let content=std::fs::read_to_string(path).ok()?;let config=regex::escape(config_directory.trim_start_matches('.'));let content=regex::Regex::new(&format!(r"(?i)~/{config}\b")).ok()?.replace_all(content.trim(),"~/.claude");let content=regex::Regex::new(&format!(r#"(^|[\s'"`])\.{config}/"#)).ok()?.replace_all(&content,"${1}.claude/");let content=regex::Regex::new(&format!(r"(?i)\b{config}\b")).ok()?.replace_all(&content,"environment").into_owned();if content.is_empty() {None}else {Some(format!("# CLAUDE.md\n\n{content}"))}
+    let content=std::fs::read_to_string(path).ok()?;let config=regex::escape(config_directory.trim_start_matches('.'));let regexes=config_regexes(&config)?;let [home,dot,bare]=&*regexes;let content=home.replace_all(content.trim(),"~/.claude");let content=dot.replace_all(&content,"${1}.claude/");let content=bare.replace_all(&content,"environment").into_owned();if content.is_empty() {None}else {Some(format!("# CLAUDE.md\n\n{content}"))}
 }
 pub fn project_rules(prompt:Option<&str>)->Option<&str> {
     let prompt=prompt?;let mut search=0;

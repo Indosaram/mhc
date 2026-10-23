@@ -153,7 +153,8 @@ pub fn resolve_threshold_context_tokens(usage_tokens: f64, estimate_tokens: f64)
 }
 
 fn usage_from_value(value: &Value) -> Option<Usage> {
-    serde_json::from_value(value.clone()).ok()
+    // PERF-DIVERGENCE(senpi compaction.ts): upstream reads the usage object in place; the port deep-cloned it per candidate via from_value, this deserializes straight from the borrowed Value. Same parsed Usage.
+    <Usage as serde::Deserialize>::deserialize(value).ok()
 }
 
 /// senpi getAssistantUsage.
@@ -323,6 +324,10 @@ pub const BASE64_CHAR_WEIGHT: usize = 4;
 /// senpi weightedChars: long base64-ish runs count four times over.
 pub fn weighted_chars(text: &str) -> usize {
     let mut chars = text.encode_utf16().count();
+    // PERF-DIVERGENCE(senpi compaction.ts weightedChars): upstream always runs the base64 regex; a run needs 512 chars (>= 512 bytes), so shorter texts skip the regex scan. Result is identical.
+    if text.len() < 512 {
+        return chars;
+    }
     for found in BASE64_RUN_RE.find_iter(text) {
         chars += found.as_str().chars().count() * (BASE64_CHAR_WEIGHT - 1);
     }

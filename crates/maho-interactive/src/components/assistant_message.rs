@@ -403,13 +403,17 @@ impl AssistantMessageComponent {
 impl Component for AssistantMessageComponent {
     fn render(&mut self, width: usize) -> Vec<String> {
         self.apply_pending_toggle();
-        let signature = self.last_message_signature.clone().unwrap_or_default();
+        // PERF-DIVERGENCE(senpi assistant-message.ts): upstream compares signature strings by reference; this port compares by borrow on a cache hit instead of cloning the signature String every frame. Output is identical.
+        let signature_matches = |cache: &RenderCache| {
+            cache.width == width
+                && cache.signature == self.last_message_signature.as_deref().unwrap_or_default()
+        };
         if let Some(cache) = &self.render_cache
-            && cache.width == width
-            && cache.signature == signature
+            && signature_matches(cache)
         {
             return cache.lines.clone();
         }
+        let signature = self.last_message_signature.clone().unwrap_or_default();
         let mut lines = self.content.render(width);
         if !self.has_tool_calls && !lines.is_empty() {
             if let Some(first) = lines.first_mut() {

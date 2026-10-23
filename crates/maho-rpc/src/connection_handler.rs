@@ -403,7 +403,8 @@ async fn handle_input_line_with_login_state(
         })
         .map(Some);
     }
-    let command: RpcCommand = match serde_json::from_value(value.clone()) {
+    // PERF-DIVERGENCE(senpi): upstream passes the parsed JSON object straight on; we deserialize from `&Value` instead of deep-cloning the whole command (MBs with inline images). Same command and same serde error text.
+    let command: RpcCommand = match <RpcCommand as serde::Deserialize>::deserialize(&value) {
         Ok(command) => command,
         Err(error)
             if error.to_string().starts_with(&format!(
@@ -607,6 +608,7 @@ pub fn build_rpc_session_state_with_dialogs(
         .as_deref()
         .is_none_or(|file| !std::path::Path::new(file).exists())
     {
+        // PERF-DIVERGENCE(senpi buildRpcSessionState): upstream copies the entries and re-serializes them on every event; we move the single `entries()` snapshot into the state instead of a second `json!(entries)` deep copy. Same JSON.
         let entries = session.with_session_manager(|manager| manager.entries());
         if entries.iter().any(|entry| {
             !matches!(
@@ -614,7 +616,7 @@ pub fn build_rpc_session_state_with_dialogs(
                 Some("model_change" | "model_change_rejected" | "thinking_level_change")
             )
         }) {
-            state["entries"] = serde_json::json!(entries);
+            state["entries"] = serde_json::Value::Array(entries);
         }
     }
     state

@@ -63,7 +63,8 @@ impl InvokeStreamParser {
             {
                 if function_calls_open_tag.index > 0 {
                     emit_text(&mut events, &self.buffer[..function_calls_open_tag.index]);
-                    self.buffer = self.buffer[function_calls_open_tag.index..].to_string();
+                    // PERF-DIVERGENCE(senpi morph/anthropic-xml stream parser): upstream slices the JS string into a new string; this port drains the consumed prefix in place to avoid reallocating the tail. Buffer contents are identical.
+                    self.buffer.drain(..function_calls_open_tag.index);
                     continue;
                 }
 
@@ -87,7 +88,8 @@ impl InvokeStreamParser {
                     self.buffer = format!("{}{}", wrapper_content, &self.buffer[wrapper_end..]);
                 } else {
                     emit_text(&mut events, &self.buffer[..wrapper_end]);
-                    self.buffer = self.buffer[wrapper_end..].to_string();
+                    // PERF-DIVERGENCE(senpi morph/anthropic-xml stream parser): upstream slices the JS string into a new string; this port drains the consumed prefix in place to avoid reallocating the tail. Buffer contents are identical.
+                    self.buffer.drain(..wrapper_end);
                 }
                 continue;
             }
@@ -95,7 +97,8 @@ impl InvokeStreamParser {
             if let Some(invoke_open_tag) = invoke_open_tag {
                 if invoke_open_tag.index > 0 {
                     emit_text(&mut events, &self.buffer[..invoke_open_tag.index]);
-                    self.buffer = self.buffer[invoke_open_tag.index..].to_string();
+                    // PERF-DIVERGENCE(senpi morph/anthropic-xml stream parser): upstream slices the JS string into a new string; this port drains the consumed prefix in place to avoid reallocating the tail. Buffer contents are identical.
+                    self.buffer.drain(..invoke_open_tag.index);
                     continue;
                 }
 
@@ -119,8 +122,8 @@ impl InvokeStreamParser {
                             &mut events,
                             &self.buffer[..next_known_invoke.opening_tag.index],
                         );
-                        self.buffer =
-                            self.buffer[next_known_invoke.opening_tag.index..].to_string();
+                        // PERF-DIVERGENCE(senpi morph/anthropic-xml stream parser): upstream slices the JS string into a new string; this port drains the consumed prefix in place to avoid reallocating the tail. Buffer contents are identical.
+                        self.buffer.drain(..next_known_invoke.opening_tag.index);
                         continue;
                     }
                 }
@@ -133,7 +136,8 @@ impl InvokeStreamParser {
                 };
 
                 let original_call_text = self.buffer[..block.end].to_string();
-                self.buffer = self.buffer[block.end..].to_string();
+                // PERF-DIVERGENCE(senpi morph/anthropic-xml stream parser): upstream slices the JS string into a new string; this port drains the consumed prefix in place to avoid reallocating the tail. Buffer contents are identical.
+                self.buffer.drain(..block.end);
 
                 let Some(tool) = tool else {
                     emit_text(&mut events, &original_call_text);
@@ -168,7 +172,7 @@ impl InvokeStreamParser {
                 });
                 events.push(StreamParserEvent::ToolcallDelta {
                     index,
-                    arguments_delta: Value::Object(arguments_record.clone()).to_string(),
+                    arguments_delta: serde_json::to_string(&arguments_record).unwrap_or_default(),
                 });
                 events.push(StreamParserEvent::ToolcallEnd {
                     index,
@@ -199,7 +203,8 @@ impl InvokeStreamParser {
                 break;
             }
             emit_text(&mut events, &self.buffer[..safe_length]);
-            self.buffer = self.buffer[safe_length..].to_string();
+            // PERF-DIVERGENCE(senpi morph/anthropic-xml stream parser): upstream slices the JS string into a new string; this port drains the consumed prefix in place to avoid reallocating the tail. Buffer contents are identical.
+            self.buffer.drain(..safe_length);
         }
 
         self.buffer_utf16_len = crate::utils::js::utf16_len(&self.buffer);
@@ -265,7 +270,8 @@ impl StreamParser for InvokeStreamParser {
             && function_calls_open_tag.index == 0
             && find_function_calls_close_tag(&self.buffer, function_calls_open_tag.length).is_none()
         {
-            self.buffer = self.buffer[function_calls_open_tag.length..].to_string();
+            // PERF-DIVERGENCE(senpi morph/anthropic-xml stream parser): upstream slices the JS string into a new string; this port drains the consumed prefix in place to avoid reallocating the tail. Buffer contents are identical.
+            self.buffer.drain(..function_calls_open_tag.length);
             events.extend(self.process_buffer(true, true));
         }
 
@@ -315,7 +321,7 @@ impl StreamParser for InvokeStreamParser {
             });
             events.push(StreamParserEvent::ToolcallDelta {
                 index,
-                arguments_delta: Value::Object(arguments_record.clone()).to_string(),
+                arguments_delta: serde_json::to_string(&arguments_record).unwrap_or_default(),
             });
             if recovered_arguments.is_some() {
                 events.push(StreamParserEvent::ToolcallEnd {

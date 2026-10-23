@@ -2256,39 +2256,32 @@ fn apply_streamed_args_delta(
         return;
     }
     let snapshot = args_text_delta;
-    let current = state
-        .streaming
-        .get(&target)
-        .and_then(|entry| entry.partial_json.clone())
-        .unwrap_or_default();
+    // PERF-DIVERGENCE(senpi cursor-agent.ts): upstream rebuilds the args string via concatenation per delta; this port appends in place and borrows the prefix instead of cloning the whole buffer several times. Buffer contents are identical.
+    let Some(entry) = state.streaming.get_mut(&target) else {
+        return;
+    };
     let chunk = snapshot
-        .strip_prefix(current.as_str())
-        .unwrap_or(snapshot)
-        .to_owned();
+        .strip_prefix(entry.partial_json.as_deref().unwrap_or(""))
+        .unwrap_or(snapshot);
     if chunk.is_empty() {
         return;
     }
-    let next_buffer = format!("{current}{chunk}");
-    let last_parse_len = state
-        .streaming
-        .get(&target)
-        .and_then(|entry| entry.last_parse_len)
-        .unwrap_or(0);
-    if let Some(entry) = state.streaming.get_mut(&target) {
-        entry.partial_json = Some(next_buffer.clone());
-    }
-    if next_buffer.len() - last_parse_len >= STREAMING_ARGS_REPARSE_DELTA {
-        let parsed = parse_streaming_json(Some(&next_buffer));
-        if let (Some(entry), Value::Object(map)) = (state.streaming.get_mut(&target), parsed) {
+    let last_parse_len = entry.last_parse_len.unwrap_or(0);
+    let buffer = entry.partial_json.get_or_insert_with(String::new);
+    buffer.push_str(chunk);
+    let next_len = buffer.len();
+    if next_len - last_parse_len >= STREAMING_ARGS_REPARSE_DELTA {
+        let parsed = parse_streaming_json(Some(buffer.as_str()));
+        if let Value::Object(map) = parsed {
             if let ContentBlock::ToolCall(call) = &mut output.content[target] {
                 call.arguments = map;
             }
-            entry.last_parse_len = Some(next_buffer.len());
+            entry.last_parse_len = Some(next_len);
         }
     }
     stream.push(AssistantMessageEvent::ToolcallDelta {
         content_index: target,
-        delta: chunk,
+        delta: chunk.to_owned(),
         partial: output.clone(),
     });
 }
@@ -2683,28 +2676,28 @@ fn cursor_user_content_key(content: &crate::types::UserContent) -> String {
     match content {
         crate::types::UserContent::Text(text) => text.trim().to_owned(),
         crate::types::UserContent::Blocks(blocks) => {
-            let mut data = String::new();
+            use sha2::Digest as _;
+            // PERF-DIVERGENCE(senpi cursor-agent.ts): upstream concatenates every block (incl. base64 images) into one string before hashing; this port feeds the hasher piecewise. The digest input bytes are identical.
+            let mut hasher = sha2::Sha256::new();
             for block in blocks {
                 match block {
                     ContentBlock::Text(text) => {
-                        data.push_str("text");
-                        data.push_str(&text.text);
+                        hasher.update(b"text");
+                        hasher.update(text.text.as_bytes());
                     }
                     ContentBlock::Image(image) => {
-                        data.push_str("image");
-                        data.push_str(&image.mime_type);
-                        data.push_str(&image.data);
+                        hasher.update(b"image");
+                        hasher.update(image.mime_type.as_bytes());
+                        hasher.update(image.data.as_bytes());
                     }
                     ContentBlock::Thinking(_)
                     | ContentBlock::ToolCall(_)
                     | ContentBlock::ProviderNative(_) => {
-                        data.push_str("image");
-                        data.push_str("undefined");
-                        data.push_str("undefined");
+                        hasher.update(b"imageundefinedundefined");
                     }
                 }
             }
-            sha256_hex(data.as_bytes())
+            hex::encode(hasher.finalize())
         }
     }
 }

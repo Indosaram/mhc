@@ -341,6 +341,26 @@ pub fn convert_to_llm(messages: Vec<AgentMessage>) -> Vec<Message> {
     drop_failed_assistant_turns_owned(converted)
 }
 
+/// Borrowing variant of [`convert_to_llm`].
+// PERF-DIVERGENCE(senpi compaction.ts): upstream's convertToLlm maps the input array without copying it; we add a slice-taking variant that clones only the kept messages instead of callers deep-copying the whole slice first. Output is identical to `convert_to_llm(messages.to_vec())`.
+pub fn convert_to_llm_ref(messages: &[AgentMessage]) -> Vec<Message> {
+    let converted: Vec<Message> = messages
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::Llm(message) => Some(message.clone()),
+            AgentMessage::Custom(custom) => match custom {
+                CustomAgentMessage::BashExecution(bash)
+                    if bash.exclude_from_context == Some(true) =>
+                {
+                    None
+                }
+                custom => Some(custom_agent_message_to_llm(custom)),
+            },
+        })
+        .collect();
+    drop_failed_assistant_turns_owned(converted)
+}
+
 #[cfg(test)]
 mod timestamp_tests {
     use super::*;

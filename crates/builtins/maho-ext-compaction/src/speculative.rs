@@ -47,10 +47,11 @@ pub fn branch_values(context: &ExtensionContext) -> Vec<Value> {
         .into_iter()
         .map(|entry| {
             let mut data = entry.data;
-            data["id"] = json!(entry.id);
-            data["parentId"] = json!(entry.parent_id);
-            data["timestamp"] = json!(entry.timestamp);
-            data["type"] = json!(entry.kind);
+            // PERF-DIVERGENCE(senpi compaction): upstream copies entry fields into the JSON view; we move the owned strings instead of cloning them via json!. Resulting values are identical.
+            data["id"] = Value::String(entry.id);
+            data["parentId"] = entry.parent_id.map_or(Value::Null, Value::String);
+            data["timestamp"] = Value::String(entry.timestamp);
+            data["type"] = Value::String(entry.kind);
             data
         })
         .collect()

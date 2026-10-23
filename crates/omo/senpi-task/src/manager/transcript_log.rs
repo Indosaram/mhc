@@ -94,8 +94,12 @@ fn to_persisted_event(event: &ManagedChildEvent) -> Option<PersistedTaskEvent> {
             if let Some(failure) = assistant_failure(message) {
                 return persisted(TRANSCRIPT_ERROR_EVENT, failure);
             }
-            assistant_text(message)
-                .and_then(|text| persisted(TRANSCRIPT_ASSISTANT_EVENT, json!({ "text": text })))
+            // PERF-DIVERGENCE(senpi manager/transcript-log.ts): upstream copies the assistant text into the payload object; we move the already-built String into the Map instead of cloning it via json!. Payload is identical.
+            assistant_text(message).and_then(|text| {
+                let mut payload = Map::new();
+                payload.insert("text".to_string(), Value::String(text));
+                persisted(TRANSCRIPT_ASSISTANT_EVENT, Value::Object(payload))
+            })
         }
         "tool_execution_end" => {
             let tool = event.tool_name.as_ref()?;

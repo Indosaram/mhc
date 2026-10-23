@@ -153,28 +153,35 @@ fn cursor_user_content_key(content: &crate::types::UserContent) -> String {
     match content {
         crate::types::UserContent::Text(text) => text.trim().to_owned(),
         crate::types::UserContent::Blocks(blocks) => {
-            let mut data = String::new();
+            // PERF-DIVERGENCE(senpi cursor-agent/measure.ts): upstream concatenates every block (incl. base64 images) into one string before hashing; this port folds each piece into the same positional hash without the intermediate string. The digest is identical.
+            let mut out = [0u8; 32];
+            let mut index = 0usize;
+            let mut feed = |piece: &str| {
+                for byte in piece.as_bytes() {
+                    let slot = index % 32;
+                    out[slot] = out[slot].wrapping_add(*byte).wrapping_add(index as u8);
+                    index += 1;
+                }
+            };
             for block in blocks {
                 match block {
                     ContentBlock::Text(text) => {
-                        data.push_str("text");
-                        data.push_str(&text.text);
+                        feed("text");
+                        feed(&text.text);
                     }
                     ContentBlock::Image(image) => {
-                        data.push_str("image");
-                        data.push_str(&image.mime_type);
-                        data.push_str(&image.data);
+                        feed("image");
+                        feed(&image.mime_type);
+                        feed(&image.data);
                     }
                     ContentBlock::Thinking(_)
                     | ContentBlock::ToolCall(_)
                     | ContentBlock::ProviderNative(_) => {
-                        data.push_str("image");
-                        data.push_str("undefined");
-                        data.push_str("undefined");
+                        feed("imageundefinedundefined");
                     }
                 }
             }
-            digest_hex(&data)
+            hex(&out)
         }
     }
 }

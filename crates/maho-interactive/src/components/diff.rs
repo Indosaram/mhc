@@ -16,7 +16,8 @@ fn parse_diff_line(line: &str) -> Option<(char, String, String)> {
     if prefix != '+' && prefix != '-' && prefix != ' ' {
         return None;
     }
-    let rest: String = chars.collect();
+    // PERF-DIVERGENCE(senpi components/diff.ts): upstream slices the line with a regex; this port slices past the one-byte ASCII prefix instead of collecting the rest into a new String. Output is identical.
+    let rest = &line[1..];
     let digits_end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
     let line_num = rest[..digits_end].to_owned();
     let remainder = &rest[digits_end..];

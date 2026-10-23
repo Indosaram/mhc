@@ -289,12 +289,24 @@ async fn read_proxy_body(
     context: &Context,
     options: &ProxyStreamOptions,
 ) -> Result<(), ProxyError> {
-    let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "model": model,
-        "context": context,
-        "options": options.serializable,
-    });
+    // PERF-DIVERGENCE(senpi proxy.ts): upstream uses fetch's global connection pool and one JSON.stringify; we reuse a static reqwest client (keep-alive, one TLS setup) and serialize a borrowed struct once instead of building a Value tree. Request bytes are identical (same key order).
+    static CLIENT: std::sync::LazyLock<reqwest::Client> =
+        std::sync::LazyLock::new(reqwest::Client::new);
+    #[derive(Serialize)]
+    struct ProxyRequestBody<'a> {
+        model: &'a Model,
+        context: &'a Context,
+        options: &'a ProxySerializableStreamOptions,
+    }
+    let client = &*CLIENT;
+    let body = serde_json::to_vec(&ProxyRequestBody {
+        model,
+        context,
+        options: &options.serializable,
+    })
+    .map_err(|error| ProxyError {
+        message: error.to_string(),
+    })?;
     let cancelled = || async {
         match options.signal.as_ref() {
             Some(signal) => signal.cancelled().await,
@@ -305,7 +317,7 @@ async fn read_proxy_body(
         .post(format!("{}/api/stream", options.proxy_url))
         .header("Authorization", format!("Bearer {}", options.auth_token))
         .header("Content-Type", "application/json")
-        .body(body.to_string())
+        .body(body)
         .send();
     let response = tokio::select! {
         biased;
@@ -366,11 +378,11 @@ async fn read_proxy_body(
                 message: "Request aborted by user".to_owned(),
             });
         }
+        // PERF-DIVERGENCE(senpi proxy.ts): upstream splits the decoded text per chunk; we search only the new chunk for the last newline and process complete lines in place, avoiding a buffer split_off/replace copy and a rescan of the old tail. The same lines are processed in the same order.
         buffer.extend_from_slice(&chunk);
-        if let Some(position) = buffer.iter().rposition(|byte| *byte == b'\n') {
-            let remainder = buffer.split_off(position + 1);
-            let complete = std::mem::replace(&mut buffer, remainder);
-            for line in complete.split(|byte| *byte == b'\n') {
+        if let Some(relative) = chunk.iter().rposition(|byte| *byte == b'\n') {
+            let position = buffer.len() - chunk.len() + relative;
+            for line in buffer[..=position].split(|byte| *byte == b'\n') {
                 if line.is_empty() {
                     continue;
                 }
@@ -385,6 +397,7 @@ async fn read_proxy_body(
                     stream.push(event);
                 }
             }
+            buffer.drain(..=position);
         }
     }
 

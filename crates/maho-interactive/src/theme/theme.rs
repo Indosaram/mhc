@@ -291,6 +291,8 @@ pub struct Theme {
     // resolved color tables are immutable after construction.
     colors: std::sync::Arc<BTreeMap<String, ColorValue>>,
     export_colors: std::sync::Arc<BTreeMap<String, String>>,
+    // PERF-DIVERGENCE(senpi theme.ts): upstream precomputes fg/bg escapes in the constructor; the port recomputed them per call, so we restore a per-key [fg, bg] escape table built once in from_json. Strings are identical.
+    ansi_cache: std::sync::Arc<std::collections::HashMap<String, [String; 2]>>,
 }
 impl Theme {
     /// Identity of the resolved color tables; changes whenever a different theme object is installed.
@@ -445,14 +447,22 @@ impl Theme {
                 colors.insert(k.into(), v.clone());
             }
         }
-        Ok(Self {
+        let mut theme = Self {
             name: json.name,
             appearance: json.appearance,
             source_path: None,
             mode,
             colors: std::sync::Arc::new(colors),
             export_colors: std::sync::Arc::new(export_colors),
-        })
+            ansi_cache: std::sync::Arc::new(std::collections::HashMap::new()),
+        };
+        let cache: std::collections::HashMap<String, [String; 2]> = theme
+            .colors
+            .keys()
+            .map(|key| (key.clone(), [theme.ansi_uncached(key, false), theme.ansi_uncached(key, true)]))
+            .collect();
+        theme.ansi_cache = std::sync::Arc::new(cache);
+        Ok(theme)
     }
     pub fn builtin(name: &str, mode: ColorMode) -> Result<Self, ThemeError> {
         let text = match name {
@@ -479,6 +489,15 @@ impl Theme {
         Ok(t)
     }
     fn ansi(&self, key: &str, bg: bool) -> String {
+        self.ansi_ref(key, bg).into_owned()
+    }
+    fn ansi_ref(&self, key: &str, bg: bool) -> std::borrow::Cow<'_, str> {
+        match self.ansi_cache.get(key) {
+            Some(pair) => std::borrow::Cow::Borrowed(pair[usize::from(bg)].as_str()),
+            None => std::borrow::Cow::Owned(self.ansi_uncached(key, bg)),
+        }
+    }
+    fn ansi_uncached(&self, key: &str, bg: bool) -> String {
         let prefix = if bg { 48 } else { 38 };
         match self.colors.get(key) {
             Some(ColorValue::Index(i)) => format!("\x1b[{prefix};5;{i}m"),
@@ -510,10 +529,20 @@ impl Theme {
         }
     }
     pub fn fg(&self, color: ThemeColor, text: &str) -> String {
-        format!("{}{text}\x1b[39m", self.get_fg_ansi(color))
+        let ansi = self.ansi_ref(color.key(), false);
+        let mut out = String::with_capacity(ansi.len() + text.len() + 5);
+        out.push_str(&ansi);
+        out.push_str(text);
+        out.push_str("\x1b[39m");
+        out
     }
     pub fn bg(&self, color: ThemeBg, text: &str) -> String {
-        format!("{}{text}\x1b[49m", self.get_bg_ansi(color))
+        let ansi = self.ansi_ref(color.key(), true);
+        let mut out = String::with_capacity(ansi.len() + text.len() + 5);
+        out.push_str(&ansi);
+        out.push_str(text);
+        out.push_str("\x1b[49m");
+        out
     }
     pub fn get_fg_ansi(&self, c: ThemeColor) -> String {
         self.ansi(c.key(), false)

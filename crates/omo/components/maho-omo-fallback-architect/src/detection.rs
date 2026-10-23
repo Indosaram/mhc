@@ -15,6 +15,13 @@ pub fn is_refusal_like_message(message: &Value) -> bool {
     if matches!(message["stopDetails"]["type"].as_str(), Some("refusal" | "sensitive")) { return true; }
     message["errorMessage"].as_str().is_some_and(|text| REFUSAL_PATTERN.is_match(text))
 }
+// PERF-DIVERGENCE(omo detection.ts): upstream reads fields off the message object; the Value-based port serialized the whole message, so this typed twin reads the same fields directly. Predicate is identical.
+/// Typed twin of `is_refusal_like_message` for an assistant message (no Value round-trip).
+pub fn is_refusal_like_assistant(message: &maho_ext_api::AssistantMessage) -> bool {
+    if !matches!(message.stop_reason.as_str(), "error" | "toolUse") { return false; }
+    if message.stop_details.is_some() { return true; }
+    message.error_message.as_deref().is_some_and(|text| REFUSAL_PATTERN.is_match(text))
+}
 pub fn is_fable_five_model(model: &Value) -> bool { model["id"] == FABLE_FIVE_MODEL_ID }
 /// Copy-only predicate (detection.ts `isFableFiveSelector`): true when the refusing model belongs to
 /// the family the architect category consults. Not an arming gate.

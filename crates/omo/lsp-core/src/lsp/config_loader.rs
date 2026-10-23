@@ -120,11 +120,23 @@ fn load_all_configs() -> Result<Vec<(ConfigSource, ConfigJson)>, LspRequestConte
 /// TS `getMergedServers`: project > user > builtin, then descending priority.
 pub fn get_merged_servers() -> Result<Vec<ServerWithSource>, LspRequestContextUnavailableError> {
     let configs = load_all_configs()?;
+    Ok(merge_servers(&configs))
+}
+
+/// Merged servers plus disabled ids from a single config load.
+// PERF-DIVERGENCE(omo lsp config-loader): upstream calls getMergedServers and getDisabledServerIds back to back, reading and parsing each config file twice; this port loads the configs once and derives both lists. Results are identical (and the two lists now share one consistent snapshot).
+pub(crate) fn get_merged_servers_and_disabled_ids(
+) -> Result<(Vec<ServerWithSource>, Vec<String>), LspRequestContextUnavailableError> {
+    let configs = load_all_configs()?;
+    Ok((merge_servers(&configs), disabled_server_ids(&configs)))
+}
+
+fn merge_servers(configs: &[(ConfigSource, ConfigJson)]) -> Vec<ServerWithSource> {
     let mut servers: Vec<ServerWithSource> = Vec::new();
     let mut disabled: HashSet<String> = HashSet::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    for (source, config) in &configs {
+    for (source, config) in configs {
         let Some(lsp) = config else { continue };
         for (id, raw) in lsp {
             let Some(entry) = parse_lsp_entry(raw) else {
@@ -171,7 +183,7 @@ pub fn get_merged_servers() -> Result<Vec<ServerWithSource>, LspRequestContextUn
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
     });
-    Ok(servers)
+    servers
 }
 
 fn create_server_from_entry(
@@ -260,10 +272,14 @@ fn string_array(value: &Value) -> Option<Vec<String>> {
 
 /// TS `getDisabledServerIds`.
 pub fn get_disabled_server_ids() -> Result<Vec<String>, LspRequestContextUnavailableError> {
+    Ok(disabled_server_ids(&load_all_configs()?))
+}
+
+fn disabled_server_ids(configs: &[(ConfigSource, ConfigJson)]) -> Vec<String> {
     let mut disabled: Vec<String> = Vec::new();
-    for (_, config) in load_all_configs()? {
+    for (_, config) in configs {
         let Some(lsp) = config else { continue };
-        for (id, raw) in &lsp {
+        for (id, raw) in lsp {
             if parse_lsp_entry(raw).is_some_and(|entry| entry.disabled == Some(true))
                 && !disabled.contains(id)
             {
@@ -271,5 +287,5 @@ pub fn get_disabled_server_ids() -> Result<Vec<String>, LspRequestContextUnavail
             }
         }
     }
-    Ok(disabled)
+    disabled
 }

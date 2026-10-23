@@ -123,14 +123,16 @@ pub fn register_task_message_renderers(api: &mut ExtensionApi) {
     api.register_message_renderer(TASK_COMPLETION_MESSAGE_TYPE, Arc::new(|message, _, _| {
         let details = match &message.details {
             None => Vec::new(),
-            Some(value) => serde_json::from_value::<Vec<CompletionPayload>>(value.clone()).ok()?
+            // PERF-DIVERGENCE(omo renderers): upstream reads the details object in place and the earlier port deep-cloned the Value per redraw; we deserialize from the borrowed &Value. Decoded payloads are identical.
+            Some(value) => Vec::<CompletionPayload>::deserialize(value).ok()?
                 .into_iter().map(CompletionPayload::decode).collect::<Option<Vec<_>>>()?,
         };
         Some(Box::new(MessageLines::Completion(details)))
     }));
     api.register_message_renderer(TEAM_MEMBER_LIVENESS_MESSAGE_TYPE, Arc::new(|message: &CustomMessage, _, _| {
         let payload = message.details.as_ref().map(|value| {
-            serde_json::from_value::<LivenessPayload>(value.clone())
+            // PERF-DIVERGENCE(omo renderers): upstream reads the details object in place and the earlier port deep-cloned the Value per redraw; we deserialize from the borrowed &Value. The decoded payload is identical.
+            LivenessPayload::deserialize(value)
         }).transpose().ok()?;
         let details = payload.as_ref().map(|value| TeamMemberLivenessDetails {
             member_name: &value.member_name,

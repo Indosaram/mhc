@@ -22,7 +22,8 @@ pub fn set_scalar(
     seq: i64,
     value: &JsonValue,
 ) -> Result<(), ValueError> {
-    db.execute("INSERT INTO scalar_values (session_id,namespace,key,seq,value) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(session_id,namespace,key) DO UPDATE SET seq=excluded.seq,value=excluded.value",params![session,address.namespace,address.key,seq,serde_json::to_string(value)?])?;
+    // PERF-DIVERGENCE(senpi): upstream re-parses this statement per write; we use the connection's prepared-statement cache. Same SQL, same rows.
+    db.prepare_cached("INSERT INTO scalar_values (session_id,namespace,key,seq,value) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(session_id,namespace,key) DO UPDATE SET seq=excluded.seq,value=excluded.value")?.execute(params![session,address.namespace,address.key,seq,serde_json::to_string(value)?])?;
     Ok(())
 }
 pub fn delete_scalar(db: &Connection, session: &str, address: &Value) -> Result<(), ValueError> {
@@ -125,8 +126,8 @@ pub fn append_list(
     seq: i64,
     value: &JsonValue,
 ) -> Result<(), ValueError> {
-    db.execute(
-        "INSERT INTO list_values (session_id,namespace,key,seq,value) VALUES (?1,?2,?3,?4,?5)",
+    // PERF-DIVERGENCE(senpi): upstream re-parses this statement per write; we use the connection's prepared-statement cache. Same SQL, same rows.
+    db.prepare_cached("INSERT INTO list_values (session_id,namespace,key,seq,value) VALUES (?1,?2,?3,?4,?5)")?.execute(
         params![
             session,
             address.namespace,

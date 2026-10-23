@@ -88,7 +88,15 @@ fn hostname() -> String {
         && !name.trim().is_empty() {
             return name;
         }
-    std::fs::read_to_string("/proc/sys/kernel/hostname").map(|value| value.trim().to_string()).unwrap_or_default()
+    // PERF-DIVERGENCE(senpi kimi identity): upstream calls os.hostname() per header build; this port memoizes the /proc hostname fallback (like release()) to avoid a blocking file read per call. The env override is still read each call.
+    static PROC_HOSTNAME: OnceLock<String> = OnceLock::new();
+    PROC_HOSTNAME
+        .get_or_init(|| {
+            std::fs::read_to_string("/proc/sys/kernel/hostname")
+                .map(|value| value.trim().to_string())
+                .unwrap_or_default()
+        })
+        .clone()
 }
 
 fn device_model() -> &'static str {

@@ -321,7 +321,48 @@ type CheckpointHook = Arc<dyn Fn(&Value) -> Result<(), DagStoreError> + Send + S
 #[cfg(test)]
 type AppendHook = Arc<dyn Fn(&DagRunEvent) -> Result<(), DagStoreError> + Send + Sync>;
 
+/// len + mtime_ns + ctime_ns + inode of a file; atomic-rename writes always change the inode.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FileStamp {
+    len: u64,
+    mtime_ns: (i64, i64),
+    ctime_ns: (i64, i64),
+    ino: u64,
+}
+
+impl FileStamp {
+    #[cfg(unix)]
+    pub(crate) fn of(path: &std::path::Path) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).ok()?;
+        Some(Self {
+            len: meta.len(),
+            mtime_ns: (meta.mtime(), meta.mtime_nsec()),
+            ctime_ns: (meta.ctime(), meta.ctime_nsec()),
+            ino: meta.ino(),
+        })
+    }
+
+    /// True when the file was last touched over two seconds ago, so a same-length in-place rewrite
+    /// inside one timestamp tick cannot be mistaken for "unchanged".
+    #[cfg(unix)]
+    fn settled(&self) -> bool {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        let newest = self.mtime_ns.0.max(self.ctime_ns.0);
+        u64::try_from(newest).is_ok_and(|newest| newest.saturating_add(2) <= now)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn of(_path: &std::path::Path) -> Option<Self> {
+        None
+    }
+}
+
 pub struct DagFileStore {
+    /// Event logs already fully inspected (and repaired) at the recorded file identity.
+    inspected_logs: Mutex<HashMap<PathBuf, FileStamp>>,
     checkpoint_listener: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     pub state_dir: PathBuf,
     pub paths: DagStorePaths,
@@ -348,6 +389,7 @@ pub fn create_dag_file_store(
     let paths = DagStorePaths::new(&state_dir);
     let dag = config.dag();
     let store = DagFileStore {
+        inspected_logs: Mutex::new(HashMap::new()),
         checkpoint_listener: Mutex::new(None),
         state_dir,
         diagnostic_log: Mutex::new(Vec::new()),
@@ -419,8 +461,9 @@ impl DagFileStore {
     ) -> Result<u64, DagStoreError> {
         assert_safe_segment(&event.run_id, "run id")?;
         let path = self.paths.event(&event.run_id);
-        let value = serde_json::to_value(event)?;
-        assert_supported_schema(&value, &path, Some(&event.run_id), self.clock())?;
+        // PERF-DIVERGENCE(senpi dag-store.ts): upstream stringifies the event once; this port serializes the typed event straight to text instead of building a `Value` tree, copying it again and re-running the schema probe (`schemaVersion` is the typed literal 1). `preserve_order` keeps field order, so the bytes are identical.
+        let mut line = serde_json::to_string(event)?;
+        line.push('\n');
         let tail = tail_seq(&path)?;
         let expected = tail.as_u64().and_then(|seq| seq.checked_add(1));
         if event.seq > MAX_SAFE_INTEGER || expected != Some(event.seq) {
@@ -437,7 +480,7 @@ impl DagFileStore {
             fs::create_dir_all(parent)?;
         }
         let mut file = OpenOptions::new().append(true).create(true).open(&path)?;
-        file.write_all(format!("{value}\n").as_bytes())?;
+        file.write_all(line.as_bytes())?;
         if self.fsync_writes {
             self.fs.fsync(&file)?;
         }
@@ -470,7 +513,19 @@ impl DagFileStore {
                 has_more: false,
             });
         }
-        self.inspect_event_log(&path, run_id)?;
+        // PERF-DIVERGENCE(senpi dag-store.ts): upstream re-parses every log line in a validation pass before each page read; this port skips that pass when the log's len/mtime/ctime/inode still match a prior clean inspection, and the page read below still envelope-validates every line. Any change to the file forces the full inspection again.
+        let stamp = FileStamp::of(&path);
+        if stamp.is_none() || guard(&self.inspected_logs).get(&path) != stamp.as_ref() {
+            self.inspect_event_log(&path, run_id)?;
+            match stamp {
+                Some(stamp) if stamp.settled() => {
+                    guard(&self.inspected_logs).insert(path.clone(), stamp);
+                }
+                _ => {
+                    guard(&self.inspected_logs).remove(&path);
+                }
+            }
+        }
         let mut events: Vec<DagRunEvent> = Vec::new();
         let mut head_seq = 0;
         let mut has_more = false;
@@ -683,15 +738,46 @@ impl DagFileStore {
             for name in list_files(&self.paths.runs, ".json")? {
                 let existing_run_id = name.strip_suffix(".json").unwrap_or(&name);
                 let existing_path = self.paths.runs.join(&name);
-                let Some(existing) =
-                    read_json_file(&existing_path, Some(existing_run_id), self.clock())?
-                else {
+                // PERF-DIVERGENCE(senpi dag-store.ts): upstream parses every existing run checkpoint into a full tree to read one field; this port deserializes only `schemaVersion` and `parentSessionId` (unknown fields are skipped without allocation) and falls back to the full parse on any shape it cannot read identically. The count and the errors raised are the same.
+                let Some(bytes) = read_file_if_exists(&existing_path)? else {
                     continue;
                 };
-                assert_supported_schema(&existing, &existing_path, Some(existing_run_id), self.clock())?;
-                if read_optional_string(&existing, "parentSessionId").as_deref()
-                    == Some(parent_session_id.as_str())
-                {
+                let text = String::from_utf8_lossy(&bytes);
+                let peeked = text
+                    .trim_start()
+                    .starts_with('{')
+                    .then(|| serde_json::from_str::<RunLimitPeek>(&text))
+                    .and_then(Result::ok);
+                let parent = match peeked {
+                    Some(peek) => {
+                        let mut header = Map::new();
+                        if let Some(version) = peek.schema_version {
+                            header.insert("schemaVersion".to_string(), version);
+                        }
+                        assert_supported_schema(
+                            &Value::Object(header),
+                            &existing_path,
+                            Some(existing_run_id),
+                            self.clock(),
+                        )?;
+                        peek.parent_session_id.and_then(|parent| match parent {
+                            Value::String(parent) => Some(parent),
+                            _ => None,
+                        })
+                    }
+                    None => {
+                        let existing =
+                            parse_json(&text, &existing_path, Some(existing_run_id), self.clock())?;
+                        assert_supported_schema(
+                            &existing,
+                            &existing_path,
+                            Some(existing_run_id),
+                            self.clock(),
+                        )?;
+                        read_optional_string(&existing, "parentSessionId")
+                    }
+                };
+                if parent.as_deref() == Some(parent_session_id.as_str()) {
                     run_count += 1;
                 }
             }
@@ -1247,6 +1333,22 @@ fn parse_json(
 ) -> Result<Value, DagJournalCorruptError> {
     serde_json::from_str(text)
         .map_err(|error| corrupt(path, run_id, format!("malformed JSON: {error}"), now))
+}
+
+#[derive(Deserialize)]
+struct RunLimitPeek {
+    #[serde(rename = "schemaVersion")]
+    schema_version: Option<Value>,
+    #[serde(rename = "parentSessionId")]
+    parent_session_id: Option<Value>,
+}
+
+fn read_file_if_exists(path: &Path) -> Result<Option<Vec<u8>>, DagStoreError> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn read_json_file(

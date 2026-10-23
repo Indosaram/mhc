@@ -7,7 +7,7 @@ use maho_ai::types::{
 use maho_ai::utils::retry::{RetryCallbacks, RetryPolicy};
 
 use crate::harness::context::Context;
-use crate::harness::messages::convert_to_llm;
+use crate::harness::messages::convert_to_llm_ref;
 use crate::harness::session::types::{Branch, Entry, EntryKind, Session};
 
 use super::compaction::{
@@ -360,7 +360,8 @@ pub async fn generate_branch_summary_with_request(
             modified_files: Vec::new(),
         });
     }
-    let llm_messages = convert_to_llm(messages.clone());
+    // PERF-DIVERGENCE(senpi branch-summarization.ts): upstream maps messages without copying; we convert from the borrowed slice instead of cloning the whole Vec first. Same output.
+    let llm_messages = convert_to_llm_ref(messages);
     let conversation_text = serialize_conversation(&llm_messages);
     let instructions = match (&options.custom_instructions, options.replace_instructions) {
         (Some(custom_instructions), true) => custom_instructions.clone(),

@@ -181,10 +181,16 @@ impl GoalDelivery {
         } else {
             1800000.0
         };
-        let usage = crate::lifecycle_helpers::last_assistant_from_entries(
-            &ctx.session_manager.get_branch(),
-        )
-        .map(|message| {
+        // PERF-DIVERGENCE(senpi goal delivery): upstream clones the whole branch to find the last assistant message; we fetch only the branch tail up to the newest parseable assistant message. The selected message is identical.
+        let (_, tail) = ctx.session_manager.get_branch_tail(0, &mut |data: &serde_json::Value| {
+            data.get("type").and_then(serde_json::Value::as_str) == Some("message")
+                && data.get("message").is_some_and(|message| {
+                message.get("role").and_then(serde_json::Value::as_str) == Some("assistant")
+                    && serde_json::from_value::<maho_ai::types::AssistantMessage>(message.clone())
+                        .is_ok()
+                })
+        });
+        let usage = crate::lifecycle_helpers::last_assistant_from_entries(&tail).map(|message| {
             (
                 message.usage.cache_read as f64,
                 message.usage.cache_write as f64,
