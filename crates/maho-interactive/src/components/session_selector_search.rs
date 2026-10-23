@@ -124,10 +124,16 @@ pub struct MatchResult {
 }
 
 fn normalize_whitespace_lower(text: &str) -> String {
-    text.split_whitespace()
-        .map(str::to_lowercase)
-        .collect::<Vec<_>>()
-        .join(" ")
+    // PERF-DIVERGENCE(senpi session-selector-search.ts): upstream lowercases and joins per word; this port lowercases once and joins into one pre-sized String instead of allocating per word. Output is identical (whitespace never affects lowercasing context).
+    let lower = text.to_lowercase();
+    let mut out = String::with_capacity(lower.len());
+    for word in lower.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
 }
 
 pub(crate) fn get_session_search_text(session: &SessionInfo) -> String {

@@ -98,7 +98,10 @@ fn update_write_highlight_cache_incremental(
         cache.normalized_lines.push((*segment).to_owned());
         cache.highlighted_lines.push(highlight_single_line(segment, cache.lang, theme));
     }
-    refresh_write_highlight_prefix(&mut cache, theme);
+    // PERF-DIVERGENCE(senpi core/tools/renderers/write.ts): upstream re-highlights the first 50 lines on every delta; this port skips that when the delta only touched lines at index >= 50, since the prefix cannot change then. Output is identical.
+    if last_index < WRITE_PARTIAL_FULL_HIGHLIGHT_LINES {
+        refresh_write_highlight_prefix(&mut cache, theme);
+    }
     Some(cache)
 }
 

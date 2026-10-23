@@ -5,6 +5,7 @@
 //! remains the authority for every entry: materialize() rehydrates from the resident map, then the
 //! blob directory, and otherwise leaves the token for the caller's JSONL recovery.
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -97,12 +98,13 @@ impl ResidentStringStore {
             return;
         }
         let mut inner = self.inner.lock().expect("resident store lock");
-        let ids: Vec<String> = inner.strings.keys().cloned().collect();
-        for id in ids {
-            let Some(text) = inner.strings.get(&id).cloned() else { continue };
+        // PERF-DIVERGENCE(senpi session-resident-store.ts): upstream deletes entries from a JS Map one by one; we drain the map once and re-insert only blobs that failed to write (same relative order) instead of cloning every key/text and shift-removing each, which was O(n^2). Resulting contents and order are identical.
+        let drained: Vec<(String, String)> = inner.strings.drain(..).collect();
+        for (id, text) in drained {
             if self.write_blob(&id, &text, &mut inner) {
-                inner.strings.shift_remove(&id);
                 inner.bytes = inner.bytes.saturating_sub(text.len());
+            } else {
+                inner.strings.insert(id, text);
             }
         }
     }
@@ -128,8 +130,24 @@ impl ResidentStringStore {
         transform_json(value, &|text| self.externalize_string(text))
     }
 
+    /// PERF-DIVERGENCE(senpi session-resident-store.ts): upstream externalizes by building a new object; this takes the value by move and rewrites large strings in place, avoiding a deep clone of every appended entry. The resulting value is identical.
+    pub fn externalize_owned(&self, mut value: Value) -> Value {
+        if contains_string(&value, &|text| text.len() >= RESIDENT_STRING_MIN_BYTES) {
+            self.externalize_in_place(&mut value);
+        }
+        value
+    }
+
     pub fn materialize(&self, value: &Value) -> Value {
         self.materialize_with(value, None)
+    }
+
+    /// PERF-DIVERGENCE(senpi session-resident-store.ts): upstream hands back the same object when nothing needs materializing; this borrows instead of deep-cloning in that case, so persisting an entry does not copy it. The value seen by callers is identical.
+    pub fn materialize_cow<'a>(&self, value: &'a Value) -> Cow<'a, Value> {
+        if !contains_string(value, &|text| text.starts_with(RESIDENT_STRING_PREFIX)) {
+            return Cow::Borrowed(value);
+        }
+        Cow::Owned(self.materialize(value))
     }
 
     pub fn materialize_with(&self, value: &Value, on_missing: Option<MissingStringCallback<'_>>) -> Value {
@@ -154,8 +172,10 @@ impl ResidentStringStore {
         let id = content_hash(text);
         let token = format!("{RESIDENT_STRING_PREFIX}{id}");
         let mut inner = self.inner.lock().expect("resident store lock");
-        if inner.strings.shift_remove(&id).is_some() {
-            inner.strings.insert(id, text.to_owned());
+        // PERF-DIVERGENCE(senpi session-resident-store.ts): upstream's Map delete+set is O(1); we move the hit to the most-recent slot in place instead of shift_remove + re-insert with a fresh String copy. Same LRU order, same stored text (the id is the content hash).
+        if let Some(index) = inner.strings.get_index_of(&id) {
+            let last = inner.strings.len() - 1;
+            inner.strings.move_index(index, last);
             return token;
         }
         inner.strings.insert(id, text.to_owned());
@@ -168,9 +188,13 @@ impl ResidentStringStore {
         let Some(id) = text.strip_prefix(RESIDENT_STRING_PREFIX) else { return text.to_owned() };
         {
             let mut inner = self.inner.lock().expect("resident store lock");
-            if let Some(resident) = inner.strings.shift_remove(id) {
-                inner.strings.insert(id.to_owned(), resident.clone());
-                return resident;
+            // PERF-DIVERGENCE(senpi session-resident-store.ts): upstream's Map delete+set is O(1); we move the hit to the most-recent slot in place instead of shift_remove + re-insert with key/text copies. Same LRU order and returned text.
+            if let Some(index) = inner.strings.get_index_of(id) {
+                let last = inner.strings.len() - 1;
+                inner.strings.move_index(index, last);
+                if let Some((_, resident)) = inner.strings.get_index(last) {
+                    return resident.clone();
+                }
             }
         }
         if let Some(hydrated) = self.read_blob(id) {
@@ -181,13 +205,14 @@ impl ResidentStringStore {
 
     fn enforce_budget(&self, inner: &mut ResidentStoreInner) {
         while inner.bytes > self.max_bytes && !inner.strings.is_empty() {
-            let Some((oldest_id, oldest)) = inner.strings.first().map(|(id, text)| (id.clone(), text.clone())) else {
+            // PERF-DIVERGENCE(senpi session-resident-store.ts): upstream deletes the oldest Map key after writing it; we take ownership of the oldest entry and put it back at the front only if the write fails, instead of cloning its text first. Eviction order and byte accounting are identical.
+            let Some((oldest_id, oldest)) = inner.strings.shift_remove_index(0) else {
                 return;
             };
             if !self.write_blob(&oldest_id, &oldest, inner) {
+                inner.strings.shift_insert(0, oldest_id, oldest);
                 return;
             }
-            inner.strings.shift_remove(&oldest_id);
             inner.bytes = inner.bytes.saturating_sub(oldest.len());
         }
     }
@@ -271,11 +296,9 @@ fn mutate_strings_in_place(value: &mut Value, transform: &dyn Fn(&str) -> String
             }
         }
         Value::Object(object) => {
-            let keys: Vec<String> = object.keys().cloned().collect();
-            for key in keys {
-                if let Some(item) = object.get_mut(&key) {
-                    mutate_strings_in_place(item, transform);
-                }
+            // PERF-DIVERGENCE(senpi session-resident-store.ts): upstream rebuilds the object; we walk values_mut directly instead of cloning every key and re-looking it up. Key order and values are identical.
+            for item in object.values_mut() {
+                mutate_strings_in_place(item, transform);
             }
         }
         _ => {}

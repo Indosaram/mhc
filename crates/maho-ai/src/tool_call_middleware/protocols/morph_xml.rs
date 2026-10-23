@@ -699,7 +699,8 @@ impl MorphXmlStreamParser {
                     "<{tool_name}>{tool_body}{}",
                     &self.buffer[closing_tag_match.start..closing_tag_match.end]
                 );
-                self.buffer = self.buffer[closing_tag_match.end..].to_string();
+                // PERF-DIVERGENCE(senpi morph-xml protocol): upstream slices the JS string into a new string; this port drains the consumed prefix in place to avoid copying the tail. Buffer contents are identical.
+                self.buffer.drain(..closing_tag_match.end);
 
                 let Some(parsed_arguments) = parsed_arguments else {
                     if let Some(options) = &self.options {
@@ -762,7 +763,8 @@ impl MorphXmlStreamParser {
                 events.push(StreamParserEvent::Text {
                     text: self.buffer[..text_length].to_string(),
                 });
-                self.buffer = self.buffer[text_length..].to_string();
+                // PERF-DIVERGENCE(senpi morph-xml protocol): upstream slices the JS string into a new string; this port drains the consumed prefix in place to avoid copying the tail. Buffer contents are identical.
+                self.buffer.drain(..text_length);
                 continue;
             };
 
@@ -771,7 +773,8 @@ impl MorphXmlStreamParser {
                     text: self.buffer[..opening_tag.index].to_string(),
                 });
             }
-            self.buffer = self.buffer[opening_tag.index + opening_tag.tag.len()..].to_string();
+            // PERF-DIVERGENCE(senpi morph-xml protocol): upstream slices the JS string into a new string; this port drains the consumed prefix in place to avoid copying the tail. Buffer contents are identical.
+            self.buffer.drain(..opening_tag.index + opening_tag.tag.len());
 
             if opening_tag.self_closing {
                 let tool = self.tool_by_name(&opening_tag.name).cloned();

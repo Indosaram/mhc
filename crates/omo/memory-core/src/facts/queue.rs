@@ -2,7 +2,7 @@
 //! `facts-queue` lock; the enqueue watermark is monotonic so a late-finishing older batch
 //! can never republish a range overlapping a retained newer entry.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ use crate::support::time::{format_rfc3339_millis, now_millis};
 
 use super::schema::{
     FACTS_QUEUE_VERSION, FactsConsumedRecord, FactsConsumedWatermark, FactsCursor, FactsQueueEntry,
-    FactsQueueLayout, FactsQueueRange, canonical_position, facts_queue_paths, initial_cursor,
+    FactsQueueLayout, FactsQueueRange, facts_queue_paths, initial_cursor,
     parse_consumed, parse_cursor, parse_queue_entry,
 };
 
@@ -399,8 +399,12 @@ impl FactsQueue {
             }
             let consumed_keys: HashSet<String> = entries.iter().map(entry_key).collect();
             let mut claims = self.read_claims_unlocked()?;
+            let claims_before = claims.len();
             claims.retain(|key, _| !consumed_keys.contains(key));
-            self.write_claims(&claims)?;
+            // PERF-DIVERGENCE(senpi facts queue): upstream rewrites claims.json even when no claim was removed; this port skips the write/rename when nothing changed and the file already exists. File content is identical.
+            if claims.len() != claims_before || !self.layout.queue_dir.join("claims.json").exists() {
+                self.write_claims(&claims)?;
+            }
             self.advance_consumed(entries)?;
             Ok(())
         })
@@ -449,9 +453,19 @@ impl FactsQueue {
             }
         }
 
+        // PERF-DIVERGENCE(senpi facts queue): upstream rescans the transcript from the end once per anchor candidate; this port indexes the last canonical position per message id once. Positions are identical.
+        let mut last_canonical: HashMap<&str, i64> = HashMap::new();
+        for (index, entry) in entries.iter().enumerate() {
+            if is_canonical_entry(entry) {
+                last_canonical.insert(entry.source_message_id(), index as i64);
+            }
+        }
         let mut anchor: i64 = -1;
         for candidate in candidates {
-            let position = canonical_position(entries, candidate.as_deref());
+            let position = candidate
+                .as_deref()
+                .and_then(|id| last_canonical.get(id).copied())
+                .unwrap_or(-1);
             if position >= entries.len() as i64 {
                 continue;
             }
@@ -633,10 +647,17 @@ impl FactsQueue {
         let consumed = self.read_consumed_unlocked()?;
         let mut next = consumed.consumed;
         let consumed_at = format_rfc3339_millis((self.now)());
+        // PERF-DIVERGENCE(senpi facts queue): upstream re-reads and rewrites the cursor file once per entry; this port keeps each conversation's cursor in memory and writes it once after the loop. The final file content is identical because the last write wins.
+        let mut cursors: HashMap<String, FactsCursor> = HashMap::new();
+        let mut dirty: Vec<String> = Vec::new();
 
         for entry in entries {
-            let cursor = self.read_cursor_unlocked(&entry.conversation_id)?;
+            let cursor = match cursors.remove(&entry.conversation_id) {
+                Some(cursor) => cursor,
+                None => self.read_cursor_unlocked(&entry.conversation_id)?,
+            };
             if (entry.range.end_snapshot_line as i64) <= cursor.consumed_through_snapshot_line {
+                cursors.insert(entry.conversation_id.clone(), cursor);
                 continue;
             }
             let updated = FactsCursor {
@@ -644,7 +665,10 @@ impl FactsQueue {
                 consumed_through_snapshot_line: entry.range.end_snapshot_line as i64,
                 ..cursor
             };
-            self.write_cursor(&entry.conversation_id, &updated)?;
+            if !dirty.contains(&entry.conversation_id) {
+                dirty.push(entry.conversation_id.clone());
+            }
+            cursors.insert(entry.conversation_id.clone(), updated);
             next.insert(
                 entry.conversation_id.clone(),
                 FactsConsumedRecord {
@@ -653,6 +677,11 @@ impl FactsQueue {
                     consumed_at: consumed_at.clone(),
                 },
             );
+        }
+        for conversation_id in &dirty {
+            if let Some(cursor) = cursors.get(conversation_id) {
+                self.write_cursor(conversation_id, cursor)?;
+            }
         }
 
         let payload = FactsConsumedWatermark {

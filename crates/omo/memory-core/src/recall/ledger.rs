@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -91,7 +91,8 @@ pub fn sanitize_session_filename(session_id: &str) -> String {
 struct LedgerCacheEntry {
     mtime_ms: f64,
     size: u64,
-    file: RecallLedgerFile,
+    // PERF-DIVERGENCE(recall/ledger.ts): upstream hands back a fresh parsed object per read; this port shares an Arc so a cache hit is a pointer clone instead of a deep BTreeMap clone, with identical contents.
+    file: Arc<RecallLedgerFile>,
 }
 
 static LEDGER_CACHE: Mutex<Option<Vec<(String, LedgerCacheEntry)>>> = Mutex::new(None);
@@ -116,7 +117,7 @@ fn cache_remove(path: &str) {
     }
 }
 
-fn remember_ledger(path: &str, mtime_ms: f64, size: u64, file: RecallLedgerFile) {
+fn remember_ledger(path: &str, mtime_ms: f64, size: u64, file: Arc<RecallLedgerFile>) {
     let mut guard = LEDGER_CACHE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -147,7 +148,7 @@ impl RecallLedger {
 
     /// The set of paths already surfaced in this session.
     pub fn surfaced_paths(&self, session_id: &str) -> BTreeSet<String> {
-        self.read(session_id).surfaced.into_keys().collect()
+        self.read(session_id).surfaced.keys().cloned().collect()
     }
 
     /// Marks paths as surfaced, merging into the existing file and updating the parse cache.
@@ -161,7 +162,7 @@ impl RecallLedger {
         }
 
         let current = self.read(session_id);
-        let mut surfaced = current.surfaced;
+        let mut surfaced = current.surfaced.clone();
         let at = now_iso();
         for entry in entries {
             surfaced.insert(
@@ -186,7 +187,12 @@ impl RecallLedger {
 
         let key = path_key(&target);
         match resilient::metadata(&target) {
-            Ok(meta) => remember_ledger(&key, stat_mtime_ms(&meta), meta.len(), written),
+            Ok(meta) => remember_ledger(
+                &key,
+                stat_mtime_ms(&meta),
+                meta.len(),
+                Arc::new(written),
+            ),
             Err(_) => cache_remove(&key),
         }
         Ok(())
@@ -197,14 +203,14 @@ impl RecallLedger {
             .join(format!("{}.json", sanitize_session_filename(session_id)))
     }
 
-    fn read(&self, session_id: &str) -> RecallLedgerFile {
+    fn read(&self, session_id: &str) -> Arc<RecallLedgerFile> {
         let target = self.session_file_path(session_id);
         let key = path_key(&target);
         let (mtime_ms, size) = match resilient::metadata(&target) {
             Ok(meta) => (stat_mtime_ms(&meta), meta.len()),
             Err(_) => {
                 cache_remove(&key);
-                return RecallLedgerFile::default();
+                return Arc::new(RecallLedgerFile::default());
             }
         };
         if let Some(cached) = cache_get(&key)
@@ -223,7 +229,7 @@ impl RecallLedger {
             }
             Err(_) => {
                 cache_remove(&key);
-                return RecallLedgerFile::default();
+                return Arc::new(RecallLedgerFile::default());
             }
         };
         let file = serde_json::from_str::<serde_json::Value>(&raw)
@@ -231,7 +237,8 @@ impl RecallLedger {
             .as_ref()
             .and_then(parse_ledger_value)
             .unwrap_or_default();
-        remember_ledger(&key, mtime_ms, size, file.clone());
+        let file = Arc::new(file);
+        remember_ledger(&key, mtime_ms, size, Arc::clone(&file));
         file
     }
 }

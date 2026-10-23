@@ -1228,17 +1228,28 @@ impl GoogleSseDecoder {
         }
         self.buffer.push_str(&chunk_string);
         let mut chunks = Vec::new();
-        while let Some((index, length)) = find_sse_event_boundary(&self.buffer) {
-            let event = self.buffer[..index].to_owned();
-            self.buffer = self.buffer[index + length..].to_owned();
-            let trimmed = crate::utils::js::trim(&event);
+        // PERF-DIVERGENCE(senpi google-genai sdk): upstream re-slices the buffer per event; this port scans by offset, parses the event as a borrowed slice, and drains the consumed prefix once. Events are identical.
+        let mut pos = 0;
+        let mut failure = None;
+        while let Some((index, length)) = find_sse_event_boundary(&self.buffer[pos..]) {
+            let event = &self.buffer[pos..pos + index];
+            pos += index + length;
+            let trimmed = crate::utils::js::trim(event);
             let Some(payload) = trimmed.strip_prefix("data:") else {
                 continue;
             };
             let payload = crate::utils::js::trim(payload);
-            let chunk = serde_json::from_str::<Value>(payload)
-                .map_err(|error| GoogleRequestError::Message(error.to_string()))?;
-            chunks.push(chunk);
+            match serde_json::from_str::<Value>(payload) {
+                Ok(chunk) => chunks.push(chunk),
+                Err(error) => {
+                    failure = Some(GoogleRequestError::Message(error.to_string()));
+                    break;
+                }
+            }
+        }
+        self.buffer.drain(..pos);
+        if let Some(error) = failure {
+            return Err(error);
         }
         Ok(chunks)
     }

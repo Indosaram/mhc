@@ -324,13 +324,26 @@ impl RecallCorpusCache {
         repo: &GitMemoryRepo,
         revision: &str,
     ) -> Result<RecallCorpus, GitError> {
-        let previous = match &self.blobs {
-            Some((dir, loaded)) if dir == &repo.dir => loaded.clone(),
-            _ => BTreeMap::new(),
+        // PERF-DIVERGENCE(recall/provider.ts): upstream copies the previous blob map before reloading; this port moves it out and restores it if the load fails, avoiding a deep clone of every body. The cache ends up identical.
+        let (previous, reused) = match self.blobs.take() {
+            Some((dir, loaded)) if dir == repo.dir => (loaded, true),
+            other => {
+                self.blobs = other;
+                (BTreeMap::new(), false)
+            }
         };
-        let (corpus, loaded) = load_corpus_at_revision(repo, revision, &previous)?;
-        self.blobs = Some((repo.dir.clone(), loaded));
-        Ok(corpus)
+        match load_corpus_at_revision(repo, revision, &previous) {
+            Ok((corpus, loaded)) => {
+                self.blobs = Some((repo.dir.clone(), loaded));
+                Ok(corpus)
+            }
+            Err(error) => {
+                if reused {
+                    self.blobs = Some((repo.dir.clone(), previous));
+                }
+                Err(error)
+            }
+        }
     }
 }
 

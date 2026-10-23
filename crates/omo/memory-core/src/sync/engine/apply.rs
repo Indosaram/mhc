@@ -141,11 +141,19 @@ pub fn capture(
         return Ok(0);
     }
     let mut pending = journal.pending()?;
-    let fresh: Vec<WireItem> = captured
-        .iter()
-        .filter(|c| !pending.items.contains(c))
-        .cloned()
-        .collect();
+    // PERF-DIVERGENCE(omo sync engine): upstream scans pending linearly per captured item (O(captured x pending)); this port probes a hash set of (key, ops) pairs. The selected items are identical.
+    let fresh: Vec<WireItem> = {
+        let known: std::collections::HashSet<(&str, &str)> = pending
+            .items
+            .iter()
+            .map(|p| (p.key.as_str(), p.ops.as_str()))
+            .collect();
+        captured
+            .iter()
+            .filter(|c| !known.contains(&(c.key.as_str(), c.ops.as_str())))
+            .cloned()
+            .collect()
+    };
     pending.items.extend(fresh);
     journal.set_pending(&pending)?;
     deps.fault_at("captured")?;
@@ -195,15 +203,16 @@ pub fn apply_verified(deps: &EngineDeps, journal: &SyncJournal) -> EngineResult<
             })
             .collect::<EngineResult<_>>()?;
         if record.snapshot {
-            deps.store.apply_snapshot(&super::ports::BatchPayload {
-                items: items.clone(),
-            })?;
+            // PERF-DIVERGENCE(omo sync engine): upstream deep-copies every payload item for the snapshot call; this port moves the items into the payload and reads the keys back from it. Applied data and keys are identical.
+            let payload = super::ports::BatchPayload { items };
+            deps.store.apply_snapshot(&payload)?;
+            keys.extend(payload.items.into_iter().map(|i| i.key));
         } else {
             for item in &items {
                 deps.store.apply(&item.key, &item.ops)?;
             }
+            keys.extend(items.into_iter().map(|i| i.key));
         }
-        keys.extend(items.into_iter().map(|i| i.key));
     }
     deps.store.persist()?;
     let state = journal.state()?;
@@ -284,7 +293,10 @@ pub fn advance(deps: &EngineDeps, journal: &SyncJournal, start: CycleRecord) -> 
         })
     };
     if cycle.stage == CycleStage::Merged {
-        let latest = latest_by_key(journal.renders(&cycle.id)?);
+        let prior_renders = journal.renders(&cycle.id)?;
+        // PERF-DIVERGENCE(omo sync engine): upstream re-lists and re-parses every render record per key to find the next seq; this port reads the max seq once and increments it locally. Records are append-only under the sync lock, so the seq values are identical.
+        let mut next_seq = prior_renders.iter().map(|r| r.seq).max().unwrap_or(0) + 1;
+        let latest = latest_by_key(prior_renders);
         for key in &cycle.keys {
             let working = read_working(&root, key)?;
             let frontier = deps.store.version(key)?;
@@ -298,7 +310,7 @@ pub fn advance(deps: &EngineDeps, journal: &SyncJournal, start: CycleRecord) -> 
             }
             let text = deps.store.render(key, working.as_deref())?;
             let record = RenderRecord {
-                seq: journal.next_render_seq(&cycle.id)?,
+                seq: next_seq,
                 key: key.clone(),
                 frontier,
                 hash: text_hash(text.as_deref()),
@@ -314,6 +326,7 @@ pub fn advance(deps: &EngineDeps, journal: &SyncJournal, start: CycleRecord) -> 
             journal.append_render(&cycle.id, &record)?;
             deps.fault_at("render-intent")?;
             land(journal, &root, &cycle.id, &record)?;
+            next_seq += 1;
             deps.fault_at("render-key")?;
         }
         let tree_id = deps.repo.stage_tree(&cycle.keys)?;

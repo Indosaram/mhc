@@ -85,7 +85,8 @@ impl CellResultBuilder {
         let details=self.details(Some(&output),is_error);
         self.emit_update(is_error);
         let shown=if !output.output.is_empty() {output.output.clone()} else if !output.images.is_empty() {format!("(displayed {} image{}; no text output)",output.images.len(),if output.images.len()==1 {""} else {"s"})} else {"(no output)".into()};
-        let text=output.meta.as_ref().and_then(|meta|serde_json::from_value::<crate::output::output_meta::TruncationMeta>(meta.clone()).ok()).map_or(shown.clone(),|meta|format!("{shown}\n{}",crate::output::output_meta::format_model_truncation_notice(&meta)));
+        // PERF-DIVERGENCE(senpi cell-runtime): upstream reads the meta object directly; this port deserializes TruncationMeta from a borrowed Value instead of cloning it. Result is identical.
+        let text=output.meta.as_ref().and_then(|meta|<crate::output::output_meta::TruncationMeta as serde::Deserialize>::deserialize(meta).ok()).map_or(shown.clone(),|meta|format!("{shown}\n{}",crate::output::output_meta::format_model_truncation_notice(&meta)));
         let mut result=AgentToolResult::text(text);
         for notice in [self.restart_notice.clone(),self.memory.as_ref().and_then(|memory|memory.get("notice").and_then(Value::as_str).map(str::to_owned))].into_iter().flatten() { result.content.push(ContentBlock::Text(maho_ai::types::TextContent {text:notice,audience:None,text_signature:None})); }
         result.content.extend(output.images.into_iter().map(|image|ContentBlock::Image(ImageContent {data:image.data,mime_type:image.mime_type})));
@@ -136,8 +137,9 @@ impl CellResultBuilder {
     fn live_update_text(&self) -> String {
         let state=&self.state;
         if state.status=="queued" && let Some(queued)=state.queued_behind.as_ref().filter(|queued|!queued.is_empty()) {
-            let language=serde_json::to_value(state.input.language).expect("language value");
-            return format!("queued behind {} in the {} kernel",queued.join(", "),language.as_str().expect("language string"));
+            // PERF-DIVERGENCE(senpi cell-runtime): upstream reads the language string directly; this port matches the enum (serde rename "js") instead of round-tripping through serde_json::to_value per update. Output is identical.
+            let language=match state.input.language {super::types::EvalLanguage::Js=>"js"};
+            return format!("queued behind {} in the {} kernel",queued.join(", "),language);
         }
         let aggregate=self.output.aggregate_text();
         let trailing=aggregate.ends_with('\n');
@@ -145,8 +147,9 @@ impl CellResultBuilder {
         // Only the last 8 lines are shown; find them from the end instead of splitting it all.
         let start=body.rmatch_indices('\n').nth(7).map_or(0,|(index,_)|index+1);
         let output=format!("{}{}",&body[start..],if trailing {"\n"} else {""});
-        let language=serde_json::to_value(state.input.language).expect("language value");
-        format!("1/1 cells {}\n[1] {} {} {}{}",state.status,language.as_str().expect("language string"),state.input.summary,state.status,if output.is_empty() {String::new()} else {format!("\n{output}")})
+        // PERF-DIVERGENCE(senpi cell-runtime): upstream reads the language string directly; this port matches the enum (serde rename "js") instead of round-tripping through serde_json::to_value per update. Output is identical.
+        let language=match state.input.language {super::types::EvalLanguage::Js=>"js"};
+        format!("1/1 cells {}\n[1] {} {} {}{}",state.status,language,state.input.summary,state.status,if output.is_empty() {String::new()} else {format!("\n{output}")})
     }
 }
 

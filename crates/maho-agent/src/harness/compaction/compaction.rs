@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::harness::context::Context;
 use crate::harness::messages::{
-    convert_to_llm, create_branch_summary_message, create_compaction_summary_message,
+    convert_to_llm_ref, create_branch_summary_message, create_compaction_summary_message,
 };
 use crate::harness::session::context::{build_context_entries, session_entry_to_context_messages};
 use crate::harness::session::types::{Entry, EntryKind, JsonValue};
@@ -803,7 +803,8 @@ pub async fn generate_summary_with_request(
         custom_prompt = format!("{base_prompt}\n\nAdditional focus: {custom_instructions}");
         base_prompt = &custom_prompt;
     }
-    let llm_messages = convert_to_llm(current_messages.to_vec());
+    // PERF-DIVERGENCE(senpi compaction.ts): upstream maps messages without copying; we convert from the borrowed slice instead of to_vec() first. Same output.
+    let llm_messages = convert_to_llm_ref(current_messages);
     let conversation_text = serialize_conversation(&llm_messages);
     let mut prompt_text = format!("<conversation>\n{conversation_text}\n</conversation>\n\n");
     if let Some(previous_summary) = &options.previous_summary {
@@ -1232,7 +1233,8 @@ async fn generate_turn_prefix_summary(
     } else {
         u64::MAX
     });
-    let llm_messages = convert_to_llm(messages.to_vec());
+    // PERF-DIVERGENCE(senpi compaction.ts): upstream maps messages without copying; we convert from the borrowed slice instead of to_vec() first. Same output.
+    let llm_messages = convert_to_llm_ref(messages);
     let conversation_text = serialize_conversation(&llm_messages);
     let prompt_text = format!(
         "<conversation>\n{conversation_text}\n</conversation>\n\n{TURN_PREFIX_SUMMARIZATION_PROMPT}"

@@ -55,11 +55,22 @@ fn find_retry_after_ms(value: &Value, depth: usize) -> Option<f64> {
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
     }
 }
-fn matches(pattern: &str, text: &str) -> bool {
-    Regex::new(pattern).is_ok_and(|regex| regex.is_match(text))
+// PERF-DIVERGENCE(senpi cursor-cli errors): upstream uses regex literals compiled once; this port compiled each constant pattern on every classification, so we memoize compiled regexes by pattern. Matches are identical.
+fn cached_regex(pattern: &'static str) -> Option<Regex> {
+    static CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<&'static str, Option<Regex>>>> =
+        std::sync::LazyLock::new(Default::default);
+    CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(pattern)
+        .or_insert_with(|| Regex::new(pattern).ok())
+        .clone()
 }
-fn text_retry_after(pattern: &str, text: &str, multiplier: f64) -> Option<f64> {
-    let regex = Regex::new(pattern).ok()?;
+fn matches(pattern: &'static str, text: &str) -> bool {
+    cached_regex(pattern).is_some_and(|regex| regex.is_match(text))
+}
+fn text_retry_after(pattern: &'static str, text: &str, multiplier: f64) -> Option<f64> {
+    let regex = cached_regex(pattern)?;
     let capture = regex.captures(text)?;
     let number = capture.get(1)?.as_str().parse::<f64>().ok()?;
     Some((number * multiplier).ceil())

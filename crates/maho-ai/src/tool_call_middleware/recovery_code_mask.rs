@@ -159,27 +159,23 @@ impl RecoveryCodeMask {
     }
 
     fn process_text(&mut self, segments: &mut Vec<RecoveryCodeMaskSegment>, text: &str) {
-        let chars: Vec<char> = text.chars().collect();
-        let mut index = 0usize;
-        while index < chars.len() {
-            if chars[index] == '`' {
+        // PERF-DIVERGENCE(senpi recovery code mask): upstream iterates the JS string; this port walks char_indices and slices backtick runs (ASCII) instead of collecting a Vec<char> and a String per run. Segments are identical.
+        let mut chars = text.char_indices().peekable();
+        while let Some((index, character)) = chars.next() {
+            if character == '`' {
                 let mut end = index + 1;
-                while end < chars.len() && chars[end] == '`' {
+                while chars.next_if(|&(_, next)| next == '`').is_some() {
                     end += 1;
                 }
-                let ticks: String = chars[index..end].iter().collect();
-                self.append_ticks(segments, &ticks);
-                index = end;
+                self.append_ticks(segments, &text[index..end]);
                 continue;
             }
             self.complete_pending_ticks(segments);
-            let character = chars[index];
             match self.state {
                 MaskState::Plain => self.process_plain_character(segments, character),
                 MaskState::Inline { .. } => self.process_inline_character(segments, character),
                 MaskState::Fenced { .. } => self.process_fenced_character(segments, character),
             }
-            index += 1;
         }
     }
 

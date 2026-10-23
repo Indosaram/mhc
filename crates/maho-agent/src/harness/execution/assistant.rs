@@ -245,8 +245,9 @@ pub async fn stream_harness_assistant(
         request_context = transform_context(request_context, context.clone()).await;
     }
 
+    // PERF-DIVERGENCE(senpi agent-session.ts): upstream passes the transformed message array by reference; we move the Vec into to_provider_messages instead of deep-cloning the whole history (only system_prompt is read afterwards). Output is identical.
     let provider_messages =
-        (config.to_provider_messages)(request_context.messages.clone(), context.clone()).await;
+        (config.to_provider_messages)(request_context.messages, context.clone()).await;
     let ai_context = AiContext {
         system_prompt: Some(request_context.system_prompt.clone()),
         messages: provider_messages,

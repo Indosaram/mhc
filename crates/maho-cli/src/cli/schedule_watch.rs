@@ -162,6 +162,12 @@ pub async fn read_process_start_ms(pid: u32) -> Result<Option<u64>> {
 }
 #[cfg(target_os = "linux")]
 async fn linux_boot_ms() -> Result<u64> {
+    // PERF-DIVERGENCE(senpi): upstream re-reads /proc/stat for every pid probe; boot time is constant while we run, so we read it once and cache it. Same value.
+    static BOOT_MS: tokio::sync::OnceCell<u64> = tokio::sync::OnceCell::const_new();
+    BOOT_MS.get_or_try_init(read_linux_boot_ms).await.copied()
+}
+#[cfg(target_os = "linux")]
+async fn read_linux_boot_ms() -> Result<u64> {
     let stat = tokio::fs::read_to_string("/proc/stat").await?;
     stat.lines()
         .find_map(|line| {

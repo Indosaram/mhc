@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::dag::events::dag_event_lane;
-use crate::dag::store::{DagEventReadOptions, DagFileStore, DagStoreError};
+use crate::dag::store::{DagEventReadOptions, DagFileStore, DagStoreError, FileStamp};
 use crate::dag::types::{
     DAG_SETTINGS_DEFAULTS, DagRunEvent, DagRunEventPayload, DagRunId, SchemaVersion1,
 };
@@ -310,6 +310,9 @@ pub struct DagJournal<C: DagJournalCheckpoint> {
     /// `(event log length, seq)` right after this journal's last append. While the log still has
     /// that length under the run lock, no foreign append happened, so replay can be skipped.
     appended_tail: Mutex<Option<(u64, u64)>>,
+    /// Identity of the checkpoint file right after this journal's own last write; `None` whenever
+    /// that write is unconfirmed or the platform cannot stamp files.
+    checkpoint_stamp: Mutex<Option<FileStamp>>,
     /// Committed appends; `when_idle` repeats its drain pass until a pass sees none, because an
     /// overflow committed by one subscriber's drain re-enqueues into subscribers already waited on.
     appends: std::sync::atomic::AtomicU64,
@@ -346,6 +349,7 @@ pub fn create_dag_journal<C: DagJournalCheckpoint + DeserializeOwned + Serialize
         ring_size,
         checkpoint: Mutex::new(recovered),
         appended_tail: Mutex::new(None),
+        checkpoint_stamp: Mutex::new(None),
         appends: std::sync::atomic::AtomicU64::new(0),
         subscribers: Arc::new(Mutex::new(Vec::new())),
     }))
@@ -446,14 +450,30 @@ impl<C: DagJournalCheckpoint + DeserializeOwned + Serialize> DagJournal<C> {
         (current == len).then_some(seq)
     }
 
+    /// The in-memory checkpoint when the on-disk checkpoint is provably this journal's own last
+    /// write and the log tail is still its own last append; otherwise `None`.
+    fn trusted_snapshot(&self) -> Option<C> {
+        let tail = self.unchanged_tail_seq()?;
+        let stamp = (*self.checkpoint_stamp.lock().unwrap_or_else(PoisonError::into_inner))?;
+        if FileStamp::of(&self.store.paths.run(&self.run_id))? != stamp {
+            return None;
+        }
+        let snapshot = self.snapshot();
+        (snapshot.checkpoint_seq() == tail).then_some(snapshot)
+    }
+
     fn append_locked(&self, payload: DagRunEventPayload) -> Result<Option<DagRunEvent>, DagStoreError> {
-        let recovered = recover_checkpoint(
-            &self.store,
-            &self.run_id,
-            || self.snapshot(),
-            &self.apply_event,
-            self.unchanged_tail_seq(),
-        )?;
+        // PERF-DIVERGENCE(senpi dag-journal.ts): upstream re-reads and re-parses the whole checkpoint from disk on every append; this port reuses its in-memory checkpoint when the file's len/mtime/ctime/inode still match its own last write and the log tail is unchanged, else it reads as before. Any foreign write changes the stamp, so the result is identical.
+        let recovered = match self.trusted_snapshot() {
+            Some(snapshot) => snapshot,
+            None => recover_checkpoint(
+                &self.store,
+                &self.run_id,
+                || self.snapshot(),
+                &self.apply_event,
+                self.unchanged_tail_seq(),
+            )?,
+        };
         if self.skip_duplicate.lock().unwrap_or_else(PoisonError::into_inner).as_ref().is_some_and(|predicate| predicate(&recovered, &payload)) {
             *self.checkpoint.lock().unwrap_or_else(PoisonError::into_inner) = recovered;
             return Ok(None);
@@ -477,9 +497,12 @@ impl<C: DagJournalCheckpoint + DeserializeOwned + Serialize> DagJournal<C> {
         .then(|| (self.apply_event)(&recovered, &event));
         let log_len = self.store.append_validated_event(&event)?;
         *self.appended_tail.lock().unwrap_or_else(PoisonError::into_inner) = Some((log_len, seq));
+        *self.checkpoint_stamp.lock().unwrap_or_else(PoisonError::into_inner) = None;
         let applied = prepared.unwrap_or_else(|| (self.apply_event)(&recovered, &event));
         let next = applied.with_checkpoint_seq_owned(seq);
         self.store.write_checkpoint(&self.run_id, &next)?;
+        *self.checkpoint_stamp.lock().unwrap_or_else(PoisonError::into_inner) =
+            FileStamp::of(&self.store.paths.run(&self.run_id));
         *self.checkpoint.lock().unwrap_or_else(PoisonError::into_inner) = next;
         Ok(Some(event))
     }

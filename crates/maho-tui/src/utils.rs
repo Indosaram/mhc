@@ -178,6 +178,10 @@ pub(crate) fn grapheme_width(segment: &str) -> usize {
     if segment == "\t" {
         return 3;
     }
+    // PERF-DIVERGENCE(senpi utils.ts): upstream runs the full width pipeline per grapheme; we return 1 immediately for a single printable ASCII byte, which the pipeline always resolves to width 1.
+    if matches!(segment.as_bytes(), [0x20..=0x7e]) {
+        return 1;
+    }
     if !segment.is_empty() && segment.chars().all(is_terminal_spacing_mark) {
         return segment.chars().count();
     }
@@ -579,10 +583,21 @@ impl AnsiCodeTracker {
         if !code.ends_with('m') {
             return;
         }
-        let Some(m) = SGR_PARAMS_REGEX.captures(code) else {
-            return;
+        // PERF-DIVERGENCE(senpi utils.ts): upstream runs an SGR regex capture per code; we slice the params directly when the code is a plain `ESC [ digits/; m` and fall back to the regex otherwise. Parsed params are identical.
+        let fast_params = code
+            .strip_prefix("\x1b[")
+            .and_then(|rest| rest.strip_suffix('m'))
+            .filter(|params| params.bytes().all(|b| b.is_ascii_digit() || b == b';'));
+        let captures;
+        let params = if let Some(params) = fast_params {
+            params
+        } else {
+            let Some(m) = SGR_PARAMS_REGEX.captures(code) else {
+                return;
+            };
+            captures = m;
+            captures.get(1).map_or("", |g| g.as_str())
         };
-        let params = m.get(1).map_or("", |g| g.as_str());
         if params.is_empty() || params == "0" {
             self.reset();
             return;
@@ -895,7 +910,12 @@ fn wrap_single_line(line: &str, width: usize) -> Vec<String> {
     if wrapped.is_empty() {
         return vec![String::new()];
     }
-    wrapped.iter().map(|l| trim_end_js(l).to_string()).collect()
+    // PERF-DIVERGENCE(senpi utils.ts): upstream maps every wrapped line to a new trimmed string; we trim each owned line in place. Output lines are identical.
+    for line in &mut wrapped {
+        let trimmed_len = trim_end_js(line).len();
+        line.truncate(trimmed_len);
+    }
+    wrapped
 }
 
 /// `PUNCTUATION_REGEX` membership for one character.

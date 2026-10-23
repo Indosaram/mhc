@@ -545,7 +545,8 @@ fn walk_directory_with_fd(
     if signal.is_aborted() || !succeeded {
         return Vec::new();
     }
-    let stdout = String::from_utf8_lossy(&bytes).to_string();
+    // PERF-DIVERGENCE(senpi autocomplete.ts): upstream decodes fd stdout into a fresh JS string; we keep the lossy Cow instead of copying it again. The parsed list is identical.
+    let stdout = String::from_utf8_lossy(&bytes);
     if stdout.trim().is_empty() {
         return Vec::new();
     }
@@ -876,28 +877,19 @@ impl CombinedAutocompleteProvider {
             .filter(|(score, _, _)| *score > 0)
             .collect();
 
-        scored.sort_by(|left, right| {
-            let score_diff = right.0.cmp(&left.0);
-            if score_diff != std::cmp::Ordering::Equal {
-                return score_diff;
-            }
-            let left_depth = to_display_path(&left.1)
+        // PERF-DIVERGENCE(senpi autocomplete.ts): upstream recomputes depth and lowercase inside every comparator call; we compute the same ordering key once per element. The resulting order is identical (stable sort).
+        scored.sort_by_cached_key(|entry| {
+            let depth = to_display_path(&entry.1)
                 .split('/')
                 .filter(|part| !part.is_empty())
                 .count();
-            let right_depth = to_display_path(&right.1)
-                .split('/')
-                .filter(|part| !part.is_empty())
-                .count();
-            let depth_diff = left_depth.cmp(&right_depth);
-            if depth_diff != std::cmp::Ordering::Equal {
-                return depth_diff;
-            }
-            let length_diff = left.1.len().cmp(&right.1.len());
-            if length_diff != std::cmp::Ordering::Equal {
-                return length_diff;
-            }
-            locale_compare(&left.1, &right.1)
+            (
+                std::cmp::Reverse(entry.0),
+                depth,
+                entry.1.len(),
+                entry.1.to_lowercase(),
+                entry.1.clone(),
+            )
         });
 
         let mut suggestions = Vec::new();

@@ -453,10 +453,11 @@ impl maho_ext_api::Extension for CompactionExtension {
             let lane = std::sync::Arc::clone(&lane);
             api.on(maho_ext_api::EventKind::BeforeAgentStart, std::sync::Arc::new(move |event, context| {
                 idle_since_end.store(false,std::sync::atomic::Ordering::SeqCst);
-                let entries: Vec<_> = context.session_manager.get_entries().into_iter().map(|entry| {
+                // PERF-DIVERGENCE(senpi compaction): upstream hands every session entry to the checkpoint lookup; we only materialize `custom` entries (the only ones it inspects) and move the owned strings instead of cloning them. The chosen checkpoint is identical.
+                let entries: Vec<_> = context.session_manager.get_entries().into_iter().filter(|entry| entry.kind == "custom").map(|entry| {
                     let mut value = entry.data;
-                    value["type"] = serde_json::json!(entry.kind);
-                    value["id"] = serde_json::json!(entry.id);
+                    value["type"] = serde_json::Value::String(entry.kind);
+                    value["id"] = serde_json::Value::String(entry.id);
                     value
                 }).collect();
                 let checkpoint = extension_wiring::recent_checkpoint(&entries, chrono::Utc::now().timestamp_millis() as f64);

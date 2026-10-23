@@ -1,4 +1,5 @@
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 
 use regex::Regex;
 use serde_json::Value;
@@ -59,6 +60,27 @@ pub fn get_runtime_fallback_error_message(error: Option<&Value>) -> String {
     json_stringify(error).to_lowercase()
 }
 
+fn cached_status_code_pattern(retry_codes: &[i64]) -> Option<Regex> {
+    static CACHE: LazyLock<Mutex<HashMap<Vec<i64>, Regex>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    let mut cache = CACHE.lock().ok()?;
+    if let Some(pattern) = cache.get(retry_codes) {
+        return Some(pattern.clone());
+    }
+    let alternatives = retry_codes
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join("|");
+    let pattern = Regex::new(&format!(r"(?-u:\b)({alternatives})(?-u:\b)")).ok()?;
+    // Bound the cache so unusual custom lists cannot grow it without limit.
+    if cache.len() >= 32 {
+        cache.clear();
+    }
+    cache.insert(retry_codes.to_vec(), pattern.clone());
+    Some(pattern)
+}
+
 /// HTTP status from `statusCode`/`status`, nested records, or a retry code in the message.
 #[must_use]
 pub fn get_runtime_fallback_status_code(
@@ -89,12 +111,8 @@ pub fn get_runtime_fallback_status_code(
     if retry_codes.is_empty() {
         return None;
     }
-    let alternatives = retry_codes
-        .iter()
-        .map(i64::to_string)
-        .collect::<Vec<_>>()
-        .join("|");
-    let pattern = Regex::new(&format!(r"(?-u:\b)({alternatives})(?-u:\b)")).ok()?;
+    // PERF-DIVERGENCE(omo runtime-fallback): upstream builds a new RegExp per call; this port caches the compiled regex per retry-code list (default list included). The matched status is identical.
+    let pattern = cached_status_code_pattern(retry_codes)?;
     let message = get_runtime_fallback_error_message(error);
     pattern.captures(&message)?.get(1)?.as_str().parse().ok()
 }

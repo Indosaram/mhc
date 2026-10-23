@@ -1290,8 +1290,13 @@ fn merge_headers(
     }
     let mut merged = base.cloned().unwrap_or_default();
     for (name, value) in overrides.into_iter().flatten() {
-        let lower = name.to_lowercase();
-        merged.retain(|existing, _| existing.to_lowercase() != lower);
+        // PERF-DIVERGENCE(senpi models.ts): upstream lowercases every existing key per override; this port compares ASCII names case-insensitively without allocating and keeps Unicode lowercasing only for non-ASCII names. The merged map is identical.
+        let lower = if name.is_ascii() { None } else { Some(name.to_lowercase()) };
+        merged.retain(|existing, _| match &lower {
+            None if existing.is_ascii() => !existing.eq_ignore_ascii_case(name),
+            None => existing.to_lowercase() != name.to_lowercase(),
+            Some(lower) => existing.to_lowercase() != *lower,
+        });
         merged.insert(name.clone(), value.clone());
     }
     Some(merged)
