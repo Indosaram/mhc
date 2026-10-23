@@ -1,6 +1,4 @@
-use senpi_desktop_protocol::{
-    is_read_only_computer_call, ComputerCallStep,
-};
+use senpi_desktop_protocol::{ComputerCallStep, is_read_only_computer_call};
 
 fn rejection_reason(chain: &[ComputerCallStep]) -> &'static str {
     match is_read_only_computer_call(chain) {
@@ -12,8 +10,14 @@ fn rejection_reason(chain: &[ComputerCallStep]) -> &'static str {
 #[test]
 fn returns_true_when_a_window_screenshot_chain_is_inspection_only() {
     let chain = vec![
-        ComputerCallStep { method: "window".to_string(), args: None },
-        ComputerCallStep { method: "screenshot".to_string(), args: None },
+        ComputerCallStep {
+            method: "window".to_string(),
+            args: None,
+        },
+        ComputerCallStep {
+            method: "screenshot".to_string(),
+            args: None,
+        },
     ];
     assert!(is_read_only_computer_call(&chain).unwrap());
 }
@@ -21,25 +25,38 @@ fn returns_true_when_a_window_screenshot_chain_is_inspection_only() {
 #[test]
 fn returns_false_when_a_window_click_chain_mutates() {
     let chain = vec![
-        ComputerCallStep { method: "window".to_string(), args: None },
-        ComputerCallStep { method: "click".to_string(), args: None },
+        ComputerCallStep {
+            method: "window".to_string(),
+            args: None,
+        },
+        ComputerCallStep {
+            method: "click".to_string(),
+            args: None,
+        },
     ];
     assert!(!is_read_only_computer_call(&chain).unwrap());
 }
 
 #[test]
 fn returns_false_when_clipboard_write_is_the_only_step() {
-    let chain = vec![
-        ComputerCallStep { method: "clipboard.write".to_string(), args: None },
-    ];
+    let chain = vec![ComputerCallStep {
+        method: "clipboard.write".to_string(),
+        args: None,
+    }];
     assert!(!is_read_only_computer_call(&chain).unwrap());
 }
 
 #[test]
 fn returns_false_when_a_ref_press_chain_mutates() {
     let chain = vec![
-        ComputerCallStep { method: "ref".to_string(), args: None },
-        ComputerCallStep { method: "press".to_string(), args: None },
+        ComputerCallStep {
+            method: "ref".to_string(),
+            args: None,
+        },
+        ComputerCallStep {
+            method: "press".to_string(),
+            args: None,
+        },
     ];
     assert!(!is_read_only_computer_call(&chain).unwrap());
 }
@@ -47,9 +64,18 @@ fn returns_false_when_a_ref_press_chain_mutates() {
 #[test]
 fn throws_too_long_when_a_call_chain_is_longer_than_two_steps() {
     let chain = vec![
-        ComputerCallStep { method: "window".to_string(), args: None },
-        ComputerCallStep { method: "screenshot".to_string(), args: None },
-        ComputerCallStep { method: "click".to_string(), args: None },
+        ComputerCallStep {
+            method: "window".to_string(),
+            args: None,
+        },
+        ComputerCallStep {
+            method: "screenshot".to_string(),
+            args: None,
+        },
+        ComputerCallStep {
+            method: "click".to_string(),
+            args: None,
+        },
     ];
     assert_eq!(rejection_reason(&chain), "tooLong");
 }
@@ -62,17 +88,24 @@ fn throws_empty_when_the_chain_has_no_steps() {
 
 #[test]
 fn rejects_an_unknown_reset_chain_as_unknown_instead_of_classifying_it_read() {
-    let chain = vec![
-        ComputerCallStep { method: "reset".to_string(), args: None },
-    ];
+    let chain = vec![ComputerCallStep {
+        method: "reset".to_string(),
+        args: None,
+    }];
     assert_eq!(rejection_reason(&chain), "unknownMethod");
 }
 
 #[test]
 fn rejects_an_unknown_handle_method_as_unknown_instead_of_classifying_it_read() {
     let chain = vec![
-        ComputerCallStep { method: "window".to_string(), args: None },
-        ComputerCallStep { method: "reset".to_string(), args: None },
+        ComputerCallStep {
+            method: "window".to_string(),
+            args: None,
+        },
+        ComputerCallStep {
+            method: "reset".to_string(),
+            args: None,
+        },
     ];
     assert_eq!(rejection_reason(&chain), "unknownMethod");
 }
@@ -80,8 +113,14 @@ fn rejects_an_unknown_handle_method_as_unknown_instead_of_classifying_it_read() 
 #[test]
 fn rejects_a_chained_call_on_a_root_that_returns_no_handle() {
     let chain = vec![
-        ComputerCallStep { method: "screenshot".to_string(), args: None },
-        ComputerCallStep { method: "click".to_string(), args: None },
+        ComputerCallStep {
+            method: "screenshot".to_string(),
+            args: None,
+        },
+        ComputerCallStep {
+            method: "click".to_string(),
+            args: None,
+        },
     ];
     assert_eq!(rejection_reason(&chain), "notChainable");
 }

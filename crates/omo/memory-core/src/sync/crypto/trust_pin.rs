@@ -63,6 +63,18 @@ fn root(state: &Path) -> PathBuf {
 fn target(state: &Path, account: &str) -> PathBuf {
     root(state).join(sha256_b64(account.as_bytes()))
 }
+/// fsync a directory so a rename or create inside it survives a crash (no-op on Windows).
+fn sync_dir(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        fs::File::open(path)?.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
 fn random_suffix() -> Result<String, TrustPinError> {
     let mut bytes = [0; 6];
     SystemRandom::new()
@@ -137,8 +149,13 @@ pub fn load_trust_anchor(state: &Path, account: &str) -> Result<PinLoad, TrustPi
     let raw = match fs::read(target(state, account).join("pin.json")) {
         Ok(raw) => raw,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let reason = match fs::metadata(target(state, account)) {
+                Ok(_) => "corrupt_pin",
+                Err(e) if e.kind() == io::ErrorKind::NotFound => "no_pin",
+                Err(e) => return Err(e.into()),
+            };
             return Ok(PinLoad::Refused {
-                reason: "no_pin",
+                reason,
                 next: ANCHOR_NEXT_STEP,
             });
         }
@@ -198,7 +215,7 @@ pub fn pin_trust_anchor(
         builder
     };
     builder.create(&staging)?;
-    let result = (|| {
+    let result = (|| -> Result<(), TrustPinError> {
         let mut options = fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -212,12 +229,10 @@ pub fn pin_trust_anchor(
         file.sync_all()?;
         // Windows cannot rename the directory while its pin file is open.
         drop(file);
-        match fs::rename(&staging, &target) {
-            Ok(()) => {}
-            Err(error) => {
-                if target.exists() {
-                    return Err(TrustPinError::Refused(TrustPinProblem::PinConflict));
-                }
+        sync_dir(&staging)?;
+        if let Err(error) = fs::rename(&staging, &target) {
+            // Losing the publishing rename to a concurrent writer is decided by the pin it published.
+            if !matches!(load_trust_anchor(state, account)?, PinLoad::Loaded { .. }) {
                 return Err(error.into());
             }
         }
@@ -230,6 +245,7 @@ pub fn pin_trust_anchor(
     };
     result?;
     cleanup?;
+    sync_dir(&root(state))?;
     match load_trust_anchor(state, account)? {
         PinLoad::Loaded { anchor } if anchor.genesis_digest == candidate.genesis_digest => {
             Ok(anchor)

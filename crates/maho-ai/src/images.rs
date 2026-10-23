@@ -20,6 +20,7 @@ pub(crate) fn images_error(model: &ImagesModel, message: String) -> AssistantIma
         stop_reason: ImagesStopReason::Error,
         error_message: Some(message),
         timestamp: now_ms(),
+        provider_diagnostic: None,
     }
 }
 

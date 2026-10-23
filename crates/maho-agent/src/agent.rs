@@ -139,6 +139,7 @@ pub(crate) fn default_model() -> Model {
         prompt_cache: None,
         supports_assistant_prefill: None,
         upstream_model_id: None,
+        deprecated: None,
         service_tier: None,
         recover_text_tool_calls: None,
         compat: None,
@@ -799,7 +800,7 @@ impl Agent {
 
     async fn run_queued_messages(&self, queue: PendingQueue, options: PromptRunOptions) {
         self.run_with_lifecycle(|signal| async move {
-            self.run_claimed_queue(queue, options, signal).await;
+            Box::pin(self.run_claimed_queue(queue, options, signal)).await;
         })
         .await;
     }
@@ -816,7 +817,8 @@ impl Agent {
             Err(error) => {
                 crate::agent_loop::emit_run_failure(
                     &config,
-                    error,
+                    error.0,
+                    true,
                     &agent_event_sink(self.clone()),
                 )
                 .await;
@@ -826,14 +828,14 @@ impl Agent {
         if messages.is_empty() {
             return;
         }
-        run_agent_loop(
+        Box::pin(run_agent_loop(
             messages,
             self.create_context_snapshot(),
             config,
             agent_event_sink(self.clone()),
             signal,
             Some(self.stream_function()),
-        )
+        ))
         .await;
     }
 
@@ -1044,8 +1046,14 @@ impl Agent {
         }
     }
 
-    async fn take_queued_messages(&self, queue: PendingQueue) -> Result<Vec<AgentMessage>, String> {
-        let port = lock(&self.inner.settings).queued_input_port.clone();
+    async fn take_queued_messages(
+        &self,
+        queue: PendingQueue,
+    ) -> Result<Vec<AgentMessage>, crate::local_failure::LocalFailure> {
+        let port = lock(&self.inner.settings)
+            .queued_input_port
+            .clone()
+            .map(crate::local_failure::local_failure_port);
         let Some(port) = port else {
             return Ok(lock(self.pending_queue(queue)).drain());
         };
@@ -1065,7 +1073,7 @@ impl Agent {
             )
             .await;
         if !messages.is_empty()
-            && let Err(error) = port.commit_consumption(queue, messages.clone()).await
+            && let Err(error) = port.commit_local(queue, messages.clone()).await
         {
             let claimed_generation = *lock(&generation);
             port.release(
@@ -1506,7 +1514,6 @@ struct PromptRunOptions {
     initial_request_stream_start_timeout_ms: Option<u64>,
 }
 
-
 /// Unused marker so the empty-usage helper stays part of the ported surface.
 pub fn empty_failure_usage() -> Usage {
     empty_usage()
@@ -1547,7 +1554,7 @@ mod queue_ownership_tests {
     async fn provider_diagnostic_follows_error_projection_and_reset_lifecycle() {
         // Given: a terminal provider failure with structured quota evidence.
         let agent = Agent::new(options());
-        let diagnostic = maho_ai::types::ProviderDiagnostic {
+        let diagnostic = maho_ai::types::ProviderDiagnostic { resets_at: None,
             category: maho_ai::types::ProviderDiagnosticCategory::Quota,
             http_status: Some(429),
             code: Some("insufficient_quota".into()),

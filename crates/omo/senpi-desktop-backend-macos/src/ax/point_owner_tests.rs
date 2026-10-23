@@ -1,6 +1,6 @@
 use senpi_desktop_core::backend::{Modifiers, MouseButton, PointerEvent};
 
-use super::{coverage, event_points, Coverage, PointOwner};
+use super::{Coverage, PointOwner, coverage, event_points};
 
 const fn owner(pid: libc::pid_t, window: Option<u32>) -> PointOwner {
     PointOwner { pid, window }
@@ -9,7 +9,10 @@ const fn owner(pid: libc::pid_t, window: Option<u32>) -> PointOwner {
 #[test]
 fn only_the_exact_target_window_owns_a_point() {
     // Target: process 10, window 100.
-    assert_eq!(coverage(Some(owner(10, Some(100))), 10, 100), Coverage::Target);
+    assert_eq!(
+        coverage(Some(owner(10, Some(100))), 10, 100),
+        Coverage::Target
+    );
     // Another process covers the point.
     assert_eq!(
         coverage(Some(owner(20, Some(200))), 10, 100),

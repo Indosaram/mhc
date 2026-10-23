@@ -2,7 +2,7 @@
 //! the conformance tests. An unsupported keyword is an error, so a schema
 //! change can never make validation vacuous.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 /// Validates values against subschemas of `root`, resolving `$ref`s in it.
 pub(super) struct Validator<'a> {
@@ -50,9 +50,14 @@ impl Validator<'_> {
         let options = || rule.as_array().into_iter().flatten();
         match keyword.as_str() {
             "$ref" => {
-                let pointer = rule.as_str().and_then(|reference| reference.strip_prefix('#'));
+                let pointer = rule
+                    .as_str()
+                    .and_then(|reference| reference.strip_prefix('#'));
                 let target = pointer.and_then(|pointer| self.root.pointer(pointer));
-                return target.map_or_else(|| fail("dangling $ref"), |target| self.check(target, value, at));
+                return target.map_or_else(
+                    || fail("dangling $ref"),
+                    |target| self.check(target, value, at),
+                );
             }
             "type" => {
                 let names: Vec<&str> = rule.as_str().map_or_else(
@@ -63,7 +68,9 @@ impl Validator<'_> {
                     return fail(&format!("not of type {rule}"));
                 }
             }
-            "enum" if !options().any(|option| option == value) => return fail(&format!("not one of {rule}")),
+            "enum" if !options().any(|option| option == value) => {
+                return fail(&format!("not one of {rule}"));
+            }
             "const" if rule != value => return fail(&format!("not {rule}")),
             "properties" | "additionalProperties" | "required" => {
                 if let Value::Object(members) = value {
@@ -92,11 +99,13 @@ impl Validator<'_> {
                 }
             }
             "anyOf" | "oneOf" => {
-                let results: Vec<Result<(), String>> =
-                    options().map(|option| self.check(option, value, at)).collect();
+                let results: Vec<Result<(), String>> = options()
+                    .map(|option| self.check(option, value, at))
+                    .collect();
                 let passed = results.iter().filter(|result| result.is_ok()).count();
                 if passed == 0 || (keyword == "oneOf" && passed > 1) {
-                    let reasons: Vec<String> = results.into_iter().filter_map(Result::err).collect();
+                    let reasons: Vec<String> =
+                        results.into_iter().filter_map(Result::err).collect();
                     return fail(&format!(
                         "{passed} {keyword} branches match: [{}]",
                         reasons.join(" | ")
@@ -130,7 +139,11 @@ impl Validator<'_> {
                 _ => {}
             }
         }
-        let required = rule.as_array().into_iter().flatten().filter_map(Value::as_str);
+        let required = rule
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str);
         match required
             .filter(|_| keyword == "required")
             .find(|name| !members.contains_key(*name))

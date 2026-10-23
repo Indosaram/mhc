@@ -8,15 +8,16 @@ use std::thread;
 use senpi_desktop_safety::StopPathError;
 use x11rb::connection::Connection;
 use x11rb::errors::ConnectionError;
+use x11rb::protocol::Event;
 use x11rb::protocol::xinput::{self, ConnectionExt as _, Device, XIEventMask};
 use x11rb::protocol::xproto::{
-    AtomEnum, ClientMessageEvent, ConnectionExt as _, CreateWindowAux, EventMask, Window, WindowClass,
+    AtomEnum, ClientMessageEvent, ConnectionExt as _, CreateWindowAux, EventMask, Window,
+    WindowClass,
 };
-use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
 
-use super::chord::{ChordCodes, Hotkey, Pressed};
 use super::Shared;
+use super::chord::{ChordCodes, Hotkey, Pressed};
 use crate::input::Keymap;
 
 pub const CONNECTION_FAILED: &str = "x11-connection-failed";
@@ -94,10 +95,22 @@ impl Session {
         hotkey.resolve(&keymap)?;
         let wake = conn.generate_id().map_err(lost)?;
         let aux = CreateWindowAux::new();
-        conn.create_window(0, wake, root, 0, 0, 1, 1, 0, WindowClass::INPUT_ONLY, 0, &aux)
-            .map_err(lost)?
-            .check()
-            .map_err(lost)?;
+        conn.create_window(
+            0,
+            wake,
+            root,
+            0,
+            0,
+            1,
+            1,
+            0,
+            WindowClass::INPUT_ONLY,
+            0,
+            &aux,
+        )
+        .map_err(lost)?
+        .check()
+        .map_err(lost)?;
         Ok(Self { conn, wake, keymap })
     }
 

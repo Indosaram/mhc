@@ -5,13 +5,13 @@
 use schemars::generate::SchemaSettings;
 use schemars::transform::RecursiveTransform;
 use schemars::{Schema, SchemaGenerator};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::error::ErrorCode;
-use crate::methods::{method_schemas, Exposure, Method, Notification};
+use crate::methods::{Exposure, Method, Notification, method_schemas};
 use crate::protocol::{
-    rpc_error_code, RpcNotification, RpcRequest, RpcResponse, ABI, ERROR_CODES, INVALID_PARAMS,
-    INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR, PROTOCOL_VERSION,
+    ABI, ERROR_CODES, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR,
+    PROTOCOL_VERSION, RpcNotification, RpcRequest, RpcResponse, rpc_error_code,
 };
 
 /// The protocol schema: `methods` (effect, hostOnly, testOnly, params and
@@ -75,7 +75,8 @@ fn close_object(schema: &mut Schema) {
     let Some(object) = schema.as_object_mut() else {
         return;
     };
-    if object.get("type") == Some(&json!("object")) && !object.contains_key("additionalProperties") {
+    if object.get("type") == Some(&json!("object")) && !object.contains_key("additionalProperties")
+    {
         object.insert("additionalProperties".to_owned(), Value::Bool(false));
     }
 }

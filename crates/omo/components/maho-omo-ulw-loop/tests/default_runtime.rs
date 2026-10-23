@@ -4,7 +4,8 @@ use maho_ext_api::*;
 use maho_omo_ulw_loop::index::UlwLoopComponent;
 
 #[tokio::test]
-async fn default_registration_executes_status_in_process() -> Result<(), Box<dyn std::error::Error>> {
+async fn default_registration_executes_status_in_process() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempfile::tempdir()?;
     let plan_dir = root.path().join(".omo/ulw-loop/session");
     std::fs::create_dir_all(&plan_dir)?;
@@ -26,6 +27,7 @@ async fn default_registration_executes_status_in_process() -> Result<(), Box<dyn
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,
+        attended: None,
     });
     let res = api.registered.handlers[&EventKind::SessionStart][0](&mut event, &ctx).await?;
     assert!(matches!(res, EventResult::None));
@@ -37,12 +39,16 @@ async fn default_registration_executes_status_in_process() -> Result<(), Box<dyn
         streaming_behavior: Some(StreamingBehavior::Steer),
     });
     let result = api.registered.handlers[&EventKind::Input][0](&mut input, &ctx).await?;
-    assert!(matches!(result, EventResult::Input(InputEventResult::Transform { .. })));
+    assert!(matches!(
+        result,
+        EventResult::Input(InputEventResult::Transform { .. })
+    ));
     Ok(())
 }
 
 #[tokio::test]
-async fn missing_plan_registration_handles_status_cleanly() -> Result<(), Box<dyn std::error::Error>> {
+async fn missing_plan_registration_handles_status_cleanly() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempfile::tempdir()?;
     let component = UlwLoopComponent::default();
     let mut api = ExtensionApi::new(

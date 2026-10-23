@@ -169,7 +169,11 @@ fn truncation_sets_flag_and_trailer() {
 #[test]
 fn unreadable_subtree_is_skipped_with_trailer() {
     let mut m = Mock {
-        props: [(1, p("window", Some("Title"))), (3, p("button", Some("Ready")))].into(),
+        props: [
+            (1, p("window", Some("Title"))),
+            (3, p("button", Some("Ready"))),
+        ]
+        .into(),
         children: [(1, vec![2, 3])].into(),
     };
     let s = snapshot(
@@ -191,9 +195,11 @@ fn unreadable_subtree_is_skipped_with_trailer() {
     };
     let limited = snapshot(&mut m, &mut AxRegistry::default(), &window(), &options).unwrap();
     assert!(limited.truncated);
-    assert!(limited
-        .text
-        .ends_with("… truncated (2 nodes)\n… skipped 1 unreadable nodes"));
+    assert!(
+        limited
+            .text
+            .ends_with("… truncated (2 nodes)\n… skipped 1 unreadable nodes")
+    );
     let q = AxQuery {
         role: Some("button".into()),
         title: None,
@@ -219,7 +225,10 @@ fn bounds_center_hit_test_is_global_and_frameless() {
         children: HashMap::new(),
     };
     let mut registry = AxRegistry::default();
-    let (x, y) = (bounds.x + bounds.width / 2.0, bounds.y + bounds.height / 2.0);
+    let (x, y) = (
+        bounds.x + bounds.width / 2.0,
+        bounds.y + bounds.height / 2.0,
+    );
     let node = element_at_node(&mut m, &mut registry, "desktop", x, y)
         .unwrap()
         .unwrap();

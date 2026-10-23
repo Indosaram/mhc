@@ -11,13 +11,13 @@ use senpi_desktop_core::error::{DesktopError, ErrorCode};
 use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{CaptureCaps, Target};
 
-use super::tests::FR;
 use super::WaylandBackend;
-use crate::capture::layout::EisRegion;
+use super::tests::FR;
 use crate::capture::PORTAL_DISPLAY_ID;
+use crate::capture::layout::EisRegion;
 use crate::test_support::fake_eis::{EisConfig, FakeEis, Recorded};
-use crate::test_support::fake_portal::{fake_bus, Mode, Reply, Shot};
-use crate::test_support::{env_lock, LibeiSocketEnv};
+use crate::test_support::fake_portal::{Mode, Reply, Shot, fake_bus};
+use crate::test_support::{LibeiSocketEnv, env_lock};
 
 const HIDPI_SHOT: Shot = Shot::Png {
     width: 128,
@@ -47,15 +47,30 @@ fn connected(shot: Shot, regions: Vec<EisRegion>) -> Scaled {
         remote_desktop: Reply::Absent,
         global_shortcuts: Reply::Absent,
         screenshot: shot,
-        eis: EisConfig { keymap: FR, group: 0 },
+        eis: EisConfig {
+            keymap: FR,
+            group: 0,
+        },
     });
-    let dir = tempfile::Builder::new().prefix("senpi-libei-").tempdir().expect("socket dir");
+    let dir = tempfile::Builder::new()
+        .prefix("senpi-libei-")
+        .tempdir()
+        .expect("socket dir");
     let socket = dir.path().join("eis-0");
     let listener = UnixListener::bind(&socket).expect("bind");
-    let eis = FakeEis::listen_with_regions(listener, EisConfig { keymap: FR, group: 0 }, regions);
+    let eis = FakeEis::listen_with_regions(
+        listener,
+        EisConfig {
+            keymap: FR,
+            group: 0,
+        },
+        regions,
+    );
     let socket_env = LibeiSocketEnv::set(Some(&socket));
     let mut backend = WaylandBackend::with_ax(Err(DesktopError::ax_unsupported()));
-    backend.prepare_input(&Target::Desktop, "test input").expect("libei connected");
+    backend
+        .prepare_input(&Target::Desktop, "test input")
+        .expect("libei connected");
     Scaled {
         eis,
         backend,
@@ -104,11 +119,17 @@ fn a_screenshot_matching_the_eis_layout_at_2x_clicks_the_logical_point() {
     // Then: pixel (100, 50) is logical (50, 25), and the click lands there
     assert_eq!(point, Ok((50.0, 25.0)));
     let displays = scaled.backend.displays().expect("displays");
-    let summary: Vec<_> = displays.iter().map(|d| (d.id.as_str(), d.width, d.scale)).collect();
+    let summary: Vec<_> = displays
+        .iter()
+        .map(|d| (d.id.as_str(), d.width, d.scale))
+        .collect();
     assert_eq!(summary, [(PORTAL_DISPLAY_ID, 64, 2.0)]);
-    let clicked = scaled
-        .backend
-        .pointer(&Target::Desktop, click(50.0, 25.0), &frame, DeliveryMode::Background);
+    let clicked = scaled.backend.pointer(
+        &Target::Desktop,
+        click(50.0, 25.0),
+        &frame,
+        DeliveryMode::Background,
+    );
     assert_eq!(clicked, Ok(()));
     let log = scaled.eis.wait_for(|log| log.bursts >= 1);
     assert_eq!(motions(&log.events), [(50.0, 25.0)]);
@@ -125,7 +146,9 @@ fn a_screenshot_matching_no_eis_layout_stays_pixels_only() {
 
     // Then
     assert_eq!(
-        frame.map_point(10.0, 10.0, None).map_err(|error| error.code),
+        frame
+            .map_point(10.0, 10.0, None)
+            .map_err(|error| error.code),
         Err(ErrorCode::InvalidCoordinateFrame)
     );
 }
@@ -138,12 +161,20 @@ fn capture_never_opens_an_input_session_to_learn_the_layout() {
         remote_desktop: Reply::Absent,
         global_shortcuts: Reply::Absent,
         screenshot: HIDPI_SHOT,
-        eis: EisConfig { keymap: FR, group: 0 },
+        eis: EisConfig {
+            keymap: FR,
+            group: 0,
+        },
     });
-    let dir = tempfile::Builder::new().prefix("senpi-libei-").tempdir().expect("socket dir");
+    let dir = tempfile::Builder::new()
+        .prefix("senpi-libei-")
+        .tempdir()
+        .expect("socket dir");
     let socket = dir.path().join("eis-0");
     let listener = UnixListener::bind(&socket).expect("bind");
-    listener.set_nonblocking(true).expect("nonblocking listener");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
     let _libei = LibeiSocketEnv::set(Some(&socket));
     let mut backend = WaylandBackend::with_ax(Err(DesktopError::ax_unsupported()));
 
@@ -152,16 +183,26 @@ fn capture_never_opens_an_input_session_to_learn_the_layout() {
 
     // Then: nothing connected, and the frame refuses coordinate input
     let pending = listener.accept().map(|_| ()).map_err(|error| error.kind());
-    assert_eq!(pending, Err(ErrorKind::WouldBlock), "capture connected to libei");
     assert_eq!(
-        frame.map_point(10.0, 10.0, None).map_err(|error| error.code),
+        pending,
+        Err(ErrorKind::WouldBlock),
+        "capture connected to libei"
+    );
+    assert_eq!(
+        frame
+            .map_point(10.0, 10.0, None)
+            .map_err(|error| error.code),
         Err(ErrorCode::InvalidCoordinateFrame)
     );
 }
 
 fn qa_layout() -> EisRegion {
-    let layout = std::env::var("SENPI_WAYLAND_QA_LAYOUT").expect("precondition: SENPI_WAYLAND_QA_LAYOUT=x,y,w,h,scale");
-    let fields: Vec<f64> = layout.split(',').map(|field| field.parse().expect("number")).collect();
+    let layout = std::env::var("SENPI_WAYLAND_QA_LAYOUT")
+        .expect("precondition: SENPI_WAYLAND_QA_LAYOUT=x,y,w,h,scale");
+    let fields: Vec<f64> = layout
+        .split(',')
+        .map(|field| field.parse().expect("number"))
+        .collect();
     let whole = |value: f64| u32::try_from(value.round() as i64).expect("non-negative");
     EisRegion {
         x: whole(fields[0]),
@@ -174,13 +215,27 @@ fn qa_layout() -> EisRegion {
 
 /// A real portal screenshot against a fake EIS announcing `layout`.
 fn live_frame(layout: EisRegion) -> (u32, u32, FrameGeometry) {
-    let dir = tempfile::Builder::new().prefix("senpi-libei-").tempdir().expect("socket dir");
+    let dir = tempfile::Builder::new()
+        .prefix("senpi-libei-")
+        .tempdir()
+        .expect("socket dir");
     let socket = dir.path().join("eis-0");
-    let _eis = FakeEis::listen_with_regions(UnixListener::bind(&socket).expect("bind"), EisConfig { keymap: FR, group: 0 }, vec![layout]);
+    let _eis = FakeEis::listen_with_regions(
+        UnixListener::bind(&socket).expect("bind"),
+        EisConfig {
+            keymap: FR,
+            group: 0,
+        },
+        vec![layout],
+    );
     let _socket = LibeiSocketEnv::set(Some(&socket));
     let mut backend = WaylandBackend::new(senpi_desktop_core::types::DisplaySelector::All);
-    backend.prepare_input(&Target::Desktop, "qa input").expect("libei connected");
-    let (image, frame) = backend.capture(&Target::Desktop, &CaptureCaps::default()).expect("portal screenshot");
+    backend
+        .prepare_input(&Target::Desktop, "qa input")
+        .expect("libei connected");
+    let (image, frame) = backend
+        .capture(&Target::Desktop, &CaptureCaps::default())
+        .expect("portal screenshot");
     (image.width(), image.height(), frame)
 }
 
@@ -197,7 +252,10 @@ fn live_portal_screenshot_maps_through_the_compositor_layout() {
         f64::from(layout.y) + f64::from(layout.height) * 0.5,
     );
     let (x, y) = mapped.expect("the image is the compositor layout, so it maps");
-    assert!((x - expected.0).abs() <= 1.0 && (y - expected.1).abs() <= 1.0, "{expected:?}");
+    assert!(
+        (x - expected.0).abs() <= 1.0 && (y - expected.1).abs() <= 1.0,
+        "{expected:?}"
+    );
 }
 
 #[test]
@@ -225,7 +283,12 @@ fn a_layout_change_after_capture_refuses_pointer_input_against_that_frame() {
     // When: a click through the stale frame, then an AX-style global click
     let stale = scaled
         .backend
-        .pointer(&Target::Desktop, click(10.0, 10.0), &frame, DeliveryMode::Background)
+        .pointer(
+            &Target::Desktop,
+            click(10.0, 10.0),
+            &frame,
+            DeliveryMode::Background,
+        )
         .map_err(|error| error.code);
     let global = scaled.backend.pointer(
         &Target::Desktop,

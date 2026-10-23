@@ -3585,6 +3585,7 @@ dependencies = [
  "maho-ext-ferryx-agent-state",
  "maho-ext-goal",
  "maho-ext-gpt-apply-patch",
+ "maho-ext-handoff-hint",
  "maho-ext-help",
  "maho-ext-herdr",
  "maho-ext-herdr-agent-state",
@@ -3732,6 +3733,7 @@ dependencies = [
  "hex",
  "ignore",
  "indexmap",
+ "jiff",
  "maho-agent",
  "maho-ai",
  "maho-ext-api",
@@ -4037,6 +4039,20 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "maho-ext-handoff-hint"
+version = "0.0.0"
+dependencies = [
+ "maho-ai",
+ "maho-ext-api",
+ "maho-ext-cache-keepalive",
+ "maho-ext-compaction",
+ "maho-ext-goal",
+ "maho-ext-todotools",
+ "serde_json",
  "tokio",
 ]
 
@@ -4883,6 +4899,7 @@ dependencies = [
  "indexmap",
  "maho-ai",
  "maho-ext-api",
+ "maho-memory-core",
  "maho-omo-ast-grep",
  "maho-omo-browser-bridge",
  "maho-omo-builtin-mcps",
@@ -4891,6 +4908,7 @@ dependencies = [
  "maho-omo-config-startup",
  "maho-omo-config-watch",
  "maho-omo-fallback-architect",
+ "maho-omo-feedback",
  "maho-omo-gateway",
  "maho-omo-git-master",
  "maho-omo-init-deep-advisor",
@@ -5088,6 +5106,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-omo-feedback"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "gethostname",
+ "maho-ext-api",
+ "maho-omo-agent-home",
+ "maho-omo-config-core",
+ "maho-omo-config-resolution",
+ "maho-omo-telemetry",
+ "maho-telemetry-core",
+ "regex",
+ "reqwest 0.12.28",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "maho-omo-formatter"
 version = "0.0.0"
 dependencies = [
@@ -5183,6 +5223,7 @@ version = "0.0.0"
 dependencies = [
  "chrono",
  "icu_collator",
+ "loro",
  "maho-ai",
  "maho-core",
  "maho-ext-api",
@@ -5234,8 +5275,11 @@ dependencies = [
  "maho-core",
  "maho-ext-api",
  "maho-ext-host",
+ "maho-memory-core",
  "maho-omo-start-work-continuation",
  "maho-test-support",
+ "maho-tools",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -5337,6 +5381,7 @@ dependencies = [
  "claude-code-compat-core",
  "maho-ai",
  "maho-ext-api",
+ "maho-omo-git-master",
  "maho-omo-lsp",
  "maho-senpi-task",
  "maho-team-core",
@@ -5474,6 +5519,7 @@ dependencies = [
  "maho-test-support",
  "maho-tools",
  "maho-tui",
+ "notify",
  "rusqlite",
  "rustix 1.1.4",
  "serde",

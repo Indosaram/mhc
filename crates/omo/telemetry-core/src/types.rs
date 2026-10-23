@@ -25,6 +25,7 @@ pub struct TelemetryCaptureMessage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TelemetryDiagnosticEvent {
+    TelemetryBufferOverflow,
     TelemetryActivityStateReadFailed,
     TelemetryActivityStateWriteFailed,
     TelemetryCaptureFailed,
@@ -40,6 +41,7 @@ pub enum TelemetryDiagnosticEvent {
 impl TelemetryDiagnosticEvent {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::TelemetryBufferOverflow => "telemetry_buffer_overflow",
             Self::TelemetryActivityStateReadFailed => "telemetry_activity_state_read_failed",
             Self::TelemetryActivityStateWriteFailed => "telemetry_activity_state_write_failed",
             Self::TelemetryCaptureFailed => "telemetry_capture_failed",

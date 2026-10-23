@@ -30,6 +30,8 @@ pub fn setup_error_message(model: &Model, message: &str) -> AssistantMessage {
         raw_stop_reason: None,
         end_turn: None,
         timestamp: now_ms(),
+        failure_source: None,
+        timing: None,
     }
 }
 

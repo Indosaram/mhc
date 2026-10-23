@@ -21,13 +21,12 @@ mod live_tests;
 pub mod pipewire;
 pub mod screenshot_portal;
 
-
 use image::RgbaImage;
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{DesktopDisplay, DesktopWindow, DisplaySelector, Target};
 
-use self::layout::{derive_displays, EisRegion};
+use self::layout::{EisRegion, derive_displays};
 use self::pipewire::{CastError, Geometry, ScreenCast};
 use self::screenshot_portal::ShotError;
 use crate::portal::portal_runtime;
@@ -129,22 +128,32 @@ impl PortalCapture {
             .transpose()
         {
             Ok(Some(cast)) => {
-                let (image, displays) = pipewire::select_capture(&self.selector, cast.image, cast.displays)?;
+                let (image, displays) =
+                    pipewire::select_capture(&self.selector, cast.image, cast.displays)?;
                 self.probe = Probe::Granted;
                 self.displays = displays;
                 self.eis_derived = cast.geometry == Geometry::FromEis;
                 return match (target, cast.geometry) {
                     (Target::Desktop, Geometry::Unknown) => {
-                        let frame =
-                            FrameGeometry::pixels_only(image.width(), image.height(), SCREENCAST_GEOMETRY_UNKNOWN);
+                        let frame = FrameGeometry::pixels_only(
+                            image.width(),
+                            image.height(),
+                            SCREENCAST_GEOMETRY_UNKNOWN,
+                        );
                         Ok((image, frame))
                     }
-                    (Target::Desktop, _) => Ok((image, FrameGeometry::for_displays(&self.displays))),
-                    (Target::Window(id), Geometry::Unknown) => Err(DesktopError::capture_failed(format!(
-                        "window {id}: {SCREENCAST_GEOMETRY_UNKNOWN}, so the window cannot be located in \
+                    (Target::Desktop, _) => {
+                        Ok((image, FrameGeometry::for_displays(&self.displays)))
+                    }
+                    (Target::Window(id), Geometry::Unknown) => {
+                        Err(DesktopError::capture_failed(format!(
+                            "window {id}: {SCREENCAST_GEOMETRY_UNKNOWN}, so the window cannot be located in \
                          its pixels; capture the desktop instead"
-                    ))),
-                    (Target::Window(id), _) => pipewire::crop_window(&image, &self.displays, windows()?, id),
+                        )))
+                    }
+                    (Target::Window(id), _) => {
+                        pipewire::crop_window(&image, &self.displays, windows()?, id)
+                    }
                 };
             }
             Err(CastError::Refused(message)) => {
@@ -180,7 +189,9 @@ impl PortalCapture {
                 DesktopError::permission_denied(message)
             }
             ShotError::Failed(message) => match &self.screencast_fallback {
-                Some(cast) => DesktopError::capture_failed(format!("{message} (ScreenCast: {cast})")),
+                Some(cast) => {
+                    DesktopError::capture_failed(format!("{message} (ScreenCast: {cast})"))
+                }
                 None => DesktopError::capture_failed(message),
             },
         })?;
@@ -188,7 +199,13 @@ impl PortalCapture {
         // The Screenshot portal returns pixels and no display geometry: map
         // them only when the libei layout proves the scale, never guess 1.
         let derived = eis.and_then(|regions| {
-            derive_displays(image.width(), image.height(), regions, PORTAL_DISPLAY_PREFIX, PORTAL_DISPLAY_NAME)
+            derive_displays(
+                image.width(),
+                image.height(),
+                regions,
+                PORTAL_DISPLAY_PREFIX,
+                PORTAL_DISPLAY_NAME,
+            )
         });
         let frame = match derived {
             Some(displays) => {
@@ -198,7 +215,11 @@ impl PortalCapture {
             }
             None => {
                 self.displays = vec![portal_display(image.width(), image.height())];
-                FrameGeometry::pixels_only(image.width(), image.height(), SCREENSHOT_GEOMETRY_UNKNOWN)
+                FrameGeometry::pixels_only(
+                    image.width(),
+                    image.height(),
+                    SCREENSHOT_GEOMETRY_UNKNOWN,
+                )
             }
         };
         Ok((image, frame))
@@ -223,13 +244,11 @@ const PORTAL_DISPLAY_PREFIX: &str = "wayland-portal-";
 const PORTAL_DISPLAY_NAME: &str = "Wayland portal screenshot";
 
 /// Why a Screenshot-portal frame refuses coordinate input.
-pub const SCREENSHOT_GEOMETRY_UNKNOWN: &str =
-    "the Wayland Screenshot portal fallback does not report display scale or layout, and no connected libei \
+pub const SCREENSHOT_GEOMETRY_UNKNOWN: &str = "the Wayland Screenshot portal fallback does not report display scale or layout, and no connected libei \
      input layout matches the image; allow the ScreenCast portal, or send desktop input first and capture again";
 
 /// Why a ScreenCast frame with a stream of unknown size refuses coordinate input.
-pub const SCREENCAST_GEOMETRY_UNKNOWN: &str =
-    "a Wayland ScreenCast stream reported no logical size and no connected libei input layout proves its scale";
+pub const SCREENCAST_GEOMETRY_UNKNOWN: &str = "a Wayland ScreenCast stream reported no logical size and no connected libei input layout proves its scale";
 
 /// The screenshot as one display at pixel size; shown only, never mapped.
 fn portal_display(width: u32, height: u32) -> DesktopDisplay {

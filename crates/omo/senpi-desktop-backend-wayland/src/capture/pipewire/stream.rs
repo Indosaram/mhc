@@ -3,20 +3,20 @@
 //! Everything PipeWire calls back into lives in one heap `Grab` that
 //! outlives the main loop run.
 
-use std::ffi::{c_char, c_int, c_void, CStr};
+use std::ffi::{CStr, c_char, c_int, c_void};
 use std::os::fd::{IntoRawFd, OwnedFd};
 use std::ptr;
 
 use image::RgbaImage;
 
 use super::ffi::{
-    PwBuffer, PwMainLoop, PwStream, PwStreamEvents, SpaHook, SpaPod, PW_STREAM_FLAG_AUTOCONNECT,
-    PW_STREAM_FLAG_MAP_BUFFERS, PW_STREAM_STATE_ERROR, PW_VERSION_STREAM_EVENTS, SPA_DIRECTION_INPUT,
-    SPA_PARAM_FORMAT,
+    PW_STREAM_FLAG_AUTOCONNECT, PW_STREAM_FLAG_MAP_BUFFERS, PW_STREAM_STATE_ERROR,
+    PW_VERSION_STREAM_EVENTS, PwBuffer, PwMainLoop, PwStream, PwStreamEvents, SPA_DIRECTION_INPUT,
+    SPA_PARAM_FORMAT, SpaHook, SpaPod,
 };
 use super::lib::PipeWire;
 use super::pixels::to_rgba;
-use super::pod::{enum_format, parse_format, Negotiated};
+use super::pod::{Negotiated, enum_format, parse_format};
 
 const STREAM_PROPERTIES: &CStr = c"media.type=Video media.category=Capture media.role=Screen";
 
@@ -54,8 +54,8 @@ impl Grab {
         }
         // SAFETY: `chunk` is non-null and valid while the buffer is dequeued.
         let chunk = unsafe { &*data.chunk };
-        let stride =
-            usize::try_from(chunk.stride).map_err(|_| format!("unsupported stride {}", chunk.stride))?;
+        let stride = usize::try_from(chunk.stride)
+            .map_err(|_| format!("unsupported stride {}", chunk.stride))?;
         let maxsize = data.maxsize as usize;
         let offset = (chunk.offset as usize) % maxsize.max(1);
         let size = (chunk.size as usize).min(maxsize.saturating_sub(offset));
@@ -78,7 +78,9 @@ unsafe extern "C" fn on_state(data: *mut c_void, _old: c_int, state: c_int, erro
             "unknown error".to_owned()
         } else {
             // SAFETY: PipeWire passes a NUL-terminated message or null.
-            unsafe { CStr::from_ptr(error) }.to_string_lossy().into_owned()
+            unsafe { CStr::from_ptr(error) }
+                .to_string_lossy()
+                .into_owned()
         };
         grab.finish(Err(format!("PipeWire stream error: {reason}")));
     }
@@ -134,7 +136,11 @@ static EVENTS: PwStreamEvents = PwStreamEvents {
     trigger_done: None,
 };
 
-pub fn grab_frame(pipewire: &'static PipeWire, node: u32, fd: OwnedFd) -> Result<RgbaImage, String> {
+pub fn grab_frame(
+    pipewire: &'static PipeWire,
+    node: u32,
+    fd: OwnedFd,
+) -> Result<RgbaImage, String> {
     // SAFETY: libpipewire's lifecycle order (loop, context, core, stream;
     // torn down in the opposite order) with each pointer null-checked first.
     // `run_stream` boxes the callback state and hook so their addresses are
@@ -144,7 +150,8 @@ pub fn grab_frame(pipewire: &'static PipeWire, node: u32, fd: OwnedFd) -> Result
         if main_loop.is_null() {
             return Err("pw_main_loop_new failed".to_owned());
         }
-        let context = (pipewire.context_new)((pipewire.main_loop_get_loop)(main_loop), ptr::null_mut(), 0);
+        let context =
+            (pipewire.context_new)((pipewire.main_loop_get_loop)(main_loop), ptr::null_mut(), 0);
         let outcome = if context.is_null() {
             Err("pw_context_new failed".to_owned())
         } else {
@@ -193,8 +200,14 @@ unsafe fn run_stream(
         let format = enum_format();
         let mut params = [format.as_ptr().cast::<SpaPod>()];
         let flags = PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS;
-        let connected =
-            (pipewire.stream_connect)(stream, SPA_DIRECTION_INPUT, node, flags, params.as_mut_ptr(), 1);
+        let connected = (pipewire.stream_connect)(
+            stream,
+            SPA_DIRECTION_INPUT,
+            node,
+            flags,
+            params.as_mut_ptr(),
+            1,
+        );
         if connected < 0 {
             (pipewire.stream_destroy)(stream);
             return Err(format!("pw_stream_connect failed ({connected})"));

@@ -24,6 +24,18 @@ pub fn limit_github_copilot_tools(
     tools: &mut Vec<Value>,
     choice: Option<&Value>,
 ) -> usize {
+    limit_github_copilot_tools_with_priority(provider, tools, choice, None)
+}
+
+/// Same as [`limit_github_copilot_tools`], plus `priority_names`: the caller's registration order.
+/// The wire order can differ from it (Responses sorts tools by name), so when given, survivors
+/// are chosen by registration rank (forced tool first) and kept in their wire order.
+pub fn limit_github_copilot_tools_with_priority(
+    provider: &str,
+    tools: &mut Vec<Value>,
+    choice: Option<&Value>,
+    priority_names: Option<&[String]>,
+) -> usize {
     if provider != "github-copilot" || tools.len() <= GITHUB_COPILOT_TOOL_LIMIT {
         return 0;
     }
@@ -36,6 +48,36 @@ pub fn limit_github_copilot_tools(
             )
         })
         .and_then(tool_name);
+    if let Some(priority_names) = priority_names {
+        let mut ranked: Vec<(i64, usize)> = tools
+            .iter()
+            .enumerate()
+            .map(|(index, tool)| {
+                let name = tool_name(tool);
+                let rank = if name.is_some() && name == forced {
+                    -1
+                } else {
+                    let known = priority_names
+                        .iter()
+                        .position(|candidate| Some(candidate.as_str()) == name);
+                    i64::try_from(known.unwrap_or(priority_names.len() + index)).unwrap_or(i64::MAX)
+                };
+                (rank, index)
+            })
+            .collect();
+        ranked.sort();
+        let kept: std::collections::BTreeSet<usize> = ranked
+            .into_iter()
+            .take(GITHUB_COPILOT_TOOL_LIMIT)
+            .map(|(_, index)| index)
+            .collect();
+        let mut index = 0;
+        tools.retain(|_| {
+            index += 1;
+            kept.contains(&(index - 1))
+        });
+        return omitted;
+    }
     if let Some(index) =
         forced.and_then(|name| tools.iter().position(|tool| tool_name(tool) == Some(name)))
         && index >= GITHUB_COPILOT_TOOL_LIMIT
@@ -101,6 +143,31 @@ mod tests {
         assert_eq!(tools.len(), 128);
         assert_eq!(tools[126]["name"], "tool126");
         assert_eq!(tools[127]["name"], "tool129");
+    }
+
+    #[test]
+    fn priority_names_choose_survivors_and_keep_wire_order() {
+        // Wire order is reversed relative to registration order.
+        let mut tools: Vec<Value> = (0..130)
+            .rev()
+            .map(|index| json!({"name": format!("tool{index}")}))
+            .collect();
+        let priority: Vec<String> = (0..130).map(|index| format!("tool{index}")).collect();
+        let omitted = limit_github_copilot_tools_with_priority(
+            "github-copilot",
+            &mut tools,
+            Some(&json!({"type":"function","function":{"name":"tool129"}})),
+            Some(&priority),
+        );
+        assert_eq!(omitted, 2);
+        assert_eq!(tools.len(), 128);
+        assert_eq!(tools[0]["name"], "tool129");
+        assert_eq!(tools[127]["name"], "tool0");
+        assert!(
+            tools
+                .iter()
+                .all(|tool| tool["name"] != "tool127" && tool["name"] != "tool128")
+        );
     }
 
     #[test]

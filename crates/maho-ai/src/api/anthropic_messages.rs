@@ -28,11 +28,12 @@ use crate::api::anthropic_tool_references::{
 mod anthropic_federation;
 #[path = "anthropic_web_search_expiry.rs"]
 mod anthropic_web_search_expiry;
-use crate::api::github_copilot_errors;
+use crate::api::anthropic_request_shape_log;
 use crate::api::cloudflare::resolve_cloudflare_base_url;
 use crate::api::constrained_sampling::{
     get_json_schema_tool_parameters, resolve_json_schema_strict_sampling_with_keyword_check,
 };
+use crate::api::github_copilot_errors;
 use crate::api::github_copilot_headers::{build_copilot_dynamic_headers, has_copilot_vision_input};
 use crate::api::simple_options::{
     ANTHROPIC_RESERVED_BODY_KEYS, adjust_max_tokens_for_thinking, build_base_options,
@@ -92,7 +93,7 @@ use anthropic_web_search_expiry::{
 pub use crate::utils::prompt_cache_ttl::get_anthropic_compat as anthropic_compat;
 
 /// Stealth mode: Mimic Claude Code's tool naming exactly.
-const CLAUDE_CODE_VERSION: &str = "2.1.296";
+const CLAUDE_CODE_VERSION: &str = "2.1.306";
 
 /// Claude Code 2.x tool names (canonical casing).
 const CLAUDE_CODE_TOOLS: [&str; 17] = [
@@ -2744,6 +2745,8 @@ fn create_output(model: &Model, options: &StreamOptions) -> AssistantMessage {
         .filter(|supported| *supported)
         .map(|_| effort_option(options).unwrap_or_else(|| "high".to_owned()));
     AssistantMessage {
+        failure_source: None,
+        timing: None,
         thinking_level: None,
         provider_diagnostic: None,
         prompt_cache_diagnostics: None,
@@ -3307,6 +3310,13 @@ async fn attempt_request(
                     sent_model: prepared.sent_model.clone(),
                 };
                 async move {
+                    anthropic_request_shape_log::log_anthropic_request_shape(
+                        &model.provider,
+                        &model.id,
+                        &request.params,
+                        options.request.env.as_ref(),
+                        None,
+                    );
                     let response = send_request(model, client, options, api_key, &request).await?;
                     if response.status().is_success() {
                         Ok(response)
@@ -3315,11 +3325,15 @@ async fn attempt_request(
                     }
                 }
             },
-            |error: &AnthropicStreamError| HttpFailure {
-                status: error.status(),
-                message: error.to_string(),
-            }.into(),
-        ).await;
+            |error: &AnthropicStreamError| {
+                HttpFailure {
+                    status: error.status(),
+                    message: error.to_string(),
+                }
+                .into()
+            },
+        )
+        .await;
         let response = match sent {
             Ok((params, response)) => {
                 prepared.params = params;
@@ -3902,7 +3916,8 @@ pub fn stream_simple(
         &model.provider,
         api_key.as_deref(),
         options_headers.as_ref(),
-    ) && anthropic_federation::resolve(model, &simple.stream, false).is_none() {
+    ) && anthropic_federation::resolve(model, &simple.stream, false).is_none()
+    {
         return crate::utils::lazy::error_stream(model, &message);
     }
 
@@ -3993,11 +4008,17 @@ mod forced_choice_tests {
     use std::sync::Arc;
 
     #[tokio::test]
-    async fn shared_fallback_preserves_replay_and_thinking_sensitive_memory() -> anyhow::Result<()> {
+    async fn shared_fallback_preserves_replay_and_thinking_sensitive_memory() -> anyhow::Result<()>
+    {
         // Given
         for (refusal, accepts_forced, expected_requests, remembered) in [
             ("'lookup' schema invalid", true, 3, true),
-            ("Thinking mode does not support this tool_choice", true, 4, false),
+            (
+                "Thinking mode does not support this tool_choice",
+                true,
+                4,
+                false,
+            ),
             ("tool_choice not supported", false, 2, false),
         ] {
             let captured = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -4018,12 +4039,21 @@ mod forced_choice_tests {
             let address = listener.local_addr()?;
             let (shutdown, closed) = tokio::sync::oneshot::channel();
             let server = tokio::spawn(async move {
-                axum::serve(listener, app).with_graceful_shutdown(async { let _closed = closed.await; }).await
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async {
+                        let _closed = closed.await;
+                    })
+                    .await
             });
-            let mut model = crate::models_generated::get_builtin_provider_models("anthropic").expect("models")[0].clone();
+            let mut model = crate::models_generated::get_builtin_provider_models("anthropic")
+                .expect("models")[0]
+                .clone();
             model.base_url = format!("http://{address}");
             model.id = format!("forced-choice-{accepts_forced}-{remembered}");
-            model.compat = Some(crate::model::ModelCompat(serde_json::from_value(json!({"supportsForcedToolChoice":accepts_forced})).expect("compat")));
+            model.compat = Some(crate::model::ModelCompat(
+                serde_json::from_value(json!({"supportsForcedToolChoice":accepts_forced}))
+                    .expect("compat"),
+            ));
             let mut options = StreamOptions::default();
             options.request.fetch = Some(reqwest::Client::builder().no_proxy().build()?);
             options.request.on_payload = Some(Arc::new(|payload, _, _| {
@@ -4040,18 +4070,37 @@ mod forced_choice_tests {
             // When
             let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
                 for _ in 0..2 {
-                    let (prepared, _) = attempt_request(&model, &context, &client, &options, Some("key"), RequestReplay { unsigned_thinking: &replay, fallback_key: None, omitted_tools: &omitted }).await.map_err(|error| anyhow::anyhow!("{error}"))?;
+                    let (prepared, _) = attempt_request(
+                        &model,
+                        &context,
+                        &client,
+                        &options,
+                        Some("key"),
+                        RequestReplay {
+                            unsigned_thinking: &replay,
+                            fallback_key: None,
+                            omitted_tools: &omitted,
+                        },
+                    )
+                    .await
+                    .map_err(|error| anyhow::anyhow!("{error}"))?;
                     assert!(!prepared.params.contains_key("tool_choice"));
                 }
                 Ok::<_, anyhow::Error>(())
-            }).await;
-            shutdown.send(()).map_err(|_| anyhow::anyhow!("server shutdown receiver dropped"))?;
+            })
+            .await;
+            shutdown
+                .send(())
+                .map_err(|_| anyhow::anyhow!("server shutdown receiver dropped"))?;
             tokio::time::timeout(std::time::Duration::from_secs(5), server).await???;
             result??;
 
             // Then
             assert_eq!(captured.lock().expect("requests").len(), expected_requests);
-            assert_eq!(crate::utils::tool_choice_fallback::has_refused_forced_tool_choice(&model), remembered);
+            assert_eq!(
+                crate::utils::tool_choice_fallback::has_refused_forced_tool_choice(&model),
+                remembered
+            );
         }
         Ok(())
     }

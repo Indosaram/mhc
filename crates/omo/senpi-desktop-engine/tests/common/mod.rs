@@ -11,7 +11,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub mod scenario;
 
@@ -87,9 +87,14 @@ impl Engine {
     /// Writes every message in one write, so no test-side scheduling gap can
     /// separate them.
     pub fn send_all(&mut self, messages: &[Value]) {
-        let batch: String = messages.iter().map(|message| format!("{message}\n")).collect();
+        let batch: String = messages
+            .iter()
+            .map(|message| format!("{message}\n"))
+            .collect();
         let stdin = self.stdin.as_mut().expect("stdin is open");
-        stdin.write_all(batch.as_bytes()).expect("engine reads stdin");
+        stdin
+            .write_all(batch.as_bytes())
+            .expect("engine reads stdin");
         stdin.flush().expect("stdin flushes");
     }
 

@@ -1,10 +1,11 @@
 //! Recall corpus provider: committed memory files from HEAD, excluding only the root `system/` tree
 //! (pin `recall/provider.ts`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
 
+use super::bm25_persist::{RecallTermErrorHandler, RecallTermPersistence};
 use crate::fs::resilient;
 use crate::git::{GitError, GitMemoryRepo};
 use crate::memfs::parse_memory_file;
@@ -98,22 +99,66 @@ fn load_corpus_at_revision(
 
 fn parse_recall_document(path: &str, content: &str) -> LoadedBlob {
     // Fail-closed: files without valid frontmatter are silently skipped.
-    parse_memory_file(content).ok().map(|parsed| RecallDocument {
-        path: path.to_string(),
-        description: parsed.frontmatter.description,
-        body: parsed.body,
-    })
+    parse_memory_file(content)
+        .ok()
+        .map(|parsed| RecallDocument {
+            path: path.to_string(),
+            description: parsed.frontmatter.description,
+            body: parsed.body,
+        })
 }
 
 /// Resolves the corpus revision; the default reads HEAD through the repository.
 pub type RecallHeadResolver =
     Arc<dyn Fn(&GitMemoryRepo) -> Result<Option<String>, GitError> + Send + Sync>;
 
+/// Builds the persisted-terms store of one repository directory on the first corpus load, so a host
+/// that never persists pays nothing. Without it every new process tokenizes the corpus.
+pub type RecallTermStoreLoader = Arc<
+    dyn Fn(&Path, RecallTermErrorHandler) -> Result<RecallTermPersistence, std::io::Error>
+        + Send
+        + Sync,
+>;
+
 /// Options for [`RecallCorpusCache`].
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct RecallCorpusCacheOptions {
     /// HEAD resolution seam; the default spawns `git rev-parse` through the repo.
     pub head: Option<RecallHeadResolver>,
+    /// Share one corpus per memory repository with every other shared cache in this process. The
+    /// shared state lives while any shared cache that loaded the repository is alive.
+    pub shared: bool,
+    /// Told when the persisted recall terms cannot be read or saved; recall itself is unaffected.
+    pub on_term_store_error: Option<RecallTermErrorHandler>,
+    /// Loads the persisted-terms store on the first corpus load.
+    pub term_store: Option<RecallTermStoreLoader>,
+}
+
+type SharedCache = Arc<Mutex<RecallCorpusCache>>;
+
+static SHARED_CACHES: LazyLock<Mutex<HashMap<PathBuf, Weak<Mutex<RecallCorpusCache>>>>> =
+    LazyLock::new(Mutex::default);
+
+/// One repository reached through a symlink or a trailing slash is still one corpus; keying by the
+/// spelled path would give each spelling its own copy. The resilient filesystem boundary resolves it.
+fn shared_key(dir: &Path) -> PathBuf {
+    resilient::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf())
+}
+
+fn acquire_shared_cache(key: &Path, options: &RecallCorpusCacheOptions) -> SharedCache {
+    let mut caches = SHARED_CACHES.lock().unwrap_or_else(PoisonError::into_inner);
+    caches.retain(|_, weak| weak.strong_count() > 0);
+    if let Some(live) = caches.get(key).and_then(Weak::upgrade) {
+        return live;
+    }
+    let cache = Arc::new(Mutex::new(RecallCorpusCache::new(
+        RecallCorpusCacheOptions {
+            shared: false,
+            ..options.clone()
+        },
+    )));
+    caches.insert(key.to_path_buf(), Arc::downgrade(&cache));
+    cache
 }
 
 struct RecallCorpusCacheEntry {
@@ -127,7 +172,14 @@ pub struct RecallCorpusCache {
     entry: Option<RecallCorpusCacheEntry>,
     probe: Option<(PathBuf, String)>,
     blobs: Option<(PathBuf, LoadedBlobs)>,
+    terms: Option<Arc<RecallTermPersistence>>,
+    /// Every repository's persisted terms this cache attached, so `settled()` covers a save started
+    /// before a switch.
+    attached: Vec<Arc<RecallTermPersistence>>,
     resolve_head: RecallHeadResolver,
+    options: RecallCorpusCacheOptions,
+    /// Shared mode only: the process-wide caches this instance keeps alive, one per repository.
+    held: HashMap<PathBuf, SharedCache>,
 }
 
 impl Default for RecallCorpusCache {
@@ -140,12 +192,17 @@ impl RecallCorpusCache {
     pub fn new(options: RecallCorpusCacheOptions) -> Self {
         let resolve_head: RecallHeadResolver = options
             .head
+            .clone()
             .unwrap_or_else(|| Arc::new(|repo: &GitMemoryRepo| repo.head()));
         Self {
             entry: None,
             probe: None,
             blobs: None,
+            terms: None,
+            attached: Vec::new(),
             resolve_head,
+            options,
+            held: HashMap::new(),
         }
     }
 
@@ -154,6 +211,13 @@ impl RecallCorpusCache {
     /// The shared corpus keeps one stable documents slice per revision, so the BM25 index cache keyed
     /// by that slice is reused across calls.
     pub fn load(&mut self, repo: &GitMemoryRepo) -> Result<Arc<RecallCorpus>, GitError> {
+        if self.options.shared {
+            let cache = self.shared_for(&repo.dir);
+            return cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .load(repo);
+        }
         let signature = head_signature(&repo.dir);
         if let Some(entry) = &self.entry
             && let Some(signature) = &signature
@@ -182,6 +246,7 @@ impl RecallCorpusCache {
             super::corpus_derived::unregister(&previous.corpus);
         }
         super::corpus_derived::register(&corpus);
+        self.attach_terms(repo, &corpus);
         self.entry = Some(RecallCorpusCacheEntry {
             revision,
             corpus: Arc::clone(&corpus),
@@ -190,7 +255,22 @@ impl RecallCorpusCache {
         Ok(corpus)
     }
 
+    /// Blocks until no persisted-terms save started by this cache, or a shared cache it holds, is
+    /// running.
+    pub fn settled(&self) {
+        for terms in &self.attached {
+            terms.settled();
+        }
+        for cache in self.held.values() {
+            cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .settled();
+        }
+    }
+
     pub fn clear(&mut self) {
+        self.held.clear();
         if let Some(previous) = self.entry.take() {
             super::corpus_derived::unregister(&previous.corpus);
         }
@@ -198,7 +278,52 @@ impl RecallCorpusCache {
         self.blobs = None;
     }
 
-    fn load_revision(&mut self, repo: &GitMemoryRepo, revision: &str) -> Result<RecallCorpus, GitError> {
+    fn shared_for(&mut self, dir: &Path) -> SharedCache {
+        let key = shared_key(dir);
+        if let Some(cache) = self.held.get(&key) {
+            return Arc::clone(cache);
+        }
+        let cache = acquire_shared_cache(&key, &self.options);
+        self.held.insert(key, Arc::clone(&cache));
+        cache
+    }
+
+    /// Attaches the repository's persisted terms to a freshly loaded corpus: seeds it from the store
+    /// the first time and saves again after a later build that tokenized.
+    fn attach_terms(&mut self, repo: &GitMemoryRepo, corpus: &Arc<RecallCorpus>) {
+        if self.terms.as_ref().map(|terms| terms.dir()) != Some(repo.dir.as_path()) {
+            self.terms = self.persistence_for(&repo.dir);
+        }
+        if let Some(terms) = &self.terms {
+            terms.attach(corpus);
+        }
+    }
+
+    fn persistence_for(&mut self, dir: &Path) -> Option<Arc<RecallTermPersistence>> {
+        let loader = self.options.term_store.as_ref()?;
+        let on_error: RecallTermErrorHandler = self
+            .options
+            .on_term_store_error
+            .clone()
+            .unwrap_or_else(|| Arc::new(|_| {}));
+        match loader(dir, Arc::clone(&on_error)) {
+            Ok(persistence) => {
+                let persistence = Arc::new(persistence);
+                self.attached.push(Arc::clone(&persistence));
+                Some(persistence)
+            }
+            Err(error) => {
+                on_error(&error);
+                None
+            }
+        }
+    }
+
+    fn load_revision(
+        &mut self,
+        repo: &GitMemoryRepo,
+        revision: &str,
+    ) -> Result<RecallCorpus, GitError> {
         let previous = match &self.blobs {
             Some((dir, loaded)) if dir == &repo.dir => loaded.clone(),
             _ => BTreeMap::new(),
@@ -227,10 +352,17 @@ fn head_signature(dir: &Path) -> Option<String> {
     }
     let head_path = git_dir.join("HEAD");
     let head_stat = resilient::metadata(&head_path).ok()?;
-    let head = resilient::read_to_string(&head_path).ok()?.trim().to_string();
+    let head = resilient::read_to_string(&head_path)
+        .ok()?
+        .trim()
+        .to_string();
     let mut parts = vec![
         format!("head={head}"),
-        format!("head-stat={}:{}", stat_mtime_ms(&head_stat), head_stat.len()),
+        format!(
+            "head-stat={}:{}",
+            stat_mtime_ms(&head_stat),
+            head_stat.len()
+        ),
     ];
     if let Some(ref_name) = head.strip_prefix("ref:") {
         let ref_name = ref_name.trim();

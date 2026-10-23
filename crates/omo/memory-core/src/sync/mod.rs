@@ -4,6 +4,7 @@ pub mod canonical_json;
 pub mod canonical_json_serialize;
 pub mod canonical_json_types;
 pub mod crypto;
+pub mod engine;
 pub mod hpke_sealed_box;
 pub mod item;
 pub mod keyring_port;

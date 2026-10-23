@@ -1,5 +1,13 @@
 #[derive(Debug, PartialEq, Eq)]
-pub enum AccountAction { List, Pin(String), Unpin, Reset(String), Remove(String), DisplayName(String), Usage }
+pub enum AccountAction {
+    List,
+    Pin(String),
+    Unpin,
+    Reset(String),
+    Remove(String),
+    DisplayName(String),
+    Usage,
+}
 
 pub fn parse_command(raw: &str) -> Option<(String, AccountAction)> {
     let raw = raw.trim();
@@ -8,26 +16,53 @@ pub fn parse_command(raw: &str) -> Option<(String, AccountAction)> {
     let remainder = raw[provider.len()..].trim_start();
     let action = match args.next().unwrap_or("list") {
         "list" => AccountAction::List,
-        "pin" => args.next().map_or(AccountAction::Usage, |id| AccountAction::Pin(id.into())),
+        "pin" => args
+            .next()
+            .map_or(AccountAction::Usage, |id| AccountAction::Pin(id.into())),
         "unpin" => AccountAction::Unpin,
-        "reset" => args.next().map_or(AccountAction::Usage, |id| AccountAction::Reset(id.into())),
-        "remove" => args.next().map_or(AccountAction::Usage, |id| AccountAction::Remove(id.into())),
+        "reset" => args
+            .next()
+            .map_or(AccountAction::Usage, |id| AccountAction::Reset(id.into())),
+        "remove" => args
+            .next()
+            .map_or(AccountAction::Usage, |id| AccountAction::Remove(id.into())),
         "rename" | "clear-name" => AccountAction::DisplayName(remainder.into()),
         _ => AccountAction::Usage,
     };
     Some((provider.into(), action))
 }
 
-use maho_ext_api::{CredentialAccountSource, CredentialAccountSummary, Extension, ExtensionApi, ExtensionFailure, NotificationType};
+use maho_ext_api::{
+    CredentialAccountSource, CredentialAccountSummary, Extension, ExtensionApi, ExtensionFailure,
+    NotificationType,
+};
 use std::sync::Arc;
 
 fn account_label(name: &str, display_name: Option<&str>) -> String {
     display_name.map_or_else(|| name.into(), |display| format!("{display} ({name})"))
 }
 fn account_status(account: &CredentialAccountSummary) -> String {
-    let source = match account.source { CredentialAccountSource::Login => "login", CredentialAccountSource::Import => "import", CredentialAccountSource::Env => "env" };
-    let mut status = format!("{} | {} | {}", account_label(&account.name, account.display_name.as_deref()), source, if account.blocked { "blocked" } else { "available" });
-    if account.pinned { status.push_str(" | pinned"); }
+    let source = match account.source {
+        CredentialAccountSource::Login => "login",
+        CredentialAccountSource::Import => "import",
+        CredentialAccountSource::Env => "env",
+    };
+    let availability = if account.unused {
+        "unused (other login kind; switch with /login)"
+    } else if account.blocked {
+        "blocked"
+    } else {
+        "available"
+    };
+    let mut status = format!(
+        "{} | {} | {}",
+        account_label(&account.name, account.display_name.as_deref()),
+        source,
+        availability
+    );
+    if account.pinned {
+        status.push_str(" | pinned");
+    }
     status
 }
 pub struct Account;

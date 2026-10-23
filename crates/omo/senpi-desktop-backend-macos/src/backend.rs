@@ -13,9 +13,9 @@ use senpi_desktop_core::types::{
     FrontWindow, Target,
 };
 
-use crate::ax::{is_trusted, MacAx};
+use crate::ax::{MacAx, is_trusted};
 use crate::capture::{MacCapture, Screencapture};
-use crate::input::{CanaryMode, CanaryResult, MacInput, CANARY_STOP_REASON};
+use crate::input::{CANARY_STOP_REASON, CanaryMode, CanaryResult, MacInput};
 
 #[path = "permissions.rs"]
 pub(crate) mod permissions;
@@ -57,9 +57,9 @@ impl MacosBackend {
         let capture_permission = self.capture.permission_granted();
         let trusted = is_trusted();
         let display_count = if capture_permission {
-            self.capture
-                .displays()
-                .map_or(0, |displays| u32::try_from(displays.len()).unwrap_or(u32::MAX))
+            self.capture.displays().map_or(0, |displays| {
+                u32::try_from(displays.len()).unwrap_or(u32::MAX)
+            })
         } else {
             0
         };
@@ -120,7 +120,11 @@ impl Backend for MacosBackend {
         self.capture.windows()
     }
 
-    fn capture(&mut self, target: &Target, _caps: &CaptureCaps) -> CoreResult<(RgbaImage, FrameGeometry)> {
+    fn capture(
+        &mut self,
+        target: &Target,
+        _caps: &CaptureCaps,
+    ) -> CoreResult<(RgbaImage, FrameGeometry)> {
         self.capture.capture(target)
     }
 
@@ -157,10 +161,16 @@ impl Backend for MacosBackend {
         delivered: &mut dyn FnMut(),
     ) -> CoreResult<()> {
         Self::require_input_permission()?;
-        self.input.type_text_interruptible(target, text, mode, &self.capture, check_stop, delivered)
+        self.input
+            .type_text_interruptible(target, text, mode, &self.capture, check_stop, delivered)
     }
 
-    fn key_chord(&mut self, target: &Target, keys: &[KeyName], mode: DeliveryMode) -> CoreResult<()> {
+    fn key_chord(
+        &mut self,
+        target: &Target,
+        keys: &[KeyName],
+        mode: DeliveryMode,
+    ) -> CoreResult<()> {
         Self::require_input_permission()?;
         self.input.key_chord(target, keys, mode, &self.capture)
     }
@@ -178,14 +188,19 @@ impl Backend for MacosBackend {
                 ))
             })?;
         self.ax.raise(&window)?;
-        let pid = window
-            .pid
-            .ok_or_else(|| DesktopError::input_failed(format!("window {id} has no owning process id")))?;
-        let pid = i32::try_from(pid)
-            .map_err(|_| DesktopError::input_failed(format!("window {id} has an invalid process id")))?;
-        let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid).ok_or_else(|| {
-            DesktopError::window_not_found(format!("application for window '{id}' is no longer running"))
+        let pid = window.pid.ok_or_else(|| {
+            DesktopError::input_failed(format!("window {id} has no owning process id"))
         })?;
+        let pid = i32::try_from(pid).map_err(|_| {
+            DesktopError::input_failed(format!("window {id} has an invalid process id"))
+        })?;
+        let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid).ok_or_else(
+            || {
+                DesktopError::window_not_found(format!(
+                    "application for window '{id}' is no longer running"
+                ))
+            },
+        )?;
         if !app.activateWithOptions(NSApplicationActivationOptions::empty()) {
             return Err(DesktopError::input_failed(format!(
                 "activation request for window '{id}' was rejected"

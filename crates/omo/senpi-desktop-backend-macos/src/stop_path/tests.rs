@@ -2,14 +2,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use senpi_desktop_safety::{
-    ActiveStopPath, Chord, FakeClock, StopPathError, StopPathListener, StopPolicy, StopSource, Supervisor,
-    HEARTBEAT_FRESH_MS, HEARTBEAT_INTERVAL_MS,
+    ActiveStopPath, Chord, FakeClock, HEARTBEAT_FRESH_MS, HEARTBEAT_INTERVAL_MS, StopPathError,
+    StopPathListener, StopPolicy, StopSource, Supervisor,
 };
 
-use super::chord::{Hotkey, DEFAULT_STOP_CHORD};
+use super::chord::{DEFAULT_STOP_CHORD, Hotkey};
 use super::tap::{
-    classify, listener_step_is_live, TapAction, EVENT_KEY_DOWN, RUN_LOOP_HANDLED_SOURCE, RUN_LOOP_TIMED_OUT,
-    TAP_DISABLED_BY_TIMEOUT, TAP_DISABLED_BY_USER_INPUT,
+    EVENT_KEY_DOWN, RUN_LOOP_HANDLED_SOURCE, RUN_LOOP_TIMED_OUT, TAP_DISABLED_BY_TIMEOUT,
+    TAP_DISABLED_BY_USER_INPUT, TapAction, classify, listener_step_is_live,
 };
 use super::{CgEventTapListener, Ladder, Shared, Wake};
 
@@ -81,8 +81,14 @@ fn chords_the_key_down_tap_cannot_see_are_rejected() {
 fn an_invalid_chord_fails_start_before_any_tap_exists() {
     let (shared, _clock) = shared(DEFAULT_STOP_CHORD);
     let mut listener = CgEventTapListener::new();
-    let started = listener.start(&Chord::parse("ctrl+alt").unwrap(), shared.supervisor.clone());
-    assert_eq!(started, Err(StopPathError::InvalidChord("ctrl+alt".to_owned())));
+    let started = listener.start(
+        &Chord::parse("ctrl+alt").unwrap(),
+        shared.supervisor.clone(),
+    );
+    assert_eq!(
+        started,
+        Err(StopPathError::InvalidChord("ctrl+alt".to_owned()))
+    );
     assert!(!listener.is_live());
     assert!(listener.shared.is_none());
 }
@@ -94,7 +100,15 @@ fn the_re_arm_ladder_backs_off_from_250_ms_to_4_s_then_parks() {
     let ms = |ms| Some(Duration::from_millis(ms));
     assert_eq!(
         delays,
-        [ms(250), ms(500), ms(1_000), ms(2_000), ms(4_000), None, None]
+        [
+            ms(250),
+            ms(500),
+            ms(1_000),
+            ms(2_000),
+            ms(4_000),
+            None,
+            None
+        ]
     );
 }
 
@@ -102,7 +116,10 @@ fn the_re_arm_ladder_backs_off_from_250_ms_to_4_s_then_parks() {
 fn only_an_enabled_tap_on_a_serviced_run_loop_stays_live() {
     assert!(listener_step_is_live(RUN_LOOP_TIMED_OUT, true));
     assert!(listener_step_is_live(RUN_LOOP_HANDLED_SOURCE, true));
-    assert!(!listener_step_is_live(RUN_LOOP_TIMED_OUT, false), "disabled tap");
+    assert!(
+        !listener_step_is_live(RUN_LOOP_TIMED_OUT, false),
+        "disabled tap"
+    );
     for finished in [0, 1, 2] {
         assert!(
             !listener_step_is_live(finished, true),

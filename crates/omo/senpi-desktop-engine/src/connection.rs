@@ -23,7 +23,7 @@ use tokio::task::JoinSet;
 
 use crate::engine::{Engine, SessionCall};
 use crate::route::Route;
-use crate::rpc::{failure_line, reply_line, Failure};
+use crate::rpc::{Failure, failure_line, reply_line};
 
 /// Reply lines buffered ahead of a slow reader of the output.
 const OUTBOUND_CAPACITY: usize = 256;
@@ -86,7 +86,10 @@ where
     let read = read_requests(&engine, reader, &out, &queue, &in_flight).await;
     drop((queue, out));
     let dispatched = dispatcher.await.map_err(io::Error::other);
-    let written = writer.await.map_err(io::Error::other).and_then(|written| written);
+    let written = writer
+        .await
+        .map_err(io::Error::other)
+        .and_then(|written| written);
     read.and(dispatched).and(written)
 }
 
@@ -147,7 +150,8 @@ fn handle_line(
         (Route::Immediate(outcome), Some(id)) => Some(reply_line(id, outcome)),
         (Route::Session(call), Some(id)) => {
             let Some(cancel) = in_flight.register(&id) else {
-                let duplicate = Failure::InvalidRequest("a request with this id is already in flight".into());
+                let duplicate =
+                    Failure::InvalidRequest("a request with this id is already in flight".into());
                 return Some(failure_line(Some(id), duplicate));
             };
             let queued = Queued {
@@ -173,8 +177,12 @@ fn parse_request(text: &[u8]) -> Result<RpcRequest, ParseFailure> {
     let id = value
         .get("id")
         .and_then(|id| serde_json::from_value(id.clone()).ok());
-    serde_json::from_value(value)
-        .map_err(|error| (id, Failure::InvalidRequest(format!("invalid request: {error}"))))
+    serde_json::from_value(value).map_err(|error| {
+        (
+            id,
+            Failure::InvalidRequest(format!("invalid request: {error}")),
+        )
+    })
 }
 
 async fn dispatch(

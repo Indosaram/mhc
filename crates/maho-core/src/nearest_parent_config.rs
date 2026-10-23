@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn a_flat_layout_needs_the_sentinel_file() {
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = crate::test_support::isolated_tempdir();
         let home = tmp.path().join("home");
         let project = tmp.path().join("proj");
         let nested = project.join("a");

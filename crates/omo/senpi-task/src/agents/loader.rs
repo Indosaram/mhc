@@ -10,11 +10,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, PoisonError};
 
 use omo_config_core::{
-    LoadOmoConfigOptions, load_omo_config, process_env, resolve_model_references,
+    LoadOmoConfigOptions, MERGED_OMO_CONFIG_PATH, load_omo_config, process_env,
+    resolve_model_references,
 };
 use serde_json::Value;
 use utils::frontmatter::{FrontmatterMode, parse_frontmatter};
 
+use super::category_shadow::{category_shadow_message, category_shadowed_agent_names};
 use super::schema::parse_model_entry;
 use super::schema::parse_raw_agent_definition;
 use super::tools::normalize_tool_rules;
@@ -82,12 +84,20 @@ pub fn load_agents_with_registry(
         .map_or_else(|| cwd.clone(), absolute);
 
     let mut result = LoadAgentsResult::default();
+    // A markdown agent that declares its own model already has a chain, so a same-named category
+    // shadows nothing it relies on.
+    let mut markdown_agents_with_own_model = std::collections::BTreeSet::new();
     for location in agent_definition_locations(&home_dir, &project_dir) {
         let (files, diagnostics) = list_markdown_agent_files(&location);
         result.diagnostics.extend(diagnostics);
         for path in files {
             match load_markdown_agent(&path) {
-                Ok(agent) => overlay_agent(&mut result.agents, agent),
+                Ok(agent) => {
+                    if agent.model.is_some() || agent.models.is_some() {
+                        markdown_agents_with_own_model.insert(agent.name.clone());
+                    }
+                    overlay_agent(&mut result.agents, agent);
+                }
                 Err(diagnostic) => result.diagnostics.push(diagnostic),
             }
         }
@@ -97,10 +107,23 @@ pub fn load_agents_with_registry(
         overlay_agent(&mut result.agents, definition);
     }
 
-    let (agents, diagnostics) = load_omo_agent_overlays(options, &home_dir, &project_dir);
+    let (agents, diagnostics, config) = load_omo_agent_overlays(options, &home_dir, &project_dir);
     result.diagnostics.extend(diagnostics);
     for definition in agents {
         overlay_agent(&mut result.agents, definition);
+    }
+    let shadowed =
+        category_shadowed_agent_names(&config, result.agents.iter().map(|(name, _)| name.as_str()));
+    for name in shadowed {
+        if markdown_agents_with_own_model.contains(&name) {
+            continue;
+        }
+        result.diagnostics.push(AgentLoaderDiagnostic {
+            kind: AgentLoaderDiagnosticKind::CategoryShadowsAgent,
+            path: MERGED_OMO_CONFIG_PATH.to_string(),
+            message: category_shadow_message(&config, &name),
+            issue_paths: Some(vec![format!("categories.{name}")]),
+        });
     }
     result
 }
@@ -259,7 +282,7 @@ fn load_omo_agent_overlays(
     options: &LoadAgentsOptions,
     home_dir: &Path,
     project_dir: &Path,
-) -> (Vec<AgentDefinition>, Vec<AgentLoaderDiagnostic>) {
+) -> (Vec<AgentDefinition>, Vec<AgentLoaderDiagnostic>, Value) {
     let mut env = process_env();
     env.extend(options.env.clone().unwrap_or_default());
     let home = display(home_dir);
@@ -311,7 +334,7 @@ fn load_omo_agent_overlays(
         .into_iter()
         .map(|(_, definition)| definition)
         .collect();
-    (agents, diagnostics)
+    (agents, diagnostics, resolved.view)
 }
 
 /// Bridges already-loaded `omo.json` agents (snake_case keys, `{ name: bool }` tools) onto

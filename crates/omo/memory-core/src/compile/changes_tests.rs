@@ -38,13 +38,20 @@ fn projected_paths_use_locale_order_for_case() {
         std::fs::write(repo.dir.join(path), "---\ndescription: note\n---\nbody\n")
             .expect("add note");
     }
-    repo.commit_write(&paths, "add notes", &author()).expect("commit");
+    repo.commit_write(&paths, "add notes", &author())
+        .expect("commit");
     let head = repo.head().expect("head").expect("revision");
     let changes = projected_changes_between(&repo, Some(&base), Some(&head), &Default::default())
         .expect("changes");
     let existing = std::fs::read_dir(repo.dir.join("notes"))
         .expect("notes directory")
-        .map(|entry| entry.expect("note entry").file_name().to_string_lossy().into_owned())
+        .map(|entry| {
+            entry
+                .expect("note entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect::<std::collections::HashSet<_>>();
     let expected = paths
         .into_iter()
@@ -156,6 +163,7 @@ fn a_commit_carrying_the_excluded_session_trailer_is_skipped() {
         Some(head.as_str()),
         &ProjectedChangesOptions {
             exclude_session_id: Some("session-1".to_string()),
+            ..Default::default()
         },
     )
     .expect("excluded changes");
@@ -185,13 +193,8 @@ fn identical_or_missing_revisions_report_no_changes() {
         .expect("same revision")
     ));
     assert!(is_empty_projected_changes(
-        &projected_changes_between(
-            &repo,
-            None,
-            None,
-            &ProjectedChangesOptions::default()
-        )
-        .expect("missing head")
+        &projected_changes_between(&repo, None, None, &ProjectedChangesOptions::default())
+            .expect("missing head")
     ));
 }
 

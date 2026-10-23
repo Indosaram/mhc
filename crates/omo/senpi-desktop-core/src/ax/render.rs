@@ -1,6 +1,6 @@
 //! `ax.snapshot`: the filtered tree rendered as an indented ref'd outline.
 
-use super::walk::{filter_node, label, walk_raw, WalkNode, WalkState};
+use super::walk::{WalkNode, WalkState, filter_node, label, walk_raw};
 use super::{AxBackend, AxRegistry};
 use crate::error::CoreResult;
 use crate::types::{AxSnapshot, AxSnapshotOptions, DesktopWindow};
@@ -10,7 +10,9 @@ fn escaped_truncated(value: &str, max: usize) -> String {
     if value.chars().count() > max {
         out.push('…');
     }
-    out.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ")
+    out.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', " ")
 }
 
 fn push_line(text: &mut String, line: &str) {
@@ -41,7 +43,12 @@ impl TreeWriter<'_> {
         if depth == 0 {
             line.push_str(&format!(" app={}", self.window.app));
         }
-        if let Some(value) = node.props.value.as_deref().filter(|value| !value.is_empty()) {
+        if let Some(value) = node
+            .props
+            .value
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
             line.push_str(&format!(": \"{}\"", escaped_truncated(value, 80)));
         }
         if !node.props.enabled {

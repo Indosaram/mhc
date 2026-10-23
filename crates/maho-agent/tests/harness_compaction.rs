@@ -39,7 +39,7 @@ fn user_message(text: &str) -> AgentMessage {
 }
 
 fn assistant_message(text: &str, usage: Usage) -> AgentMessage {
-    AgentMessage::Llm(Message::Assistant(Box::new(AssistantMessage {
+    AgentMessage::Llm(Message::Assistant(Box::new(AssistantMessage { timing: None, failure_source: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,

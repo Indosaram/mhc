@@ -18,6 +18,7 @@ fn test_envelope() -> FactsPayloadEnvelope {
             slug: "human".to_string(),
             aliases: Vec::new(),
         },
+        agreements: None,
     }
 }
 

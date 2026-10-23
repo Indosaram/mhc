@@ -6,13 +6,13 @@ use senpi_desktop_core::backend::Backend;
 use senpi_desktop_core::error::{DesktopError, ErrorCode};
 use senpi_desktop_core::types::{CaptureCaps, DisplaySelector, Target};
 
-use super::tests::backend_without_services;
 use super::WaylandBackend;
+use super::tests::backend_without_services;
 use crate::capture::screenshot_portal::UNAVAILABLE;
-use crate::capture::{PortalCapture, PORTAL_DISPLAY_ID};
+use crate::capture::{PORTAL_DISPLAY_ID, PortalCapture};
 use crate::test_support::env_lock;
 use crate::test_support::fake_eis::EisConfig;
-use crate::test_support::fake_portal::{fake_bus, FakeBus, Mode, Reply, Shot};
+use crate::test_support::fake_portal::{FakeBus, Mode, Reply, Shot, fake_bus};
 use crate::test_support::screenshot_iface::CORNER;
 
 const PNG: Shot = Shot::Png {
@@ -25,7 +25,10 @@ fn portal(screenshot: Shot) -> &'static FakeBus {
         remote_desktop: Reply::Absent,
         global_shortcuts: Reply::Absent,
         screenshot,
-        eis: EisConfig { keymap: "", group: 0 },
+        eis: EisConfig {
+            keymap: "",
+            group: 0,
+        },
     })
 }
 
@@ -106,7 +109,10 @@ fn a_portal_screenshot_arrives_as_rgba_and_its_file_is_removed() {
     let displays = backend.displays().expect("displays");
     let display = displays.first().expect("the portal display");
     assert_eq!(display.id, PORTAL_DISPLAY_ID);
-    assert_eq!((display.width, display.height, display.scale), (64, 48, 1.0));
+    assert_eq!(
+        (display.width, display.height, display.scale),
+        (64, 48, 1.0)
+    );
     let recorded = bus.state.recorded();
     assert_eq!(recorded.interactive, Some(false));
     let shot = recorded.shots.first().expect("one screenshot file");
@@ -149,7 +155,8 @@ fn a_refused_screenshot_is_permission_denied_and_never_reported_as_capture() {
 }
 
 #[test]
-fn a_window_target_without_screencast_is_refused_because_the_screenshot_portal_has_no_window_capture() {
+fn a_window_target_without_screencast_is_refused_because_the_screenshot_portal_has_no_window_capture()
+ {
     let _env = env_lock();
     portal(Shot::Absent);
     let mut backend = backend_without_services();

@@ -39,6 +39,7 @@ impl StreamError {
             http_status: Some(status),
             code: None,
             evidence: ProviderDiagnosticEvidence::StructuredStatus,
+            resets_at: None,
         })
     }
 
@@ -146,7 +147,8 @@ impl<T: Clone + Send + 'static, R: Clone + Send + 'static> EventStream<T, R> {
     }
 
     pub async fn cancel(&self) -> Result<(), StreamError> {
-        let mut completion = self.inner
+        let mut completion = self
+            .inner
             .cancellation
             .get_or_init(|| {
                 let handler = self
@@ -176,7 +178,9 @@ impl<T: Clone + Send + 'static, R: Clone + Send + 'static> EventStream<T, R> {
                 return result;
             }
             if completion.changed().await.is_err() {
-                return Err(StreamError::new("Cancellation task ended without acknowledgement"));
+                return Err(StreamError::new(
+                    "Cancellation task ended without acknowledgement",
+                ));
             }
         }
     }
@@ -184,18 +188,24 @@ impl<T: Clone + Send + 'static, R: Clone + Send + 'static> EventStream<T, R> {
     /// Join the owned relay after its cancellation handler, including terminal streams.
     /// Install the handler first and attach the task before exposing the stream.
     pub fn set_cancellation_task(&self, task: tokio::task::JoinHandle<()>) {
-        let handler = self.inner.cancellation_handler.lock()
-            .unwrap_or_else(|error| error.into_inner()).take();
-        self.set_cancellation_handler(Box::new(move || Box::pin(async move {
-            let cancellation = match handler {
-                Some(handler) => handler().await,
-                None => Ok(()),
-            };
-            let joined = task.await.map_err(|error| {
-                StreamError::new(format!("Stream relay task failed: {error}"))
-            });
-            cancellation.and(joined)
-        })));
+        let handler = self
+            .inner
+            .cancellation_handler
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        self.set_cancellation_handler(Box::new(move || {
+            Box::pin(async move {
+                let cancellation = match handler {
+                    Some(handler) => handler().await,
+                    None => Ok(()),
+                };
+                let joined = task.await.map_err(|error| {
+                    StreamError::new(format!("Stream relay task failed: {error}"))
+                });
+                cancellation.and(joined)
+            })
+        }));
     }
 
     /// Snapshot a settled result without waiting for an `end(None)` stream.
@@ -425,6 +435,8 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 0,
+            failure_source: None,
+            timing: None,
         }
     }
 
@@ -433,11 +445,13 @@ mod tests {
         let stream: EventStream<u32, u32> = EventStream::new(|value| *value == 9, |value| *value);
         let (entered_tx, entered_rx) = oneshot::channel();
         let (release_tx, release_rx) = oneshot::channel();
-        stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
-            entered_tx.send(()).expect("entered subscriber");
-            release_rx.await.expect("release");
-            Ok(())
-        })));
+        stream.set_cancellation_handler(Box::new(move || {
+            Box::pin(async move {
+                entered_tx.send(()).expect("entered subscriber");
+                release_rx.await.expect("release");
+                Ok(())
+            })
+        }));
         let resource = Arc::new(());
         let owned = resource.clone();
         let (exit_tx, exit_rx) = oneshot::channel();
@@ -451,11 +465,17 @@ mod tests {
         let bound = std::time::Duration::from_secs(5);
         let mut cancellation = Box::pin(stream.cancel());
         assert!(futures::poll!(cancellation.as_mut()).is_pending());
-        tokio::time::timeout(bound, entered_rx).await.expect("entered deadline").expect("entered");
+        tokio::time::timeout(bound, entered_rx)
+            .await
+            .expect("entered deadline")
+            .expect("entered");
         release_tx.send(()).expect("release subscriber");
         assert!(futures::poll!(cancellation.as_mut()).is_pending());
         exit_tx.send(()).expect("relay subscriber");
-        tokio::time::timeout(bound, cancellation).await.expect("cancel deadline").expect("cancel");
+        tokio::time::timeout(bound, cancellation)
+            .await
+            .expect("cancel deadline")
+            .expect("cancel");
         assert_eq!(Arc::strong_count(&resource), 1);
         assert_eq!(stream.collect().await.expect("events"), vec![1, 9]);
         assert_eq!(stream.result_if_ready(), Some(Ok(9)));
@@ -466,20 +486,28 @@ mod tests {
         let stream: EventStream<u32, u32> = EventStream::new(|_| false, |value| *value);
         let (entered_tx, entered_rx) = oneshot::channel();
         let (release_tx, release_rx) = oneshot::channel();
-        stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
-            entered_tx.send(()).expect("entered subscriber");
-            release_rx.await.expect("release");
-            Ok(())
-        })));
+        stream.set_cancellation_handler(Box::new(move || {
+            Box::pin(async move {
+                entered_tx.send(()).expect("entered subscriber");
+                release_rx.await.expect("release");
+                Ok(())
+            })
+        }));
         let bound = std::time::Duration::from_secs(5);
         let mut first = Box::pin(stream.cancel());
         assert!(futures::poll!(first.as_mut()).is_pending());
-        tokio::time::timeout(bound, entered_rx).await.expect("entered deadline").expect("entered");
+        tokio::time::timeout(bound, entered_rx)
+            .await
+            .expect("entered deadline")
+            .expect("entered");
         drop(first);
         let mut second = Box::pin(stream.cancel());
         assert!(futures::poll!(second.as_mut()).is_pending());
         release_tx.send(()).expect("release subscriber");
-        tokio::time::timeout(bound, second).await.expect("cancel deadline").expect("cancel");
+        tokio::time::timeout(bound, second)
+            .await
+            .expect("cancel deadline")
+            .expect("cancel");
         assert_eq!(stream.next().await, Ok(None));
     }
 

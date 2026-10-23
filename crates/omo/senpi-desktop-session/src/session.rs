@@ -1,7 +1,7 @@
 //! The session handle: starts the session thread, enqueues requests in
 //! submission order, and waits for each reply under its deadline.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -9,7 +9,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use senpi_desktop_core::types::{DesktopCapabilities, DesktopSessionOptions};
-use tokio::time::{timeout_at, Instant};
+use tokio::time::{Instant, timeout_at};
 
 use crate::mutate::SessionSafety;
 use crate::request::{Op, Response};
@@ -81,10 +81,12 @@ impl Session {
                 ready_tx.send(()).unwrap_or(());
                 serve(worker, &requests);
             })
-            .map_err(|error| DesktopError::internal(format!("cannot start {THREAD_NAME}: {error}")))?;
-        ready_rx
-            .recv()
-            .map_err(|_| DesktopError::internal(format!("{THREAD_NAME} died while building the backend")))?;
+            .map_err(|error| {
+                DesktopError::internal(format!("cannot start {THREAD_NAME}: {error}"))
+            })?;
+        ready_rx.recv().map_err(|_| {
+            DesktopError::internal(format!("{THREAD_NAME} died while building the backend"))
+        })?;
         Ok(Self {
             queue: Mutex::new(Some(queue)),
             capabilities,
@@ -150,7 +152,9 @@ fn serve(mut worker: Worker, requests: &flume::Receiver<Message>) {
             }
             // A waiter that already gave up (deadline or `$/cancel`) dropped
             // its receiver: its request must not reach the desktop.
-            Message::Open { reply, .. } | Message::Op { reply, .. } if reply.is_disconnected() => continue,
+            Message::Open { reply, .. } | Message::Op { reply, .. } if reply.is_disconnected() => {
+                continue;
+            }
             Message::Open { options, reply } => (
                 reply,
                 guarded(|| Ok(Response::Capabilities(worker.open(options)))),
@@ -204,21 +208,26 @@ impl Pending {
     /// The request's own error, `Timeout` past the deadline, or `Internal`
     /// when the session thread ended without replying.
     pub async fn wait(self) -> CoreResult<Response> {
-        let timed_out =
-            |what: &str| DesktopError::timeout(format!("{what} within {} ms", self.budget.as_millis()));
+        let timed_out = |what: &str| {
+            DesktopError::timeout(format!("{what} within {} ms", self.budget.as_millis()))
+        };
         let lost = || DesktopError::internal(format!("{THREAD_NAME} ended without replying"));
         match self.kind {
             PendingKind::Ready(result) => *result,
-            PendingKind::Reply(replied) => match timeout_at(self.deadline, replied.recv_async()).await {
-                Ok(Ok(result)) => result,
-                Ok(Err(_)) => Err(lost()),
-                Err(_) => Err(timed_out("desktop operation did not complete")),
-            },
-            PendingKind::Close(acked) => match timeout_at(self.deadline, acked.recv_async()).await {
-                Ok(Ok(())) => Ok(Response::Unit),
-                Ok(Err(_)) => Err(lost()),
-                Err(_) => Err(timed_out("the desktop backend was not released")),
-            },
+            PendingKind::Reply(replied) => {
+                match timeout_at(self.deadline, replied.recv_async()).await {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(_)) => Err(lost()),
+                    Err(_) => Err(timed_out("desktop operation did not complete")),
+                }
+            }
+            PendingKind::Close(acked) => {
+                match timeout_at(self.deadline, acked.recv_async()).await {
+                    Ok(Ok(())) => Ok(Response::Unit),
+                    Ok(Err(_)) => Err(lost()),
+                    Err(_) => Err(timed_out("the desktop backend was not released")),
+                }
+            }
         }
     }
 }

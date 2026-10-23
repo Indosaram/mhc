@@ -63,6 +63,8 @@ mod tests {
 
     fn assistant() -> Message {
         Message::Assistant(Box::new(AssistantMessage {
+            failure_source: None,
+            timing: None,
             error_cause: None,
             prompt_cache_diagnostics: None,
             thinking_level: None,

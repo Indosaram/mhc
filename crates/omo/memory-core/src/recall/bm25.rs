@@ -1,7 +1,7 @@
 //! Recall BM25 ranking with CJK bigram tokenization (pin `recall/bm25.ts`).
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 
 use unicode_general_category::{GeneralCategory, get_general_category};
 use unicode_normalization::UnicodeNormalization;
@@ -143,6 +143,20 @@ pub fn tokenize_recall_text(text: &str) -> Vec<String> {
     tokenize(text).tokens
 }
 
+/// A document's index terms and BM25 length: what the index and the persisted term store hold.
+pub fn recall_document_terms(document: &RecallDocument) -> DocumentTermsInput {
+    let tokens = tokenize(&format!("{}\n{}", document.description, document.body));
+    // The stand-alone Han characters repeat text the run and its bigrams already count.
+    DocumentTermsInput {
+        terms: tokens
+            .tokens
+            .iter()
+            .map(|token| stem_english_token(token))
+            .collect(),
+        length: tokens.tokens.len() - tokens.standalone_han_characters,
+    }
+}
+
 /// Index and query terms: the tokens with English suffixes folded.
 pub fn recall_terms(text: &str) -> Vec<String> {
     tokenize_recall_text(text)
@@ -151,48 +165,308 @@ pub fn recall_terms(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// One document's terms as the tokenizer makes them, before they are interned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentTermsInput {
+    pub terms: Vec<String>,
+    pub length: usize,
+}
+
+/// One document's terms outside the process dictionary: ids index a term list the holder carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredDocumentTerms {
+    /// Term ids, ascending.
+    pub ids: Vec<u32>,
+    pub counts: Vec<u32>,
+    pub length: usize,
+}
+
+/// A document's terms against the live dictionary of one generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentTerms {
+    pub generation: u64,
+    pub ids: Vec<u32>,
+    pub counts: Vec<u32>,
+    pub length: usize,
+}
+
+impl DocumentTerms {
+    pub fn to_stored(&self) -> StoredDocumentTerms {
+        StoredDocumentTerms {
+            ids: self.ids.clone(),
+            counts: self.counts.clone(),
+            length: self.length,
+        }
+    }
+}
+
+/// Documents' terms against a compact term list holding exactly the terms they use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecallTermsSnapshot {
+    pub terms: Vec<String>,
+    pub documents: Vec<StoredDocumentTerms>,
+}
+
+/// SHA-1 of the exact text a document's terms are made from.
+pub type DocumentKey = [u8; 20];
+
+pub(crate) fn sha1_digest(data: &[u8]) -> DocumentKey {
+    let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA1_FOR_LEGACY_USE_ONLY, data);
+    let mut key = [0u8; 20];
+    for (slot, byte) in key.iter_mut().zip(digest.as_ref()) {
+        *slot = *byte;
+    }
+    key
+}
+
+/// The key of `description\nbody`, the text [`recall_document_terms`] tokenizes.
+pub fn document_key(document: &RecallDocument) -> DocumentKey {
+    sha1_digest(format!("{}\n{}", document.description, document.body).as_bytes())
+}
+
+/// Terms no live index holds still keep their ids, so the dictionary is replaced once it holds more
+/// than twice the live vocabulary plus this slack; every cached document is then re-read once.
+const DICTIONARY_SLACK: usize = 65_536;
+const RECENT_BUILDS: usize = 8;
+
+/// The process-wide dictionary. The vocabulary lists the dictionary's terms by id; both reset together
+/// when the generation rolls over. Document terms are cached by the key of their text, which plays the
+/// role of the pin's per-document-object cache across HEAD moves.
 #[derive(Default)]
+struct IndexState {
+    generation: u64,
+    dictionary: HashMap<Arc<str>, u32>,
+    vocabulary: Vec<Arc<str>>,
+    recent_live: Vec<usize>,
+    documents: HashMap<DocumentKey, Arc<DocumentTerms>>,
+}
+
+static STATE: LazyLock<Mutex<IndexState>> = LazyLock::new(Mutex::default);
+
+fn state() -> MutexGuard<'static, IndexState> {
+    STATE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl IndexState {
+    fn intern(&mut self, term: &str) -> u32 {
+        if let Some(id) = self.dictionary.get(term) {
+            return *id;
+        }
+        let id = u32::try_from(self.vocabulary.len()).unwrap_or(u32::MAX);
+        let shared: Arc<str> = Arc::from(term);
+        self.dictionary.insert(Arc::clone(&shared), id);
+        self.vocabulary.push(shared);
+        id
+    }
+
+    fn encode(&mut self, input: &DocumentTermsInput) -> DocumentTerms {
+        let mut counts: BTreeMap<u32, u32> = BTreeMap::new();
+        for term in &input.terms {
+            let id = self.intern(term);
+            *counts.entry(id).or_insert(0) += 1;
+        }
+        DocumentTerms {
+            generation: self.generation,
+            ids: counts.keys().copied().collect(),
+            counts: counts.values().copied().collect(),
+            length: input.length,
+        }
+    }
+
+    fn current(&self, key: &DocumentKey) -> Option<Arc<DocumentTerms>> {
+        self.documents
+            .get(key)
+            .filter(|cached| cached.generation == self.generation)
+            .cloned()
+    }
+}
+
+/// Compact BM25 index storage: interned term ids, two sorted arrays per document.
 pub(crate) struct RecallBm25Index {
-    term_frequencies: Vec<BTreeMap<String, u64>>,
-    lengths: Vec<usize>,
-    document_frequency: BTreeMap<String, u64>,
+    generation: u64,
+    documents: Vec<Arc<DocumentTerms>>,
+    document_frequency: Vec<u32>,
     average_length: f64,
 }
 
-fn build_index(documents: &[RecallDocument]) -> RecallBm25Index {
-    let mut index = RecallBm25Index::default();
-    for document in documents {
-        let tokens = tokenize(&format!("{}\n{}", document.description, document.body));
-        let mut frequencies: BTreeMap<String, u64> = BTreeMap::new();
-        for token in tokens.tokens.iter().map(|token| stem_english_token(token)) {
-            *frequencies.entry(token).or_insert(0) += 1;
+impl RecallBm25Index {
+    /// The id of a term any indexed document holds; `None` when no document holds it.
+    fn term_id(&self, term: &str) -> Option<u32> {
+        let state = state();
+        if state.generation != self.generation {
+            return None;
         }
-        for token in frequencies.keys() {
-            *index.document_frequency.entry(token.clone()).or_insert(0) += 1;
-        }
-        index
-            .lengths
-            .push(tokens.tokens.len() - tokens.standalone_han_characters);
-        index.term_frequencies.push(frequencies);
+        let id = *state.dictionary.get(term)?;
+        (self
+            .document_frequency
+            .get(id as usize)
+            .copied()
+            .unwrap_or(0)
+            > 0)
+        .then_some(id)
     }
-    let total: usize = index.lengths.iter().sum();
-    index.average_length = if documents.is_empty() {
-        0.0
-    } else {
-        total as f64 / documents.len() as f64
-    };
-    index
+}
+
+fn term_count(terms: &DocumentTerms, id: u32) -> u32 {
+    terms
+        .ids
+        .binary_search(&id)
+        .ok()
+        .and_then(|position| terms.counts.get(position).copied())
+        .unwrap_or(0)
+}
+
+/// Builds the index; the count is how many documents had to be tokenized.
+fn build_index(documents: &[RecallDocument]) -> (RecallBm25Index, usize) {
+    let mut state = state();
+    loop {
+        let mut fresh = 0usize;
+        let mut encoded: Vec<Arc<DocumentTerms>> = Vec::with_capacity(documents.len());
+        for document in documents {
+            let key = document_key(document);
+            if let Some(cached) = state.current(&key) {
+                encoded.push(cached);
+                continue;
+            }
+            fresh += 1;
+            let terms = Arc::new(state.encode(&recall_document_terms(document)));
+            state.documents.insert(key, Arc::clone(&terms));
+            encoded.push(terms);
+        }
+        let mut document_frequency = vec![0u32; state.vocabulary.len()];
+        let mut live = 0usize;
+        let mut total_length = 0usize;
+        for terms in &encoded {
+            total_length += terms.length;
+            for id in &terms.ids {
+                if let Some(slot) = document_frequency.get_mut(*id as usize) {
+                    if *slot == 0 {
+                        live += 1;
+                    }
+                    *slot += 1;
+                }
+            }
+        }
+        state.recent_live.push(live);
+        if state.recent_live.len() > RECENT_BUILDS {
+            state.recent_live.remove(0);
+        }
+        let largest = state.recent_live.iter().copied().max().unwrap_or(0);
+        if state.dictionary.len() > 2 * largest + DICTIONARY_SLACK {
+            state.generation += 1;
+            state.dictionary = HashMap::new();
+            state.vocabulary = Vec::new();
+            state.recent_live.clear();
+            state.documents.clear();
+            continue;
+        }
+        let average_length = if documents.is_empty() {
+            0.0
+        } else {
+            total_length as f64 / documents.len() as f64
+        };
+        return (
+            RecallBm25Index {
+                generation: state.generation,
+                documents: encoded,
+                document_frequency,
+                average_length,
+            },
+            fresh,
+        );
+    }
 }
 
 /// One index per cached corpus (the pin keys its `WeakMap` by array); other slices build per call.
+/// A cached index from an older dictionary generation is rebuilt.
 fn index_for(documents: &[RecallDocument]) -> Arc<RecallBm25Index> {
-    match super::corpus_derived::derived_for(documents) {
-        Some(derived) => Arc::clone(
-            derived
-                .bm25
-                .get_or_init(|| Arc::new(build_index(documents))),
-        ),
-        None => Arc::new(build_index(documents)),
+    let Some(derived) = super::corpus_derived::derived_for(documents) else {
+        return Arc::new(build_index(documents).0);
+    };
+    let mut slot = derived.bm25.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(cached) = slot.as_ref()
+        && cached.generation == state().generation
+    {
+        return Arc::clone(cached);
+    }
+    let (index, fresh) = build_index(documents);
+    let index = Arc::new(index);
+    *slot = Some(Arc::clone(&index));
+    drop(slot);
+    if fresh > 0 {
+        let listener = derived
+            .encoded_listener
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(listener) = listener {
+            listener();
+        }
+    }
+    index
+}
+
+/// Calls `listener` after an index of `documents` is built that had to tokenize at least one of them,
+/// so a holder of a persisted copy knows that copy is missing documents. Only a slice a
+/// `RecallCorpusCache` registered has an index to build, so another slice is ignored.
+pub fn on_recall_documents_encoded(
+    documents: &[RecallDocument],
+    listener: Arc<dyn Fn() + Send + Sync>,
+) {
+    if let Some(derived) = super::corpus_derived::derived_for(documents) {
+        *derived
+            .encoded_listener
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(listener);
+    }
+}
+
+/// The index internals a persisted store needs to seed and snapshot document terms.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RecallTermAccess;
+
+/// The process-wide access to the live dictionary.
+pub const RECALL_TERM_ACCESS: RecallTermAccess = RecallTermAccess;
+
+impl RecallTermAccess {
+    pub fn current(&self, document: &RecallDocument) -> Option<Arc<DocumentTerms>> {
+        let key = document_key(document);
+        state().current(&key)
+    }
+
+    /// Sets `document`'s terms from a store when it has none in the current generation.
+    pub fn adopt(&self, document: &RecallDocument, stored: StoredDocumentTerms) {
+        let key = document_key(document);
+        let mut state = state();
+        if state.current(&key).is_none() {
+            let terms = DocumentTerms {
+                generation: state.generation,
+                ids: stored.ids,
+                counts: stored.counts,
+                length: stored.length,
+            };
+            state.documents.insert(key, Arc::new(terms));
+        }
+    }
+
+    pub fn intern(&self, term: &str) -> u32 {
+        state().intern(term)
+    }
+
+    pub fn term(&self, id: u32) -> Option<String> {
+        state()
+            .vocabulary
+            .get(id as usize)
+            .map(|term| term.to_string())
+    }
+
+    pub fn vocabulary_size(&self) -> usize {
+        state().vocabulary.len()
+    }
+
+    /// The dictionary generation; ids of a different generation mean other terms.
+    pub fn generation(&self) -> u64 {
+        state().generation
     }
 }
 
@@ -237,7 +511,9 @@ pub fn recall_expansion_weights(
     {
         for text in texts {
             for term in recall_terms(&text) {
-                if !query_terms.contains(&term) && weight > weights.get(&term).copied().unwrap_or(0.0) {
+                if !query_terms.contains(&term)
+                    && weight > weights.get(&term).copied().unwrap_or(0.0)
+                {
                     weights.insert(term, weight);
                 }
             }
@@ -315,38 +591,56 @@ pub(crate) fn rank_recall_positions_bm25(
         1.0
     };
     let document_count = documents.len() as f64;
-    let term_score = |term: &str, frequencies: &BTreeMap<String, u64>, length: usize| -> f64 {
-        let Some(frequency) = frequencies.get(term) else {
+    let term_score = |id: Option<u32>, terms: &DocumentTerms| -> f64 {
+        let Some(id) = id else {
             return 0.0;
         };
-        let frequency = *frequency as f64;
-        let document_frequency = index.document_frequency.get(term).copied().unwrap_or(0) as f64;
-        let idf = (1.0 + (document_count - document_frequency + 0.5) / (document_frequency + 0.5)).ln();
+        let frequency = term_count(terms, id);
+        if frequency == 0 {
+            return 0.0;
+        }
+        let frequency = f64::from(frequency);
+        let document_frequency = index
+            .document_frequency
+            .get(id as usize)
+            .copied()
+            .unwrap_or(0) as f64;
+        let idf =
+            (1.0 + (document_count - document_frequency + 0.5) / (document_frequency + 0.5)).ln();
         (idf * frequency * (K1 + 1.0))
-            / (frequency + K1 * (1.0 - B + B * length as f64 / average_length))
+            / (frequency + K1 * (1.0 - B + B * terms.length as f64 / average_length))
     };
 
     let query_set: BTreeSet<String> = query_terms.iter().cloned().collect();
-    let added = recall_expansion_weights(expansions, &query_set);
-    let units = if added.is_empty() {
+    let added: Vec<(Option<u32>, f64)> = recall_expansion_weights(expansions, &query_set)
+        .into_iter()
+        .map(|(term, weight)| (index.term_id(&term), weight))
+        .collect();
+    let query_ids: Vec<Option<u32>> = query_terms.iter().map(|term| index.term_id(term)).collect();
+    let unit_ids: Vec<Option<u32>> = if added.is_empty() {
         Vec::new()
     } else {
         query_units(queries)
+            .iter()
+            .map(|unit| index.term_id(unit))
+            .collect()
     };
 
     let mut ranked: Vec<RankedRecallPosition> = Vec::new();
     let mut full_matches: Vec<RankedRecallPosition> = Vec::new();
     for position in 0..documents.len() {
-        let Some(frequencies) = index.term_frequencies.get(position) else {
+        let Some(terms) = index.documents.get(position) else {
             continue;
         };
-        let length = index.lengths.get(position).copied().unwrap_or(0);
         let mut score: f64 = 0.0;
-        for term in &query_terms {
-            score += term_score(term, frequencies, length);
+        for id in &query_ids {
+            score += term_score(*id, terms);
         }
         if !added.is_empty() {
-            if units.iter().all(|unit| frequencies.contains_key(unit)) {
+            if unit_ids
+                .iter()
+                .all(|id| id.is_some_and(|id| term_count(terms, id) > 0))
+            {
                 full_matches.push(RankedRecallPosition {
                     position,
                     score,
@@ -354,8 +648,8 @@ pub(crate) fn rank_recall_positions_bm25(
                 });
                 continue;
             }
-            for (term, weight) in &added {
-                score += weight * term_score(term, frequencies, length);
+            for (id, weight) in &added {
+                score += weight * term_score(*id, terms);
             }
         }
         if score > 0.0 {

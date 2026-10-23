@@ -6,7 +6,7 @@ use senpi_desktop_core::ax::{AxBackend, AxOwner};
 use senpi_desktop_core::types::DesktopWindow;
 
 use crate::bus::Extents;
-use crate::fake::{editor, node, FakeBus, FakeNode, EDITOR_RECT};
+use crate::fake::{EDITOR_RECT, FakeBus, FakeNode, editor, node};
 use crate::{AtSpiAx, WindowIds};
 
 fn frames_backend(bus: FakeBus) -> AtSpiAx<FakeBus> {
@@ -69,8 +69,14 @@ fn owner_on_x11_is_the_window_each_frame_provably_is() {
         xid("1", "notes.txt - gedit", 4242, EDITOR_RECT),
     ];
     // When / Then: each element names its own frame's window.
-    assert_eq!(ax.owner(&node(31), &windows).unwrap(), AxOwner::Window("3".into()));
-    assert_eq!(ax.owner(&node(12), &windows).unwrap(), AxOwner::Window("1".into()));
+    assert_eq!(
+        ax.owner(&node(31), &windows).unwrap(),
+        AxOwner::Window("3".into())
+    );
+    assert_eq!(
+        ax.owner(&node(12), &windows).unwrap(),
+        AxOwner::Window("1".into())
+    );
 }
 
 #[test]

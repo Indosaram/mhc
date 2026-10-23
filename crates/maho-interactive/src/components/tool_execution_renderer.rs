@@ -9,7 +9,8 @@ use maho_tui::tui::{Component, Container};
 use serde_json::Value;
 
 use super::tool_execution_fallback::{
-    create_tool_call_fallback_with_args, create_tool_result_fallback, format_tool_execution_fallback,
+    create_tool_call_fallback_with_args, create_tool_result_fallback,
+    format_tool_execution_fallback,
 };
 use super::tool_execution_types::ToolExecutionRenderState;
 use super::tool_renderer_boundary::ToolRendererBoundary;
@@ -23,21 +24,31 @@ pub struct ToolExecutionIdentity {
     pub cwd: String,
 }
 
-/// `renderShell` of each built-in tool definition, read once. A definition's shell does not depend
-/// on the cwd it is built for, so one table serves every card.
-fn built_in_render_shell(tool_name: &str) -> RenderShell {
-    static SHELLS: std::sync::OnceLock<std::collections::BTreeMap<String, RenderShell>> =
-        std::sync::OnceLock::new();
-    SHELLS
-        .get_or_init(|| {
-            maho_tools::index::create_all_tool_definitions(
-                std::path::Path::new("."),
-                maho_tools::index::ToolsOptions::default(),
+/// `renderShell` of each built-in tool definition, built once per cwd in a process-wide map
+/// (unbounded, like senpi's per-cwd definition cache) instead of once per card.
+fn built_in_render_shell(tool_name: &str, cwd: &str) -> RenderShell {
+    use std::collections::{BTreeMap, HashMap};
+    use std::sync::{Arc, Mutex, OnceLock};
+    type ShellsByCwd = HashMap<String, Arc<BTreeMap<String, RenderShell>>>;
+    static SHELLS: OnceLock<Mutex<ShellsByCwd>> = OnceLock::new();
+    let table = {
+        let mut map = SHELLS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(map.entry(cwd.to_owned()).or_insert_with(|| {
+            Arc::new(
+                maho_tools::index::create_all_tool_definitions(
+                    std::path::Path::new(cwd),
+                    maho_tools::index::ToolsOptions::default(),
+                )
+                .into_iter()
+                .filter_map(|(name, definition)| definition.render_shell.map(|shell| (name, shell)))
+                .collect(),
             )
-            .into_iter()
-            .filter_map(|(name, definition)| definition.render_shell.map(|shell| (name, shell)))
-            .collect()
-        })
+        }))
+    };
+    table
         .get(tool_name)
         .copied()
         .unwrap_or(RenderShell::Default)
@@ -70,8 +81,10 @@ impl ToolExecutionRenderer {
         theme: Theme,
         on_invalidate: Rc<dyn Fn()>,
     ) -> Self {
-        let built_in = create_all_tool_renderers().get(identity.tool_name.as_str()).cloned();
-        let built_in_shell = built_in_render_shell(&identity.tool_name);
+        let built_in = create_all_tool_renderers()
+            .get(identity.tool_name.as_str())
+            .cloned();
+        let built_in_shell = built_in_render_shell(&identity.tool_name, &identity.cwd);
         Self {
             identity,
             built_in,
@@ -86,6 +99,28 @@ impl ToolExecutionRenderer {
             call_component: None,
             result_component: None,
         }
+    }
+
+    /// senpi `releaseContent`: detach every built child and renderer component and reset the state,
+    /// so a card scrolled above kept history holds no rendered tree until it is shown again.
+    pub fn release_content(&mut self) {
+        self.content_box.detach_all();
+        self.self_render_container.clear();
+        self.content_text.set_text(String::new());
+        self.call_component = None;
+        self.result_component = None;
+        self.state = ToolExecutionRenderState {
+            args: Value::Null,
+            execution_started: false,
+            args_complete: false,
+            is_partial: false,
+            expanded: false,
+            show_images: false,
+            spinner_frame: Some(0),
+            result: None,
+            is_error: false,
+            now_ms: 0.0,
+        };
     }
 
     pub fn has_renderer_definition(&self) -> bool {
@@ -116,7 +151,10 @@ impl ToolExecutionRenderer {
         self.custom.clone().or_else(|| self.built_in.clone())
     }
 
-    fn context(&self, _last_component: Option<&Rc<RefCell<dyn Component>>>) -> ToolRenderContext<'_> {
+    fn context(
+        &self,
+        _last_component: Option<&Rc<RefCell<dyn Component>>>,
+    ) -> ToolRenderContext<'_> {
         ToolRenderContext {
             args: &self.state.args,
             tool_call_id: &self.identity.tool_call_id,
@@ -148,14 +186,22 @@ impl ToolExecutionRenderer {
         };
 
         let progress = if self.state.is_partial {
-            self.state.result.as_ref().and_then(|result| result.details.as_ref()).and_then(read_tool_progress)
+            self.state
+                .result
+                .as_ref()
+                .and_then(|result| result.details.as_ref())
+                .and_then(read_tool_progress)
         } else {
             None
         };
 
         if !self.has_renderer_definition() {
             self.content_text.set_custom_bg_fn(Some(background));
-            let result = self.state.result.as_ref().map(|result| result.as_tool_result());
+            let result = self
+                .state
+                .result
+                .as_ref()
+                .map(|result| result.as_tool_result());
             let mut text = format_tool_execution_fallback(
                 &self.identity.tool_name,
                 &self.state.args,
@@ -164,7 +210,14 @@ impl ToolExecutionRenderer {
                 &self.theme,
             );
             if let Some(progress) = &progress {
-                text += &format!("\n{}", format_tool_progress_line(progress, self.state.now_ms, self.state.spinner_frame));
+                text += &format!(
+                    "\n{}",
+                    format_tool_progress_line(
+                        progress,
+                        self.state.now_ms,
+                        self.state.spinner_frame
+                    )
+                );
             }
             self.content_text.set_text(text);
             return;
@@ -184,8 +237,16 @@ impl ToolExecutionRenderer {
         let rebuild_call_after_result = self
             .get_call_renderer()
             .is_some_and(|renderer| renderer.borrow().rebuild_call_after_result());
-        let mut call_child = if rebuild_call_after_result { None } else { self.render_call() };
-        let result_child = if self.state.result.is_some() { self.render_result() } else { None };
+        let mut call_child = if rebuild_call_after_result {
+            None
+        } else {
+            self.render_call()
+        };
+        let result_child = if self.state.result.is_some() {
+            self.render_result()
+        } else {
+            None
+        };
         if rebuild_call_after_result {
             call_child = self.render_call();
         }
@@ -196,8 +257,10 @@ impl ToolExecutionRenderer {
             self.add_child(use_self, child);
         }
         if let Some(progress) = &progress {
-            let line = format_tool_progress_line(progress, self.state.now_ms, self.state.spinner_frame);
-            let child = Rc::new(RefCell::new(Text::with_padding(line, 0, 0))) as Rc<RefCell<dyn Component>>;
+            let line =
+                format_tool_progress_line(progress, self.state.now_ms, self.state.spinner_frame);
+            let child =
+                Rc::new(RefCell::new(Text::with_padding(line, 0, 0))) as Rc<RefCell<dyn Component>>;
             self.add_child(use_self, child);
         }
     }
@@ -211,7 +274,12 @@ impl ToolExecutionRenderer {
     }
 
     fn render_call(&mut self) -> Option<Rc<RefCell<dyn Component>>> {
-        let fallback = create_tool_call_fallback_with_args(&self.identity.tool_name, &self.state.args, self.state.expanded, &self.theme);
+        let fallback = create_tool_call_fallback_with_args(
+            &self.identity.tool_name,
+            &self.state.args,
+            self.state.expanded,
+            &self.theme,
+        );
         let Some(renderer) = self.get_call_renderer() else {
             return Some(fallback);
         };
@@ -240,7 +308,8 @@ impl ToolExecutionRenderer {
     fn render_result(&mut self) -> Option<Rc<RefCell<dyn Component>>> {
         let result = self.state.result.clone()?;
         let tool_result = result.as_tool_result();
-        let fallback = create_tool_result_fallback(Some(&tool_result), self.state.show_images, &self.theme);
+        let fallback =
+            create_tool_result_fallback(Some(&tool_result), self.state.show_images, &self.theme);
         let Some(renderer) = self.get_call_renderer() else {
             return fallback;
         };
@@ -251,7 +320,9 @@ impl ToolExecutionRenderer {
         let component = {
             let last = self.result_component.clone();
             let context = self.context(last.as_ref());
-            renderer.borrow_mut().render_result(&tool_result, options, &self.theme, &context)
+            renderer
+                .borrow_mut()
+                .render_result(&tool_result, options, &self.theme, &context)
         };
         match component {
             Some(component) => {
@@ -294,7 +365,12 @@ impl Component for ToolExecutionRenderer {
 }
 
 pub fn is_error_result(result: &ToolResult) -> bool {
-    result.details.as_ref().and_then(|details| details.get("isError")).and_then(Value::as_bool).unwrap_or(false)
+    result
+        .details
+        .as_ref()
+        .and_then(|details| details.get("isError"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 pub fn title_color(theme: &Theme) -> String {

@@ -3,10 +3,13 @@
 //! commit-footer directive after a successful read of the `/git-master/SKILL.md` skill, using the
 //! `git_master` settings resolved from the effective omo config for the session cwd.
 //!
+//! `skill_content.ts` maps to [`skill_content`] (git-env-prefix injection into the skill text).
+//!
 //! Upstream `index.ts` maps to [`index`] and `directive.ts` to [`directive`], keeping names and
 //! order so an upstream diff translates mechanically. The TS barrel (`components/git-master`
 //! resolves through `index.ts`) has no separate file; `index.ts` re-exports nothing, so the native
 //! `lib.rs` mirrors the todo-fanout crate's shape and re-exports [`index`].
 pub mod directive;
 pub mod index;
+pub mod skill_content;
 pub use index::*;

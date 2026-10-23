@@ -6,11 +6,11 @@
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
+use x11rb::protocol::ErrorKind;
 use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::xproto::{
     Atom, ConnectionExt as _, ImageFormat, ImageOrder, MapState, VisualClass, Window,
 };
-use x11rb::protocol::ErrorKind;
 use x11rb::rust_connection::RustConnection;
 
 use super::image::{ColorMasks, Pixmap, RootRect};
@@ -81,17 +81,18 @@ impl X11Connection {
                 "X11 connection failed; ensure DISPLAY points at a reachable X server: {error}"
             ))
         })?;
-        let screen = conn
-            .setup()
-            .roots
-            .get(screen_num)
-            .ok_or_else(|| DesktopError::capture_failed("X11 setup reported no default screen"))?;
+        let screen =
+            conn.setup().roots.get(screen_num).ok_or_else(|| {
+                DesktopError::capture_failed("X11 setup reported no default screen")
+            })?;
         let visual = screen
             .allowed_depths
             .iter()
             .flat_map(|depth| &depth.visuals)
             .find(|visual| visual.visual_id == screen.root_visual)
-            .ok_or_else(|| DesktopError::capture_failed("X11 setup does not describe the root visual"))?;
+            .ok_or_else(|| {
+                DesktopError::capture_failed("X11 setup does not describe the root visual")
+            })?;
         if visual.class != VisualClass::TRUE_COLOR {
             return Err(DesktopError::capture_failed(format!(
                 "unsupported X11 root visual class {:?}; TrueColor is required",
@@ -179,7 +180,8 @@ impl XServer for X11Connection {
     }
 
     fn bytes(&self, window: Window, property: Atom, kind: Atom) -> Option<Vec<u8>> {
-        self.property(window, property, kind).map(|reply| reply.value)
+        self.property(window, property, kind)
+            .map(|reply| reply.value)
     }
 
     fn placement(&self, window: Window) -> Option<Placement> {
@@ -209,7 +211,15 @@ impl XServer for X11Connection {
         let height = u16::try_from(rect.height).map_err(|_| out_of_range())?;
         let reply = self
             .conn
-            .get_image(ImageFormat::Z_PIXMAP, self.screen.root, x, y, width, height, !0)
+            .get_image(
+                ImageFormat::Z_PIXMAP,
+                self.screen.root,
+                x,
+                y,
+                width,
+                height,
+                !0,
+            )
             .map_err(request_failed)?
             .reply()
             .map_err(root_capture_failed)?;
@@ -242,7 +252,9 @@ fn request_failed(error: impl std::fmt::Display) -> DesktopError {
 
 fn root_capture_failed(error: ReplyError) -> DesktopError {
     match &error {
-        ReplyError::X11Error(x11) if matches!(x11.error_kind, ErrorKind::Match | ErrorKind::Drawable) => {
+        ReplyError::X11Error(x11)
+            if matches!(x11.error_kind, ErrorKind::Match | ErrorKind::Drawable) =>
+        {
             DesktopError::capture_failed(
                 "X11 root window is not a readable drawable; rootless XWayland capture requires the Wayland portal backend",
             )

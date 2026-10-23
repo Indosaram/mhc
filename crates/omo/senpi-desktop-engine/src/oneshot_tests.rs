@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::io;
 
 use senpi_desktop_core::protocol::MethodRejection;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{answer, translate};
 use crate::rpc::Failure;
@@ -23,7 +23,11 @@ fn host_only_methods_are_refused_by_the_bridge() {
         "desktop.stopPath.heartbeat",
         "desktop.stopPath.resume",
     ] {
-        assert_eq!(rejected(method), Some(MethodRejection::HostOnly), "{method}");
+        assert_eq!(
+            rejected(method),
+            Some(MethodRejection::HostOnly),
+            "{method}"
+        );
     }
 }
 

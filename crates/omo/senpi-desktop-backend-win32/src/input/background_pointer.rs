@@ -2,22 +2,20 @@ use senpi_desktop_core::backend::{MouseButton, PointerEvent};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use windows_sys::Win32::Foundation::{LPARAM, POINT, WPARAM};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_NCHITTEST,
+    SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_NCHITTEST,
 };
 
 use super::background::{post, refusal};
-use super::dispatch::{to_physical, Via, Win32Input};
+use super::dispatch::{Via, Win32Input, to_physical};
 use super::held::{HeldButton, Route};
 use super::keys::modifier_virtual_keys;
 use super::messages::{
-    button_messages, modifier_flags, packed_point, scroll_steps, wheel_wparam, WHEEL_DELTA,
-    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WHEEL_DELTA, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, button_messages, modifier_flags,
+    packed_point, scroll_steps, wheel_wparam,
 };
 use super::native::Window;
 use crate::ax::Win32Ax;
-use crate::delivery::{
-    is_chromium_class, non_client_drag_region, posts_double_click, EventKind,
-};
+use crate::delivery::{EventKind, is_chromium_class, non_client_drag_region, posts_double_click};
 
 fn screen_point(x: f64, y: f64) -> CoreResult<POINT> {
     let (x, y) = to_physical(x, y)?;
@@ -113,34 +111,38 @@ impl Win32Input {
                 let messages = button_messages(*button);
                 let flags = modifier_flags(*modifiers);
                 let wants_double = window.class_wants_double_clicks();
-                self.holding(Via::Post(window), &modifier_virtual_keys(*modifiers), |this| {
-                    for index in 0..*count {
-                        let down = if posts_double_click(index, wants_double) {
-                            messages.double
-                        } else {
-                            messages.down
-                        };
-                        this.post_button(
-                            window,
-                            ButtonPost {
-                                button: *button,
-                                at,
-                                message: down,
-                                key_state: flags | messages.flag,
-                            },
-                        )?;
-                        this.post_button(
-                            window,
-                            ButtonPost {
-                                button: *button,
-                                at,
-                                message: messages.up,
-                                key_state: flags,
-                            },
-                        )?;
-                    }
-                    Ok(())
-                })
+                self.holding(
+                    Via::Post(window),
+                    &modifier_virtual_keys(*modifiers),
+                    |this| {
+                        for index in 0..*count {
+                            let down = if posts_double_click(index, wants_double) {
+                                messages.double
+                            } else {
+                                messages.down
+                            };
+                            this.post_button(
+                                window,
+                                ButtonPost {
+                                    button: *button,
+                                    at,
+                                    message: down,
+                                    key_state: flags | messages.flag,
+                                },
+                            )?;
+                            this.post_button(
+                                window,
+                                ButtonPost {
+                                    button: *button,
+                                    at,
+                                    message: messages.up,
+                                    key_state: flags,
+                                },
+                            )?;
+                        }
+                        Ok(())
+                    },
+                )
             }
             PointerEvent::Move { x, y } => {
                 let (window, point) = child_at(root, *x, *y)?;
@@ -168,48 +170,51 @@ impl Win32Input {
                         "window {id} drag starts on its {region}, where posted input cannot drive the system move/size loop; retry with delivery:\"foreground\" or use ax actions"
                     )));
                 }
-                let (window, start_point) =
-                    root.deepest_child(start_screen).ok_or_else(|| {
-                        DesktopError::background_unavailable(
-                            "cannot map the drag start into an enabled target client area",
-                        )
-                    })?;
+                let (window, start_point) = root.deepest_child(start_screen).ok_or_else(|| {
+                    DesktopError::background_unavailable(
+                        "cannot map the drag start into an enabled target client area",
+                    )
+                })?;
                 refusal(id, window, kind).map_or(Ok(()), Err)?;
                 let messages = button_messages(*button);
                 let flags = modifier_flags(*modifiers);
-                self.holding(Via::Post(window), &modifier_virtual_keys(*modifiers), |this| {
-                    let start = packed_point(start_point.x, start_point.y)?;
-                    post(window, WM_MOUSEMOVE, flags, start)?;
-                    this.post_button(
-                        window,
-                        ButtonPost {
-                            button: *button,
-                            at: start,
-                            message: messages.down,
-                            key_state: flags | messages.flag,
-                        },
-                    )?;
-                    let movement = path.iter().skip(1).try_for_each(|&(x, y)| {
-                        post(
+                self.holding(
+                    Via::Post(window),
+                    &modifier_virtual_keys(*modifiers),
+                    |this| {
+                        let start = packed_point(start_point.x, start_point.y)?;
+                        post(window, WM_MOUSEMOVE, flags, start)?;
+                        this.post_button(
                             window,
-                            WM_MOUSEMOVE,
-                            flags | messages.flag,
-                            client_point(window, x, y)?,
-                        )
-                    });
-                    let end = client_point(window, last_x, last_y);
-                    let at = *end.as_ref().unwrap_or(&start);
-                    let release = this.post_button(
-                        window,
-                        ButtonPost {
-                            button: *button,
-                            at,
-                            message: messages.up,
-                            key_state: flags,
-                        },
-                    );
-                    movement.and(end.map(drop)).and(release)
-                })
+                            ButtonPost {
+                                button: *button,
+                                at: start,
+                                message: messages.down,
+                                key_state: flags | messages.flag,
+                            },
+                        )?;
+                        let movement = path.iter().skip(1).try_for_each(|&(x, y)| {
+                            post(
+                                window,
+                                WM_MOUSEMOVE,
+                                flags | messages.flag,
+                                client_point(window, x, y)?,
+                            )
+                        });
+                        let end = client_point(window, last_x, last_y);
+                        let at = *end.as_ref().unwrap_or(&start);
+                        let release = this.post_button(
+                            window,
+                            ButtonPost {
+                                button: *button,
+                                at,
+                                message: messages.up,
+                                key_state: flags,
+                            },
+                        );
+                        movement.and(end.map(drop)).and(release)
+                    },
+                )
             }
             PointerEvent::Scroll { x, y, dx, dy } => {
                 let point = screen_point(*x, *y)?;
@@ -248,11 +253,7 @@ impl Win32Input {
         if message == button_messages(button).up {
             self.held.button_up(route, button);
         } else {
-            self.held.button_down(HeldButton {
-                route,
-                button,
-                at,
-            });
+            self.held.button_down(HeldButton { route, button, at });
         }
         Ok(())
     }

@@ -1,30 +1,248 @@
-use std::fs;
+use crate::host_process_table::{ProcessTableRow, load_process_table_reader};
 use serde::Serialize;
-use crate::host_process_table::{ProcessTableRow,load_process_table_reader};
-#[derive(Debug,Serialize,PartialEq,Eq,Default)]
-pub struct HostProcessMetrics { pub rss_mb:Option<i64>,pub open_fds:Option<usize>,pub zombies:Option<usize> }
-pub fn descendants(rows:&[ProcessTableRow],root:u32) -> Vec<&ProcessTableRow> {
-    let mut tree=rows.iter().filter(|row|row.pid==root).collect::<Vec<_>>();let mut index=0;
-    while index<tree.len(){let parent=tree[index].pid;for row in rows {if row.ppid==parent&&!tree.iter().any(|item|std::ptr::eq(*item,row)){tree.push(row);}}index+=1;}tree
+use std::fs;
+#[derive(Debug, Serialize, PartialEq, Eq, Default)]
+pub struct HostProcessMetrics {
+    pub rss_mb: Option<i64>,
+    /// RSS of the supervisor and host processes only (rows with `pid == pid` or `ppid == pid`).
+    pub host_rss_mb: Option<i64>,
+    /// Footprint of the same processes (`phys_footprint` on macOS, `RssAnon` on Linux); `None` when any is unreadable.
+    pub host_footprint_mb: Option<i64>,
+    pub open_fds: Option<usize>,
+    pub zombies: Option<usize>,
 }
-pub fn metrics_from_rows(rows:&[ProcessTableRow],pid:u32,mut descriptors:Option<&mut dyn FnMut(u32)->Option<usize>>) -> HostProcessMetrics {
-    let tree=descendants(rows,pid);if tree.is_empty(){return HostProcessMetrics::default();}
-    let mut open_fds=None;
-    if let Some(read)=descriptors.as_mut(){for row in &tree {if let Some(count)=read(row.pid){*open_fds.get_or_insert(0)+=count;}}}
-    HostProcessMetrics{rss_mb:Some((tree.iter().map(|row|row.rss_kb).sum::<f64>()/1024.+0.5).floor() as i64),open_fds,zombies:Some(tree.iter().filter(|row|row.state.starts_with('Z')).count())}
+pub fn descendants(rows: &[ProcessTableRow], root: u32) -> Vec<&ProcessTableRow> {
+    let mut tree = rows
+        .iter()
+        .filter(|row| row.pid == root)
+        .collect::<Vec<_>>();
+    let mut index = 0;
+    while index < tree.len() {
+        let parent = tree[index].pid;
+        for row in rows {
+            if row.ppid == parent && !tree.iter().any(|item| std::ptr::eq(*item, row)) {
+                tree.push(row);
+            }
+        }
+        index += 1;
+    }
+    tree
+}
+fn resident_megabytes(rows: &[&ProcessTableRow]) -> i64 {
+    (rows.iter().map(|row| row.rss_kb).sum::<f64>() / 1024. + 0.5).floor() as i64
+}
+/// Sum of per-process footprint bytes over the host rows, in whole megabytes; `None` when any pid is unreadable.
+pub fn footprint_megabytes(
+    rows: &[&ProcessTableRow],
+    read: &mut dyn FnMut(u32) -> Option<u64>,
+) -> Option<i64> {
+    let mut bytes: u64 = 0;
+    for row in rows {
+        bytes = bytes.saturating_add(read(row.pid)?);
+    }
+    Some((bytes as f64 / 1_048_576.).round() as i64)
+}
+/// `RssAnon` (bytes) from `/proc/<pid>/status`; read only on the status path, never at supervisor startup.
+#[cfg(target_os = "linux")]
+pub fn read_process_footprint(pid: u32) -> Option<u64> {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let kilobytes = status
+        .lines()
+        .find_map(|line| line.strip_prefix("RssAnon:"))?
+        .trim()
+        .strip_suffix("kB")?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    Some(kilobytes * 1024)
+}
+/// `phys_footprint` from libproc `proc_pid_rusage`.
+#[cfg(target_os = "macos")]
+pub fn read_process_footprint(pid: u32) -> Option<u64> {
+    libproc::pid_rusage::pidrusage::<libproc::pid_rusage::RUsageInfoV2>(i32::try_from(pid).ok()?)
+        .ok()
+        .map(|usage| usage.ri_phys_footprint)
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn read_process_footprint(_pid: u32) -> Option<u64> {
+    None
+}
+pub fn metrics_from_rows(
+    rows: &[ProcessTableRow],
+    pid: u32,
+    descriptors: Option<&mut dyn FnMut(u32) -> Option<usize>>,
+) -> HostProcessMetrics {
+    metrics_with_footprint(rows, pid, descriptors, &mut |_| None)
+}
+pub fn metrics_with_footprint(
+    rows: &[ProcessTableRow],
+    pid: u32,
+    mut descriptors: Option<&mut dyn FnMut(u32) -> Option<usize>>,
+    footprint: &mut dyn FnMut(u32) -> Option<u64>,
+) -> HostProcessMetrics {
+    let tree = descendants(rows, pid);
+    if tree.is_empty() {
+        return HostProcessMetrics::default();
+    }
+    let mut open_fds = None;
+    if let Some(read) = descriptors.as_mut() {
+        for row in &tree {
+            if let Some(count) = read(row.pid) {
+                *open_fds.get_or_insert(0) += count;
+            }
+        }
+    }
+    let host_rows = tree
+        .iter()
+        .copied()
+        .filter(|row| row.pid == pid || row.ppid == pid)
+        .collect::<Vec<_>>();
+    HostProcessMetrics {
+        rss_mb: Some(resident_megabytes(&tree)),
+        host_rss_mb: Some(resident_megabytes(&host_rows)),
+        host_footprint_mb: footprint_megabytes(&host_rows, footprint),
+        open_fds,
+        zombies: Some(tree.iter().filter(|row| row.state.starts_with('Z')).count()),
+    }
 }
 /// Open descriptors are `/proc`-only, so they stay `None` off Linux (senpi `readHostProcessMetrics`).
-pub fn read_host_process_metrics(pid:u32,platform:&str) -> HostProcessMetrics {
-    let Some(read)=load_process_table_reader(platform) else{return HostProcessMetrics::default();};
-    let Some(rows)=read() else{return HostProcessMetrics::default();};
-    if platform!="linux"{return metrics_from_rows(&rows,pid,None);}
-    metrics_from_rows(&rows,pid,Some(&mut |pid|fs::read_dir(format!("/proc/{pid}/fd")).ok().map(|entries|entries.count())))
+pub fn read_host_process_metrics(pid: u32, platform: &str) -> HostProcessMetrics {
+    let Some(read) = load_process_table_reader(platform) else {
+        return HostProcessMetrics::default();
+    };
+    let Some(rows) = read() else {
+        return HostProcessMetrics::default();
+    };
+    if platform != "linux" {
+        return metrics_with_footprint(&rows, pid, None, &mut read_process_footprint);
+    }
+    metrics_with_footprint(
+        &rows,
+        pid,
+        Some(&mut |pid| {
+            fs::read_dir(format!("/proc/{pid}/fd"))
+                .ok()
+                .map(|entries| entries.count())
+        }),
+        &mut read_process_footprint,
+    )
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn includes_descendants_and_counts_partial_fd_reads(){let rows=vec![ProcessTableRow{pid:1,ppid:0,state:"U".into(),rss_kb:1024.},ProcessTableRow{pid:3,ppid:2,state:"Z".into(),rss_kb:0.},ProcessTableRow{pid:2,ppid:1,state:"U".into(),rss_kb:2048.},ProcessTableRow{pid:9,ppid:0,state:"U".into(),rss_kb:9999.}];let metrics=metrics_from_rows(&rows,1,Some(&mut |pid|if pid==2{None}else{Some(4)}));assert_eq!(metrics,HostProcessMetrics{rss_mb:Some(3),open_fds:Some(8),zombies:Some(1)});assert_eq!(metrics_from_rows(&rows,8,None),HostProcessMetrics::default());}
-    #[test] fn unavailable_descriptor_reader_is_not_zero(){let row=ProcessTableRow{pid:1,ppid:0,state:"U".into(),rss_kb:0.};assert_eq!(metrics_from_rows(&[row],1,Some(&mut |_|None)).open_fds,None);assert_eq!(read_host_process_metrics(1,"win32"),HostProcessMetrics::default());}
+    #[test]
+    fn includes_descendants_and_counts_partial_fd_reads() {
+        let rows = vec![
+            ProcessTableRow {
+                pid: 1,
+                ppid: 0,
+                state: "U".into(),
+                rss_kb: 1024.,
+            },
+            ProcessTableRow {
+                pid: 3,
+                ppid: 2,
+                state: "Z".into(),
+                rss_kb: 0.,
+            },
+            ProcessTableRow {
+                pid: 2,
+                ppid: 1,
+                state: "U".into(),
+                rss_kb: 2048.,
+            },
+            ProcessTableRow {
+                pid: 9,
+                ppid: 0,
+                state: "U".into(),
+                rss_kb: 9999.,
+            },
+        ];
+        let metrics = metrics_from_rows(
+            &rows,
+            1,
+            Some(&mut |pid| if pid == 2 { None } else { Some(4) }),
+        );
+        assert_eq!(
+            metrics,
+            HostProcessMetrics {
+                rss_mb: Some(3),
+                host_rss_mb: Some(3),
+                host_footprint_mb: None,
+                open_fds: Some(8),
+                zombies: Some(1)
+            }
+        );
+        assert_eq!(
+            metrics_from_rows(&rows, 8, None),
+            HostProcessMetrics::default()
+        );
+    }
+    #[test]
+    fn host_rows_are_the_pid_and_its_direct_children_and_footprint_needs_every_reading() {
+        let rows = vec![
+            ProcessTableRow {
+                pid: 1,
+                ppid: 0,
+                state: "U".into(),
+                rss_kb: 1024.,
+            },
+            ProcessTableRow {
+                pid: 2,
+                ppid: 1,
+                state: "U".into(),
+                rss_kb: 1024.,
+            },
+            ProcessTableRow {
+                pid: 3,
+                ppid: 2,
+                state: "U".into(),
+                rss_kb: 4096.,
+            },
+        ];
+        let metrics =
+            metrics_with_footprint(&rows, 1, None, &mut |pid| Some(u64::from(pid) * 1_048_576));
+        assert_eq!(metrics.rss_mb, Some(6));
+        assert_eq!(metrics.host_rss_mb, Some(2));
+        assert_eq!(metrics.host_footprint_mb, Some(3));
+        assert_eq!(
+            metrics_with_footprint(&rows, 1, None, &mut |pid| if pid == 2 {
+                None
+            } else {
+                Some(1)
+            })
+            .host_footprint_mb,
+            None
+        );
+    }
+    #[test]
+    fn unavailable_descriptor_reader_is_not_zero() {
+        let row = ProcessTableRow {
+            pid: 1,
+            ppid: 0,
+            state: "U".into(),
+            rss_kb: 0.,
+        };
+        assert_eq!(
+            metrics_from_rows(&[row], 1, Some(&mut |_| None)).open_fds,
+            None
+        );
+        assert_eq!(
+            read_host_process_metrics(1, "win32"),
+            HostProcessMetrics::default()
+        );
+    }
     #[cfg(unix)]
-    #[test] fn real_process_surface_has_memory_and_fds(){let platform=if cfg!(target_os="macos"){"darwin"}else{"linux"};let metrics=read_host_process_metrics(std::process::id(),platform);assert!(metrics.rss_mb.is_some());assert_eq!(metrics.open_fds.is_some(),platform=="linux");assert_eq!(metrics.zombies,Some(0));}
+    #[test]
+    fn real_process_surface_has_memory_and_fds() {
+        let platform = if cfg!(target_os = "macos") {
+            "darwin"
+        } else {
+            "linux"
+        };
+        let metrics = read_host_process_metrics(std::process::id(), platform);
+        assert!(metrics.rss_mb.is_some());
+        assert_eq!(metrics.open_fds.is_some(), platform == "linux");
+        assert_eq!(metrics.zombies, Some(0));
+    }
 }

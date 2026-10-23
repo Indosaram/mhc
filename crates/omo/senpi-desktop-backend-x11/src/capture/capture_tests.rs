@@ -6,9 +6,9 @@ use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{DesktopDisplay, DesktopWindow, DisplaySelector, Target};
 use x11rb::protocol::xproto::AtomEnum;
 
-use super::fake::{viewable, FakeServer};
-use super::image::RootRect;
 use super::X11Capture;
+use super::fake::{FakeServer, viewable};
+use super::image::RootRect;
 
 fn root_pixel(x: u8, y: u8) -> [u8; 4] {
     [x, y, 0x7f, 255]
@@ -22,7 +22,8 @@ fn dual_head() -> FakeServer {
 
 #[test]
 fn construction_probes_a_one_pixel_root_image() {
-    let capture = X11Capture::with_server(FakeServer::new(1280, 800), DisplaySelector::All).unwrap();
+    let capture =
+        X11Capture::with_server(FakeServer::new(1280, 800), DisplaySelector::All).unwrap();
 
     assert_eq!(
         capture.server.requests.borrow().as_slice(),
@@ -70,7 +71,8 @@ fn desktop_capture_composites_each_display_at_its_pixel_origin() {
 
 #[test]
 fn a_selected_display_is_captured_alone() {
-    let capture = X11Capture::with_server(dual_head(), DisplaySelector::Id("HDMI-1".into())).unwrap();
+    let capture =
+        X11Capture::with_server(dual_head(), DisplaySelector::Id("HDMI-1".into())).unwrap();
 
     let (image, _frame) = capture.capture(&Target::Desktop).unwrap();
 
@@ -135,12 +137,16 @@ fn an_unchanged_partially_offscreen_window_keeps_a_targetable_full_frame() {
     assert_eq!((image.width(), image.height()), (100, 100));
     assert_eq!(image.get_pixel(0, 0).0, [0, 0, 0, 0]);
     assert_eq!(image.get_pixel(20, 30).0, root_pixel(0, 0));
-    assert_eq!(frame.map_point(20.0, 30.0, Some(&current)).unwrap(), (0.0, 0.0));
+    assert_eq!(
+        frame.map_point(20.0, 30.0, Some(&current)).unwrap(),
+        (0.0, 0.0)
+    );
 }
 
 #[test]
 fn an_unknown_window_id_is_window_not_found() {
-    let capture = X11Capture::with_server(FakeServer::new(1280, 800), DisplaySelector::All).unwrap();
+    let capture =
+        X11Capture::with_server(FakeServer::new(1280, 800), DisplaySelector::All).unwrap();
 
     let error = capture.capture(&Target::Window("404".into())).unwrap_err();
 

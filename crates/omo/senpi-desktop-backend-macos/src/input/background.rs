@@ -15,7 +15,7 @@ use senpi_desktop_core::types::DesktopWindow;
 
 use super::cgevent::{button_types, click_group_id, modifier_flags};
 use super::held::{ButtonRoute, Held, HeldButton};
-use super::post::{local_point, post_mouse, scroll, ScrollTarget};
+use super::post::{ScrollTarget, local_point, post_mouse, scroll};
 
 pub(super) fn pointer(
     source: &CGEventSource,
@@ -32,7 +32,9 @@ pub(super) fn pointer(
             button,
             count,
             modifiers,
-        } => click(source, held, pid, wid, window, x, y, button, count, modifiers),
+        } => click(
+            source, held, pid, wid, window, x, y, button, count, modifiers,
+        ),
         PointerEvent::Move { x, y } => post_mouse(
             source,
             pid,

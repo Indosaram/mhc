@@ -1,7 +1,9 @@
 //! Port of senpi packages/coding-agent/src/core/credential-pool/failover.ts.
 #![allow(async_fn_in_trait)]
 
-use crate::credential_pool::classify::{CredentialAction, CredentialBlock, ClassifyContext, classify_credential_failure};
+use crate::credential_pool::classify::{
+    ClassifyContext, CredentialAction, CredentialBlock, classify_credential_failure,
+};
 use serde_json::Value;
 
 /// Re-exported for the lanes that still recognize the marker (the Claude SDK lane stamps it because
@@ -49,18 +51,26 @@ impl std::fmt::Display for CredentialFailoverError {
 impl std::error::Error for CredentialFailoverError {}
 
 pub fn is_available(slot: &RunSlot, now: u64) -> bool {
-    if matches!(slot.block_reason.as_deref(), Some("auth_error") | Some("account_disabled")) {
+    if matches!(
+        slot.block_reason.as_deref(),
+        Some("auth_error") | Some("account_disabled")
+    ) {
         return false;
     }
     if let Some(blocked_until) = slot.blocked_until
-        && blocked_until > now {
-            return false;
-        }
+        && blocked_until > now
+    {
+        return false;
+    }
     true
 }
 
 pub fn soonest_retry_at(slots: &[RunSlot], now: u64) -> Option<u64> {
-    slots.iter().filter_map(|slot| slot.blocked_until).filter(|until| *until > now).min()
+    slots
+        .iter()
+        .filter_map(|slot| slot.blocked_until)
+        .filter(|until| *until > now)
+        .min()
 }
 
 pub trait FailoverHost {
@@ -74,7 +84,10 @@ pub trait FailoverHost {
     /// Starts one attempt; an `Err` is the attempt failing by throwing before any event.
     async fn run_attempt(&mut self, slot: &RunSlot) -> Result<Self::Attempt, Value>;
     /// The attempt's next event: `None` once it ended, `Err` once it failed by throwing.
-    async fn next_event(&mut self, attempt: &mut Self::Attempt) -> Option<Result<Self::Event, Value>>;
+    async fn next_event(
+        &mut self,
+        attempt: &mut Self::Attempt,
+    ) -> Option<Result<Self::Event, Value>>;
     async fn settle_attempt(&mut self, attempt: &mut Self::Attempt) -> Result<(), String>;
     fn is_cancelled(&self) -> bool {
         false
@@ -90,42 +103,84 @@ pub trait FailoverHost {
         None
     }
     fn classify(&self, error: &Value, failure_count: u32) -> CredentialAction {
-        classify_credential_failure(error, &ClassifyContext { failure_count: Some(failure_count), ..ClassifyContext::default() })
+        classify_credential_failure(
+            error,
+            &ClassifyContext {
+                failure_count: Some(failure_count),
+                ..ClassifyContext::default()
+            },
+        )
     }
     /// Persisted BEFORE a replacement slot is selected so a crash never forgets a block.
-    async fn persist_block(&mut self, slot: &RunSlot, block: &CredentialBlock) -> Result<(), String>;
+    async fn persist_block(
+        &mut self,
+        slot: &RunSlot,
+        block: &CredentialBlock,
+    ) -> Result<(), String>;
     async fn on_rotate(&mut self, _event: CredentialFailoverEvent) {}
     async fn on_success(&mut self, _slot: &RunSlot) -> Result<(), String> {
         Ok(())
     }
     fn now(&self) -> u64 {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|duration| duration.as_millis() as u64).unwrap_or(0)
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0)
     }
     /// Delivers one event to the caller.
     fn emit(&mut self, event: Self::Event);
 }
 
+/// When every slot is cooling and this request has tried none, the rate-limited slot due back first
+/// still gets the request: a provider can lift a limit before its predicted expiry.
+fn cooling_probe(slots: &[RunSlot], attempted: &[String]) -> Vec<RunSlot> {
+    if !attempted.is_empty() {
+        return Vec::new();
+    }
+    slots
+        .iter()
+        .filter(|slot| {
+            slot.block_reason.as_deref() == Some("rate_limit") && slot.blocked_until.is_some()
+        })
+        .min_by_key(|slot| slot.blocked_until.unwrap_or(u64::MAX))
+        .cloned()
+        .into_iter()
+        .collect()
+}
+
 /// Generic in-lane credential failover. Runs at most one failover attempt per slot per request,
 /// retries provider-scoped faults on the SAME slot up to the classifier's bound without blocking it,
 /// and rotates only while no committed output has reached the caller.
-pub async fn run_credential_failover<H: FailoverHost>(host: &mut H) -> Result<(), CredentialFailoverError> {
+pub async fn run_credential_failover<H: FailoverHost>(
+    host: &mut H,
+) -> Result<(), CredentialFailoverError> {
     let mut attempted: Vec<String> = Vec::new();
-    let mut retries_by_slot: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut retries_by_slot: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
     let mut last_error: Option<CredentialFailoverError> = None;
     let mut last_original: Option<Value> = None;
     let mut last_terminal_event: Option<H::Event> = None;
     let mut start_announced = false;
 
     loop {
-        if host.is_cancelled() { return Ok(()); }
+        if host.is_cancelled() {
+            return Ok(());
+        }
         let slots = host.list_slots().await;
-        if host.is_cancelled() { return Ok(()); }
+        if host.is_cancelled() {
+            return Ok(());
+        }
         let now = host.now();
-        let candidates: Vec<RunSlot> = slots
+        let available: Vec<RunSlot> = slots
             .iter()
             .filter(|slot| !attempted.contains(&slot.name) && is_available(slot, now))
             .cloned()
             .collect();
+        let candidates: Vec<RunSlot> = if available.is_empty() {
+            cooling_probe(&slots, &attempted)
+        } else {
+            available
+        };
         if candidates.is_empty() {
             if let Some(terminal) = last_terminal_event.take() {
                 host.emit(terminal);
@@ -135,9 +190,16 @@ pub async fn run_credential_failover<H: FailoverHost>(host: &mut H) -> Result<()
             let (action, detail) = match (last_error, last_original) {
                 (Some(error), _) => (error.action, error.detail),
                 (None, Some(original)) => (CredentialAction::FailRequest, original.to_string()),
-                (None, None) => (CredentialAction::FailRequest, "No credential slots available".to_owned()),
+                (None, None) => (
+                    CredentialAction::FailRequest,
+                    "No credential slots available".to_owned(),
+                ),
             };
-            return Err(CredentialFailoverError { action, detail, retry_at });
+            return Err(CredentialFailoverError {
+                action,
+                detail,
+                retry_at,
+            });
         }
         let Some(slot) = host.select(&candidates) else {
             return Err(CredentialFailoverError {
@@ -153,42 +215,56 @@ pub async fn run_credential_failover<H: FailoverHost>(host: &mut H) -> Result<()
             Err(failure) => Some(failure),
             Ok(mut attempt) => {
                 let failure = loop {
-                match host.next_event(&mut attempt).await {
-                    None => break None,
-                    Some(Err(failure)) => break Some(failure),
-                    Some(Ok(event)) => {
-                        if let Some(failure) = host.error_from_event(&event) {
-                            terminal_event = Some(event);
-                            break Some(failure);
-                        }
-                        if host.is_stream_start(&event) {
-                            if start_announced {
-                                continue;
+                    match host.next_event(&mut attempt).await {
+                        None => break None,
+                        Some(Err(failure)) => break Some(failure),
+                        Some(Ok(event)) => {
+                            if let Some(failure) = host.error_from_event(&event) {
+                                terminal_event = Some(event);
+                                break Some(failure);
                             }
-                            start_announced = true;
+                            if host.is_stream_start(&event) {
+                                if start_announced {
+                                    continue;
+                                }
+                                start_announced = true;
+                            }
+                            committed_output = committed_output || host.is_committed_output(&event);
+                            host.emit(event);
                         }
-                        committed_output = committed_output || host.is_committed_output(&event);
-                        host.emit(event);
                     }
-                }
                 };
-                host.settle_attempt(&mut attempt).await.map_err(|detail| CredentialFailoverError {
+                host.settle_attempt(&mut attempt).await.map_err(|detail| {
+                    CredentialFailoverError {
+                        action: CredentialAction::FailRequest,
+                        detail,
+                        retry_at: None,
+                    }
+                })?;
+                failure
+            }
+        };
+        let Some(failure) = failure else {
+            if host.is_cancelled() {
+                return Ok(());
+            }
+            return host
+                .on_success(&slot)
+                .await
+                .map_err(|detail| CredentialFailoverError {
                     action: CredentialAction::FailRequest,
                     detail,
                     retry_at: None,
-                })?;
-                failure
-            },
+                });
         };
-        let Some(failure) = failure else {
-            if host.is_cancelled() { return Ok(()); }
-            return host.on_success(&slot).await.map_err(|detail| CredentialFailoverError { action: CredentialAction::FailRequest, detail, retry_at: None });
-        };
-        if host.is_cancelled() { return Ok(()); }
+        if host.is_cancelled() {
+            return Ok(());
+        }
         last_original = Some(failure.clone());
         last_terminal_event = terminal_event.clone();
 
-        let failure_count = slot.failure_count.unwrap_or(0) + retries_by_slot.get(&slot.name).copied().unwrap_or(0);
+        let failure_count =
+            slot.failure_count.unwrap_or(0) + retries_by_slot.get(&slot.name).copied().unwrap_or(0);
         let action = host.classify(&failure, failure_count);
 
         if matches!(action, CredentialAction::RetrySame { .. }) && !committed_output {
@@ -201,21 +277,40 @@ pub async fn run_credential_failover<H: FailoverHost>(host: &mut H) -> Result<()
                 host.emit(terminal);
                 return Ok(());
             }
-            return Err(CredentialFailoverError { action, detail: failure.to_string(), retry_at: None });
+            return Err(CredentialFailoverError {
+                action,
+                detail: failure.to_string(),
+                retry_at: None,
+            });
         }
         let CredentialAction::Failover { block } = action.clone() else {
             if let Some(terminal) = terminal_event {
                 host.emit(terminal);
                 return Ok(());
             }
-            return Err(CredentialFailoverError { action, detail: failure.to_string(), retry_at: None });
+            return Err(CredentialFailoverError {
+                action,
+                detail: failure.to_string(),
+                retry_at: None,
+            });
         };
 
-        host.persist_block(&slot, &block).await
-            .map_err(|detail| CredentialFailoverError { action: CredentialAction::FailRequest, detail, retry_at: None })?;
-        if host.is_cancelled() { return Ok(()); }
+        host.persist_block(&slot, &block)
+            .await
+            .map_err(|detail| CredentialFailoverError {
+                action: CredentialAction::FailRequest,
+                detail,
+                retry_at: None,
+            })?;
+        if host.is_cancelled() {
+            return Ok(());
+        }
         attempted.push(slot.name.clone());
-        let error = CredentialFailoverError { action, detail: failure.to_string(), retry_at: None };
+        let error = CredentialFailoverError {
+            action,
+            detail: failure.to_string(),
+            retry_at: None,
+        };
         last_error = Some(error.clone());
         host.on_rotate(CredentialFailoverEvent {
             slot_name: slot.name.clone(),
@@ -268,7 +363,11 @@ mod tests {
 
         async fn run_attempt(&mut self, _slot: &RunSlot) -> Result<Self::Attempt, Value> {
             self.attempt_settlement_counts.push(self.settlements);
-            let scripted = self.attempts.get(self.attempt_index).cloned().unwrap_or_default();
+            let scripted = self
+                .attempts
+                .get(self.attempt_index)
+                .cloned()
+                .unwrap_or_default();
             self.attempt_index += 1;
             let mut attempt = std::collections::VecDeque::new();
             for step in scripted {
@@ -283,7 +382,10 @@ mod tests {
             Ok(attempt)
         }
 
-        async fn next_event(&mut self, attempt: &mut Self::Attempt) -> Option<Result<Self::Event, Value>> {
+        async fn next_event(
+            &mut self,
+            attempt: &mut Self::Attempt,
+        ) -> Option<Result<Self::Event, Value>> {
             attempt.pop_front()
         }
 
@@ -296,7 +398,11 @@ mod tests {
             *event == "delta"
         }
 
-        async fn persist_block(&mut self, slot: &RunSlot, block: &CredentialBlock) -> Result<(), String> {
+        async fn persist_block(
+            &mut self,
+            slot: &RunSlot,
+            block: &CredentialBlock,
+        ) -> Result<(), String> {
             self.blocked.push((slot.name.clone(), block.clone()));
             Ok(())
         }
@@ -320,7 +426,10 @@ mod tests {
     }
 
     fn slot(name: &str) -> RunSlot {
-        RunSlot { name: name.to_owned(), ..RunSlot::default() }
+        RunSlot {
+            name: name.to_owned(),
+            ..RunSlot::default()
+        }
     }
 
     fn ok(events: Vec<&'static str>) -> Result<Vec<&'static str>, Value> {
@@ -335,7 +444,10 @@ mod tests {
     async fn replacement_starts_after_attempt_settlement() {
         let mut host = FakeHost {
             slots: vec![slot("a"), slot("b")],
-            attempts: vec![vec![failed(json!({"status":401,"message":"invalid api key"}))], vec![ok(vec!["delta"])]],
+            attempts: vec![
+                vec![failed(json!({"status":401,"message":"invalid api key"}))],
+                vec![ok(vec!["delta"])],
+            ],
             ..Default::default()
         };
         run_credential_failover(&mut host).await.expect("failover");
@@ -347,12 +459,21 @@ mod tests {
     async fn rotates_to_the_next_slot_after_an_auth_failure() {
         let mut host = FakeHost {
             slots: vec![slot("a"), slot("b")],
-            attempts: vec![vec![ok(vec!["start"]), failed(json!({ "status": 401, "message": "invalid api key" }))], vec![ok(vec!["delta"])]],
+            attempts: vec![
+                vec![
+                    ok(vec!["start"]),
+                    failed(json!({ "status": 401, "message": "invalid api key" })),
+                ],
+                vec![ok(vec!["delta"])],
+            ],
             ..FakeHost::default()
         };
         run_credential_failover(&mut host).await.expect("failover");
         assert_eq!(host.emitted, vec!["start", "delta"]);
-        assert_eq!(host.blocked, vec![("a".to_owned(), CredentialBlock::AuthError)]);
+        assert_eq!(
+            host.blocked,
+            vec![("a".to_owned(), CredentialBlock::AuthError)]
+        );
         assert_eq!(host.rotations, 1);
         assert_eq!(host.successes, vec!["b".to_owned()]);
     }
@@ -361,7 +482,13 @@ mod tests {
     async fn retries_the_same_slot_for_a_provider_fault_then_succeeds() {
         let mut host = FakeHost {
             slots: vec![slot("a")],
-            attempts: vec![vec![ok(vec!["start"]), failed(json!({ "status": 503, "message": "overloaded" }))], vec![ok(vec!["delta"])]],
+            attempts: vec![
+                vec![
+                    ok(vec!["start"]),
+                    failed(json!({ "status": 503, "message": "overloaded" })),
+                ],
+                vec![ok(vec!["delta"])],
+            ],
             ..FakeHost::default()
         };
         run_credential_failover(&mut host).await.expect("failover");
@@ -374,11 +501,19 @@ mod tests {
     async fn committed_output_bars_rotation_and_reports_the_failure() {
         let mut host = FakeHost {
             slots: vec![slot("a"), slot("b")],
-            attempts: vec![vec![ok(vec!["start", "delta"]), failed(json!({ "status": 401, "message": "invalid api key" }))]],
+            attempts: vec![vec![
+                ok(vec!["start", "delta"]),
+                failed(json!({ "status": 401, "message": "invalid api key" })),
+            ]],
             ..FakeHost::default()
         };
         let error = run_credential_failover(&mut host).await.expect_err("error");
-        assert_eq!(error.action, CredentialAction::Failover { block: CredentialBlock::AuthError });
+        assert_eq!(
+            error.action,
+            CredentialAction::Failover {
+                block: CredentialBlock::AuthError
+            }
+        );
         assert_eq!(host.emitted, vec!["start", "delta"]);
         assert_eq!(host.rotations, 1);
         assert_eq!(host.blocked.len(), 1);
@@ -389,11 +524,19 @@ mod tests {
     async fn a_provider_fault_after_committed_output_is_not_retried() {
         let mut host = FakeHost {
             slots: vec![slot("a")],
-            attempts: vec![vec![ok(vec!["start", "delta"]), failed(json!({ "status": 503, "message": "overloaded" }))]],
+            attempts: vec![vec![
+                ok(vec!["start", "delta"]),
+                failed(json!({ "status": 503, "message": "overloaded" })),
+            ]],
             ..FakeHost::default()
         };
         let error = run_credential_failover(&mut host).await.expect_err("error");
-        assert_eq!(error.action, CredentialAction::RetrySame { max_attempts: RETRY_SAME_MAX_ATTEMPTS });
+        assert_eq!(
+            error.action,
+            CredentialAction::RetrySame {
+                max_attempts: RETRY_SAME_MAX_ATTEMPTS
+            }
+        );
         assert_eq!(host.emitted, vec!["start", "delta"]);
         assert_eq!(host.attempt_index, 1);
     }
@@ -402,7 +545,11 @@ mod tests {
     async fn a_blocked_slot_is_skipped_and_an_empty_pool_reports_the_soonest_retry() {
         let mut blocked = slot("a");
         blocked.blocked_until = Some(500);
-        let mut host = FakeHost { slots: vec![blocked], now: 100, ..FakeHost::default() };
+        let mut host = FakeHost {
+            slots: vec![blocked],
+            now: 100,
+            ..FakeHost::default()
+        };
         let error = run_credential_failover(&mut host).await.expect_err("error");
         assert_eq!(error.retry_at, Some(500));
         assert_eq!(error.detail, "No credential slots available");

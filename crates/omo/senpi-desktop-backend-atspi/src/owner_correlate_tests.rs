@@ -4,7 +4,7 @@
 use senpi_desktop_core::types::DesktopWindow;
 
 use crate::bus::Extents;
-use crate::owner::{correlate_owner, FrameFacts};
+use crate::owner::{FrameFacts, correlate_owner};
 
 const PID: u32 = 4242;
 
@@ -27,7 +27,12 @@ fn frame(title: &str, extents: Option<(i32, i32, i32, i32)>) -> FrameFacts {
     FrameFacts {
         pid: Some(PID),
         title: title.to_string(),
-        extents: extents.map(|(x, y, width, height)| Extents { x, y, width, height }),
+        extents: extents.map(|(x, y, width, height)| Extents {
+            x,
+            y,
+            width,
+            height,
+        }),
         sole_frame: false,
     }
 }
@@ -45,7 +50,10 @@ fn picks_the_same_pid_window_whose_title_and_geometry_match_the_frame() {
     ];
     // When / Then
     assert_eq!(
-        owner(&frame("b.txt - gedit", Some((400, 300, 640, 480))), &windows),
+        owner(
+            &frame("b.txt - gedit", Some((400, 300, 640, 480))),
+            &windows
+        ),
         Some("0xb".into())
     );
 }
@@ -59,7 +67,10 @@ fn ignores_another_process_window_at_the_frame_geometry() {
     ];
     // When / Then: pid linkage excludes it.
     assert_eq!(
-        owner(&frame("b.txt - gedit", Some((400, 300, 640, 480))), &windows),
+        owner(
+            &frame("b.txt - gedit", Some((400, 300, 640, 480))),
+            &windows
+        ),
         Some("0xb".into())
     );
 }
@@ -87,7 +98,10 @@ fn refuses_same_title_windows_that_geometry_cannot_tell_apart() {
         win("0xb", "Untitled", Some(PID), (410, 300, 640, 480)),
     ];
     // When / Then
-    assert_eq!(owner(&frame("Untitled", Some((405, 300, 640, 480))), &windows), None);
+    assert_eq!(
+        owner(&frame("Untitled", Some((405, 300, 640, 480))), &windows),
+        None
+    );
 }
 
 #[test]
@@ -96,7 +110,10 @@ fn refuses_same_title_windows_at_identical_geometry() {
         win("0xa", "Untitled", Some(PID), (400, 300, 640, 480)),
         win("0xb", "Untitled", Some(PID), (400, 300, 640, 480)),
     ];
-    assert_eq!(owner(&frame("Untitled", Some((400, 300, 640, 480))), &windows), None);
+    assert_eq!(
+        owner(&frame("Untitled", Some((400, 300, 640, 480))), &windows),
+        None
+    );
 }
 
 #[test]
@@ -108,7 +125,10 @@ fn a_unique_title_separates_windows_that_geometry_cannot() {
     ];
     // When / Then
     assert_eq!(
-        owner(&frame("b.txt - gedit", Some((400, 300, 640, 480))), &windows),
+        owner(
+            &frame("b.txt - gedit", Some((400, 300, 640, 480))),
+            &windows
+        ),
         Some("0xb".into())
     );
 }
@@ -121,7 +141,13 @@ fn refuses_when_title_and_geometry_disagree() {
         win("0xb", "b.txt - gedit", Some(PID), (700, 300, 640, 480)),
     ];
     // When / Then
-    assert_eq!(owner(&frame("b.txt - gedit", Some((100, 100, 640, 480))), &windows), None);
+    assert_eq!(
+        owner(
+            &frame("b.txt - gedit", Some((100, 100, 640, 480))),
+            &windows
+        ),
+        None
+    );
 }
 
 #[test]
@@ -129,7 +155,13 @@ fn refuses_when_no_same_pid_window_is_close_enough() {
     // Given: the one same-pid window is far from the frame.
     let windows = [win("0xa", "a.txt - gedit", Some(PID), (900, 700, 300, 200))];
     // When / Then: even its exact title cannot outvote the geometry.
-    assert_eq!(owner(&frame("a.txt - gedit", Some((100, 100, 640, 480))), &windows), None);
+    assert_eq!(
+        owner(
+            &frame("a.txt - gedit", Some((100, 100, 640, 480))),
+            &windows
+        ),
+        None
+    );
 }
 
 #[test]
@@ -152,7 +184,10 @@ fn origin_collapsed_extents_with_duplicate_titles_are_unknown() {
         win("0xa", "Untitled", Some(PID), (100, 100, 640, 480)),
         win("0xb", "Untitled", Some(PID), (700, 300, 640, 480)),
     ];
-    assert_eq!(owner(&frame("Untitled", Some((0, 0, 640, 480))), &windows), None);
+    assert_eq!(
+        owner(&frame("Untitled", Some((0, 0, 640, 480))), &windows),
+        None
+    );
 }
 
 #[test]
@@ -162,7 +197,10 @@ fn an_unknown_or_unlisted_pid_is_unknown() {
     let placed = frame("a.txt - gedit", Some((100, 100, 640, 480)));
     // When / Then: no pid on the window, then no pid on the frame.
     assert_eq!(owner(&placed, &windows), None);
-    let pidless = FrameFacts { pid: None, ..placed };
+    let pidless = FrameFacts {
+        pid: None,
+        ..placed
+    };
     let listed = [win("0xa", "a.txt - gedit", Some(PID), (100, 100, 640, 480))];
     assert_eq!(owner(&pidless, &listed), None);
 }
@@ -181,5 +219,14 @@ fn a_sole_frame_without_usable_extents_or_title_is_the_pids_only_window() {
     // When / Then
     assert_eq!(owner(&sole, &windows), Some("0xa".into()));
     // And: a second frame in the application makes that unprovable.
-    assert_eq!(owner(&FrameFacts { sole_frame: false, ..sole }, &windows), None);
+    assert_eq!(
+        owner(
+            &FrameFacts {
+                sole_frame: false,
+                ..sole
+            },
+            &windows
+        ),
+        None
+    );
 }

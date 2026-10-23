@@ -1,14 +1,14 @@
 //! Element properties: the normalized props the snapshot walker renders and
 //! the raw UIA property dump behind `ax.attributes`.
 
-use senpi_desktop_core::ax::{normalize_role_uia, AxBounds, AxProps};
+use senpi_desktop_core::ax::{AxBounds, AxProps, normalize_role_uia};
 use senpi_desktop_core::error::CoreResult;
 use senpi_desktop_core::types::DesktopDisplay;
 use uiautomation::types::{Rect, UIProperty};
 use uiautomation::{UIElement, UITreeWalker};
 
 use super::{patterns, uia_error};
-use crate::capture::{logical_bounds, PhysicalRect};
+use crate::capture::{PhysicalRect, logical_bounds};
 
 const MAX_ATTRIBUTE_CHARS: usize = 200;
 
@@ -54,9 +54,9 @@ pub(super) fn read_props(
     displays: Option<&[DesktopDisplay]>,
 ) -> CoreResult<AxProps> {
     let native_role = element.get_control_type().map_err(uia_error)?.to_string();
-    let child_count = walker
-        .get_children(element)
-        .map_or(0, |children| u32::try_from(children.len()).unwrap_or(u32::MAX));
+    let child_count = walker.get_children(element).map_or(0, |children| {
+        u32::try_from(children.len()).unwrap_or(u32::MAX)
+    });
     Ok(AxProps {
         role: normalize_role_uia(&native_role),
         native_role,

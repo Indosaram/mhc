@@ -14,8 +14,8 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -166,7 +166,11 @@ impl Supervisor {
     /// Heartbeat from a stop path, due every [`HEARTBEAT_INTERVAL_MS`].
     pub fn heartbeat(&self, id: StopPathId) {
         let now_ms = self.clock.now_ms();
-        self.stop_paths.lock().entry(id).or_default().last_heartbeat_ms = now_ms;
+        self.stop_paths
+            .lock()
+            .entry(id)
+            .or_default()
+            .last_heartbeat_ms = now_ms;
     }
 
     /// Latch suspension. The first source is kept until [`Self::reset`].

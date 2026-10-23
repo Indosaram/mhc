@@ -73,7 +73,11 @@ impl Screencapture {
             .prefix("senpi-desktop-")
             .suffix(".png")
             .tempfile()
-            .map_err(|error| fatal(format!("failed to create temporary screenshot file: {error}")))?;
+            .map_err(|error| {
+                fatal(format!(
+                    "failed to create temporary screenshot file: {error}"
+                ))
+            })?;
         let status = self.exit_status(args, file.path())?;
         if !status.success() {
             return Err(if self.permission_granted() {
@@ -103,7 +107,11 @@ impl Screencapture {
                     self.program.display()
                 )));
             }
-            Err(error) => return Err(fatal(format!("failed to start macOS screen capture: {error}"))),
+            Err(error) => {
+                return Err(fatal(format!(
+                    "failed to start macOS screen capture: {error}"
+                )));
+            }
         };
         let deadline = Instant::now() + self.deadline;
         loop {

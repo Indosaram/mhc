@@ -15,7 +15,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
 use crate::engine::{Engine, SessionCall};
-use crate::rpc::{to_result, Failure};
+use crate::rpc::{Failure, to_result};
 
 #[derive(Debug)]
 pub enum Route {
@@ -86,8 +86,8 @@ impl Engine {
             }
             Method::StopPathStart => {
                 let chord = parse::<StopPathStartParams>(params)?.chord;
-                let chord =
-                    Chord::parse(&chord).map_err(|error| Failure::InvalidParams(error.to_string()))?;
+                let chord = Chord::parse(&chord)
+                    .map_err(|error| Failure::InvalidParams(error.to_string()))?;
                 Ok(self.stop_path_changed(to_result(self.stop_paths().start(&chord))))
             }
             Method::StopPathHeartbeat => {
@@ -105,7 +105,9 @@ impl Engine {
                 let resumed = self.stop_paths().resume(&token).map_err(Failure::Engine);
                 Ok(self.stop_path_changed(resumed.and_then(to_result)))
             }
-            Method::ClipboardRead => parse::<EmptyParams>(params).and_then(|_| op(Op::ClipboardRead)),
+            Method::ClipboardRead => {
+                parse::<EmptyParams>(params).and_then(|_| op(Op::ClipboardRead))
+            }
             Method::ClipboardWrite => op(Op::ClipboardWrite(parse(params)?)),
             Method::Cancel => Ok(Route::Cancel(parse::<CancelParams>(params)?.id)),
             Method::TestAdvanceClock => {
@@ -125,5 +127,6 @@ fn parse<T: DeserializeOwned>(params: Value) -> Result<T, Failure> {
         Value::Null => Value::Object(Map::new()),
         present => present,
     };
-    serde_json::from_value(params).map_err(|error| Failure::InvalidParams(format!("invalid params: {error}")))
+    serde_json::from_value(params)
+        .map_err(|error| Failure::InvalidParams(format!("invalid params: {error}")))
 }

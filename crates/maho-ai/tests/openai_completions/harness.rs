@@ -274,6 +274,8 @@ pub fn tool_result(tool_call_id: &str, content: Vec<ContentBlock>) -> Message {
 
 pub fn assistant(content: Vec<ContentBlock>, stop_reason: StopReason) -> Message {
     Message::Assistant(Box::new(maho_ai::types::AssistantMessage {
+        failure_source: None,
+        timing: None,
         thinking_level: None,
         provider_diagnostic: None,
         prompt_cache_diagnostics: None,

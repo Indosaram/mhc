@@ -127,6 +127,36 @@ async fn policy_slots(sources: &RotationSources<'_>) -> Vec<EnvCredentialSlot> {
     slots
 }
 
+/// A slot's kind from its own material: OAuth tokens make an OAuth login, a key alone an API key.
+fn slot_kind(slot: &crate::credential_pool::slots::CredentialSlot) -> Option<&'static str> {
+    if slot.access.is_some() || slot.refresh.is_some() {
+        Some("oauth")
+    } else if slot.key.is_some() {
+        Some("api_key")
+    } else {
+        None
+    }
+}
+
+/// The slots a credential can actually use: a slot of the other kind never projects (senpi#3486).
+///
+/// deviation: mirrors pi-ai auth/pool/kinds.ts `slotsOfOwnKind`; kept private here because maho-ai
+/// has no `kinds` module and it is outside this lane's write scope.
+fn slots_of_own_kind(
+    credential: &PooledCredential,
+) -> Vec<crate::credential_pool::slots::CredentialSlot> {
+    let other = if credential.credential_type == "oauth" {
+        "api_key"
+    } else {
+        "oauth"
+    };
+    credential
+        .list_slots()
+        .into_iter()
+        .filter(|slot| slot_kind(slot) != Some(other))
+        .collect()
+}
+
 /// Lists the provider's rotation slots with sidecar health overlaid. Stored credentials own the
 /// lane when present; env slots participate only when nothing is stored.
 pub async fn list_rotation_slots(
@@ -139,7 +169,8 @@ pub async fn list_rotation_slots(
     if let Some(credential) = &sources.credential {
         let state = repository.list_slots(&provider_id, "stored").await?;
         let mut slots = Vec::new();
-        for slot in credential.list_slots() {
+        // A slot of the other kind cannot project, so a session must never be handed it (senpi#3486).
+        for slot in slots_of_own_kind(credential) {
             let stored_revision = repository
                 .stored_credential_revision(
                     &provider_id,
@@ -571,6 +602,8 @@ impl crate::credential_pool::failover::FailoverHost for RotationHost {
                         lease: None,
                         blocked_until: None,
                         block_reason: None,
+                        // A healthy answer ends the failure run, so a later limit restarts its backoff.
+                        failure_count: None,
                         ..current.clone()
                     })
                 },
@@ -601,10 +634,12 @@ pub fn stream_with_credential_rotation(
     let target = maho_ai::types::AssistantMessageEventStream::assistant();
     let controller = maho_ai::utils::abort::AbortController::new();
     let signal = controller.signal();
-    target.set_cancellation_handler(Box::new(move || Box::pin(async move {
-        controller.abort(None);
-        Ok(())
-    })));
+    target.set_cancellation_handler(Box::new(move || {
+        Box::pin(async move {
+            controller.abort(None);
+            Ok(())
+        })
+    }));
     let affinity_key = affinity_key.unwrap_or_else(|| {
         maho_ai::utils::uuid::uuidv7(None).unwrap_or_else(|_| now_ms().to_string())
     });
@@ -652,7 +687,10 @@ mod tests {
     #[tokio::test]
     async fn cancelling_rotation_drops_pending_auth_setup_without_starting_another_slot() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let model = maho_ai::providers::faux::faux_provider(Default::default()).expect("faux provider").get_model(None).expect("model");
+        let model = maho_ai::providers::faux::faux_provider(Default::default())
+            .expect("faux provider")
+            .get_model(None)
+            .expect("model");
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel::<()>();
         let setup = std::sync::Arc::new(std::sync::Mutex::new(Some((started_tx, dropped_tx))));
@@ -675,10 +713,20 @@ mod tests {
             policy: RotationPolicy::default(),
         };
         let stream = stream_with_credential_rotation(&model, sources, Some("affinity".into()), run);
-        tokio::time::timeout(std::time::Duration::from_secs(5), started_rx).await.expect("bounded setup").expect("setup started");
+        tokio::time::timeout(std::time::Duration::from_secs(5), started_rx)
+            .await
+            .expect("bounded setup")
+            .expect("setup started");
         tokio::time::timeout(std::time::Duration::from_secs(5), stream.cancel())
-            .await.expect("bounded cancellation").expect("cancel rotation");
-        assert!(tokio::time::timeout(std::time::Duration::from_secs(5), dropped_rx).await.expect("bounded destruction").is_err());
+            .await
+            .expect("bounded cancellation")
+            .expect("cancel rotation");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), dropped_rx)
+                .await
+                .expect("bounded destruction")
+                .is_err()
+        );
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 

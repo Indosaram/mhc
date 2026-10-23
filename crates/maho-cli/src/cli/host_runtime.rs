@@ -453,9 +453,16 @@ pub fn resolve_cli_path(cwd: &str, path: &str) -> String {
     if !maho_core::paths::is_local_path(path) {
         return path.to_owned();
     }
-    let normalized = crate::utils::paths::normalize_path(path, &crate::utils::paths::PathInputOptions::default())
-        .unwrap_or_else(|_| path.to_owned());
-    maho_core::paths::resolve_path(&normalized, cwd, &maho_core::paths::PathInputOptions::default())
+    let normalized = crate::utils::paths::normalize_path(
+        path,
+        &crate::utils::paths::PathInputOptions::default(),
+    )
+    .unwrap_or_else(|_| path.to_owned());
+    maho_core::paths::resolve_path(
+        &normalized,
+        cwd,
+        &maho_core::paths::PathInputOptions::default(),
+    )
 }
 
 /// The per-runtime inputs a mode supplies when it mounts a session runtime.
@@ -564,7 +571,8 @@ pub async fn mount_agent_session_runtime(
         settings_manager,
         model_runtime,
     })
-    .await.map_err(|error| error.to_string())?;
+    .await
+    .map_err(|error| error.to_string())?;
     let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
     let reload_widget_sender = widget_sender.clone();
     let reload_mcp_registry = mcp_registry.clone();
@@ -599,15 +607,19 @@ pub async fn mount_agent_session_runtime(
     );
     services
         .diagnostics
-        .extend(extension_errors.into_iter().map(|error| {
-        AgentSessionRuntimeDiagnostic {
+        .extend(
+            extension_errors
+                .into_iter()
+                .map(|error| {
+                    AgentSessionRuntimeDiagnostic {
             kind: maho_core::agent_session_services::AgentSessionRuntimeDiagnosticType::Warning,
             message: super::default_extensions::extension_load_failure_message(
                 &error.path,
                 &error.message,
             ),
         }
-    }));
+                }),
+        );
     let created = maho_core::agent_session_services::create_agent_session_from_services(
         services,
         maho_core::agent_session_services::CreateAgentSessionFromServicesOptions {
@@ -796,22 +808,24 @@ pub fn create_host_core(
             tokio::io::sink(),
         )),
     };
-    Ok(std::sync::Arc::new(maho_rpc::multi_session_host::HostCore::new(
-        maho_rpc::multi_session_host::HostCoreOptions {
-            agent_dir: PathBuf::from(&config.agent_dir),
-            cwd: cwd.to_owned(),
-            create_runtime,
-            capabilities: maho_rpc::custom_capability::parse_client_capabilities(
-                maho_core::brand::env_value(
-                    "RPC_CLIENT_CAPABILITIES",
-                    &maho_core::config::current_env(),
-                )
-                .as_deref(),
-            ),
-            close_grace_ms: host_close_grace_ms(),
-        },
-        writer,
-    )))
+    Ok(std::sync::Arc::new(
+        maho_rpc::multi_session_host::HostCore::new(
+            maho_rpc::multi_session_host::HostCoreOptions {
+                agent_dir: PathBuf::from(&config.agent_dir),
+                cwd: cwd.to_owned(),
+                create_runtime,
+                capabilities: maho_rpc::custom_capability::parse_client_capabilities(
+                    maho_core::brand::env_value(
+                        "RPC_CLIENT_CAPABILITIES",
+                        &maho_core::config::current_env(),
+                    )
+                    .as_deref(),
+                ),
+                close_grace_ms: host_close_grace_ms(),
+            },
+            writer,
+        ),
+    ))
 }
 
 /// senpi main.ts:1112-1154 with \`resolveSessionRuntime(parsed) === "worker"\`: the host passes its
@@ -902,7 +916,9 @@ pub fn session_worker_configuration(
 
 /// senpi's shared host model runtime (`hostModelRuntime`): one catalog and one auth store behind
 /// every in-process session the host opens.
-fn host_model_runtime(config: &CliRuntimeConfiguration) -> Result<ModelRuntime, maho_ai::models::ModelsError> {
+fn host_model_runtime(
+    config: &CliRuntimeConfiguration,
+) -> Result<ModelRuntime, maho_ai::models::ModelsError> {
     ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(Path::new(&config.agent_dir).join("models.json")),
         auth_path: Some(Path::new(&config.agent_dir).join("auth.json")),
@@ -986,7 +1002,10 @@ pub fn host_runtime_factory_with_mcp_registry(
                 let scope_models = if config.models.is_empty() {
                     Vec::new()
                 } else {
-                    model_runtime.get_available(None).await.map_err(|error| error.to_string())?
+                    model_runtime
+                        .get_available(None)
+                        .await
+                        .map_err(|error| error.to_string())?
                 };
                 let scoped = maho_core::model_resolver::resolve_model_scope_from_models(
                     &config.models,
@@ -1020,6 +1039,7 @@ pub fn host_runtime_factory_with_mcp_registry(
                     reason: maho_ext_api::SessionReason::Startup,
                     initial_model_provenance: Some(provenance.to_owned()),
                     previous_session_file: None,
+                    attended: None,
                 });
                 let request = CliRuntimeRequest {
                     cwd: Some(profile.runtime.cwd.clone()),
@@ -1125,10 +1145,10 @@ pub async fn resolve_cli_initial_model(
     )
     .await?;
     Ok(CliInitialModel {
-            model: resolved.parsed.model,
-            thinking_level: resolved.parsed.thinking_level,
-            provenance: Some(provenance_str(resolved.provenance)),
-            thinking_selection: resolved.parsed.thinking_selection,
+        model: resolved.parsed.model,
+        thinking_level: resolved.parsed.thinking_level,
+        provenance: Some(provenance_str(resolved.provenance)),
+        thinking_selection: resolved.parsed.thinking_selection,
     })
 }
 

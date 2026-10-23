@@ -34,6 +34,7 @@ fn devin_model(id: &str, name: &str, context_window: u64) -> Model {
         recover_text_tool_calls: None,
         compat: Some(ModelCompat(compat)),
         input_limits: None,
+        deprecated: None,
     }
 }
 
@@ -54,6 +55,15 @@ mod tests {
     #[test]
     fn seeds_only_supported_swe_2_lanes() {
         let ids: Vec<_> = devin_models().into_iter().map(|model| model.id).collect();
-        assert_eq!(ids, ["swe-2-high", "swe-2-medium", "swe-2-max", "swe-1-6", "swe-1-6-fast"]);
+        assert_eq!(
+            ids,
+            [
+                "swe-2-high",
+                "swe-2-medium",
+                "swe-2-max",
+                "swe-1-6",
+                "swe-1-6-fast"
+            ]
+        );
     }
 }

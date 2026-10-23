@@ -22,6 +22,7 @@ pub trait SystemOneTransport: Send + Sync {
 /// Shared request metadata for the existing auth/cost boundary. Classifiers remain separately typed.
 pub(crate) fn request_model(model: &ClassifierModel) -> Model {
     Model {
+        deprecated: None,
         id: model.id.clone(),
         name: model.name.clone(),
         api: model.api.clone(),
@@ -166,9 +167,7 @@ pub(crate) async fn post(
         }
     }, &ProviderRetryOptions { max_retries: Some(request.max_retries.unwrap_or(2)), max_retry_delay_ms: request.max_retry_delay_ms, signal: request.signal.clone() })
         .await.map_err(|e| e.to_string())?;
-    if observe
-        && let Some(hook) = &options.on_response
-    {
+    if observe && let Some(hook) = &options.on_response {
         hook(response, model.clone()).await?;
     }
     Ok(body)

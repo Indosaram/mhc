@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::*;
 
@@ -78,9 +78,10 @@ fn capture_modes_use_kebab_case_wire_names() {
 #[test]
 fn session_options_missing_fields_take_documented_defaults() {
     // When: the host sends only two fields.
-    let options: DesktopSessionOptions =
-        serde_json::from_value(json!({"allowHostRelayOnlyStop": true, "captureCaps": {"maxWidth": 1280}}))
-            .unwrap();
+    let options: DesktopSessionOptions = serde_json::from_value(
+        json!({"allowHostRelayOnlyStop": true, "captureCaps": {"maxWidth": 1280}}),
+    )
+    .unwrap();
     // Then
     assert!(options.allow_host_relay_only_stop);
     assert_eq!(options.capture_caps.max_width, Some(1280));

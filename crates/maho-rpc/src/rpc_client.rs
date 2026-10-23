@@ -1,193 +1,514 @@
-use std::collections::{BTreeSet,VecDeque};
 use serde_json::Value;
-pub const MAX_PENDING_SESSION_EVENTS:usize=512;
-pub const MAX_PENDING_SESSION_EVENT_BYTES:usize=1024*1024;
+use std::collections::{BTreeSet, VecDeque};
+pub const MAX_PENDING_SESSION_EVENTS: usize = 512;
+pub const MAX_PENDING_SESSION_EVENT_BYTES: usize = 1024 * 1024;
 #[cfg(unix)]
-pub struct RpcSocketClient{stream:tokio::net::UnixStream,pub frames:RpcClientFrames,reader:crate::jsonl::JsonlLineReader,lines:VecDeque<crate::jsonl::LineRecord>}
+pub struct RpcSocketClient {
+    stream: tokio::net::UnixStream,
+    pub frames: RpcClientFrames,
+    reader: crate::jsonl::JsonlLineReader,
+    lines: VecDeque<crate::jsonl::LineRecord>,
+}
 #[cfg(not(unix))]
-pub struct RpcSocketClient{pub frames:RpcClientFrames}
+pub struct RpcSocketClient {
+    pub frames: RpcClientFrames,
+}
 #[cfg(unix)]
-pub type RpcStream=tokio::net::UnixStream;
+pub type RpcStream = tokio::net::UnixStream;
 #[cfg(not(unix))]
-pub type RpcStream=();
+pub type RpcStream = ();
 #[cfg(unix)]
-impl RpcSocketClient{
-    pub async fn connect(path:&std::path::Path)->std::io::Result<Self>{Ok(Self::from_stream(tokio::net::UnixStream::connect(path).await?))}
-    pub async fn connect_authenticated(path:&std::path::Path,secret_path:&std::path::Path)->std::io::Result<Self>{
-        let secret=crate::socket_transport::read_socket_secret(secret_path)?;
-        let mut stream=tokio::net::UnixStream::connect(path).await?;
-        crate::socket_transport::send_socket_handshake(&mut stream,&secret).await?;
+impl RpcSocketClient {
+    pub async fn connect(path: &std::path::Path) -> std::io::Result<Self> {
+        Ok(Self::from_stream(
+            tokio::net::UnixStream::connect(path).await?,
+        ))
+    }
+    pub async fn connect_authenticated(
+        path: &std::path::Path,
+        secret_path: &std::path::Path,
+    ) -> std::io::Result<Self> {
+        let secret = crate::socket_transport::read_socket_secret(secret_path)?;
+        let mut stream = tokio::net::UnixStream::connect(path).await?;
+        crate::socket_transport::send_socket_handshake(&mut stream, &secret).await?;
         Ok(Self::from_stream(stream))
     }
-    pub fn from_stream(stream:tokio::net::UnixStream)->Self{Self{stream,frames:RpcClientFrames::default(),reader:crate::jsonl::JsonlLineReader::default(),lines:VecDeque::new()}}
-    pub async fn prompt(&mut self,message:&str,options:Value,on_event:impl FnMut(Value),mut disposition:impl FnMut(&str),mut preflight:impl FnMut(bool))->std::io::Result<()>{
-        let mut command=options;
-        command["type"]="prompt".into();command["message"]=message.into();
-        let response=self.request(command,true,on_event,|response|{
-            if response["success"]==true{disposition(response["data"]["disposition"].as_str().unwrap_or("handled"));preflight(true);}else{preflight(false);}
-        }).await;
-        match response{
-            Err(error)=>{preflight(false);Err(error)},
-            Ok(response) if response["success"]==true=>Ok(()),
-            Ok(response)=>Err(std::io::Error::other(response["error"].as_str().unwrap_or_default())),
+    pub fn from_stream(stream: tokio::net::UnixStream) -> Self {
+        Self {
+            stream,
+            frames: RpcClientFrames::default(),
+            reader: crate::jsonl::JsonlLineReader::default(),
+            lines: VecDeque::new(),
         }
     }
-    pub async fn collect_events(&mut self,timeout:std::time::Duration)->std::io::Result<Vec<Value>>{
-        tokio::time::timeout(timeout,async{
-            let mut events=Vec::new();
-            loop{match self.receive().await?{
-                Some(ClientFrame::Event(event))=>{let settled=event["type"]=="agent_settled";events.push(event);if settled{return Ok(events);}},
-                Some(ClientFrame::Response(_)|ClientFrame::Ignored)=>{},
-                None=>return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe,"RPC transport is gone")),
-            }}
-        }).await.map_err(|_|std::io::Error::new(std::io::ErrorKind::TimedOut,"Timeout waiting for agent events. Stderr: "))?
+    pub async fn prompt(
+        &mut self,
+        message: &str,
+        options: Value,
+        on_event: impl FnMut(Value),
+        mut disposition: impl FnMut(&str),
+        mut preflight: impl FnMut(bool),
+    ) -> std::io::Result<()> {
+        let mut command = options;
+        command["type"] = "prompt".into();
+        command["message"] = message.into();
+        let response = self
+            .request(command, true, on_event, |response| {
+                if response["success"] == true {
+                    disposition(
+                        response["data"]["disposition"]
+                            .as_str()
+                            .unwrap_or("handled"),
+                    );
+                    preflight(true);
+                } else {
+                    preflight(false);
+                }
+            })
+            .await;
+        match response {
+            Err(error) => {
+                preflight(false);
+                Err(error)
+            }
+            Ok(response) if response["success"] == true => Ok(()),
+            Ok(response) => Err(std::io::Error::other(
+                response["error"].as_str().unwrap_or_default(),
+            )),
+        }
     }
-    pub async fn send(&mut self,command:Value,route:bool,expect_response:bool)->std::io::Result<Value>{
+    pub async fn collect_events(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<Vec<Value>> {
+        tokio::time::timeout(timeout, async {
+            let mut events = Vec::new();
+            loop {
+                match self.receive().await? {
+                    Some(ClientFrame::Event(event)) => {
+                        let settled = event["type"] == "agent_settled";
+                        events.push(event);
+                        if settled {
+                            return Ok(events);
+                        }
+                    }
+                    Some(ClientFrame::Response(_) | ClientFrame::Ignored) => {}
+                    None => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::BrokenPipe,
+                            "RPC transport is gone",
+                        ));
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Timeout waiting for agent events. Stderr: ",
+            )
+        })?
+    }
+    pub async fn send(
+        &mut self,
+        command: Value,
+        route: bool,
+        expect_response: bool,
+    ) -> std::io::Result<Value> {
         use tokio::io::AsyncWriteExt;
-        let command=self.frames.command(command,route,expect_response);
-        let line=crate::jsonl::serialize_json_line(&command)?;
-        if let Err(error)=self.stream.write_all(line.as_bytes()).await{
-            if let Some(id)=command["id"].as_str(){self.frames.pending.remove(id);}
+        let command = self.frames.command(command, route, expect_response);
+        let line = crate::jsonl::serialize_json_line(&command)?;
+        if let Err(error) = self.stream.write_all(line.as_bytes()).await {
+            if let Some(id) = command["id"].as_str() {
+                self.frames.pending.remove(id);
+            }
             return Err(error);
         }
         Ok(command)
     }
-    pub async fn request(&mut self,command:Value,route:bool,mut on_event:impl FnMut(Value),on_response:impl FnOnce(&Value))->std::io::Result<Value>{
-        let kind=command["type"].as_str().unwrap_or_default().to_owned();
-        let command=self.send(command,route,true).await?;
-        let id=command["id"].as_str().expect("assigned request id").to_owned();
-        let response=tokio::time::timeout(std::time::Duration::from_secs(30),async{
-            loop{match self.receive().await?{
-                Some(ClientFrame::Response(response)) if response["id"].as_str()==Some(&id)=>return Ok(response),
-                Some(ClientFrame::Event(event))=>on_event(event),
-                Some(_)=>{},
-                None=>return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe,"RPC transport is gone")),
-            }}
-        }).await;
+    pub async fn request(
+        &mut self,
+        command: Value,
+        route: bool,
+        mut on_event: impl FnMut(Value),
+        on_response: impl FnOnce(&Value),
+    ) -> std::io::Result<Value> {
+        let kind = command["type"].as_str().unwrap_or_default().to_owned();
+        let command = self.send(command, route, true).await?;
+        let id = command["id"]
+            .as_str()
+            .expect("assigned request id")
+            .to_owned();
+        let response = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                match self.receive().await? {
+                    Some(ClientFrame::Response(response))
+                        if response["id"].as_str() == Some(&id) =>
+                    {
+                        return Ok(response);
+                    }
+                    Some(ClientFrame::Event(event)) => on_event(event),
+                    Some(_) => {}
+                    None => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::BrokenPipe,
+                            "RPC transport is gone",
+                        ));
+                    }
+                }
+            }
+        })
+        .await;
         self.frames.pending.remove(&id);
-        let response=response.map_err(|_|std::io::Error::new(std::io::ErrorKind::TimedOut,format!("Timeout waiting for response to {kind}. Stderr: ")))??;
+        let response = response.map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("Timeout waiting for response to {kind}. Stderr: "),
+            )
+        })??;
         on_response(&response);
         Ok(response)
     }
-    pub async fn receive(&mut self)->std::io::Result<Option<ClientFrame>>{use tokio::io::AsyncReadExt;loop{
-        if let Some(record)=self.lines.pop_front(){if let crate::jsonl::LineRecord::Line(line)=record{return Ok(Some(self.frames.handle_line(&line)));}continue;}
-        let mut bytes=[0;8192];let count=self.stream.read(&mut bytes).await?;
-        if count==0{self.lines.extend(self.reader.finish());if self.lines.is_empty(){self.frames.reject_pending();return Ok(None);}continue;}
-        self.lines.extend(self.reader.push(&bytes[..count]));
-    }}
-    pub async fn open_session(&mut self,mut options:Value,mut on_event:impl FnMut(Value))->std::io::Result<Value>{
-        if self.frames.pending_open_session{return Err(std::io::Error::other("An open_session request is already in flight"));}
-        self.frames.pending_open_session=true;
-        options["type"]="open_session".into();
-        let response=self.request(options,false,&mut on_event,|_|{}).await;
-        self.frames.pending_open_session=false;
-        match response{
-            Ok(response) if response["success"]==true=>{
-                let data=response["data"].clone();
-                self.frames.session_id=data["sessionId"].as_str().map(str::to_owned);
-                for event in self.frames.flush_pending_session_events(){on_event(event);}
-                Ok(data)
-            },
-            response=>{
-                self.frames.events.clear();self.frames.event_bytes=0;
-                match response{Err(error)=>Err(error),Ok(response)=>Err(std::io::Error::other(response["error"].as_str().unwrap_or("RPC open_session failed"))) }
-            },
+    pub async fn receive(&mut self) -> std::io::Result<Option<ClientFrame>> {
+        use tokio::io::AsyncReadExt;
+        loop {
+            if let Some(record) = self.lines.pop_front() {
+                if let crate::jsonl::LineRecord::Line(line) = record {
+                    return Ok(Some(self.frames.handle_line(&line)));
+                }
+                continue;
+            }
+            let mut bytes = [0; 8192];
+            let count = self.stream.read(&mut bytes).await?;
+            if count == 0 {
+                self.lines.extend(self.reader.finish());
+                if self.lines.is_empty() {
+                    self.frames.reject_pending();
+                    return Ok(None);
+                }
+                continue;
+            }
+            self.lines.extend(self.reader.push(&bytes[..count]));
         }
     }
-    pub async fn close_session(&mut self,session_id:Option<&str>,on_event:impl FnMut(Value))->std::io::Result<()>{
-        let Some(session_id)=session_id.map(str::to_owned).or_else(||self.frames.session_id.clone()).filter(|id|!id.is_empty())else{return Ok(());};
-        if let Err(error)=self.request(serde_json::json!({"type":"close_session","sessionId":session_id}),false,on_event,|_|{}).await
-            && !matches!(error.kind(),std::io::ErrorKind::BrokenPipe|std::io::ErrorKind::ConnectionReset|std::io::ErrorKind::NotConnected){return Err(error);}
-        if self.frames.session_id.as_deref()==Some(&session_id){self.frames.session_id=None;}
+    pub async fn open_session(
+        &mut self,
+        mut options: Value,
+        mut on_event: impl FnMut(Value),
+    ) -> std::io::Result<Value> {
+        if self.frames.pending_open_session {
+            return Err(std::io::Error::other(
+                "An open_session request is already in flight",
+            ));
+        }
+        self.frames.pending_open_session = true;
+        options["type"] = "open_session".into();
+        let response = self.request(options, false, &mut on_event, |_| {}).await;
+        self.frames.pending_open_session = false;
+        match response {
+            Ok(response) if response["success"] == true => {
+                let data = response["data"].clone();
+                self.frames.session_id = data["sessionId"].as_str().map(str::to_owned);
+                for event in self.frames.flush_pending_session_events() {
+                    on_event(event);
+                }
+                Ok(data)
+            }
+            response => {
+                self.frames.events.clear();
+                self.frames.event_bytes = 0;
+                match response {
+                    Err(error) => Err(error),
+                    Ok(response) => Err(std::io::Error::other(
+                        response["error"]
+                            .as_str()
+                            .unwrap_or("RPC open_session failed"),
+                    )),
+                }
+            }
+        }
+    }
+    pub async fn close_session(
+        &mut self,
+        session_id: Option<&str>,
+        on_event: impl FnMut(Value),
+    ) -> std::io::Result<()> {
+        let Some(session_id) = session_id
+            .map(str::to_owned)
+            .or_else(|| self.frames.session_id.clone())
+            .filter(|id| !id.is_empty())
+        else {
+            return Ok(());
+        };
+        if let Err(error) = self
+            .request(
+                serde_json::json!({"type":"close_session","sessionId":session_id}),
+                false,
+                on_event,
+                |_| {},
+            )
+            .await
+            && !matches!(
+                error.kind(),
+                std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::NotConnected
+            )
+        {
+            return Err(error);
+        }
+        if self.frames.session_id.as_deref() == Some(&session_id) {
+            self.frames.session_id = None;
+        }
         Ok(())
     }
 }
 #[cfg(not(unix))]
-impl RpcSocketClient{
-    pub async fn connect(_path:&std::path::Path)->std::io::Result<Self>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
-    pub async fn connect_authenticated(_path:&std::path::Path,_secret_path:&std::path::Path)->std::io::Result<Self>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
-    pub async fn send(&mut self,_command:Value,_route:bool,_expect_response:bool)->std::io::Result<Value>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
-    pub async fn request(&mut self,_command:Value,_route:bool,_on_event:impl FnMut(Value),_on_response:impl FnOnce(&Value))->std::io::Result<Value>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
-    pub async fn open_session(&mut self,_options:Value,_on_event:impl FnMut(Value))->std::io::Result<Value>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
-    pub async fn close_session(&mut self,_session_id:Option<&str>,_on_event:impl FnMut(Value))->std::io::Result<()>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
-    pub async fn prompt(&mut self,_message:&str,_options:Value,_on_event:impl FnMut(Value),_disposition:impl FnMut(&str),_preflight:impl FnMut(bool))->std::io::Result<()>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
-    pub async fn receive(&mut self)->std::io::Result<Option<ClientFrame>>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
+impl RpcSocketClient {
+    pub async fn connect(_path: &std::path::Path) -> std::io::Result<Self> {
+        Err(std::io::Error::other(
+            "rpc host sockets are not supported on this platform yet",
+        ))
+    }
+    pub async fn connect_authenticated(
+        _path: &std::path::Path,
+        _secret_path: &std::path::Path,
+    ) -> std::io::Result<Self> {
+        Err(std::io::Error::other(
+            "rpc host sockets are not supported on this platform yet",
+        ))
+    }
+    pub async fn send(
+        &mut self,
+        _command: Value,
+        _route: bool,
+        _expect_response: bool,
+    ) -> std::io::Result<Value> {
+        Err(std::io::Error::other(
+            "rpc host sockets are not supported on this platform yet",
+        ))
+    }
+    pub async fn request(
+        &mut self,
+        _command: Value,
+        _route: bool,
+        _on_event: impl FnMut(Value),
+        _on_response: impl FnOnce(&Value),
+    ) -> std::io::Result<Value> {
+        Err(std::io::Error::other(
+            "rpc host sockets are not supported on this platform yet",
+        ))
+    }
+    pub async fn open_session(
+        &mut self,
+        _options: Value,
+        _on_event: impl FnMut(Value),
+    ) -> std::io::Result<Value> {
+        Err(std::io::Error::other(
+            "rpc host sockets are not supported on this platform yet",
+        ))
+    }
+    pub async fn close_session(
+        &mut self,
+        _session_id: Option<&str>,
+        _on_event: impl FnMut(Value),
+    ) -> std::io::Result<()> {
+        Err(std::io::Error::other(
+            "rpc host sockets are not supported on this platform yet",
+        ))
+    }
+    pub async fn prompt(
+        &mut self,
+        _message: &str,
+        _options: Value,
+        _on_event: impl FnMut(Value),
+        _disposition: impl FnMut(&str),
+        _preflight: impl FnMut(bool),
+    ) -> std::io::Result<()> {
+        Err(std::io::Error::other(
+            "rpc host sockets are not supported on this platform yet",
+        ))
+    }
+    pub async fn receive(&mut self) -> std::io::Result<Option<ClientFrame>> {
+        Err(std::io::Error::other(
+            "rpc host sockets are not supported on this platform yet",
+        ))
+    }
 }
-#[derive(Debug,PartialEq)]pub enum ClientFrame{Response(Value),Event(Value),Ignored}
+#[derive(Debug, PartialEq)]
+pub enum ClientFrame {
+    Response(Value),
+    Event(Value),
+    Ignored,
+}
 
 /// A command the host refused; `error_code` carries the typed code when the command defines one.
-#[derive(Debug,Clone,PartialEq,thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[error("{message}")]
-pub struct RpcCommandError{pub message:String,pub error_code:Option<String>,pub error_data:Option<Value>}
+pub struct RpcCommandError {
+    pub message: String,
+    pub error_code: Option<String>,
+    pub error_data: Option<Value>,
+}
 /// Transport-level failure kinds senpi's `isTransportGoneError` recognizes.
-pub const RPC_TRANSPORT_GONE_CODE:&str="rpc_transport_gone";
+pub const RPC_TRANSPORT_GONE_CODE: &str = "rpc_transport_gone";
 /// Whether an error means the shared host is unreachable (a caller should surface it as
 /// transport loss rather than a command refusal).
-pub fn is_transport_gone_error(error:&std::io::Error)->bool{matches!(error.kind(),std::io::ErrorKind::BrokenPipe|std::io::ErrorKind::ConnectionReset|std::io::ErrorKind::NotConnected|std::io::ErrorKind::UnexpectedEof)}
+pub fn is_transport_gone_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::NotConnected
+            | std::io::ErrorKind::UnexpectedEof
+    )
+}
 /// Typed client-error surface: a transport failure or a refused command.
-#[derive(Debug,thiserror::Error)]
-pub enum RpcClientError{
-    #[error(transparent)]Transport(#[from]std::io::Error),
-    #[error(transparent)]Command(#[from]RpcCommandError),
+#[derive(Debug, thiserror::Error)]
+pub enum RpcClientError {
+    #[error(transparent)]
+    Transport(#[from] std::io::Error),
+    #[error(transparent)]
+    Command(#[from] RpcCommandError),
 }
-impl RpcClientError{
-    pub fn error_code(&self)->Option<&str>{match self{Self::Command(error)=>error.error_code.as_deref(),Self::Transport(_)=>Some(RPC_TRANSPORT_GONE_CODE)}}
-    pub fn is_transport_gone(&self)->bool{matches!(self,Self::Transport(_))}
+impl RpcClientError {
+    pub fn error_code(&self) -> Option<&str> {
+        match self {
+            Self::Command(error) => error.error_code.as_deref(),
+            Self::Transport(_) => Some(RPC_TRANSPORT_GONE_CODE),
+        }
+    }
+    pub fn is_transport_gone(&self) -> bool {
+        matches!(self, Self::Transport(_))
+    }
 }
-pub type RpcClientResult<T>=Result<T,RpcClientError>;
+pub type RpcClientResult<T> = Result<T, RpcClientError>;
 
 /** The event families the shared-host proxy discriminates on (senpi `RpcClientEvent`). */
-#[derive(Debug,Clone,Copy,PartialEq,Eq)]
-pub enum RpcClientEventKind{
-    AgentStart,AgentSettled,MessageStart,MessageUpdate,MessageEnd,EntryAppended,
-    BashStart,BashEnd,BashExecutionUpdate,QueueUpdate,
-    CompactionStart,CompactionEnd,AutoRetryStart,AutoRetryEnd,
-    ModelChanged,ThinkingLevelChanged,ServiceTierChanged,SessionSettingsChanged,SessionInfoChanged,
-    ExtensionUiRequest,ExtensionUiProgress,ExtensionEvent,ExtensionError,
-    SessionReplaced,SessionParked,SessionClosed,CommandsChanged,LoadedSurfacesChanged,
-    AuthAccountsChanged,AccountFailover,AuthLoginUrl,AuthLoginEnd
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpcClientEventKind {
+    AgentStart,
+    AgentSettled,
+    MessageStart,
+    MessageUpdate,
+    MessageEnd,
+    EntryAppended,
+    BashStart,
+    BashEnd,
+    BashExecutionUpdate,
+    QueueUpdate,
+    CompactionStart,
+    CompactionEnd,
+    AutoRetryStart,
+    AutoRetryEnd,
+    ModelChanged,
+    ThinkingLevelChanged,
+    ServiceTierChanged,
+    SessionSettingsChanged,
+    SessionInfoChanged,
+    ExtensionUiRequest,
+    ExtensionUiProgress,
+    ExtensionEvent,
+    ExtensionError,
+    SessionReplaced,
+    SessionParked,
+    SessionClosed,
+    CommandsChanged,
+    LoadedSurfacesChanged,
+    AuthAccountsChanged,
+    AccountFailover,
+    AuthLoginUrl,
+    AuthLoginEnd,
 }
 /// Classify one wire record into the client-event families, or `None` for a record the
 /// proxy ignores (responses, unknown additive records).
-pub fn classify_rpc_client_event(value:&Value)->Option<RpcClientEventKind>{
+pub fn classify_rpc_client_event(value: &Value) -> Option<RpcClientEventKind> {
     use RpcClientEventKind as K;
-    Some(match value["type"].as_str()?{
-        "agent_start"=>K::AgentStart,"agent_settled"=>K::AgentSettled,"message_start"=>K::MessageStart,"message_update"=>K::MessageUpdate,"message_end"=>K::MessageEnd,"entry_appended"=>K::EntryAppended,
-        "bash_start"=>K::BashStart,"bash_end"=>K::BashEnd,"bash_execution_update"=>K::BashExecutionUpdate,"queue_update"=>K::QueueUpdate,
-        "compaction_start"=>K::CompactionStart,"compaction_end"=>K::CompactionEnd,"auto_retry_start"=>K::AutoRetryStart,"auto_retry_end"=>K::AutoRetryEnd,
-        "model_changed"=>K::ModelChanged,"thinking_level_changed"=>K::ThinkingLevelChanged,"service_tier_changed"=>K::ServiceTierChanged,"session_settings_changed"=>K::SessionSettingsChanged,"session_info_changed"=>K::SessionInfoChanged,
-        "extension_ui_request"=>K::ExtensionUiRequest,"extension_ui_progress"=>K::ExtensionUiProgress,"extension_event"=>K::ExtensionEvent,"extension_error"=>K::ExtensionError,
-        "session_replaced"=>K::SessionReplaced,"session_parked"=>K::SessionParked,"session_closed"=>K::SessionClosed,"commands_changed"=>K::CommandsChanged,"loaded_surfaces_changed"=>K::LoadedSurfacesChanged,
-        "auth_accounts_changed"=>K::AuthAccountsChanged,"account_failover"=>K::AccountFailover,"auth_login_url"=>K::AuthLoginUrl,"auth_login_end"=>K::AuthLoginEnd,
-        _=>return None,
+    Some(match value["type"].as_str()? {
+        "agent_start" => K::AgentStart,
+        "agent_settled" => K::AgentSettled,
+        "message_start" => K::MessageStart,
+        "message_update" => K::MessageUpdate,
+        "message_end" => K::MessageEnd,
+        "entry_appended" => K::EntryAppended,
+        "bash_start" => K::BashStart,
+        "bash_end" => K::BashEnd,
+        "bash_execution_update" => K::BashExecutionUpdate,
+        "queue_update" => K::QueueUpdate,
+        "compaction_start" => K::CompactionStart,
+        "compaction_end" => K::CompactionEnd,
+        "auto_retry_start" => K::AutoRetryStart,
+        "auto_retry_end" => K::AutoRetryEnd,
+        "model_changed" => K::ModelChanged,
+        "thinking_level_changed" => K::ThinkingLevelChanged,
+        "service_tier_changed" => K::ServiceTierChanged,
+        "session_settings_changed" => K::SessionSettingsChanged,
+        "session_info_changed" => K::SessionInfoChanged,
+        "extension_ui_request" => K::ExtensionUiRequest,
+        "extension_ui_progress" => K::ExtensionUiProgress,
+        "extension_event" => K::ExtensionEvent,
+        "extension_error" => K::ExtensionError,
+        "session_replaced" => K::SessionReplaced,
+        "session_parked" => K::SessionParked,
+        "session_closed" => K::SessionClosed,
+        "commands_changed" => K::CommandsChanged,
+        "loaded_surfaces_changed" => K::LoadedSurfacesChanged,
+        "auth_accounts_changed" => K::AuthAccountsChanged,
+        "account_failover" => K::AccountFailover,
+        "auth_login_url" => K::AuthLoginUrl,
+        "auth_login_end" => K::AuthLoginEnd,
+        _ => return None,
     })
 }
 /** Provider-account records are connection-level, not part of the agent event stream. */
-pub fn is_provider_account_event(value:&Value)->bool{matches!(value["type"].as_str(),Some("auth_accounts_changed"|"account_failover"))}
+pub fn is_provider_account_event(value: &Value) -> bool {
+    matches!(
+        value["type"].as_str(),
+        Some("auth_accounts_changed" | "account_failover")
+    )
+}
 
-pub type RpcEventListener=std::sync::Arc<dyn Fn(&Value)+Send+Sync>;
+pub type RpcEventListener = std::sync::Arc<dyn Fn(&Value) + Send + Sync>;
 /// Handle that removes one listener when dropped, matching senpi's returned unsubscribe fn.
-pub struct RpcClientUnsubscribe{listeners:std::sync::Arc<std::sync::Mutex<Vec<(u64,RpcEventListener)>>>,id:u64}
-impl Drop for RpcClientUnsubscribe{fn drop(&mut self){self.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|(id,_)|*id!=self.id);}}
+pub struct RpcClientUnsubscribe {
+    listeners: std::sync::Arc<std::sync::Mutex<Vec<(u64, RpcEventListener)>>>,
+    id: u64,
+}
+impl Drop for RpcClientUnsubscribe {
+    fn drop(&mut self) {
+        self.listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(id, _)| *id != self.id);
+    }
+}
 /// The success `data` of one response, or a typed refusal.
-pub fn get_data(response:&Value)->RpcClientResult<Value>{
-    if response["success"]!=true{
-        return Err(RpcCommandError{message:response["error"].as_str().unwrap_or_default().into(),error_code:response["errorCode"].as_str().map(str::to_owned),error_data:response.get("errorData").cloned()}.into());
+pub fn get_data(response: &Value) -> RpcClientResult<Value> {
+    if response["success"] != true {
+        return Err(RpcCommandError {
+            message: response["error"].as_str().unwrap_or_default().into(),
+            error_code: response["errorCode"].as_str().map(str::to_owned),
+            error_data: response.get("errorData").cloned(),
+        }
+        .into());
     }
     Ok(response.get("data").cloned().unwrap_or(Value::Null))
 }
 /** The shared host's default endpoint for an agent directory (senpi `unix://` resolution). */
-pub fn default_rpc_socket_path(agent_dir:&std::path::Path)->std::path::PathBuf{agent_dir.join("rpc").join("rpc.sock")}
+pub fn default_rpc_socket_path(agent_dir: &std::path::Path) -> std::path::PathBuf {
+    agent_dir.join("rpc").join("rpc.sock")
+}
 /** How a client reaches a host: an existing socket, or the endpoint `ensure_host` starts. */
-#[derive(Debug,Clone,Default)]
-pub struct RpcClientOptions{
-    pub socket_path:Option<std::path::PathBuf>,
-    pub agent_dir:Option<std::path::PathBuf>,
-    pub cwd:Option<String>,
-    pub env:std::collections::HashMap<String,String>,
-    pub provider:Option<String>,
-    pub model:Option<String>,
-    pub args:Vec<String>,
+#[derive(Debug, Clone, Default)]
+pub struct RpcClientOptions {
+    pub socket_path: Option<std::path::PathBuf>,
+    pub agent_dir: Option<std::path::PathBuf>,
+    pub cwd: Option<String>,
+    pub env: std::collections::HashMap<String, String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub args: Vec<String>,
 }
 /// High-level client over the shared-host JSONL protocol: one connection, typed command
 /// methods, and the event union the interactive proxy matches on (senpi `RpcClient`).
@@ -211,7 +532,9 @@ type PendingReply = std::io::Result<(Value, u64)>;
 struct RpcMux {
     write: tokio::sync::Mutex<Option<RpcWriteHalf>>,
     reader: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    pending: std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<PendingReply>>>,
+    pending: std::sync::Mutex<
+        std::collections::HashMap<String, tokio::sync::oneshot::Sender<PendingReply>>,
+    >,
     frames: std::sync::Mutex<RpcClientFrames>,
     listeners: std::sync::Arc<std::sync::Mutex<Vec<(u64, RpcEventListener)>>>,
     next_listener: std::sync::Mutex<u64>,
@@ -243,13 +566,23 @@ impl RpcMux {
     }
 
     fn abort_reader(&self) {
-        if let Some(reader) = self.reader.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+        if let Some(reader) = self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             reader.abort();
         }
     }
 
     fn fail_pending(&self, error: std::io::Error) {
-        let pending = std::mem::take(&mut *self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        let pending = std::mem::take(
+            &mut *self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         for (_, tx) in pending {
             let _ = tx.send(Err(std::io::Error::new(error.kind(), error.to_string())));
         }
@@ -264,7 +597,10 @@ impl RpcMux {
 impl Drop for RpcClient {
     fn drop(&mut self) {
         self.inner.abort_reader();
-        self.inner.fail_pending(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "RPC transport is gone"));
+        self.inner.fail_pending(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "RPC transport is gone",
+        ));
         self.inner.mark_closed();
     }
 }
@@ -272,21 +608,31 @@ impl Drop for RpcClient {
 impl RpcClient {
     #[cfg(unix)]
     pub fn new(options: RpcClientOptions) -> Self {
-        Self { inner: std::sync::Arc::new(RpcMux::new()), options }
+        Self {
+            inner: std::sync::Arc::new(RpcMux::new()),
+            options,
+        }
     }
     #[cfg(not(unix))]
     pub fn new(_options: RpcClientOptions) -> Self {
-        Self { inner: std::sync::Arc::new(RpcMux::new()) }
+        Self {
+            inner: std::sync::Arc::new(RpcMux::new()),
+        }
     }
 
     /// Connect to an endpoint directly.
     #[cfg(unix)]
     pub async fn connect(path: &std::path::Path) -> std::io::Result<Self> {
-        Ok(Self::from_stream(tokio::net::UnixStream::connect(path).await?, RpcClientOptions::default()))
+        Ok(Self::from_stream(
+            tokio::net::UnixStream::connect(path).await?,
+            RpcClientOptions::default(),
+        ))
     }
     #[cfg(not(unix))]
     pub async fn connect(_path: &std::path::Path) -> std::io::Result<Self> {
-        Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))
+        Err(std::io::Error::other(
+            "rpc host sockets are not supported on this platform yet",
+        ))
     }
 
     #[cfg(unix)]
@@ -308,7 +654,10 @@ impl RpcClient {
     pub async fn start(&self) -> RpcClientResult<()> {
         #[cfg(not(unix))]
         {
-            Err(std::io::Error::other("rpc host sockets are not supported on this platform yet").into())
+            Err(
+                std::io::Error::other("rpc host sockets are not supported on this platform yet")
+                    .into(),
+            )
         }
         #[cfg(unix)]
         {
@@ -318,16 +667,21 @@ impl RpcClient {
             let path = match &self.options.socket_path {
                 Some(path) => path.clone(),
                 None => {
-                    let agent_dir = self.options.agent_dir.clone().unwrap_or_else(|| std::path::PathBuf::from(maho_core::config::get_agent_dir()));
+                    let agent_dir = self.options.agent_dir.clone().unwrap_or_else(|| {
+                        std::path::PathBuf::from(maho_core::config::get_agent_dir())
+                    });
                     let socket = default_rpc_socket_path(&agent_dir);
-                    let ensured = crate::host_ensure::ensure_host(crate::host_ensure::EnsureHostOptions {
-                        socket: socket.to_string_lossy().into_owned(),
-                        agent_dir: Some(agent_dir),
-                        host_args: self.options.args.clone(),
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(|error| RpcClientError::Transport(std::io::Error::other(error.to_string())))?;
+                    let ensured =
+                        crate::host_ensure::ensure_host(crate::host_ensure::EnsureHostOptions {
+                            socket: socket.to_string_lossy().into_owned(),
+                            agent_dir: Some(agent_dir),
+                            host_args: self.options.args.clone(),
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(|error| {
+                            RpcClientError::Transport(std::io::Error::other(error.to_string()))
+                        })?;
                     std::path::PathBuf::from(ensured.socket)
                 }
             };
@@ -341,9 +695,16 @@ impl RpcClient {
     pub async fn stop(&self) {
         *self.inner.write.lock().await = None;
         self.inner.abort_reader();
-        self.inner.fail_pending(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "RPC transport is gone"));
+        self.inner.fail_pending(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "RPC transport is gone",
+        ));
         {
-            let mut frames = self.inner.frames.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut frames = self
+                .inner
+                .frames
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             frames.session_id = None;
             frames.pending_open_session = false;
             frames.pending.clear();
@@ -355,16 +716,32 @@ impl RpcClient {
 
     /// Subscribe to every subsequent event record.
     pub fn on_event(&self, listener: RpcEventListener) -> RpcClientUnsubscribe {
-        let mut next = self.inner.next_listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut next = self
+            .inner
+            .next_listener
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *next += 1;
         let id = *next;
         drop(next);
-        self.inner.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((id, listener));
-        RpcClientUnsubscribe { listeners: self.inner.listeners.clone(), id }
+        self.inner
+            .listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((id, listener));
+        RpcClientUnsubscribe {
+            listeners: self.inner.listeners.clone(),
+            id,
+        }
     }
 
     pub fn session_id(&self) -> Option<String> {
-        self.inner.frames.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_id.clone()
+        self.inner
+            .frames
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .session_id
+            .clone()
     }
 
     #[cfg(unix)]
@@ -383,30 +760,64 @@ impl RpcClient {
             }
             Err(_) => return Err(std::io::Error::other("RPC transport is not writable.")),
         }
-        self.inner.closed.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.inner
+            .closed
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         self.inner.abort_reader();
         let reader = spawn_reader(self.inner.clone(), read);
-        *self.inner.reader.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reader);
+        *self
+            .inner
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reader);
         Ok(())
     }
 
-    async fn request_marked(&self, command: Value, route: bool) -> Result<(Value, u64), RpcClientError> {
-        let kind = command.get("type").and_then(Value::as_str).unwrap_or_default().to_owned();
+    async fn request_marked(
+        &self,
+        command: Value,
+        route: bool,
+    ) -> Result<(Value, u64), RpcClientError> {
+        let kind = command
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
         let (id, line) = self.assign_frame(command, route)?;
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id.clone(), tx);
+        self.inner
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.clone(), tx);
         if let Err(error) = self.write_line(line.as_bytes()).await {
-            self.inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
+            self.inner
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&id);
             return Err(error.into());
         }
         // The write permit is gone. The caller waits on this oneshot only.
         match tokio::time::timeout(RPC_RESPONSE_TIMEOUT, rx).await {
             Ok(Ok(Ok(value))) => Ok(value),
             Ok(Ok(Err(error))) => Err(error.into()),
-            Ok(Err(_)) => Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "RPC transport is gone").into()),
+            Ok(Err(_)) => Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "RPC transport is gone",
+            )
+            .into()),
             Err(_) => {
-                self.inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
-                Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("Timeout waiting for response to {kind}. Stderr: ")).into())
+                self.inner
+                    .pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&id);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("Timeout waiting for response to {kind}. Stderr: "),
+                )
+                .into())
             }
         }
     }
@@ -421,13 +832,26 @@ impl RpcClient {
         Ok(())
     }
 
-    fn assign_frame(&self, command: Value, route: bool) -> Result<(String, String), RpcClientError> {
+    fn assign_frame(
+        &self,
+        command: Value,
+        route: bool,
+    ) -> Result<(String, String), RpcClientError> {
         let command = {
-            let mut frames = self.inner.frames.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut frames = self
+                .inner
+                .frames
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             frames.command(command, route, false)
         };
-        let id = command.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
-        let line = crate::jsonl::serialize_json_line(&command).map_err(|error| std::io::Error::other(error.to_string()))?;
+        let id = command
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let line = crate::jsonl::serialize_json_line(&command)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
         Ok((id, line))
     }
 
@@ -438,7 +862,9 @@ impl RpcClient {
         #[cfg(not(unix))]
         {
             let _ = line;
-            Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))
+            Err(std::io::Error::other(
+                "rpc host sockets are not supported on this platform yet",
+            ))
         }
         #[cfg(unix)]
         {
@@ -460,7 +886,11 @@ impl RpcClient {
         }
     }
 
-    pub async fn set_client_info(&self, width: f64, capabilities: Option<Vec<String>>) -> RpcClientResult<()> {
+    pub async fn set_client_info(
+        &self,
+        width: f64,
+        capabilities: Option<Vec<String>>,
+    ) -> RpcClientResult<()> {
         let route = self.session_id().is_some();
         let mut command = serde_json::json!({"type": "set_client_info", "width": width});
         if let Some(capabilities) = capabilities {
@@ -469,24 +899,41 @@ impl RpcClient {
         self.fire_and_forget(command, route).await
     }
 
+    /// `options` passes through verbatim, so `{"attended": false}` opens observationally (senpi `openSession`).
     pub async fn open_session(&self, mut options: Value) -> RpcClientResult<Value> {
         {
-            let mut frames = self.inner.frames.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut frames = self
+                .inner
+                .frames
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if frames.pending_open_session {
-                return Err(std::io::Error::other("An open_session request is already in flight").into());
+                return Err(
+                    std::io::Error::other("An open_session request is already in flight").into(),
+                );
             }
             frames.pending_open_session = true;
         }
         options["type"] = "open_session".into();
-        let response = self.request_marked(options, false).await.map(|(value, _)| value);
+        let response = self
+            .request_marked(options, false)
+            .await
+            .map(|(value, _)| value);
         // Set the lease and clear the buffer flag under one lock so the reader cannot observe a
         // gap where other-session events are neither buffered nor delivered.
-        let mut frames = self.inner.frames.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut frames = self
+            .inner
+            .frames
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         frames.pending_open_session = false;
         match response {
             Ok(response) if response["success"] == true => {
                 let data = response.get("data").cloned().unwrap_or(Value::Null);
-                frames.session_id = data.get("sessionId").and_then(Value::as_str).map(str::to_owned);
+                frames.session_id = data
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
                 let flushed = frames.flush_pending_session_events();
                 drop(frames);
                 for event in flushed {
@@ -497,7 +944,12 @@ impl RpcClient {
             Ok(response) => {
                 frames.events.clear();
                 frames.event_bytes = 0;
-                Err(std::io::Error::other(response["error"].as_str().unwrap_or("RPC open_session failed")).into())
+                Err(std::io::Error::other(
+                    response["error"]
+                        .as_str()
+                        .unwrap_or("RPC open_session failed"),
+                )
+                .into())
             }
             Err(error) => {
                 frames.events.clear();
@@ -508,29 +960,96 @@ impl RpcClient {
     }
 
     pub async fn close_session(&self, session_id: Option<&str>) -> RpcClientResult<()> {
-        let session_id = session_id.map(str::to_owned).or_else(|| self.session_id()).filter(|id| !id.is_empty());
-        let Some(session_id) = session_id else { return Ok(()) };
-        match self.request_marked(serde_json::json!({"type": "close_session", "sessionId": &session_id}), false).await {
+        let session_id = session_id
+            .map(str::to_owned)
+            .or_else(|| self.session_id())
+            .filter(|id| !id.is_empty());
+        let Some(session_id) = session_id else {
+            return Ok(());
+        };
+        match self
+            .request_marked(
+                serde_json::json!({"type": "close_session", "sessionId": &session_id}),
+                false,
+            )
+            .await
+        {
             Ok(_) => {}
-            Err(RpcClientError::Transport(error)) if matches!(error.kind(), std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::NotConnected) => {}
+            Err(RpcClientError::Transport(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::NotConnected
+                ) => {}
             Err(error) => return Err(error),
         }
-        let mut frames = self.inner.frames.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut frames = self
+            .inner
+            .frames
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if frames.session_id.as_deref() == Some(session_id.as_str()) {
             frames.session_id = None;
         }
         Ok(())
     }
 
-    pub async fn list_sessions(&self) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "list_sessions"}), false).await }
-    pub async fn new_session(&self, parent_session: Option<&str>) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "new_session", "parentSession": parent_session}), true).await }
-    pub async fn switch_session(&self, session_path: &str, cwd_override: Option<&str>) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "switch_session", "sessionPath": session_path, "cwdOverride": cwd_override}), true).await }
-    pub async fn fork(&self, entry_id: &str, position: Option<&str>) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "fork", "entryId": entry_id, "position": position}), true).await }
-    pub async fn clone(&self) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "clone"}), true).await }
-    pub async fn import_jsonl(&self, input_path: &str, cwd_override: Option<&str>) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "import_jsonl", "inputPath": input_path, "cwdOverride": cwd_override}), true).await }
-    pub async fn append_session_entry(&self, entry: Value) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "append_session_entry", "entry": entry}), true).await }
-    pub async fn append_user_message(&self, content: Value) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "append_user_message", "content": content}), true).await }
-    pub async fn send_custom_message(&self, mut message: Value, options: Option<Value>) -> RpcClientResult<()> {
+    pub async fn list_sessions(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "list_sessions"}), false)
+            .await
+    }
+    pub async fn new_session(&self, parent_session: Option<&str>) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "new_session", "parentSession": parent_session}),
+            true,
+        )
+        .await
+    }
+    pub async fn switch_session(
+        &self,
+        session_path: &str,
+        cwd_override: Option<&str>,
+    ) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "switch_session", "sessionPath": session_path, "cwdOverride": cwd_override}), true).await
+    }
+    pub async fn fork(&self, entry_id: &str, position: Option<&str>) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "fork", "entryId": entry_id, "position": position}),
+            true,
+        )
+        .await
+    }
+    pub async fn clone(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "clone"}), true)
+            .await
+    }
+    pub async fn import_jsonl(
+        &self,
+        input_path: &str,
+        cwd_override: Option<&str>,
+    ) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "import_jsonl", "inputPath": input_path, "cwdOverride": cwd_override}), true).await
+    }
+    pub async fn append_session_entry(&self, entry: Value) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "append_session_entry", "entry": entry}),
+            true,
+        )
+        .await
+    }
+    pub async fn append_user_message(&self, content: Value) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "append_user_message", "content": content}),
+            true,
+        )
+        .await
+    }
+    pub async fn send_custom_message(
+        &self,
+        mut message: Value,
+        options: Option<Value>,
+    ) -> RpcClientResult<()> {
         message["type"] = "send_custom_message".into();
         if let Some(options) = options.and_then(|options| options.as_object().cloned()) {
             for (key, value) in options {
@@ -539,19 +1058,84 @@ impl RpcClient {
         }
         self.fire_and_forget(message, true).await
     }
-    pub async fn get_state(&self) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "get_state"}), true).await }
-    pub async fn get_messages(&self) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "get_messages"}), true).await }
-    pub async fn get_session_stats(&self) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "get_session_stats"}), true).await }
-    pub async fn get_fork_messages(&self) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "get_fork_messages"}), true).await }
-    pub async fn get_entries(&self, since: Option<&str>) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "get_entries", "since": since}), true).await }
-    pub async fn get_tree(&self) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "get_tree"}), true).await }
-    pub async fn get_last_assistant_text(&self) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "get_last_assistant_text"}), true).await }
-    pub async fn get_commands(&self) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "get_commands"}), true).await }
-    pub async fn get_media(&self, tool_call_id: &str, content_index: f64) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "get_media", "toolCallId": tool_call_id, "contentIndex": content_index}), true).await }
-    pub async fn request_extension(&self, name: &str, data: Option<Value>) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "extension_request", "name": name, "data": data}), true).await }
-    pub async fn get_provider_accounts(&self, provider: &str) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "get_provider_accounts", "provider": provider}), true).await }
-    pub async fn pin_provider_account(&self, provider: &str, name: Option<&str>) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "account_pin", "provider": provider, "name": name}), true).await }
-    pub async fn remove_provider_account(&self, provider: &str, name: &str) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "account_remove", "provider": provider, "name": name}), true).await }
+    pub async fn get_state(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "get_state"}), true)
+            .await
+    }
+    pub async fn get_messages(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "get_messages"}), true)
+            .await
+    }
+    pub async fn get_session_stats(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "get_session_stats"}), true)
+            .await
+    }
+    pub async fn get_fork_messages(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "get_fork_messages"}), true)
+            .await
+    }
+    pub async fn get_entries(&self, since: Option<&str>) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "get_entries", "since": since}),
+            true,
+        )
+        .await
+    }
+    pub async fn get_tree(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "get_tree"}), true)
+            .await
+    }
+    pub async fn get_last_assistant_text(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "get_last_assistant_text"}), true)
+            .await
+    }
+    pub async fn get_commands(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "get_commands"}), true)
+            .await
+    }
+    pub async fn get_media(
+        &self,
+        tool_call_id: &str,
+        content_index: f64,
+    ) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "get_media", "toolCallId": tool_call_id, "contentIndex": content_index}), true).await
+    }
+    pub async fn request_extension(
+        &self,
+        name: &str,
+        data: Option<Value>,
+    ) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "extension_request", "name": name, "data": data}),
+            true,
+        )
+        .await
+    }
+    pub async fn get_provider_accounts(&self, provider: &str) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "get_provider_accounts", "provider": provider}),
+            true,
+        )
+        .await
+    }
+    pub async fn pin_provider_account(
+        &self,
+        provider: &str,
+        name: Option<&str>,
+    ) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "account_pin", "provider": provider, "name": name}),
+            true,
+        )
+        .await
+    }
+    pub async fn remove_provider_account(&self, provider: &str, name: &str) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "account_remove", "provider": provider, "name": name}),
+            true,
+        )
+        .await
+    }
 
     pub async fn prompt(&self, message: &str, mut options: Value) -> RpcClientResult<()> {
         options["type"] = "prompt".into();
@@ -563,47 +1147,273 @@ impl RpcClient {
             Err(std::io::Error::other(response["error"].as_str().unwrap_or_default()).into())
         }
     }
-    pub async fn steer(&self, message: &str, images: Option<Value>, enqueue_order: Option<f64>) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "steer", "message": message, "images": images, "enqueueOrder": enqueue_order}), true).await }
-    pub async fn follow_up(&self, message: &str, images: Option<Value>, enqueue_order: Option<f64>) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "follow_up", "message": message, "images": images, "enqueueOrder": enqueue_order}), true).await }
-    pub async fn abort(&self) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "abort"}), true).await }
-    pub async fn abort_compaction(&self) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "abort_compaction"}), true).await }
-    pub async fn abort_branch_summary(&self) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "abort_branch_summary"}), true).await }
-    pub async fn abort_retry(&self) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "abort_retry"}), true).await }
-    pub async fn abort_bash(&self) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "abort_bash"}), true).await }
+    pub async fn steer(
+        &self,
+        message: &str,
+        images: Option<Value>,
+        enqueue_order: Option<f64>,
+    ) -> RpcClientResult<()> {
+        self.fire_and_forget(serde_json::json!({"type": "steer", "message": message, "images": images, "enqueueOrder": enqueue_order}), true).await
+    }
+    pub async fn follow_up(
+        &self,
+        message: &str,
+        images: Option<Value>,
+        enqueue_order: Option<f64>,
+    ) -> RpcClientResult<()> {
+        self.fire_and_forget(serde_json::json!({"type": "follow_up", "message": message, "images": images, "enqueueOrder": enqueue_order}), true).await
+    }
+    pub async fn abort(&self) -> RpcClientResult<()> {
+        self.fire_and_forget(serde_json::json!({"type": "abort"}), true)
+            .await
+    }
+    pub async fn abort_compaction(&self) -> RpcClientResult<()> {
+        self.fire_and_forget(serde_json::json!({"type": "abort_compaction"}), true)
+            .await
+    }
+    pub async fn abort_branch_summary(&self) -> RpcClientResult<()> {
+        self.fire_and_forget(serde_json::json!({"type": "abort_branch_summary"}), true)
+            .await
+    }
+    pub async fn abort_retry(&self) -> RpcClientResult<()> {
+        self.fire_and_forget(serde_json::json!({"type": "abort_retry"}), true)
+            .await
+    }
+    pub async fn abort_bash(&self) -> RpcClientResult<()> {
+        self.fire_and_forget(serde_json::json!({"type": "abort_bash"}), true)
+            .await
+    }
     /// Address one daemon session by id: the shared host routes `abort` through its session-keyed catch-all, so an explicit `sessionId` ends THAT session's turn - the abort step of the `host_session_close` writer. The id-less `abort()` only reaches the client's own attached session.
-    pub async fn abort_session(&self, session_id: &str) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "abort", "sessionId": session_id}), true).await }
-    pub async fn clear_queue(&self, abort_will_follow: Option<bool>) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "clear_queue", "abortWillFollow": abort_will_follow}), true).await }
-    pub async fn get_steering_messages(&self) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "get_steering_messages"}), true).await }
-    pub async fn get_follow_up_messages(&self) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "get_follow_up_messages"}), true).await }
-    pub async fn record_bash_result(&self, command: &str, result: Value, exclude_from_context: Option<bool>) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "record_bash_result", "command": command, "result": result, "excludeFromContext": exclude_from_context}), true).await }
-    pub async fn set_label(&self, entry_id: &str, label: Option<&str>) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "set_label", "entryId": entry_id, "label": label}), true).await }
-    pub async fn send_extension_ui_response(&self, response: Value) -> RpcClientResult<()> { self.fire_and_forget(response, true).await }
-    pub async fn send_extension_ui_progress(&self, progress: Value) -> RpcClientResult<()> { self.fire_and_forget(progress, true).await }
-    pub async fn set_model(&self, provider: &str, model_id: &str) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "set_model", "provider": provider, "modelId": model_id}), true).await }
-    pub async fn cycle_model(&self, direction: &str) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "cycle_model", "direction": direction}), true).await }
-    pub async fn get_available_models(&self) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "get_available_models"}), true).await }
-    pub async fn set_thinking_level(&self, level: &str, scope: Option<&str>) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "set_thinking_level", "level": level, "scope": scope}), true).await }
-    pub async fn cycle_thinking_level(&self) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "cycle_thinking_level"}), true).await }
-    pub async fn get_available_thinking_levels(&self) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "get_available_thinking_levels"}), true).await }
-    pub async fn set_fast_mode(&self, enabled: bool) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "set_fast_mode", "enabled": enabled}), true).await }
-    pub async fn get_fast_mode(&self) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "get_fast_mode"}), true).await }
-    pub async fn set_steering_mode(&self, mode: &str) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "set_steering_mode", "mode": mode}), true).await }
-    pub async fn set_follow_up_mode(&self, mode: &str) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "set_follow_up_mode", "mode": mode}), true).await }
-    pub async fn set_auto_compaction(&self, enabled: bool) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "set_auto_compaction", "enabled": enabled}), true).await }
-    pub async fn set_auto_retry(&self, enabled: bool) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "set_auto_retry", "enabled": enabled}), true).await }
-    pub async fn set_favorite_models(&self, models: Value) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "set_favorite_models", "models": models}), true).await }
-    pub async fn set_scoped_models(&self, models: Value) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "set_scoped_models", "models": models}), true).await }
-    pub async fn set_session_name(&self, name: &str) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "set_session_name", "name": name}), true).await }
-    pub async fn reload(&self) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "reload"}), true).await }
-    pub async fn check_reload_veto(&self) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "check_reload_veto"}), true).await }
-    pub async fn compact(&self, custom_instructions: Option<&str>) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "compact", "customInstructions": custom_instructions}), true).await }
-    pub async fn navigate_tree(&self, target_id: &str, mut options: Value) -> RpcClientResult<Value> { options["type"] = "navigate_tree".into(); options["targetId"] = target_id.into(); self.request_value(options, true).await }
-    pub async fn edit_assistant_message(&self, entry_id: &str, text: &str, mut options: Value) -> RpcClientResult<Value> { options["type"] = "edit_assistant_message".into(); options["entryId"] = entry_id.into(); options["text"] = text.into(); self.request_value(options, true).await }
-    pub async fn edit_user_message(&self, entry_id: &str, text: &str, mut options: Value) -> RpcClientResult<Value> { options["type"] = "edit_user_message".into(); options["entryId"] = entry_id.into(); options["text"] = text.into(); self.request_value(options, true).await }
-    pub async fn bash(&self, command: &str, mut options: Value) -> RpcClientResult<Value> { options["type"] = "bash".into(); options["command"] = command.into(); self.request_value(options, true).await }
-    pub async fn cleanup_bash_output(&self, path: &str) -> RpcClientResult<()> { self.fire_and_forget(serde_json::json!({"type": "cleanup_bash_output", "path": path}), true).await }
-    pub async fn export_jsonl(&self, output_path: Option<&str>) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "export_jsonl", "outputPath": output_path}), true).await }
-    pub async fn export_html(&self, output_path: Option<&str>, theme_name: Option<&str>) -> RpcClientResult<Value> { self.request_value(serde_json::json!({"type": "export_html", "outputPath": output_path, "themeName": theme_name}), true).await }
+    pub async fn abort_session(&self, session_id: &str) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "abort", "sessionId": session_id}),
+            true,
+        )
+        .await
+    }
+    pub async fn clear_queue(&self, abort_will_follow: Option<bool>) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "clear_queue", "abortWillFollow": abort_will_follow}),
+            true,
+        )
+        .await
+    }
+    pub async fn get_steering_messages(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "get_steering_messages"}), true)
+            .await
+    }
+    pub async fn get_follow_up_messages(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "get_follow_up_messages"}), true)
+            .await
+    }
+    pub async fn record_bash_result(
+        &self,
+        command: &str,
+        result: Value,
+        exclude_from_context: Option<bool>,
+    ) -> RpcClientResult<()> {
+        self.fire_and_forget(serde_json::json!({"type": "record_bash_result", "command": command, "result": result, "excludeFromContext": exclude_from_context}), true).await
+    }
+    pub async fn set_label(&self, entry_id: &str, label: Option<&str>) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "set_label", "entryId": entry_id, "label": label}),
+            true,
+        )
+        .await
+    }
+    pub async fn send_extension_ui_response(&self, response: Value) -> RpcClientResult<()> {
+        self.fire_and_forget(response, true).await
+    }
+    pub async fn send_extension_ui_progress(&self, progress: Value) -> RpcClientResult<()> {
+        self.fire_and_forget(progress, true).await
+    }
+    pub async fn set_model(&self, provider: &str, model_id: &str) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "set_model", "provider": provider, "modelId": model_id}),
+            true,
+        )
+        .await
+    }
+    pub async fn cycle_model(&self, direction: &str) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "cycle_model", "direction": direction}),
+            true,
+        )
+        .await
+    }
+    pub async fn get_available_models(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "get_available_models"}), true)
+            .await
+    }
+    pub async fn set_thinking_level(
+        &self,
+        level: &str,
+        scope: Option<&str>,
+    ) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "set_thinking_level", "level": level, "scope": scope}),
+            true,
+        )
+        .await
+    }
+    pub async fn cycle_thinking_level(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "cycle_thinking_level"}), true)
+            .await
+    }
+    pub async fn get_available_thinking_levels(&self) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "get_available_thinking_levels"}),
+            true,
+        )
+        .await
+    }
+    pub async fn set_fast_mode(&self, enabled: bool) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "set_fast_mode", "enabled": enabled}),
+            true,
+        )
+        .await
+    }
+    pub async fn get_fast_mode(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "get_fast_mode"}), true)
+            .await
+    }
+    pub async fn set_steering_mode(&self, mode: &str) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "set_steering_mode", "mode": mode}),
+            true,
+        )
+        .await
+    }
+    pub async fn set_follow_up_mode(&self, mode: &str) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "set_follow_up_mode", "mode": mode}),
+            true,
+        )
+        .await
+    }
+    pub async fn set_auto_compaction(&self, enabled: bool) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "set_auto_compaction", "enabled": enabled}),
+            true,
+        )
+        .await
+    }
+    pub async fn set_auto_retry(&self, enabled: bool) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "set_auto_retry", "enabled": enabled}),
+            true,
+        )
+        .await
+    }
+    pub async fn set_favorite_models(&self, models: Value) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "set_favorite_models", "models": models}),
+            true,
+        )
+        .await
+    }
+    pub async fn set_scoped_models(&self, models: Value) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "set_scoped_models", "models": models}),
+            true,
+        )
+        .await
+    }
+    /// Release a held wake on the routed session (senpi `resumeSession`).
+    pub async fn resume_session(&self) -> RpcClientResult<()> {
+        self.request_value(serde_json::json!({"type": "resume_session"}), true)
+            .await
+            .map(|_| ())
+    }
+    /// Report that the user started typing a draft, so a first-activity prompt-cache prewarm can run (senpi#3859).
+    pub async fn record_draft_activity(&self) -> RpcClientResult<()> {
+        self.request_value(
+            serde_json::json!({"type": "record_user_activity", "kind": "draft"}),
+            true,
+        )
+        .await
+        .map(|_| ())
+    }
+    pub async fn set_session_name(&self, name: &str) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "set_session_name", "name": name}),
+            true,
+        )
+        .await
+    }
+    pub async fn reload(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "reload"}), true)
+            .await
+    }
+    pub async fn check_reload_veto(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "check_reload_veto"}), true)
+            .await
+    }
+    pub async fn compact(&self, custom_instructions: Option<&str>) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "compact", "customInstructions": custom_instructions}),
+            true,
+        )
+        .await
+    }
+    pub async fn navigate_tree(
+        &self,
+        target_id: &str,
+        mut options: Value,
+    ) -> RpcClientResult<Value> {
+        options["type"] = "navigate_tree".into();
+        options["targetId"] = target_id.into();
+        self.request_value(options, true).await
+    }
+    pub async fn edit_assistant_message(
+        &self,
+        entry_id: &str,
+        text: &str,
+        mut options: Value,
+    ) -> RpcClientResult<Value> {
+        options["type"] = "edit_assistant_message".into();
+        options["entryId"] = entry_id.into();
+        options["text"] = text.into();
+        self.request_value(options, true).await
+    }
+    pub async fn edit_user_message(
+        &self,
+        entry_id: &str,
+        text: &str,
+        mut options: Value,
+    ) -> RpcClientResult<Value> {
+        options["type"] = "edit_user_message".into();
+        options["entryId"] = entry_id.into();
+        options["text"] = text.into();
+        self.request_value(options, true).await
+    }
+    pub async fn bash(&self, command: &str, mut options: Value) -> RpcClientResult<Value> {
+        options["type"] = "bash".into();
+        options["command"] = command.into();
+        self.request_value(options, true).await
+    }
+    pub async fn cleanup_bash_output(&self, path: &str) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "cleanup_bash_output", "path": path}),
+            true,
+        )
+        .await
+    }
+    pub async fn export_jsonl(&self, output_path: Option<&str>) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "export_jsonl", "outputPath": output_path}),
+            true,
+        )
+        .await
+    }
+    pub async fn export_html(
+        &self,
+        output_path: Option<&str>,
+        theme_name: Option<&str>,
+    ) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "export_html", "outputPath": output_path, "themeName": theme_name}), true).await
+    }
 
     /// Wait for `agent_settled`, bounded by `timeout`.
     pub async fn wait_for_idle(&self, timeout: std::time::Duration) -> RpcClientResult<()> {
@@ -616,34 +1426,61 @@ impl RpcClient {
         }));
         match tokio::time::timeout(timeout, self.wait_until(settled)).await {
             Ok(result) => result,
-            Err(_) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Timeout waiting for agent to become idle").into()),
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Timeout waiting for agent to become idle",
+            )
+            .into()),
         }
     }
 
     /// Collect agent events until `agent_settled`, dropping connection-level records.
-    pub async fn collect_events(&self, timeout: std::time::Duration) -> RpcClientResult<Vec<Value>> {
+    pub async fn collect_events(
+        &self,
+        timeout: std::time::Duration,
+    ) -> RpcClientResult<Vec<Value>> {
         match tokio::time::timeout(timeout, self.collect_events_inner()).await {
             Ok(result) => result,
-            Err(_) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Timeout collecting events").into()),
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Timeout collecting events",
+            )
+            .into()),
         }
     }
 
     /// Send a prompt and return every event up to settle.
-    pub async fn prompt_and_wait(&self, message: &str, images: Option<Value>, timeout: std::time::Duration) -> RpcClientResult<Vec<Value>> {
+    pub async fn prompt_and_wait(
+        &self,
+        message: &str,
+        images: Option<Value>,
+        timeout: std::time::Duration,
+    ) -> RpcClientResult<Vec<Value>> {
         match tokio::time::timeout(timeout, self.prompt_and_wait_inner(message, images)).await {
             Ok(result) => result,
-            Err(_) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Timeout collecting events").into()),
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Timeout collecting events",
+            )
+            .into()),
         }
     }
 
-    async fn wait_until(&self, settled: std::sync::Arc<std::sync::atomic::AtomicBool>) -> RpcClientResult<()> {
+    async fn wait_until(
+        &self,
+        settled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> RpcClientResult<()> {
         loop {
             let notified = std::pin::pin!(self.inner.notify.notified());
             if settled.load(std::sync::atomic::Ordering::SeqCst) {
                 return Ok(());
             }
             if self.inner.closed.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "RPC transport is gone").into());
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "RPC transport is gone",
+                )
+                .into());
             }
             notified.await;
         }
@@ -653,38 +1490,70 @@ impl RpcClient {
         let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
         let captured = recorded.clone();
         let _subscription = self.on_event(std::sync::Arc::new(move |event| {
-            captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone());
+            captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event.clone());
         }));
         loop {
             let notified = std::pin::pin!(self.inner.notify.notified());
-            if let Some(events) = fold_collected(&recorded.lock().unwrap_or_else(std::sync::PoisonError::into_inner)) {
+            if let Some(events) = fold_collected(
+                &recorded
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ) {
                 return Ok(events);
             }
             if self.inner.closed.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "RPC transport is gone").into());
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "RPC transport is gone",
+                )
+                .into());
             }
             notified.await;
         }
     }
 
-    async fn prompt_and_wait_inner(&self, message: &str, images: Option<Value>) -> RpcClientResult<Vec<Value>> {
+    async fn prompt_and_wait_inner(
+        &self,
+        message: &str,
+        images: Option<Value>,
+    ) -> RpcClientResult<Vec<Value>> {
         let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(u64, Value)>::new()));
         let seq = self.inner.dispatch_seq.clone();
         let captured = recorded.clone();
         let _subscription = self.on_event(std::sync::Arc::new(move |event| {
             let n = seq.load(std::sync::atomic::Ordering::SeqCst);
-            captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((n, event.clone()));
+            captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((n, event.clone()));
         }));
-        let (response, mark) = self.request_marked(serde_json::json!({"type": "prompt", "message": message, "images": images}), true).await?;
+        let (response, mark) = self
+            .request_marked(
+                serde_json::json!({"type": "prompt", "message": message, "images": images}),
+                true,
+            )
+            .await?;
         get_data(&response)?;
         loop {
             let notified = std::pin::pin!(self.inner.notify.notified());
-            let (events, settled) = fold_prompt_events(&recorded.lock().unwrap_or_else(std::sync::PoisonError::into_inner), mark);
+            let (events, settled) = fold_prompt_events(
+                &recorded
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                mark,
+            );
             if settled {
                 return Ok(events);
             }
             if self.inner.closed.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "RPC transport is gone").into());
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "RPC transport is gone",
+                )
+                .into());
             }
             notified.await;
         }
@@ -692,8 +1561,14 @@ impl RpcClient {
 }
 
 fn dispatch_event(inner: &RpcMux, event: &Value) {
-    inner.dispatch_seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let listeners = inner.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    inner
+        .dispatch_seq
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let listeners = inner
+        .listeners
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     for (_, listener) in listeners {
         listener(event);
     }
@@ -702,10 +1577,16 @@ fn dispatch_event(inner: &RpcMux, event: &Value) {
 
 #[cfg(unix)]
 fn on_line(inner: &RpcMux, line: &str) {
-    let Ok(value) = serde_json::from_str::<Value>(line) else { return };
+    let Ok(value) = serde_json::from_str::<Value>(line) else {
+        return;
+    };
     if value.get("type").and_then(Value::as_str) == Some("response") {
         if let Some(id) = value.get("id").and_then(Value::as_str)
-            && let Some(tx) = inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(id)
+            && let Some(tx) = inner
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(id)
         {
             let seq = inner.dispatch_seq.load(std::sync::atomic::Ordering::SeqCst);
             let _ = tx.send(Ok((value, seq)));
@@ -713,7 +1594,10 @@ fn on_line(inner: &RpcMux, line: &str) {
         return;
     }
     let frame = {
-        let mut frames = inner.frames.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut frames = inner
+            .frames
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         frames.handle_line(line)
     };
     if let ClientFrame::Event(event) = frame {
@@ -760,16 +1644,32 @@ fn skip_stream_event(event: &Value) -> bool {
     is_provider_account_event(event)
         || matches!(
             event.get("type").and_then(Value::as_str),
-            Some("extension_event" | "bash_start" | "bash_end" | "extension_ui_request" | "session_replaced" | "session_parked")
+            Some(
+                "extension_event"
+                    | "bash_start"
+                    | "bash_end"
+                    | "extension_ui_request"
+                    | "session_replaced"
+                    | "session_parked"
+            )
         )
 }
 
 #[cfg(unix)]
-fn try_write_line(socket: &mut RpcWriteHalf, line: &[u8], offset: &mut usize) -> std::io::Result<bool> {
+fn try_write_line(
+    socket: &mut RpcWriteHalf,
+    line: &[u8],
+    offset: &mut usize,
+) -> std::io::Result<bool> {
     use std::io::Write;
     while *offset < line.len() {
         match socket.write(&line[*offset..]) {
-            Ok(0) => return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "RPC transport is gone")),
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "RPC transport is gone",
+                ));
+            }
             Ok(count) => *offset += count,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
@@ -780,7 +1680,10 @@ fn try_write_line(socket: &mut RpcWriteHalf, line: &[u8], offset: &mut usize) ->
 }
 
 #[cfg(unix)]
-fn spawn_reader(inner: std::sync::Arc<RpcMux>, mut read: tokio::net::UnixStream) -> tokio::task::JoinHandle<()> {
+fn spawn_reader(
+    inner: std::sync::Arc<RpcMux>,
+    mut read: tokio::net::UnixStream,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         use tokio::io::AsyncReadExt;
         let mut reader = crate::jsonl::JsonlLineReader::default();
@@ -801,189 +1704,461 @@ fn spawn_reader(inner: std::sync::Arc<RpcMux>, mut read: tokio::net::UnixStream)
                 on_line(&inner, &line);
             }
         }
-        inner.fail_pending(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "RPC transport is gone"));
+        inner.fail_pending(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "RPC transport is gone",
+        ));
         inner.mark_closed();
     })
 }
 
-
-#[derive(Default)]pub struct RpcClientFrames{request_id:u64,pending:BTreeSet<String>,pub session_id:Option<String>,pub pending_open_session:bool,events:VecDeque<(String,Value,usize)>,event_bytes:usize}
-impl RpcClientFrames{
-    pub fn command(&mut self,mut command:Value,route:bool,expect_response:bool)->Value{
-        let own_id=matches!(command["type"].as_str(),Some("extension_ui_response"|"extension_ui_progress")).then(||command["id"].as_str().map(str::to_owned)).flatten();
-        let id=own_id.clone().unwrap_or_else(||{self.request_id+=1;format!("req_{}",self.request_id)});
-        if route&&command.get("sessionId").is_none()&&let Some(session)=&self.session_id{command["sessionId"]=session.clone().into();}
-        if own_id.is_none(){command["id"]=id.clone().into();}
-        if expect_response{self.pending.insert(id);}
+#[derive(Default)]
+pub struct RpcClientFrames {
+    request_id: u64,
+    pending: BTreeSet<String>,
+    pub session_id: Option<String>,
+    pub pending_open_session: bool,
+    events: VecDeque<(String, Value, usize)>,
+    event_bytes: usize,
+}
+impl RpcClientFrames {
+    pub fn command(&mut self, mut command: Value, route: bool, expect_response: bool) -> Value {
+        let own_id = matches!(
+            command["type"].as_str(),
+            Some("extension_ui_response" | "extension_ui_progress")
+        )
+        .then(|| command["id"].as_str().map(str::to_owned))
+        .flatten();
+        let id = own_id.clone().unwrap_or_else(|| {
+            self.request_id += 1;
+            format!("req_{}", self.request_id)
+        });
+        if route
+            && command.get("sessionId").is_none()
+            && let Some(session) = &self.session_id
+        {
+            command["sessionId"] = session.clone().into();
+        }
+        if own_id.is_none() {
+            command["id"] = id.clone().into();
+        }
+        if expect_response {
+            self.pending.insert(id);
+        }
         command
     }
-    pub fn handle_line(&mut self,line:&str)->ClientFrame{
-        let Ok(value)=serde_json::from_str::<Value>(line)else{return ClientFrame::Ignored;};
-        if value["type"]=="response"&&let Some(id)=value["id"].as_str()&&self.pending.remove(id){return ClientFrame::Response(value);}
-        if let Some(session)=value["sessionId"].as_str()&&Some(session)!=self.session_id.as_deref(){
-            if self.pending_open_session{let bytes=line.len();self.events.push_back((session.into(),value,bytes));self.event_bytes+=bytes;while self.events.len()>MAX_PENDING_SESSION_EVENTS||self.event_bytes>MAX_PENDING_SESSION_EVENT_BYTES{if let Some((_,_,bytes))=self.events.pop_front(){self.event_bytes-=bytes;}}}
+    pub fn handle_line(&mut self, line: &str) -> ClientFrame {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            return ClientFrame::Ignored;
+        };
+        if value["type"] == "response"
+            && let Some(id) = value["id"].as_str()
+            && self.pending.remove(id)
+        {
+            return ClientFrame::Response(value);
+        }
+        if let Some(session) = value["sessionId"].as_str()
+            && Some(session) != self.session_id.as_deref()
+        {
+            if self.pending_open_session {
+                let bytes = line.len();
+                self.events.push_back((session.into(), value, bytes));
+                self.event_bytes += bytes;
+                while self.events.len() > MAX_PENDING_SESSION_EVENTS
+                    || self.event_bytes > MAX_PENDING_SESSION_EVENT_BYTES
+                {
+                    if let Some((_, _, bytes)) = self.events.pop_front() {
+                        self.event_bytes -= bytes;
+                    }
+                }
+            }
             return ClientFrame::Ignored;
         }
         ClientFrame::Event(value)
     }
-    pub fn flush_pending_session_events(&mut self)->Vec<Value>{self.event_bytes=0;self.events.drain(..).filter(|(session,_,_)|Some(session)==self.session_id.as_ref()).map(|(_,value,_)|value).collect()}
-    pub fn reject_pending(&mut self)->Vec<String>{std::mem::take(&mut self.pending).into_iter().collect()}
+    pub fn flush_pending_session_events(&mut self) -> Vec<Value> {
+        self.event_bytes = 0;
+        self.events
+            .drain(..)
+            .filter(|(session, _, _)| Some(session) == self.session_id.as_ref())
+            .map(|(_, value, _)| value)
+            .collect()
+    }
+    pub fn reject_pending(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending).into_iter().collect()
+    }
 }
-#[cfg(test)]mod tests{
-    use super::*;use serde_json::json;
-    #[test]fn ui_reply_keeps_host_id_and_session_route_is_not_overwritten(){let mut client=RpcClientFrames{session_id:Some("s".into()),..Default::default()};let reply=client.command(json!({"type":"extension_ui_response","id":"ui"}),true,false);assert_eq!(reply["id"],"ui");assert_eq!(reply["sessionId"],"s");let command=client.command(json!({"type":"abort","sessionId":"other"}),true,true);assert_eq!(command["id"],"req_1");assert_eq!(command["sessionId"],"other");assert!(matches!(client.handle_line(r#"{"type":"response","id":"req_1","success":true}"#),ClientFrame::Response(_)));}
-    #[test]fn startup_events_replay_only_for_selected_lease(){let mut client=RpcClientFrames{pending_open_session:true,..Default::default()};client.handle_line(r#"{"type":"agent_start","sessionId":"s"}"#);client.handle_line(r#"{"type":"agent_start","sessionId":"other"}"#);client.session_id=Some("s".into());assert_eq!(client.flush_pending_session_events().len(),1);assert!(client.flush_pending_session_events().is_empty());}
-    #[test]fn retention_drops_oldest_at_record_budget(){let mut client=RpcClientFrames{pending_open_session:true,..Default::default()};for index in 0..513{client.handle_line(&json!({"sessionId":"s","index":index}).to_string());}client.session_id=Some("s".into());let events=client.flush_pending_session_events();assert_eq!(events.len(),512);assert_eq!(events[0]["index"],1);}
-    #[test]fn startup_retention_counts_utf8_bytes_and_releases_debt_after_replay(){
-        let mut client=RpcClientFrames{pending_open_session:true,..Default::default()};
-        let payload="\u{1f600}".repeat(MAX_PENDING_SESSION_EVENT_BYTES/8);
-        let first=json!({"sessionId":"s","index":1,"payload":payload}).to_string();
-        let second=json!({"sessionId":"s","index":2,"payload":payload}).to_string();
-        assert!(first.len()+second.len()>MAX_PENDING_SESSION_EVENT_BYTES);
-        assert!(first.chars().count()+second.chars().count()<MAX_PENDING_SESSION_EVENT_BYTES);
-        assert_eq!(client.handle_line(&first),ClientFrame::Ignored);
-        assert_eq!(client.handle_line(&second),ClientFrame::Ignored);
-        client.session_id=Some("s".into());
-        let events=client.flush_pending_session_events();
-        assert_eq!(events.len(),1);assert_eq!(events[0]["index"],2);
-        assert_eq!(client.event_bytes,0);assert!(client.events.is_empty());
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn ui_reply_keeps_host_id_and_session_route_is_not_overwritten() {
+        let mut client = RpcClientFrames {
+            session_id: Some("s".into()),
+            ..Default::default()
+        };
+        let reply = client.command(
+            json!({"type":"extension_ui_response","id":"ui"}),
+            true,
+            false,
+        );
+        assert_eq!(reply["id"], "ui");
+        assert_eq!(reply["sessionId"], "s");
+        let command = client.command(json!({"type":"abort","sessionId":"other"}), true, true);
+        assert_eq!(command["id"], "req_1");
+        assert_eq!(command["sessionId"], "other");
+        assert!(matches!(
+            client.handle_line(r#"{"type":"response","id":"req_1","success":true}"#),
+            ClientFrame::Response(_)
+        ));
     }
-    #[test]fn client_event_union_classifies_known_records_only(){
+    #[test]
+    fn startup_events_replay_only_for_selected_lease() {
+        let mut client = RpcClientFrames {
+            pending_open_session: true,
+            ..Default::default()
+        };
+        client.handle_line(r#"{"type":"agent_start","sessionId":"s"}"#);
+        client.handle_line(r#"{"type":"agent_start","sessionId":"other"}"#);
+        client.session_id = Some("s".into());
+        assert_eq!(client.flush_pending_session_events().len(), 1);
+        assert!(client.flush_pending_session_events().is_empty());
+    }
+    #[test]
+    fn retention_drops_oldest_at_record_budget() {
+        let mut client = RpcClientFrames {
+            pending_open_session: true,
+            ..Default::default()
+        };
+        for index in 0..513 {
+            client.handle_line(&json!({"sessionId":"s","index":index}).to_string());
+        }
+        client.session_id = Some("s".into());
+        let events = client.flush_pending_session_events();
+        assert_eq!(events.len(), 512);
+        assert_eq!(events[0]["index"], 1);
+    }
+    #[test]
+    fn startup_retention_counts_utf8_bytes_and_releases_debt_after_replay() {
+        let mut client = RpcClientFrames {
+            pending_open_session: true,
+            ..Default::default()
+        };
+        let payload = "\u{1f600}".repeat(MAX_PENDING_SESSION_EVENT_BYTES / 8);
+        let first = json!({"sessionId":"s","index":1,"payload":payload}).to_string();
+        let second = json!({"sessionId":"s","index":2,"payload":payload}).to_string();
+        assert!(first.len() + second.len() > MAX_PENDING_SESSION_EVENT_BYTES);
+        assert!(first.chars().count() + second.chars().count() < MAX_PENDING_SESSION_EVENT_BYTES);
+        assert_eq!(client.handle_line(&first), ClientFrame::Ignored);
+        assert_eq!(client.handle_line(&second), ClientFrame::Ignored);
+        client.session_id = Some("s".into());
+        let events = client.flush_pending_session_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["index"], 2);
+        assert_eq!(client.event_bytes, 0);
+        assert!(client.events.is_empty());
+    }
+    #[test]
+    fn client_event_union_classifies_known_records_only() {
         use RpcClientEventKind as K;
-        for (kind, expected) in [("agent_start",K::AgentStart),("agent_settled",K::AgentSettled),("message_update",K::MessageUpdate),("session_replaced",K::SessionReplaced),("session_parked",K::SessionParked),("extension_ui_request",K::ExtensionUiRequest),("bash_execution_update",K::BashExecutionUpdate),("queue_update",K::QueueUpdate),("session_settings_changed",K::SessionSettingsChanged),("thinking_level_changed",K::ThinkingLevelChanged)]{assert_eq!(classify_rpc_client_event(&json!({"type":kind})),Some(expected));}
-        assert_eq!(classify_rpc_client_event(&json!({"type":"response","success":true})),None);assert_eq!(classify_rpc_client_event(&json!({"type":"some_future_record"})),None);assert!(is_provider_account_event(&json!({"type":"account_failover"})));assert!(!is_provider_account_event(&json!({"type":"agent_start"})));
+        for (kind, expected) in [
+            ("agent_start", K::AgentStart),
+            ("agent_settled", K::AgentSettled),
+            ("message_update", K::MessageUpdate),
+            ("session_replaced", K::SessionReplaced),
+            ("session_parked", K::SessionParked),
+            ("extension_ui_request", K::ExtensionUiRequest),
+            ("bash_execution_update", K::BashExecutionUpdate),
+            ("queue_update", K::QueueUpdate),
+            ("session_settings_changed", K::SessionSettingsChanged),
+            ("thinking_level_changed", K::ThinkingLevelChanged),
+        ] {
+            assert_eq!(
+                classify_rpc_client_event(&json!({"type":kind})),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            classify_rpc_client_event(&json!({"type":"response","success":true})),
+            None
+        );
+        assert_eq!(
+            classify_rpc_client_event(&json!({"type":"some_future_record"})),
+            None
+        );
+        assert!(is_provider_account_event(
+            &json!({"type":"account_failover"})
+        ));
+        assert!(!is_provider_account_event(&json!({"type":"agent_start"})));
     }
-    #[test]fn get_data_surfaces_the_typed_refusal_and_success_data(){
+    #[test]
+    fn get_data_surfaces_the_typed_refusal_and_success_data() {
         let refused=get_data(&json!({"type":"response","success":false,"error":"stale","errorCode":"stale_leaf","errorData":{"leafId":"one"}})).unwrap_err();
-        assert_eq!(refused.error_code(),Some("stale_leaf"));assert!(!refused.is_transport_gone());
-        let data=get_data(&json!({"type":"response","success":true,"data":{"level":"high"}})).unwrap();assert_eq!(data["level"],"high");assert_eq!(get_data(&json!({"type":"response","success":true})).unwrap(),Value::Null);
+        assert_eq!(refused.error_code(), Some("stale_leaf"));
+        assert!(!refused.is_transport_gone());
+        let data =
+            get_data(&json!({"type":"response","success":true,"data":{"level":"high"}})).unwrap();
+        assert_eq!(data["level"], "high");
+        assert_eq!(
+            get_data(&json!({"type":"response","success":true})).unwrap(),
+            Value::Null
+        );
     }
-    #[test]fn transport_gone_and_default_endpoint(){
-        assert!(is_transport_gone_error(&std::io::Error::new(std::io::ErrorKind::BrokenPipe,"RPC socket closed")));assert!(!is_transport_gone_error(&std::io::Error::new(std::io::ErrorKind::InvalidInput,"bad")));
-        assert_eq!(default_rpc_socket_path(std::path::Path::new("/agent")),std::path::Path::new("/agent/rpc/rpc.sock"));
+    #[test]
+    fn transport_gone_and_default_endpoint() {
+        assert!(is_transport_gone_error(&std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "RPC socket closed"
+        )));
+        assert!(!is_transport_gone_error(&std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "bad"
+        )));
+        assert_eq!(
+            default_rpc_socket_path(std::path::Path::new("/agent")),
+            std::path::Path::new("/agent/rpc/rpc.sock")
+        );
         assert!(RpcClientError::Transport(std::io::Error::other("x")).is_transport_gone());
     }
     #[cfg(unix)]
-    #[tokio::test]async fn request_value_returns_data_and_dispatches_events_to_listeners(){
-        use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
-        let (client_stream,host)=tokio::net::UnixStream::pair().unwrap();
-        let client=RpcClient::from_stream(client_stream,RpcClientOptions::default());
-        let seen=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let captured=seen.clone();
-        let _subscription=client.on_event(std::sync::Arc::new(move|event|captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone())));
-        let serve=async move{
-            let (read,mut write)=host.into_split();let mut lines=BufReader::new(read).lines();
-            let request:Value=serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();assert_eq!(request["type"],"get_state");
-            let id=request["id"].as_str().unwrap();
-            write.write_all(format!("{}\n",serde_json::json!({"type":"agent_start"})).as_bytes()).await.unwrap();
+    #[tokio::test]
+    async fn request_value_returns_data_and_dispatches_events_to_listeners() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (client_stream, host) = tokio::net::UnixStream::pair().unwrap();
+        let client = RpcClient::from_stream(client_stream, RpcClientOptions::default());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = seen.clone();
+        let _subscription = client.on_event(std::sync::Arc::new(move |event| {
+            captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event.clone())
+        }));
+        let serve = async move {
+            let (read, mut write) = host.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let request: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(request["type"], "get_state");
+            let id = request["id"].as_str().unwrap();
+            write
+                .write_all(format!("{}\n", serde_json::json!({"type":"agent_start"})).as_bytes())
+                .await
+                .unwrap();
             write.write_all(format!("{}\n",serde_json::json!({"type":"response","id":id,"success":true,"data":{"isStreaming":false}})).as_bytes()).await.unwrap();
         };
-        let (state,()) = tokio::join!(client.get_state(),serve);
-        assert_eq!(state.unwrap()["isStreaming"],false);
-        assert_eq!(seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(),1);
-        assert_eq!(classify_rpc_client_event(&seen.lock().unwrap()[0]),Some(RpcClientEventKind::AgentStart));
+        let (state, ()) = tokio::join!(client.get_state(), serve);
+        assert_eq!(state.unwrap()["isStreaming"], false);
+        assert_eq!(
+            seen.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            1
+        );
+        assert_eq!(
+            classify_rpc_client_event(&seen.lock().unwrap()[0]),
+            Some(RpcClientEventKind::AgentStart)
+        );
     }
     #[cfg(unix)]
-    #[tokio::test]async fn unsubscribe_stops_delivery_and_stopped_client_reports_transport_gone(){
-        let (client_stream,_host)=tokio::net::UnixStream::pair().unwrap();
-        let client=RpcClient::from_stream(client_stream,RpcClientOptions::default());
-        let seen=std::sync::Arc::new(std::sync::Mutex::new(0usize));
-        let counter=seen.clone();
-        let subscription=client.on_event(std::sync::Arc::new(move|_|{*counter.lock().unwrap_or_else(std::sync::PoisonError::into_inner)+=1;}));
+    #[tokio::test]
+    async fn unsubscribe_stops_delivery_and_stopped_client_reports_transport_gone() {
+        let (client_stream, _host) = tokio::net::UnixStream::pair().unwrap();
+        let client = RpcClient::from_stream(client_stream, RpcClientOptions::default());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let counter = seen.clone();
+        let subscription = client.on_event(std::sync::Arc::new(move |_| {
+            *counter
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        }));
         drop(subscription);
         client.stop().await;
-        assert_eq!(*seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner),0);
+        assert_eq!(
+            *seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            0
+        );
         assert!(client.get_state().await.unwrap_err().is_transport_gone());
     }
     #[cfg(unix)]
-    #[tokio::test]async fn prompt_and_wait_propagates_a_refused_prompt_as_a_command_error(){
-        use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
-        let (client_stream,host)=tokio::net::UnixStream::pair().unwrap();
-        let client=RpcClient::from_stream(client_stream,RpcClientOptions::default());
-        let (release_tx,release_rx)=tokio::sync::oneshot::channel::<()>();
-        let serve=tokio::spawn(async move{
-            let (read,mut write)=host.into_split();let mut lines=BufReader::new(read).lines();
-            let request:Value=serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-            assert_eq!(request["type"],"prompt");
-            let id=request["id"].as_str().unwrap().to_owned();
-            write.write_all(format!("{}\n",serde_json::json!({"type":"agent_start"})).as_bytes()).await.unwrap();
+    #[tokio::test]
+    async fn prompt_and_wait_propagates_a_refused_prompt_as_a_command_error() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (client_stream, host) = tokio::net::UnixStream::pair().unwrap();
+        let client = RpcClient::from_stream(client_stream, RpcClientOptions::default());
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let serve = tokio::spawn(async move {
+            let (read, mut write) = host.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let request: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(request["type"], "prompt");
+            let id = request["id"].as_str().unwrap().to_owned();
+            write
+                .write_all(format!("{}\n", serde_json::json!({"type":"agent_start"})).as_bytes())
+                .await
+                .unwrap();
             write.write_all(format!("{}\n",serde_json::json!({"type":"response","id":id,"success":false,"error":"prompt refused","errorCode":"busy"})).as_bytes()).await.unwrap();
-            let _=release_rx.await;
+            let _ = release_rx.await;
         });
-        let error=client.prompt_and_wait("hi",None,std::time::Duration::from_secs(5)).await.unwrap_err();
-        let _=release_tx.send(());
-        tokio::time::timeout(std::time::Duration::from_secs(5),serve).await.expect("the peer task is released and joined").unwrap();
-        assert!(matches!(&error,RpcClientError::Command(command) if command.message=="prompt refused"&&command.error_code.as_deref()==Some("busy")),"unexpected error: {error:?}");
+        let error = client
+            .prompt_and_wait("hi", None, std::time::Duration::from_secs(5))
+            .await
+            .unwrap_err();
+        let _ = release_tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(5), serve)
+            .await
+            .expect("the peer task is released and joined")
+            .unwrap();
+        assert!(
+            matches!(&error,RpcClientError::Command(command) if command.message=="prompt refused"&&command.error_code.as_deref()==Some("busy")),
+            "unexpected error: {error:?}"
+        );
     }
     #[cfg(unix)]
-    #[tokio::test]async fn prompt_and_wait_returns_the_events_up_to_settle_after_a_successful_response(){
-        use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
-        let (client_stream,host)=tokio::net::UnixStream::pair().unwrap();
-        let client=RpcClient::from_stream(client_stream,RpcClientOptions::default());
-        let (release_tx,release_rx)=tokio::sync::oneshot::channel::<()>();
-        let serve=tokio::spawn(async move{
-            let (read,mut write)=host.into_split();let mut lines=BufReader::new(read).lines();
-            let request:Value=serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-            let id=request["id"].as_str().unwrap().to_owned();
+    #[tokio::test]
+    async fn prompt_and_wait_returns_the_events_up_to_settle_after_a_successful_response() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (client_stream, host) = tokio::net::UnixStream::pair().unwrap();
+        let client = RpcClient::from_stream(client_stream, RpcClientOptions::default());
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let serve = tokio::spawn(async move {
+            let (read, mut write) = host.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let request: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            let id = request["id"].as_str().unwrap().to_owned();
             write.write_all(format!("{}\n",serde_json::json!({"type":"response","id":id,"success":true,"data":{"disposition":"started"}})).as_bytes()).await.unwrap();
-            write.write_all(format!("{}\n",serde_json::json!({"type":"agent_start"})).as_bytes()).await.unwrap();
-            write.write_all(format!("{}\n",serde_json::json!({"type":"agent_settled"})).as_bytes()).await.unwrap();
-            let _=release_rx.await;
+            write
+                .write_all(format!("{}\n", serde_json::json!({"type":"agent_start"})).as_bytes())
+                .await
+                .unwrap();
+            write
+                .write_all(format!("{}\n", serde_json::json!({"type":"agent_settled"})).as_bytes())
+                .await
+                .unwrap();
+            let _ = release_rx.await;
         });
-        let events=client.prompt_and_wait("hi",None,std::time::Duration::from_secs(5)).await.unwrap();
-        let _=release_tx.send(());
-        tokio::time::timeout(std::time::Duration::from_secs(5),serve).await.expect("the peer task is released and joined").unwrap();
-        let kinds:Vec<&str>=events.iter().map(|event|event["type"].as_str().unwrap_or_default()).collect();
-        assert_eq!(kinds,vec!["agent_start","agent_settled"]);
+        let events = client
+            .prompt_and_wait("hi", None, std::time::Duration::from_secs(5))
+            .await
+            .unwrap();
+        let _ = release_tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(5), serve)
+            .await
+            .expect("the peer task is released and joined")
+            .unwrap();
+        let kinds: Vec<&str> = events
+            .iter()
+            .map(|event| event["type"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(kinds, vec!["agent_start", "agent_settled"]);
     }
     #[cfg(unix)]
-    #[tokio::test]async fn prompt_and_wait_retains_events_that_arrive_before_a_settling_response(){
-        use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
-        let (client_stream,host)=tokio::net::UnixStream::pair().unwrap();
-        let client=RpcClient::from_stream(client_stream,RpcClientOptions::default());
-        let (release_tx,release_rx)=tokio::sync::oneshot::channel::<()>();
-        let serve=tokio::spawn(async move{
-            let (read,mut write)=host.into_split();let mut lines=BufReader::new(read).lines();
-            let request:Value=serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-            let id=request["id"].as_str().unwrap().to_owned();
-            write.write_all(format!("{}\n",serde_json::json!({"type":"agent_start"})).as_bytes()).await.unwrap();
-            write.write_all(format!("{}\n",serde_json::json!({"type":"agent_settled"})).as_bytes()).await.unwrap();
+    #[tokio::test]
+    async fn prompt_and_wait_retains_events_that_arrive_before_a_settling_response() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (client_stream, host) = tokio::net::UnixStream::pair().unwrap();
+        let client = RpcClient::from_stream(client_stream, RpcClientOptions::default());
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let serve = tokio::spawn(async move {
+            let (read, mut write) = host.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let request: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            let id = request["id"].as_str().unwrap().to_owned();
+            write
+                .write_all(format!("{}\n", serde_json::json!({"type":"agent_start"})).as_bytes())
+                .await
+                .unwrap();
+            write
+                .write_all(format!("{}\n", serde_json::json!({"type":"agent_settled"})).as_bytes())
+                .await
+                .unwrap();
             write.write_all(format!("{}\n",serde_json::json!({"type":"response","id":id,"success":true,"data":{"disposition":"started"}})).as_bytes()).await.unwrap();
-            write.write_all(format!("{}\n",serde_json::json!({"type":"agent_idle"})).as_bytes()).await.unwrap();
-            let _=release_rx.await;
+            write
+                .write_all(format!("{}\n", serde_json::json!({"type":"agent_idle"})).as_bytes())
+                .await
+                .unwrap();
+            let _ = release_rx.await;
         });
-        let events=client.prompt_and_wait("hi",None,std::time::Duration::from_secs(5)).await.unwrap();
-        let _=release_tx.send(());
-        tokio::time::timeout(std::time::Duration::from_secs(5),serve).await.expect("the peer task is released and joined").unwrap();
-        let kinds:Vec<&str>=events.iter().map(|event|event["type"].as_str().unwrap_or_default()).collect();
-        assert_eq!(kinds,vec!["agent_start","agent_settled"],"pre-response events are retained and post-settle events are excluded");
+        let events = client
+            .prompt_and_wait("hi", None, std::time::Duration::from_secs(5))
+            .await
+            .unwrap();
+        let _ = release_tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(5), serve)
+            .await
+            .expect("the peer task is released and joined")
+            .unwrap();
+        let kinds: Vec<&str> = events
+            .iter()
+            .map(|event| event["type"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["agent_start", "agent_settled"],
+            "pre-response events are retained and post-settle events are excluded"
+        );
     }
     #[cfg(unix)]
-    #[tokio::test]async fn prompt_and_wait_delivers_classified_events_after_settlement_without_collecting_them(){
-        use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
-        let (client_stream,host)=tokio::net::UnixStream::pair().unwrap();
-        let client=RpcClient::from_stream(client_stream,RpcClientOptions::default());
-        let seen=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let captured=seen.clone();
-        let _subscription=client.on_event(std::sync::Arc::new(move|event|captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone())));
-        let (release_tx,release_rx)=tokio::sync::oneshot::channel::<()>();
-        let serve=tokio::spawn(async move{
-            let (read,mut write)=host.into_split();let mut lines=BufReader::new(read).lines();
-            let request:Value=serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-            let id=request["id"].as_str().unwrap().to_owned();
-            for record in [serde_json::json!({"type":"agent_settled"}),serde_json::json!({"type":"message_end"}),serde_json::json!({"type":"response","id":id,"success":true,"data":{"disposition":"started"}})]{
-                write.write_all(format!("{}\n",record).as_bytes()).await.unwrap();
+    #[tokio::test]
+    async fn prompt_and_wait_delivers_classified_events_after_settlement_without_collecting_them() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (client_stream, host) = tokio::net::UnixStream::pair().unwrap();
+        let client = RpcClient::from_stream(client_stream, RpcClientOptions::default());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = seen.clone();
+        let _subscription = client.on_event(std::sync::Arc::new(move |event| {
+            captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event.clone())
+        }));
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let serve = tokio::spawn(async move {
+            let (read, mut write) = host.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let request: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            let id = request["id"].as_str().unwrap().to_owned();
+            for record in [
+                serde_json::json!({"type":"agent_settled"}),
+                serde_json::json!({"type":"message_end"}),
+                serde_json::json!({"type":"response","id":id,"success":true,"data":{"disposition":"started"}}),
+            ] {
+                write
+                    .write_all(format!("{}\n", record).as_bytes())
+                    .await
+                    .unwrap();
             }
-            let _=release_rx.await;
+            let _ = release_rx.await;
         });
-        let events=client.prompt_and_wait("hi",None,std::time::Duration::from_secs(5)).await.unwrap();
-        let _=release_tx.send(());
-        tokio::time::timeout(std::time::Duration::from_secs(5),serve).await.expect("the peer task is released and joined").unwrap();
-        let kinds:Vec<&str>=events.iter().map(|event|event["type"].as_str().unwrap_or_default()).collect();
-        assert_eq!(kinds,vec!["agent_settled"]);
-        let seen=seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let listened:Vec<&str>=seen.iter().map(|event|event["type"].as_str().unwrap_or_default()).collect();
-        assert_eq!(listened,vec!["agent_settled","message_end"]);
+        let events = client
+            .prompt_and_wait("hi", None, std::time::Duration::from_secs(5))
+            .await
+            .unwrap();
+        let _ = release_tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(5), serve)
+            .await
+            .expect("the peer task is released and joined")
+            .unwrap();
+        let kinds: Vec<&str> = events
+            .iter()
+            .map(|event| event["type"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(kinds, vec!["agent_settled"]);
+        let seen = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let listened: Vec<&str> = seen
+            .iter()
+            .map(|event| event["type"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(listened, vec!["agent_settled", "message_end"]);
     }
 
     /// Two in-flight frames must stay intact when the socket buffer fills. Dropping the write
@@ -1007,9 +2182,15 @@ impl RpcClientFrames{
                 Err(error) => panic!("prefill failed: {error}"),
             }
         }
-        assert!(filled > 0, "the send buffer must fill so the frame write hits WouldBlock");
+        assert!(
+            filled > 0,
+            "the send buffer must fill so the frame write hits WouldBlock"
+        );
         let client_stream = tokio::net::UnixStream::from_std(std_client).expect("tokio client");
-        let client = std::sync::Arc::new(RpcClient::from_stream(client_stream, RpcClientOptions::default()));
+        let client = std::sync::Arc::new(RpcClient::from_stream(
+            client_stream,
+            RpcClientOptions::default(),
+        ));
         let payload_a = "A".repeat(128 * 1024);
         let payload_b = "B".repeat(128 * 1024);
         let left = client.clone();
@@ -1030,16 +2211,23 @@ impl RpcClientFrames{
         let (wrote_a, wrote_b, collected) = tokio::join!(write_a, write_b, read);
         wrote_a.expect("writer a").expect("frame a");
         wrote_b.expect("writer b").expect("frame b");
-        let start = collected.iter().position(|byte| *byte == b'{').expect("json frame");
+        let start = collected
+            .iter()
+            .position(|byte| *byte == b'{')
+            .expect("json frame");
         let text = std::str::from_utf8(&collected[start..]).expect("frame utf8");
         let frames: Vec<&str> = text.split('\n').filter(|line| !line.is_empty()).collect();
         assert_eq!(frames.len(), 2, "two intact lines, got {text}");
         let mut names = Vec::new();
         for frame in frames {
-            let value: Value = serde_json::from_str(frame).unwrap_or_else(|error| panic!("interleaved frame: {error}: {frame}"));
+            let value: Value = serde_json::from_str(frame)
+                .unwrap_or_else(|error| panic!("interleaved frame: {error}: {frame}"));
             let name = value["name"].as_str().expect("name");
             let first = name.as_bytes().first().copied().expect("payload");
-            assert!(name.bytes().all(|byte| byte == first), "mixed payload inside one frame");
+            assert!(
+                name.bytes().all(|byte| byte == first),
+                "mixed payload inside one frame"
+            );
             names.push(first);
         }
         names.sort_unstable();

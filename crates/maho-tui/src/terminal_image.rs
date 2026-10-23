@@ -5,16 +5,16 @@ use std::sync::{LazyLock, Mutex, RwLock};
 
 use crate::process_env::{self, Env};
 use crate::terminal_capabilities::{
-    self, detect_terminal_capabilities_in, CellDimensions, DetectedTerminalCapabilities,
-    ImageProtocol,
+    self, CellDimensions, DetectedTerminalCapabilities, ImageProbe, ImageProtocol,
+    detect_terminal_capabilities_in,
 };
-use crate::terminal_text::{sanitize_terminal_label, shorten_image_path, ImageDimensions};
-use crate::tmux_cursor_query::{exec_file_sync, TmuxExecFile};
+use crate::terminal_text::{ImageDimensions, sanitize_terminal_label, shorten_image_path};
+use crate::tmux_cursor_query::{TmuxExecFile, exec_file_sync};
 use crate::tmux_image_capability::{
-    decide_tmux_image_capability, parse_tmux_kitty_terminal_override, TmuxKittyPlacement,
-    TmuxKittyTerminalOverride, TmuxImageDecision,
+    TmuxImageDecision, TmuxKittyPlacement, TmuxKittyTerminalOverride, decide_tmux_image_capability,
+    parse_tmux_kitty_terminal_override,
 };
-use crate::tmux_image_probe::{probe_tmux_image_state, TmuxAllowPassthrough};
+use crate::tmux_image_probe::{TmuxAllowPassthrough, probe_tmux_image_state};
 
 const PROBE_TIMEOUT_MS: u64 = 250;
 const KITTY_PREFIX: &str = "\x1b_G";
@@ -46,6 +46,9 @@ pub struct TerminalCapabilities {
     pub hyperlinks: bool,
     pub tmux_passthrough: bool,
     pub kitty_unicode_placeholders: bool,
+    /// Set only while image support is unknown; the TUI must probe and call
+    /// [`set_probed_image_protocol`].
+    pub image_probe: Option<ImageProbe>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -116,6 +119,10 @@ struct RegisteredKittyImageMetadata {
     transmission_generation: u64,
 }
 
+/// Answer of the TUI's Kitty graphics probe, recorded once per process. It outlives the cached
+/// capabilities because focus events reset that cache and re-detect from the environment.
+static PROBED_IMAGE_PROTOCOL: Mutex<Option<ImageProtocol>> = Mutex::new(None);
+
 static CAPABILITY_STATE: LazyLock<RwLock<CapabilityCache>> =
     LazyLock::new(|| RwLock::new(CapabilityCache::default()));
 static CELL_DIMENSIONS: LazyLock<RwLock<CellDimensions>> = LazyLock::new(|| {
@@ -142,7 +149,8 @@ struct KittyRegistry {
 }
 
 fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
-    lock.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+    lock.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn write_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
@@ -151,7 +159,8 @@ fn write_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
 }
 
 fn mutex_lock<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    lock.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 pub fn get_cell_dimensions() -> CellDimensions {
@@ -208,7 +217,10 @@ fn detect_capabilities_from_environment(
         .get("TERMINAL_EMULATOR")
         .map(|v| v.to_lowercase())
         .unwrap_or_default();
-    let term = env.get("TERM").map(|v| v.to_lowercase()).unwrap_or_default();
+    let term = env
+        .get("TERM")
+        .map(|v| v.to_lowercase())
+        .unwrap_or_default();
     let color_term = env
         .get("COLORTERM")
         .map(|v| v.to_lowercase())
@@ -224,6 +236,7 @@ fn detect_capabilities_from_environment(
             tmux_passthrough: None,
             kitty_unicode_placeholders: None,
             cell_dimensions: None,
+            image_probe: None,
         }
     };
 
@@ -273,6 +286,16 @@ fn detect_capabilities_from_environment(
         return plain(None, true, false);
     }
 
+    // herdr panes: the environment says nothing about the outer terminal's graphics support, so
+    // detection defers to the TUI's Kitty graphics probe and latches its answer.
+    if term_program == "herdr" || env.get("HERDR_ENV").map(String::as_str) == Some("1") {
+        let probed = *mutex_lock(&PROBED_IMAGE_PROTOCOL);
+        return DetectedTerminalCapabilities {
+            image_probe: probed.is_none().then_some(ImageProbe::Kitty),
+            ..plain(probed, has_true_color_hint, false)
+        };
+    }
+
     if is_windows_console {
         return plain(None, true, false);
     }
@@ -288,10 +311,14 @@ fn parse_boolean_capability_override(value: Option<&str>) -> Option<bool> {
     }
 }
 
-fn tmux_image_detector(env: &Env, exec_tmux: Option<&TmuxExecFile>) -> terminal_capabilities::TmuxImageDetection {
+fn tmux_image_detector(
+    env: &Env,
+    exec_tmux: Option<&TmuxExecFile>,
+) -> terminal_capabilities::TmuxImageDetection {
     let state = probe_tmux_image_state(env, exec_tmux);
-    let override_terminal: TmuxKittyTerminalOverride =
-        parse_tmux_kitty_terminal_override(env.get("PI_TUI_TMUX_KITTY_TERMINAL").map(String::as_str));
+    let override_terminal: TmuxKittyTerminalOverride = parse_tmux_kitty_terminal_override(
+        env.get("PI_TUI_TMUX_KITTY_TERMINAL").map(String::as_str),
+    );
     let decision = decide_tmux_image_capability(&state, override_terminal);
     let (enabled, placeholder) = match decision {
         TmuxImageDecision::Enabled { placement, .. } => {
@@ -340,8 +367,12 @@ pub fn detect_capabilities_in(
     merge_env_overrides(env, detected)
 }
 
-fn merge_env_overrides(env: &Env, detected: DetectedTerminalCapabilities) -> DetectedTerminalCapabilities {
-    let hyperlinks = parse_boolean_capability_override(env.get("PI_HYPERLINKS").map(String::as_str));
+fn merge_env_overrides(
+    env: &Env,
+    detected: DetectedTerminalCapabilities,
+) -> DetectedTerminalCapabilities {
+    let hyperlinks =
+        parse_boolean_capability_override(env.get("PI_HYPERLINKS").map(String::as_str));
     let image_protocol = env.get("PI_IMAGE_PROTOCOL").map(|v| v.to_lowercase());
     let images = match image_protocol.as_deref() {
         Some("kitty") => Some(Some(ImageProtocol::Kitty)),
@@ -349,12 +380,19 @@ fn merge_env_overrides(env: &Env, detected: DetectedTerminalCapabilities) -> Det
         Some("none") | Some("0") => Some(None),
         _ => None,
     };
-    let true_color = parse_boolean_capability_override(env.get("PI_TRUE_COLOR").map(String::as_str));
+    let true_color =
+        parse_boolean_capability_override(env.get("PI_TRUE_COLOR").map(String::as_str));
 
     DetectedTerminalCapabilities {
         images: match images {
             Some(images) => images,
             None => detected.images,
+        },
+        // An explicit image choice settles the question: no probe needed.
+        image_probe: if images.is_some() {
+            None
+        } else {
+            detected.image_probe
         },
         true_color: true_color.unwrap_or(detected.true_color),
         hyperlinks: hyperlinks.unwrap_or(detected.hyperlinks),
@@ -385,18 +423,24 @@ pub fn detect_capabilities_with_tmux(
         "1".to_string(),
         "1".to_string(),
         legacy.client_termname.clone(),
-        legacy.cell_width_px.map(|v| v.to_string()).unwrap_or_default(),
+        legacy
+            .cell_width_px
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
         legacy
             .cell_height_px
             .map(|v| v.to_string())
             .unwrap_or_default(),
-        if hyperlinks { "hyperlinks".to_string() } else { String::new() },
+        if hyperlinks {
+            "hyperlinks".to_string()
+        } else {
+            String::new()
+        },
     ]
     .join("|");
 
-    let exec: TmuxExecFile = std::sync::Arc::new(move |_file: &str, _args: &[String]| {
-        Ok(legacy_output.clone())
-    });
+    let exec: TmuxExecFile =
+        std::sync::Arc::new(move |_file: &str, _args: &[String]| Ok(legacy_output.clone()));
     let detected = detect_terminal_capabilities_in(&merged, platform, Some(&exec));
     if let Some(dims) = detected.cell_dimensions {
         set_cell_dimensions(dims);
@@ -422,6 +466,7 @@ fn to_capabilities(detected: DetectedTerminalCapabilities) -> TerminalCapabiliti
         hyperlinks: detected.hyperlinks,
         tmux_passthrough: detected.tmux_passthrough.unwrap_or(false),
         kitty_unicode_placeholders: detected.kitty_unicode_placeholders.unwrap_or(false),
+        image_probe: detected.image_probe,
     }
 }
 
@@ -434,6 +479,7 @@ pub fn get_capabilities() -> TerminalCapabilities {
     let mut resolved = to_capabilities(detect_capabilities());
     if let Some(images) = overrides.images {
         resolved.images = images;
+        resolved.image_probe = None;
     }
     if let Some(true_color) = overrides.true_color {
         resolved.true_color = true_color;
@@ -443,6 +489,19 @@ pub fn get_capabilities() -> TerminalCapabilities {
     }
     write_lock(&CAPABILITY_STATE).cached = Some(resolved);
     resolved
+}
+
+/// Records the TUI probe's answer for probe-requesting terminals. `None` means "probed, no
+/// graphics"; a no-op when unchanged, otherwise clears the cached capabilities.
+pub fn set_probed_image_protocol(protocol: Option<ImageProtocol>) {
+    {
+        let mut probed = mutex_lock(&PROBED_IMAGE_PROTOCOL);
+        if *probed == protocol {
+            return;
+        }
+        *probed = protocol;
+    }
+    write_lock(&CAPABILITY_STATE).cached = None;
 }
 
 pub fn reset_capabilities_cache() {
@@ -678,10 +737,11 @@ pub fn register_kitty_image_metadata(metadata: KittyImageMetadata) {
     );
     registry.order.push(metadata.image_id);
     if registry.order.len() > 1000
-        && let Some(oldest) = registry.order.first().copied() {
-            registry.entries.remove(&oldest);
-            registry.order.remove(0);
-        }
+        && let Some(oldest) = registry.order.first().copied()
+    {
+        registry.entries.remove(&oldest);
+        registry.order.remove(0);
+    }
 }
 
 fn kitty_controls_before_semicolon(line: &str) -> Option<(usize, String)> {
@@ -722,7 +782,10 @@ const KITTY_PLACEMENT_CONTROL_KEYS: [&str; 17] = [
 ];
 
 fn is_placement_control(control: &str) -> bool {
-    let key = control.split_once('=').map(|(key, _)| key).unwrap_or(control);
+    let key = control
+        .split_once('=')
+        .map(|(key, _)| key)
+        .unwrap_or(control);
     KITTY_PLACEMENT_CONTROL_KEYS.contains(&key)
 }
 
@@ -753,7 +816,10 @@ pub fn get_kitty_image_placement(line: &str) -> Option<KittyImagePlacement> {
         command_controls = line[controls_start..controls_end].to_string();
     }
 
-    let filtered: Vec<&str> = controls.split(',').filter(|c| is_placement_control(c)).collect();
+    let filtered: Vec<&str> = controls
+        .split(',')
+        .filter(|c| is_placement_control(c))
+        .collect();
     let sequence = format!("\x1b_Ga=p,q=2,{}\x1b\\", filtered.join(","));
     let image_id = metadata.metadata.image_id;
     let replacement_line = format!(
@@ -788,8 +854,8 @@ pub fn crop_kitty_image_line(line: &str, hidden_rows: usize, visible_rows: usize
     if hidden_rows == 0 && cropped_rows == metadata.rows as usize {
         return line.to_string();
     }
-    let source_y = (f64::from(metadata.height_px) * hidden_rows as f64 / f64::from(metadata.rows))
-        .floor();
+    let source_y =
+        (f64::from(metadata.height_px) * hidden_rows as f64 / f64::from(metadata.rows)).floor();
     let source_end = (f64::from(metadata.height_px) * (hidden_rows + cropped_rows) as f64
         / f64::from(metadata.rows))
     .ceil();
@@ -821,7 +887,10 @@ pub fn calculate_image_rows(
     target_width_cells: f64,
     cell_dimensions: Option<CellDimensions>,
 ) -> u32 {
-    let cell_dimensions = cell_dimensions.unwrap_or(CellDimensions { width_px: 9, height_px: 18 });
+    let cell_dimensions = cell_dimensions.unwrap_or(CellDimensions {
+        width_px: 9,
+        height_px: 18,
+    });
     calculate_image_cell_size(image_dimensions, target_width_cells, None, cell_dimensions).rows
 }
 
@@ -1030,8 +1099,10 @@ pub fn get_webp_dimensions(base64_data: &str) -> Option<ImageDimensions> {
         if buffer.len() < 30 {
             return None;
         }
-        let width = u32::from(buffer[24]) | (u32::from(buffer[25]) << 8) | (u32::from(buffer[26]) << 16);
-        let height = u32::from(buffer[27]) | (u32::from(buffer[28]) << 8) | (u32::from(buffer[29]) << 16);
+        let width =
+            u32::from(buffer[24]) | (u32::from(buffer[25]) << 8) | (u32::from(buffer[26]) << 16);
+        let height =
+            u32::from(buffer[27]) | (u32::from(buffer[28]) << 8) | (u32::from(buffer[29]) << 16);
         return Some(ImageDimensions {
             width_px: width + 1,
             height_px: height + 1,

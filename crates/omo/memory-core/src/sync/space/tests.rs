@@ -262,7 +262,7 @@ fn read_back_counts_duplicates_and_bounds_metadata_allowances() {
     // When / Then
     for (rendered, source, reason) in cases {
         assert_eq!(
-            read_back::first_missing_fact(rendered, source, None).as_deref(),
+            read_back::first_missing_fact(rendered, source, &BTreeMap::new()).as_deref(),
             Some(reason)
         );
     }
@@ -273,7 +273,7 @@ fn joined_register_render_cannot_vouch_for_single_whole_value() {
     let text = "---\nk: \"a / b\"\n---\nx\n";
     let registers = BTreeMap::from([("k".into(), vec!["a".into(), "b".into()])]);
     // When
-    let missing = read_back::first_missing_fact(text, text, Some(&registers));
+    let missing = read_back::first_missing_fact(text, text, &registers);
     // Then
     assert!(missing.is_some());
 }

@@ -2,7 +2,10 @@
 //! `tui_alt_screen.rs` call through this facade, and every function delegates to the full port in
 //! [`crate::terminal_image`].
 
-pub use crate::terminal_image::{crop_kitty_image_line, delete_all_kitty_images, delete_all_kitty_placements, delete_kitty_image, is_image_line, KittyImagePlacement};
+pub use crate::terminal_image::{
+    KittyImagePlacement, crop_kitty_image_line, delete_all_kitty_images,
+    delete_all_kitty_placements, delete_kitty_image, is_image_line,
+};
 
 const KITTY_PREFIX: &str = "\x1b_G";
 
@@ -37,7 +40,9 @@ fn parse_kitty_image_header(line: &str) -> Option<KittyImageHeader> {
 }
 
 pub fn extract_kitty_image_ids(line: &str) -> Vec<u32> {
-    parse_kitty_image_header(line).map(|h| h.ids).unwrap_or_default()
+    parse_kitty_image_header(line)
+        .map(|h| h.ids)
+        .unwrap_or_default()
 }
 
 pub fn extract_kitty_image_rows(line: &str) -> usize {
@@ -88,5 +93,6 @@ pub fn set_capabilities(capabilities: TerminalCapabilities) {
         hyperlinks: false,
         tmux_passthrough: false,
         kitty_unicode_placeholders: false,
+        image_probe: None,
     });
 }

@@ -28,11 +28,17 @@ pub struct TaskInputs {
     pub ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps,
 }
 
-pub fn component_options(cwd: &Path, env: &std::collections::BTreeMap<String, String>) -> maho_omo::OmoComponentOptions {
+pub fn component_options(
+    cwd: &Path,
+    env: &std::collections::BTreeMap<String, String>,
+) -> maho_omo::OmoComponentOptions {
     maho_omo::OmoComponentOptions {
         skills_root: maho_omo::builtin_skills_root(),
         state_dir: cwd.join(".omo"),
-        facts_read_only_bootstrap: env.get("MAHO_FACTS_READ_ONLY_BOOTSTRAP").is_some_and(|value|value=="1")&&maho_core::lockfile_policy::facts_lock_broker_enabled(),
+        facts_read_only_bootstrap: env
+            .get("MAHO_FACTS_READ_ONLY_BOOTSTRAP")
+            .is_some_and(|value| value == "1")
+            && maho_core::lockfile_policy::facts_lock_broker_enabled(),
         env: env.clone(),
     }
 }
@@ -43,18 +49,25 @@ pub struct MemoryStore {
 }
 
 impl MemoryStore {
-    pub fn new(cwd: &Path, env: std::collections::BTreeMap<String, String>, config: Arc<dyn Fn() -> Result<Value, String> + Send + Sync>) -> Self {
+    pub fn new(
+        cwd: &Path,
+        env: std::collections::BTreeMap<String, String>,
+        config: Arc<dyn Fn() -> Result<Value, String> + Send + Sync>,
+    ) -> Self {
         let component = MemoryComponent::new(MemoryComponentOptions {
             env,
             load_config: config,
             cwd: cwd.to_path_buf(),
             now: Arc::new(|| maho_ai::utils::diagnostics::now_ms() as f64),
             disabled: Arc::new(|| false),
+            sync_runner: None,
         });
-        let wiring = Arc::new(tokio::sync::Mutex::new(create_memory_wiring(MemoryWiringOptions {
-            runtime: Default::default(),
-            skills_usage: Default::default(),
-        })));
+        let wiring = Arc::new(tokio::sync::Mutex::new(create_memory_wiring(
+            MemoryWiringOptions {
+                runtime: Default::default(),
+                skills_usage: Default::default(),
+            },
+        )));
         Self { component, wiring }
     }
 
@@ -82,7 +95,10 @@ pub struct TaskWiring {
     pub coordinator: Option<Arc<dyn CompletionCoordinator>>,
 }
 
-pub fn compose_task_engine_for_session(wiring: TaskWiring, actions: Arc<dyn ExtensionActions>) -> TaskEngine {
+pub fn compose_task_engine_for_session(
+    wiring: TaskWiring,
+    actions: Arc<dyn ExtensionActions>,
+) -> TaskEngine {
     compose_task_engine(ComposeTaskEngineDeps {
         cwd: wiring.cwd,
         config: wiring.config,
@@ -94,6 +110,10 @@ pub fn compose_task_engine_for_session(wiring: TaskWiring, actions: Arc<dyn Exte
     })
 }
 
-pub fn task_entry(engine: TaskEngine, spawn: senpi_task::tools::task::execute_spec::TaskToolDeps, ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps) -> OmoSenpiComponent {
+pub fn task_entry(
+    engine: TaskEngine,
+    spawn: senpi_task::tools::task::execute_spec::TaskToolDeps,
+    ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps,
+) -> OmoSenpiComponent {
     task_component(engine, spawn, ownership)
 }

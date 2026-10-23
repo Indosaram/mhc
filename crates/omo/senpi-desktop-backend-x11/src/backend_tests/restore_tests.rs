@@ -3,7 +3,7 @@ use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{DesktopPoint, Target};
 
-use super::{backend, FakeInputServer, EDITOR};
+use super::{EDITOR, FakeInputServer, backend};
 
 #[test]
 fn failed_click_restores_the_motion_that_preceded_failure() {
@@ -27,11 +27,19 @@ fn failed_click_restores_the_motion_that_preceded_failure() {
         )
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::InputFailed);
-    assert_eq!(backend.input_ref().unwrap().server().pointer.get(), (510, 10));
+    assert_eq!(
+        backend.input_ref().unwrap().server().pointer.get(),
+        (510, 10)
+    );
 
-    backend.warp_cursor(DesktopPoint { x: 12.0, y: 34.0 }).unwrap();
+    backend
+        .warp_cursor(DesktopPoint { x: 12.0, y: 34.0 })
+        .unwrap();
 
-    assert_eq!(backend.input_ref().unwrap().server().pointer.get(), (12, 34));
+    assert_eq!(
+        backend.input_ref().unwrap().server().pointer.get(),
+        (12, 34)
+    );
 }
 
 #[test]
@@ -49,9 +57,17 @@ fn user_motion_before_action_returns_is_not_claimed_by_the_engine() {
             DeliveryMode::Foreground,
         )
         .unwrap();
-    assert_eq!(backend.input_ref().unwrap().server().pointer.get(), (900, 700));
+    assert_eq!(
+        backend.input_ref().unwrap().server().pointer.get(),
+        (900, 700)
+    );
 
-    backend.warp_cursor(DesktopPoint { x: 12.0, y: 34.0 }).unwrap();
+    backend
+        .warp_cursor(DesktopPoint { x: 12.0, y: 34.0 })
+        .unwrap();
 
-    assert_eq!(backend.input_ref().unwrap().server().pointer.get(), (900, 700));
+    assert_eq!(
+        backend.input_ref().unwrap().server().pointer.get(),
+        (900, 700)
+    );
 }

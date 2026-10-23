@@ -6,11 +6,11 @@
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use senpi_desktop_core::ax::{snapshot, AxBackend, AxHandle, AxRegistry};
+use senpi_desktop_core::ax::{AxBackend, AxHandle, AxRegistry, snapshot};
 use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_core::types::{AxSnapshotOptions, DesktopWindow};
 
-use super::{element, is_trusted, MacAx};
+use super::{MacAx, element, is_trusted};
 
 const DOCUMENT_TEXT: &str = "senpi ax live";
 /// Hang guard for TextEdit's launch; the window usually appears in < 2 s.
@@ -100,7 +100,13 @@ fn ax_snapshot_of_textedit_has_text_area() {
     let window = open_textedit_document(&dir);
     let mut ax = MacAx::new();
     let mut registry = AxRegistry::default();
-    let snap = snapshot(&mut ax, &mut registry, &window, &AxSnapshotOptions::default()).unwrap();
+    let snap = snapshot(
+        &mut ax,
+        &mut registry,
+        &window,
+        &AxSnapshotOptions::default(),
+    )
+    .unwrap();
     println!(
         "window_id={} pid={:?} node_count={}\n{}",
         window.id, window.pid, snap.node_count, snap.text

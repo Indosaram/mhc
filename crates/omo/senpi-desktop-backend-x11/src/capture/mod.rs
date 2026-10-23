@@ -17,7 +17,7 @@ mod tests;
 #[cfg(test)]
 mod windows_tests;
 
-use ::image::{imageops, RgbaImage};
+use ::image::{RgbaImage, imageops};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{DesktopDisplay, DesktopWindow, DisplaySelector, Target};
@@ -25,7 +25,7 @@ use x11rb::protocol::xproto::Window;
 
 pub use self::connection::X11Connection;
 pub use self::connection::XServer;
-use self::image::{clip_to_root, to_rgba, RootRect};
+use self::image::{RootRect, clip_to_root, to_rgba};
 
 pub struct X11Capture<S = X11Connection> {
     server: S,
@@ -146,8 +146,9 @@ impl<S: XServer> X11Capture<S> {
             width: window.width,
             height: window.height,
         };
-        let clipped = clip_to_root(rect, screen.width, screen.height)
-            .ok_or_else(|| DesktopError::capture_failed(format!("window {id} has no visible root area")))?;
+        let clipped = clip_to_root(rect, screen.width, screen.height).ok_or_else(|| {
+            DesktopError::capture_failed(format!("window {id} has no visible root area"))
+        })?;
         let visible = self.capture_rect(clipped)?;
         if clipped == rect && visible.dimensions() == (window.width, window.height) {
             // Fully on-root: the padded frame would be the capture itself.

@@ -3,7 +3,7 @@
 //! read degrades to "absent", as oh-my-pi's does.
 
 use atspi::{Interface, State};
-use senpi_desktop_core::ax::{normalize_role_atspi, AxBounds, AxProps};
+use senpi_desktop_core::ax::{AxBounds, AxProps, normalize_role_atspi};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 
 use crate::bus::{AtSpiBus, BusResult, Extents};
@@ -65,7 +65,10 @@ pub(crate) fn read_props<B: AtSpiBus>(bus: &mut B, node: &B::Node) -> CoreResult
 }
 
 /// Object attributes sorted by key, each value cut to 200 characters.
-pub(crate) fn attributes<B: AtSpiBus>(bus: &mut B, node: &B::Node) -> CoreResult<Vec<(String, String)>> {
+pub(crate) fn attributes<B: AtSpiBus>(
+    bus: &mut B,
+    node: &B::Node,
+) -> CoreResult<Vec<(String, String)>> {
     let mut attributes: Vec<(String, String)> = bus
         .attributes(node)
         .map_err(DesktopError::ax_failed)?

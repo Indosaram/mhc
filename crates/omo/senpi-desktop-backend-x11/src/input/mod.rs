@@ -40,7 +40,7 @@ use x11rb::protocol::xproto::Window;
 pub use connection::X11InputConnection;
 use held::{Held, HeldButton, HeldKey, Route};
 use keys::Stroke;
-pub use keys::{keysym_variants, Keymap};
+pub use keys::{Keymap, keysym_variants};
 pub use server::InputServer;
 use server::{FakeInput, SentEvent, Spot};
 
@@ -75,11 +75,18 @@ impl<S: InputServer> X11Input<S> {
     /// # Errors
     /// `WindowNotFound` for a malformed id, `BackgroundUnavailable` for a
     /// filtering toolkit, `InputFailed` when a request fails.
-    pub fn pointer(&mut self, target: &Target, event: &PointerEvent, mode: DeliveryMode) -> CoreResult<()> {
+    pub fn pointer(
+        &mut self,
+        target: &Target,
+        event: &PointerEvent,
+        mode: DeliveryMode,
+    ) -> CoreResult<()> {
         self.last_pointer_motion = None;
         match (target, mode) {
             (Target::Desktop, _) => self.pointer_xtest(event, None),
-            (Target::Window(id), DeliveryMode::Foreground) => self.pointer_foreground(parse_window(id)?, event),
+            (Target::Window(id), DeliveryMode::Foreground) => {
+                self.pointer_foreground(parse_window(id)?, event)
+            }
             (Target::Window(id), DeliveryMode::Background) => {
                 let window = self.background_window(id, send_event::event_kind(event))?;
                 self.pointer_send_event(window, event)
@@ -123,13 +130,20 @@ impl<S: InputServer> X11Input<S> {
 
     /// # Errors
     /// As [`Self::type_text`].
-    pub fn key_chord(&mut self, target: &Target, keys: &[KeyName], mode: DeliveryMode) -> CoreResult<()> {
+    pub fn key_chord(
+        &mut self,
+        target: &Target,
+        keys: &[KeyName],
+        mode: DeliveryMode,
+    ) -> CoreResult<()> {
         let keymap = self.server.keymap()?;
         let mut strokes = Vec::with_capacity(keys.len());
         for &key in keys {
             strokes.extend(keymap.strokes(key)?);
         }
-        self.deliver_keys(target, mode, "key", |this, route| this.chord(route, &strokes))
+        self.deliver_keys(target, mode, "key", |this, route| {
+            this.chord(route, &strokes)
+        })
     }
 
     /// # Errors
@@ -215,7 +229,9 @@ impl<S: InputServer> X11Input<S> {
         let window = parse_window(id)?;
         let class = self.server.wm_class(window).unwrap_or_default();
         match toolkit_filter::filtering_toolkit(&class) {
-            Some(toolkit) => Err(toolkit_filter::background_unavailable(id, kind, toolkit, &class)),
+            Some(toolkit) => Err(toolkit_filter::background_unavailable(
+                id, kind, toolkit, &class,
+            )),
             None => Ok(window),
         }
     }

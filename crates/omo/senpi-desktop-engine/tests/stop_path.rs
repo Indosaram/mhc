@@ -5,8 +5,8 @@
 
 mod common;
 
-use common::{error_code, fake_backend, Engine, TWO_DISPLAYS};
-use serde_json::{json, Value};
+use common::{Engine, TWO_DISPLAYS, error_code, fake_backend};
+use serde_json::{Value, json};
 
 const CHORD: &str = "ctrl+alt+shift+escape";
 
@@ -41,7 +41,11 @@ fn live_session(engine: &mut Engine) -> String {
 }
 
 fn click(engine: &mut Engine, id: i64) -> Value {
-    engine.call(id, "click", json!({"target": "desktop", "x": 10.0, "y": 10.0}))
+    engine.call(
+        id,
+        "click",
+        json!({"target": "desktop", "x": 10.0, "y": 10.0}),
+    )
 }
 
 fn stop_path_unavailable(reply: &Value) -> (&Value, &Value) {
@@ -87,7 +91,10 @@ fn a_host_relay_alone_never_enables_input_without_the_policy() {
     );
     assert_eq!(
         stop_path_unavailable(&refused),
-        (&json!("StopPathUnavailable"), &json!("host-relay-not-allowed"))
+        (
+            &json!("StopPathUnavailable"),
+            &json!("host-relay-not-allowed")
+        )
     );
 }
 
@@ -176,7 +183,10 @@ fn capabilities_report_the_stop_path_and_why_it_is_not_global() {
         )
     };
     assert_eq!(stop(&before), (json!("none"), json!("no-global-listener")));
-    assert_eq!(stop(&after), (json!("host-relay"), json!("no-global-listener")));
+    assert_eq!(
+        stop(&after),
+        (json!("host-relay"), json!("no-global-listener"))
+    );
 }
 
 #[test]

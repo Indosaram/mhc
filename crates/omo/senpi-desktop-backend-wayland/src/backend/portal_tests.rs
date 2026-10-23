@@ -6,19 +6,22 @@ use senpi_desktop_core::backend::{Backend, DeliveryMode};
 use senpi_desktop_core::error::{DesktopError, ErrorCode};
 use senpi_desktop_core::types::Target;
 
-use super::tests::FR;
 use super::WaylandBackend;
+use super::tests::FR;
 use crate::portal::remote_desktop::INPUT_PATH_REQUIRED;
 use crate::test_support::fake_eis::{EisConfig, Recorded};
-use crate::test_support::fake_portal::{fake_bus, FakeBus, Mode, Reply, Shot};
-use crate::test_support::{env_lock, LibeiSocketEnv};
+use crate::test_support::fake_portal::{FakeBus, Mode, Reply, Shot, fake_bus};
+use crate::test_support::{LibeiSocketEnv, env_lock};
 
 fn portal(remote_desktop: Reply) -> &'static FakeBus {
     fake_bus(Mode {
         remote_desktop,
         global_shortcuts: Reply::Absent,
         screenshot: Shot::Absent,
-        eis: EisConfig { keymap: FR, group: 0 },
+        eis: EisConfig {
+            keymap: FR,
+            group: 0,
+        },
     })
 }
 

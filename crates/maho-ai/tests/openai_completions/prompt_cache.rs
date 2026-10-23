@@ -184,8 +184,8 @@ async fn sends_known_session_affinity_headers_when_compat_enables_them() {
 }
 
 #[tokio::test]
-async fn sends_fireworks_session_affinity_for_glm_5p2() {
-    let model = catalog_model("fireworks", "accounts/fireworks/models/glm-5p2");
+async fn sends_fireworks_session_affinity_for_glm_5p3() {
+    let model = catalog_model("fireworks", "accounts/fireworks/models/glm-5p3");
 
     let capture = capture_request(None, Some("fireworks-session"), None, &model, None).await;
 
@@ -193,8 +193,8 @@ async fn sends_fireworks_session_affinity_for_glm_5p2() {
 }
 
 #[tokio::test]
-async fn sends_fireworks_session_affinity_for_glm_5p2_fast() {
-    let model = catalog_model("fireworks", "accounts/fireworks/routers/glm-5p2-fast");
+async fn sends_fireworks_session_affinity_for_glm_5p3_fast() {
+    let model = catalog_model("fireworks", "accounts/fireworks/routers/glm-5p3-fast");
 
     let capture = capture_request(None, Some("fireworks-session"), None, &model, None).await;
 

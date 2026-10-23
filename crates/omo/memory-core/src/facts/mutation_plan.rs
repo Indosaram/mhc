@@ -10,6 +10,11 @@ use crate::git::path_state::{
 use crate::git::{GitError, GitMemoryRepo};
 use crate::memfs::{FrontmatterError, MemoryFrontmatter, parse_memory_file, render_memory_file};
 
+use crate::agreements::{
+    AGREEMENTS_PATH, AgreementEvent, AgreementExtractionRecord, AgreementsPolicy,
+};
+
+use super::agreements_target::render_agreements_target;
 use super::extraction::{FactsBatch, FactsExtractionRecord};
 use super::person_routing::{
     AliasTieCallback, FactsPeopleRouting, facts_routing_paths, plan_facts_routing,
@@ -138,8 +143,18 @@ impl From<serde_json::Error> for MutationPlanError {
 }
 
 /// Compute SHA-256 hash of JSON-serialized extraction records.
-pub fn facts_records_hash(records: &[FactsExtractionRecord]) -> String {
-    let json = serde_json::to_string(records).unwrap_or_default();
+///
+/// Agreement records join the hash only when present, so hashes of batches without them stay stable.
+pub fn facts_records_hash(
+    records: &[FactsExtractionRecord],
+    agreements: &[AgreementExtractionRecord],
+) -> String {
+    let json = if agreements.is_empty() {
+        serde_json::to_string(records)
+    } else {
+        serde_json::to_string(&serde_json::json!({ "records": records, "agreements": agreements }))
+    }
+    .unwrap_or_default();
     crate::support::sha256::sha256_hex(json.as_bytes())
 }
 
@@ -194,6 +209,8 @@ pub fn plan_facts_mutation(
     batch: &FactsBatch,
     people: Option<&FactsPeopleRouting>,
     on_alias_tie: Option<AliasTieCallback<'_>>,
+    agreements: &AgreementsPolicy,
+    mut on_agreement_event: Option<&mut dyn FnMut(&AgreementEvent)>,
 ) -> Result<FactsApplyRecovery, MutationPlanError> {
     let head_before_apply = repo
         .head()
@@ -201,7 +218,31 @@ pub fn plan_facts_mutation(
         .ok_or(MutationPlanError::NoHead)?;
 
     let routing = plan_facts_routing(&repo.dir, &batch.records, people, on_alias_tie);
-    let paths = facts_routing_paths(&routing);
+    let agreement_records = batch.agreements.as_deref().unwrap_or_default();
+    let ledger = if agreement_records.is_empty() {
+        None
+    } else {
+        Some(render_agreements_target(
+            &repo.dir,
+            agreement_records,
+            agreements,
+        )?)
+    };
+    if let Some(target) = &ledger {
+        for event in &target.events {
+            if let Some(callback) = on_agreement_event.as_mut() {
+                callback(event);
+            }
+        }
+    }
+    let mut paths = facts_routing_paths(&routing);
+    if ledger
+        .as_ref()
+        .is_some_and(|target| target.content.is_some())
+    {
+        paths.push(AGREEMENTS_PATH.to_string());
+    }
+    paths.sort();
     let pre = repo
         .path_state
         .capture_all(&paths)
@@ -229,6 +270,10 @@ pub fn plan_facts_mutation(
             &routing,
             people_cfg.limits(),
         )?);
+    }
+
+    if let Some(content_value) = ledger.and_then(|target| target.content) {
+        content.insert(AGREEMENTS_PATH.to_string(), content_value);
     }
 
     let mut planned = Vec::new();
@@ -278,7 +323,10 @@ pub fn plan_facts_mutation(
         version: 1,
         batch_id: batch.batch_id.clone(),
         head_before_apply,
-        records_hash: facts_records_hash(&batch.records),
+        records_hash: facts_records_hash(
+            &batch.records,
+            batch.agreements.as_deref().unwrap_or_default(),
+        ),
         people: people.cloned(),
         paths: planned,
     })

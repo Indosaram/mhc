@@ -177,10 +177,12 @@ pub fn stream_proxy(
     let task_stream = stream.clone();
     let controller = maho_ai::utils::abort::AbortController::new();
     let signal = controller.signal();
-    stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
-        controller.abort(None);
-        Ok(())
-    })));
+    stream.set_cancellation_handler(Box::new(move || {
+        Box::pin(async move {
+            controller.abort(None);
+            Ok(())
+        })
+    }));
     let task = tokio::spawn(async move {
         tokio::select! {
             biased;
@@ -217,8 +219,10 @@ async fn run_proxy_stream(
         error_message: None,
         error_cause: None,
         abort_source: None,
+        failure_source: None,
         raw_stop_reason: None,
         end_turn: None,
+        timing: None,
         timestamp: now_ms(),
     };
     let mut partial_json: BTreeMap<usize, String> = BTreeMap::new();
@@ -707,21 +711,34 @@ mod tests {
                 request.push(byte[0]);
             }
             let headers = String::from_utf8(request).expect("request headers UTF-8");
-            let length = headers.lines().find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse::<usize>().expect("content length"))
-            }).expect("request body length");
+            let length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().expect("content length"))
+                })
+                .expect("request body length");
             let mut request_body = vec![0; length];
-            socket.read_exact(&mut request_body).expect("complete request body");
-            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+            socket
+                .read_exact(&mut request_body)
+                .expect("complete request body");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
             socket.write_all(response.as_bytes()).expect("response");
             // Send FIN after the complete Content-Length body, then let the client close
             // its side before dropping the Windows socket rather than resetting it.
             socket.shutdown(Shutdown::Write).expect("response shutdown");
             let mut trailing = Vec::new();
             if let Err(error) = socket.read_to_end(&mut trailing) {
-                assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset, "client shutdown: {error}");
+                assert_eq!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset,
+                    "client shutdown: {error}"
+                );
             }
         });
         let context = Context {
@@ -844,7 +861,12 @@ mod tests {
         ))
         .await;
         // Then this deliberately tolerated upstream event is not widened into an error.
-        assert_eq!(result.stop_reason, StopReason::Stop, "proxy error_message: {:?}", result.error_message);
+        assert_eq!(
+            result.stop_reason,
+            StopReason::Stop,
+            "proxy error_message: {:?}",
+            result.error_message
+        );
     }
 
     async fn abort_stalled_response(headers: &'static [u8]) {
@@ -865,11 +887,14 @@ mod tests {
                 request.push(byte[0]);
             }
             let request = String::from_utf8(request).expect("request headers UTF-8");
-            let length = request.lines().find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse::<usize>().expect("content length"))
-            }).expect("request body length");
+            let length = request
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().expect("content length"))
+                })
+                .expect("request body length");
             let mut body = vec![0; length];
             socket.read_exact(&mut body).expect("complete request body");
             socket.write_all(headers).expect("headers");

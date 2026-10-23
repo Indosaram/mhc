@@ -14,7 +14,7 @@ use maho_omo_config_resolution::load_senpi_omo_config;
 use omo_config_core::{LoadOmoConfigOptions, OmoConfigEnv, resolve_omo_git_master_settings};
 
 pub use crate::directive::{GitMasterCommitFooter, GitMasterSettings};
-use crate::directive::build_git_master_attribution_directive;
+use crate::skill_content::resolve_git_master_skill_additions;
 
 /// Upstream `GIT_MASTER_SKILL_PATH_SUFFIX`: only a read of the git-master skill is attributed.
 pub const GIT_MASTER_SKILL_PATH_SUFFIX: &str = "/git-master/SKILL.md";
@@ -78,9 +78,10 @@ fn read_file_path(input: &JsonValue) -> Option<&str> {
 impl Extension for GitMasterAttributionComponent {
     fn register(&self, api: &mut ExtensionApi) {
         let env = self.options.env.clone();
-        let load_settings: LoadSettings = self.options.load_settings.clone().unwrap_or_else(move || {
-            Arc::new(move |cwd: &Path| default_load_settings(cwd, env.as_ref()))
-        });
+        let load_settings: LoadSettings =
+            self.options.load_settings.clone().unwrap_or_else(move || {
+                Arc::new(move |cwd: &Path| default_load_settings(cwd, env.as_ref()))
+            });
 
         api.on(
             EventKind::ToolResult,
@@ -99,18 +100,31 @@ impl Extension for GitMasterAttributionComponent {
                     let Some(file_path) = read_file_path(&event.input) else {
                         return Ok(EventResult::None);
                     };
-                    if !file_path.replace('\\', "/").ends_with(GIT_MASTER_SKILL_PATH_SUFFIX) {
+                    if !file_path
+                        .replace('\\', "/")
+                        .ends_with(GIT_MASTER_SKILL_PATH_SUFFIX)
+                    {
                         return Ok(EventResult::None);
                     }
 
                     let settings = load_settings(&ctx.cwd);
-                    let Some(directive) = build_git_master_attribution_directive(&settings) else {
+                    let Some(additions) = resolve_git_master_skill_additions(&settings) else {
                         return Ok(EventResult::None);
                     };
-                    log_appended(ctx.logger.as_ref(), &settings.commit_footer);
+                    log_applied(ctx.logger.as_ref(), &settings);
 
+                    // Rewrite the first text item (upstream `findIndex(typeof text === "string")`),
+                    // then append the attribution directive when there is one.
                     let mut content = event.content.clone();
-                    content.push(ToolContent::text(directive));
+                    if let Some(ToolContent::Text { text, .. }) = content
+                        .iter_mut()
+                        .find(|item| matches!(item, ToolContent::Text { .. }))
+                    {
+                        *text = (additions.rewrite_skill_text)(text);
+                    }
+                    if let Some(directive) = additions.directive {
+                        content.push(ToolContent::text(directive));
+                    }
                     Ok(EventResult::ToolResult(ToolResultEventResult {
                         content: Some(content),
                         ..Default::default()
@@ -121,17 +135,26 @@ impl Extension for GitMasterAttributionComponent {
     }
 }
 
-/// Upstream `ctx.logger.info("omo-senpi git-master attribution appended", { commitFooter })`.
-fn log_appended(logger: Option<&Arc<dyn ComponentLogger>>, footer: &GitMasterCommitFooter) {
+/// Upstream `ctx.logger.info("omo-senpi git-master settings applied", { commitFooter, gitEnvPrefix })`.
+fn log_applied(logger: Option<&Arc<dyn ComponentLogger>>, settings: &GitMasterSettings) {
     let Some(logger) = logger else {
         return;
     };
-    let commit_footer = match footer {
+    let commit_footer = match &settings.commit_footer {
         GitMasterCommitFooter::Disabled => JsonValue::Bool(false),
         GitMasterCommitFooter::Builtin => JsonValue::Bool(true),
         GitMasterCommitFooter::Custom(text) => JsonValue::String(text.clone()),
     };
-    let details =
-        JsonValue::Object([("commitFooter".to_owned(), commit_footer)].into_iter().collect());
-    logger.info("omo-senpi git-master attribution appended", Some(&details));
+    let details = JsonValue::Object(
+        [
+            ("commitFooter".to_owned(), commit_footer),
+            (
+                "gitEnvPrefix".to_owned(),
+                JsonValue::String(settings.git_env_prefix.clone()),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    logger.info("omo-senpi git-master settings applied", Some(&details));
 }

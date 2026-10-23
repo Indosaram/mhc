@@ -1,15 +1,16 @@
 //! Tools for interacting with git-backed memory files.
 
-pub mod memfs;
+pub mod agreements_write_guard;
 pub mod leaked_arguments;
+pub mod memfs;
 pub mod memory;
 pub mod memory_apply_patch;
 pub mod patch_parser;
 pub mod soul;
 pub mod tool_errors;
 
-pub use memfs::*;
 pub use leaked_arguments::*;
+pub use memfs::*;
 pub use memory::*;
 pub use memory_apply_patch::*;
 pub use patch_parser::*;

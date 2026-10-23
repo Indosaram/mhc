@@ -6,9 +6,9 @@ use image::{Rgba, RgbaImage};
 use senpi_desktop_core::error::{ErrorCode, TccPermission};
 use senpi_desktop_core::types::{DesktopDisplay, DisplaySelector, Target};
 
-use super::displays::composite;
-use super::screencapture::{display_rect_arg, window_args, Screencapture, ShotError};
 use super::MacCapture;
+use super::displays::composite;
+use super::screencapture::{Screencapture, ShotError, display_rect_arg, window_args};
 
 /// Hang guard for fakes that exit immediately; only the deadline test relies
 /// on expiry, so a loaded host cannot flip these results.
@@ -18,15 +18,20 @@ const DEADLINE: Duration = Duration::from_secs(60);
 fn permission_error_names_host_app_pane_and_relaunch() {
     let error = super::permission_denied();
     println!("{}", error.message);
-    let app = std::env::var("SENPI_DESKTOP_HOST_APP").ok().filter(|app| !app.trim().is_empty()).unwrap_or_else(|| {
-        "the app that launched OmO (for a terminal launch, that terminal app)".to_owned()
-    });
+    let app = std::env::var("SENPI_DESKTOP_HOST_APP")
+        .ok()
+        .filter(|app| !app.trim().is_empty())
+        .unwrap_or_else(|| {
+            "the app that launched OmO (for a terminal launch, that terminal app)".to_owned()
+        });
     assert_eq!(error.code, ErrorCode::PermissionDenied);
     let data = error.permission.expect("structured permission payload");
     assert_eq!(data.app, app);
     assert_eq!(data.permission, TccPermission::ScreenRecording);
-    assert_eq!(data.settings_url,
-        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture");
+    assert_eq!(
+        data.settings_url,
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+    );
     assert!(data.relaunch_required);
 }
 
@@ -56,7 +61,11 @@ fn fake_program(dir: &Path, body: &str) -> PathBuf {
     path
 }
 
-fn run(program: PathBuf, deadline: Duration, permission: fn() -> bool) -> Result<RgbaImage, ShotError> {
+fn run(
+    program: PathBuf,
+    deadline: Duration,
+    permission: fn() -> bool,
+) -> Result<RgbaImage, ShotError> {
     Screencapture::with(program, deadline, permission).run(&["-x".to_string()])
 }
 
@@ -84,7 +93,9 @@ fn nonzero_exit_without_permission_is_permission_denied_with_tcc_identity() {
     assert_eq!(error.code, ErrorCode::PermissionDenied);
     assert!(
         error.message.contains("TCC identity: responsible=")
-            || error.message.contains("TCC identity: unresolved (engine executable="),
+            || error
+                .message
+                .contains("TCC identity: unresolved (engine executable="),
         "{}",
         error.message
     );
@@ -94,14 +105,20 @@ fn nonzero_exit_without_permission_is_permission_denied_with_tcc_identity() {
 fn nonzero_exit_with_permission_allows_the_fallback() {
     let dir = tempfile::tempdir().unwrap();
     let result = run(fake_program(dir.path(), "exit 1"), DEADLINE, || true);
-    assert!(matches!(result, Err(ShotError::Unavailable(_))), "{result:?}");
+    assert!(
+        matches!(result, Err(ShotError::Unavailable(_))),
+        "{result:?}"
+    );
 }
 
 #[test]
 fn absent_program_allows_the_fallback() {
     let dir = tempfile::tempdir().unwrap();
     let result = run(dir.path().join("missing-screencapture"), DEADLINE, || true);
-    assert!(matches!(result, Err(ShotError::Unavailable(_))), "{result:?}");
+    assert!(
+        matches!(result, Err(ShotError::Unavailable(_))),
+        "{result:?}"
+    );
 }
 
 #[test]

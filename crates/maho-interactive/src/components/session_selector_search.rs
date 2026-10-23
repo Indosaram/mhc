@@ -36,25 +36,44 @@ pub struct SessionSearchCache {
 impl SessionSearchCache {
     pub fn search_text<'a>(&'a mut self, session: &'a SessionInfo) -> &'a str {
         let key = session.path.clone();
-        self.text_by_session.entry(key).or_insert_with(|| get_session_search_text(session)).as_str()
+        self.text_by_session
+            .entry(key)
+            .or_insert_with(|| get_session_search_text(session))
+            .as_str()
     }
 
     pub fn parsed_query(&mut self, query: &str) -> &ParsedSearchQuery {
-        if self.parsed_query.as_ref().is_none_or(|(cached, _)| cached != query) {
+        if self
+            .parsed_query
+            .as_ref()
+            .is_none_or(|(cached, _)| cached != query)
+        {
             self.parsed_query = Some((query.to_owned(), parse_search_query(query)));
         }
-        match self.parsed_query.as_ref() { Some((_, parsed)) => parsed, None => unreachable!() }
+        match self.parsed_query.as_ref() {
+            Some((_, parsed)) => parsed,
+            None => unreachable!(),
+        }
     }
 
     pub fn prepared_tokens(&mut self, query: &str) -> &[SearchToken] {
-        if self.prepared_tokens.as_ref().is_none_or(|(cached, _)| cached != query) {
+        if self
+            .prepared_tokens
+            .as_ref()
+            .is_none_or(|(cached, _)| cached != query)
+        {
             let tokens = parse_search_query(query).tokens;
             self.prepared_tokens = Some((query.to_owned(), tokens));
         }
-        match self.prepared_tokens.as_ref() { Some((_, tokens)) => tokens, None => &[] }
+        match self.prepared_tokens.as_ref() {
+            Some((_, tokens)) => tokens,
+            None => &[],
+        }
     }
 
-    pub fn clear_session(&mut self, path: &str) { self.text_by_session.remove(path); }
+    pub fn clear_session(&mut self, path: &str) {
+        self.text_by_session.remove(path);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,9 +131,13 @@ fn normalize_whitespace_lower(text: &str) -> String {
 }
 
 pub(crate) fn get_session_search_text(session: &SessionInfo) -> String {
+    let id = match maho_core::session_manager::session_file_name_id(&session.path) {
+        Some(file_id) if file_id != session.id => format!("{} {file_id}", session.id),
+        _ => session.id.clone(),
+    };
     format!(
         "{} {} {} {}",
-        session.id,
+        id,
         session.name.clone().unwrap_or_default(),
         session.all_messages_text,
         session.cwd
@@ -122,7 +145,10 @@ pub(crate) fn get_session_search_text(session: &SessionInfo) -> String {
 }
 
 pub fn has_session_name(session: &SessionInfo) -> bool {
-    session.name.as_deref().is_some_and(|name| !name.trim().is_empty())
+    session
+        .name
+        .as_deref()
+        .is_some_and(|name| !name.trim().is_empty())
 }
 
 fn matches_name_filter(session: &SessionInfo, filter: NameFilter) -> bool {
@@ -208,7 +234,10 @@ pub fn parse_search_query(query: &str) -> ParsedSearchQuery {
             tokens: trimmed
                 .split_whitespace()
                 .filter(|token| !token.is_empty())
-                .map(|token| SearchToken { kind: TokenKind::Fuzzy, value: token.to_owned() })
+                .map(|token| SearchToken {
+                    kind: TokenKind::Fuzzy,
+                    value: token.to_owned(),
+                })
                 .collect(),
             regex: None,
             error: None,
@@ -216,7 +245,12 @@ pub fn parse_search_query(query: &str) -> ParsedSearchQuery {
     }
 
     flush(&mut buf, &mut tokens, TokenKind::Fuzzy);
-    ParsedSearchQuery { mode: SearchMode::Tokens, tokens, regex: None, error: None }
+    ParsedSearchQuery {
+        mode: SearchMode::Tokens,
+        tokens,
+        regex: None,
+        error: None,
+    }
 }
 
 pub fn match_session(session: &SessionInfo, parsed: &ParsedSearchQuery) -> MatchResult {
@@ -227,16 +261,28 @@ pub fn match_session(session: &SessionInfo, parsed: &ParsedSearchQuery) -> Match
 fn match_session_text(text: &str, parsed: &ParsedSearchQuery) -> MatchResult {
     if parsed.mode == SearchMode::Regex {
         let Some(regex) = &parsed.regex else {
-            return MatchResult { matches: false, score: 0.0 };
+            return MatchResult {
+                matches: false,
+                score: 0.0,
+            };
         };
         return match regex.find(text) {
-            Some(found) => MatchResult { matches: true, score: found.start() as f64 * 0.1 },
-            None => MatchResult { matches: false, score: 0.0 },
+            Some(found) => MatchResult {
+                matches: true,
+                score: found.start() as f64 * 0.1,
+            },
+            None => MatchResult {
+                matches: false,
+                score: 0.0,
+            },
         };
     }
 
     if parsed.tokens.is_empty() {
-        return MatchResult { matches: true, score: 0.0 };
+        return MatchResult {
+            matches: true,
+            score: 0.0,
+        };
     }
 
     let mut total_score = 0.0;
@@ -244,13 +290,17 @@ fn match_session_text(text: &str, parsed: &ParsedSearchQuery) -> MatchResult {
 
     for token in &parsed.tokens {
         if token.kind == TokenKind::Phrase {
-            let normalized = normalized_text.get_or_insert_with(|| normalize_whitespace_lower(text));
+            let normalized =
+                normalized_text.get_or_insert_with(|| normalize_whitespace_lower(text));
             let phrase = normalize_whitespace_lower(&token.value);
             if phrase.is_empty() {
                 continue;
             }
             let Some(index) = normalized.find(&phrase) else {
-                return MatchResult { matches: false, score: 0.0 };
+                return MatchResult {
+                    matches: false,
+                    score: 0.0,
+                };
             };
             total_score += normalized[..index].chars().count() as f64 * 0.1;
             continue;
@@ -258,12 +308,18 @@ fn match_session_text(text: &str, parsed: &ParsedSearchQuery) -> MatchResult {
 
         let matched = fuzzy_match(&token.value, text);
         if !matched.matches {
-            return MatchResult { matches: false, score: 0.0 };
+            return MatchResult {
+                matches: false,
+                score: 0.0,
+            };
         }
         total_score += matched.score;
     }
 
-    MatchResult { matches: true, score: total_score }
+    MatchResult {
+        matches: true,
+        score: total_score,
+    }
 }
 
 pub fn filter_and_sort_sessions(
@@ -272,14 +328,23 @@ pub fn filter_and_sort_sessions(
     sort_mode: SortMode,
     name_filter: NameFilter,
 ) -> Vec<SessionInfo> {
-    let name_filtered = sessions.iter().filter(|session| matches_name_filter(session, name_filter));
+    let name_filtered = sessions
+        .iter()
+        .filter(|session| matches_name_filter(session, name_filter));
     if query.trim().is_empty() {
         return name_filtered.cloned().collect();
     }
-    let texts: Vec<(&SessionInfo, String)> =
-        name_filtered.map(|session| (session, get_session_search_text(session))).collect();
-    let candidates: Vec<(&SessionInfo, &str)> = texts.iter().map(|(session, text)| (*session, text.as_str())).collect();
-    filter_and_sort_sessions_with_text(candidates, query, sort_mode).into_iter().cloned().collect()
+    let texts: Vec<(&SessionInfo, String)> = name_filtered
+        .map(|session| (session, get_session_search_text(session)))
+        .collect();
+    let candidates: Vec<(&SessionInfo, &str)> = texts
+        .iter()
+        .map(|(session, text)| (*session, text.as_str()))
+        .collect();
+    filter_and_sort_sessions_with_text(candidates, query, sort_mode)
+        .into_iter()
+        .cloned()
+        .collect()
 }
 
 /// [`filter_and_sort_sessions`] over already name-filtered sessions paired with their

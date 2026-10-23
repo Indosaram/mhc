@@ -35,6 +35,8 @@ pub struct OpenAiImagesRequestError {
     pub message: String,
     pub status: Option<u16>,
     pub headers: reqwest::header::HeaderMap,
+    /// The classified provider failure (`awaitProviderTransport` + diagnostic reader).
+    pub diagnostic: Option<crate::types::ProviderDiagnostic>,
 }
 
 impl ProviderRequestError for OpenAiImagesRequestError {
@@ -63,6 +65,7 @@ pub async fn generate_images(
         stop_reason: ImagesStopReason::Stop,
         error_message: None,
         timestamp: now_ms(),
+        provider_diagnostic: None,
     };
 
     let result = run_generate(model, context, options_ref, &mut output).await;
@@ -76,6 +79,9 @@ pub async fn generate_images(
             ImagesStopReason::Error
         };
         output.error_message = Some(error);
+        if output.stop_reason != ImagesStopReason::Error {
+            output.provider_diagnostic = None;
+        }
     }
     output
 }
@@ -194,6 +200,7 @@ async fn run_generate(
                     message: "Request aborted".into(),
                     status: None,
                     headers: reqwest::header::HeaderMap::new(),
+                    diagnostic: None,
                 });
             }
             send_request(
@@ -212,7 +219,10 @@ async fn run_generate(
     let (body, raw_status, raw_headers) = retry_provider_request(send, &retry_options)
         .await
         .map_err(|error| match error {
-            ProviderRetryError::Request(error) => error.message,
+            ProviderRetryError::Request(error) => {
+                output.provider_diagnostic = error.diagnostic;
+                error.message
+            }
             ProviderRetryError::RetryDelay { message, .. } => message,
             ProviderRetryError::Aborted => "Request aborted".to_owned(),
         })?;
@@ -279,11 +289,14 @@ async fn send_request(
             }
             fields.push(MultipartField::text(key, json_scalar(value)));
         }
-        fields.extend(edit_upload_fields(params).map_err(|message| OpenAiImagesRequestError {
-            message,
-            status: None,
-            headers: reqwest::header::HeaderMap::new(),
-        })?);
+        fields.extend(
+            edit_upload_fields(params).map_err(|message| OpenAiImagesRequestError {
+                message,
+                status: None,
+                headers: reqwest::header::HeaderMap::new(),
+                diagnostic: None,
+            })?,
+        );
         let (body, content_type) = encode_multipart(&fields);
         let mut headers = headers;
         headers.insert(
@@ -293,6 +306,7 @@ async fn send_request(
                     message: error.to_string(),
                     status: None,
                     headers: reqwest::header::HeaderMap::new(),
+                    diagnostic: None,
                 }
             })?,
         );
@@ -308,11 +322,16 @@ async fn send_request(
     let response = match signal {
         Some(signal) => tokio::select! {
             result = request.send() => result,
-            _ = signal.cancelled() => return Err(OpenAiImagesRequestError { message: "Request aborted".into(), status: None, headers: reqwest::header::HeaderMap::new() }),
+            _ = signal.cancelled() => return Err(OpenAiImagesRequestError { message: "Request aborted".into(), status: None, headers: reqwest::header::HeaderMap::new(), diagnostic: None, }),
         },
         None => request.send().await,
     }
-    .map_err(|error| OpenAiImagesRequestError { message: error.to_string(), status: None, headers: reqwest::header::HeaderMap::new() })?;
+    .map_err(|error| OpenAiImagesRequestError {
+        message: error.to_string(),
+        status: None,
+        headers: reqwest::header::HeaderMap::new(),
+        diagnostic: crate::utils::provider_diagnostic_carrier::diagnostic_from_transport(&error),
+    })?;
     let status = response.status().as_u16();
     let response_headers = headers_to_record(response.headers());
     let error_headers = response.headers().clone();
@@ -320,32 +339,35 @@ async fn send_request(
     let text = match signal {
         Some(signal) => tokio::select! {
             biased;
-            () = signal.cancelled() => return Err(OpenAiImagesRequestError { message: "Request aborted".into(), status: Some(status), headers: error_headers }),
+            () = signal.cancelled() => return Err(OpenAiImagesRequestError { message: "Request aborted".into(), status: Some(status), headers: error_headers, diagnostic: None, }),
             text = body => text,
         },
         None => body.await,
-    }.map_err(|error| OpenAiImagesRequestError { message: error.to_string(), status: Some(status), headers: error_headers.clone() })?;
+    }.map_err(|error| OpenAiImagesRequestError { message: error.to_string(), status: Some(status), headers: error_headers.clone(), diagnostic: None, })?;
     if !(200..300).contains(&status) {
         let message = error_message_from_body(&text);
         return Err(OpenAiImagesRequestError {
             message,
             status: Some(status),
             headers: error_headers.clone(),
+            diagnostic: crate::api::github_copilot_errors::diagnostic_from_openai_error(
+                Some(status),
+                Some(&text),
+            ),
         });
     }
     let body = serde_json::from_str::<Value>(&text).map_err(|error| OpenAiImagesRequestError {
         message: error.to_string(),
         status: Some(status),
         headers: error_headers,
+        diagnostic: None,
     })?;
     Ok((body, status, response_headers))
 }
 
 const MULTIPART_BOUNDARY: &str = "maho-ai-openai-images-boundary";
 
-fn edit_upload_fields(
-    params: &Map<String, Value>,
-) -> Result<Vec<MultipartField>, String> {
+fn edit_upload_fields(params: &Map<String, Value>) -> Result<Vec<MultipartField>, String> {
     let mut fields = Vec::new();
     for (key, prefix) in [("image", "reference"), ("mask", "mask")] {
         let Some(value) = params.get(key).filter(|value| !value.is_null()) else {
@@ -442,6 +464,7 @@ fn encode_multipart(fields: &[MultipartField]) -> (Vec<u8>, String) {
 
 pub fn model_as_payload_model(model: &ImagesModel) -> crate::types::Model {
     crate::types::Model {
+        deprecated: None,
         prompt_cache: None,
         supports_assistant_prefill: None,
         id: model.id.clone(),

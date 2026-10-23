@@ -14,7 +14,7 @@ use senpi_desktop_safety::{Chord, MonotonicClock, StopPathListener, Supervisor};
 
 use crate::capture::screenshot_portal::UNAVAILABLE as CAPTURE_UNAVAILABLE;
 use crate::portal::remote_desktop::INPUT_PATH_REQUIRED;
-use crate::{GlobalShortcutsListener, WaylandBackend, STOP_PATH_UNAVAILABLE};
+use crate::{GlobalShortcutsListener, STOP_PATH_UNAVAILABLE, WaylandBackend};
 
 fn preconditions() {
     assert!(
@@ -96,7 +96,10 @@ fn live_session_without_portals_reports_global_shortcuts_unavailable() {
         Arc::clone(&supervisor),
     );
 
-    let reason = started.as_ref().err().map(|error| error.reason().to_owned());
+    let reason = started
+        .as_ref()
+        .err()
+        .map(|error| error.reason().to_owned());
     let status = supervisor.status();
     println!(
         "stop_path_reason={reason:?} global_live={} stop_path={}",

@@ -1,6 +1,13 @@
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
-use maho_ai::{model::Model, types::{AssistantMessageEvent as Event, ContentBlock, Context, DoneReason, ErrorReason, SimpleStreamOptions, StopReason, TextContent}, utils::event_stream::{AssistantMessageEventStream, create_assistant_message_event_stream}};
+use maho_ai::{
+    model::Model,
+    types::{
+        AssistantMessageEvent as Event, ContentBlock, Context, DoneReason, ErrorReason,
+        SimpleStreamOptions, StopReason, TextContent,
+    },
+    utils::event_stream::{AssistantMessageEventStream, create_assistant_message_event_stream},
+};
 use serde_json::json;
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 pub struct StreamDeps {
     pub executable: PathBuf,
@@ -20,32 +27,64 @@ pub struct StreamDeps {
 /// `message`, then the end of the stream.
 pub fn failed_stream(model: &Model, message: &str) -> AssistantMessageEventStream {
     let stream = create_assistant_message_event_stream();
-    let mut output = crate::stream_events::StreamEventContext::new(model.clone(), maho_ai::utils::diagnostics::now_ms(), BTreeMap::new()).output;
+    let mut output = crate::stream_events::StreamEventContext::new(
+        model.clone(),
+        maho_ai::utils::diagnostics::now_ms(),
+        BTreeMap::new(),
+    )
+    .output;
     output.stop_reason = StopReason::Error;
     output.error_message = Some(message.to_owned());
-    stream.push(Event::Error { reason: ErrorReason::Error, error: output });
+    stream.push(Event::Error {
+        reason: ErrorReason::Error,
+        error: output,
+    });
     stream.end(None);
     stream
 }
 
-pub fn stream_anthropic_subscription(model: Model, context: Context, options: Option<SimpleStreamOptions>, deps: StreamDeps) -> AssistantMessageEventStream {
+pub fn stream_anthropic_subscription(
+    model: Model,
+    context: Context,
+    options: Option<SimpleStreamOptions>,
+    deps: StreamDeps,
+) -> AssistantMessageEventStream {
     let stream = create_assistant_message_event_stream();
     let events = stream.clone();
     tokio::spawn(async move {
-        let signal = options.as_ref().and_then(|options| options.stream.request.signal.clone());
-        let mut mapper = crate::stream_events::StreamEventContext::new(model.clone(), (deps.now)(), BTreeMap::new());
-        let request = options.as_ref().and_then(|options| options.stream.request.env.as_ref());
-        let pool = crate::auth_lane::managed_pool(deps.store.as_ref(), &deps.settings, &deps.environment, request).await;
-        let (mut pool, pool_error) = match pool { Ok(pool) => (pool, None), Err(error) => (None, Some(error)) };
+        let signal = options
+            .as_ref()
+            .and_then(|options| options.stream.request.signal.clone());
+        let mut mapper = crate::stream_events::StreamEventContext::new(
+            model.clone(),
+            (deps.now)(),
+            BTreeMap::new(),
+        );
+        let request = options
+            .as_ref()
+            .and_then(|options| options.stream.request.env.as_ref());
+        let pool = crate::auth_lane::managed_pool(
+            deps.store.as_ref(),
+            &deps.settings,
+            &deps.environment,
+            request,
+        )
+        .await;
+        let (mut pool, pool_error) = match pool {
+            Ok(pool) => (pool, None),
+            Err(error) => (None, Some(error)),
+        };
         let mut pool_error = pool_error;
         let mut attempt = 0;
         let mut retry_account = None;
         let mut started = false;
+        let mut asked_legacy_long_context = false;
+        let mut long_context_retried = false;
         let outcome = loop {
-        let mut query = None;
-        let mut selected = None;
-        let mut visible = false;
-        let outcome: anyhow::Result<()> = async {
+            let mut query = None;
+            let mut selected = None;
+            let mut visible = false;
+            let outcome: anyhow::Result<()> = async {
             if let Some(error) = pool_error.take() { return Err(error); }
             if let Some(signal) = &signal { signal.throw_if_aborted()?; }
             let (lane, environment, account) = match pool.as_ref() {
@@ -55,7 +94,7 @@ pub fn stream_anthropic_subscription(model: Model, context: Context, options: Op
                     let mut slot = if let Some(name) = retry_account.take() {
                         pool.accounts.iter().find(|slot| slot.name == name).cloned().ok_or_else(|| anyhow::anyhow!("retry account disappeared"))?
                     } else {
-                        crate::affinity::select_account(&pool.accounts, &crate::affinity::AffinityOptions { session_id: session, pinned_account: cli_pin.as_deref().or(pool.pinned_account.as_deref()), ..Default::default() }, (deps.now)() as f64)?
+                        crate::affinity::select_account(&pool.accounts, &crate::affinity::AffinityOptions { session_id: session, pinned_account: cli_pin.as_deref().or(pool.pinned_account.as_deref()), pin_source: if cli_pin.is_some() { Some(crate::affinity::PinSource::Cli) } else { pool.pin_source }, ..Default::default() }, (deps.now)() as f64)?
                     };
                     selected = Some(slot.clone());
                     pool.refresh_for_attempt(deps.store.as_ref(), &mut slot, (deps.now)() as f64, signal.clone().unwrap_or_else(|| maho_ai::utils::abort::AbortController::new().signal()), deps.refresh.clone()).await?;
@@ -82,6 +121,7 @@ pub fn stream_anthropic_subscription(model: Model, context: Context, options: Op
                 }
             }
             let mut configuration = crate::options::build_query_configuration(crate::options::QueryOptionsInput { model: &model_json, context: &context_json, stream_options: &options_json, settings: &deps.settings, lane, cwd: &deps.cwd, agent_dir: &deps.agent_dir, config_directory: ".omo", tools: Some(&resolved.sdk_tools), executable: deps.executable.to_str() })?;
+            asked_legacy_long_context = crate::context_window::asks_legacy_long_context(configuration["model"].as_str());
             if options.as_ref().is_none_or(|options| options.tool_choice != Some(maho_ai::types::ToolChoice::None)) && !resolved.custom_tools.is_empty() { configuration["customTools"] = json!(resolved.custom_tools); }
             let resident = options.as_ref().filter(|options| options.stream.request.stream_kind == Some(maho_ai::types::StreamKind::Main) && deps.settings.values.get("resumeMode").and_then(serde_json::Value::as_str) != Some("off")).and_then(|options| options.stream.session_id.as_deref());
             if resident.is_none() && options.as_ref().is_some_and(|options| options.stream.request.stream_kind == Some(maho_ai::types::StreamKind::Main)) {
@@ -94,6 +134,7 @@ pub fn stream_anthropic_subscription(model: Model, context: Context, options: Op
                 let result = registry.turn(crate::session_stream::ResidentInput { session, account: &account, model: &model.id, context: &context_json, options: &configuration, executable: &deps.executable, environment: &environment, auth_lane: lane_name, custom: &resolved.to_sdk, tool_note: tool_note.as_deref(), now: (deps.now)() as u64, transcript_available: true, signal: signal.as_ref() }, |message| {
                     if !started { events.push(Event::Start { partial: mapper.output.clone() }); started = true; }
                     if message["type"] == "stream_event" { saw_stream = true; visible |= matches!(message["event"]["type"].as_str(), Some("content_block_start" | "content_block_delta" | "content_block_stop")); if let Some(event) = mapper.apply_stream_event(&message["event"]) { events.push(event); } }
+                    else if message["type"] == "assistant" { mapper.note_response_id(message["message"]["id"].as_str()); }
                     else if message["type"] == "result" {
                         crate::stream_protocol::update_usage(&model, &mut mapper.output, &message["usage"]);
                         if mapper.output.stop_reason != StopReason::ToolUse && !message["stop_reason"].is_null() { mapper.output.stop_reason = crate::stream_protocol::map_stop_reason(message["stop_reason"].as_str()); }
@@ -145,6 +186,8 @@ pub fn stream_anthropic_subscription(model: Model, context: Context, options: Op
                     saw_stream = true;
                     visible |= matches!(message["event"]["type"].as_str(), Some("content_block_start" | "content_block_delta" | "content_block_stop"));
                     if let Some(event) = mapper.apply_stream_event(&message["event"]) { events.push(event); }
+                } else if message["type"] == "assistant" {
+                    mapper.note_response_id(message["message"]["id"].as_str());
                 } else if message["type"] == "result" && message["subtype"] == "success" {
                     crate::stream_protocol::update_usage(&model, &mut mapper.output, &message["usage"]);
                     if mapper.output.stop_reason != StopReason::ToolUse && !message["stop_reason"].is_null() { mapper.output.stop_reason = crate::stream_protocol::map_stop_reason(message["stop_reason"].as_str()); }
@@ -154,50 +197,178 @@ pub fn stream_anthropic_subscription(model: Model, context: Context, options: Op
             }
             Ok(())
         }.await;
-        let cleanup = match query { Some(query) => query.close().await, None => Ok(()) };
-        let outcome = outcome.and(cleanup);
-        let Err(error) = outcome else { break Ok(()); };
-        if signal.as_ref().is_some_and(maho_ai::utils::abort::AbortSignal::aborted) { break Err(error); }
-        let (Some(pool), Some(slot)) = (pool.as_mut(), selected) else { break Err(error); };
-        let original = json!({"message":error.to_string()});
-        let classification = crate::errors::classify_sdk_error(&original);
-        if !classification.retryable { break Err(crate::failover::ClassifiedSdkError {classification,original,suppress_turn_retry:visible}.into()); }
-        let retryable_kind = matches!(classification.kind, crate::errors::SdkErrorKind::Other | crate::errors::SdkErrorKind::Overloaded);
-        let retried = retryable_kind && attempt == 0 && !visible;
-        let blocked = if retried { slot.clone() } else { crate::failover::blocked_account(&slot, classification, (deps.now)() as f64, attempt, crate::failover::DEFAULT_RATE_LIMIT_BLOCK_MS, &original) };
-        if !retried {
-            if let Err(error) = crate::failover::persist_block(deps.store.as_ref(), crate::auth_lane::PROVIDER_ID, blocked.clone()).await { break Err(error); }
-            for account in &mut pool.accounts { if account.name == blocked.name { *account = blocked.clone(); } }
-        }
-        crate::account_events::emit_provider_accounts_changed(crate::auth_lane::PROVIDER_ID);
-        if visible { break Err(crate::failover::ClassifiedSdkError { classification, original, suppress_turn_retry:true }.into()); }
-        if retried {
-            retry_account = Some(slot.name.clone());
+            let cleanup = match query {
+                Some(query) => query.close().await,
+                None => Ok(()),
+            };
+            let outcome = outcome.and(cleanup);
+            let Err(error) = outcome else {
+                break Ok(());
+            };
+            if signal
+                .as_ref()
+                .is_some_and(maho_ai::utils::abort::AbortSignal::aborted)
+            {
+                break Err(error);
+            }
+            let original = json!({"message":error.to_string()});
+            let classification = crate::long_context_retry::classify_for_request(
+                &original,
+                asked_legacy_long_context,
+            );
+            if classification.kind == crate::errors::SdkErrorKind::LongContextUnavailable {
+                // Ambient and single-account turns have no failover to absorb the refusal: record it and retry once at the standard window.
+                if visible || long_context_retried {
+                    break Err(crate::failover::ClassifiedSdkError {
+                        classification,
+                        original,
+                        suppress_turn_retry: visible,
+                    }
+                    .into());
+                }
+                long_context_retried = true;
+                crate::long_context::mark_long_context_refused();
+                retry_account = selected.as_ref().map(|slot| slot.name.clone());
+                continue;
+            }
+            let (Some(pool), Some(slot)) = (pool.as_mut(), selected) else {
+                break Err(error);
+            };
+            if !classification.retryable {
+                break Err(crate::failover::ClassifiedSdkError {
+                    classification,
+                    original,
+                    suppress_turn_retry: visible,
+                }
+                .into());
+            }
+            let retryable_kind = matches!(
+                classification.kind,
+                crate::errors::SdkErrorKind::Other | crate::errors::SdkErrorKind::Overloaded
+            );
+            let retried = retryable_kind && attempt == 0 && !visible;
+            let blocked = if retried {
+                slot.clone()
+            } else {
+                crate::failover::blocked_account(
+                    &slot,
+                    classification,
+                    (deps.now)() as f64,
+                    attempt,
+                    crate::failover::DEFAULT_RATE_LIMIT_BLOCK_MS,
+                    &original,
+                )
+            };
+            if !retried {
+                if let Err(error) = crate::failover::persist_block(
+                    deps.store.as_ref(),
+                    crate::auth_lane::PROVIDER_ID,
+                    blocked.clone(),
+                )
+                .await
+                {
+                    break Err(error);
+                }
+                for account in &mut pool.accounts {
+                    if account.name == blocked.name {
+                        *account = blocked.clone();
+                    }
+                }
+            }
+            crate::account_events::emit_provider_accounts_changed(crate::auth_lane::PROVIDER_ID);
+            if visible {
+                break Err(crate::failover::ClassifiedSdkError {
+                    classification,
+                    original,
+                    suppress_turn_retry: true,
+                }
+                .into());
+            }
+            if retried {
+                retry_account = Some(slot.name.clone());
+                attempt += 1;
+                continue;
+            }
+            let previous_name = slot.name.clone();
             attempt += 1;
-            continue;
-        }
-        let previous_name = slot.name.clone();
-        attempt += 1;
-        if attempt as usize >= pool.accounts.len() { break Err(error); }
-        let session = options.as_ref().and_then(|options| options.stream.request.affinity_session_id.as_deref().or(options.stream.session_id.as_deref()));
-        let cli_pin = crate::account_command::session_pin(session);
-        let next = match crate::affinity::select_account(&pool.accounts, &crate::affinity::AffinityOptions { session_id:session, pinned_account:cli_pin.as_deref().or(pool.pinned_account.as_deref()), ..Default::default() }, (deps.now)() as f64) { Ok(next) => next, Err(error) => break Err(error.into()) };
-        retry_account = Some(next.name.clone());
-        crate::account_events::emit_provider_account_failover(crate::auth_lane::PROVIDER_ID, &previous_name, &next.name, classification.kind);
+            if attempt as usize >= pool.accounts.len() {
+                break Err(error);
+            }
+            let session = options.as_ref().and_then(|options| {
+                options
+                    .stream
+                    .request
+                    .affinity_session_id
+                    .as_deref()
+                    .or(options.stream.session_id.as_deref())
+            });
+            let cli_pin = crate::account_command::session_pin(session);
+            let next = match crate::affinity::select_account(
+                &pool.accounts,
+                &crate::affinity::AffinityOptions {
+                    session_id: session,
+                    pinned_account: cli_pin.as_deref().or(pool.pinned_account.as_deref()),
+                    pin_source: if cli_pin.is_some() {
+                        Some(crate::affinity::PinSource::Cli)
+                    } else {
+                        pool.pin_source
+                    },
+                    ..Default::default()
+                },
+                (deps.now)() as f64,
+            ) {
+                Ok(next) => next,
+                Err(error) => break Err(error.into()),
+            };
+            retry_account = Some(next.name.clone());
+            crate::account_events::emit_provider_account_failover(
+                crate::auth_lane::PROVIDER_ID,
+                &previous_name,
+                &next.name,
+                classification.kind,
+            );
         };
         match outcome {
-            Ok(()) => events.push(Event::Done { reason: match mapper.output.stop_reason { StopReason::ToolUse => DoneReason::ToolUse, StopReason::Length => DoneReason::Length, _ => DoneReason::Stop }, message: mapper.output }),
+            Ok(()) => events.push(Event::Done {
+                reason: match mapper.output.stop_reason {
+                    StopReason::ToolUse => DoneReason::ToolUse,
+                    StopReason::Length => DoneReason::Length,
+                    _ => DoneReason::Stop,
+                },
+                message: mapper.output,
+            }),
             Err(error) => {
-                let aborted = signal.as_ref().is_some_and(maho_ai::utils::abort::AbortSignal::aborted);
-                mapper.output.stop_reason = if aborted { StopReason::Aborted } else { StopReason::Error };
+                let aborted = signal
+                    .as_ref()
+                    .is_some_and(maho_ai::utils::abort::AbortSignal::aborted);
+                mapper.output.stop_reason = if aborted {
+                    StopReason::Aborted
+                } else {
+                    StopReason::Error
+                };
                 let mut message = crate::stream_guidance::with_auth_guidance(&error);
-                if error.downcast_ref::<crate::affinity::AllAccountsBlockedError>().is_none()
-                    && let Some(guidance) = crate::guidance::version_floor_guidance(&message, deps.source, &deps.executable.to_string_lossy()) {
-                    message.push('\n'); message.push_str(&guidance);
+                if error
+                    .downcast_ref::<crate::affinity::AllAccountsBlockedError>()
+                    .is_none()
+                    && let Some(guidance) = crate::guidance::version_floor_guidance(
+                        &message,
+                        deps.source,
+                        &deps.executable.to_string_lossy(),
+                    )
+                {
+                    message.push('\n');
+                    message.push_str(&guidance);
                 }
                 mapper.output.error_message = Some(message);
-                events.push(Event::Error { reason: if aborted { ErrorReason::Aborted } else { ErrorReason::Error }, error: mapper.output });
-            },
+                events.push(Event::Error {
+                    reason: if aborted {
+                        ErrorReason::Aborted
+                    } else {
+                        ErrorReason::Error
+                    },
+                    error: mapper.output,
+                });
+            }
         }
         events.end(None);
     });

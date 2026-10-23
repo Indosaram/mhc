@@ -4,7 +4,7 @@
 //! (#9084). The query is IPC to launchservicesd, so it stays live in the engine, which has no AppKit run loop
 //! to refresh `NSWorkspace`.
 
-use std::ffi::{c_void, CStr};
+use std::ffi::{CStr, c_void};
 use std::sync::LazyLock;
 
 use objc2_core_foundation::{CFArray, CFNumber, CFRetained, CFString, CFType};
@@ -50,7 +50,9 @@ static SPI: LazyLock<Option<LaunchServicesSpi>> = LazyLock::new(|| {
     let copy_item = lookup(c"_LSCopyApplicationInformationItem")?;
     Some(LaunchServicesSpi {
         // SAFETY: both symbols have exactly the C signatures in their aliases (as `lsappinfo` uses them).
-        copy_front_to_back: unsafe { std::mem::transmute::<*mut c_void, CopyFrontToBackFn>(copy_front_to_back) },
+        copy_front_to_back: unsafe {
+            std::mem::transmute::<*mut c_void, CopyFrontToBackFn>(copy_front_to_back)
+        },
         // SAFETY: see above.
         copy_item: unsafe { std::mem::transmute::<*mut c_void, CopyInformationItemFn>(copy_item) },
         pid_key: constant(c"_kLSPIDKey")?,
@@ -59,7 +61,11 @@ static SPI: LazyLock<Option<LaunchServicesSpi>> = LazyLock::new(|| {
     })
 });
 
-fn copy_item(spi: &LaunchServicesSpi, asn: &CFType, key: *const c_void) -> Option<CFRetained<CFType>> {
+fn copy_item(
+    spi: &LaunchServicesSpi,
+    asn: &CFType,
+    key: *const c_void,
+) -> Option<CFRetained<CFType>> {
     let asn: *const CFType = asn;
     // SAFETY: `asn` is alive for the call and `key` is a process-lived constant; the copy returns +1 or null.
     let raw = unsafe { (spi.copy_item)(DEFAULT_SESSION, asn.cast(), key) };
@@ -71,7 +77,9 @@ fn copy_item(spi: &LaunchServicesSpi, asn: &CFType, key: *const c_void) -> Optio
 pub(crate) fn front_application_pid() -> Option<libc::pid_t> {
     let spi = SPI.as_ref()?;
     // SAFETY: the SPI returns a +1 CFArray of ASNs (or null); ownership moves into `CFRetained`.
-    let raw = std::ptr::NonNull::new(unsafe { (spi.copy_front_to_back)(DEFAULT_SESSION, 0) }.cast::<CFArray>())?;
+    let raw = std::ptr::NonNull::new(
+        unsafe { (spi.copy_front_to_back)(DEFAULT_SESSION, 0) }.cast::<CFArray>(),
+    )?;
     // SAFETY: a +1 CFArray from a copy function.
     let order: CFRetained<CFArray> = unsafe { CFRetained::from_raw(raw) };
     // SAFETY: every element of the front-to-back array is an ASN CFType.
@@ -79,11 +87,16 @@ pub(crate) fn front_application_pid() -> Option<libc::pid_t> {
     // SAFETY: `foreground` is the `_kLSApplicationForegroundTypeKey` CFString constant.
     let foreground: &CFString = unsafe { &*spi.foreground.cast::<CFString>() };
     order.iter().find_map(|asn| {
-        let kind = copy_item(spi, &asn, spi.type_key)?.downcast::<CFString>().ok()?;
+        let kind = copy_item(spi, &asn, spi.type_key)?
+            .downcast::<CFString>()
+            .ok()?;
         if *kind != *foreground {
             return None;
         }
-        let pid = copy_item(spi, &asn, spi.pid_key)?.downcast::<CFNumber>().ok()?.as_i64()?;
+        let pid = copy_item(spi, &asn, spi.pid_key)?
+            .downcast::<CFNumber>()
+            .ok()?
+            .as_i64()?;
         libc::pid_t::try_from(pid).ok().filter(|&pid| pid > 0)
     })
 }

@@ -12,10 +12,12 @@ pub fn wrap_stream_with_kimi_thinking_recovery(
     let outer_for_task = outer_stream.clone();
     let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
     let cancellation_source = inner_stream.clone();
-    outer_stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
-        let _ = cancel_tx.send(());
-        cancellation_source.cancel().await
-    })));
+    outer_stream.set_cancellation_handler(Box::new(move || {
+        Box::pin(async move {
+            let _ = cancel_tx.send(());
+            cancellation_source.cancel().await
+        })
+    }));
 
     let task = tokio::spawn(async move {
         let mut partial = None;
@@ -59,7 +61,9 @@ pub fn wrap_stream_with_kimi_thinking_recovery(
                             outer_for_task.end(Some(recover_kimi_xtml_thinking(&message)))
                         }
                         Some(Err(error)) => outer_for_task.fail(error),
-                        None => outer_for_task.end(partial.as_ref().map(recover_kimi_xtml_thinking)),
+                        None => {
+                            outer_for_task.end(partial.as_ref().map(recover_kimi_xtml_thinking))
+                        }
                     }
                     return;
                 }
@@ -106,6 +110,8 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 0,
+            failure_source: None,
+            timing: None,
         }
     }
 

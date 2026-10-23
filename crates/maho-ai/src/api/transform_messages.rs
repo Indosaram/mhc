@@ -399,6 +399,8 @@ mod tests {
 
     fn assistant_message(content: Vec<ContentBlock>, stop_reason: StopReason) -> Message {
         Message::Assistant(Box::new(AssistantMessage {
+            failure_source: None,
+            timing: None,
             error_cause: None,
             prompt_cache_diagnostics: None,
             thinking_level: None,

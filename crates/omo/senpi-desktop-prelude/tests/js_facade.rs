@@ -1,6 +1,6 @@
+use serde_json::{Value, json};
 use std::io::Write;
 use std::process::{Command, Stdio};
-use serde_json::{json, Value};
 
 use senpi_desktop_prelude::ComputerPreludeAssets;
 
@@ -80,9 +80,18 @@ fn run_js_test(script: &str, responder: Option<&str>) -> Value {
         .unwrap_or_else(|_| panic!("Failed to spawn {}", cmd));
 
     let input_bytes = serde_json::to_vec(&input).unwrap();
-    child.stdin.as_mut().unwrap().write_all(&input_bytes).unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(&input_bytes)
+        .unwrap();
     let output = child.wait_with_output().unwrap();
-    assert!(output.status.success(), "JS runner failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "JS runner failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
@@ -98,14 +107,20 @@ fn js_sends_a_window_click_as_one_two_step_call_chain_through_tool_computer() {
     assert!(res["error"].is_null(), "facade error: {}", res["error"]);
     let calls = res["calls"].as_array().unwrap();
     assert_eq!(calls.len(), 2);
-    assert_eq!(calls[0], json!({ "action": "call", "chain": [{ "method": "window", "args": [{ "app": "Code" }] }] }));
-    assert_eq!(calls[1], json!({
-        "action": "call",
-        "chain": [
-            { "method": "window", "args": ["w1"] },
-            { "method": "click", "args": [1, 2, { "delivery": "foreground" }] }
-        ]
-    }));
+    assert_eq!(
+        calls[0],
+        json!({ "action": "call", "chain": [{ "method": "window", "args": [{ "app": "Code" }] }] })
+    );
+    assert_eq!(
+        calls[1],
+        json!({
+            "action": "call",
+            "chain": [
+                { "method": "window", "args": ["w1"] },
+                { "method": "click", "args": [1, 2, { "delivery": "foreground" }] }
+            ]
+        })
+    );
 }
 
 #[test]
@@ -128,11 +143,16 @@ fn js_returns_details_value_and_displays_every_result_image() {
         r#"
         return await computer.screenshot();
         "#,
-        Some("return { text: 'screenshot desktop 1x1', details: { value: { width: 1 } }, images: [IMAGE] };"),
+        Some(
+            "return { text: 'screenshot desktop 1x1', details: { value: { width: 1 } }, images: [IMAGE] };",
+        ),
     );
     assert_eq!(res["out"], json!({ "width": 1 }));
     assert_eq!(res["displayed"].as_array().unwrap().len(), 1);
-    assert_eq!(res["displayed"][0], serde_json::from_str::<Value>(IMAGE).unwrap());
+    assert_eq!(
+        res["displayed"][0],
+        serde_json::from_str::<Value>(IMAGE).unwrap()
+    );
 }
 
 #[test]
@@ -148,15 +168,18 @@ fn js_throws_the_result_text_when_the_tool_reports_an_error() {
 }
 
 #[test]
-fn js_throws_the_computer_permission_required_text_when_a_permission_denial_comes_back_as_an_error() {
+fn js_throws_the_computer_permission_required_text_when_a_permission_denial_comes_back_as_an_error()
+{
     let res = run_js_test(
         r#"
         await computer.screenshot();
         "#,
-        Some(r#"
+        Some(
+            r#"
         const text = 'COMPUTER_PERMISSION_REQUIRED: accessibility permission is missing. Do not retry until the user says the grant is done and the app was relaunched.';
         return { text, details: { value: { code: 'COMPUTER_PERMISSION_REQUIRED' }, isError: true }, hasError: true };
-        "#),
+        "#,
+        ),
     );
     let err = res["error"].as_str().unwrap();
     assert!(err.contains("COMPUTER_PERMISSION_REQUIRED"));
@@ -171,7 +194,10 @@ fn js_drops_trailing_undefined_arguments_from_a_chain_step() {
         None,
     );
     let calls = res["calls"].as_array().unwrap();
-    assert_eq!(calls, &vec![json!({ "action": "call", "chain": [{ "method": "scroll", "args": [3, 4] }] })]);
+    assert_eq!(
+        calls,
+        &vec![json!({ "action": "call", "chain": [{ "method": "scroll", "args": [3, 4] }] })]
+    );
 }
 
 #[test]
@@ -198,7 +224,10 @@ fn js_never_sends_a_three_step_chain_a_window_handle_has_no_window_to_chain() {
     assert!(res["error"].is_string());
     let calls = res["calls"].as_array().unwrap();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0], json!({ "action": "call", "chain": [{ "method": "window", "args": [{ "app": "Code" }] }] }));
+    assert_eq!(
+        calls[0],
+        json!({ "action": "call", "chain": [{ "method": "window", "args": [{ "app": "Code" }] }] })
+    );
 }
 
 #[test]
@@ -232,7 +261,10 @@ fn js_sends_a_code_string_to_computer_run_unchanged() {
     );
     assert_eq!(res["out"], 7);
     let calls = res["calls"].as_array().unwrap();
-    assert_eq!(calls, &vec![json!({ "action": "run", "code": "return 7;" })]);
+    assert_eq!(
+        calls,
+        &vec![json!({ "action": "run", "code": "return 7;" })]
+    );
 }
 
 #[test]
@@ -245,5 +277,11 @@ fn js_maps_capabilities_and_close_to_their_own_tool_actions() {
         Some("return { text: '' };"),
     );
     let calls = res["calls"].as_array().unwrap();
-    assert_eq!(calls, &vec![json!({ "action": "capabilities" }), json!({ "action": "close" })]);
+    assert_eq!(
+        calls,
+        &vec![
+            json!({ "action": "capabilities" }),
+            json!({ "action": "close" })
+        ]
+    );
 }

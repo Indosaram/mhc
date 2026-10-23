@@ -218,6 +218,15 @@ pub struct DagNodeError {
     pub at: String,
 }
 
+/// Marks a `dag.node.retried` event as an automatic infrastructure retry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DagNodeRetryAutomatic {
+    pub attempt: u32,
+    pub failure_kind: String,
+    pub delay_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DagDiagnostic {
@@ -525,6 +534,8 @@ pub enum DagRunEventPayload {
         prior_task_id: Option<String>,
         exec_attempt: u32,
         prompt_changed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        automatic: Option<DagNodeRetryAutomatic>,
     },
     #[serde(rename = "dag.node.steered", rename_all = "camelCase")]
     NodeSteered {

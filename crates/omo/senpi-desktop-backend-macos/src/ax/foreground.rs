@@ -36,7 +36,9 @@ pub(crate) fn prepare_foreground_input(window: &DesktopWindow) -> CoreResult<()>
     let started = Instant::now();
     loop {
         let observed = KeyObservation {
-            frontmost: app.as_deref().and_then(|app| element::copy_bool(app, "AXFrontmost")),
+            frontmost: app
+                .as_deref()
+                .and_then(|app| element::copy_bool(app, "AXFrontmost")),
             main: element::copy_bool(&root, "AXMain"),
             focused_window_is_target: app.as_deref().and_then(|app| {
                 let focused = element::copy_element(app, "AXFocusedWindow")?;
@@ -65,7 +67,8 @@ pub(crate) fn prepare_foreground_input(window: &DesktopWindow) -> CoreResult<()>
 /// Accessibility-trusted process is allowed to use under cooperative activation.
 /// Returns whether the write was accepted.
 pub(crate) fn make_frontmost(pid: libc::pid_t) -> bool {
-    element::create_application(pid).is_ok_and(|app| actions::set_bool(&app, "AXFrontmost", true).is_ok())
+    element::create_application(pid)
+        .is_ok_and(|app| actions::set_bool(&app, "AXFrontmost", true).is_ok())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -83,7 +86,11 @@ enum KeyState {
 }
 
 fn key_state(observed: KeyObservation) -> KeyState {
-    match (observed.frontmost, observed.main, observed.focused_window_is_target) {
+    match (
+        observed.frontmost,
+        observed.main,
+        observed.focused_window_is_target,
+    ) {
         (Some(true), Some(true), Some(true)) => KeyState::Ready,
         (None, _, _) | (_, None, _) | (_, _, None) => KeyState::Unverifiable,
         _ => KeyState::NotYet,
@@ -92,28 +99,57 @@ fn key_state(observed: KeyObservation) -> KeyState {
 
 #[cfg(test)]
 mod tests {
-    use super::{key_state, KeyObservation, KeyState};
+    use super::{KeyObservation, KeyState, key_state};
 
-    const fn observed(frontmost: Option<bool>, main: Option<bool>, target: Option<bool>) -> KeyObservation {
-        KeyObservation { frontmost, main, focused_window_is_target: target }
+    const fn observed(
+        frontmost: Option<bool>,
+        main: Option<bool>,
+        target: Option<bool>,
+    ) -> KeyObservation {
+        KeyObservation {
+            frontmost,
+            main,
+            focused_window_is_target: target,
+        }
     }
 
     #[test]
     fn a_window_is_ready_when_its_app_is_front_and_it_is_the_main_focused_window() {
-        assert_eq!(key_state(observed(Some(true), Some(true), Some(true))), KeyState::Ready);
+        assert_eq!(
+            key_state(observed(Some(true), Some(true), Some(true))),
+            KeyState::Ready
+        );
     }
 
     #[test]
     fn a_window_is_not_ready_while_any_front_signal_is_false() {
-        assert_eq!(key_state(observed(Some(false), Some(true), Some(true))), KeyState::NotYet);
-        assert_eq!(key_state(observed(Some(true), Some(false), Some(true))), KeyState::NotYet);
-        assert_eq!(key_state(observed(Some(true), Some(true), Some(false))), KeyState::NotYet);
+        assert_eq!(
+            key_state(observed(Some(false), Some(true), Some(true))),
+            KeyState::NotYet
+        );
+        assert_eq!(
+            key_state(observed(Some(true), Some(false), Some(true))),
+            KeyState::NotYet
+        );
+        assert_eq!(
+            key_state(observed(Some(true), Some(true), Some(false))),
+            KeyState::NotYet
+        );
     }
 
     #[test]
     fn a_window_whose_app_hides_a_front_signal_cannot_be_verified() {
-        assert_eq!(key_state(observed(None, Some(true), Some(true))), KeyState::Unverifiable);
-        assert_eq!(key_state(observed(Some(true), None, Some(false))), KeyState::Unverifiable);
-        assert_eq!(key_state(observed(Some(false), Some(false), None)), KeyState::Unverifiable);
+        assert_eq!(
+            key_state(observed(None, Some(true), Some(true))),
+            KeyState::Unverifiable
+        );
+        assert_eq!(
+            key_state(observed(Some(true), None, Some(false))),
+            KeyState::Unverifiable
+        );
+        assert_eq!(
+            key_state(observed(Some(false), Some(false), None)),
+            KeyState::Unverifiable
+        );
     }
 }

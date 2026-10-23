@@ -2,15 +2,15 @@
 //! (the capture connection is left untouched), gated on XTEST 2.2.
 
 use senpi_desktop_core::error::{CoreResult, DesktopError};
+use x11rb::CURRENT_TIME;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
-    AtomEnum, ClientMessageData, ClientMessageEvent, ConnectionExt as _, EventMask, InputFocus,
-    Window, BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, CLIENT_MESSAGE_EVENT, KEY_PRESS_EVENT,
-    KEY_RELEASE_EVENT, MOTION_NOTIFY_EVENT,
+    AtomEnum, BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, CLIENT_MESSAGE_EVENT, ClientMessageData,
+    ClientMessageEvent, ConnectionExt as _, EventMask, InputFocus, KEY_PRESS_EVENT,
+    KEY_RELEASE_EVENT, MOTION_NOTIFY_EVENT, Window,
 };
 use x11rb::protocol::xtest::ConnectionExt as _;
 use x11rb::rust_connection::RustConnection;
-use x11rb::CURRENT_TIME;
 
 use super::keys::Keymap;
 use super::server::{FakeInput, InputServer, SentEvent};
@@ -63,7 +63,8 @@ impl InputServer for X11InputConnection {
     }
 
     fn keymap(&self) -> CoreResult<Keymap> {
-        let (min_keycode, max_keycode) = (self.conn.setup().min_keycode, self.conn.setup().max_keycode);
+        let (min_keycode, max_keycode) =
+            (self.conn.setup().min_keycode, self.conn.setup().max_keycode);
         let count = max_keycode.saturating_sub(min_keycode).saturating_add(1);
         let mapping = self
             .conn
@@ -80,7 +81,9 @@ impl InputServer for X11InputConnection {
 
     fn fake(&self, input: FakeInput) -> CoreResult<()> {
         let (kind, detail, x, y) = match input {
-            FakeInput::Key { code, press } => (pick(press, KEY_PRESS_EVENT, KEY_RELEASE_EVENT), code, 0, 0),
+            FakeInput::Key { code, press } => {
+                (pick(press, KEY_PRESS_EVENT, KEY_RELEASE_EVENT), code, 0, 0)
+            }
             FakeInput::Button { detail, press } => (
                 pick(press, BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT),
                 detail,
@@ -228,11 +231,7 @@ impl InputServer for X11InputConnection {
 }
 
 pub(super) fn pick<T: Copy>(press: bool, down: T, up: T) -> T {
-    if press {
-        down
-    } else {
-        up
-    }
+    if press { down } else { up }
 }
 
 pub(super) fn failed(error: impl std::fmt::Display) -> DesktopError {
