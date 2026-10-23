@@ -30,6 +30,9 @@ pub struct McpClient {
     server:String,io:ClientTransport,pending:Arc<Mutex<BTreeMap<u64,Reply>>>,next_id:AtomicU64,
     pub notifications:broadcast::Sender<Value>,pub closed:tokio::sync::watch::Sender<bool>,pub root_pid:Option<u32>,
     pub server_capabilities:tokio::sync::RwLock<Value>,pub server_info:tokio::sync::RwLock<Value>,pub instructions:tokio::sync::RwLock<Option<String>>,
+    /// Upstream `StreamableHTTPClientTransport._protocolVersion`: unset until `initialize` negotiates it,
+    /// then sent as `mcp-protocol-version` on every later HTTP request.
+    protocol_version:std::sync::RwLock<Option<String>>,
     auth:tokio::sync::RwLock<Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>>,
     step_up:tokio::sync::RwLock<Option<Arc<dyn McpAuthStepUp>>>,
     http_stream:Mutex<Option<JoinHandle<()>>>,
@@ -89,7 +92,7 @@ impl McpClient {
         let stderr=tokio::spawn(async move {
             let mut lines=BufReader::new(errors).lines();while let Ok(Some(line))=lines.next_line().await {if !line.is_empty(){let _=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("info",&line,None,Some("stderr"));}}
         });
-        Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Stdio {input:tokio::sync::Mutex::new(Some(input)),child:Box::new(tokio::sync::Mutex::new(child)),reader,stderr},pending,next_id:AtomicU64::new(1),notifications,closed,root_pid,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),step_up:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default())}))
+        Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Stdio {input:tokio::sync::Mutex::new(Some(input)),child:Box::new(tokio::sync::Mutex::new(child)),reader,stderr},pending,next_id:AtomicU64::new(1),notifications,closed,root_pid,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),protocol_version:std::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),step_up:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default())}))
     }
     pub async fn materialize(server:&str,spec:&McpTransportSpec,logger:Arc<Mutex<McpLogger>>)->Result<Arc<Self>,McpError> {
         match spec {
@@ -98,7 +101,7 @@ impl McpClient {
                 let client=reqwest::Client::builder().build().map_err(|e|failure(server,McpErrorKind::Connect,e.to_string(),"create"))?;
                 let (notifications,_)=broadcast::channel(256);
                 let (closed,_)=tokio::sync::watch::channel(false);
-                Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Http {client,url:url.clone(),headers:headers.clone(),session:tokio::sync::RwLock::new(None)},pending:Arc::new(Mutex::new(BTreeMap::new())),next_id:AtomicU64::new(1),notifications,closed,root_pid:None,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),step_up:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default())}))
+                Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Http {client,url:url.clone(),headers:headers.clone(),session:tokio::sync::RwLock::new(None)},pending:Arc::new(Mutex::new(BTreeMap::new())),next_id:AtomicU64::new(1),notifications,closed,root_pid:None,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),protocol_version:std::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),step_up:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default())}))
             }
         }
     }
@@ -138,9 +141,12 @@ impl McpClient {
         input.write_all(text.as_bytes()).await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"request"))?;
         input.flush().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"request"))
     }
+    fn with_protocol_version(&self,request:reqwest::RequestBuilder)->reqwest::RequestBuilder {
+        match self.protocol_version.read().unwrap_or_else(std::sync::PoisonError::into_inner).as_deref() {Some(version)=>request.header("mcp-protocol-version",version),None=>request}
+    }
     async fn http_request(&self,value:&Value)->Result<reqwest::Response,McpError> {
         let ClientTransport::Http {client,url,headers,session}=&self.io else{return Err(failure(&self.server,McpErrorKind::Protocol,"not HTTP","request"));};
-        let mut request=client.post(url.clone()).header("accept","application/json, text/event-stream").header("mcp-protocol-version","2025-11-25").json(value);
+        let mut request=self.with_protocol_version(client.post(url.clone()).header("accept","application/json, text/event-stream")).json(value);
         for (name,value) in headers {request=request.header(name,value);}
         if let Some(refresh)=self.auth.read().await.as_ref() {
             let tokens=refresh.ensure_fresh().await.map_err(|error|{let terminal=crate::needs_auth::is_oauth_needs_auth_error(&error);let mut result=failure(&self.server,if terminal{McpErrorKind::Auth}else{McpErrorKind::Connect},error.to_string(),"request");result.retriable = !terminal;result})?;
@@ -237,6 +243,7 @@ impl McpClient {
         *self.server_capabilities.write().await=response.get("capabilities").cloned().unwrap_or(Value::Null);
         *self.server_info.write().await=response.get("serverInfo").cloned().unwrap_or(Value::Null);
         *self.instructions.write().await=response.get("instructions").and_then(Value::as_str).map(str::to_owned);
+        *self.protocol_version.write().unwrap_or_else(std::sync::PoisonError::into_inner)=response.get("protocolVersion").and_then(Value::as_str).map(str::to_owned);
         self.send(&json!({"jsonrpc":"2.0","method":"notifications/initialized"})).await?;
         if matches!(self.io,ClientTransport::Http {..}) {self.start_http_notifications();}
         Ok(())
@@ -250,7 +257,7 @@ impl McpClient {
             loop {
                 let Some(owner)=weak.upgrade() else{return;};
                 let ClientTransport::Http {client,url,headers,session}=&owner.io else{return;};
-                let mut request=client.get(url.clone()).header("accept","text/event-stream").header("mcp-protocol-version","2025-11-25");
+                let mut request=owner.with_protocol_version(client.get(url.clone()).header("accept","text/event-stream"));
                 for (name,value) in headers {request=request.header(name,value);}
                 if let Some(id)=session.read().await.as_ref(){request=request.header("mcp-session-id",id);}
                 if let Some(id)=&last_event_id {request=request.header("last-event-id",id);}
@@ -305,7 +312,7 @@ impl McpClient {
         if let Some(task)=self.http_stream.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(){task.abort();}
         let ClientTransport::Stdio {input,child,..}=&self.io else{
             if let ClientTransport::Http {client,url,headers,session}=&self.io && let Some(id)=session.write().await.take() {
-                let mut request=client.delete(url.clone()).header("mcp-session-id",id).header("mcp-protocol-version","2025-11-25");for (name,value) in headers {request=request.header(name,value);}let _=request.timeout(Duration::from_millis(400)).send().await;
+                let mut request=self.with_protocol_version(client.delete(url.clone()).header("mcp-session-id",id));for (name,value) in headers {request=request.header(name,value);}let _=request.timeout(Duration::from_millis(400)).send().await;
             }
             return Ok(());
         };

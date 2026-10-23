@@ -160,3 +160,27 @@ async fn http_post_sse_accepts_bom_and_carriage_return_delimiters() {
     client.initialize(Duration::from_secs(2)).await.unwrap();assert_eq!(client.request("tools/list",json!({}),Duration::from_secs(2)).await.unwrap()["tools"],json!([]));
     client.close().await.unwrap();drop(client);stop.send(()).unwrap();tokio::time::timeout(Duration::from_secs(2),server).await.unwrap().unwrap();
 }
+#[tokio::test]
+async fn http_requests_after_initialize_carry_the_negotiated_protocol_version() {
+    // grep.app answers initialize with an older version and rejects later requests whose
+    // mcp-protocol-version header names a version it does not support.
+    use axum::{Router,routing::post,Json,response::IntoResponse,http::HeaderMap};
+    use serde_json::{Value,json};use std::{sync::{Arc,Mutex},time::Duration};
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let address=listener.local_addr().unwrap();
+    let seen=Arc::new(Mutex::new(Vec::new()));let observed=seen.clone();
+    let (stop,stopped)=tokio::sync::oneshot::channel();
+    let server=tokio::spawn(async move {axum::serve(listener,Router::new().route("/mcp",post(move|headers:HeaderMap,Json(value):Json<Value>|{let observed=observed.clone();async move {
+        let version=headers.get("mcp-protocol-version").and_then(|v|v.to_str().ok()).map(str::to_owned);
+        observed.lock().unwrap().push((value["method"].as_str().unwrap_or_default().to_owned(),version.clone()));
+        if value["method"]!="initialize" && version.as_deref()!=Some("2025-06-18") {return axum::http::StatusCode::BAD_REQUEST.into_response();}
+        if value.get("id").is_none(){return axum::http::StatusCode::ACCEPTED.into_response();}
+        let result=if value["method"]=="initialize" {json!({"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"old","version":"1"}})}else{json!({"tools":[]})};
+        Json(json!({"jsonrpc":"2.0","id":value["id"],"result":result})).into_response()
+    }}))).with_graceful_shutdown(async {let _=stopped.await;}).await.unwrap();});
+    let root=tempfile::tempdir().unwrap();let client=McpClient::materialize("old",&McpTransportSpec::Http {url:format!("http://{address}/mcp").parse().unwrap(),headers:Default::default()},Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("old",root.path(),None).unwrap()))).await.unwrap();
+    client.initialize(Duration::from_secs(2)).await.unwrap();assert_eq!(client.request("tools/list",json!({}),Duration::from_secs(2)).await.unwrap()["tools"],json!([]));
+    let seen=seen.lock().unwrap().clone();
+    assert_eq!(seen[0],("initialize".to_owned(),None));
+    assert!(seen[1..].iter().all(|(_,version)|version.as_deref()==Some("2025-06-18")),"{seen:?}");
+    client.close().await.unwrap();drop(client);stop.send(()).unwrap();tokio::time::timeout(Duration::from_secs(2),server).await.unwrap().unwrap();
+}
