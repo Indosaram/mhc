@@ -28,5 +28,6 @@ mod store_tests;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod types;
-#[cfg(test)]
+// getrusage-based CPU timing is Unix-only.
+#[cfg(all(test, unix))]
 mod perf_bench;
