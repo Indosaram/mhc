@@ -63,7 +63,7 @@ async fn killed_native_process_is_observed_and_renewed(){
     let root=tempfile::tempdir().unwrap();
     let connection=ServerConnection::new("health-stdio",McpServerConfig{
         enabled:Some(true),transport:Some(Transport::Stdio),command:Some(std::env::current_exe().unwrap().to_string_lossy().into_owned()),
-        args:Some(vec!["--exact".into(),"native_health_stdio_peer".into(),"--nocapture".into()]),
+        args:Some(vec!["--exact".into(),"health::native_health_stdio_peer".into(),"--nocapture".into()]),
         env:Some(std::collections::BTreeMap::from([("MHC_HEALTH_STDIO_PEER".into(),"1".into())])),
         connect_timeout_ms:Some(2000.0),..Default::default()
     },None,Arc::new(Mutex::new(McpLogger::new("health-stdio",root.path(),None).unwrap())));

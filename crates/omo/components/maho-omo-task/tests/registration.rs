@@ -1,4 +1,4 @@
-pub mod support;
+use crate::support;
 use maho_ext_api::FlagValue;
 use maho_omo_task::registration::{register_task_flags,register_removed_team_wait_hint};
 #[test] fn flags_default_enabled_and_preserve_explicit_host_override() {

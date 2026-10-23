@@ -24,7 +24,7 @@ fn competing_processes_append_whole_lines_and_deduplicate_under_one_lock() {
         let mut children = Vec::new();
         for _ in 0..3 {
             let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-            command.args(["--exact", "receipt_process_worker", "--nocapture"])
+            command.args(["--exact", "receipt_processes::receipt_process_worker", "--nocapture"])
                 .env("RECEIPT_PROCESS_ROOT", root.path())
                 .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped());
             if once { command.env("RECEIPT_PROCESS_ONCE", "1"); }

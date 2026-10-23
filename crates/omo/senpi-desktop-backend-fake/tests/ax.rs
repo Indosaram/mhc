@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use senpi_desktop_backend_fake::{FakeBackend, FakeMethod, FakeScenario, SinkOp};
 use senpi_desktop_core::ax::{self, AxHandle, AxRegistry};

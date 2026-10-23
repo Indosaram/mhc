@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 
 use std::sync::Arc;
 use maho_agent::harness::context::BACKGROUND_CONTEXT;

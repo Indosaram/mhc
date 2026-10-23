@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 
 use maho_ext_mcp::auth::{commands_auth::run_loopback_auth, oauth_provider::McpOAuthProvider, token_store::McpTokenStore};
 

@@ -1,5 +1,4 @@
-#[path = "../../maho-ext-imagegen/tests/support.rs"]
-pub mod imagegen_support;
+use crate::imagegen_support;
 
 use maho_ai::node::provider_scope::{run_with_provider_scope_async, ProviderScope};
 use maho_ext_api::*;

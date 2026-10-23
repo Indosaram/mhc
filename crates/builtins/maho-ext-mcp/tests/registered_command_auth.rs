@@ -83,7 +83,7 @@ async fn run_parent() {
     let executable = std::env::current_exe().expect("current test executable");
     let mut child = tokio::process::Command::new(&executable)
         .arg("--exact")
-        .arg("registered_command_auth")
+        .arg("registered_command_auth::registered_command_auth")
         .arg("--nocapture")
         .env(ROLE_ENV, "child")
         .env(DIR_ENV, root.path())

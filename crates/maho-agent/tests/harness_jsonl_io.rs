@@ -1,6 +1,6 @@
 //! Port of senpi packages/agent/test/harness/jsonl-io.test.ts.
 
-mod support;
+use crate::support;
 
 use std::sync::Arc;
 

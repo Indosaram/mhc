@@ -1,4 +1,4 @@
-pub mod support;
+use crate::support;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

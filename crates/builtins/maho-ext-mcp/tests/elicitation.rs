@@ -2,7 +2,7 @@ use maho_ext_api::*;
 use maho_ext_mcp::elicitation::*;
 use serde_json::json;
 use std::time::Duration;
-mod support;
+use crate::support;
 struct ScriptedUi {answer:Option<&'static str>,hanging:bool}
 impl ExtensionUi for ScriptedUi {
     fn select<'a>(&'a self,_:&'a str,_:&'a [String],_:ExtensionUiDialogOptions)->UiFuture<'a,Option<String>> {Box::pin(async {Some("beta".into())})}

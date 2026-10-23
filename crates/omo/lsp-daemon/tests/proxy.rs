@@ -2,7 +2,7 @@
 //! proxy-startup-watchdog.test.ts.
 #![cfg(unix)]
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 use std::io::{Read, Write};

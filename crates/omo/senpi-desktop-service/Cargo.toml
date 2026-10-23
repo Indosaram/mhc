@@ -3,6 +3,7 @@ name = "maho-senpi-desktop-service"
 version.workspace = true
 edition.workspace = true
 license = "MIT"
+autotests = false
 
 [lib]
 name = "senpi_desktop_service"
@@ -20,3 +21,7 @@ tokio = { workspace = true, features = ["io-std", "io-util", "macros", "process"
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "process", "io-std", "io-util"] }
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

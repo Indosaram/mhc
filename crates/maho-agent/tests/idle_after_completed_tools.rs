@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 
 use maho_agent::assistant_terminal_state::{
     AgentStreamError, is_stream_idle_timeout_error, should_finalize_idle_as_stop,

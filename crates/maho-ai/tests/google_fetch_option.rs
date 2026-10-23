@@ -7,7 +7,7 @@
 //! to compare against, so any client a caller hands over is by construction a custom one. The
 //! missing-auth case asserts the error text the ported adapter produces.
 
-mod google_fixtures;
+use crate::google_fixtures;
 
 use google_fixtures::model_with;
 use maho_ai::api::google_generative_ai::{

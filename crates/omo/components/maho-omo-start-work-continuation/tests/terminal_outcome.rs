@@ -1,7 +1,7 @@
 //! Port of `terminal-outcome.test.ts` (the `boulder` half): the registered component must not
 //! answer a turn the host aborted, is retrying, or refused, and must decide only on `agent_settled`.
 
-mod support;
+use crate::support;
 use std::sync::{Arc,Mutex};
 use maho_ext_api::*;
 

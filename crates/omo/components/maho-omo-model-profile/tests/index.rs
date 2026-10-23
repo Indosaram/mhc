@@ -1,4 +1,4 @@
-pub mod support;
+use crate::support;
 
 use std::sync::Arc;
 

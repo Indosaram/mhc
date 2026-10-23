@@ -1,4 +1,4 @@
-pub mod support;
+use crate::support;
 
 use maho_omo_model_profile::builtin_profiles::builtin_model_profiles;
 

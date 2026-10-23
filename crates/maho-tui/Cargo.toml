@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license = "MIT"
+autotests = false
 
 # Mirrors the workspace lints; unsafe_code is deny (not forbid) so the Windows console-input wait
 # in src/terminal.rs can allow it locally.
@@ -53,3 +54,7 @@ maho-test-support = { path = "../maho-test-support" }
 [[example]]
 name = "key-tester"
 path = "examples/key-tester.rs"
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

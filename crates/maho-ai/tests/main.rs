@@ -1,0 +1,61 @@
+//! Single integration-test binary for this crate: each file under tests/ is one module, so
+//! the crate links one test executable instead of one per file.
+
+#[path = "anthropic_replay.rs"]
+pub mod anthropic_replay;
+#[path = "anthropic_tool_references.rs"]
+pub mod anthropic_tool_references;
+#[path = "core_types.rs"]
+pub mod core_types;
+#[path = "cursor_agent_wire.rs"]
+pub mod cursor_agent_wire;
+#[path = "devin_agent.rs"]
+pub mod devin_agent;
+#[path = "google_fetch_option.rs"]
+pub mod google_fetch_option;
+#[path = "google_provider_native.rs"]
+pub mod google_provider_native;
+#[path = "google_raw_stop_reason.rs"]
+pub mod google_raw_stop_reason;
+#[path = "google_shared_convert_tools.rs"]
+pub mod google_shared_convert_tools;
+#[path = "google_shared_gemini3_unsigned_tool_call.rs"]
+pub mod google_shared_gemini3_unsigned_tool_call;
+#[path = "google_shared_image_tool_result_routing.rs"]
+pub mod google_shared_image_tool_result_routing;
+#[path = "google_shared_retry.rs"]
+pub mod google_shared_retry;
+#[path = "google_shared_signed_empty_blocks.rs"]
+pub mod google_shared_signed_empty_blocks;
+#[path = "google_shared_tool_call_id.rs"]
+pub mod google_shared_tool_call_id;
+#[path = "google_thinking_level_map.rs"]
+pub mod google_thinking_level_map;
+#[path = "google_thinking_signature.rs"]
+pub mod google_thinking_signature;
+#[path = "google_thinking_wire_audit.rs"]
+pub mod google_thinking_wire_audit;
+#[path = "google_vertex_api_key_resolution.rs"]
+pub mod google_vertex_api_key_resolution;
+#[path = "independent_image_boundary.rs"]
+pub mod independent_image_boundary;
+#[path = "openai_completions.rs"]
+pub mod openai_completions;
+#[path = "openai_responses.rs"]
+pub mod openai_responses;
+#[path = "provider_async_hooks.rs"]
+pub mod provider_async_hooks;
+#[path = "replay_misc.rs"]
+pub mod replay_misc;
+#[path = "replay_support.rs"]
+pub mod replay_support;
+#[path = "task_13_qa.rs"]
+pub mod task_13_qa;
+
+// Helpers several test modules share, declared once so each file compiles once.
+#[path = "anthropic_common/mod.rs"]
+pub mod anthropic_common;
+#[path = "support/mod.rs"]
+pub mod support;
+#[path = "google_fixtures/mod.rs"]
+pub mod google_fixtures;

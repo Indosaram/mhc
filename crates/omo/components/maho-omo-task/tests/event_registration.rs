@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 use std::sync::{Arc,Mutex};
 use maho_ext_api::*;
 use maho_omo_task::{dag_runtime::{DagRuntimeLifecycle,wire_dag_lifecycle},event_bridge::wire_task_usage_guidance};

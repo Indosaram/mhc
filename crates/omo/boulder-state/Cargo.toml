@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license = "LicenseRef-SUL-1.0"
 publish.workspace = true
+autotests = false
 
 [lib]
 name = "boulder_state"
@@ -27,3 +28,7 @@ unsafe_code = "forbid"
 
 [lints.clippy]
 unwrap_used = "deny"
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

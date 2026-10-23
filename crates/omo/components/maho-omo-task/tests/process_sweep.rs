@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap,sync::{Arc,Mutex,atomic::{AtomicUsize,Ordering}}};
 use maho_omo_task::process_sweep::{SessionStartProcessSweepOptions,SENPI_RPC_CHILD_MARKER_ENV,run_session_start_process_sweep};
-mod support;
+use crate::support;
 #[test]
 fn production_sweep_resolves_paired_daemon_override_before_running_families() {
     let root = tempfile::tempdir().expect("root");

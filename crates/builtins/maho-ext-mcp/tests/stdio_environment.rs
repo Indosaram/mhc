@@ -9,7 +9,7 @@ use maho_ext_mcp::config_schema::{McpServerConfig, Transport};
 use maho_ext_mcp::env_cleaner::{create_clean_mcp_environment, create_clean_mcp_environment_from, is_excluded_env_key, EXCLUDED_ENV_PATTERNS};
 use maho_ext_mcp::log::McpLogger;
 use maho_ext_mcp::transport::{connect_mcp_transport, create_mcp_transport, shutdown_mcp_transport};
-mod support;
+use crate::support;
 
 fn map(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
     entries.iter().map(|(key, value)| ((*key).to_owned(), (*value).to_owned())).collect()

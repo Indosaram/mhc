@@ -1,6 +1,6 @@
 //! Port of src/cmux-detect.test.ts
 
-mod common;
+use crate::common;
 
 use common::env;
 use tmux_core::is_cmux_compat_environment;

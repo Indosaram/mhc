@@ -1,4 +1,4 @@
-pub mod support;
+use crate::support;
 use std::{collections::BTreeMap,sync::{Arc,Mutex}};
 use maho_ext_api::{ExtensionMode,WidgetContent,WidgetPlacement};
 use maho_omo_task::{runtime_context::TaskRuntimeContext,status_ui::{TaskStatusUi,StatusUiTimers,StatusUiManager}};

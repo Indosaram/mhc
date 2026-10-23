@@ -4,7 +4,7 @@
 //! Rust builders never read the environment, so those cases assert the same output
 //! without mutating process-global state.
 
-mod common;
+use crate::common;
 
 use tmux_core::{build_tmux_attach_command, build_tmux_placeholder_command};
 
