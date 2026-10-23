@@ -3,7 +3,6 @@ use super::footer_layout::{
     FooterLayout, FooterLayoutInput, FooterRightFit, FooterRightForm, FooterRightLabel,
     FooterSegment, plan_footer_layout,
 };
-use super::keybinding_hints::key_text;
 use crate::theme::theme::{Theme, ThemeColor};
 use maho_tui::utils::{truncate_to_width, visible_width};
 use std::collections::BTreeMap;
@@ -236,11 +235,6 @@ impl FooterComponent {
         let mut label_runs = model_runs();
         label_runs.push((" • ".to_owned(), ThemeColor::BorderMuted));
         label_runs.push((format!("effort {level}"), ThemeColor::Muted));
-        let cycle_key = if s.reasoning {
-            key_text("app.thinking.cycle")
-        } else {
-            String::new()
-        };
         let provider = if provider_prefix.is_empty() {
             Vec::new()
         } else {
@@ -264,12 +258,6 @@ impl FooterComponent {
             }
         };
         let mut forms = Vec::new();
-        if !cycle_key.is_empty() {
-            let mut runs = provider.clone();
-            runs.extend(label_runs.clone());
-            runs.push((format!(" ({cycle_key})"), ThemeColor::Dim));
-            forms.push(make_form(runs, FooterRightFit::Everything));
-        }
         if s.reasoning {
             let mut runs = provider.clone();
             runs.extend(label_runs.clone());

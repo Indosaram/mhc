@@ -32,7 +32,10 @@ pub fn reflection_remediation(reason: Option<&str>, detail: Option<&str>) -> &'s
         return "senpi executable not resolvable for the reflection child; set SENPI_BIN";
     }
     if combined.contains("api key") || combined.contains("auth_missing") { return "run /login <provider>"; }
-    "inspect runtime/reflection-sessions/<runId>/child-stderr.log"
+    if combined.contains("cannot lock mhc") {
+        return "an mhc session started before the last update is still running an old version; restart that session";
+    }
+    "inspect runtime/reflection/runs/<runId>/child-stderr.log"
 }
 #[cfg(test)]mod tests{
     use super::*;
@@ -40,6 +43,8 @@ pub fn reflection_remediation(reason: Option<&str>, detail: Option<&str>) -> &'s
     #[test]fn quoted_child_model_miss_matches_taxonomy(){assert_eq!(reflection_remediation(Some("child_exit"),Some("Error: Model \"p/m\" not found. Use --list-models")),reflection_remediation(Some("model_not_visible"),None));}
     #[test]fn existing_model_miss_variants_select_same_remediation(){for reason in ["model-not-found","model_not_visible","Model not found: p/m"]{assert_eq!(reflection_remediation(Some(reason),None),reflection_remediation(Some("model_not_visible"),None));}assert_ne!(reflection_remediation(Some("model_not_visible"),None),reflection_remediation(None,None));}
     #[test]fn spawn_and_missing_executable_select_same_remediation(){assert_eq!(reflection_remediation(Some("spawn_failed"),None),reflection_remediation(Some("child_exit"),Some("execvp ENOENT")));assert_ne!(reflection_remediation(Some("spawn_failed"),None),reflection_remediation(None,None));}
+    #[test]fn stale_version_lock_failure_selects_restart_remediation(){let stale=reflection_remediation(Some("child_exit"),Some("cannot lock mhc 2026.10.22: Read-only file system (os error 30)"));assert_ne!(stale,reflection_remediation(None,None));assert!(stale.contains("restart"));}
+    #[test]fn generic_failure_points_at_the_reflection_run_directory(){assert!(reflection_remediation(None,None).contains("runtime/reflection/runs/<runId>/child-stderr.log"));}
     #[test]fn generic_failure_uses_default_and_auth_stays_distinct(){assert_eq!(reflection_remediation(Some("child_exit"),Some("exit code 1")),reflection_remediation(None,None));assert_eq!(reflection_remediation(Some("auth_missing"),None),reflection_remediation(None,Some("No API key")));assert_ne!(reflection_remediation(Some("auth_missing"),None),reflection_remediation(None,None));}
     #[test]fn budget_namespace_and_model_exhaustion_have_specific_hints(){assert!(reflection_remediation(Some("budget_not_met"),None).contains("$SYSTEM_TOKEN_TARGET"));assert!(reflection_remediation(None,Some("bwrap: setting up uid map")).contains("user namespace"));assert!(reflection_remediation(Some("spawn_failed"),Some("provider_unavailable:p/a; attempted:p/a")).contains("refused by its provider"));assert!(reflection_remediation(Some("spawn_failed"),Some("context_overflow:p/a; attempted:p/a")).contains("context window"));assert!(reflection_remediation(Some("spawn_failed"),Some("attempted:p/a,p/b")).contains("could be admitted"));assert_eq!(reflection_remediation(Some("spawn_failed"),Some("auth_missing:p; attempted:p/a")),"run /login <provider>");}
 }

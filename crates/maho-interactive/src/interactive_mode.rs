@@ -931,7 +931,10 @@ pub struct InteractiveMode {
     tool_reveal: crate::tool_result_reveal::ToolResultRevealController,
     tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController,
     tool_partial_json: BTreeMap<String, String>,
-    last_status: Option<(usize, Rc<RefCell<maho_tui::components::text::Text>>)>,
+    /// The trailing status line: chat length after it, its component, and the unstyled text.
+    last_status: Option<(usize, Rc<RefCell<maho_tui::components::text::Text>>, String)>,
+    /// A theme switch arrived while the agent was running; the transcript is rebuilt at agent end.
+    theme_rebuild_pending: bool,
     assistant_cards: Vec<Rc<RefCell<AssistantMessageComponent>>>,
     tool_cards: Vec<Rc<RefCell<ToolExecutionComponent>>>,
     pub tools_expanded: bool,
@@ -1715,6 +1718,9 @@ impl InteractiveMode {
     }
 
     fn install_theme(&mut self, theme: Theme) {
+        let recolor = theme.get_color_mode() != self.theme.get_color_mode()
+            || theme.resolved_colors() != self.theme.resolved_colors()
+            || theme.export_colors() != self.theme.export_colors();
         self.theme = theme;
         *self.mermaid_theme.borrow_mut() = self.theme.clone();
         self.editor.editor.border_color = editor_theme(&self.theme).border_color;
@@ -1725,10 +1731,33 @@ impl InteractiveMode {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             crate::interactive_extension_ui::extension_theme(&self.theme);
-        // senpi `onThemeChange` -> `ui.invalidate()` + `updateEditorBorderColor()` (interactive-mode.ts:1700-1704): a
-        // theme switch re-renders the existing components; it never rebuilds the transcript, so UI-only status
-        // lines (reload result, notices) survive it.
+        // senpi `onThemeChange` -> `ui.invalidate()` + `updateEditorBorderColor()` (interactive-mode.ts:1700-1704).
+        // senpi components read the global theme proxy at render time; here every transcript component
+        // captured a `Theme` copy when it was built, so a palette change rebuilds the transcript to
+        // recolor it. An unchanged palette (re-detection settling on the active theme) only invalidates,
+        // and the rebuild keeps the trailing status line (e.g. the `/reload` result).
+        if recolor {
+            if self.agent_idle {
+                self.rebuild_history_keeping_status();
+            } else {
+                self.theme_rebuild_pending = true;
+            }
+        }
         maho_tui::tui::Component::invalidate(self);
+    }
+
+    /// `rebuild_history` for a theme switch: the trailing status line is re-shown in the new theme.
+    fn rebuild_history_keeping_status(&mut self) {
+        self.theme_rebuild_pending = false;
+        let status = self
+            .last_status
+            .as_ref()
+            .filter(|(count, _, _)| *count == self.chat.children().len())
+            .map(|(_, _, text)| text.clone());
+        self.rebuild_history();
+        if let Some(status) = status {
+            self.show_status(status);
+        }
     }
 
     /// senpi `applyThemeName` over `setTheme`: load and apply `name`; an unloadable theme falls
@@ -2593,6 +2622,7 @@ impl InteractiveMode {
             side_column: None,
             mounted_side_column: None,
             ulw_turn_glow: false,
+            theme_rebuild_pending: false,
             provider_count_key: None,
             footer_data: Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(
                 &session.cwd(),
@@ -4408,7 +4438,7 @@ impl InteractiveMode {
             .map(from_extension_entry_replaces);
         // The status line and its spacer are transient: an entry replaces the card before them.
         let transient: Vec<usize> = match &self.last_status {
-            Some((count, text)) if count.checked_sub(1).and_then(|index| self.chat.children().get(index)).is_some_and(|child| matches!(child, TranscriptChild::Other(other) if std::ptr::addr_eq(Rc::as_ptr(other), Rc::as_ptr(text)))) => vec![count - 1, count.saturating_sub(2)],
+            Some((count, text, _)) if count.checked_sub(1).and_then(|index| self.chat.children().get(index)).is_some_and(|child| matches!(child, TranscriptChild::Other(other) if std::ptr::addr_eq(Rc::as_ptr(other), Rc::as_ptr(text)))) => vec![count - 1, count.saturating_sub(2)],
             _ => Vec::new(),
         };
         let replaced_index = {
@@ -8135,11 +8165,13 @@ impl InteractiveMode {
     }
 
     fn show_status(&mut self, text: String) {
-        let text = self.theme.fg(crate::theme::ThemeColor::Dim, &text);
-        if let Some((count, component)) = &self.last_status
+        let raw = text;
+        let text = self.theme.fg(crate::theme::ThemeColor::Dim, &raw);
+        if let Some((count, component, last)) = &mut self.last_status
             && *count == self.chat.children().len()
         {
             component.borrow_mut().set_text(text);
+            *last = raw;
             return;
         }
         self.chat.add_child(
@@ -8155,7 +8187,7 @@ impl InteractiveMode {
                 component.clone(),
             ),
         );
-        self.last_status = Some((self.chat.children().len(), component));
+        self.last_status = Some((self.chat.children().len(), component, raw));
     }
 
     fn dispatch_command(&mut self, text: &str) -> Result<bool, String> {
@@ -12827,6 +12859,7 @@ impl InteractiveMode {
             reasoning: model.reasoning,
             thinking_level: Some(self.host_thinking_level().as_str().into()),
             subscription,
+            provider_count: self.footer_data.available_provider_count(),
             ..Default::default()
         }
     }
@@ -12884,6 +12917,9 @@ impl InteractiveMode {
                 self.working_started_ms = Some(self.clock.elapsed().as_secs_f64() * 1000.0);
             }
             AgentEvent::AgentEnd { .. } => {
+                if self.theme_rebuild_pending {
+                    self.rebuild_history_keeping_status();
+                }
                 self.agent_idle = true;
                 self.ulw_turn_glow = false;
                 self.active_tool_executions.clear();
