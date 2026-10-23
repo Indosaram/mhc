@@ -192,32 +192,6 @@ pub async fn run(
     {
         mode.set_session_host(host);
     }
-    mode.rebuild_history();
-    mode.bind_extensions().await;
-    mode.use_registered_markdown_transformers(&extensions);
-    mode.initialize_startup_header();
-    mode.show_startup_model_warnings();
-    // senpi: ensure fd and rg (download when missing, honouring offline mode) after the header is up;
-    // fd feeds the `@` file-mention search.
-    {
-        use crate::utils::tools_manager::{Tool, ToolStatus, ensure_tool};
-        let statuses = RefCell::new(Vec::<ToolStatus>::new());
-        let (fd_path, _rg_path) = tokio::join!(
-            ensure_tool(Tool::Fd, |status| statuses.borrow_mut().push(status)),
-            ensure_tool(Tool::Rg, |status| statuses.borrow_mut().push(status)),
-        );
-        for status in statuses.into_inner() {
-            mode.show_managed_tool_status(status.kind, &status.message);
-        }
-        mode.set_fd_path(fd_path);
-    }
-    mode.show_startup_warnings();
-    if let Some(notice) = crate::legacy_pi_edits::legacy_pi_edit_startup_notice(
-        std::path::Path::new(&session.agent_dir()),
-        std::path::Path::new(&maho_core::config::home_dir()),
-    ) {
-        mode.show_warning(&notice);
-    }
     // senpi `options.tuiMode ?? settingsManager.getTuiMode()`: the flag, then the persisted setting.
     let fullscreen = parsed
         .tui_mode
@@ -292,6 +266,43 @@ pub async fn run(
     screen.base_mut().after_terminal_start(&mut terminal);
     mode.resume_question_mouse_capture(&mut screen, &mut terminal);
     mode.bind_terminal_theme(&mut screen, theme_setting);
+    // senpi `init()`: paint the header, editor and footer before the expensive history rebuild and
+    // extension binding, so a large session shows the prompt immediately.
+    mode.mount_startup_chrome();
+    if fullscreen {
+        let (document, dock) = mode.render_split(usize::from(terminal.columns()));
+        *document_lines.borrow_mut() = document;
+        *dock_lines.borrow_mut() = dock;
+    } else {
+        rendered.borrow_mut().0 = mode.render(usize::from(terminal.columns()));
+    }
+    screen.do_render(&mut terminal);
+    mode.rebuild_history();
+    mode.bind_extensions().await;
+    mode.use_registered_markdown_transformers(&extensions);
+    mode.initialize_startup_resources();
+    mode.show_startup_model_warnings();
+    // senpi: ensure fd and rg (download when missing, honouring offline mode) after the header is up;
+    // fd feeds the `@` file-mention search.
+    {
+        use crate::utils::tools_manager::{Tool, ToolStatus, ensure_tool};
+        let statuses = RefCell::new(Vec::<ToolStatus>::new());
+        let (fd_path, _rg_path) = tokio::join!(
+            ensure_tool(Tool::Fd, |status| statuses.borrow_mut().push(status)),
+            ensure_tool(Tool::Rg, |status| statuses.borrow_mut().push(status)),
+        );
+        for status in statuses.into_inner() {
+            mode.show_managed_tool_status(status.kind, &status.message);
+        }
+        mode.set_fd_path(fd_path);
+    }
+    mode.show_startup_warnings();
+    if let Some(notice) = crate::legacy_pi_edits::legacy_pi_edit_startup_notice(
+        std::path::Path::new(&session.agent_dir()),
+        std::path::Path::new(&maho_core::config::home_dir()),
+    ) {
+        mode.show_warning(&notice);
+    }
     let mut progress_active = false;
     let result = async {
         // senpi main.ts:1355-1370 `PI_STARTUP_BENCHMARK`: once the TUI is initialized, give stdin a

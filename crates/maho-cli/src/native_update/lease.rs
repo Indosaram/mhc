@@ -27,9 +27,28 @@ fn lock_error(error: TryLockError, busy: &str) -> io::Error {
     }
 }
 
+/// Opens an existing lock file without write access. A shared lock needs only a readable handle
+/// (`flock` on Unix, `LockFileEx` on Windows), so a session whose view of the install root is
+/// read-only (the memory reflection/facts child under `bwrap --ro-bind / /`, a read-only mount)
+/// still takes the lease its parent created and keeps the version protected from cleanup.
+fn open_existing_lock_read_only(path: &Path, write_error: io::Error) -> io::Result<File> {
+    match write_error.kind() {
+        io::ErrorKind::ReadOnlyFilesystem | io::ErrorKind::PermissionDenied => {
+            OpenOptions::new().read(true).open(path).map_err(|read_error| {
+                if read_error.kind() == io::ErrorKind::NotFound { write_error } else { read_error }
+            })
+        }
+        _ => Err(write_error),
+    }
+}
+
 impl SessionLease {
     pub fn acquire(root: &Path, version: &str) -> io::Result<Self> {
-        let file = open_lock(&version_lock_path(root, version))?;
+        let path = version_lock_path(root, version);
+        let file = match open_lock(&path) {
+            Ok(file) => file,
+            Err(error) => open_existing_lock_read_only(&path, error)?,
+        };
         file.try_lock_shared()
             .map_err(|error| lock_error(error, "version lock is held exclusively by a cleanup"))?;
         Ok(Self { _file: file })
@@ -71,6 +90,36 @@ mod tests {
         drop((first, second));
         assert!(try_exclusive_version(root.path(), "1.0.0")?.is_some());
         let _update = UpdateLease::acquire(root.path())?;
+        Ok(())
+    }
+
+    /// A session that cannot write the install root still shares the existing version lock, and that
+    /// lock still blocks cleanup.
+    #[cfg(unix)]
+    #[test]
+    fn read_only_session_shares_the_existing_version_lock() -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir()?;
+        let versions = root.path().join("versions");
+        std::fs::create_dir(&versions)?;
+        drop(SessionLease::acquire(root.path(), "1.0.0")?);
+        let lock = version_lock_path(root.path(), "1.0.0");
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o444))?;
+        std::fs::set_permissions(&versions, std::fs::Permissions::from_mode(0o555))?;
+        let writable = OpenOptions::new().write(true).open(&lock);
+        let session = SessionLease::acquire(root.path(), "1.0.0");
+        let missing = SessionLease::acquire(root.path(), "2.0.0");
+        std::fs::set_permissions(&versions, std::fs::Permissions::from_mode(0o755))?;
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644))?;
+        if writable.is_ok() {
+            // Running as root: permissions do not restrict access, so the read-only path cannot occur.
+            return Ok(());
+        }
+        let session = session?;
+        assert!(matches!(missing, Err(e) if e.kind() == io::ErrorKind::PermissionDenied));
+        assert!(try_exclusive_version(root.path(), "1.0.0")?.is_none(), "read-only lease defers cleanup");
+        drop(session);
+        assert!(try_exclusive_version(root.path(), "1.0.0")?.is_some());
         Ok(())
     }
 }

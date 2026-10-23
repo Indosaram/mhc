@@ -411,7 +411,7 @@ impl FooterComponent {
                         .join(" ")
                 })
                 .collect::<Vec<_>>()
-                .join(" ");
+                .join(" | ");
             lines.push(truncate_to_width(
                 &text,
                 width,
