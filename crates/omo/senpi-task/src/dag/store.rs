@@ -345,7 +345,6 @@ impl FileStamp {
 
     /// True when the file was last touched over two seconds ago, so a same-length in-place rewrite
     /// inside one timestamp tick cannot be mistaken for "unchanged".
-    #[cfg(unix)]
     fn settled(&self) -> bool {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
