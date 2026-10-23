@@ -150,9 +150,7 @@ jobs:
               (cd "dist/candidate-$letter" && 7z a -tzip -bso0 "${name}.zip" "$name" && sha256sum "${name}.zip" > "${name}.zip.sha256")
               assert_archive_has_both_executables "dist/candidate-$letter/${name}.zip" "$name"
             else
-              tar -C "dist/candidate-$letter" -czf "dist/candidate-$letter/${name}.tar.gz" "$name"
-              (cd "dist/candidate-$letter" && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256")
-              assert_archive_has_both_executables "dist/candidate-$letter/${name}.tar.gz" "$name"
+              scripts/package-archive.sh "dist/candidate-$letter" "$name"
             fi
           done
 
