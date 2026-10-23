@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use senpi_desktop_core::ax::{snapshot, AxRegistry};
+use senpi_desktop_core::ax::{AxRegistry, snapshot};
 use senpi_desktop_core::types::{AxSnapshotOptions, DesktopWindow, DisplaySelector};
 
 use super::Win32Ax;
@@ -30,7 +30,8 @@ pub(crate) struct Notepad {
 impl Notepad {
     /// `tag` keeps the scratch files of concurrently running tests apart.
     pub(crate) fn open(tag: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("senpi-{tag}-live-{}.txt", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("senpi-{tag}-live-{}.txt", std::process::id()));
         std::fs::write(&path, "senpi uia live").unwrap();
         let child = Command::new("notepad.exe").arg(&path).spawn().unwrap();
         Self {
@@ -43,7 +44,12 @@ impl Notepad {
     /// Notepad's document window, found by the scratch file's name in its
     /// title.
     pub(crate) fn wait_for_window(&mut self) -> DesktopWindow {
-        let name = self.path.file_name().unwrap().to_string_lossy().into_owned();
+        let name = self
+            .path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         let backend = Win32Backend::new(DisplaySelector::All).unwrap();
         let started = Instant::now();
         let window = loop {
@@ -92,7 +98,13 @@ fn uia_snapshot_of_notepad_has_document() {
     let window = notepad.wait_for_window();
     let mut ax = Win32Ax::new();
     let mut registry = AxRegistry::default();
-    let snap = snapshot(&mut ax, &mut registry, &window, &AxSnapshotOptions::default()).unwrap();
+    let snap = snapshot(
+        &mut ax,
+        &mut registry,
+        &window,
+        &AxSnapshotOptions::default(),
+    )
+    .unwrap();
     println!(
         "window_id={} title={:?} pid={:?} node_count={}\n{}",
         window.id, window.title, window.pid, snap.node_count, snap.text
@@ -100,8 +112,12 @@ fn uia_snapshot_of_notepad_has_document() {
     // Classic Notepad's editor is a UIA `Edit` (textfield); packaged
     // Notepad's is a `Document` (textarea).
     let document = snap.text.lines().map(str::trim_start).find(|line| {
-        (line.starts_with("- textfield") || line.starts_with("- textarea")) && line.contains("[ref=e")
+        (line.starts_with("- textfield") || line.starts_with("- textarea"))
+            && line.contains("[ref=e")
     });
     println!("document_line={document:?}");
-    assert!(document.is_some(), "no textfield/textarea line in the snapshot");
+    assert!(
+        document.is_some(),
+        "no textfield/textarea line in the snapshot"
+    );
 }

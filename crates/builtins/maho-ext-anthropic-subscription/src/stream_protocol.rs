@@ -49,6 +49,8 @@ pub fn empty_output(model: &Model, now: i64) -> AssistantMessage {
         abort_source: None,
         raw_stop_reason: None,
         end_turn: None,
+        failure_source: None,
+        timing: None,
         timestamp: now,
     }
 }
@@ -89,11 +91,18 @@ mod tests {
     #[test]
     fn empty_output_keeps_unreported_error_cause_absent() {
         let model = maho_ai::models_generated::MODELS["anthropic"]
-            .values().next().expect("model");
+            .values()
+            .next()
+            .expect("model");
 
         let output = empty_output(model, 123);
 
         assert_eq!(output.error_cause, None);
-        assert!(serde_json::to_value(output).expect("message").get("errorCause").is_none());
+        assert!(
+            serde_json::to_value(output)
+                .expect("message")
+                .get("errorCause")
+                .is_none()
+        );
     }
 }

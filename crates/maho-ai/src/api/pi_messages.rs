@@ -307,6 +307,8 @@ impl EventConverter {
         Self {
             model: model.clone(),
             partial: AssistantMessage {
+                failure_source: None,
+                timing: None,
                 error_cause: None,
                 prompt_cache_diagnostics: None,
                 thinking_level: None,
@@ -593,6 +595,8 @@ fn create_error_event(
         StopReason::Error
     };
     let mut assistant_message = AssistantMessage {
+        failure_source: None,
+        timing: None,
         error_cause: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,

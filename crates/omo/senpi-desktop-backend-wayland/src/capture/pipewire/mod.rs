@@ -21,11 +21,11 @@ mod stream;
 mod tests;
 mod window;
 
-use image::{imageops, RgbaImage};
+use image::{RgbaImage, imageops};
 use senpi_desktop_core::types::DesktopDisplay;
 use tokio::runtime::Runtime;
 
-use super::layout::{monitor_size, EisRegion};
+use super::layout::{EisRegion, monitor_size};
 use screencast::Cast;
 pub(super) use selection::select_capture;
 pub use window::crop_window;
@@ -66,8 +66,13 @@ impl ScreenCast {
         Self { cast: None }
     }
 
-    pub fn capture(&mut self, runtime: &Runtime, eis: Option<&[EisRegion]>) -> Result<Composite, CastError> {
-        let pipewire = lib::pipewire().map_err(|reason| CastError::Unavailable(reason.to_owned()))?;
+    pub fn capture(
+        &mut self,
+        runtime: &Runtime,
+        eis: Option<&[EisRegion]>,
+    ) -> Result<Composite, CastError> {
+        let pipewire =
+            lib::pipewire().map_err(|reason| CastError::Unavailable(reason.to_owned()))?;
         if self.cast.is_none() {
             let cast = screencast::start(runtime).map_err(|(refused, message)| {
                 if refused {
@@ -110,7 +115,11 @@ fn grab_all(
 /// A stream's logical size: reported by the portal, else proven by the
 /// libei region at its position, else unknown (the pixel size stands in so
 /// the image can still be shown).
-fn logical_size(monitor: &screencast::MonitorStream, image: &RgbaImage, eis: Option<&[EisRegion]>) -> ((u32, u32), Geometry) {
+fn logical_size(
+    monitor: &screencast::MonitorStream,
+    image: &RgbaImage,
+    eis: Option<&[EisRegion]>,
+) -> ((u32, u32), Geometry) {
     let reported = monitor
         .size
         .and_then(|(w, h)| Some((u32::try_from(w).ok()?, u32::try_from(h).ok()?)))
@@ -118,13 +127,18 @@ fn logical_size(monitor: &screencast::MonitorStream, image: &RgbaImage, eis: Opt
     if let Some(size) = reported {
         return (size, Geometry::Reported);
     }
-    match eis.and_then(|regions| monitor_size(monitor.position, image.width(), image.height(), regions)) {
+    match eis
+        .and_then(|regions| monitor_size(monitor.position, image.width(), image.height(), regions))
+    {
         Some(size) => (size, Geometry::FromEis),
         None => ((image.width(), image.height()), Geometry::Unknown),
     }
 }
 
-fn composite(frames: &[(screencast::MonitorStream, RgbaImage)], eis: Option<&[EisRegion]>) -> Composite {
+fn composite(
+    frames: &[(screencast::MonitorStream, RgbaImage)],
+    eis: Option<&[EisRegion]>,
+) -> Composite {
     let mut geometry = Geometry::Reported;
     let min_x = frames
         .iter()

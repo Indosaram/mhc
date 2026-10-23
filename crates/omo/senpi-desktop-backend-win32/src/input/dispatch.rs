@@ -18,11 +18,11 @@ use senpi_desktop_core::keys::KeyName;
 use senpi_desktop_core::types::{DesktopPoint, Target};
 
 use super::held::{Held, HeldKey, Route};
-use super::keys::{chord_virtual_keys, named_virtual_key, Stroke, VK_MENU};
+use super::keys::{Stroke, VK_MENU, chord_virtual_keys, named_virtual_key};
 use super::native::{self, Window};
 use super::{background, compositor, system};
 use crate::ax::Win32Ax;
-use crate::capture::{all_displays, logical_bounds, physical_point, PhysicalRect};
+use crate::capture::{PhysicalRect, all_displays, logical_bounds, physical_point};
 use crate::integrity::IntegrityRid;
 
 /// How one key transition is delivered.
@@ -98,16 +98,17 @@ impl Win32Input {
         }
         let strokes = keys
             .iter()
-            .map(|&key| named_virtual_key(key).map_or_else(|| char_stroke(key), |vk| Ok(Stroke::plain(vk))))
+            .map(|&key| {
+                named_virtual_key(key).map_or_else(|| char_stroke(key), |vk| Ok(Stroke::plain(vk)))
+            })
             .collect::<CoreResult<Vec<_>>>()?;
         let vks = chord_virtual_keys(&strokes);
         match (target, mode) {
             (Target::Desktop, _) => self.holding(Via::Enigo, &vks, |_| Ok(())),
-            (Target::Window(id), DeliveryMode::Foreground) => {
-                self.with_foreground(id, |this, target| {
+            (Target::Window(id), DeliveryMode::Foreground) => self
+                .with_foreground(id, |this, target| {
                     this.holding(Via::SendInput(Some(target)), &vks, |_| Ok(()))
-                })
-            }
+                }),
             (Target::Window(id), DeliveryMode::Background) => {
                 let window = background::key_target(id, self.integrity, keys)?;
                 self.holding(Via::Post(window), &vks, |_| Ok(()))
@@ -235,8 +236,9 @@ pub(crate) fn warp_cursor(point: DesktopPoint) -> CoreResult<()> {
 
 /// A global logical point in physical virtual-desktop pixels.
 pub(super) fn to_physical(x: f64, y: f64) -> CoreResult<(i32, i32)> {
-    physical_point(x, y, &all_displays()?)
-        .ok_or_else(|| DesktopError::input_failed("Win32 reported no displays to map the point onto"))
+    physical_point(x, y, &all_displays()?).ok_or_else(|| {
+        DesktopError::input_failed("Win32 reported no displays to map the point onto")
+    })
 }
 
 fn char_stroke(key: KeyName) -> CoreResult<Stroke> {

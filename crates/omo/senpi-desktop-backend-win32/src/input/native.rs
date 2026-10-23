@@ -8,20 +8,23 @@ use senpi_desktop_core::error::{CoreResult, DesktopError};
 use windows_sys::Win32::Foundation::{HWND, POINT};
 use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
 use windows_sys::Win32::UI::HiDpi::{
-    GetWindowDpiAwarenessContext, PhysicalToLogicalPointForPerMonitorDPI, SetThreadDpiAwarenessContext,
+    GetWindowDpiAwarenessContext, PhysicalToLogicalPointForPerMonitorDPI,
+    SetThreadDpiAwarenessContext,
 };
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, VkKeyScanW, MAPVK_VK_TO_VSC};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    MAPVK_VK_TO_VSC, MapVirtualKeyW, VkKeyScanW,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    ChildWindowFromPointEx, EnumChildWindows, GetAncestor, GetClassLongW, GetClassNameW, GetCursorPos,
-    GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, IsChild, IsWindow, SetCursorPos,
-    SetForegroundWindow, CWP_SKIPDISABLED, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, GA_ROOT,
-    GA_ROOTOWNER, GCL_STYLE, GUITHREADINFO,
+    CWP_SKIPDISABLED, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, ChildWindowFromPointEx,
+    EnumChildWindows, GA_ROOT, GA_ROOTOWNER, GCL_STYLE, GUITHREADINFO, GetAncestor, GetClassLongW,
+    GetClassNameW, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId,
+    IsChild, IsWindow, SetCursorPos, SetForegroundWindow,
 };
 
 use super::char_sink;
 use super::keys::Stroke;
 use crate::delivery;
-use crate::integrity::{process_elevated, IntegrityRid};
+use crate::integrity::{IntegrityRid, process_elevated};
 
 /// A validated top-level window. The HWND is an opaque value, never
 /// dereferenced; it is kept as an address so the input state stays `Send`.
@@ -54,7 +57,9 @@ impl Window {
     /// As [`Self::parse`], plus `PermissionDenied` for an elevated window.
     pub(super) fn target(id: &str, own: IntegrityRid) -> CoreResult<Self> {
         let window = Self::parse(id)?;
-        let elevated = window.process_id().and_then(|pid| process_elevated(pid, own));
+        let elevated = window
+            .process_id()
+            .and_then(|pid| process_elevated(pid, own));
         delivery::uipi_check(id, elevated)?;
         Ok(window)
     }
@@ -85,7 +90,9 @@ impl Window {
         // units, the count Win32 is told it may write.
         let length = unsafe { GetClassNameW(self.hwnd(), buffer.as_mut_ptr(), capacity) };
         match usize::try_from(length) {
-            Ok(length) if length > 0 => String::from_utf16_lossy(&buffer[..length.min(buffer.len())]),
+            Ok(length) if length > 0 => {
+                String::from_utf16_lossy(&buffer[..length.min(buffer.len())])
+            }
             Ok(_) | Err(_) => "<unknown>".to_owned(),
         }
     }
@@ -289,7 +296,9 @@ pub(super) fn layout_stroke(character: char) -> CoreResult<Stroke> {
     };
     // SAFETY: [FFI] a scalar lookup in the active layout.
     Stroke::from_scan(unsafe { VkKeyScanW(*unit) }).ok_or_else(|| {
-        DesktopError::invalid_key(format!("{character:?} is absent from the active keyboard layout"))
+        DesktopError::invalid_key(format!(
+            "{character:?} is absent from the active keyboard layout"
+        ))
     })
 }
 

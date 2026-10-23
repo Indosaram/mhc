@@ -30,7 +30,7 @@ pub use document::create_item_doc;
 pub use document::{ItemFrontier, delete_item, is_live, item_frontier};
 pub use frontmatter::{FmEntry, FmValue, ParsedItemText, split_item};
 pub use key::normalize_item_key;
-pub use render::render_item;
+pub use render::{render_doc_content, render_item};
 pub use render_for_disk::render_for_disk;
 
 #[derive(Debug)]
@@ -66,14 +66,14 @@ pub(crate) fn crdt(e: impl std::fmt::Display) -> ItemError {
 }
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod capture_tests;
 #[cfg(test)]
-mod render_tests;
-#[cfg(test)]
-mod property_tests;
+mod device_tests;
 #[cfg(test)]
 mod property_model;
 #[cfg(test)]
-mod device_tests;
+mod property_tests;
+#[cfg(test)]
+mod render_tests;
+#[cfg(test)]
+mod tests;

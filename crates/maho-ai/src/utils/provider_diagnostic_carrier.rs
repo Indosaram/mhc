@@ -34,6 +34,7 @@ pub fn diagnostic_from_transport(error: &(dyn Error + 'static)) -> Option<Provid
                 http_status: None,
                 code: Some(code.to_owned()),
                 evidence: crate::types::ProviderDiagnosticEvidence::StructuredTransport,
+                resets_at: None,
             });
         }
         current = source.source();
@@ -102,6 +103,7 @@ mod tests {
             http_status: Some(401),
             code: None,
             evidence: ProviderDiagnosticEvidence::StructuredStatus,
+            resets_at: None,
         };
         let error =
             attach_provider_diagnostic(std::io::Error::other("failure"), Some(diagnostic.clone()));

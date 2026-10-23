@@ -7,9 +7,10 @@ pub mod hint_policy;
 pub mod log;
 pub mod probe_scheduler;
 pub mod profile_override;
+pub mod request_shape;
 pub mod settings;
-pub mod validate;
 pub mod usage_limit;
+pub mod validate;
 
 #[cfg(test)]
 mod hint_policy_tests;

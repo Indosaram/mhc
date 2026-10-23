@@ -457,7 +457,10 @@ fn create_client_headers(
     compat: &ResolvedOpenAICompletionsCompat,
 ) -> HeaderMap {
     let mut headers: ProviderHeaders = ProviderHeaders::new();
-    headers.insert("Content-Type".to_owned(), Some("application/json".to_owned()));
+    headers.insert(
+        "Content-Type".to_owned(),
+        Some("application/json".to_owned()),
+    );
     headers.insert("User-Agent".to_owned(), Some(get_pi_user_agent()));
     if let Some(model_headers) = &model.headers {
         for (name, value) in model_headers {
@@ -753,16 +756,36 @@ fn is_forced_openai_completions_tool_choice(tool_choice: Option<&Value>) -> bool
 }
 
 fn chat_chunk_has_content(chunk: &Value) -> bool {
-    chunk.get("choices").and_then(Value::as_array).is_some_and(|choices| {
-        choices.iter().any(|choice| {
-            choice.get("finish_reason").and_then(Value::as_str).is_some_and(|reason| !reason.is_empty())
-                || choice.get("delta").is_some_and(|delta| {
-                    delta.get("tool_calls").and_then(Value::as_array).is_some_and(|calls| !calls.is_empty())
-                        || ["content", "reasoning_content", "reasoning", "reasoning_text"]
-                            .iter().any(|field| delta.get(*field).and_then(Value::as_str).is_some_and(|text| !text.is_empty()))
-                })
+    chunk
+        .get("choices")
+        .and_then(Value::as_array)
+        .is_some_and(|choices| {
+            choices.iter().any(|choice| {
+                choice
+                    .get("finish_reason")
+                    .and_then(Value::as_str)
+                    .is_some_and(|reason| !reason.is_empty())
+                    || choice.get("delta").is_some_and(|delta| {
+                        delta
+                            .get("tool_calls")
+                            .and_then(Value::as_array)
+                            .is_some_and(|calls| !calls.is_empty())
+                            || [
+                                "content",
+                                "reasoning_content",
+                                "reasoning",
+                                "reasoning_text",
+                            ]
+                            .iter()
+                            .any(|field| {
+                                delta
+                                    .get(*field)
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|text| !text.is_empty())
+                            })
+                    })
+            })
         })
-    })
 }
 
 fn resolve_thinking_token_budget_field(
@@ -1519,11 +1542,12 @@ fn parse_chunk_usage(raw_usage: &Value, model: &Model) -> Usage {
         .get("completion_tokens")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let reasoning = raw_usage
-        .get("completion_tokens_details")
-        .and_then(|details| details.get("reasoning_tokens"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    let reasoning = crate::utils::reported_count::reported_count(
+        raw_usage
+            .get("completion_tokens_details")
+            .and_then(|details| details.get("reasoning_tokens")),
+    )
+    .map(|count| count.max(0.0) as u64);
 
     let mut usage = Usage {
         input,
@@ -1531,7 +1555,7 @@ fn parse_chunk_usage(raw_usage: &Value, model: &Model) -> Usage {
         cache_read: cache_read_tokens,
         cache_write: cache_write_tokens,
         cache_write_1h: None,
-        reasoning: Some(reasoning),
+        reasoning,
         total_tokens: input + output_tokens + cache_read_tokens + cache_write_tokens,
         cost: Default::default(),
     };
@@ -2369,6 +2393,8 @@ pub fn stream_with_transport(
     let context = &resolved_context;
     let stream = AssistantMessageEventStream::assistant();
     let output = AssistantMessage {
+        failure_source: None,
+        timing: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,
@@ -2470,35 +2496,49 @@ async fn create_request(
         get_compat(model).supports_forced_tool_choice != Some(false),
         is_forced_openai_completions_tool_choice,
         |params| {
-        let forced = is_forced_openai_completions_tool_choice(params.get("tool_choice"));
-        let request = ChatRequest {
-            url: url.to_owned(),
-            headers: headers.clone(),
-            body: serde_json::to_vec(&Value::Object(params.clone())).unwrap_or_default(),
-            timeout_ms,
-            signal: signal.clone(),
-        };
-        async move {
-            let mut response = transport.create_chat_completion(request).await.map_err(|error| (error, false))?;
-            if forced {
-                let chunks = response.stream.map(|chunk| chunk.and_then(|chunk| {
-                    match chunk.get("error").filter(|error| !error.is_null()) {
-                        Some(error) => Err(stream_error_chunk(error)),
-                        None => Ok(chunk),
-                    }
-                }));
-                let primed = prime_stream_until_content(chunks, chat_chunk_has_content, 64)
-                    .await.map_err(|error| (error.error, error.in_band_before_content))?;
-                response.stream = Box::pin(primed);
+            let forced = is_forced_openai_completions_tool_choice(params.get("tool_choice"));
+            let request = ChatRequest {
+                url: url.to_owned(),
+                headers: headers.clone(),
+                body: serde_json::to_vec(&Value::Object(params.clone())).unwrap_or_default(),
+                timeout_ms,
+                signal: signal.clone(),
+            };
+            async move {
+                let mut response = transport
+                    .create_chat_completion(request)
+                    .await
+                    .map_err(|error| (error, false))?;
+                if forced {
+                    let chunks = response.stream.map(|chunk| {
+                        chunk.and_then(|chunk| {
+                            match chunk.get("error").filter(|error| !error.is_null()) {
+                                Some(error) => Err(stream_error_chunk(error)),
+                                None => Ok(chunk),
+                            }
+                        })
+                    });
+                    let primed = prime_stream_until_content(chunks, chat_chunk_has_content, 64)
+                        .await
+                        .map_err(|error| (error.error, error.in_band_before_content))?;
+                    response.stream = Box::pin(primed);
+                }
+                Ok(response)
             }
-            Ok(response)
-        }
-    },
-    |(error, in_band_before_content): &(OpenAiCompletionsError, bool)| ForcedToolChoiceFailure {
-        failure: HttpFailure { status: error.status, message: error.message.clone() },
-        in_band_before_content: *in_band_before_content,
-    },
-    ).await.map(|(_, response)| response).map_err(|(error, _)| error)
+        },
+        |(error, in_band_before_content): &(OpenAiCompletionsError, bool)| {
+            ForcedToolChoiceFailure {
+                failure: HttpFailure {
+                    status: error.status,
+                    message: error.message.clone(),
+                },
+                in_band_before_content: *in_band_before_content,
+            }
+        },
+    )
+    .await
+    .map(|(_, response)| response)
+    .map_err(|(error, _)| error)
 }
 
 async fn run_stream_inner(
@@ -2606,9 +2646,10 @@ async fn run_stream_inner(
                 let response_options = response_options.clone();
                 let signal = retry_signal.clone();
                 async move {
-                    let response =
-                        create_request(&model, &transport, &url, &headers, &params, timeout_ms, signal)
-                            .await?;
+                    let response = create_request(
+                        &model, &transport, &url, &headers, &params, timeout_ms, signal,
+                    )
+                    .await?;
                     if let Some(options) = response_options {
                         options
                             .apply_response_hook(
@@ -3068,16 +3109,27 @@ mod audit_compat_tests {
 
     struct ScriptedTransport {
         requests: std::sync::Mutex<Vec<Value>>,
-        responses: std::sync::Mutex<std::collections::VecDeque<Result<ChatStreamResponse, OpenAiCompletionsError>>>,
+        responses: std::sync::Mutex<
+            std::collections::VecDeque<Result<ChatStreamResponse, OpenAiCompletionsError>>,
+        >,
     }
 
     impl ChatTransport for ScriptedTransport {
         fn create_chat_completion(
             &self,
             request: ChatRequest,
-        ) -> crate::types::BoxFuture<'static, Result<ChatStreamResponse, OpenAiCompletionsError>> {
-            self.requests.lock().expect("requests").push(serde_json::from_slice(&request.body).expect("body"));
-            let response = self.responses.lock().expect("responses").pop_front().expect("unexpected request");
+        ) -> crate::types::BoxFuture<'static, Result<ChatStreamResponse, OpenAiCompletionsError>>
+        {
+            self.requests
+                .lock()
+                .expect("requests")
+                .push(serde_json::from_slice(&request.body).expect("body"));
+            let response = self
+                .responses
+                .lock()
+                .expect("responses")
+                .pop_front()
+                .expect("unexpected request");
             Box::pin(std::future::ready(response))
         }
     }
@@ -3093,15 +3145,25 @@ mod audit_compat_tests {
     #[tokio::test]
     async fn in_band_refusal_retries_and_remembers_the_wire_target() {
         // Given
-        let mut model = crate::models_generated::get_builtin_provider_models("openai").expect("models")[0].clone();
+        let mut model = crate::models_generated::get_builtin_provider_models("openai")
+            .expect("models")[0]
+            .clone();
         model.api = "openai-completions".into();
         model.id = "completions-in-band-refusal".into();
         let transport = Arc::new(ScriptedTransport {
             requests: Default::default(),
             responses: std::sync::Mutex::new(std::collections::VecDeque::from([
-                Ok(scripted_response(vec![json!({"choices":[{"delta":{"role":"assistant"}}]}), json!({"error":{"message":"tool_choice not supported"}})])),
-                Ok(scripted_response(vec![json!({"id":"replayed","choices":[{"delta":{"role":"assistant"}}]}), json!({"choices":[{"delta":{"content":"accepted"},"finish_reason":"stop"}]} )])),
-                Ok(scripted_response(vec![json!({"choices":[{"delta":{"content":"remembered"},"finish_reason":"stop"}]} )])),
+                Ok(scripted_response(vec![
+                    json!({"choices":[{"delta":{"role":"assistant"}}]}),
+                    json!({"error":{"message":"tool_choice not supported"}}),
+                ])),
+                Ok(scripted_response(vec![
+                    json!({"id":"replayed","choices":[{"delta":{"role":"assistant"}}]}),
+                    json!({"choices":[{"delta":{"content":"accepted"},"finish_reason":"stop"}]} ),
+                ])),
+                Ok(scripted_response(vec![
+                    json!({"choices":[{"delta":{"content":"remembered"},"finish_reason":"stop"}]} ),
+                ])),
             ])),
         });
         let mut options = OpenAiCompletionsOptions::default();
@@ -3114,14 +3176,42 @@ mod audit_compat_tests {
         };
 
         // When
-        let first = tokio::time::timeout(std::time::Duration::from_secs(5), stream_with_transport(&model, &Context::default(), Some(options), transport.clone()).result()).await.expect("bounded stream").expect("message");
-        let second = tokio::time::timeout(std::time::Duration::from_secs(5), stream_with_transport(&model, &Context::default(), Some(second_options), transport.clone()).result()).await.expect("bounded stream").expect("message");
+        let first = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream_with_transport(
+                &model,
+                &Context::default(),
+                Some(options),
+                transport.clone(),
+            )
+            .result(),
+        )
+        .await
+        .expect("bounded stream")
+        .expect("message");
+        let second = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream_with_transport(
+                &model,
+                &Context::default(),
+                Some(second_options),
+                transport.clone(),
+            )
+            .result(),
+        )
+        .await
+        .expect("bounded stream")
+        .expect("message");
 
         // Then
         assert_eq!(first.stop_reason, StopReason::Stop);
         assert_eq!(first.response_id.as_deref(), Some("replayed"));
-        assert!(matches!(&first.content[..], [ContentBlock::Text(text)] if text.text == "accepted"));
-        assert!(matches!(&second.content[..], [ContentBlock::Text(text)] if text.text == "remembered"));
+        assert!(
+            matches!(&first.content[..], [ContentBlock::Text(text)] if text.text == "accepted")
+        );
+        assert!(
+            matches!(&second.content[..], [ContentBlock::Text(text)] if text.text == "remembered")
+        );
         let requests = transport.requests.lock().expect("requests");
         assert_eq!(requests.len(), 3);
         assert_eq!(requests[0]["tool_choice"], "required");
@@ -3132,7 +3222,9 @@ mod audit_compat_tests {
     #[tokio::test]
     async fn fallback_failure_preserves_typed_http_metadata_without_remembering() {
         // Given
-        let mut model = crate::models_generated::get_builtin_provider_models("openai").expect("models")[0].clone();
+        let mut model = crate::models_generated::get_builtin_provider_models("openai")
+            .expect("models")[0]
+            .clone();
         model.id = "completions-fallback-failure".into();
         let mut headers = HeaderMap::new();
         headers.insert("retry-after", HeaderValue::from_static("7"));
@@ -3141,7 +3233,11 @@ mod audit_compat_tests {
         let scripted = Arc::new(ScriptedTransport {
             requests: Default::default(),
             responses: std::sync::Mutex::new(std::collections::VecDeque::from([
-                Err(OpenAiCompletionsError::http("'lookup' schema invalid", 400, HeaderMap::new())),
+                Err(OpenAiCompletionsError::http(
+                    "'lookup' schema invalid",
+                    400,
+                    HeaderMap::new(),
+                )),
                 Err(failure),
             ])),
         });
@@ -3149,10 +3245,21 @@ mod audit_compat_tests {
         let params = json!({"tool_choice":{"type":"function","function":{"name":"lookup"}},"tools":[{"type":"function","function":{"name":"lookup"}}]}).as_object().expect("params").clone();
 
         // When
-        let result = create_request(&model, &transport, "https://unused.test", &HeaderMap::new(), &params, None, None).await;
+        let result = create_request(
+            &model,
+            &transport,
+            "https://unused.test",
+            &HeaderMap::new(),
+            &params,
+            None,
+            None,
+        )
+        .await;
 
         // Then
-        let Err(error) = result else { panic!("expected retry failure"); };
+        let Err(error) = result else {
+            panic!("expected retry failure");
+        };
         assert_eq!(error.status, Some(429));
         assert_eq!(error.headers.as_ref().expect("headers")["retry-after"], "7");
         assert_eq!(error.body, Some(json!({"code":"rate_limit"})));
@@ -3163,24 +3270,45 @@ mod audit_compat_tests {
     #[tokio::test]
     async fn refusal_after_reasoning_content_is_not_retried() {
         // Given
-        let mut model = crate::models_generated::get_builtin_provider_models("openai").expect("models")[0].clone();
+        let mut model = crate::models_generated::get_builtin_provider_models("openai")
+            .expect("models")[0]
+            .clone();
         model.id = "completions-post-content-refusal".into();
         let scripted = Arc::new(ScriptedTransport {
             requests: Default::default(),
-            responses: std::sync::Mutex::new(std::collections::VecDeque::from([
-                Ok(scripted_response(vec![json!({"choices":[{"delta":{"reasoning_text":"reason"}}]}), json!({"error":{"message":"tool_choice not supported"}})])),
-            ])),
+            responses: std::sync::Mutex::new(std::collections::VecDeque::from([Ok(
+                scripted_response(vec![
+                    json!({"choices":[{"delta":{"reasoning_text":"reason"}}]}),
+                    json!({"error":{"message":"tool_choice not supported"}}),
+                ]),
+            )])),
         });
         let transport: Arc<dyn ChatTransport> = scripted.clone();
-        let params = json!({"tool_choice":"required"}).as_object().expect("params").clone();
+        let params = json!({"tool_choice":"required"})
+            .as_object()
+            .expect("params")
+            .clone();
 
         // When
-        let response = create_request(&model, &transport, "https://unused.test", &HeaderMap::new(), &params, None, None).await.expect("content accepted");
+        let response = create_request(
+            &model,
+            &transport,
+            "https://unused.test",
+            &HeaderMap::new(),
+            &params,
+            None,
+            None,
+        )
+        .await
+        .expect("content accepted");
         let chunks = response.stream.collect::<Vec<_>>().await;
 
         // Then
         assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].as_ref().expect("reasoning")["choices"][0]["delta"]["reasoning_text"], "reason");
+        assert_eq!(
+            chunks[0].as_ref().expect("reasoning")["choices"][0]["delta"]["reasoning_text"],
+            "reason"
+        );
         assert!(chunks[1].is_err());
         assert_eq!(scripted.requests.lock().expect("requests").len(), 1);
         assert!(!crate::utils::tool_choice_fallback::has_refused_forced_tool_choice(&model));
@@ -3189,14 +3317,26 @@ mod audit_compat_tests {
     #[test]
     fn priming_stops_at_every_supported_output_shape() {
         // Given
-        let deltas = [json!({"content":"text"}), json!({"reasoning_content":"thought"}), json!({"reasoning":"thought"}), json!({"reasoning_text":"thought"}), json!({"tool_calls":[{"index":0}]})];
+        let deltas = [
+            json!({"content":"text"}),
+            json!({"reasoning_content":"thought"}),
+            json!({"reasoning":"thought"}),
+            json!({"reasoning_text":"thought"}),
+            json!({"tool_calls":[{"index":0}]}),
+        ];
 
         // When / Then
         for delta in deltas {
-            assert!(chat_chunk_has_content(&json!({"choices":[{"delta":delta}]})));
+            assert!(chat_chunk_has_content(
+                &json!({"choices":[{"delta":delta}]})
+            ));
         }
-        assert!(chat_chunk_has_content(&json!({"choices":[{"finish_reason":"stop"}]})));
-        assert!(!chat_chunk_has_content(&json!({"choices":[{"delta":{"role":"assistant","content":"","tool_calls":[]}}]})));
+        assert!(chat_chunk_has_content(
+            &json!({"choices":[{"finish_reason":"stop"}]})
+        ));
+        assert!(!chat_chunk_has_content(
+            &json!({"choices":[{"delta":{"role":"assistant","content":"","tool_calls":[]}}]})
+        ));
     }
 
     struct ObserverTransport;

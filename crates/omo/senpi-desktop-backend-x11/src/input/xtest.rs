@@ -9,9 +9,9 @@ use senpi_desktop_core::error::{CoreResult, DesktopError};
 use x11rb::protocol::xproto::Window;
 
 use super::held::{HeldButton, Route};
-use super::keys::{modifier_keys, Stroke};
+use super::keys::{Stroke, modifier_keys};
 use super::server::{FakeInput, InputServer};
-use super::{root_spot, X11Input};
+use super::{X11Input, root_spot};
 
 /// Between a button's press and release, and between repeated clicks.
 pub const CLICK_DELAY: Duration = Duration::from_millis(12);
@@ -27,7 +27,11 @@ impl<S: InputServer> X11Input<S> {
     /// Delivers `event` through XTEST; with `over`, the first motion must
     /// leave the pointer over that window before any button is sent, and each
     /// click is delivered before the next press is sent.
-    pub(super) fn pointer_xtest(&mut self, event: &PointerEvent, over: Option<Window>) -> CoreResult<()> {
+    pub(super) fn pointer_xtest(
+        &mut self,
+        event: &PointerEvent,
+        over: Option<Window>,
+    ) -> CoreResult<()> {
         match event {
             PointerEvent::Click {
                 x,

@@ -15,8 +15,8 @@ use senpi_desktop_core::types::{DisplaySelector, Target};
 use crate::backend::MacosBackend;
 use observer::{cursor, frontmost, wait_terminal_contains};
 use setup::{
-    assert_no_windows, bring_terminal_front, close_focused_window, open_textedit_document,
-    post_hid_character, post_hid_key, wait_listed, BACKSPACE,
+    BACKSPACE, assert_no_windows, bring_terminal_front, close_focused_window,
+    open_textedit_document, post_hid_character, post_hid_key, wait_listed,
 };
 
 fn backend() -> MacosBackend {
@@ -73,7 +73,9 @@ fn background_click_keeps_frontmost_app() {
             DeliveryMode::Background,
         )
         .expect("background type");
-    backend.restore_key_focus(&front).expect("key focus restore");
+    backend
+        .restore_key_focus(&front)
+        .expect("key focus restore");
 
     let after = frontmost().expect("observer");
     let (ax, ay) = cursor().expect("cursor observer");
@@ -131,10 +133,15 @@ fn background_keys_into_sole_window_restore_key_focus() {
         )
         .expect("background type into the sole window");
     let focused_during = frontmost().expect("observer");
-    backend.restore_key_focus(&front).expect("key focus restore");
+    backend
+        .restore_key_focus(&front)
+        .expect("key focus restore");
     let after = frontmost().expect("observer");
 
-    println!("frontmost_before={} frontmost_after={}", before.pid, after.pid);
+    println!(
+        "frontmost_before={} frontmost_after={}",
+        before.pid, after.pid
+    );
     println!(
         "terminal_focused_title_before='{}' during='{}' after='{}'",
         before.focused_title, focused_during.focused_title, after.focused_title

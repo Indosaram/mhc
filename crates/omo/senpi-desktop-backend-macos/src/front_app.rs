@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 use objc2_app_kit::{NSApplicationActivationPolicy, NSRunningApplication, NSWorkspace};
 
-use crate::focus::{window_info, WindowInfo};
+use crate::focus::{WindowInfo, window_info};
 use crate::{launch_services, skylight};
 
 /// The application the user sees in front: LaunchServices' front application
@@ -47,7 +47,6 @@ pub(crate) fn user_front_pid(
         .or(Some(front))
 }
 
-
 /// The last application the engine itself brought to the front (0 = none). A restore may take the front
 /// back from this app, but never from one the user switched to afterwards (#9056).
 static LAST_ACTIVATED: AtomicI32 = AtomicI32::new(0);
@@ -79,7 +78,9 @@ pub(crate) fn restore_step(
 ) -> RestoreStep {
     match front {
         Some(front) if front == previous => RestoreStep::Front,
-        Some(front) if Some(front) == engine_activated || !is_regular(front) => RestoreStep::Reclaim,
+        Some(front) if Some(front) == engine_activated || !is_regular(front) => {
+            RestoreStep::Reclaim
+        }
         None => RestoreStep::Reclaim,
         Some(_) => RestoreStep::UserMovedOn,
     }

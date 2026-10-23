@@ -29,7 +29,12 @@ impl DeferredTurnClaim {
     }
 
     pub fn resolve(&self, disposition: DeferredTurnDisposition) {
-        if let Some(sender) = self.resolve.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+        if let Some(sender) = self
+            .resolve
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             let _ = sender.send(disposition);
         }
     }
@@ -72,6 +77,11 @@ impl AgentSettledDelivery {
         Self::default()
     }
 
+    /// True while `agent_settled` handlers run: a turn they trigger is deferred until the window closes.
+    pub fn active(&self) -> bool {
+        self.generation.is_some()
+    }
+
     pub fn begin(&mut self, user_abort_generation: u64) {
         self.cancel();
         self.generation = Some(user_abort_generation);
@@ -87,7 +97,10 @@ impl AgentSettledDelivery {
         true
     }
 
-    pub fn defer_trigger_turn(&mut self, action: impl FnOnce(Arc<DeferredTurnClaim>) + Send + 'static) -> bool {
+    pub fn defer_trigger_turn(
+        &mut self,
+        action: impl FnOnce(Arc<DeferredTurnClaim>) + Send + 'static,
+    ) -> bool {
         if self.generation.is_none() {
             return false;
         }
@@ -131,6 +144,16 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
+    fn active_is_true_only_while_a_generation_is_open() {
+        let mut delivery = AgentSettledDelivery::new();
+        assert!(!delivery.active());
+        delivery.begin(1);
+        assert!(delivery.active());
+        delivery.finish(1);
+        assert!(!delivery.active());
+    }
+
+    #[test]
     fn deferring_before_begin_is_refused() {
         let mut delivery = AgentSettledDelivery::new();
         assert!(!delivery.defer(Box::new(|| {})));
@@ -169,12 +192,18 @@ mod tests {
         delivery.begin(1);
         let ran = Arc::new(AtomicUsize::new(0));
         let counter = ran.clone();
-        assert!(delivery.defer_trigger_turn(move |_| { counter.fetch_add(1, Ordering::SeqCst); }));
+        assert!(delivery.defer_trigger_turn(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
         let claim = delivery.turn_claims[0].clone();
         delivery.cancel();
         claim.resolve(DeferredTurnDisposition::Started);
-        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(1), claim.disposition()).await
-            .expect("bounded cancellation disposition"), Some(DeferredTurnDisposition::FinishedWithoutStart));
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), claim.disposition())
+                .await
+                .expect("bounded cancellation disposition"),
+            Some(DeferredTurnDisposition::FinishedWithoutStart)
+        );
         assert!(delivery.generation.is_none());
         let batch = delivery.finish(1);
         assert!(batch.actions.is_empty());
@@ -189,16 +218,24 @@ mod tests {
             delivery.begin(1);
             let ran = Arc::new(AtomicUsize::new(0));
             let counter = ran.clone();
-            assert!(delivery.defer_trigger_turn(move |_| { counter.fetch_add(1, Ordering::SeqCst); }));
+            assert!(delivery.defer_trigger_turn(move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }));
             let claim = delivery.turn_claims[0].clone();
-            if replacement { delivery.begin(2); }
+            if replacement {
+                delivery.begin(2);
+            }
             let batch = delivery.finish(2);
             assert!(batch.actions.is_empty());
             delivery.cancel();
             delivery.cancel();
             claim.resolve(DeferredTurnDisposition::Started);
-            assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(1), claim.disposition()).await
-                .expect("bounded retirement"), Some(DeferredTurnDisposition::FinishedWithoutStart));
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(1), claim.disposition())
+                    .await
+                    .expect("bounded retirement"),
+                Some(DeferredTurnDisposition::FinishedWithoutStart)
+            );
             assert_eq!(ran.load(Ordering::SeqCst), 0);
         }
     }
@@ -208,6 +245,9 @@ mod tests {
         let claim = DeferredTurnClaim::new();
         claim.resolve(DeferredTurnDisposition::Started);
         claim.resolve(DeferredTurnDisposition::Delegated);
-        assert_eq!(claim.disposition().await, Some(DeferredTurnDisposition::Started));
+        assert_eq!(
+            claim.disposition().await,
+            Some(DeferredTurnDisposition::Started)
+        );
     }
 }

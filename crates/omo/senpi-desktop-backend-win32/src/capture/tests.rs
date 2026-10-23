@@ -6,11 +6,16 @@ use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{DesktopDisplay, DisplaySelector};
 
 use super::frame::{
-    capture_geometry_matches, composite, lay_out, logical_bounds, logical_window_rect, physical_point,
-    MonitorSample, PhysicalRect,
+    MonitorSample, PhysicalRect, capture_geometry_matches, composite, lay_out, logical_bounds,
+    logical_window_rect, physical_point,
 };
 
-fn monitor(id: &str, (x, y): (i32, i32), (width, height): (u32, u32), scale: f64) -> ((), MonitorSample) {
+fn monitor(
+    id: &str,
+    (x, y): (i32, i32),
+    (width, height): (u32, u32),
+    scale: f64,
+) -> ((), MonitorSample) {
     let sample = MonitorSample {
         id: id.to_string(),
         name: format!("Display {id}"),
@@ -77,7 +82,10 @@ fn mixed_scales_preserve_physical_monitor_rectangles() {
         .iter()
         .map(|d| (d.id.as_str(), d.x, d.pixel_x, d.pixel_width, d.pixel_height))
         .collect::<Vec<_>>();
-    assert_eq!(rects, [("1", 0, 0, 1920, 1080), ("2", 3840, 3840, 3840, 2160)]);
+    assert_eq!(
+        rects,
+        [("1", 0, 0, 1920, 1080), ("2", 3840, 3840, 3840, 2160)]
+    );
 }
 
 #[test]
@@ -174,7 +182,10 @@ fn window_off_every_display_keeps_its_physical_rect() {
         width: 160,
         height: 28,
     };
-    assert_eq!(logical_window_rect(rect, &laid_out), (-32_000, -32_000, 160, 28));
+    assert_eq!(
+        logical_window_rect(rect, &laid_out),
+        (-32_000, -32_000, 160, 28)
+    );
 }
 
 #[test]

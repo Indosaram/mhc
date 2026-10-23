@@ -12,7 +12,7 @@
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use senpi_desktop_core::ax::{snapshot, AxRegistry};
+use senpi_desktop_core::ax::{AxRegistry, snapshot};
 use senpi_desktop_core::types::{AxSnapshotOptions, DesktopWindow};
 
 use crate::{AtSpiAx, AxPermission, LiveBus, WindowIds};
@@ -75,7 +75,10 @@ fn ax_tree_of_xterm_lists_window() {
     let terminal = spawn_terminal(&title, &[]);
     let mut ax = AtSpiAx::new(WindowIds::AtSpiFrames).unwrap();
     let window = until("the terminal window", || find_window(&mut ax, &title));
-    println!("window_id={} app={} pid={:?}", window.id, window.app, window.pid);
+    println!(
+        "window_id={} app={} pid={:?}",
+        window.id, window.app, window.pid
+    );
     assert_eq!(window.pid, Some(terminal.0.id()));
     let mut registry = AxRegistry::default();
     let unfiltered = AxSnapshotOptions {
@@ -83,7 +86,10 @@ fn ax_tree_of_xterm_lists_window() {
         ..AxSnapshotOptions::default()
     };
     let tree = snapshot(&mut ax, &mut registry, &window, &unfiltered).unwrap();
-    println!("node_count={} truncated={}", tree.node_count, tree.truncated);
+    println!(
+        "node_count={} truncated={}",
+        tree.node_count, tree.truncated
+    );
     println!("{}", tree.text);
     let first = tree.text.lines().next().unwrap();
     assert!(
@@ -110,7 +116,11 @@ fn permission_is_toolkits_silent_until_a_toolkit_publishes() {
     let after = until("granted", || {
         Some(ax.permission()).filter(|permission| permission.is_granted())
     });
-    println!("ax_permission_after={} ax={}", after.as_str(), after.is_granted());
+    println!(
+        "ax_permission_after={} ax={}",
+        after.as_str(),
+        after.is_granted()
+    );
 }
 
 #[test]

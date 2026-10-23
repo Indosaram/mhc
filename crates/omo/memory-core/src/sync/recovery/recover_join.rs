@@ -3,7 +3,7 @@ use crate::sync::crypto::{
     anchor::{ChainAnchor, PinCandidate},
     entry::Head,
     fold::Authority,
-    parse::RecoveryKey,
+    parse::{Principal, RecoveryKey},
     rejection::RejectionCounter,
 };
 pub struct ConfirmedJoin {
@@ -69,4 +69,35 @@ pub async fn append_and_confirm_join(
         pin: pin.clone(),
         used_key: used_key.clone(),
     }))
+}
+/// Confirms an acknowledged rotation on a fresh anchored reload: the verified keyring must contain
+/// the rotation this device sent, at `epoch`, and this device must still be a member at the head.
+/// The head may be a later record that descends from our rotation, which is not a fork.
+pub async fn rotation_stored(
+    transport: &dyn RecoveryTransport,
+    account: &str,
+    rejections: &mut RejectionCounter,
+    anchor: ChainAnchor,
+    sent: &KeyringAppendRequest,
+    epoch: u64,
+    device: &Principal,
+) -> bool {
+    let Ok(Ok(state)) = load_served_chain(transport, account, rejections, anchor).await else {
+        return false;
+    };
+    let Some(authority) = state.authority() else {
+        return false;
+    };
+    let Some(ours) = state.received().iter().find(|entry| {
+        entry.entry.fields.keyring_link.as_deref() == Some(sent.keyring_link.as_str())
+    }) else {
+        return false;
+    };
+    ours.entry.fields.epoch == epoch
+        && authority.epoch >= epoch
+        && !authority.cancelled.contains(&ours.entry.fields.digest)
+        && authority
+            .members
+            .get(&device.id)
+            .is_some_and(|p| p.signing_public_key == device.signing_public_key)
 }

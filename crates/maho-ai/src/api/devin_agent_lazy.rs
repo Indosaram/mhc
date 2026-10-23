@@ -104,6 +104,8 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let stream = create_assistant_message_event_stream();
             let message = AssistantMessage {
+                failure_source: None,
+                timing: None,
                 error_cause: None,
                 prompt_cache_diagnostics: None,
                 thinking_level: None,
@@ -148,6 +150,7 @@ mod tests {
     /// catalog entry, so the test builds the same defaults the faux core uses.
     fn model() -> Model {
         Model {
+            deprecated: None,
             prompt_cache: None,
             supports_assistant_prefill: None,
             id: "faux-1".into(),

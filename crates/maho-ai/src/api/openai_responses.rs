@@ -18,7 +18,7 @@ use crate::api::constrained_sampling::create_grammar_tool_input_properties;
 use crate::api::github_copilot_headers::{build_copilot_dynamic_headers, has_copilot_vision_input};
 use crate::api::openai_client_auth::resolve_openai_client_auth;
 use crate::api::openai_completions::{github_copilot_errors, github_copilot_tool_limit};
-use crate::api::openai_prompt_cache::clamp_openai_prompt_cache_key;
+use crate::api::openai_prompt_cache::derive_openai_prompt_cache_key;
 use crate::api::openai_responses_shared::{
     ConvertResponsesMessagesOptions, ConvertResponsesToolsOptions, ResponsesDeferredToolsMode,
     ResponsesStreamOptions, convert_responses_messages, convert_responses_tools, get_done_reason,
@@ -87,13 +87,17 @@ pub(crate) fn observe_responses_events(
         if let Some(hook) = &hook {
             hook(event, model);
         }
-        if !matches!(event.get("type").and_then(Value::as_str), Some("error" | "response.failed")) {
+        if !matches!(
+            event.get("type").and_then(Value::as_str),
+            Some("error" | "response.failed")
+        ) {
             return;
         }
         if serde_json::to_vec(event).is_ok_and(|bytes| bytes.len() <= 8192) {
             let mut failure = failure.lock().unwrap_or_else(|poison| poison.into_inner());
             failure.diagnostic = github_copilot_errors::diagnostic_from_responses_event(event);
-            failure.error_cause = github_copilot_errors::usage_limit_cause(&model.provider, None, event);
+            failure.error_cause =
+                github_copilot_errors::usage_limit_cause(&model.provider, None, event);
         }
     })
 }
@@ -104,7 +108,10 @@ pub(crate) fn observe_responses_transport(
 ) -> ResponsesBody {
     Box::pin(body.map(move |chunk| {
         if let Err(error) = &chunk {
-            failure.lock().unwrap_or_else(|poison| poison.into_inner()).diagnostic =
+            failure
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .diagnostic =
                 crate::utils::provider_diagnostic_carrier::diagnostic_from_transport(error);
         }
         chunk
@@ -133,15 +140,29 @@ pub(crate) fn responses_transport_error(error: reqwest::Error) -> ResponsesApiEr
 
 pub(crate) fn apply_responses_failure(output: &mut AssistantMessage, error: &ResponsesApiError) {
     match error {
-        ResponsesApiError::Provider { diagnostic, error_cause, .. } => {
+        ResponsesApiError::Provider {
+            diagnostic,
+            error_cause,
+            ..
+        } => {
             output.provider_diagnostic = diagnostic.clone();
             output.error_cause = *error_cause;
         }
         ResponsesApiError::Http { status_code, body }
-        | ResponsesApiError::HttpWithHeaders { status_code, body, .. } => {
-            output.provider_diagnostic = github_copilot_errors::diagnostic_from_openai_error(Some(*status_code), Some(body));
-            output.error_cause = serde_json::from_str::<Value>(body).ok().and_then(|payload|
-                github_copilot_errors::usage_limit_cause(&output.provider, Some(*status_code), &payload));
+        | ResponsesApiError::HttpWithHeaders {
+            status_code, body, ..
+        } => {
+            output.provider_diagnostic =
+                github_copilot_errors::diagnostic_from_openai_error(Some(*status_code), Some(body));
+            output.error_cause = serde_json::from_str::<Value>(body)
+                .ok()
+                .and_then(|payload| {
+                    github_copilot_errors::usage_limit_cause(
+                        &output.provider,
+                        Some(*status_code),
+                        &payload,
+                    )
+                });
         }
         ResponsesApiError::Message(_) | ResponsesApiError::WebSocketClose(_) => {}
     }
@@ -204,9 +225,13 @@ async fn prime_responses_body_with_provenance(
                 let kind = event["type"].as_str().unwrap_or_default();
                 if matches!(kind, "error" | "response.failed") {
                     if data.len() <= 8192 {
-                        let mut metadata = provenance.lock().unwrap_or_else(|poison| poison.into_inner());
-                        metadata.diagnostic = github_copilot_errors::diagnostic_from_responses_event(&event);
-                        metadata.error_cause = github_copilot_errors::usage_limit_cause(provider, None, &event);
+                        let mut metadata = provenance
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner());
+                        metadata.diagnostic =
+                            github_copilot_errors::diagnostic_from_responses_event(&event);
+                        metadata.error_cause =
+                            github_copilot_errors::usage_limit_cause(provider, None, &event);
                     }
                     let error = event
                         .get("error")
@@ -493,7 +518,8 @@ impl ProviderRequestError for ResponsesApiError {
                 status: Some(*status_code),
                 headers: Some(headers),
             }),
-            ResponsesApiError::Message(_) | ResponsesApiError::WebSocketClose(_)
+            ResponsesApiError::Message(_)
+            | ResponsesApiError::WebSocketClose(_)
             | ResponsesApiError::Provider { .. } => None,
         }
     }
@@ -514,7 +540,8 @@ pub fn format_openai_responses_error(error: &ResponsesApiError, provider: &str) 
             };
             ThrownProviderError::Error(Box::new(shape))
         }
-        ResponsesApiError::Message(_) | ResponsesApiError::WebSocketClose(_)
+        ResponsesApiError::Message(_)
+        | ResponsesApiError::WebSocketClose(_)
         | ResponsesApiError::Provider { .. } => {
             ThrownProviderError::Error(Box::new(SdkErrorShape {
                 message: error.to_string(),
@@ -540,6 +567,8 @@ pub fn format_openai_responses_error(error: &ResponsesApiError, provider: &str) 
 
 fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
+        failure_source: None,
+        timing: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,
@@ -764,9 +793,7 @@ pub fn build_params(
     params.insert("input".into(), Value::Array(messages));
     params.insert("stream".into(), json!(true));
     if cache_retention != CacheRetention::None
-        && !(is_openai_responses_native_endpoint(model, options.request.env.as_ref())
-            && (compat.supports_explicit_prompt_cache_mode || model.cost.cache_write > 0.0))
-        && let Some(key) = clamp_openai_prompt_cache_key(options.session_id.as_deref())
+        && let Some(key) = derive_openai_prompt_cache_key(&model.id, &transcript)
     {
         params.insert("prompt_cache_key".into(), json!(key));
     }
@@ -1328,7 +1355,8 @@ pub async fn connect_web_socket(
     connect_timeout_ms: Option<u64>,
 ) -> Result<Arc<TungsteniteWebSocket>, String> {
     connect_web_socket_typed(url, headers, signal, connect_timeout_ms)
-        .await.map_err(|error| error.to_string())
+        .await
+        .map_err(|error| error.to_string())
 }
 
 pub(crate) async fn connect_web_socket_typed(
@@ -1356,8 +1384,10 @@ pub(crate) async fn connect_web_socket_typed(
                     Ok(result) => result.map_err(websocket_connect_error),
                     Err(_) => Err(ResponsesApiError::Provider {
                         message: format!("WebSocket connect timeout after {ms}ms"),
-                        diagnostic: crate::utils::provider_diagnostic_carrier::diagnostic_from_transport(
-                            &std::io::Error::from(std::io::ErrorKind::TimedOut)),
+                        diagnostic:
+                            crate::utils::provider_diagnostic_carrier::diagnostic_from_transport(
+                                &std::io::Error::from(std::io::ErrorKind::TimedOut),
+                            ),
                         error_cause: None,
                     }),
                 }
@@ -1377,7 +1407,11 @@ fn websocket_connect_error(error: tokio_tungstenite::tungstenite::Error) -> Resp
     if let tokio_tungstenite::tungstenite::Error::Http(response) = &error {
         return ResponsesApiError::HttpWithHeaders {
             status_code: response.status().as_u16(),
-            body: response.body().as_ref().map(|body| String::from_utf8_lossy(body).into_owned()).unwrap_or_default(),
+            body: response
+                .body()
+                .as_ref()
+                .map(|body| String::from_utf8_lossy(body).into_owned())
+                .unwrap_or_default(),
             headers: response.headers().clone(),
         };
     }
@@ -1546,8 +1580,14 @@ async fn next_web_socket_frame(state: &mut ParseWebSocketState) -> Option<Bytes>
             () = idle => ParseWebSocketStep::Idle,
         };
         match step {
-            ParseWebSocketStep::Event(Some(WebSocketEvent::TransportError { message, diagnostic })) => {
-                state.fail(WebSocketStreamFailure::DiagnosedTransport { message, diagnostic });
+            ParseWebSocketStep::Event(Some(WebSocketEvent::TransportError {
+                message,
+                diagnostic,
+            })) => {
+                state.fail(WebSocketStreamFailure::DiagnosedTransport {
+                    message,
+                    diagnostic,
+                });
                 return None;
             }
             ParseWebSocketStep::Failure(failure) => {
@@ -1710,8 +1750,7 @@ async fn process_web_socket_stream(
     options: &StreamOptions,
 ) -> Result<(), ResponsesApiError> {
     let signal = options.request.signal.clone();
-    let lease = acquire_web_socket(url, headers, cache_session_id, signal.as_ref())
-        .await?;
+    let lease = acquire_web_socket(url, headers, cache_session_id, signal.as_ref()).await?;
     let result = async {
         let mut frame = Map::new();
         frame.insert("type".into(), json!("response.create"));
@@ -1769,7 +1808,10 @@ async fn process_web_socket_stream(
         if let Some(failure) = failure {
             return Err(match failure {
                 WebSocketStreamFailure::Close(error) => ResponsesApiError::WebSocketClose(error),
-                WebSocketStreamFailure::DiagnosedTransport { message, diagnostic } => ResponsesApiError::Provider {
+                WebSocketStreamFailure::DiagnosedTransport {
+                    message,
+                    diagnostic,
+                } => ResponsesApiError::Provider {
                     message,
                     diagnostic,
                     error_cause: None,
@@ -1833,7 +1875,8 @@ async fn run_stream(
             ResponsesApiError::HttpWithHeaders {
                 status_code, body, ..
             } => (Some(*status_code), Some(body.as_str())),
-            ResponsesApiError::Message(_) | ResponsesApiError::WebSocketClose(_)
+            ResponsesApiError::Message(_)
+            | ResponsesApiError::WebSocketClose(_)
             | ResponsesApiError::Provider { .. } => (None, None),
         };
         if output.stop_reason != StopReason::Aborted {
@@ -1937,14 +1980,20 @@ async fn drive(
         params = crate::api::openai_responses_allowed_tools::restrict_to_allowed_tools(&params);
     }
     let choice = params.get("tool_choice").cloned();
+    let declared_tool_names: Vec<String> =
+        crate::types::transcript::get_declared_tools(&transcript.messages)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
     let omitted = params
         .get_mut("tools")
         .and_then(Value::as_array_mut)
         .map_or(0, |tools| {
-            github_copilot_tool_limit::limit_github_copilot_tools(
+            github_copilot_tool_limit::limit_github_copilot_tools_with_priority(
                 &model.provider,
                 tools,
                 choice.as_ref(),
+                Some(declared_tool_names.as_slice()),
             )
         });
     github_copilot_tool_limit::record_github_copilot_tool_limit(output, omitted);
@@ -2064,7 +2113,10 @@ async fn drive(
         let provenance = request_provenance.clone();
         async move {
             loop {
-                *provenance.lock().unwrap_or_else(|poison| poison.into_inner()) = ResponsesFailureMetadata::default();
+                *provenance
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner()) =
+                    ResponsesFailureMetadata::default();
                 let error_headers = Arc::new(Mutex::new(None));
                 let sent_params = params
                     .lock()
@@ -2151,9 +2203,7 @@ async fn drive(
                                     .take()
                                     .unwrap_or_default(),
                             },
-                            None => {
-                                responses_stream_error(failure.message, &provenance)
-                            },
+                            None => responses_stream_error(failure.message, &provenance),
                         });
                     }
                 };
@@ -2352,10 +2402,17 @@ pub async fn warm_openai_responses_prompt_cache(
     params.insert("stream".into(), json!(false));
     let choice = params.get("tool_choice").cloned();
     if let Some(Value::Array(tools)) = params.get_mut("tools") {
-        github_copilot_tool_limit::limit_github_copilot_tools(
+        let declared_tool_names: Vec<String> = crate::types::transcript::get_declared_tools(
+            &crate::types::transcript::normalize_context(&prefix).messages,
+        )
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+        github_copilot_tool_limit::limit_github_copilot_tools_with_priority(
             &model.provider,
             tools,
             choice.as_ref(),
+            Some(declared_tool_names.as_slice()),
         );
     }
     let cache = params
@@ -2449,7 +2506,9 @@ mod audit_resp2_tests {
     #[tokio::test]
     async fn post_content_failure_preserves_structured_provenance() {
         // Given content followed by a structured provider error.
-        let model = crate::models_generated::get_builtin_provider_models("openai").expect("models")[0].clone();
+        let model = crate::models_generated::get_builtin_provider_models("openai").expect("models")
+            [0]
+        .clone();
         let mut output = create_output(&model);
         let sink = create_assistant_message_event_stream();
         let provenance: ResponsesFailureSlot = Arc::default();
@@ -2458,35 +2517,69 @@ mod audit_resp2_tests {
             b"data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_1\"}}\n\ndata: {\"type\":\"response.content_part.added\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\"}}\n\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"x\"}\n\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"insufficient_quota\",\"message\":\"failure\"}}}\n\n"
         ))]));
         // When the real processor consumes the stream after priming commits the content.
-        let body = prime_responses_body_with_provenance(body, &provenance, &model.provider).await.expect("committed stream");
-        let error = process_responses_stream(body, &mut output, &sink, &model, &ResponsesStreamOptions {
-            on_provider_stream_event: Some(&observer),
-            ..ResponsesStreamOptions::default()
-        }).await.expect_err("provider failure");
-        apply_responses_failure(&mut output, &responses_stream_error(error.message, &provenance));
+        let body = prime_responses_body_with_provenance(body, &provenance, &model.provider)
+            .await
+            .expect("committed stream");
+        let error = process_responses_stream(
+            body,
+            &mut output,
+            &sink,
+            &model,
+            &ResponsesStreamOptions {
+                on_provider_stream_event: Some(&observer),
+                ..ResponsesStreamOptions::default()
+            },
+        )
+        .await
+        .expect_err("provider failure");
+        apply_responses_failure(
+            &mut output,
+            &responses_stream_error(error.message, &provenance),
+        );
         // Then partial content and provider provenance survive independently of display text.
         assert!(!output.content.is_empty());
-        assert_eq!(output.provider_diagnostic.expect("diagnostic").code.as_deref(), Some("insufficient_quota"));
+        assert_eq!(
+            output
+                .provider_diagnostic
+                .expect("diagnostic")
+                .code
+                .as_deref(),
+            Some("insufficient_quota")
+        );
     }
 
     #[tokio::test]
     async fn callback_failure_never_acquires_provider_provenance() {
         // Given a callback rejecting a provider-shaped error event.
-        let model = crate::models_generated::get_builtin_provider_models("openai").expect("models")[0].clone();
+        let model = crate::models_generated::get_builtin_provider_models("openai").expect("models")
+            [0]
+        .clone();
         let mut output = create_output(&model);
         let provenance: ResponsesFailureSlot = Arc::default();
         let observer = observe_responses_events(&StreamOptions::default(), provenance.clone());
-        let hook: crate::types::AsyncOnProviderStreamEvent = Arc::new(|_, _| Box::pin(async { Err("invalid_api_key".to_owned()) }));
+        let hook: crate::types::AsyncOnProviderStreamEvent =
+            Arc::new(|_, _| Box::pin(async { Err("invalid_api_key".to_owned()) }));
         let body: ResponsesBody = Box::pin(futures::stream::iter([Ok(Bytes::from_static(
-            b"data: {\"type\":\"error\",\"code\":\"invalid_api_key\"}\n\n"
+            b"data: {\"type\":\"error\",\"code\":\"invalid_api_key\"}\n\n",
         ))]));
         // When the callback terminates processing before the adapter handles the event.
-        let error = process_responses_stream(body, &mut output, &create_assistant_message_event_stream(), &model, &ResponsesStreamOptions {
-            on_provider_stream_event: Some(&observer),
-            async_on_provider_stream_event: Some(&hook),
-            ..ResponsesStreamOptions::default()
-        }).await.expect_err("callback failure");
-        apply_responses_failure(&mut output, &responses_stream_error(error.message, &provenance));
+        let error = process_responses_stream(
+            body,
+            &mut output,
+            &create_assistant_message_event_stream(),
+            &model,
+            &ResponsesStreamOptions {
+                on_provider_stream_event: Some(&observer),
+                async_on_provider_stream_event: Some(&hook),
+                ..ResponsesStreamOptions::default()
+            },
+        )
+        .await
+        .expect_err("callback failure");
+        apply_responses_failure(
+            &mut output,
+            &responses_stream_error(error.message, &provenance),
+        );
         // Then callback wording is not classified as provider evidence.
         assert!(output.provider_diagnostic.is_none());
         assert!(output.error_cause.is_none());
@@ -2500,11 +2593,18 @@ mod audit_resp2_tests {
             b"data: {\"type\":\"error\",\"error\":{\"code\":\"usage_limit_reached\",\"message\":\"opaque\"}}\n\n"
         ))]));
         // When priming encounters the refusal.
-        assert!(prime_responses_body_with_provenance(body, &provenance, "chatgpt-subscription").await.is_err());
+        assert!(
+            prime_responses_body_with_provenance(body, &provenance, "chatgpt-subscription")
+                .await
+                .is_err()
+        );
         // Then the account scope is captured before display formatting.
-        assert_eq!(provenance.lock().expect("metadata").error_cause, Some(crate::types::AssistantErrorCause::UsageLimit {
-            scope: crate::types::UsageLimitScope::Account,
-        }));
+        assert_eq!(
+            provenance.lock().expect("metadata").error_cause,
+            Some(crate::types::AssistantErrorCause::UsageLimit {
+                scope: crate::types::UsageLimitScope::Account,
+            })
+        );
     }
 
     #[test]
@@ -2535,7 +2635,7 @@ mod audit_resp2_tests {
     }
 
     #[test]
-    fn native_paid_write_cache_omits_session_key() {
+    fn native_paid_write_cache_uses_prefix_key_not_session_key() {
         let mut model = crate::models_generated::get_builtin_provider_models("openai")
             .expect("models")[0]
             .clone();
@@ -2553,7 +2653,10 @@ mod audit_resp2_tests {
             &BTreeMap::new(),
         )
         .expect("params");
-        assert!(!params.contains_key("prompt_cache_key"));
+        // senpi#2097: the key is a prefix hash (even on paid-write native endpoints), never the session id.
+        let key = params["prompt_cache_key"].as_str().expect("prefix key");
+        assert!(key.starts_with("maho-responses-prefix-v1-"), "{key}");
+        assert_ne!(key, "session");
     }
 
     #[tokio::test]

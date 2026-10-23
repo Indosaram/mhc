@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use crate::agreements::{AGREEMENTS_PATH, render_agreements_section};
 use crate::git::GitMemoryRepo;
 use crate::memfs::frontmatter::parse_memory_file;
 
@@ -69,6 +70,13 @@ pub fn compile_memory_block_at_revision(
         _ => None,
     };
 
+    let agreements = match revision {
+        Some(rev) if paths.iter().any(|p| p == AGREEMENTS_PATH) => {
+            read_system_file(repo, rev, AGREEMENTS_PATH)
+        }
+        _ => None,
+    };
+
     let system_files = match revision {
         Some(rev) => {
             let mut other_paths: Vec<&str> = paths
@@ -93,6 +101,7 @@ pub fn compile_memory_block_at_revision(
     let projection = render_projection(
         persona.as_ref(),
         identity.as_ref(),
+        agreements.as_ref(),
         &system_files,
         &external_paths,
     );
@@ -122,11 +131,16 @@ fn read_system_file(
 fn render_projection(
     persona: Option<&CompiledSystemFile>,
     identity: Option<&CompiledSystemFile>,
+    agreements: Option<&CompiledSystemFile>,
     system_files: &[CompiledSystemFile],
     external_paths: &[String],
 ) -> String {
+    let agreements_section = agreements
+        .map(|file| render_agreements_section(&file.body))
+        .unwrap_or_default();
     if persona.is_none()
         && identity.is_none()
+        && agreements_section.is_empty()
         && system_files.is_empty()
         && external_paths.is_empty()
     {
@@ -154,6 +168,11 @@ fn render_projection(
         lines.push("</self>".to_string());
     }
 
+    if !agreements_section.is_empty() {
+        lines.push(String::new());
+        lines.push(agreements_section);
+    }
+
     if !system_files.is_empty() || !external_paths.is_empty() {
         lines.push(String::new());
         lines.push("<memory>".to_string());
@@ -173,6 +192,7 @@ fn is_other_system_markdown(path: &str) -> bool {
     path.starts_with("system/")
         && path != PERSONA_PATH
         && path != IDENTITY_PATH
+        && path != AGREEMENTS_PATH
         && path.ends_with(".md")
 }
 

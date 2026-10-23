@@ -340,10 +340,11 @@ async fn leaves_messages_without_thinking_events_unaffected() {
     let messages = stream.result().await.expect("result");
     let mut expected = final_message;
     expected.thinking_level = Some(maho_ai::types::ModelThinkingLevel::Off);
-    assert_eq!(
-        messages[1].as_assistant().expect("assistant"),
-        &expected
-    );
+    let actual = messages[1].as_assistant().expect("assistant");
+    let timing = actual.timing.clone().expect("response timing is stamped");
+    assert!(timing.ended_at >= timing.requested_at);
+    expected.timing = Some(timing);
+    assert_eq!(actual, &expected);
     assert_eq!(
         messages[1].as_assistant().expect("assistant").content.len(),
         1

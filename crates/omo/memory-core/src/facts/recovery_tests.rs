@@ -25,6 +25,7 @@ fn sample_batch() -> FactsBatch {
             text: "Uses Bun.".to_string(),
             date: "2026-08-10".to_string(),
         }],
+        agreements: None,
     }
 }
 
@@ -72,8 +73,10 @@ fn test_rejects_tracked_worktree_drift_without_changing_index_or_worktree_bytes(
             text: "Uses TypeScript.".to_string(),
             date: "2026-08-11".to_string(),
         }],
+        agreements: None,
     };
-    let recovery = plan_facts_mutation(&repo, &next, None, None).expect("plan mutation");
+    let recovery = plan_facts_mutation(&repo, &next, None, None, &Default::default(), None)
+        .expect("plan mutation");
     let path = &recovery.paths[0].path;
     let full_path = dir.path().join(path);
     std::fs::write(&full_path, "foreign tracked bytes\n").expect("write foreign bytes");
@@ -110,8 +113,10 @@ fn test_rejects_tracked_index_drift_without_rewriting_either_surface() {
             text: "Uses TypeScript.".to_string(),
             date: "2026-08-11".to_string(),
         }],
+        agreements: None,
     };
-    let recovery = plan_facts_mutation(&repo, &next, None, None).expect("plan mutation");
+    let recovery = plan_facts_mutation(&repo, &next, None, None, &Default::default(), None)
+        .expect("plan mutation");
     let path = &recovery.paths[0].path;
     let foreign_oid = repo
         .path_state
@@ -141,7 +146,15 @@ fn test_rejects_tracked_index_drift_without_rewriting_either_surface() {
 fn test_rejects_foreign_creation_at_a_planned_new_path_without_deleting_it() {
     let dir = tempdir().expect("tempdir");
     let repo = crate::support::test_repo::init_test_repo(dir.path());
-    let recovery = plan_facts_mutation(&repo, &sample_batch(), None, None).expect("plan mutation");
+    let recovery = plan_facts_mutation(
+        &repo,
+        &sample_batch(),
+        None,
+        None,
+        &Default::default(),
+        None,
+    )
+    .expect("plan mutation");
     let path = &recovery.paths[0].path;
     let full_path = dir.path().join(path);
     std::fs::create_dir_all(full_path.parent().unwrap()).expect("create parent dirs");
@@ -173,8 +186,10 @@ fn test_restores_owned_partial_pre_post_residue_and_commits_the_exact_recorded_p
                 date: "2026-09-01".to_string(),
             },
         ],
+        agreements: None,
     };
-    let recovery = plan_facts_mutation(&repo, &batch, None, None).expect("plan mutation");
+    let recovery = plan_facts_mutation(&repo, &batch, None, None, &Default::default(), None)
+        .expect("plan mutation");
     let first = &recovery.paths[0];
     repo.path_state
         .set_index(&first.path, &first.post.index)
@@ -207,6 +222,7 @@ fn test_publishes_a_complete_blob_backed_envelope_before_the_first_affected_path
         &author(),
         ApplyFactsBatchOptions {
             people: None,
+            agreements: None,
             on_alias_tie: None,
             publish_recovery: Some(Box::new(|recovery: &FactsApplyRecovery| {
                 published = true;
@@ -292,6 +308,7 @@ mod race_ports {
                     date: "2026-09-01".to_string(),
                 },
             ],
+            agreements: None,
         }
     }
 
@@ -310,6 +327,8 @@ mod race_ports {
             &repo,
             &two_month_batch("11111111-1111-4111-8111-111111111111"),
             None,
+            None,
+            &Default::default(),
             None,
         )
         .expect("plan");
@@ -336,6 +355,7 @@ mod race_ports {
                     text: "Initial August.".to_string(),
                     date: "2026-08-01".to_string(),
                 }],
+                agreements: None,
             },
             &super::author(),
             ApplyFactsBatchOptions::default(),
@@ -382,6 +402,7 @@ mod race_ports {
                     text: "Initial August.".to_string(),
                     date: "2026-08-01".to_string(),
                 }],
+                agreements: None,
             },
             &super::author(),
             ApplyFactsBatchOptions::default(),
@@ -391,6 +412,8 @@ mod race_ports {
             &repo,
             &two_month_batch("22222222-2222-4222-8222-222222222222"),
             None,
+            None,
+            &Default::default(),
             None,
         )
         .expect("plan");

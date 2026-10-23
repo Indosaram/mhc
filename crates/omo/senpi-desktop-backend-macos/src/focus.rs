@@ -4,9 +4,7 @@
 use std::time::{Duration, Instant};
 
 use core_graphics::window::{kCGNullWindowID, kCGWindowListOptionAll};
-use objc2_app_kit::{
-    NSApplicationActivationOptions, NSRunningApplication,
-};
+use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 use objc2_core_foundation::{
     CFArray, CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType,
 };
@@ -14,8 +12,8 @@ use senpi_desktop_core::error::{CoreResult, DesktopError};
 use senpi_desktop_core::types::{DesktopWindow, FrontWindow};
 
 use crate::ax;
+use crate::front_app::{RestoreStep, current_front_pid, restore_step};
 use crate::input::MacInput;
-use crate::front_app::{current_front_pid, restore_step, RestoreStep};
 use crate::skylight;
 
 #[derive(Clone, Copy)]
@@ -155,7 +153,12 @@ pub(crate) fn restore_front_window(front: &FrontWindow) -> CoreResult<()> {
     let mut last_request = started;
     loop {
         let now = Instant::now();
-        match restore_step(pid, current_front_pid(), engine_activated, crate::front_app::is_regular) {
+        match restore_step(
+            pid,
+            current_front_pid(),
+            engine_activated,
+            crate::front_app::is_regular,
+        ) {
             RestoreStep::Front => {
                 let since = *front_since.get_or_insert(now);
                 if now.duration_since(since) >= RESTORE_STABLE {

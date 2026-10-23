@@ -70,6 +70,7 @@ fn model(
         recover_text_tool_calls: None,
         compat: Some(compat(allow_empty_signature)),
         input_limits: None,
+        deprecated: None,
     }
 }
 

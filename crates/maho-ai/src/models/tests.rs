@@ -17,7 +17,7 @@ fn builtin(provider: &str, id: &str) -> Model {
 #[test]
 fn catalog_matches_senpi_generated_counts_and_order() {
     assert_eq!(get_builtin_providers().len(), 43);
-    assert_eq!(MODELS.values().map(IndexMap::len).sum::<usize>(), 1766);
+    assert_eq!(MODELS.values().map(IndexMap::len).sum::<usize>(), 1899);
     assert_eq!(
         get_builtin_providers().first().copied(),
         Some("alibaba-token-plan")
@@ -124,7 +124,7 @@ fn anthropic_claude_models_resolve_with_senpi_context_windows() {
         .into_iter()
         .filter(|m| m.id.starts_with("claude-"))
         .collect();
-    assert_eq!(claude.len(), 15);
+    assert_eq!(claude.len(), 17);
     let expected = [
         ("claude-fable-5", 1_000_000, 128_000),
         ("claude-fable-5-1", 1_000_000, 128_000),
@@ -173,7 +173,6 @@ fn derives_model_api_id_and_provider_literals_from_grouped_model_data() {
         ("xai", "grok-4.7", "openai-responses"),
         ("xai", "grok-4.3", "openai-responses"),
         ("github-copilot", "grok-4.7", "openai-responses"),
-        ("xiaomi", "mimo-v2.5-pro", "openai-completions"),
         ("xiaomi", "mimo-v2.6-pro", "openai-completions"),
     ] {
         let model = builtin(provider, id);
@@ -222,7 +221,7 @@ fn ships_grok_4_7_and_mimo_v2_6_pro_on_their_direct_provider_shards() {
     let xai = ids("xai");
     assert!(xai.contains(&"grok-4.6".into()) && xai.contains(&"grok-4.7".into()));
     let xiaomi = ids("xiaomi");
-    assert!(xiaomi.contains(&"mimo-v2.5-pro".into()) && xiaomi.contains(&"mimo-v2.6-pro".into()));
+    assert!(xiaomi.contains(&"mimo-v2.6-flash".into()) && xiaomi.contains(&"mimo-v2.6-pro".into()));
 }
 
 #[test]
@@ -2486,16 +2485,10 @@ const CATALOG_CASES: &[CatalogCase] = &[
         checks: &[Check::Exact(&["off", "low", "high", "max"])],
     },
     CatalogCase {
-        title: "includes low/high/max plus off for DeepSeek V4 Flash on opencode-go",
+        title: "preserves low/high/max metadata for DeepSeek V4.1 Flash on opencode-go",
         provider: "opencode-go",
-        ids: &["deepseek-v4-flash"],
-        checks: &[Check::Exact(&["off", "low", "high", "max"])],
-    },
-    CatalogCase {
-        title: "includes only high plus off for OpenCode Go Kimi K2.6",
-        provider: "opencode-go",
-        ids: &["kimi-k2.6"],
-        checks: &[Check::Exact(&["off", "high"])],
+        ids: &["deepseek-v4.1-flash"],
+        checks: &[Check::Exact(&["low", "high", "max"])],
     },
     CatalogCase {
         title: "excludes thinking off for Moonshot Kimi K2.7 Code models",

@@ -5,7 +5,7 @@
 
 use std::io;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::oneshot::translate;
 use crate::rpc::Failure;
@@ -46,7 +46,9 @@ fn tool_result(result: &Value) -> Value {
         object.get("data").and_then(Value::as_str),
         object.get("mimeType").and_then(Value::as_str),
     ) {
-        (Some(data), Some(mime)) => Some(json!({ "type": "image", "data": data, "mimeType": mime })),
+        (Some(data), Some(mime)) => {
+            Some(json!({ "type": "image", "data": data, "mimeType": mime }))
+        }
         _ => None,
     };
     let Some(image) = image else {

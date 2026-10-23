@@ -148,6 +148,17 @@ pub async fn run(
     let auto_trust_on_reload_cwd = (parsed.project_trust_override.is_none()
         && !maho_core::trust_manager::has_trust_requiring_project_resources(&session_cwd, None))
     .then_some(session_cwd);
+    // senpi `interactiveAuthNotices`: shown once at startup, then recorded as seen.
+    let auth_storage = session.model_registry().auth_storage.clone();
+    let (auth_messages, auth_notice_ids) = super::runtime::interactive_auth_notices(&auth_storage);
+    let auth_notices = (!auth_messages.is_empty() || !auth_notice_ids.is_empty()).then(|| {
+        maho_interactive::interactive_mode::AuthNotices {
+            messages: auth_messages,
+            mark_seen: Some(Box::new(move || {
+                auth_storage.mark_notices_seen(&auth_notice_ids)
+            })),
+        }
+    });
     let mut mode = InteractiveMode::new_with_options(
         session.clone(),
         theme.clone(),
@@ -159,6 +170,7 @@ pub async fn run(
                 .then(|| maho_interactive::grok::chrome::GrokChrome::new(theme.clone())),
             migrated_providers,
             model_fallback_message,
+            auth_notices,
             auto_trust_on_reload_cwd,
             initial_title_prompt: initial.initial_title_prompt.clone(),
         },
@@ -904,7 +916,8 @@ mod tests {
                 providers: Some(Vec::new()),
                 ..Default::default()
             },
-        ).expect("model runtime");
+        )
+        .expect("model runtime");
         let stream_fn: maho_agent::types::StreamFn =
             Arc::new(|_, _, _| maho_ai::types::AssistantMessageEventStream::assistant());
         let cwd = agent_dir.to_string_lossy().into_owned();
@@ -1003,16 +1016,23 @@ mod tests {
             session.native_tool_renderers_snapshot::<(), serde_json::Value>(),
             session.native_tool_renderers_snapshot::<maho_ext_gpt_apply_patch::preview_format::ApplyPatchRenderState, serde_json::Value>(),
         );
-        assert!(free.is_some(), "a free runner lock still returns both snapshots");
+        assert!(
+            free.is_some(),
+            "a free runner lock still returns both snapshots"
+        );
 
         // Hold the REAL runner lock (the one the old frame loop awaited through these exact
         // futures). The helper must poll once, see Pending, and keep the installed set.
-        let guard = super::poll_now(session.hold_extension_runner_lock_for_test()).expect("the free runner lock is acquired in one poll");
+        let guard = super::poll_now(session.hold_extension_runner_lock_for_test())
+            .expect("the free runner lock is acquired in one poll");
         let held = super::native_snapshots_if_lock_free(
             session.native_tool_renderers_snapshot::<(), serde_json::Value>(),
             session.native_tool_renderers_snapshot::<maho_ext_gpt_apply_patch::preview_format::ApplyPatchRenderState, serde_json::Value>(),
         );
-        assert!(held.is_none(), "a held runner lock's pending snapshot poll is not awaited");
+        assert!(
+            held.is_none(),
+            "a held runner lock's pending snapshot poll is not awaited"
+        );
         drop(guard);
         assert_eq!(super::poll_now(std::future::ready(7)), Some(7));
     }

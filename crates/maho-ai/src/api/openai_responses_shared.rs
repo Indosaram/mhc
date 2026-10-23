@@ -335,7 +335,10 @@ pub fn convert_responses_messages(
 
     let include_system_prompt = options.include_system_prompt.unwrap_or(true);
     if include_system_prompt
-        && let Some(system_prompt) = context.system_prompt.as_ref().filter(|prompt| !prompt.is_empty())
+        && let Some(system_prompt) = context
+            .system_prompt
+            .as_ref()
+            .filter(|prompt| !prompt.is_empty())
     {
         let compat = model
             .compat
@@ -739,8 +742,11 @@ pub fn convert_responses_tools(
     let supports_openai_grammar_tools = options.supports_openai_grammar_tools.unwrap_or(false);
     let defer_loading = options.defer_loading.unwrap_or(false);
 
+    // Sorted by name (UTF-16 order, stable) so the wire order is stable for prefix hashing.
+    let mut sorted_tools: Vec<&Tool> = tools.iter().collect();
+    sorted_tools.sort_by(|a, b| a.name.encode_utf16().cmp(b.name.encode_utf16()));
     let mut converted = Vec::with_capacity(tools.len());
-    for tool in tools {
+    for tool in sorted_tools {
         if let Some(grammar) =
             resolve_grammar_constrained_sampling(tool, supports_openai_grammar_tools)?
         {
@@ -1965,12 +1971,12 @@ fn finalize_response(
             cache_read: cached_tokens,
             cache_write: cache_write_tokens,
             cache_write_1h: None,
-            reasoning: Some(
+            reasoning: crate::utils::reported_count::reported_count(
                 usage
                     .get("output_tokens_details")
-                    .map(|details| field_u64(details, "reasoning_tokens"))
-                    .unwrap_or(0),
-            ),
+                    .and_then(|details| details.get("reasoning_tokens")),
+            )
+            .map(|count| count.max(0.0) as u64),
             total_tokens: field_u64(usage, "total_tokens"),
             cost: Default::default(),
         };

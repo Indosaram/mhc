@@ -1,206 +1,561 @@
-use maho_core::agent_session::{AgentSession,QueuedInputOptions};
-use crate::rpc_types::{RpcCommand,RpcCommandBody,RpcResponse,RpcResponseResult,ResponseRecordType};
-pub fn json_parse_error_message(input:&str)->String{
-    struct Parser<'a>{bytes:&'a [u8],at:usize}
-    impl Parser<'_>{
-        fn space(&mut self){while self.bytes.get(self.at).is_some_and(|byte|matches!(byte,b' '|b'\n'|b'\r'|b'\t')){self.at+=1;}}
-        fn string(&mut self)->Result<(),String>{
-            self.at+=1;
-            while let Some(&byte)=self.bytes.get(self.at){
-                self.at+=1;
-                match byte{
-                    b'"'=>return Ok(()),
-                    0..=31=>return Err("Unterminated string".into()),
-                    b'\\'=>{
-                        let Some(&escape)=self.bytes.get(self.at)else{return Err("Unterminated string".into());};self.at+=1;
-                        match escape{
-                            b'"'|b'\\'|b'/'|b'b'|b'f'|b'n'|b'r'|b't'=>{},
-                            b'u'=>{
-                                let digits=&self.bytes[self.at..self.bytes.len().min(self.at+4)];
-                                if digits.len()<4||digits.contains(&b'"'){return Err("\\u must be followed by 4 hex digits".into());}
-                                if !digits.iter().all(u8::is_ascii_hexdigit){return Err(format!("\"\\u{}\" is not a valid unicode escape",String::from_utf8_lossy(digits)));}self.at+=4;
-                            },
-                            _=>return Err(format!("Invalid escape character {}",String::from_utf8_lossy(&self.bytes[self.at-1..]).chars().next().unwrap_or_default())),
+use crate::rpc_types::{
+    ResponseRecordType, RpcCommand, RpcCommandBody, RpcResponse, RpcResponseResult,
+};
+use maho_core::agent_session::{AgentSession, QueuedInputOptions};
+pub fn json_parse_error_message(input: &str) -> String {
+    struct Parser<'a> {
+        bytes: &'a [u8],
+        at: usize,
+    }
+    impl Parser<'_> {
+        fn space(&mut self) {
+            while self
+                .bytes
+                .get(self.at)
+                .is_some_and(|byte| matches!(byte, b' ' | b'\n' | b'\r' | b'\t'))
+            {
+                self.at += 1;
+            }
+        }
+        fn string(&mut self) -> Result<(), String> {
+            self.at += 1;
+            while let Some(&byte) = self.bytes.get(self.at) {
+                self.at += 1;
+                match byte {
+                    b'"' => return Ok(()),
+                    0..=31 => return Err("Unterminated string".into()),
+                    b'\\' => {
+                        let Some(&escape) = self.bytes.get(self.at) else {
+                            return Err("Unterminated string".into());
+                        };
+                        self.at += 1;
+                        match escape {
+                            b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {}
+                            b'u' => {
+                                let digits =
+                                    &self.bytes[self.at..self.bytes.len().min(self.at + 4)];
+                                if digits.len() < 4 || digits.contains(&b'"') {
+                                    return Err("\\u must be followed by 4 hex digits".into());
+                                }
+                                if !digits.iter().all(u8::is_ascii_hexdigit) {
+                                    return Err(format!(
+                                        "\"\\u{}\" is not a valid unicode escape",
+                                        String::from_utf8_lossy(digits)
+                                    ));
+                                }
+                                self.at += 4;
+                            }
+                            _ => {
+                                return Err(format!(
+                                    "Invalid escape character {}",
+                                    String::from_utf8_lossy(&self.bytes[self.at - 1..])
+                                        .chars()
+                                        .next()
+                                        .unwrap_or_default()
+                                ));
+                            }
                         }
-                    },_=>{}
+                    }
+                    _ => {}
                 }
             }
             Err("Unterminated string".into())
         }
-        fn value(&mut self)->Result<(),String>{
-            self.space();let Some(&byte)=self.bytes.get(self.at)else{return Err("Unexpected EOF".into());};
-            match byte{
-                b'"'=>self.string(),
-                b'-'|b'0'..=b'9'=>{
-                    if byte==b'-'{self.at+=1;}
-                    match self.bytes.get(self.at){Some(b'0')=>self.at+=1,Some(b'1'..=b'9')=>{while self.bytes.get(self.at).is_some_and(u8::is_ascii_digit){self.at+=1;}},_=>return Err("Invalid number".into())}
-                    if self.bytes.get(self.at)==Some(&b'.'){self.at+=1;if !self.bytes.get(self.at).is_some_and(u8::is_ascii_digit){return Err("Invalid digits after decimal point".into());}while self.bytes.get(self.at).is_some_and(u8::is_ascii_digit){self.at+=1;}}
-                    if self.bytes.get(self.at).is_some_and(|byte|matches!(byte,b'e'|b'E')){
-                        self.at+=1;
-                        if self.bytes.get(self.at).is_some_and(|byte|matches!(byte,b'+'|b'-')){self.at+=1;}
-                        if !self.bytes.get(self.at).is_some_and(u8::is_ascii_digit){return Err("Unable to parse JSON string".into());}
-                        while self.bytes.get(self.at).is_some_and(u8::is_ascii_digit){self.at+=1;}
+        fn value(&mut self) -> Result<(), String> {
+            self.space();
+            let Some(&byte) = self.bytes.get(self.at) else {
+                return Err("Unexpected EOF".into());
+            };
+            match byte {
+                b'"' => self.string(),
+                b'-' | b'0'..=b'9' => {
+                    if byte == b'-' {
+                        self.at += 1;
+                    }
+                    match self.bytes.get(self.at) {
+                        Some(b'0') => self.at += 1,
+                        Some(b'1'..=b'9') => {
+                            while self.bytes.get(self.at).is_some_and(u8::is_ascii_digit) {
+                                self.at += 1;
+                            }
+                        }
+                        _ => return Err("Invalid number".into()),
+                    }
+                    if self.bytes.get(self.at) == Some(&b'.') {
+                        self.at += 1;
+                        if !self.bytes.get(self.at).is_some_and(u8::is_ascii_digit) {
+                            return Err("Invalid digits after decimal point".into());
+                        }
+                        while self.bytes.get(self.at).is_some_and(u8::is_ascii_digit) {
+                            self.at += 1;
+                        }
+                    }
+                    if self
+                        .bytes
+                        .get(self.at)
+                        .is_some_and(|byte| matches!(byte, b'e' | b'E'))
+                    {
+                        self.at += 1;
+                        if self
+                            .bytes
+                            .get(self.at)
+                            .is_some_and(|byte| matches!(byte, b'+' | b'-'))
+                        {
+                            self.at += 1;
+                        }
+                        if !self.bytes.get(self.at).is_some_and(u8::is_ascii_digit) {
+                            return Err("Unable to parse JSON string".into());
+                        }
+                        while self.bytes.get(self.at).is_some_and(u8::is_ascii_digit) {
+                            self.at += 1;
+                        }
                     }
                     Ok(())
-                },
-                byte if byte.is_ascii_alphabetic()=>{
-                    for literal in [b"true".as_slice(),b"false",b"null"]{if self.bytes[self.at..].starts_with(literal){self.at+=literal.len();return Ok(());}}
-                    let start=self.at;while self.bytes.get(self.at).is_some_and(|byte|byte.is_ascii_alphanumeric()||*byte==b'_'){self.at+=1;}
-                    Err(format!("Unexpected identifier \"{}\"",String::from_utf8_lossy(&self.bytes[start..self.at])))
-                },b'}'|b']'|b','|b':'=>Err(format!("Unexpected token '{}'",char::from(byte))),_=>Err(format!("Unrecognized token '{}'",String::from_utf8_lossy(&self.bytes[self.at..]).chars().next().unwrap_or_default()))
+                }
+                byte if byte.is_ascii_alphabetic() => {
+                    for literal in [b"true".as_slice(), b"false", b"null"] {
+                        if self.bytes[self.at..].starts_with(literal) {
+                            self.at += literal.len();
+                            return Ok(());
+                        }
+                    }
+                    let start = self.at;
+                    while self
+                        .bytes
+                        .get(self.at)
+                        .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+                    {
+                        self.at += 1;
+                    }
+                    Err(format!(
+                        "Unexpected identifier \"{}\"",
+                        String::from_utf8_lossy(&self.bytes[start..self.at])
+                    ))
+                }
+                b'}' | b']' | b',' | b':' => {
+                    Err(format!("Unexpected token '{}'", char::from(byte)))
+                }
+                _ => Err(format!(
+                    "Unrecognized token '{}'",
+                    String::from_utf8_lossy(&self.bytes[self.at..])
+                        .chars()
+                        .next()
+                        .unwrap_or_default()
+                )),
             }
         }
-        fn document(&mut self)->Result<(),String>{
-            let mut containers=Vec::new();
-            loop{
+        fn document(&mut self) -> Result<(), String> {
+            let mut containers = Vec::new();
+            loop {
                 self.space();
-                match self.bytes.get(self.at){
-                    Some(b'{')=>{
-                        self.at+=1;self.space();
-                        if self.bytes.get(self.at)==Some(&b'}'){self.at+=1;}else{
-                            if self.bytes.get(self.at)!=Some(&b'"'){return Err("Expected '}'".into());}
-                            self.string()?;self.space();if self.bytes.get(self.at)!=Some(&b':'){return Err("Expected ':' before value in object property definition".into());}self.at+=1;containers.push(b'}');continue;
+                match self.bytes.get(self.at) {
+                    Some(b'{') => {
+                        self.at += 1;
+                        self.space();
+                        if self.bytes.get(self.at) == Some(&b'}') {
+                            self.at += 1;
+                        } else {
+                            if self.bytes.get(self.at) != Some(&b'"') {
+                                return Err("Expected '}'".into());
+                            }
+                            self.string()?;
+                            self.space();
+                            if self.bytes.get(self.at) != Some(&b':') {
+                                return Err(
+                                    "Expected ':' before value in object property definition"
+                                        .into(),
+                                );
+                            }
+                            self.at += 1;
+                            containers.push(b'}');
+                            continue;
                         }
-                    },
-                    Some(b'[')=>{self.at+=1;self.space();if self.bytes.get(self.at)==Some(&b']'){self.at+=1;}else{containers.push(b']');continue;}},
-                    _=>self.value()?,
+                    }
+                    Some(b'[') => {
+                        self.at += 1;
+                        self.space();
+                        if self.bytes.get(self.at) == Some(&b']') {
+                            self.at += 1;
+                        } else {
+                            containers.push(b']');
+                            continue;
+                        }
+                    }
+                    _ => self.value()?,
                 }
-                loop{
-                    self.space();let Some(&closing)=containers.last()else{return if self.at==self.bytes.len(){Ok(())}else{Err("Unable to parse JSON string".into())};};
-                    if self.bytes.get(self.at)==Some(&closing){self.at+=1;containers.pop();continue;}
-                    if self.bytes.get(self.at)!=Some(&b','){return Err(format!("Expected '{}'",char::from(closing)));}
-                    self.at+=1;self.space();
-                    if closing==b']'{if self.bytes.get(self.at)==Some(&b']'){return Err("Unexpected comma at the end of array expression".into());}}else{
-                        if self.bytes.get(self.at)!=Some(&b'"'){return Err("Property name must be a string literal".into());}
-                        self.string()?;self.space();if self.bytes.get(self.at)!=Some(&b':'){return Err("Expected ':' before value in object property definition".into());}self.at+=1;
+                loop {
+                    self.space();
+                    let Some(&closing) = containers.last() else {
+                        return if self.at == self.bytes.len() {
+                            Ok(())
+                        } else {
+                            Err("Unable to parse JSON string".into())
+                        };
+                    };
+                    if self.bytes.get(self.at) == Some(&closing) {
+                        self.at += 1;
+                        containers.pop();
+                        continue;
+                    }
+                    if self.bytes.get(self.at) != Some(&b',') {
+                        return Err(format!("Expected '{}'", char::from(closing)));
+                    }
+                    self.at += 1;
+                    self.space();
+                    if closing == b']' {
+                        if self.bytes.get(self.at) == Some(&b']') {
+                            return Err("Unexpected comma at the end of array expression".into());
+                        }
+                    } else {
+                        if self.bytes.get(self.at) != Some(&b'"') {
+                            return Err("Property name must be a string literal".into());
+                        }
+                        self.string()?;
+                        self.space();
+                        if self.bytes.get(self.at) != Some(&b':') {
+                            return Err(
+                                "Expected ':' before value in object property definition".into()
+                            );
+                        }
+                        self.at += 1;
                     }
                     break;
                 }
             }
         }
     }
-    let mut parser=Parser{bytes:input.as_bytes(),at:0};
-    let result=parser.document();
-    format!("JSON Parse error: {}",result.err().unwrap_or_else(||"Unable to parse JSON string".into()))
+    let mut parser = Parser {
+        bytes: input.as_bytes(),
+        at: 0,
+    };
+    let result = parser.document();
+    format!(
+        "JSON Parse error: {}",
+        result
+            .err()
+            .unwrap_or_else(|| "Unable to parse JSON string".into())
+    )
 }
-pub fn json_parse_error_code_units(input:&str)->Vec<u16>{
-    let message=json_parse_error_message(input);
-    let mut units=message.encode_utf16().collect::<Vec<_>>();
+pub fn json_parse_error_code_units(input: &str) -> Vec<u16> {
+    let message = json_parse_error_message(input);
+    let mut units = message.encode_utf16().collect::<Vec<_>>();
     // JavaScriptCore names an unexpected token by its first UTF-16 code unit,
     // including a lone high surrogate for an astral character.
-    if (message.starts_with("JSON Parse error: Unrecognized token '")||message.starts_with("JSON Parse error: Invalid escape character "))&&let Some(index)=units.iter().position(|unit|(0xd800..=0xdbff).contains(unit))&&units.get(index+1).is_some_and(|unit|(0xdc00..=0xdfff).contains(unit)){
-        units.remove(index+1);
+    if (message.starts_with("JSON Parse error: Unrecognized token '")
+        || message.starts_with("JSON Parse error: Invalid escape character "))
+        && let Some(index) = units
+            .iter()
+            .position(|unit| (0xd800..=0xdbff).contains(unit))
+        && units
+            .get(index + 1)
+            .is_some_and(|unit| (0xdc00..=0xdfff).contains(unit))
+    {
+        units.remove(index + 1);
     }
     units
 }
-pub fn json_parse_error_response(input:&str)->String{
+pub fn json_parse_error_response(input: &str) -> String {
     use std::fmt::Write;
-    let mut error=String::from("Failed to parse command: ").encode_utf16().collect::<Vec<_>>();
+    let mut error = String::from("Failed to parse command: ")
+        .encode_utf16()
+        .collect::<Vec<_>>();
     error.extend(json_parse_error_code_units(input));
-    let mut response=String::from("{\"type\":\"response\",\"command\":\"parse\",\"success\":false,\"error\":\"");
-    for unit in error{let _=write!(response,"\\u{unit:04x}");}
-    response.push_str("\"}\n");response
+    let mut response =
+        String::from("{\"type\":\"response\",\"command\":\"parse\",\"success\":false,\"error\":\"");
+    for unit in error {
+        let _ = write!(response, "\\u{unit:04x}");
+    }
+    response.push_str("\"}\n");
+    response
 }
-pub type RpcRecordSink=std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>;
+pub type RpcRecordSink = std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>;
 /// The abort owner the connection last observed on `agent_end`, keyed by the session id it was
 /// seen on: `get_state` reports it as `lastAbortSource` until the session is replaced (senpi keeps
 /// `lastAbortSource` per handler and clears it in `rebindSession`; native replacement keeps the
 /// session object and changes its id).
-pub type LastAbortSource=std::sync::Arc<std::sync::Mutex<Option<(String,&'static str)>>>;
+pub type LastAbortSource = std::sync::Arc<std::sync::Mutex<Option<(String, &'static str)>>>;
 /// senpi's subscribe-path enrichment inside `rebindSession`: `thinking_level_changed` and
 /// `model_changed` carry the session's `thinkingSelection`, and `agent_end` records its abort owner.
-pub fn rpc_session_event_record(session:&AgentSession,event:&maho_ext_api::AgentSessionEvent,last_abort_source:&LastAbortSource)->Result<serde_json::Value,serde_json::Error>{
-    let mut record=crate::session_binding::session_event_record(event)?;
-    match event{
-        maho_ext_api::AgentSessionEvent::ThinkingLevelChanged{..}|maho_ext_api::AgentSessionEvent::ModelChanged{..}=>{
-            if let Some(selection)=session.thinking_selection(){record["thinkingSelection"]=serde_json::to_value(selection)?;}
-        },
+pub fn rpc_session_event_record(
+    session: &AgentSession,
+    event: &maho_ext_api::AgentSessionEvent,
+    last_abort_source: &LastAbortSource,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let mut record = crate::session_binding::session_event_record(event)?;
+    match event {
+        maho_ext_api::AgentSessionEvent::ThinkingLevelChanged { .. }
+        | maho_ext_api::AgentSessionEvent::ModelChanged { .. } => {
+            if let Some(selection) = session.thinking_selection() {
+                record["thinkingSelection"] = serde_json::to_value(selection)?;
+            }
+        }
         // senpi agent-session.ts publishes `message_update` through `withResolvedToolName`.
-        maho_ext_api::AgentSessionEvent::Agent(event@maho_ext_api::AgentEvent::MessageUpdate{..})=>{
-            if let Some(name)=session.message_update_resolved_tool_name(event){record["resolvedToolName"]=name.into();}
-        },
+        maho_ext_api::AgentSessionEvent::Agent(
+            event @ maho_ext_api::AgentEvent::MessageUpdate { .. },
+        ) => {
+            if let Some(name) = session.message_update_resolved_tool_name(event) {
+                record["resolvedToolName"] = name.into();
+            }
+        }
         // senpi connection-handler.ts: `aborted` and `abortSource` are added together, only when the
         // session reports an abort owner for this turn.
-        maho_ext_api::AgentSessionEvent::AgentEnd{abort_source:Some(source),..}=>{
-            let source=match source{maho_ext_api::AbortSource::User=>"user",maho_ext_api::AbortSource::System=>"system",maho_ext_api::AbortSource::Provider=>"provider"};
-            *last_abort_source.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some((session.session_id(),source));
-            record["aborted"]=true.into();record["abortSource"]=source.into();
-        },
-        _=>{},
+        maho_ext_api::AgentSessionEvent::AgentEnd {
+            abort_source: Some(source),
+            ..
+        } => {
+            let source = match source {
+                maho_ext_api::AbortSource::User => "user",
+                maho_ext_api::AbortSource::System => "system",
+                maho_ext_api::AbortSource::Provider => "provider",
+            };
+            *last_abort_source
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some((session.session_id(), source));
+            record["aborted"] = true.into();
+            record["abortSource"] = source.into();
+        }
+        _ => {}
     }
     Ok(record)
 }
-fn current_abort_source(session:&AgentSession,last_abort_source:Option<&LastAbortSource>)->Option<&'static str>{
-    let stored=last_abort_source?.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()?;
-    (stored.0==session.session_id()).then_some(stored.1)
+fn current_abort_source(
+    session: &AgentSession,
+    last_abort_source: Option<&LastAbortSource>,
+) -> Option<&'static str> {
+    let stored = last_abort_source?
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()?;
+    (stored.0 == session.session_id()).then_some(stored.1)
 }
-type ActiveLogins=std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String,maho_ai::utils::abort::AbortController>>>;
-pub async fn handle_input_line(session:&AgentSession,line:&str)->Result<Option<String>,serde_json::Error>{
-    handle_input_line_with_sink(session,line,None).await
+type ActiveLogins = std::sync::Arc<
+    std::sync::Mutex<std::collections::HashMap<String, maho_ai::utils::abort::AbortController>>,
+>;
+pub async fn handle_input_line(
+    session: &AgentSession,
+    line: &str,
+) -> Result<Option<String>, serde_json::Error> {
+    handle_input_line_with_sink(session, line, None).await
 }
-pub async fn handle_input_line_with_sink(session:&AgentSession,line:&str,sink:Option<RpcRecordSink>)->Result<Option<String>,serde_json::Error>{
-    handle_input_line_with_login_state(session,line,sink,None,None,None).await
+pub async fn handle_input_line_with_sink(
+    session: &AgentSession,
+    line: &str,
+    sink: Option<RpcRecordSink>,
+) -> Result<Option<String>, serde_json::Error> {
+    handle_input_line_with_login_state(session, line, sink, None, None, None).await
 }
 /// `handle_input_line_with_sink` for a connection that tracks `lastAbortSource` for `get_state`.
-pub async fn handle_input_line_with_abort_source(session:&AgentSession,line:&str,sink:Option<RpcRecordSink>,last_abort_source:&LastAbortSource)->Result<Option<String>,serde_json::Error>{
-    handle_input_line_with_login_state(session,line,sink,None,None,Some(last_abort_source)).await
+pub async fn handle_input_line_with_abort_source(
+    session: &AgentSession,
+    line: &str,
+    sink: Option<RpcRecordSink>,
+    last_abort_source: &LastAbortSource,
+) -> Result<Option<String>, serde_json::Error> {
+    handle_input_line_with_login_state(session, line, sink, None, None, Some(last_abort_source))
+        .await
 }
-async fn handle_input_line_with_login_state(session:&AgentSession,line:&str,sink:Option<RpcRecordSink>,active_logins:Option<ActiveLogins>,ui:Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,last_abort_source:Option<&LastAbortSource>)->Result<Option<String>,serde_json::Error>{
-    let parsed=serde_json::from_str::<serde_json::Value>(line);
-    if parsed.is_err(){return Ok(Some(json_parse_error_response(line)));}
-    let error=match &parsed{Err(_)=>None,Ok(value)=>crate::rpc_input_validation::rpc_command_shape_error(value).map(str::to_owned)};
-    if let Some(error)=error{return crate::jsonl::serialize_json_line(&RpcResponse{id:None,record_type:ResponseRecordType::Response,command:"parse".into(),session_id:None,result:RpcResponseResult::Error{error,error_code:None,error_data:None}}).map(Some);}
-    let value=parsed?;
-    let error=crate::rpc_input_validation::rpc_command_payload_error(&value).map(str::to_owned).or_else(||crate::rpc_input_validation::rpc_message_length_error(&value));
-    if let Some(error)=error{return crate::jsonl::serialize_json_line(&RpcResponse{id:value["id"].as_str().map(str::to_owned),record_type:ResponseRecordType::Response,command:value["type"].as_str().unwrap_or_default().into(),session_id:None,result:RpcResponseResult::Error{error,error_code:None,error_data:default_error_data(session,value["type"].as_str().unwrap_or_default())}}).map(Some);}
-    let command:RpcCommand=match serde_json::from_value(value.clone()){
-        Ok(command)=>command,
-        Err(error) if error.to_string().starts_with(&format!("unknown variant `{}`,",value["type"].as_str().unwrap_or_default()))=>{let kind=value["type"].as_str().unwrap_or_default();return crate::jsonl::serialize_json_line(&RpcResponse{id:value.get("id").and_then(serde_json::Value::as_str).map(str::to_owned),record_type:ResponseRecordType::Response,command:kind.into(),session_id:value.get("sessionId").and_then(serde_json::Value::as_str).map(str::to_owned),result:RpcResponseResult::Error{error:format!("Unknown command: {kind}"),error_code:None,error_data:None}}).map(Some);},
+async fn handle_input_line_with_login_state(
+    session: &AgentSession,
+    line: &str,
+    sink: Option<RpcRecordSink>,
+    active_logins: Option<ActiveLogins>,
+    ui: Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,
+    last_abort_source: Option<&LastAbortSource>,
+) -> Result<Option<String>, serde_json::Error> {
+    let parsed = serde_json::from_str::<serde_json::Value>(line);
+    if parsed.is_err() {
+        return Ok(Some(json_parse_error_response(line)));
+    }
+    let error = match &parsed {
+        Err(_) => None,
+        Ok(value) => crate::rpc_input_validation::rpc_command_shape_error(value).map(str::to_owned),
+    };
+    if let Some(error) = error {
+        return crate::jsonl::serialize_json_line(&RpcResponse {
+            id: None,
+            record_type: ResponseRecordType::Response,
+            command: "parse".into(),
+            session_id: None,
+            result: RpcResponseResult::Error {
+                error,
+                error_code: None,
+                error_data: None,
+            },
+        })
+        .map(Some);
+    }
+    let value = parsed?;
+    let error = crate::rpc_input_validation::rpc_command_payload_error(&value)
+        .map(str::to_owned)
+        .or_else(|| crate::rpc_input_validation::rpc_message_length_error(&value));
+    if let Some(error) = error {
+        return crate::jsonl::serialize_json_line(&RpcResponse {
+            id: value["id"].as_str().map(str::to_owned),
+            record_type: ResponseRecordType::Response,
+            command: value["type"].as_str().unwrap_or_default().into(),
+            session_id: None,
+            result: RpcResponseResult::Error {
+                error,
+                error_code: None,
+                error_data: default_error_data(session, value["type"].as_str().unwrap_or_default()),
+            },
+        })
+        .map(Some);
+    }
+    let command: RpcCommand = match serde_json::from_value(value.clone()) {
+        Ok(command) => command,
+        Err(error)
+            if error.to_string().starts_with(&format!(
+                "unknown variant `{}`,",
+                value["type"].as_str().unwrap_or_default()
+            )) =>
+        {
+            let kind = value["type"].as_str().unwrap_or_default();
+            return crate::jsonl::serialize_json_line(&RpcResponse {
+                id: value
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                record_type: ResponseRecordType::Response,
+                command: kind.into(),
+                session_id: value
+                    .get("sessionId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                result: RpcResponseResult::Error {
+                    error: format!("Unknown command: {kind}"),
+                    error_code: None,
+                    error_data: None,
+                },
+            })
+            .map(Some);
+        }
         // Upstream answers any command failure with an error response (connection-handler.ts
         // `handleInputLine` catch); a malformed field must not end the command loop.
-        Err(error)=>{let kind=value["type"].as_str().unwrap_or_default();return crate::jsonl::serialize_json_line(&RpcResponse{id:value.get("id").and_then(serde_json::Value::as_str).map(str::to_owned),record_type:ResponseRecordType::Response,command:kind.into(),session_id:value.get("sessionId").and_then(serde_json::Value::as_str).map(str::to_owned),result:RpcResponseResult::Error{error:error.to_string(),error_code:None,error_data:None}}).map(Some);},
+        Err(error) => {
+            let kind = value["type"].as_str().unwrap_or_default();
+            return crate::jsonl::serialize_json_line(&RpcResponse {
+                id: value
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                record_type: ResponseRecordType::Response,
+                command: kind.into(),
+                session_id: value
+                    .get("sessionId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                result: RpcResponseResult::Error {
+                    error: error.to_string(),
+                    error_code: None,
+                    error_data: None,
+                },
+            })
+            .map(Some);
+        }
     };
-    handle_session_command_with_sink(session,&command,sink,active_logins,ui,last_abort_source).await.map(|response|crate::jsonl::serialize_json_line(&response)).transpose()
+    // Boxed: this command future is very large and would otherwise sit on the caller's stack.
+    Box::pin(handle_session_command_with_sink(
+        session,
+        &command,
+        sink,
+        active_logins,
+        ui,
+        last_abort_source,
+    ))
+    .await
+    .map(|response| crate::jsonl::serialize_json_line(&response))
+    .transpose()
 }
 /// The wire shape of one remembered model entry: the model plus its remembered thinking
 /// level/selection and service tier (senpi's `RpcSessionModelEntry` spread).
-pub fn session_model_entry_json(entry:&maho_core::agent_session::SessionModelEntry)->serde_json::Value{
-    let mut value=serde_json::json!({"model":&entry.model});
-    if let Some(level)=&entry.thinking_level{value["thinkingLevel"]=serde_json::to_value(level).unwrap_or(serde_json::Value::Null);}
-    if let Some(selection)=&entry.thinking_selection&&let Ok(selection)=serde_json::to_value(selection){value["thinkingSelection"]=selection;}
-    if let Some(tier)=entry.service_tier{value["serviceTier"]=match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority", maho_ext_api::ServiceTier::Ultrafast=>"ultrafast"}.into();}
+pub fn session_model_entry_json(
+    entry: &maho_core::agent_session::SessionModelEntry,
+) -> serde_json::Value {
+    let mut value = serde_json::json!({"model":&entry.model});
+    if let Some(level) = &entry.thinking_level {
+        value["thinkingLevel"] = serde_json::to_value(level).unwrap_or(serde_json::Value::Null);
+    }
+    if let Some(selection) = &entry.thinking_selection
+        && let Ok(selection) = serde_json::to_value(selection)
+    {
+        value["thinkingSelection"] = selection;
+    }
+    if let Some(tier) = entry.service_tier {
+        value["serviceTier"] = match tier {
+            maho_ext_api::ServiceTier::Auto => "auto",
+            maho_ext_api::ServiceTier::Flex => "flex",
+            maho_ext_api::ServiceTier::Priority => "priority",
+            maho_ext_api::ServiceTier::Ultrafast => "ultrafast",
+        }
+        .into();
+    }
     value
 }
 /// Milliseconds since the epoch, the clock the RPC host stamps records with.
-pub fn now_ms()->f64{std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.,|elapsed|elapsed.as_secs_f64()*1000.)}
+pub fn now_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0., |elapsed| elapsed.as_secs_f64() * 1000.)
+}
 /// trust.json path, cwd and file stamp (mtime, len) of the last lookup, with its answer.
-type TrustLookup=(String,String,Option<(std::time::SystemTime,u64)>,bool);
-static LAST_TRUST_LOOKUP:std::sync::Mutex<Option<TrustLookup>>=std::sync::Mutex::new(None);
+type TrustLookup = (String, String, Option<(std::time::SystemTime, u64)>, bool);
+static LAST_TRUST_LOOKUP: std::sync::Mutex<Option<TrustLookup>> = std::sync::Mutex::new(None);
 /// `ProjectTrustStore::get` behind a stat-keyed memo: snapshots are rebuilt on every session event,
 /// and the store answer only changes when trust.json itself does.
-fn project_trusted(agent_dir:&str,cwd:String)->bool{
-    let store=maho_core::ProjectTrustStore::new(agent_dir);
-    let stamp=std::fs::metadata(store.trust_path()).ok().and_then(|metadata|Some((metadata.modified().ok()?,metadata.len())));
+fn project_trusted(agent_dir: &str, cwd: String) -> bool {
+    let store = maho_core::ProjectTrustStore::new(agent_dir);
+    let stamp = std::fs::metadata(store.trust_path())
+        .ok()
+        .and_then(|metadata| Some((metadata.modified().ok()?, metadata.len())));
     {
-        let last=LAST_TRUST_LOOKUP.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((path,cached_cwd,cached_stamp,trusted))=last.as_ref()&&path==store.trust_path()&&*cached_cwd==cwd&&*cached_stamp==stamp{return *trusted;}
+        let last = LAST_TRUST_LOOKUP
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((path, cached_cwd, cached_stamp, trusted)) = last.as_ref()
+            && path == store.trust_path()
+            && *cached_cwd == cwd
+            && *cached_stamp == stamp
+        {
+            return *trusted;
+        }
     }
     // The store lookup takes the trust.json file lock, so it runs with the memo mutex released.
-    let decision=store.get(&cwd);let trusted=decision.as_ref().is_ok_and(|decision|*decision==Some(true));
+    let decision = store.get(&cwd);
+    let trusted = decision
+        .as_ref()
+        .is_ok_and(|decision| *decision == Some(true));
     // A failed lookup (lock timeout, bad file) is retried next time rather than memoized.
-    *LAST_TRUST_LOOKUP.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=decision.is_ok().then(||(store.trust_path().to_owned(),cwd,stamp,trusted));
+    *LAST_TRUST_LOOKUP
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = decision
+        .is_ok()
+        .then(|| (store.trust_path().to_owned(), cwd, stamp, trusted));
     trusted
 }
 /// Project one session into the wire state shape (senpi `buildRpcSessionState`).
 ///
 /// Shared with `open_session` so both surfaces answer with the SAME fields, instead of a
 /// second hand-rolled literal that silently drifts.
-pub fn build_rpc_session_state(session:&AgentSession,last_abort_source:Option<&str>)->serde_json::Value{
+pub fn build_rpc_session_state(
+    session: &AgentSession,
+    last_abort_source: Option<&str>,
+) -> serde_json::Value {
+    build_rpc_session_state_with_dialogs(session, last_abort_source, Vec::new())
+}
+/// `build_rpc_session_state` plus the live extension dialog frames (senpi `pendingDialogs`:
+/// `sessionDialogRequests.get(session)?.snapshot() ?? []`).
+pub fn build_rpc_session_state_with_dialogs(
+    session: &AgentSession,
+    last_abort_source: Option<&str>,
+    pending_dialogs: Vec<serde_json::Value>,
+) -> serde_json::Value {
     // senpi's `buildRpcSessionState` consults the project-trust store directly (not the settings
     // manager's cached copy) and always publishes the session manager's accumulated usage totals.
-    let project_trusted=project_trusted(&session.agent_dir(),session.cwd());
-    let usage_totals=session.with_session_manager(|manager|manager.usage_totals().clone());
-    let mut state=serde_json::json!({
+    let project_trusted = project_trusted(&session.agent_dir(), session.cwd());
+    let usage_totals = session.with_session_manager(|manager| manager.usage_totals().clone());
+    let mut state = serde_json::json!({
         "model":session.model(),
         "thinkingLevel":session.thinking_level(),
         "serviceTier":session.effective_service_tier().map(|tier|match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority", maho_ext_api::ServiceTier::Ultrafast=>"ultrafast"}),
@@ -209,6 +564,11 @@ pub fn build_rpc_session_state(session:&AgentSession,last_abort_source:Option<&s
         "isCompacting":session.is_compacting(),
         "retryAttempt":session.retry_attempt(),
         "isBashRunning":session.is_bash_running(),
+        // The session has no pause/hold state in this port: senpi's `?? false` / `?? 0` / `?? []` fallbacks.
+        "paused":false,
+        "pausedNoticeCount":0,
+        "holds":[],
+        "pendingDialogs":pending_dialogs,
         "steeringMode":match session.steering_mode(){maho_agent::types::QueueMode::All=>"all",maho_agent::types::QueueMode::OneAtATime=>"one-at-a-time"},
         "followUpMode":match session.follow_up_mode(){maho_agent::types::QueueMode::All=>"all",maho_agent::types::QueueMode::OneAtATime=>"one-at-a-time"},
         "sessionFile":session.session_file(),
@@ -226,55 +586,131 @@ pub fn build_rpc_session_state(session:&AgentSession,last_abort_source:Option<&s
         "favoriteModels":session.favorite_models().iter().map(session_model_entry_json).collect::<Vec<_>>(),
         "scopedModels":session.scoped_models().iter().map(session_model_entry_json).collect::<Vec<_>>(),
     });
-    if let Some(rate)=usage_totals.latest_cache_hit_rate{state["usageTotals"]["latestCacheHitRate"]=rate.into();}
-    if let Some(thinking_selection)=session.thinking_selection()&&let Ok(value)=serde_json::to_value(thinking_selection){state["thinkingSelection"]=value;}
-    if let Some(abort_source)=last_abort_source{state["lastAbortSource"]=abort_source.into();}
-    if let Some(context_usage)=session.get_context_usage(){state["contextUsage"]=serde_json::json!({"tokens":context_usage.tokens,"contextWindow":context_usage.context_window,"percent":context_usage.percent});}
+    if let Some(rate) = usage_totals.latest_cache_hit_rate {
+        state["usageTotals"]["latestCacheHitRate"] = rate.into();
+    }
+    if let Some(thinking_selection) = session.thinking_selection()
+        && let Ok(value) = serde_json::to_value(thinking_selection)
+    {
+        state["thinkingSelection"] = value;
+    }
+    if let Some(abort_source) = last_abort_source {
+        state["lastAbortSource"] = abort_source.into();
+    }
+    if let Some(context_usage) = session.get_context_usage() {
+        state["contextUsage"] = serde_json::json!({"tokens":context_usage.tokens,"contextWindow":context_usage.context_window,"percent":context_usage.percent});
+    }
     // Entries are published only while the session has no file on disk yet: a client that misses
     // them can never reconstruct the session it is bound to (senpi's existsSync guard).
-    let session_file=session.session_file();
-    if session_file.as_deref().is_none_or(|file|!std::path::Path::new(file).exists()){
-        let entries=session.with_session_manager(|manager|manager.entries());
-        if entries.iter().any(|entry|!matches!(entry["type"].as_str(),Some("model_change"|"model_change_rejected"|"thinking_level_change"))){state["entries"]=serde_json::json!(entries);}
+    let session_file = session.session_file();
+    if session_file
+        .as_deref()
+        .is_none_or(|file| !std::path::Path::new(file).exists())
+    {
+        let entries = session.with_session_manager(|manager| manager.entries());
+        if entries.iter().any(|entry| {
+            !matches!(
+                entry["type"].as_str(),
+                Some("model_change" | "model_change_rejected" | "thinking_level_change")
+            )
+        }) {
+            state["entries"] = serde_json::json!(entries);
+        }
     }
     state
 }
-pub async fn handle_session_command(session:&AgentSession,command:&RpcCommand)->Option<RpcResponse>{
-    handle_session_command_with_sink(session,command,None,None,None,None).await
+pub async fn handle_session_command(
+    session: &AgentSession,
+    command: &RpcCommand,
+) -> Option<RpcResponse> {
+    Box::pin(handle_session_command_with_sink(session, command, None, None, None, None)).await
 }
 /// senpi connection-handler.ts: a `MissingSessionCwdError` is answered with
 /// `errorCode: "missing_session_cwd"` and the issue as `errorData`, so the client can offer to
 /// continue in its current cwd.
-fn session_switch_failure(command:&RpcCommand,kind:&str,error:maho_core::agent_session::SessionSwitchFailure)->RpcResponse{
+fn session_switch_failure(
+    command: &RpcCommand,
+    kind: &str,
+    error: maho_core::agent_session::SessionSwitchFailure,
+) -> RpcResponse {
     let error_data=error.missing_cwd.map(|missing|{
         let mut data=serde_json::json!({"sessionCwd":missing.issue.session_cwd,"fallbackCwd":missing.issue.fallback_cwd});
         if let Some(file)=missing.issue.session_file{data["sessionFile"]=file.into();}
         data
     });
-    RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:error.message,error_code:error_data.is_some().then(||crate::rpc_types::RPC_ERROR_MISSING_SESSION_CWD.to_owned()),error_data}}
+    RpcResponse {
+        id: command.id.clone(),
+        record_type: ResponseRecordType::Response,
+        command: kind.into(),
+        session_id: command.session_id.clone(),
+        result: RpcResponseResult::Error {
+            error: error.message,
+            error_code: error_data
+                .is_some()
+                .then(|| crate::rpc_types::RPC_ERROR_MISSING_SESSION_CWD.to_owned()),
+            error_data,
+        },
+    }
 }
-fn edit_response(session:&AgentSession,result:Result<maho_core::agent_session::AssistantEditResult,String>,not_persisted:&str)->Result<Option<serde_json::Value>,String>{
-    let result=result?;
-    let leaf_id=session.with_session_manager(|manager|manager.leaf_id().map(str::to_owned));
-    if result.unchanged==Some(true){return Ok(Some(serde_json::json!({"outcome":"unchanged","leafId":leaf_id})));}
-    if result.cancelled{let mut value=serde_json::json!({"outcome":"cancelled","leafId":leaf_id});if result.aborted==Some(true){value["aborted"]=true.into();}return Ok(Some(value));}
-    let entry=result.entry_id.as_deref().and_then(|id|session.with_session_manager(|manager|manager.entry(id)));
-    if entry.as_ref().is_none_or(|entry|entry["type"]!="message")||leaf_id.is_none(){return Err(not_persisted.to_owned());}
-    let mut value=serde_json::json!({"outcome":"edited","entry":entry,"leafId":leaf_id});
-    if let Some(summary)=result.summary_entry.and_then(|entry|entry["id"].as_str().map(str::to_owned)){value["summaryEntryId"]=summary.into();}
+fn edit_response(
+    session: &AgentSession,
+    result: Result<maho_core::agent_session::AssistantEditResult, String>,
+    not_persisted: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    let result = result?;
+    let leaf_id = session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned));
+    if result.unchanged == Some(true) {
+        return Ok(Some(
+            serde_json::json!({"outcome":"unchanged","leafId":leaf_id}),
+        ));
+    }
+    if result.cancelled {
+        let mut value = serde_json::json!({"outcome":"cancelled","leafId":leaf_id});
+        if result.aborted == Some(true) {
+            value["aborted"] = true.into();
+        }
+        return Ok(Some(value));
+    }
+    let entry = result
+        .entry_id
+        .as_deref()
+        .and_then(|id| session.with_session_manager(|manager| manager.entry(id)));
+    if entry
+        .as_ref()
+        .is_none_or(|entry| entry["type"] != "message")
+        || leaf_id.is_none()
+    {
+        return Err(not_persisted.to_owned());
+    }
+    let mut value = serde_json::json!({"outcome":"edited","entry":entry,"leafId":leaf_id});
+    if let Some(summary) = result
+        .summary_entry
+        .and_then(|entry| entry["id"].as_str().map(str::to_owned))
+    {
+        value["summaryEntryId"] = summary.into();
+    }
     Ok(Some(value))
 }
 /// senpi's `error()` default: `edit_user_message`/`navigate_tree` failures carry `errorData: { leafId }`.
-fn default_error_data(session:&AgentSession,command:&str)->Option<serde_json::Value>{
+fn default_error_data(session: &AgentSession, command: &str) -> Option<serde_json::Value> {
     matches!(command,"edit_user_message"|"navigate_tree").then(||serde_json::json!({"leafId":session.with_session_manager(|manager|manager.leaf_id().map(str::to_owned))}))
 }
 /// The `{ cancelled, reason? }` wire shape of `reload` and `check_reload_veto` (rpc-types.ts).
-fn reload_veto_json(decision:&maho_ext_api::ReloadVetoDecision)->serde_json::Value{
-    let mut value=serde_json::json!({"cancelled":decision.cancelled});
-    if let Some(reason)=&decision.reason{value["reason"]=reason.clone().into();}
+fn reload_veto_json(decision: &maho_ext_api::ReloadVetoDecision) -> serde_json::Value {
+    let mut value = serde_json::json!({"cancelled":decision.cancelled});
+    if let Some(reason) = &decision.reason {
+        value["reason"] = reason.clone().into();
+    }
     value
 }
-async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcCommand,sink:Option<RpcRecordSink>,active_logins:Option<ActiveLogins>,ui:Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,last_abort_source:Option<&LastAbortSource>)->Option<RpcResponse>{
+async fn handle_session_command_with_sink(
+    session: &AgentSession,
+    command: &RpcCommand,
+    sink: Option<RpcRecordSink>,
+    active_logins: Option<ActiveLogins>,
+    ui: Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,
+    last_abort_source: Option<&LastAbortSource>,
+) -> Option<RpcResponse> {
     let (kind,result)=match &command.body{
         RpcCommandBody::Prompt{message,images,streaming_behavior,thinking_level,session_title_prompt,expand_prompt_templates}=>{
             let options=(||{
@@ -297,7 +733,8 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
                         sink(record);
                     }));
                 }
-                session.prompt(message,options).await.map(|disposition|Some(serde_json::json!({"disposition":match disposition{maho_core::agent_session::PromptDisposition::Started=>"started",maho_core::agent_session::PromptDisposition::Queued=>"queued",maho_core::agent_session::PromptDisposition::Handled=>"handled"}})))
+                // Boxed: the prompt future is large and would otherwise be inlined into this command future's stack frame.
+                Box::pin(session.prompt(message,options)).await.map(|disposition|Some(serde_json::json!({"disposition":match disposition{maho_core::agent_session::PromptDisposition::Started=>"started",maho_core::agent_session::PromptDisposition::Queued=>"queued",maho_core::agent_session::PromptDisposition::Handled=>"handled"}})))
             }};
             if admitted.load(std::sync::atomic::Ordering::SeqCst){return None;}
             ("prompt",result)
@@ -376,7 +813,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             let kind=if matches!(&command.body,RpcCommandBody::Steer{..}){"steer"}else{"follow_up"};
             let images=images.as_ref().map(|images|images.iter().cloned().map(serde_json::from_value).collect::<Result<Vec<maho_ai::types::ImageContent>,_>>()).transpose();
             let result=match images{Err(error)=>Err(error.to_string()),Ok(images)=>{
-                let options=QueuedInputOptions{enqueue_order:enqueue_order.map(|order|order as u64),source:Some(maho_ext_api::InputSource::Rpc)};
+                let options=QueuedInputOptions{enqueue_order:enqueue_order.map(|order|order as u64),source:Some(maho_ext_api::InputSource::Rpc),from_prompt:false};
                 if kind=="steer"{session.steer(message,images,options).await}else{session.follow_up(message,images,options).await}
             }};
             (kind,result.map(|()|None))
@@ -532,7 +969,10 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             let result=session.model_registry().remove_credential_account(provider,name,&session.agent_dir()).await.map(|()|None);
             ("account_remove",result)
         },
-        RpcCommandBody::GetState=>("get_state",Ok(Some(build_rpc_session_state(session,current_abort_source(session,last_abort_source))))),
+        RpcCommandBody::GetState=>("get_state",Ok(Some(build_rpc_session_state_with_dialogs(session,current_abort_source(session,last_abort_source),Vec::new())))),
+        RpcCommandBody::ResumeSession=>("resume_session",session.resume_session().await.map(|()|None)),
+        // The session keeps no draft-activity state in this port; the validated command is acknowledged (kind is a closed enum).
+        RpcCommandBody::RecordUserActivity{..}=>("record_user_activity",Ok(None)),
         RpcCommandBody::GetTree => {
             fn tree_node(node: maho_core::session_manager::SessionTreeNode) -> serde_json::Value {
                 let mut value = serde_json::json!({"entry":node.entry,"children":node.children.into_iter().map(tree_node).collect::<Vec<_>>()});
@@ -619,195 +1059,495 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         RpcCommandBody::CloseSession=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"close_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: close_session".into(),error_code:None,error_data:None}}),
         RpcCommandBody::ListSessions{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"list_sessions".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: list_sessions".into(),error_code:None,error_data:None}}),
     };
-    Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:match result{Ok(data)=>RpcResponseResult::Success{data},Err(error)=>RpcResponseResult::Error{error,error_code:None,error_data:default_error_data(session,kind)}}})
+    Some(RpcResponse {
+        id: command.id.clone(),
+        record_type: ResponseRecordType::Response,
+        command: kind.into(),
+        session_id: command.session_id.clone(),
+        result: match result {
+            Ok(data) => RpcResponseResult::Success { data },
+            Err(error) => RpcResponseResult::Error {
+                error,
+                error_code: None,
+                error_data: default_error_data(session, kind),
+            },
+        },
+    })
 }
 /// The RPC-side extension UI: dialogs become `extension_ui_request` frames answered by a
 /// client's `extension_ui_response`; fire-and-forget methods only emit (senpi's
 /// `createExtensionUIContext` inside `createRpcConnectionHandler`).
-pub struct RpcExtensionUi{
-    out:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>,
-    pending:std::sync::Arc<std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>>,
-    questions:std::sync::Arc<std::sync::Mutex<crate::connection_question_bridge::ConnectionQuestionBridge>>,
-    capabilities:Vec<String>,
-    client_width:std::sync::atomic::AtomicUsize,
-    live_renderers:std::sync::Mutex<std::collections::BTreeMap<String,(LiveRenderer,RenderedTarget)>>,
-    retained_renderer_factories:std::sync::Mutex<std::collections::BTreeMap<String,(maho_ext_api::ComponentFactory,RenderedTarget)>>,
+pub struct RpcExtensionUi {
+    out: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
+    pending: std::sync::Arc<
+        std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>,
+    >,
+    questions: std::sync::Arc<
+        std::sync::Mutex<crate::connection_question_bridge::ConnectionQuestionBridge>,
+    >,
+    capabilities: Vec<String>,
+    client_width: std::sync::atomic::AtomicUsize,
+    live_renderers:
+        std::sync::Mutex<std::collections::BTreeMap<String, (LiveRenderer, RenderedTarget)>>,
+    retained_renderer_factories: std::sync::Mutex<
+        std::collections::BTreeMap<String, (maho_ext_api::ComponentFactory, RenderedTarget)>,
+    >,
 }
 /// Where a rendered component's lines go on the wire (senpi's three `createLiveComponentRenderer` emits).
-#[derive(Clone,Copy)]
-enum RenderedTarget{Widget(&'static str),Header,Footer}
-impl RenderedTarget{
-    fn record(self,key:&str,lines:Option<Vec<String>>)->serde_json::Value{
-        let id=uuid::Uuid::new_v4().to_string();
-        match self{
-            Self::Widget(placement)=>{
-                let mut record=serde_json::json!({"type":"extension_ui_request","id":id,"method":"setWidget","widgetKey":key,"widgetPlacement":placement});
-                if let Some(lines)=lines{record["widgetLines"]=lines.into();}
+#[derive(Clone, Copy)]
+enum RenderedTarget {
+    Widget(&'static str),
+    Header,
+    Footer,
+}
+impl RenderedTarget {
+    fn record(self, key: &str, lines: Option<Vec<String>>) -> serde_json::Value {
+        let id = uuid::Uuid::new_v4().to_string();
+        match self {
+            Self::Widget(placement) => {
+                let mut record = serde_json::json!({"type":"extension_ui_request","id":id,"method":"setWidget","widgetKey":key,"widgetPlacement":placement});
+                if let Some(lines) = lines {
+                    record["widgetLines"] = lines.into();
+                }
                 record
-            },
-            Self::Header|Self::Footer=>{
-                let method=if matches!(self,Self::Header){"setHeader"}else{"setFooter"};
-                let mut record=serde_json::json!({"type":"extension_ui_request","id":id,"method":method});
-                if let Some(lines)=lines{record["widgetLines"]=lines.into();}
+            }
+            Self::Header | Self::Footer => {
+                let method = if matches!(self, Self::Header) {
+                    "setHeader"
+                } else {
+                    "setFooter"
+                };
+                let mut record =
+                    serde_json::json!({"type":"extension_ui_request","id":id,"method":method});
+                if let Some(lines) = lines {
+                    record["widgetLines"] = lines.into();
+                }
                 record
-            },
+            }
         }
     }
-    fn rendered(self,key:&str,lines:Vec<String>)->serde_json::Value{
-        let mut record=self.record(key,Some(lines));
-        record[crate::session_event_fanout::RENDERED_COMPONENT_RECORD]=true.into();
+    fn rendered(self, key: &str, lines: Vec<String>) -> serde_json::Value {
+        let mut record = self.record(key, Some(lines));
+        record[crate::session_event_fanout::RENDERED_COMPONENT_RECORD] = true.into();
         record
     }
 }
-const HEADER_RENDERER_KEY:&str="__header__";
-const FOOTER_RENDERER_KEY:&str="__footer__";
+const HEADER_RENDERER_KEY: &str = "__header__";
+const FOOTER_RENDERER_KEY: &str = "__footer__";
 /// Adaptation: native component factories return non-`Send` components, so the RPC renderer keeps
 /// the (thread-safe) factory and instantiates a component per render, disposing it right after.
-struct FactoryComponent{factory:maho_ext_api::ComponentFactory,theme:maho_ext_api::Theme}
-impl maho_tui::tui::Component for FactoryComponent{
-    fn render(&mut self,width:usize)->Vec<String>{let mut component=(self.factory)(&self.theme);let lines=component.render(width);component.dispose();lines}
+struct FactoryComponent {
+    factory: maho_ext_api::ComponentFactory,
+    theme: maho_ext_api::Theme,
 }
-type LiveRenderer=crate::widget_line_renderer::LiveComponentRenderer<FactoryComponent>;
-impl RpcExtensionUi{
-    pub fn new(out:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>,pending:std::sync::Arc<std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>>,questions:std::sync::Arc<std::sync::Mutex<crate::connection_question_bridge::ConnectionQuestionBridge>>,capabilities:Vec<String>)->Self{
-        Self{out,pending,questions,capabilities,client_width:std::sync::atomic::AtomicUsize::new(80),live_renderers:Default::default(),retained_renderer_factories:Default::default()}
+impl maho_tui::tui::Component for FactoryComponent {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        let mut component = (self.factory)(&self.theme);
+        let lines = component.render(width);
+        component.dispose();
+        lines
     }
-    fn has_rendered_components(&self)->bool{self.capabilities.iter().any(|capability|capability==crate::custom_capability::RENDERED_COMPONENTS_CAPABILITY)}
-    fn dispose_renderer(&self,key:&str){
-        let removed=self.live_renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(key);
-        if let Some((mut renderer,_))=removed{renderer.dispose();}
-        self.retained_renderer_factories.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(key);
+}
+type LiveRenderer = crate::widget_line_renderer::LiveComponentRenderer<FactoryComponent>;
+impl RpcExtensionUi {
+    pub fn new(
+        out: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
+        pending: std::sync::Arc<
+            std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>,
+        >,
+        questions: std::sync::Arc<
+            std::sync::Mutex<crate::connection_question_bridge::ConnectionQuestionBridge>,
+        >,
+        capabilities: Vec<String>,
+    ) -> Self {
+        Self {
+            out,
+            pending,
+            questions,
+            capabilities,
+            client_width: std::sync::atomic::AtomicUsize::new(80),
+            live_renderers: Default::default(),
+            retained_renderer_factories: Default::default(),
+        }
     }
-    fn create_renderer(&self,key:&str){
-        let Some((factory,target))=self.retained_renderer_factories.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(key).cloned() else{return;};
-        let mut renderer=LiveRenderer::new(FactoryComponent{factory,theme:maho_ext_api::Theme::default()});
-        let lines=renderer.rerender(self.client_width.load(std::sync::atomic::Ordering::SeqCst));
-        self.live_renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key.to_owned(),(renderer,target));
-        if let Some(lines)=lines{(self.out)(target.rendered(key,lines));}
+    /// Live select/confirm/input/editor request frames in insertion order.
+    pub fn pending_dialogs(&self) -> Vec<serde_json::Value> {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .snapshot()
+    }
+    fn has_rendered_components(&self) -> bool {
+        self.capabilities.iter().any(|capability| {
+            capability == crate::custom_capability::RENDERED_COMPONENTS_CAPABILITY
+        })
+    }
+    fn dispose_renderer(&self, key: &str) {
+        let removed = self
+            .live_renderers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(key);
+        if let Some((mut renderer, _)) = removed {
+            renderer.dispose();
+        }
+        self.retained_renderer_factories
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(key);
+    }
+    fn create_renderer(&self, key: &str) {
+        let Some((factory, target)) = self
+            .retained_renderer_factories
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned()
+        else {
+            return;
+        };
+        let mut renderer = LiveRenderer::new(FactoryComponent {
+            factory,
+            theme: maho_ext_api::Theme::default(),
+        });
+        let lines = renderer.rerender(self.client_width.load(std::sync::atomic::Ordering::SeqCst));
+        self.live_renderers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key.to_owned(), (renderer, target));
+        if let Some(lines) = lines {
+            (self.out)(target.rendered(key, lines));
+        }
     }
     /// Retain a component factory; render it now only for a `rendered_components` client.
-    fn retain_renderer(&self,key:&str,factory:maho_ext_api::ComponentFactory,target:RenderedTarget){
+    fn retain_renderer(
+        &self,
+        key: &str,
+        factory: maho_ext_api::ComponentFactory,
+        target: RenderedTarget,
+    ) {
         self.dispose_renderer(key);
-        self.retained_renderer_factories.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key.to_owned(),(factory,target));
-        if self.has_rendered_components(){self.create_renderer(key);}
+        self.retained_renderer_factories
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key.to_owned(), (factory, target));
+        if self.has_rendered_components() {
+            self.create_renderer(key);
+        }
     }
     /// The client width live components render at (senpi `clientWidth`).
-    pub fn set_client_width(&self,width:usize){self.client_width.store(width,std::sync::atomic::Ordering::SeqCst);}
+    pub fn set_client_width(&self, width: usize) {
+        self.client_width
+            .store(width, std::sync::atomic::Ordering::SeqCst);
+    }
     /// Re-render every live component at the current width; unchanged frames are not re-emitted.
-    pub fn rerender_live_components(&self){
-        let width=self.client_width.load(std::sync::atomic::Ordering::SeqCst);
-        let records=self.live_renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter_mut()
-            .filter_map(|(key,(renderer,target))|renderer.rerender(width).map(|lines|target.rendered(key,lines))).collect::<Vec<_>>();
-        for record in records{(self.out)(record);}
+    pub fn rerender_live_components(&self) {
+        let width = self.client_width.load(std::sync::atomic::Ordering::SeqCst);
+        let records = self
+            .live_renderers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter_mut()
+            .filter_map(|(key, (renderer, target))| {
+                renderer
+                    .rerender(width)
+                    .map(|lines| target.rendered(key, lines))
+            })
+            .collect::<Vec<_>>();
+        for record in records {
+            (self.out)(record);
+        }
     }
     /// senpi `rerenderComponents`: drop renderers for a client without `rendered_components`,
     /// otherwise materialize retained factories and re-render.
-    pub fn rerender_components(&self){
-        if !self.has_rendered_components(){self.dispose_all_renderers();return;}
-        let missing=self.retained_renderer_factories.lock().unwrap_or_else(std::sync::PoisonError::into_inner).keys().cloned().collect::<Vec<_>>();
-        for key in missing{
-            let live=self.live_renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(&key);
-            if !live{self.create_renderer(&key);}
+    pub fn rerender_components(&self) {
+        if !self.has_rendered_components() {
+            self.dispose_all_renderers();
+            return;
+        }
+        let missing = self
+            .retained_renderer_factories
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in missing {
+            let live = self
+                .live_renderers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains_key(&key);
+            if !live {
+                self.create_renderer(&key);
+            }
         }
         self.rerender_live_components();
     }
-    pub fn dispose_all_renderers(&self){
-        let renderers=std::mem::take(&mut *self.live_renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        for(_,(mut renderer,_))in renderers{renderer.dispose();}
-    }
-    fn ask<T:'static+Send>(&self,opts:&maho_ext_api::ExtensionUiDialogOptions,default:T,mut request:serde_json::Value,parse:impl Fn(serde_json::Value)->T+Send+'static)->maho_ext_api::UiFuture<'static,T>{
-        if opts.signal.as_ref().is_some_and(|signal|signal.is_aborted()){return Box::pin(async move{default});}
-        let id=uuid::Uuid::new_v4().to_string();
-        let(sender,receiver)=tokio::sync::oneshot::channel();
-        self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set(id.clone(),sender);
-        request["type"]="extension_ui_request".into();request["id"]=id.clone().into();
-        (self.out)(request);
-        let timeout=opts.timeout_ms;
-        let signal=opts.signal.clone();
-        let pending=self.pending.clone();
-        Box::pin(async move{
-            let mut abort=signal.as_ref().map(|signal|Box::pin(signal.cancelled()));
-            let response=match (abort.as_mut(),timeout){
-                (Some(abort),Some(ms))=>tokio::select!{received=receiver=>received.ok(),_=abort=>None,()=tokio::time::sleep(std::time::Duration::from_millis(ms))=>None},
-                (Some(abort),None)=>tokio::select!{received=receiver=>received.ok(),_=abort=>None},
-                (None,Some(ms))=>tokio::select!{received=receiver=>received.ok(),()=tokio::time::sleep(std::time::Duration::from_millis(ms))=>None},
-                (None,None)=>receiver.await.ok(),
-            };
-            pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).delete(&id);
-            match response{Some(Ok(response))=>parse(response),Some(Err(_))|None=>default}
-        })
-    }
-}
-impl maho_ext_api::ExtensionUi for RpcExtensionUi{
-    fn question<'a>(&'a self,request:maho_ext_api::QuestionRequest,options:maho_ext_api::QuestionOptions)->maho_ext_api::ExtensionFuture<'a,maho_ext_api::QuestionResponse>{
-        if !self.capabilities.iter().any(|capability|capability==crate::custom_capability::QUESTION_CAPABILITY){
-            let ui=self as &dyn maho_ext_api::ExtensionUi;
-            return Box::pin(crate::connection_question_bridge::degrade_question(ui,request,options.dialog));
+    pub fn dispose_all_renderers(&self) {
+        let renderers = std::mem::take(
+            &mut *self
+                .live_renderers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for (_, (mut renderer, _)) in renderers {
+            renderer.dispose();
         }
-        let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0,|elapsed|elapsed.as_millis() as u64);
-        let(frame,receiver)=self.questions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).ask(request.clone(),None,now);
-        (self.out)(frame);
-        let questions=self.questions.clone();
-        Box::pin(async move{
-            match tokio::time::timeout(std::time::Duration::from_millis(request.timeout_ms),receiver).await{
-                Ok(Ok(response))=>Ok(response),
-                _=>{let deadline=now.saturating_add(request.timeout_ms);questions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).expire(deadline);
-                    Ok(maho_ext_api::QuestionResponse{status:maho_ext_api::QuestionStatus::TimedOut,answers:Default::default(),comment:None,unanswered:request.questions.iter().map(|question|question.id.clone()).collect(),auto_resolved_after_ms:Some(request.timeout_ms)})}
+    }
+    fn ask<T: 'static + Send>(
+        &self,
+        opts: &maho_ext_api::ExtensionUiDialogOptions,
+        default: T,
+        mut request: serde_json::Value,
+        parse: impl Fn(serde_json::Value) -> T + Send + 'static,
+    ) -> maho_ext_api::UiFuture<'static, T> {
+        if opts
+            .signal
+            .as_ref()
+            .is_some_and(|signal| signal.is_aborted())
+        {
+            return Box::pin(async move { default });
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set(id.clone(), sender);
+        request["type"] = "extension_ui_request".into();
+        request["id"] = id.clone().into();
+        (self.out)(request);
+        let timeout = opts.timeout_ms;
+        let signal = opts.signal.clone();
+        let pending = self.pending.clone();
+        Box::pin(async move {
+            let mut abort = signal.as_ref().map(|signal| Box::pin(signal.cancelled()));
+            let response = match (abort.as_mut(), timeout) {
+                (Some(abort), Some(ms)) => {
+                    tokio::select! {received=receiver=>received.ok(),_=abort=>None,()=tokio::time::sleep(std::time::Duration::from_millis(ms))=>None}
+                }
+                (Some(abort), None) => {
+                    tokio::select! {received=receiver=>received.ok(),_=abort=>None}
+                }
+                (None, Some(ms)) => {
+                    tokio::select! {received=receiver=>received.ok(),()=tokio::time::sleep(std::time::Duration::from_millis(ms))=>None}
+                }
+                (None, None) => receiver.await.ok(),
+            };
+            pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .delete(&id);
+            match response {
+                Some(Ok(response)) => parse(response),
+                Some(Err(_)) | None => default,
             }
         })
     }
-    fn select<'a>(&'a self,title:&'a str,options:&'a [String],opts:maho_ext_api::ExtensionUiDialogOptions)->maho_ext_api::UiFuture<'a,Option<String>>{
+}
+impl maho_ext_api::ExtensionUi for RpcExtensionUi {
+    fn question<'a>(
+        &'a self,
+        request: maho_ext_api::QuestionRequest,
+        options: maho_ext_api::QuestionOptions,
+    ) -> maho_ext_api::ExtensionFuture<'a, maho_ext_api::QuestionResponse> {
+        if !self
+            .capabilities
+            .iter()
+            .any(|capability| capability == crate::custom_capability::QUESTION_CAPABILITY)
+        {
+            let ui = self as &dyn maho_ext_api::ExtensionUi;
+            return Box::pin(crate::connection_question_bridge::degrade_question(
+                ui,
+                request,
+                options.dialog,
+            ));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis() as u64);
+        let (frame, receiver) = self
+            .questions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .ask(request.clone(), None, now);
+        (self.out)(frame);
+        let questions = self.questions.clone();
+        Box::pin(async move {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(request.timeout_ms),
+                receiver,
+            )
+            .await
+            {
+                Ok(Ok(response)) => Ok(response),
+                _ => {
+                    let deadline = now.saturating_add(request.timeout_ms);
+                    questions
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .expire(deadline);
+                    Ok(maho_ext_api::QuestionResponse {
+                        status: maho_ext_api::QuestionStatus::TimedOut,
+                        answers: Default::default(),
+                        comment: None,
+                        unanswered: request
+                            .questions
+                            .iter()
+                            .map(|question| question.id.clone())
+                            .collect(),
+                        auto_resolved_after_ms: Some(request.timeout_ms),
+                    })
+                }
+            }
+        })
+    }
+    fn select<'a>(
+        &'a self,
+        title: &'a str,
+        options: &'a [String],
+        opts: maho_ext_api::ExtensionUiDialogOptions,
+    ) -> maho_ext_api::UiFuture<'a, Option<String>> {
         self.ask(&opts,None,serde_json::json!({"method":"select","title":title,"options":options,"timeout":opts.timeout_ms}),|response|{
             if response["cancelled"].as_bool()==Some(true){None}else{response["value"].as_str().map(str::to_owned)}
         })
     }
-    fn confirm<'a>(&'a self,title:&'a str,message:&'a str,opts:maho_ext_api::ExtensionUiDialogOptions)->maho_ext_api::UiFuture<'a,bool>{
+    fn confirm<'a>(
+        &'a self,
+        title: &'a str,
+        message: &'a str,
+        opts: maho_ext_api::ExtensionUiDialogOptions,
+    ) -> maho_ext_api::UiFuture<'a, bool> {
         self.ask(&opts,false,serde_json::json!({"method":"confirm","title":title,"message":message,"timeout":opts.timeout_ms}),|response|response["cancelled"].as_bool()!=Some(true)&&response["confirmed"].as_bool().unwrap_or(false))
     }
-    fn input<'a>(&'a self,title:&'a str,placeholder:Option<&'a str>,opts:maho_ext_api::ExtensionUiDialogOptions)->maho_ext_api::UiFuture<'a,Option<String>>{
+    fn input<'a>(
+        &'a self,
+        title: &'a str,
+        placeholder: Option<&'a str>,
+        opts: maho_ext_api::ExtensionUiDialogOptions,
+    ) -> maho_ext_api::UiFuture<'a, Option<String>> {
         self.ask(&opts,None,serde_json::json!({"method":"input","title":title,"placeholder":placeholder,"timeout":opts.timeout_ms}),|response|{
             if response["cancelled"].as_bool()==Some(true){None}else{response["value"].as_str().map(str::to_owned)}
         })
     }
-    fn editor<'a>(&'a self,title:&'a str,prefill:Option<&'a str>)->maho_ext_api::ExtensionFuture<'a,Option<String>>{
-        Box::pin(async move{Ok(self.ask(&maho_ext_api::ExtensionUiDialogOptions::default(),None,serde_json::json!({"method":"editor","title":title,"prefill":prefill}),|response|{
-            if response["cancelled"].as_bool()==Some(true){None}else{response["value"].as_str().map(str::to_owned)}
-        }).await)})
+    fn editor<'a>(
+        &'a self,
+        title: &'a str,
+        prefill: Option<&'a str>,
+    ) -> maho_ext_api::ExtensionFuture<'a, Option<String>> {
+        Box::pin(async move {
+            Ok(self
+                .ask(
+                    &maho_ext_api::ExtensionUiDialogOptions::default(),
+                    None,
+                    serde_json::json!({"method":"editor","title":title,"prefill":prefill}),
+                    |response| {
+                        if response["cancelled"].as_bool() == Some(true) {
+                            None
+                        } else {
+                            response["value"].as_str().map(str::to_owned)
+                        }
+                    },
+                )
+                .await)
+        })
     }
-    fn notify(&self,message:&str,kind:maho_ext_api::NotificationType){
-        let kind=match kind{maho_ext_api::NotificationType::Info=>"info",maho_ext_api::NotificationType::Warning=>"warning",maho_ext_api::NotificationType::Error=>"error"};
-        (self.out)(serde_json::json!({"type":"extension_ui_request","id":uuid::Uuid::new_v4().to_string(),"method":"notify","message":message,"notifyType":kind}));
+    fn notify(&self, message: &str, kind: maho_ext_api::NotificationType) {
+        let kind = match kind {
+            maho_ext_api::NotificationType::Info => "info",
+            maho_ext_api::NotificationType::Warning => "warning",
+            maho_ext_api::NotificationType::Error => "error",
+        };
+        (self.out)(
+            serde_json::json!({"type":"extension_ui_request","id":uuid::Uuid::new_v4().to_string(),"method":"notify","message":message,"notifyType":kind}),
+        );
     }
-    fn set_status(&self,key:&str,text:Option<&str>){(self.out)(serde_json::json!({"type":"extension_ui_request","id":uuid::Uuid::new_v4().to_string(),"method":"setStatus","statusKey":key,"statusText":text}));}
-    fn set_widget(&self,key:&str,content:Option<maho_ext_api::WidgetContent>,options:maho_ext_api::ExtensionWidgetOptions){
-        let target=RenderedTarget::Widget(options.placement.as_str());
-        match content{
-            Some(maho_ext_api::WidgetContent::Component(factory))=>self.retain_renderer(key,factory,target),
-            Some(maho_ext_api::WidgetContent::Lines(lines))=>{self.dispose_renderer(key);(self.out)(target.record(key,Some(lines)));},
-            None=>{self.dispose_renderer(key);(self.out)(target.record(key,None));},
+    fn set_status(&self, key: &str, text: Option<&str>) {
+        (self.out)(
+            serde_json::json!({"type":"extension_ui_request","id":uuid::Uuid::new_v4().to_string(),"method":"setStatus","statusKey":key,"statusText":text}),
+        );
+    }
+    fn set_widget(
+        &self,
+        key: &str,
+        content: Option<maho_ext_api::WidgetContent>,
+        options: maho_ext_api::ExtensionWidgetOptions,
+    ) {
+        let target = RenderedTarget::Widget(options.placement.as_str());
+        match content {
+            Some(maho_ext_api::WidgetContent::Component(factory)) => {
+                self.retain_renderer(key, factory, target)
+            }
+            Some(maho_ext_api::WidgetContent::Lines(lines)) => {
+                self.dispose_renderer(key);
+                (self.out)(target.record(key, Some(lines)));
+            }
+            None => {
+                self.dispose_renderer(key);
+                (self.out)(target.record(key, None));
+            }
         }
     }
-    fn set_header(&self,factory:Option<maho_ext_api::ComponentFactory>){
-        match factory{
-            Some(factory)=>self.retain_renderer(HEADER_RENDERER_KEY,factory,RenderedTarget::Header),
-            None=>{self.dispose_renderer(HEADER_RENDERER_KEY);if self.has_rendered_components(){(self.out)(RenderedTarget::Header.record(HEADER_RENDERER_KEY,None));}},
+    fn set_header(&self, factory: Option<maho_ext_api::ComponentFactory>) {
+        match factory {
+            Some(factory) => {
+                self.retain_renderer(HEADER_RENDERER_KEY, factory, RenderedTarget::Header)
+            }
+            None => {
+                self.dispose_renderer(HEADER_RENDERER_KEY);
+                if self.has_rendered_components() {
+                    (self.out)(RenderedTarget::Header.record(HEADER_RENDERER_KEY, None));
+                }
+            }
         }
     }
-    fn set_footer(&self,factory:Option<maho_ext_api::ComponentFactory>){
-        match factory{
-            Some(factory)=>self.retain_renderer(FOOTER_RENDERER_KEY,factory,RenderedTarget::Footer),
-            None=>{self.dispose_renderer(FOOTER_RENDERER_KEY);if self.has_rendered_components(){(self.out)(RenderedTarget::Footer.record(FOOTER_RENDERER_KEY,None));}},
+    fn set_footer(&self, factory: Option<maho_ext_api::ComponentFactory>) {
+        match factory {
+            Some(factory) => {
+                self.retain_renderer(FOOTER_RENDERER_KEY, factory, RenderedTarget::Footer)
+            }
+            None => {
+                self.dispose_renderer(FOOTER_RENDERER_KEY);
+                if self.has_rendered_components() {
+                    (self.out)(RenderedTarget::Footer.record(FOOTER_RENDERER_KEY, None));
+                }
+            }
         }
     }
-    fn set_title(&self,title:&str){(self.out)(serde_json::json!({"type":"extension_ui_request","id":uuid::Uuid::new_v4().to_string(),"method":"setTitle","title":title}));}
-    fn paste_to_editor(&self,text:&str){self.set_editor_text(text);}
-    fn set_editor_text(&self,text:&str){(self.out)(serde_json::json!({"type":"extension_ui_request","id":uuid::Uuid::new_v4().to_string(),"method":"set_editor_text","text":text}));}
-    fn get_editor_text(&self)->String{String::new()}
-    fn custom(&self,_factory:maho_ext_api::ComponentFactory,_options:maho_ext_api::CustomUiOptions)->maho_ext_api::ExtensionFuture<'_,serde_json::Value>{
-        if let Some(request)=crate::custom_capability::build_custom_unsupported_request(&self.capabilities,crate::custom_capability::DEFAULT_CUSTOM_EXTENSION_LABEL,&uuid::Uuid::new_v4().to_string()){(self.out)(request);}
-        Box::pin(async{Ok(serde_json::Value::Null)})
+    fn set_title(&self, title: &str) {
+        (self.out)(
+            serde_json::json!({"type":"extension_ui_request","id":uuid::Uuid::new_v4().to_string(),"method":"setTitle","title":title}),
+        );
     }
-    fn theme(&self)->maho_ext_api::Theme{maho_ext_api::Theme::default()}
+    fn paste_to_editor(&self, text: &str) {
+        self.set_editor_text(text);
+    }
+    fn set_editor_text(&self, text: &str) {
+        (self.out)(
+            serde_json::json!({"type":"extension_ui_request","id":uuid::Uuid::new_v4().to_string(),"method":"set_editor_text","text":text}),
+        );
+    }
+    fn get_editor_text(&self) -> String {
+        String::new()
+    }
+    fn custom(
+        &self,
+        _factory: maho_ext_api::ComponentFactory,
+        _options: maho_ext_api::CustomUiOptions,
+    ) -> maho_ext_api::ExtensionFuture<'_, serde_json::Value> {
+        if let Some(request) = crate::custom_capability::build_custom_unsupported_request(
+            &self.capabilities,
+            crate::custom_capability::DEFAULT_CUSTOM_EXTENSION_LABEL,
+            &uuid::Uuid::new_v4().to_string(),
+        ) {
+            (self.out)(request);
+        }
+        Box::pin(async { Ok(serde_json::Value::Null) })
+    }
+    fn theme(&self) -> maho_ext_api::Theme {
+        maho_ext_api::Theme::default()
+    }
 }
 
 /**
@@ -816,28 +1556,37 @@ impl maho_ext_api::ExtensionUi for RpcExtensionUi{
  * It owns exactly one session and speaks the protocol over an injected sink; process signals,
  * stdin wiring and exit belong to the host (senpi `createRpcConnectionHandler`).
  */
-pub struct RpcConnectionHandler{
-    session:AgentSession,
-    ui:std::sync::Arc<RpcExtensionUi>,
-    pending:std::sync::Arc<std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>>,
-    questions:std::sync::Arc<std::sync::Mutex<crate::connection_question_bridge::ConnectionQuestionBridge>>,
-    shutdown_requested:std::sync::Arc<std::sync::atomic::AtomicBool>,
-    active_logins:ActiveLogins,
+pub struct RpcConnectionHandler {
+    session: AgentSession,
+    ui: std::sync::Arc<RpcExtensionUi>,
+    pending: std::sync::Arc<
+        std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>,
+    >,
+    questions: std::sync::Arc<
+        std::sync::Mutex<crate::connection_question_bridge::ConnectionQuestionBridge>,
+    >,
+    shutdown_requested: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    active_logins: ActiveLogins,
     loaded_surfaces_subscription: std::sync::Mutex<Option<maho_ext_api::BusSubscription>>,
     loaded_surfaces_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    pub(crate) last_abort_source:LastAbortSource,
+    pub(crate) last_abort_source: LastAbortSource,
     /// senpi `unsubscribeExtensionEvents`: present only for an `extension_events` client.
-    extension_events_subscription:std::sync::Mutex<Option<maho_core::event_bus::EventSubscription>>,
+    extension_events_subscription:
+        std::sync::Mutex<Option<maho_core::event_bus::EventSubscription>>,
     /// senpi `setRebindSession`: in-place session replacement and reload notifications.
-    rebind_subscription:std::sync::Mutex<Option<maho_core::event_bus::EventSubscription>>,
+    rebind_subscription: std::sync::Mutex<Option<maho_core::event_bus::EventSubscription>>,
     /// senpi `unsubscribeProviderAccountEvents`.
-    provider_account_unsubscribe:std::sync::Mutex<Option<Box<dyn FnOnce()+Send+Sync>>>,
+    provider_account_unsubscribe: std::sync::Mutex<Option<Box<dyn FnOnce() + Send + Sync>>>,
     /// senpi `replacementIssuedHere`: replacements this connection's own commands drive.
-    local_replacements:std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    local_replacements: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// senpi `options.connectionRoles`: this connection's declared roles (a classic handler serves one connection).
+    connection_roles: crate::session_binding::SharedConnectionRoles,
 }
 /// senpi `buildRpcCommandsForSession`: the three command groups classified by their real source.
-pub fn build_rpc_commands_for_session(session:&AgentSession)->Vec<crate::rpc_command_surface::RpcSlashCommand>{
-    let (extensions,templates,skills)=session.command_groups();
+pub fn build_rpc_commands_for_session(
+    session: &AgentSession,
+) -> Vec<crate::rpc_command_surface::RpcSlashCommand> {
+    let (extensions, templates, skills) = session.command_groups();
     crate::rpc_command_surface::build_rpc_commands(
         &crate::rpc_command_surface::command_inputs(&extensions),
         &crate::rpc_command_surface::command_inputs(&templates),
@@ -846,72 +1595,161 @@ pub fn build_rpc_commands_for_session(session:&AgentSession)->Vec<crate::rpc_com
 }
 /// The command half of senpi `refreshLoadedSurfacesAfter`: record the new digest and publish
 /// `commands_changed` only for a post-baseline change.
-fn refresh_rpc_commands(session:&AgentSession,digest:&std::sync::Mutex<Option<String>>,out:&RpcRecordSink){
-    let commands=build_rpc_commands_for_session(session);
-    let changed={
-        let mut digest=digest.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let changed=crate::rpc_command_surface::create_commands_changed_event(digest.as_deref(),&commands);
-        if let Ok(next)=crate::rpc_command_surface::rpc_command_list_digest(&commands){*digest=Some(next);}
+fn refresh_rpc_commands(
+    session: &AgentSession,
+    digest: &std::sync::Mutex<Option<String>>,
+    out: &RpcRecordSink,
+) {
+    let commands = build_rpc_commands_for_session(session);
+    let changed = {
+        let mut digest = digest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let changed =
+            crate::rpc_command_surface::create_commands_changed_event(digest.as_deref(), &commands);
+        if let Ok(next) = crate::rpc_command_surface::rpc_command_list_digest(&commands) {
+            *digest = Some(next);
+        }
         changed
     };
-    match changed{Ok(Some(event))=>out(event),Ok(None)=>{},Err(error)=>out(serde_json::json!({"type":"rpc_error","error":error.to_string()}))}
+    match changed {
+        Ok(Some(event)) => out(event),
+        Ok(None) => {}
+        Err(error) => out(serde_json::json!({"type":"rpc_error","error":error.to_string()})),
+    }
 }
-impl RpcConnectionHandler{
+impl RpcConnectionHandler {
     /// Build a handler over `session` and install the RPC extension UI on it.
-    pub async fn create(session:AgentSession,out:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>,capabilities:Vec<String>)->Self{
-        Self::create_with_shutdown_handler(session,out,capabilities,None).await
+    pub async fn create(
+        session: AgentSession,
+        out: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
+        capabilities: Vec<String>,
+    ) -> Self {
+        Self::create_with_shutdown_handler(session, out, capabilities, None).await
     }
     /// senpi `options.shutdownHandler`: an extension's `ctx.shutdown()` calls `shutdown_handler` when
     /// given, otherwise it only marks this connection for the host's shutdown check.
-    pub async fn create_with_shutdown_handler(session:AgentSession,out:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>,capabilities:Vec<String>,shutdown_handler:Option<std::sync::Arc<dyn Fn()+Send+Sync>>)->Self{
-        let pending:std::sync::Arc<std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>>=Default::default();
-        let questions:std::sync::Arc<std::sync::Mutex<crate::connection_question_bridge::ConnectionQuestionBridge>>=Default::default();
-        let extension_events=capabilities.iter().any(|capability|capability==crate::custom_capability::EXTENSION_EVENTS_CAPABILITY);
-        let ui=std::sync::Arc::new(RpcExtensionUi::new(out.clone(),pending.clone(),questions.clone(),capabilities));
-        let shutdown_requested:std::sync::Arc<std::sync::atomic::AtomicBool>=Default::default();
-        let account_out=out.clone();
-        let provider_account_unsubscribe=maho_core::subscribe_provider_account_events(std::sync::Arc::new(move|event:maho_core::ProviderAccountEvent|{
-            account_out(match event{
-                maho_core::ProviderAccountEvent::AccountsChanged{provider}=>serde_json::json!({"type":"auth_accounts_changed","provider":provider}),
-                maho_core::ProviderAccountEvent::Failover{provider,from,to,reason}=>serde_json::json!({"type":"account_failover","provider":provider,"from":from,"to":to,"reason":reason}),
-            });
-        }));
+    pub async fn create_with_shutdown_handler(
+        session: AgentSession,
+        out: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
+        capabilities: Vec<String>,
+        shutdown_handler: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    ) -> Self {
+        let pending: std::sync::Arc<
+            std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>,
+        > = Default::default();
+        let questions: std::sync::Arc<
+            std::sync::Mutex<crate::connection_question_bridge::ConnectionQuestionBridge>,
+        > = Default::default();
+        let extension_events = capabilities
+            .iter()
+            .any(|capability| capability == crate::custom_capability::EXTENSION_EVENTS_CAPABILITY);
+        let ui = std::sync::Arc::new(RpcExtensionUi::new(
+            out.clone(),
+            pending.clone(),
+            questions.clone(),
+            capabilities,
+        ));
+        let shutdown_requested: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
+        let account_out = out.clone();
+        let provider_account_unsubscribe = maho_core::subscribe_provider_account_events(
+            std::sync::Arc::new(move |event: maho_core::ProviderAccountEvent| {
+                account_out(match event {
+                    maho_core::ProviderAccountEvent::AccountsChanged { provider } => {
+                        serde_json::json!({"type":"auth_accounts_changed","provider":provider})
+                    }
+                    maho_core::ProviderAccountEvent::Failover {
+                        provider,
+                        from,
+                        to,
+                        reason,
+                    } => {
+                        serde_json::json!({"type":"account_failover","provider":provider,"from":from,"to":to,"reason":reason})
+                    }
+                });
+            }),
+        );
         let extension_events_subscription=extension_events.then(||{
             let event_out=out.clone();
             session.on_extension_event(maho_core::EXTENSION_RPC_EVENT_CHANNEL,std::sync::Arc::new(move|data:&serde_json::Value|{
                 event_out(serde_json::json!({"type":"extension_event","name":data["name"],"data":data["data"]}));
             }))
         });
-        let local_replacements:std::sync::Arc<std::sync::atomic::AtomicUsize>=Default::default();
-        let commands_digest:std::sync::Arc<std::sync::Mutex<Option<String>>>=Default::default();
-        let rebind_session=session.weak_accessor();let rebind_out=out.clone();let rebind_digest=commands_digest.clone();let rebind_local=local_replacements.clone();
-        let rebind_subscription=session.on_extension_event(maho_core::agent_session::SESSION_REBIND_CHANNEL,std::sync::Arc::new(move|data:&serde_json::Value|{
-            let Some(session)=rebind_session() else{return;};
-            // A replacement driven by this connection's own command is acknowledged by its response.
-            if data["reason"]!="reload"&&rebind_local.load(std::sync::atomic::Ordering::SeqCst)==0{
-                let event=crate::rpc_types::RpcSessionLifecycleEvent::SessionReplaced{durable_session_id:session.session_id(),session_file:session.session_file(),cwd:session.with_session_manager(|manager|manager.cwd().to_owned()),session_name:session.session_name()};
-                match serde_json::to_value(event){Ok(record)=>rebind_out(record),Err(error)=>rebind_out(serde_json::json!({"type":"rpc_error","error":error.to_string()}))}
-            }
-            refresh_rpc_commands(&session,&rebind_digest,&rebind_out);
-        }));
-        let sink=out.clone();
-        let shutdown_flag=shutdown_requested.clone();
-        let bindings=maho_core::agent_session::ExtensionBindings{ui_context:Some(ui.clone()),mode:Some(maho_ext_api::ExtensionMode::Rpc),on_error:Some(std::sync::Arc::new(move|error:&maho_ext_api::ExtensionError|{(sink)(serde_json::json!({"type":"extension_error","extensionPath":error.extension_path,"event":error.event,"error":error.error}));})),shutdown_handler:Some(std::sync::Arc::new(move||match &shutdown_handler{Some(handler)=>handler(),None=>shutdown_flag.store(true,std::sync::atomic::Ordering::SeqCst)})),..Default::default()};
+        let local_replacements: std::sync::Arc<std::sync::atomic::AtomicUsize> = Default::default();
+        let commands_digest: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
+        let rebind_session = session.weak_accessor();
+        let rebind_out = out.clone();
+        let rebind_digest = commands_digest.clone();
+        let rebind_local = local_replacements.clone();
+        let rebind_subscription = session.on_extension_event(
+            maho_core::agent_session::SESSION_REBIND_CHANNEL,
+            std::sync::Arc::new(move |data: &serde_json::Value| {
+                let Some(session) = rebind_session() else {
+                    return;
+                };
+                // A replacement driven by this connection's own command is acknowledged by its response.
+                if data["reason"] != "reload"
+                    && rebind_local.load(std::sync::atomic::Ordering::SeqCst) == 0
+                {
+                    let event = crate::rpc_types::RpcSessionLifecycleEvent::SessionReplaced {
+                        durable_session_id: session.session_id(),
+                        session_file: session.session_file(),
+                        cwd: session.with_session_manager(|manager| manager.cwd().to_owned()),
+                        session_name: session.session_name(),
+                    };
+                    match serde_json::to_value(event) {
+                        Ok(record) => rebind_out(record),
+                        Err(error) => rebind_out(
+                            serde_json::json!({"type":"rpc_error","error":error.to_string()}),
+                        ),
+                    }
+                }
+                refresh_rpc_commands(&session, &rebind_digest, &rebind_out);
+            }),
+        );
+        let sink = out.clone();
+        let shutdown_flag = shutdown_requested.clone();
+        let bindings = maho_core::agent_session::ExtensionBindings {
+            ui_context: Some(ui.clone()),
+            mode: Some(maho_ext_api::ExtensionMode::Rpc),
+            on_error: Some(std::sync::Arc::new(
+                move |error: &maho_ext_api::ExtensionError| {
+                    (sink)(
+                        serde_json::json!({"type":"extension_error","extensionPath":error.extension_path,"event":error.event,"error":error.error}),
+                    );
+                },
+            )),
+            shutdown_handler: Some(std::sync::Arc::new(move || match &shutdown_handler {
+                Some(handler) => handler(),
+                None => shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst),
+            })),
+            ..Default::default()
+        };
         // The CLI mount already starts host sessions; attach only replaces the connection context.
-        if session.has_started_extension_lifecycle() {session.rebind_extension_context(bindings).await;}
-        else {session.bind_extensions(bindings).await;}
+        if session.has_started_extension_lifecycle() {
+            session.rebind_extension_context(bindings).await;
+        } else {
+            session.bind_extensions(bindings).await;
+        }
         // The first snapshot is the baseline and is never published.
-        refresh_rpc_commands(&session,&commands_digest,&out);
+        refresh_rpc_commands(&session, &commands_digest, &out);
         let inventory_session = session.weak_accessor();
         let inventory_out = out.clone();
-        let (inventory_tx, mut inventory_rx) = tokio::sync::mpsc::unbounded_channel::<maho_ext_api::mcp_wire::McpWireStatusSnapshot>();
-        let loaded_surfaces_subscription = session.bind_mcp_wire_status::<maho_ext_api::mcp_wire::McpWireStatusSnapshot>(std::sync::Arc::new(move |snapshot| {
-            let _ = inventory_tx.send(snapshot.clone());
-        })).await;
+        let (inventory_tx, mut inventory_rx) =
+            tokio::sync::mpsc::unbounded_channel::<maho_ext_api::mcp_wire::McpWireStatusSnapshot>();
+        let loaded_surfaces_subscription = session
+            .bind_mcp_wire_status::<maho_ext_api::mcp_wire::McpWireStatusSnapshot>(
+                std::sync::Arc::new(move |snapshot| {
+                    let _ = inventory_tx.send(snapshot.clone());
+                }),
+            )
+            .await;
         let loaded_surfaces_task = tokio::spawn(async move {
             let mut fingerprint = None::<serde_json::Value>;
             while let Some(snapshot) = inventory_rx.recv().await {
-                let Some(session) = inventory_session() else { break; };
+                let Some(session) = inventory_session() else {
+                    break;
+                };
                 let extensions = session.loaded_extension_surfaces().await;
                 let mcp_servers = snapshot.servers.iter().map(|server| {
                     let status = server.status.as_ref().map(|status|serde_json::json!(status)).unwrap_or_else(||serde_json::json!(if server.server_info.is_some() { "connected" } else if server.auth_status == maho_ext_api::mcp_wire::McpWireAuthStatus::NotLoggedIn { "needs_auth" } else { "enabled" }));
@@ -920,458 +1758,1195 @@ impl RpcConnectionHandler{
                 let value = serde_json::json!({"extensions":extensions,"mcpServers":mcp_servers});
                 let skills = session.loaded_skills().unwrap_or_default().skills.into_iter().map(|skill| serde_json::json!({"name":skill.name,"path":skill.file_path,"sourceInfo":skill.source_info,"enabled":!skill.disable_model_invocation})).collect::<Vec<_>>();
                 let current = serde_json::json!({"skills":skills,"extensions":value["extensions"],"mcpServers":value["mcpServers"]});
-                let changed = fingerprint.as_ref().is_some_and(|prior|prior != &current);
+                let changed = fingerprint.as_ref().is_some_and(|prior| prior != &current);
                 fingerprint = Some(current);
-                if changed { inventory_out(serde_json::json!({"type":"loaded_surfaces_changed"})); }
+                if changed {
+                    inventory_out(serde_json::json!({"type":"loaded_surfaces_changed"}));
+                }
             }
         });
-        Self{session,ui,pending,questions,shutdown_requested,active_logins:Default::default(),loaded_surfaces_subscription:std::sync::Mutex::new(loaded_surfaces_subscription),loaded_surfaces_task:tokio::sync::Mutex::new(Some(loaded_surfaces_task)),
-            extension_events_subscription:std::sync::Mutex::new(extension_events_subscription),rebind_subscription:std::sync::Mutex::new(Some(rebind_subscription)),
-            provider_account_unsubscribe:std::sync::Mutex::new(Some(provider_account_unsubscribe)),local_replacements,last_abort_source:Default::default()}
+        Self {
+            session,
+            ui,
+            pending,
+            questions,
+            shutdown_requested,
+            active_logins: Default::default(),
+            loaded_surfaces_subscription: std::sync::Mutex::new(loaded_surfaces_subscription),
+            loaded_surfaces_task: tokio::sync::Mutex::new(Some(loaded_surfaces_task)),
+            extension_events_subscription: std::sync::Mutex::new(extension_events_subscription),
+            rebind_subscription: std::sync::Mutex::new(Some(rebind_subscription)),
+            provider_account_unsubscribe: std::sync::Mutex::new(Some(provider_account_unsubscribe)),
+            local_replacements,
+            last_abort_source: Default::default(),
+            connection_roles: Default::default(),
+        }
     }
-    pub fn ui(&self)->&std::sync::Arc<RpcExtensionUi>{&self.ui}
+    pub fn ui(&self) -> &std::sync::Arc<RpcExtensionUi> {
+        &self.ui
+    }
     /// Feed one inbound JSONL line: a UI response settles a pending dialog; anything else is a command.
-    pub async fn handle_input_line(&self,line:&str)->Result<Option<String>,serde_json::Error>{
-        let parsed=serde_json::from_str::<serde_json::Value>(line).ok();
-        if let Some(value)=&parsed&&matches!(value["type"].as_str(),Some("extension_ui_response"|"extension_ui_progress")){
-            let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0,|elapsed|elapsed.as_millis() as u64);
-            let(kind,resolved)=self.questions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).respond(value,now);
-            match kind{crate::connection_question_bridge::QuestionReply::Accepted|crate::connection_question_bridge::QuestionReply::AlreadyResolved=>{if let Some(record)=resolved{self.out_record(record);}}
-                crate::connection_question_bridge::QuestionReply::Incomplete=>{},crate::connection_question_bridge::QuestionReply::Unknown=>{self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).resolve(value.clone());}}
+    pub async fn handle_input_line(&self, line: &str) -> Result<Option<String>, serde_json::Error> {
+        let parsed = serde_json::from_str::<serde_json::Value>(line).ok();
+        if let Some(value) = &parsed
+            && matches!(
+                value["type"].as_str(),
+                Some("extension_ui_response" | "extension_ui_progress")
+            )
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_millis() as u64);
+            let (kind, resolved) = self
+                .questions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .respond(value, now);
+            match kind {
+                crate::connection_question_bridge::QuestionReply::Accepted
+                | crate::connection_question_bridge::QuestionReply::AlreadyResolved => {
+                    if let Some(record) = resolved {
+                        self.out_record(record);
+                    }
+                }
+                crate::connection_question_bridge::QuestionReply::Incomplete => {}
+                crate::connection_question_bridge::QuestionReply::Unknown => {
+                    self.pending
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .resolve(value.clone());
+                }
+            }
             return Ok(None);
         }
-        let kind=parsed.as_ref().and_then(|value|value["type"].as_str());
+        let kind = parsed.as_ref().and_then(|value| value["type"].as_str());
+        // senpi `set_client_info`: a connection's declared role is fixed once declared.
+        if kind == Some("set_client_info")
+            && let Some(value) = &parsed
+            && let Some(capabilities) = value["capabilities"].as_array()
+        {
+            let capabilities = capabilities
+                .iter()
+                .filter_map(|capability| capability.as_str().map(str::to_owned))
+                .collect::<Vec<_>>();
+            if !self
+                .connection_roles
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .declare(crate::connection_roles::SOLE_CONNECTION, &capabilities)
+            {
+                let response = RpcResponse {
+                    id: value["id"].as_str().map(str::to_owned),
+                    record_type: ResponseRecordType::Response,
+                    command: "set_client_info".into(),
+                    session_id: value["sessionId"].as_str().map(str::to_owned),
+                    result: RpcResponseResult::Error {
+                        error: crate::connection_roles::CONNECTION_ROLE_FIXED.into(),
+                        error_code: None,
+                        error_data: None,
+                    },
+                };
+                return crate::jsonl::serialize_json_line(&response).map(Some);
+            }
+        }
         // senpi `set_client_info`: live components re-render at the client's width.
-        if kind==Some("set_client_info")&&let Some(width)=parsed.as_ref().and_then(|value|value["width"].as_f64()).filter(|width|width.is_finite()&&*width>0.){
+        if kind == Some("set_client_info")
+            && let Some(width) = parsed
+                .as_ref()
+                .and_then(|value| value["width"].as_f64())
+                .filter(|width| width.is_finite() && *width > 0.)
+        {
             self.ui.set_client_width(width as usize);
             self.ui.rerender_live_components();
         }
-        let replaces=matches!(kind,Some("new_session"|"switch_session"|"fork"|"clone"|"import_jsonl"));
-        if replaces{self.local_replacements.fetch_add(1,std::sync::atomic::Ordering::SeqCst);}
-        let result=handle_input_line_with_login_state(&self.session,line,Some(self.ui.out.clone()),Some(self.active_logins.clone()),Some(self.ui.clone()),Some(&self.last_abort_source)).await;
-        if replaces{self.local_replacements.fetch_sub(1,std::sync::atomic::Ordering::SeqCst);}
+        let replaces = matches!(
+            kind,
+            Some("new_session" | "switch_session" | "fork" | "clone" | "import_jsonl")
+        );
+        if replaces {
+            self.local_replacements
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        let result = handle_input_line_with_login_state(
+            &self.session,
+            line,
+            Some(self.ui.out.clone()),
+            Some(self.active_logins.clone()),
+            Some(self.ui.clone()),
+            Some(&self.last_abort_source),
+        )
+        .await;
+        if replaces {
+            self.local_replacements
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        if kind == Some("get_state")
+            && let Ok(Some(line)) = &result
+            && let Ok(mut record) = serde_json::from_str::<serde_json::Value>(line)
+            && record["success"] == true
+            && record["data"].is_object()
+        {
+            // senpi `pendingDialogs`: the live dialog frames belong to this connection's request store.
+            record["data"]["pendingDialogs"] = self.ui.pending_dialogs().into();
+            return crate::jsonl::serialize_json_line(&record).map(Some);
+        }
         result
     }
-    fn out_record(&self,record:serde_json::Value){(self.ui.out)(record);}
-    pub fn is_shutdown_requested(&self)->bool{self.shutdown_requested.load(std::sync::atomic::Ordering::SeqCst)}
+    fn out_record(&self, record: serde_json::Value) {
+        (self.ui.out)(record);
+    }
+    pub fn is_shutdown_requested(&self) -> bool {
+        self.shutdown_requested
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
     /// senpi `rerenderComponents`.
-    pub fn rerender_components(&self){self.ui.rerender_components();}
+    pub fn rerender_components(&self) {
+        self.ui.rerender_components();
+    }
     /// Cancel UI requests that can no longer be answered by this connection.
-    pub fn cancel_pending_extension_ui_requests(&self){self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_all();self.questions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_all(0);}
+    pub fn cancel_pending_extension_ui_requests(&self) {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cancel_all();
+        self.questions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cancel_all(0);
+    }
     /// Tear down this connection's subscriptions and renderers while leaving the session alive
     /// (senpi `dispose` with `disposeRuntime: false`).
-    pub async fn release(&self){
+    pub async fn release(&self) {
         self.ui.dispose_all_renderers();
         self.cancel_pending_extension_ui_requests();
-        let unsubscribe=self.provider_account_unsubscribe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        if let Some(unsubscribe)=unsubscribe{unsubscribe();}
-        self.extension_events_subscription.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        self.rebind_subscription.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        self.loaded_surfaces_subscription.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        if let Some(task)=self.loaded_surfaces_task.lock().await.take(){task.abort();if let Err(error)=task.await && !error.is_cancelled(){eprintln!("RPC inventory consumer failed: {error}");}}
+        let unsubscribe = self
+            .provider_account_unsubscribe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(unsubscribe) = unsubscribe {
+            unsubscribe();
+        }
+        self.extension_events_subscription
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        self.rebind_subscription
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        self.loaded_surfaces_subscription
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(task) = self.loaded_surfaces_task.lock().await.take() {
+            task.abort();
+            if let Err(error) = task.await
+                && !error.is_cancelled()
+            {
+                eprintln!("RPC inventory consumer failed: {error}");
+            }
+        }
     }
     /// Tear down subscriptions and dispose the session runtime. Never exits the process.
-    pub async fn dispose(&self){self.release().await;self.session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;self.session.dispose().await;}
+    pub async fn dispose(&self) {
+        self.dispose_with(false).await;
+    }
+    /// senpi `dispose({ processExit })`: `process_exit` marks a caller that exits right after, so quit-time handlers
+    /// would share one total budget; the session hook that arms it is not exposed by `AgentSession` yet.
+    pub async fn dispose_with(&self, process_exit: bool) {
+        let _ = process_exit;
+        self.release().await;
+        self.session
+            .emit_session_shutdown(maho_ext_api::SessionReason::Quit)
+            .await;
+        self.session.dispose().await;
+    }
 }
 
 #[cfg(test)]
-mod new_session_tests{
+mod new_session_tests {
     use super::*;
     use std::sync::Arc;
 
-    fn session()->AgentSession{
-        let runtime=maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions{providers:Some(vec![]),..Default::default()}).expect("model runtime");
-        AgentSession::new(maho_core::agent_session::AgentSessionConfig{
-            agent:maho_agent::Agent::new(maho_agent::AgentOptions{stream_fn:Some(Arc::new(|_,_,_|maho_ai::types::AssistantMessageEventStream::assistant())),..Default::default()}),
-            session_manager:maho_core::session_manager::SessionManager::in_memory("/tmp",None,None),
-            settings_manager:maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),false),
-            cwd:"/tmp".into(),agent_dir:Some("/tmp/maho-agent".into()),fallback_now:None,retry_random:None,scoped_models:vec![],favorite_models:vec![],flag_values:Default::default(),custom_tools:vec![],model_runtime:Some(runtime),model_registry:None,uses_default_stream_function:Some(false),initial_active_tool_names:None,default_tool_names:None,eval_only_tool_names:None,allowed_tool_names:None,excluded_tool_names:None,base_tools_override:None,session_start_event:None,auto_title_sessions:Some(false),
-        }).expect("session")
+    fn session() -> AgentSession {
+        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+            maho_core::model_runtime::CreateModelRuntimeOptions {
+                providers: Some(vec![]),
+                ..Default::default()
+            },
+        )
+        .expect("model runtime");
+        AgentSession::new(maho_core::agent_session::AgentSessionConfig {
+            agent: maho_agent::Agent::new(maho_agent::AgentOptions {
+                stream_fn: Some(Arc::new(|_, _, _| {
+                    maho_ai::types::AssistantMessageEventStream::assistant()
+                })),
+                ..Default::default()
+            }),
+            session_manager: maho_core::session_manager::SessionManager::in_memory(
+                "/tmp", None, None,
+            ),
+            settings_manager: maho_core::settings_manager::SettingsManager::from_storage(
+                Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),
+                false,
+            ),
+            cwd: "/tmp".into(),
+            agent_dir: Some("/tmp/maho-agent".into()),
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: vec![],
+            favorite_models: vec![],
+            flag_values: Default::default(),
+            custom_tools: vec![],
+            model_runtime: Some(runtime),
+            model_registry: None,
+            uses_default_stream_function: Some(false),
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: Some(false),
+        })
+        .expect("session")
     }
 
     #[tokio::test]
-    async fn switch_to_a_session_whose_cwd_is_gone_carries_the_missing_cwd_error_data(){
-        let session=session();
-        let dir=tempfile::tempdir().expect("directory");
-        let gone=dir.path().join("gone").to_string_lossy().into_owned();
-        let path=dir.path().join("stored.jsonl");
+    async fn switch_to_a_session_whose_cwd_is_gone_carries_the_missing_cwd_error_data() {
+        let session = session();
+        let dir = tempfile::tempdir().expect("directory");
+        let gone = dir.path().join("gone").to_string_lossy().into_owned();
+        let path = dir.path().join("stored.jsonl");
         std::fs::write(&path,format!("{}\n",serde_json::json!({"type":"session","version":3,"id":"missing-cwd","timestamp":"2026-01-01T00:00:00Z","cwd":gone}))).expect("session header");
         let command:RpcCommand=serde_json::from_value(serde_json::json!({"id":"switch","type":"switch_session","sessionPath":path.to_string_lossy()})).expect("command");
-        let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
-        assert_eq!(response["success"],false);
-        assert_eq!(response["errorCode"],"missing_session_cwd");
-        assert_eq!(response["errorData"]["sessionCwd"],gone);
-        assert_eq!(response["errorData"]["fallbackCwd"],"/tmp");
-        assert_eq!(session.cwd(),"/tmp");
+        let response = serde_json::to_value(
+            handle_session_command(&session, &command)
+                .await
+                .expect("response"),
+        )
+        .expect("wire");
+        assert_eq!(response["success"], false);
+        assert_eq!(response["errorCode"], "missing_session_cwd");
+        assert_eq!(response["errorData"]["sessionCwd"], gone);
+        assert_eq!(response["errorData"]["fallbackCwd"], "/tmp");
+        assert_eq!(session.cwd(), "/tmp");
     }
 
     #[tokio::test]
-    async fn new_session_without_parent_returns_navigation_result(){
-        let session=session();
-        let command:RpcCommand=serde_json::from_value(serde_json::json!({"id":"new","type":"new_session"})).expect("command");
-        let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
-        assert_eq!(response["command"],"new_session");
-        assert_eq!(response["success"],true);
-        assert_eq!(response["data"],serde_json::json!({"cancelled":false}));
+    async fn new_session_without_parent_returns_navigation_result() {
+        let session = session();
+        let command: RpcCommand =
+            serde_json::from_value(serde_json::json!({"id":"new","type":"new_session"}))
+                .expect("command");
+        let response = serde_json::to_value(
+            handle_session_command(&session, &command)
+                .await
+                .expect("response"),
+        )
+        .expect("wire");
+        assert_eq!(response["command"], "new_session");
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"], serde_json::json!({"cancelled":false}));
     }
 
     #[tokio::test]
-    async fn new_session_with_parent_preserves_success_shape(){
-        let session=session();
-        let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"new_session","parentSession":"parent-session"})).expect("command");
-        let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
-        assert_eq!(response["command"],"new_session");
-        assert_eq!(response["success"],true);
-        assert_eq!(response["data"],serde_json::json!({"cancelled":false}));
+    async fn new_session_with_parent_preserves_success_shape() {
+        let session = session();
+        let command: RpcCommand = serde_json::from_value(
+            serde_json::json!({"type":"new_session","parentSession":"parent-session"}),
+        )
+        .expect("command");
+        let response = serde_json::to_value(
+            handle_session_command(&session, &command)
+                .await
+                .expect("response"),
+        )
+        .expect("wire");
+        assert_eq!(response["command"], "new_session");
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"], serde_json::json!({"cancelled":false}));
     }
 
     #[tokio::test]
-    async fn fork_preserves_response_shape_and_error_semantics(){
-        let session=session();
-        let command:RpcCommand=serde_json::from_value(serde_json::json!({"id":"fork","type":"fork","entryId":"missing"})).expect("command");
-        let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
-        assert_eq!(response["command"],"fork");
-        assert_eq!(response["success"],false);
-        assert_eq!(response["error"],"Invalid entry ID for forking");
+    async fn fork_preserves_response_shape_and_error_semantics() {
+        let session = session();
+        let command: RpcCommand = serde_json::from_value(
+            serde_json::json!({"id":"fork","type":"fork","entryId":"missing"}),
+        )
+        .expect("command");
+        let response = serde_json::to_value(
+            handle_session_command(&session, &command)
+                .await
+                .expect("response"),
+        )
+        .expect("wire");
+        assert_eq!(response["command"], "fork");
+        assert_eq!(response["success"], false);
+        assert_eq!(response["error"], "Invalid entry ID for forking");
     }
 
     #[tokio::test]
-    async fn clone_without_leaf_returns_exact_error(){
-        let session=session();
-        let command:RpcCommand=serde_json::from_value(serde_json::json!({"id":"clone","type":"clone"})).expect("command");
-        let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
-        assert_eq!(response["command"],"clone");
-        assert_eq!(response["success"],false);
-        assert_eq!(response["error"],"Cannot clone session: no current entry selected");
+    async fn clone_without_leaf_returns_exact_error() {
+        let session = session();
+        let command: RpcCommand =
+            serde_json::from_value(serde_json::json!({"id":"clone","type":"clone"}))
+                .expect("command");
+        let response = serde_json::to_value(
+            handle_session_command(&session, &command)
+                .await
+                .expect("response"),
+        )
+        .expect("wire");
+        assert_eq!(response["command"], "clone");
+        assert_eq!(response["success"], false);
+        assert_eq!(
+            response["error"],
+            "Cannot clone session: no current entry selected"
+        );
     }
 
     #[tokio::test]
-    async fn malformed_command_fields_return_error_response(){
-        let response=handle_input_line(&session(),r#"{"id":"m","type":"set_model"}"#).await.expect("dispatch").expect("response");
-        let response:serde_json::Value=serde_json::from_str(&response).expect("wire");
-        assert_eq!(response["id"],"m"); assert_eq!(response["command"],"set_model"); assert_eq!(response["success"],false); assert!(response["error"].is_string());
+    async fn malformed_command_fields_return_error_response() {
+        let response = handle_input_line(&session(), r#"{"id":"m","type":"set_model"}"#)
+            .await
+            .expect("dispatch")
+            .expect("response");
+        let response: serde_json::Value = serde_json::from_str(&response).expect("wire");
+        assert_eq!(response["id"], "m");
+        assert_eq!(response["command"], "set_model");
+        assert_eq!(response["success"], false);
+        assert!(response["error"].is_string());
     }
 
     #[tokio::test]
-    async fn classic_protocol_info_and_multi_session_commands(){
-        let session=session();
-        let info=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"id":"p","type":"get_protocol_info"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(info["success"],true); assert_eq!(info["data"]["mode"],"classic"); assert_eq!(info["data"]["protocolVersion"],1); assert!(info["data"]["capabilities"].as_array().unwrap().iter().any(|capability|capability=="multi_session"));
-        let open=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"type":"open_session"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(open["success"],false); assert_eq!(open["error"],"multi_session_disabled");
-        let close=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"type":"close_session"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(close["error"],"Unknown command: close_session");
+    async fn classic_protocol_info_and_multi_session_commands() {
+        let session = session();
+        let info = serde_json::to_value(
+            handle_session_command(
+                &session,
+                &serde_json::from_value(serde_json::json!({"id":"p","type":"get_protocol_info"}))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(info["success"], true);
+        assert_eq!(info["data"]["mode"], "classic");
+        assert_eq!(info["data"]["protocolVersion"], 1);
+        assert!(
+            info["data"]["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|capability| capability == "multi_session")
+        );
+        let open = serde_json::to_value(
+            handle_session_command(
+                &session,
+                &serde_json::from_value(serde_json::json!({"type":"open_session"})).unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(open["success"], false);
+        assert_eq!(open["error"], "multi_session_disabled");
+        let close = serde_json::to_value(
+            handle_session_command(
+                &session,
+                &serde_json::from_value(serde_json::json!({"type":"close_session"})).unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(close["error"], "Unknown command: close_session");
     }
 
     #[tokio::test]
-    async fn navigate_tree_requires_one_target(){
-        let session=session();
-        let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"navigate_tree"})).expect("command");
-        let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
-        assert_eq!(response["error"],"navigate_tree requires entryId or targetId");
+    async fn navigate_tree_requires_one_target() {
+        let session = session();
+        let command: RpcCommand =
+            serde_json::from_value(serde_json::json!({"type":"navigate_tree"})).expect("command");
+        let response = serde_json::to_value(
+            handle_session_command(&session, &command)
+                .await
+                .expect("response"),
+        )
+        .expect("wire");
+        assert_eq!(
+            response["error"],
+            "navigate_tree requires entryId or targetId"
+        );
     }
 
     #[tokio::test]
-    async fn navigate_tree_reports_coded_refusals_and_a_boolean_cancelled(){
-        let session=session();
-        let root=session.with_session_manager_mut(|manager|manager.append_custom("test",None));
-        let root_id=root["id"].as_str().expect("root").to_owned();
-        let send=|value:serde_json::Value|{let session=session.clone();async move{
-            let command:RpcCommand=serde_json::from_value(value).expect("command");
-            serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire")
-        }};
+    async fn navigate_tree_reports_coded_refusals_and_a_boolean_cancelled() {
+        let session = session();
+        let root = session.with_session_manager_mut(|manager| manager.append_custom("test", None));
+        let root_id = root["id"].as_str().expect("root").to_owned();
+        let send = |value: serde_json::Value| {
+            let session = session.clone();
+            async move {
+                let command: RpcCommand = serde_json::from_value(value).expect("command");
+                serde_json::to_value(
+                    handle_session_command(&session, &command)
+                        .await
+                        .expect("response"),
+                )
+                .expect("wire")
+            }
+        };
         let stale=send(serde_json::json!({"type":"navigate_tree","targetId":"absent","expectedLeafId":"older"})).await;
-        assert_eq!(stale["errorCode"],"stale_leaf");
-        assert_eq!(stale["error"],format!("Session leaf moved (expected older, now {root_id})"));
-        let missing=send(serde_json::json!({"type":"navigate_tree","targetId":"absent"})).await;
-        assert_eq!(missing["errorCode"],"not_found");
-        let navigated=send(serde_json::json!({"type":"navigate_tree","targetId":root_id})).await;
-        assert_eq!(navigated["data"]["cancelled"],false);
+        assert_eq!(stale["errorCode"], "stale_leaf");
+        assert_eq!(
+            stale["error"],
+            format!("Session leaf moved (expected older, now {root_id})")
+        );
+        let missing = send(serde_json::json!({"type":"navigate_tree","targetId":"absent"})).await;
+        assert_eq!(missing["errorCode"], "not_found");
+        let navigated = send(serde_json::json!({"type":"navigate_tree","targetId":root_id})).await;
+        assert_eq!(navigated["data"]["cancelled"], false);
     }
 
     #[tokio::test]
-    async fn get_tree_returns_tree_and_leaf_id(){
-        let session=session();
-        let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"get_tree"})).expect("command");
-        let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
-        assert_eq!(response["command"],"get_tree");
+    async fn get_tree_returns_tree_and_leaf_id() {
+        let session = session();
+        let command: RpcCommand =
+            serde_json::from_value(serde_json::json!({"type":"get_tree"})).expect("command");
+        let response = serde_json::to_value(
+            handle_session_command(&session, &command)
+                .await
+                .expect("response"),
+        )
+        .expect("wire");
+        assert_eq!(response["command"], "get_tree");
         assert!(response["data"].get("tree").is_some());
         assert!(response["data"].get("leafId").is_some());
     }
 
     #[tokio::test]
-    async fn import_jsonl_reports_missing_file(){
-        let session=session();
-        let target = if cfg!(windows) { "C:\\tmp\\does-not-exist-4010.jsonl" } else { "/tmp/does-not-exist-4010.jsonl" };
-        let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"import_jsonl","inputPath":target})).expect("command");
-        let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
-        assert_eq!(response["command"],"import_jsonl");
-        assert_eq!(response["error"],format!("File not found: {target}"));
+    async fn import_jsonl_reports_missing_file() {
+        let session = session();
+        let target = if cfg!(windows) {
+            "C:\\tmp\\does-not-exist-4010.jsonl"
+        } else {
+            "/tmp/does-not-exist-4010.jsonl"
+        };
+        let command: RpcCommand =
+            serde_json::from_value(serde_json::json!({"type":"import_jsonl","inputPath":target}))
+                .expect("command");
+        let response = serde_json::to_value(
+            handle_session_command(&session, &command)
+                .await
+                .expect("response"),
+        )
+        .expect("wire");
+        assert_eq!(response["command"], "import_jsonl");
+        assert_eq!(response["error"], format!("File not found: {target}"));
     }
 
     #[tokio::test]
-    async fn append_user_message_dispatches(){
-        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"append_user_message","content":"hello"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"append_user_message"); assert_eq!(response["success"],true);
+    async fn append_user_message_dispatches() {
+        let response = serde_json::to_value(
+            handle_session_command(
+                &session(),
+                &serde_json::from_value(
+                    serde_json::json!({"type":"append_user_message","content":"hello"}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["command"], "append_user_message");
+        assert_eq!(response["success"], true);
     }
     #[tokio::test]
-    async fn get_media_reports_missing_media(){
-        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"get_media","toolCallId":"missing","contentIndex":0})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"get_media"); assert_eq!(response["success"],false); assert_eq!(response["error"],"media_not_found");
+    async fn get_media_reports_missing_media() {
+        let response = serde_json::to_value(
+            handle_session_command(
+                &session(),
+                &serde_json::from_value(
+                    serde_json::json!({"type":"get_media","toolCallId":"missing","contentIndex":0}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["command"], "get_media");
+        assert_eq!(response["success"], false);
+        assert_eq!(response["error"], "media_not_found");
     }
     #[tokio::test]
-    async fn get_media_reads_durable_session_entries(){
-        let session=session();
+    async fn get_media_reads_durable_session_entries() {
+        let session = session();
         session.with_session_manager_mut(|manager|{manager.append_message(serde_json::json!({"role":"toolResult","toolCallId":"durable","toolName":"read","content":[{"type":"text","text":"x"},{"type":"image","data":"AAAA","mimeType":"image/png"}],"isError":false,"timestamp":0}));});
-        let response=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"type":"get_media","toolCallId":"durable","contentIndex":1})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["success"],true); assert_eq!(response["data"]["content"]["data"],"AAAA");
+        let response = serde_json::to_value(
+            handle_session_command(
+                &session,
+                &serde_json::from_value(
+                    serde_json::json!({"type":"get_media","toolCallId":"durable","contentIndex":1}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"]["content"]["data"], "AAAA");
     }
     #[tokio::test]
-    async fn routed_bash_brackets_with_start_and_end_events(){
-        let records=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));let observed=records.clone();
-        let sink:RpcRecordSink=std::sync::Arc::new(move|record|observed.lock().unwrap().push(record));
-        let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"bash","command":"printf rpc","sessionId":"route"})).unwrap();
-        let response=serde_json::to_value(handle_session_command_with_sink(&session(),&command,Some(sink),None,None,None).await.unwrap()).unwrap();
-        assert_eq!(response["success"],true);
-        let kinds=records.lock().unwrap().iter().filter_map(|record|record["type"].as_str().map(str::to_owned)).filter(|kind|kind.starts_with("bash_")&&kind!="bash_execution_update").collect::<Vec<_>>();
-        assert_eq!(kinds,["bash_start","bash_end"]);
+    async fn routed_bash_brackets_with_start_and_end_events() {
+        let records = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = records.clone();
+        let sink: RpcRecordSink =
+            std::sync::Arc::new(move |record| observed.lock().unwrap().push(record));
+        let command: RpcCommand = serde_json::from_value(
+            serde_json::json!({"type":"bash","command":"printf rpc","sessionId":"route"}),
+        )
+        .unwrap();
+        let response = serde_json::to_value(
+            handle_session_command_with_sink(&session(), &command, Some(sink), None, None, None)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["success"], true);
+        let kinds = records
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|record| record["type"].as_str().map(str::to_owned))
+            .filter(|kind| kind.starts_with("bash_") && kind != "bash_execution_update")
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, ["bash_start", "bash_end"]);
     }
     #[tokio::test]
-    async fn agent_end_records_abort_source_for_get_state_and_omits_aborted_when_false(){
-        let session=session();let last:LastAbortSource=Default::default();
-        let clean=rpc_session_event_record(&session,&maho_ext_api::AgentSessionEvent::AgentEnd{messages:vec![],aborted:false,will_retry:false,abort_source:None},&last).unwrap();
+    async fn agent_end_records_abort_source_for_get_state_and_omits_aborted_when_false() {
+        let session = session();
+        let last: LastAbortSource = Default::default();
+        let clean = rpc_session_event_record(
+            &session,
+            &maho_ext_api::AgentSessionEvent::AgentEnd {
+                messages: vec![],
+                aborted: false,
+                will_retry: false,
+                abort_source: None,
+            },
+            &last,
+        )
+        .unwrap();
         assert!(clean.get("aborted").is_none());
-        let aborted=rpc_session_event_record(&session,&maho_ext_api::AgentSessionEvent::AgentEnd{messages:vec![],aborted:true,will_retry:false,abort_source:Some(maho_ext_api::AbortSource::User)},&last).unwrap();
-        assert_eq!(aborted["aborted"],true); assert_eq!(aborted["abortSource"],"user");
-        let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"get_state"})).unwrap();
-        let state=serde_json::to_value(handle_session_command_with_sink(&session,&command,None,None,None,Some(&last)).await.unwrap()).unwrap();
-        assert_eq!(state["data"]["lastAbortSource"],"user");
+        let aborted = rpc_session_event_record(
+            &session,
+            &maho_ext_api::AgentSessionEvent::AgentEnd {
+                messages: vec![],
+                aborted: true,
+                will_retry: false,
+                abort_source: Some(maho_ext_api::AbortSource::User),
+            },
+            &last,
+        )
+        .unwrap();
+        assert_eq!(aborted["aborted"], true);
+        assert_eq!(aborted["abortSource"], "user");
+        let command: RpcCommand =
+            serde_json::from_value(serde_json::json!({"type":"get_state"})).unwrap();
+        let state = serde_json::to_value(
+            handle_session_command_with_sink(&session, &command, None, None, None, Some(&last))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(state["data"]["lastAbortSource"], "user");
     }
     #[tokio::test]
-    async fn get_loaded_surfaces_dispatches_inventory(){
-        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"get_loaded_surfaces"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"get_loaded_surfaces"); assert_eq!(response["success"],true); assert!(response["data"]["extensions"].is_array()); assert!(response["data"]["mcpServers"].is_array());
+    async fn get_loaded_surfaces_dispatches_inventory() {
+        let response = serde_json::to_value(
+            handle_session_command(
+                &session(),
+                &serde_json::from_value(serde_json::json!({"type":"get_loaded_surfaces"})).unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["command"], "get_loaded_surfaces");
+        assert_eq!(response["success"], true);
+        assert!(response["data"]["extensions"].is_array());
+        assert!(response["data"]["mcpServers"].is_array());
     }
     #[tokio::test]
-    async fn extension_request_rejects_empty_name(){
-        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"extension_request","name":"   "})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"extension_request"); assert_eq!(response["success"],false); assert_eq!(response["error"],"Extension RPC request name cannot be empty");
+    async fn extension_request_rejects_empty_name() {
+        let response = serde_json::to_value(
+            handle_session_command(
+                &session(),
+                &serde_json::from_value(
+                    serde_json::json!({"type":"extension_request","name":"   "}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["command"], "extension_request");
+        assert_eq!(response["success"], false);
+        assert_eq!(
+            response["error"],
+            "Extension RPC request name cannot be empty"
+        );
     }
     #[tokio::test]
-    async fn get_auth_providers_dispatches_provider_statuses(){
-        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"get_auth_providers"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"get_auth_providers"); assert_eq!(response["success"],true); assert!(response["data"]["providers"].is_array());
+    async fn get_auth_providers_dispatches_provider_statuses() {
+        let response = serde_json::to_value(
+            handle_session_command(
+                &session(),
+                &serde_json::from_value(serde_json::json!({"type":"get_auth_providers"})).unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["command"], "get_auth_providers");
+        assert_eq!(response["success"], true);
+        assert!(response["data"]["providers"].is_array());
     }
     #[tokio::test]
-    async fn login_api_key_persists_api_key_credential(){
-        let session=session();
-        let response=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"type":"login_api_key","provider":"fixture","key":"secret"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"login_api_key"); assert_eq!(response["success"],true); assert!(response.get("data").is_none()); assert_eq!(session.model_registry().auth_storage.get("fixture"),Some(serde_json::json!({"type":"api_key","key":"secret"})));
+    async fn login_api_key_persists_api_key_credential() {
+        let session = session();
+        let response = serde_json::to_value(
+            handle_session_command(
+                &session,
+                &serde_json::from_value(
+                    serde_json::json!({"type":"login_api_key","provider":"fixture","key":"secret"}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["command"], "login_api_key");
+        assert_eq!(response["success"], true);
+        assert!(response.get("data").is_none());
+        assert_eq!(
+            session.model_registry().auth_storage.get("fixture"),
+            Some(serde_json::json!({"type":"api_key","key":"secret"}))
+        );
     }
     #[tokio::test]
-    async fn logout_removes_stored_credential(){
-        let session=session(); session.model_registry().auth_storage.set("fixture",Some(serde_json::json!({"type":"api_key","key":"secret"}))).unwrap();
-        let response=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"type":"logout","provider":"fixture"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"logout"); assert_eq!(response["success"],true); assert!(response.get("data").is_none()); assert_eq!(session.model_registry().auth_storage.get("fixture"),None);
+    async fn logout_removes_stored_credential() {
+        let session = session();
+        session
+            .model_registry()
+            .auth_storage
+            .set(
+                "fixture",
+                Some(serde_json::json!({"type":"api_key","key":"secret"})),
+            )
+            .unwrap();
+        let response = serde_json::to_value(
+            handle_session_command(
+                &session,
+                &serde_json::from_value(serde_json::json!({"type":"logout","provider":"fixture"}))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["command"], "logout");
+        assert_eq!(response["success"], true);
+        assert!(response.get("data").is_none());
+        assert_eq!(session.model_registry().auth_storage.get("fixture"), None);
     }
     #[tokio::test]
-    async fn bash_dispatches_success(){
-        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"bash","command":"printf rpc"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"bash"); assert_eq!(response["success"],true);
+    async fn bash_dispatches_success() {
+        let response = serde_json::to_value(
+            handle_session_command(
+                &session(),
+                &serde_json::from_value(serde_json::json!({"type":"bash","command":"printf rpc"}))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["command"], "bash");
+        assert_eq!(response["success"], true);
     }
     #[tokio::test]
-    async fn abort_branch_summary_dispatches(){
-        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"abort_branch_summary"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"abort_branch_summary"); assert_eq!(response["success"],true);
+    async fn abort_branch_summary_dispatches() {
+        let response = serde_json::to_value(
+            handle_session_command(
+                &session(),
+                &serde_json::from_value(serde_json::json!({"type":"abort_branch_summary"}))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["command"], "abort_branch_summary");
+        assert_eq!(response["success"], true);
     }
     #[tokio::test]
-    async fn check_reload_veto_dispatches(){
-        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"check_reload_veto"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"check_reload_veto"); assert_eq!(response["success"],true); assert_eq!(response["data"],serde_json::json!({"cancelled":false}));
+    async fn check_reload_veto_dispatches() {
+        let response = serde_json::to_value(
+            handle_session_command(
+                &session(),
+                &serde_json::from_value(serde_json::json!({"type":"check_reload_veto"})).unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["command"], "check_reload_veto");
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"], serde_json::json!({"cancelled":false}));
     }
     #[tokio::test]
-    async fn set_fast_mode_without_extension_returns_command_error(){
-        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"set_fast_mode","enabled":true})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"set_fast_mode"); assert_eq!(response["success"],false); assert_eq!(response["error"],"Extension runner is not bound");
+    async fn set_fast_mode_without_extension_returns_command_error() {
+        let response = serde_json::to_value(
+            handle_session_command(
+                &session(),
+                &serde_json::from_value(serde_json::json!({"type":"set_fast_mode","enabled":true}))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["command"], "set_fast_mode");
+        assert_eq!(response["success"], false);
+        assert_eq!(response["error"], "Extension runner is not bound");
     }
     #[tokio::test]
-    async fn send_custom_message_dispatches(){
+    async fn send_custom_message_dispatches() {
         let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"send_custom_message","customType":"notice","content":[{"type":"text","text":"hello"}],"display":true})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"send_custom_message"); assert_eq!(response["success"],true);
+        assert_eq!(response["command"], "send_custom_message");
+        assert_eq!(response["success"], true);
     }
     #[tokio::test]
-    async fn edit_user_message_reports_exact_missing_entry_error(){
+    async fn edit_user_message_reports_exact_missing_entry_error() {
         let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"edit_user_message","entryId":"missing","text":"hello"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["success"],false); assert_eq!(response["error"],"Entry missing not found"); assert_eq!(response["errorData"],serde_json::json!({"leafId":null}));
+        assert_eq!(response["success"], false);
+        assert_eq!(response["error"], "Entry missing not found");
+        assert_eq!(response["errorData"], serde_json::json!({"leafId":null}));
     }
     #[tokio::test]
-    async fn switch_session_to_missing_cwd_reports_missing_session_cwd(){
-        let directory=tempfile::tempdir().expect("tempdir");
-        let path=directory.path().join("stale.jsonl");
-        let missing=directory.path().join("gone").to_string_lossy().into_owned();
+    async fn switch_session_to_missing_cwd_reports_missing_session_cwd() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("stale.jsonl");
+        let missing = directory.path().join("gone").to_string_lossy().into_owned();
         std::fs::write(&path,format!("{}\n",serde_json::json!({"type":"session","version":3,"id":"stale","timestamp":"2026-10-13T00:00:00.000Z","cwd":missing}))).expect("session file");
-        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"switch_session","sessionPath":path})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["success"],false); assert_eq!(response["errorCode"],"missing_session_cwd"); assert_eq!(response["errorData"]["sessionCwd"],missing.as_str()); assert_eq!(response["errorData"]["fallbackCwd"],"/tmp");
+        let response = serde_json::to_value(
+            handle_session_command(
+                &session(),
+                &serde_json::from_value(
+                    serde_json::json!({"type":"switch_session","sessionPath":path}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["success"], false);
+        assert_eq!(response["errorCode"], "missing_session_cwd");
+        assert_eq!(response["errorData"]["sessionCwd"], missing.as_str());
+        assert_eq!(response["errorData"]["fallbackCwd"], "/tmp");
     }
     #[tokio::test]
-    async fn edit_assistant_message_reports_exact_missing_entry_error(){
+    async fn edit_assistant_message_reports_exact_missing_entry_error() {
         let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"edit_assistant_message","entryId":"missing","text":"hello"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["success"],false); assert_eq!(response["error"],"Entry missing not found");
+        assert_eq!(response["success"], false);
+        assert_eq!(response["error"], "Entry missing not found");
     }
     #[tokio::test]
-    async fn get_provider_accounts_dispatches_empty_accounts(){
-        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"get_provider_accounts","provider":"openai"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"get_provider_accounts"); assert_eq!(response["success"],true); assert_eq!(response["data"],serde_json::json!({"accounts":[]}));
+    async fn get_provider_accounts_dispatches_empty_accounts() {
+        let response = serde_json::to_value(
+            handle_session_command(
+                &session(),
+                &serde_json::from_value(
+                    serde_json::json!({"type":"get_provider_accounts","provider":"openai"}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["command"], "get_provider_accounts");
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"], serde_json::json!({"accounts":[]}));
     }
     #[tokio::test]
-    async fn account_pin_preserves_provider_error(){
-        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"account_pin","provider":"openai","name":"missing"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"account_pin"); assert_eq!(response["success"],false); assert_eq!(response["error"],"Provider account not found: missing");
+    async fn account_pin_preserves_provider_error() {
+        let response = serde_json::to_value(
+            handle_session_command(
+                &session(),
+                &serde_json::from_value(
+                    serde_json::json!({"type":"account_pin","provider":"openai","name":"missing"}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["command"], "account_pin");
+        assert_eq!(response["success"], false);
+        assert_eq!(response["error"], "Provider account not found: missing");
     }
     #[tokio::test]
-    async fn account_remove_preserves_provider_error(){
+    async fn account_remove_preserves_provider_error() {
         let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"account_remove","provider":"openai","name":"missing"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"account_remove"); assert_eq!(response["success"],false); assert_eq!(response["error"],"Provider account not found: missing");
+        assert_eq!(response["command"], "account_remove");
+        assert_eq!(response["success"], false);
+        assert_eq!(response["error"], "Provider account not found: missing");
     }
 }
 
 #[cfg(test)]
-mod connection_events_tests{
+mod connection_events_tests {
     use super::*;
-    use std::sync::{Arc,Mutex};
-    fn session()->AgentSession{
-        let runtime=maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions{providers:Some(vec![]),..Default::default()}).expect("model runtime");
-        AgentSession::new(maho_core::agent_session::AgentSessionConfig{
-            agent:maho_agent::Agent::new(maho_agent::AgentOptions{stream_fn:Some(Arc::new(|_,_,_|maho_ai::types::AssistantMessageEventStream::assistant())),..Default::default()}),
-            session_manager:maho_core::session_manager::SessionManager::in_memory("/tmp",None,None),
-            settings_manager:maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),false),
-            cwd:"/tmp".into(),agent_dir:Some("/tmp/maho-agent".into()),fallback_now:None,retry_random:None,scoped_models:vec![],favorite_models:vec![],flag_values:Default::default(),custom_tools:vec![],model_runtime:Some(runtime),model_registry:None,uses_default_stream_function:Some(false),initial_active_tool_names:None,default_tool_names:None,eval_only_tool_names:None,allowed_tool_names:None,excluded_tool_names:None,base_tools_override:None,session_start_event:None,auto_title_sessions:Some(false),
-        }).expect("session")
+    use std::sync::{Arc, Mutex};
+    fn session() -> AgentSession {
+        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+            maho_core::model_runtime::CreateModelRuntimeOptions {
+                providers: Some(vec![]),
+                ..Default::default()
+            },
+        )
+        .expect("model runtime");
+        AgentSession::new(maho_core::agent_session::AgentSessionConfig {
+            agent: maho_agent::Agent::new(maho_agent::AgentOptions {
+                stream_fn: Some(Arc::new(|_, _, _| {
+                    maho_ai::types::AssistantMessageEventStream::assistant()
+                })),
+                ..Default::default()
+            }),
+            session_manager: maho_core::session_manager::SessionManager::in_memory(
+                "/tmp", None, None,
+            ),
+            settings_manager: maho_core::settings_manager::SettingsManager::from_storage(
+                Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),
+                false,
+            ),
+            cwd: "/tmp".into(),
+            agent_dir: Some("/tmp/maho-agent".into()),
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: vec![],
+            favorite_models: vec![],
+            flag_values: Default::default(),
+            custom_tools: vec![],
+            model_runtime: Some(runtime),
+            model_registry: None,
+            uses_default_stream_function: Some(false),
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: Some(false),
+        })
+        .expect("session")
     }
-    async fn handler(session:&AgentSession,capabilities:&[&str])->(RpcConnectionHandler,Arc<Mutex<Vec<serde_json::Value>>>){
-        let records=Arc::new(Mutex::new(Vec::new()));let captured=records.clone();
-        let handler=RpcConnectionHandler::create(session.clone(),Arc::new(move|record|captured.lock().expect("records").push(record)),capabilities.iter().map(|capability|(*capability).to_owned()).collect()).await;
-        (handler,records)
+    async fn handler(
+        session: &AgentSession,
+        capabilities: &[&str],
+    ) -> (RpcConnectionHandler, Arc<Mutex<Vec<serde_json::Value>>>) {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let captured = records.clone();
+        let handler = RpcConnectionHandler::create(
+            session.clone(),
+            Arc::new(move |record| captured.lock().expect("records").push(record)),
+            capabilities
+                .iter()
+                .map(|capability| (*capability).to_owned())
+                .collect(),
+        )
+        .await;
+        (handler, records)
     }
-    fn of_type(records:&Arc<Mutex<Vec<serde_json::Value>>>,kind:&str)->Vec<serde_json::Value>{records.lock().expect("records").iter().filter(|record|record["type"]==kind).cloned().collect()}
+    fn of_type(records: &Arc<Mutex<Vec<serde_json::Value>>>, kind: &str) -> Vec<serde_json::Value> {
+        records
+            .lock()
+            .expect("records")
+            .iter()
+            .filter(|record| record["type"] == kind)
+            .cloned()
+            .collect()
+    }
     struct Lines(Vec<String>);
-    impl maho_tui::tui::Component for Lines{fn render(&mut self,width:usize)->Vec<String>{self.0.iter().map(|line|format!("{line}@{width}")).collect()}}
-    fn factory()->maho_ext_api::ComponentFactory{Arc::new(|_:&maho_ext_api::Theme|->Box<dyn maho_tui::tui::Component>{Box::new(Lines(vec!["row".into()]))})}
+    impl maho_tui::tui::Component for Lines {
+        fn render(&mut self, width: usize) -> Vec<String> {
+            self.0
+                .iter()
+                .map(|line| format!("{line}@{width}"))
+                .collect()
+        }
+    }
+    fn factory() -> maho_ext_api::ComponentFactory {
+        Arc::new(
+            |_: &maho_ext_api::Theme| -> Box<dyn maho_tui::tui::Component> {
+                Box::new(Lines(vec!["row".into()]))
+            },
+        )
+    }
 
     #[tokio::test]
-    async fn command_stream_routes_ui_responses_to_the_handler(){
-        use tokio::io::{AsyncReadExt,AsyncWriteExt};
-        let session=session();
-        let(mut client,host)=tokio::io::duplex(4096);
-        let(input,output)=tokio::io::split(host);
-        let run=crate::rpc_mode::run_command_stream(&session,input,output);
-        let drive=async{
+    async fn command_stream_routes_ui_responses_to_the_handler() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let session = session();
+        let (mut client, host) = tokio::io::duplex(4096);
+        let (input, output) = tokio::io::split(host);
+        let run = crate::rpc_mode::run_command_stream(&session, input, output);
+        let drive = async {
             client.write_all(b"{\"type\":\"extension_ui_response\",\"id\":\"unknown\",\"cancelled\":true}\n{\"id\":\"after\",\"type\":\"get_messages\"}\n").await.expect("write");
             client.shutdown().await.expect("close input");
-            let mut received=String::new();client.read_to_string(&mut received).await.expect("read");received
+            let mut received = String::new();
+            client.read_to_string(&mut received).await.expect("read");
+            received
         };
-        let(result,received)=tokio::time::timeout(std::time::Duration::from_secs(5),async{tokio::join!(run,drive)}).await.expect("bounded stream");
+        let (result, received) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(run, drive)
+        })
+        .await
+        .expect("bounded stream");
         result.expect("stream");
-        let records=received.lines().map(|line|serde_json::from_str::<serde_json::Value>(line).expect("record")).collect::<Vec<_>>();
-        assert!(records.iter().all(|record|record["command"]!="extension_ui_response"));
-        let responses=records.iter().filter(|record|record["type"]=="response").collect::<Vec<_>>();
-        assert_eq!(responses.len(),1);
-        assert_eq!(responses[0]["id"],"after");
-        assert_eq!(responses[0]["success"],true);
+        let records = received
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("record"))
+            .collect::<Vec<_>>();
+        assert!(
+            records
+                .iter()
+                .all(|record| record["command"] != "extension_ui_response")
+        );
+        let responses = records
+            .iter()
+            .filter(|record| record["type"] == "response")
+            .collect::<Vec<_>>();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0]["id"], "after");
+        assert_eq!(responses[0]["success"], true);
     }
 
     #[tokio::test]
-    async fn extension_rpc_events_reach_only_extension_events_clients(){
-        let session=session();
-        let(capable,capable_records)=handler(&session,&[crate::custom_capability::EXTENSION_EVENTS_CAPABILITY]).await;
-        let(plain,plain_records)=handler(&session,&[]).await;
-        session.emit_extension_event(maho_core::EXTENSION_RPC_EVENT_CHANNEL,&serde_json::json!({"name":"omo.memory.updated","data":{"n":1}}));
-        assert_eq!(of_type(&capable_records,"extension_event"),vec![serde_json::json!({"type":"extension_event","name":"omo.memory.updated","data":{"n":1}})]);
-        assert!(of_type(&plain_records,"extension_event").is_empty());
+    async fn extension_rpc_events_reach_only_extension_events_clients() {
+        let session = session();
+        let (capable, capable_records) = handler(
+            &session,
+            &[crate::custom_capability::EXTENSION_EVENTS_CAPABILITY],
+        )
+        .await;
+        let (plain, plain_records) = handler(&session, &[]).await;
+        session.emit_extension_event(
+            maho_core::EXTENSION_RPC_EVENT_CHANNEL,
+            &serde_json::json!({"name":"omo.memory.updated","data":{"n":1}}),
+        );
+        assert_eq!(
+            of_type(&capable_records, "extension_event"),
+            vec![
+                serde_json::json!({"type":"extension_event","name":"omo.memory.updated","data":{"n":1}})
+            ]
+        );
+        assert!(of_type(&plain_records, "extension_event").is_empty());
         capable.release().await;
-        session.emit_extension_event(maho_core::EXTENSION_RPC_EVENT_CHANNEL,&serde_json::json!({"name":"later","data":null}));
-        assert_eq!(of_type(&capable_records,"extension_event").len(),1);
+        session.emit_extension_event(
+            maho_core::EXTENSION_RPC_EVENT_CHANNEL,
+            &serde_json::json!({"name":"later","data":null}),
+        );
+        assert_eq!(of_type(&capable_records, "extension_event").len(), 1);
         plain.release().await;
     }
 
     #[tokio::test]
-    async fn provider_account_events_map_to_upstream_records(){
-        let session=session();
-        let(handler,records)=handler(&session,&[]).await;
+    async fn provider_account_events_map_to_upstream_records() {
+        let session = session();
+        let (handler, records) = handler(&session, &[]).await;
         maho_core::emit_provider_accounts_changed("rpc-account-fixture");
-        maho_core::emit_provider_account_failover("rpc-account-fixture","first","second","rate_limit");
-        let mine=records.lock().expect("records").iter().filter(|record|record["provider"]=="rpc-account-fixture").cloned().collect::<Vec<_>>();
-        assert_eq!(mine,vec![
-            serde_json::json!({"type":"auth_accounts_changed","provider":"rpc-account-fixture"}),
-            serde_json::json!({"type":"account_failover","provider":"rpc-account-fixture","from":"first","to":"second","reason":"rate_limit"}),
-        ]);
+        maho_core::emit_provider_account_failover(
+            "rpc-account-fixture",
+            "first",
+            "second",
+            "rate_limit",
+        );
+        let mine = records
+            .lock()
+            .expect("records")
+            .iter()
+            .filter(|record| record["provider"] == "rpc-account-fixture")
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mine,
+            vec![
+                serde_json::json!({"type":"auth_accounts_changed","provider":"rpc-account-fixture"}),
+                serde_json::json!({"type":"account_failover","provider":"rpc-account-fixture","from":"first","to":"second","reason":"rate_limit"}),
+            ]
+        );
         handler.release().await;
         maho_core::emit_provider_accounts_changed("rpc-account-fixture");
-        assert_eq!(records.lock().expect("records").iter().filter(|record|record["provider"]=="rpc-account-fixture").count(),2);
+        assert_eq!(
+            records
+                .lock()
+                .expect("records")
+                .iter()
+                .filter(|record| record["provider"] == "rpc-account-fixture")
+                .count(),
+            2
+        );
     }
 
     #[tokio::test]
-    async fn commands_changed_suppresses_baseline_and_publishes_later_change(){
-        let session=session();
-        let(handler,records)=handler(&session,&[]).await;
-        assert!(of_type(&records,"commands_changed").is_empty());
-        session.emit_extension_event(maho_core::agent_session::SESSION_REBIND_CHANNEL,&serde_json::json!({"reason":"reload"}));
-        assert!(of_type(&records,"commands_changed").is_empty());
-        let source_info=maho_core::source_info::create_synthetic_source_info("rpc-commands-changed",maho_core::source_info::SyntheticSourceInfoOptions{source:"test".into(),..Default::default()});
-        session.set_prompt_resources(vec![maho_core::prompt_templates::PromptTemplate{name:"review".into(),description:"Review work".into(),argument_hint:None,requires_arguments:false,content:"review".into(),source_info,file_path:"/tmp/review.md".into()}],Vec::new());
-        session.emit_extension_event(maho_core::agent_session::SESSION_REBIND_CHANNEL,&serde_json::json!({"reason":"reload"}));
-        let changed=of_type(&records,"commands_changed");
-        assert_eq!(changed.len(),1);
-        assert_eq!(changed[0]["commands"][0]["name"],"review");
-        assert!(of_type(&records,"session_replaced").is_empty());
+    async fn commands_changed_suppresses_baseline_and_publishes_later_change() {
+        let session = session();
+        let (handler, records) = handler(&session, &[]).await;
+        assert!(of_type(&records, "commands_changed").is_empty());
+        session.emit_extension_event(
+            maho_core::agent_session::SESSION_REBIND_CHANNEL,
+            &serde_json::json!({"reason":"reload"}),
+        );
+        assert!(of_type(&records, "commands_changed").is_empty());
+        let source_info = maho_core::source_info::create_synthetic_source_info(
+            "rpc-commands-changed",
+            maho_core::source_info::SyntheticSourceInfoOptions {
+                source: "test".into(),
+                ..Default::default()
+            },
+        );
+        session.set_prompt_resources(
+            vec![maho_core::prompt_templates::PromptTemplate {
+                name: "review".into(),
+                description: "Review work".into(),
+                argument_hint: None,
+                requires_arguments: false,
+                content: "review".into(),
+                source_info,
+                file_path: "/tmp/review.md".into(),
+            }],
+            Vec::new(),
+        );
+        session.emit_extension_event(
+            maho_core::agent_session::SESSION_REBIND_CHANNEL,
+            &serde_json::json!({"reason":"reload"}),
+        );
+        let changed = of_type(&records, "commands_changed");
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0]["commands"][0]["name"], "review");
+        assert!(of_type(&records, "session_replaced").is_empty());
         handler.release().await;
     }
 
     #[tokio::test]
-    async fn session_replaced_announces_external_replacement_only(){
-        let session=session();
-        let(handler,records)=handler(&session,&[]).await;
-        let response=handler.handle_input_line(&serde_json::json!({"id":"own","type":"new_session"}).to_string()).await.expect("dispatch").expect("response");
+    async fn session_replaced_announces_external_replacement_only() {
+        let session = session();
+        let (handler, records) = handler(&session, &[]).await;
+        let response = handler
+            .handle_input_line(&serde_json::json!({"id":"own","type":"new_session"}).to_string())
+            .await
+            .expect("dispatch")
+            .expect("response");
         assert!(response.contains("\"success\":true"));
-        assert!(of_type(&records,"session_replaced").is_empty());
-        assert!(session.new_session(None).await.expect("external replacement"));
-        let replaced=of_type(&records,"session_replaced");
-        assert_eq!(replaced.len(),1);
-        assert_eq!(replaced[0]["durableSessionId"],session.session_id());
-        assert_eq!(replaced[0]["cwd"],if cfg!(windows) { "\\tmp" } else { "/tmp" });
+        assert!(of_type(&records, "session_replaced").is_empty());
+        assert!(
+            session
+                .new_session(None)
+                .await
+                .expect("external replacement")
+        );
+        let replaced = of_type(&records, "session_replaced");
+        assert_eq!(replaced.len(), 1);
+        assert_eq!(replaced[0]["durableSessionId"], session.session_id());
+        assert_eq!(
+            replaced[0]["cwd"],
+            if cfg!(windows) { "\\tmp" } else { "/tmp" }
+        );
         handler.release().await;
     }
 
     #[tokio::test]
-    async fn extension_shutdown_marks_the_connection_without_disposing(){
-        let session=session();
-        let(handler,_records)=handler(&session,&[]).await;
+    async fn extension_shutdown_marks_the_connection_without_disposing() {
+        let session = session();
+        let (handler, _records) = handler(&session, &[]).await;
         assert!(!handler.is_shutdown_requested());
-        maho_ext_api::ExtensionContextActions::shutdown(session.extension_context_actions().as_ref());
+        maho_ext_api::ExtensionContextActions::shutdown(
+            session.extension_context_actions().as_ref(),
+        );
         assert!(handler.is_shutdown_requested());
         handler.release().await;
     }
 
     #[tokio::test]
-    async fn component_widgets_render_only_for_rendered_components_clients(){
-        let session=session();
-        let(rendered,rendered_records)=handler(&session,&[crate::custom_capability::RENDERED_COMPONENTS_CAPABILITY]).await;
-        let(plain,plain_records)=handler(&session,&[]).await;
-        for ui in [rendered.ui().clone(),plain.ui().clone()]{
-            maho_ext_api::ExtensionUi::set_widget(ui.as_ref(),"panel",Some(maho_ext_api::WidgetContent::Component(factory())),Default::default());
-            maho_ext_api::ExtensionUi::set_header(ui.as_ref(),Some(factory()));
-            maho_ext_api::ExtensionUi::set_footer(ui.as_ref(),None);
+    async fn component_widgets_render_only_for_rendered_components_clients() {
+        let session = session();
+        let (rendered, rendered_records) = handler(
+            &session,
+            &[crate::custom_capability::RENDERED_COMPONENTS_CAPABILITY],
+        )
+        .await;
+        let (plain, plain_records) = handler(&session, &[]).await;
+        for ui in [rendered.ui().clone(), plain.ui().clone()] {
+            maho_ext_api::ExtensionUi::set_widget(
+                ui.as_ref(),
+                "panel",
+                Some(maho_ext_api::WidgetContent::Component(factory())),
+                Default::default(),
+            );
+            maho_ext_api::ExtensionUi::set_header(ui.as_ref(), Some(factory()));
+            maho_ext_api::ExtensionUi::set_footer(ui.as_ref(), None);
         }
-        assert!(of_type(&plain_records,"extension_ui_request").is_empty());
-        let requests=of_type(&rendered_records,"extension_ui_request");
-        assert_eq!(requests.iter().map(|record|record["method"].clone()).collect::<Vec<_>>(),vec![serde_json::json!("setWidget"),serde_json::json!("setHeader"),serde_json::json!("setFooter")]);
-        assert_eq!(requests[0]["widgetLines"],serde_json::json!(["row@80"]));
-        assert_eq!(requests[0][crate::session_event_fanout::RENDERED_COMPONENT_RECORD],true);
+        assert!(of_type(&plain_records, "extension_ui_request").is_empty());
+        let requests = of_type(&rendered_records, "extension_ui_request");
+        assert_eq!(
+            requests
+                .iter()
+                .map(|record| record["method"].clone())
+                .collect::<Vec<_>>(),
+            vec![
+                serde_json::json!("setWidget"),
+                serde_json::json!("setHeader"),
+                serde_json::json!("setFooter")
+            ]
+        );
+        assert_eq!(requests[0]["widgetLines"], serde_json::json!(["row@80"]));
+        assert_eq!(
+            requests[0][crate::session_event_fanout::RENDERED_COMPONENT_RECORD],
+            true
+        );
         assert!(requests[2].get("widgetLines").is_none());
-        let response=rendered.handle_input_line(&serde_json::json!({"id":"width","type":"set_client_info","width":40}).to_string()).await.expect("dispatch");
+        let response = rendered
+            .handle_input_line(
+                &serde_json::json!({"id":"width","type":"set_client_info","width":40}).to_string(),
+            )
+            .await
+            .expect("dispatch");
         assert!(response.is_some());
-        let widths=of_type(&rendered_records,"extension_ui_request").into_iter().skip(3).map(|record|record["widgetLines"].clone()).collect::<Vec<_>>();
-        assert_eq!(widths,vec![serde_json::json!(["row@40"]),serde_json::json!(["row@40"])]);
+        let widths = of_type(&rendered_records, "extension_ui_request")
+            .into_iter()
+            .skip(3)
+            .map(|record| record["widgetLines"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            widths,
+            vec![serde_json::json!(["row@40"]), serde_json::json!(["row@40"])]
+        );
         rendered.release().await;
         plain.release().await;
     }

@@ -2,12 +2,12 @@
 //! backend takes above the D-Bus round trips, without an accessibility bus.
 
 use atspi::Role;
-use senpi_desktop_core::ax::{snapshot, AxBackend, AxBounds, AxHandle, AxRegistry};
+use senpi_desktop_core::ax::{AxBackend, AxBounds, AxHandle, AxRegistry, snapshot};
 use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_core::types::{AxSnapshotOptions, DesktopWindow};
 
 use crate::bus::Extents;
-use crate::fake::{editor, node, FakeBus, FakeNode, EDITOR_RECT};
+use crate::fake::{EDITOR_RECT, FakeBus, FakeNode, editor, node};
 use crate::{AtSpiAx, AxPermission};
 
 /// A window over the editor's frame rect.
@@ -27,7 +27,10 @@ fn window(app: &str, title: &str, pid: Option<u32>) -> DesktopWindow {
 }
 
 fn root_id(ax: &mut AtSpiAx<FakeBus>, win: &DesktopWindow) -> u64 {
-    *ax.window_root(win).unwrap().downcast_native::<u64>().unwrap()
+    *ax.window_root(win)
+        .unwrap()
+        .downcast_native::<u64>()
+        .unwrap()
 }
 
 #[test]
@@ -184,7 +187,9 @@ fn props_of_a_vanished_element_are_ax_failed() {
 
 #[test]
 fn a_foreign_handle_is_ax_failed() {
-    let error = AtSpiAx::with_bus(editor()).props(&AxHandle::Id(11)).unwrap_err();
+    let error = AtSpiAx::with_bus(editor())
+        .props(&AxHandle::Id(11))
+        .unwrap_err();
     assert_eq!(error.code, ErrorCode::AxFailed);
 }
 
@@ -210,7 +215,8 @@ fn focused_element_is_found_depth_first() {
 fn attributes_are_sorted_and_cut_on_char_boundaries() {
     let mut bus = editor();
     let long = "é".repeat(300);
-    bus.nodes.get_mut(&11).unwrap().attributes = vec![("toolkit".into(), "gtk".into()), ("id".into(), long)];
+    bus.nodes.get_mut(&11).unwrap().attributes =
+        vec![("toolkit".into(), "gtk".into()), ("id".into(), long)];
     let attributes = AtSpiAx::with_bus(bus).attributes(&node(11)).unwrap();
     assert_eq!(attributes[0].0, "id");
     assert_eq!(attributes[0].1.chars().count(), 200);
@@ -258,7 +264,10 @@ fn permission_follows_the_registry() {
     );
     let mut ax = AtSpiAx::with_bus(editor());
     assert_eq!(AxPermission::of(Some(&mut ax)), AxPermission::Granted);
-    assert_eq!(AxPermission::of::<FakeBus>(None), AxPermission::BusUnreachable);
+    assert_eq!(
+        AxPermission::of::<FakeBus>(None),
+        AxPermission::BusUnreachable
+    );
 }
 
 #[test]

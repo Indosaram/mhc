@@ -4,9 +4,11 @@ use std::sync::Arc;
 
 use senpi_desktop_safety::{Chord, FakeClock, StopPathError, StopPathListener, Supervisor};
 
-use super::chord::{Hotkey, Pressed, DEFAULT_STOP_CHORD, UNMAPPED_CHORD};
 use super::Xi2Listener;
-use crate::input::fake::{keymap, KEY_A, KEY_ALT_L, KEY_CONTROL_L, KEY_ESCAPE, KEY_SHIFT_L, KEY_SHIFT_R};
+use super::chord::{DEFAULT_STOP_CHORD, Hotkey, Pressed, UNMAPPED_CHORD};
+use crate::input::fake::{
+    KEY_A, KEY_ALT_L, KEY_CONTROL_L, KEY_ESCAPE, KEY_SHIFT_L, KEY_SHIFT_R, keymap,
+};
 
 fn default_codes() -> super::chord::ChordCodes {
     Hotkey::parse(&Chord::parse(DEFAULT_STOP_CHORD).unwrap())

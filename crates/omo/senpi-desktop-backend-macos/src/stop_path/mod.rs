@@ -21,18 +21,19 @@ use std::thread;
 use std::time::Duration;
 
 use parking_lot::{Condvar, Mutex};
-use senpi_desktop_safety::{Chord, StopPathError, StopPathId, StopPathListener, StopSource, Supervisor};
+use senpi_desktop_safety::{
+    Chord, StopPathError, StopPathId, StopPathListener, StopSource, Supervisor,
+};
 
-use chord::Hotkey;
 pub use chord::DEFAULT_STOP_CHORD;
+use chord::Hotkey;
 
 const THREAD_NAME: &str = "senpi-desktop-killswitch";
 /// How long `start()` waits for the first tap to go live.
 const START_TIMEOUT: Duration = Duration::from_secs(1);
 /// Delays before each re-creation of a dead tap.
 const RE_ARM_LADDER_MS: [u64; 5] = [250, 500, 1_000, 2_000, 4_000];
-const ACCESSIBILITY_REQUIRED: &str =
-    "macOS Accessibility permission is not granted for this process; the kill-switch event tap needs it";
+const ACCESSIBILITY_REQUIRED: &str = "macOS Accessibility permission is not granted for this process; the kill-switch event tap needs it";
 /// `stopReason` when the tap could not be created although trusted.
 const TAP_UNAVAILABLE: &str = "event-tap-unavailable";
 const THREAD_UNAVAILABLE: &str = "event-tap-thread-unavailable";
@@ -208,7 +209,9 @@ impl StopPathListener for CgEventTapListener {
     fn start(&mut self, chord: &Chord, sup: Arc<Supervisor>) -> Result<(), StopPathError> {
         let hotkey = Hotkey::parse(chord)?;
         if !crate::ax::is_trusted() {
-            return Err(StopPathError::PermissionDenied(ACCESSIBILITY_REQUIRED.to_owned()));
+            return Err(StopPathError::PermissionDenied(
+                ACCESSIBILITY_REQUIRED.to_owned(),
+            ));
         }
         let (shared, failures) = if let Some(shared) = &self.shared {
             *shared.hotkey.lock() = hotkey;

@@ -35,6 +35,7 @@ const UUID_SHAPE_LEN: usize = 36;
 
 fn model(base_url: &str) -> Model {
     Model {
+        deprecated: None,
         id: "swe-1-6".into(),
         name: "SWE-1.6".into(),
         api: "devin-agent".into(),
@@ -384,6 +385,8 @@ fn foreign_assistant_message(content: Vec<ContentBlock>) -> maho_ai::types::Assi
 
 fn assistant_message(content: Vec<ContentBlock>) -> maho_ai::types::AssistantMessage {
     maho_ai::types::AssistantMessage {
+        failure_source: None,
+        timing: None,
         thinking_level: None,
         provider_diagnostic: None,
         prompt_cache_diagnostics: None,

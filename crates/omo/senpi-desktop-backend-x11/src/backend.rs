@@ -92,7 +92,8 @@ impl<S: XServer, I: InputServer> X11Backend<S, I> {
             capture_permission: granted(capture).to_string(),
             input_permission: granted(input.is_some()).to_string(),
             ax_permission: ax.as_str().to_string(),
-            display_count: displays.map_or(0, |items| u32::try_from(items.len()).unwrap_or(u32::MAX)),
+            display_count: displays
+                .map_or(0, |items| u32::try_from(items.len()).unwrap_or(u32::MAX)),
             focus_guard: input.is_some_and(X11Input::focus_guard_available),
             ..DesktopCapabilities::unavailable()
         }
@@ -116,11 +117,7 @@ impl<S: XServer, I: InputServer> X11Backend<S, I> {
 }
 
 const fn granted(granted: bool) -> &'static str {
-    if granted {
-        "granted"
-    } else {
-        "unavailable"
-    }
+    if granted { "granted" } else { "unavailable" }
 }
 
 impl<S: XServer + Send, I: InputServer + Send> Backend for X11Backend<S, I> {
@@ -136,7 +133,11 @@ impl<S: XServer + Send, I: InputServer + Send> Backend for X11Backend<S, I> {
         self.capture.windows()
     }
 
-    fn capture(&mut self, target: &Target, _caps: &CaptureCaps) -> CoreResult<(RgbaImage, FrameGeometry)> {
+    fn capture(
+        &mut self,
+        target: &Target,
+        _caps: &CaptureCaps,
+    ) -> CoreResult<(RgbaImage, FrameGeometry)> {
         self.capture.capture(target)
     }
 
@@ -182,10 +183,16 @@ impl<S: XServer + Send, I: InputServer + Send> Backend for X11Backend<S, I> {
     ) -> CoreResult<()> {
         self.focus_restore_owner = foreground_owner(target, mode);
         self.pointer_restore_owner = None;
-        self.input()?.type_text_interruptible(target, text, mode, check_stop, delivered)
+        self.input()?
+            .type_text_interruptible(target, text, mode, check_stop, delivered)
     }
 
-    fn key_chord(&mut self, target: &Target, keys: &[KeyName], mode: DeliveryMode) -> CoreResult<()> {
+    fn key_chord(
+        &mut self,
+        target: &Target,
+        keys: &[KeyName],
+        mode: DeliveryMode,
+    ) -> CoreResult<()> {
         self.focus_restore_owner = foreground_owner(target, mode);
         self.pointer_restore_owner = None;
         self.input()?.key_chord(target, keys, mode)
@@ -229,7 +236,11 @@ impl<S: XServer + Send, I: InputServer + Send> Backend for X11Backend<S, I> {
             return Ok(None);
         };
         let id = active.to_string();
-        let window = self.capture.windows()?.into_iter().find(|window| window.id == id);
+        let window = self
+            .capture
+            .windows()?
+            .into_iter()
+            .find(|window| window.id == id);
         Ok(Some(FrontWindow {
             pid: window.as_ref().and_then(|window| window.pid).unwrap_or(0),
             app: window.map(|window| window.app).unwrap_or_default(),

@@ -269,12 +269,13 @@ fn test_given_a_matching_envelope_when_validated_then_it_does_not_throw() {
     let batch = FactsBatch {
         batch_id: VALID_BATCH_ID.to_string(),
         records: records.clone(),
+        agreements: None,
     };
     let recovery = FactsApplyRecovery {
         version: 1,
         batch_id: VALID_BATCH_ID.to_string(),
         head_before_apply: "head-sha".to_string(),
-        records_hash: facts_records_hash(&records),
+        records_hash: facts_records_hash(&records, &[]),
         people: None,
         paths: vec![
             FactsRecoveryPath {
@@ -332,12 +333,13 @@ fn test_given_an_unsorted_path_list_when_validated_then_it_throws() {
     let batch = FactsBatch {
         batch_id: VALID_BATCH_ID.to_string(),
         records: records.clone(),
+        agreements: None,
     };
     let recovery = FactsApplyRecovery {
         version: 1,
         batch_id: VALID_BATCH_ID.to_string(),
         head_before_apply: "head-sha".to_string(),
-        records_hash: facts_records_hash(&records),
+        records_hash: facts_records_hash(&records, &[]),
         people: None,
         paths: vec![
             FactsRecoveryPath {
@@ -395,6 +397,7 @@ fn test_given_a_mismatched_records_hash_when_validated_then_it_throws() {
     let batch = FactsBatch {
         batch_id: VALID_BATCH_ID.to_string(),
         records,
+        agreements: None,
     };
     let recovery = FactsApplyRecovery {
         version: 1,
@@ -419,12 +422,13 @@ fn test_given_a_non_uuid_batch_id_when_validated_then_it_throws() {
     let batch = FactsBatch {
         batch_id: "not-a-uuid".to_string(),
         records: records.clone(),
+        agreements: None,
     };
     let recovery = FactsApplyRecovery {
         version: 1,
         batch_id: "not-a-uuid".to_string(),
         head_before_apply: "head-sha".to_string(),
-        records_hash: facts_records_hash(&records),
+        records_hash: facts_records_hash(&records, &[]),
         people: None,
         paths: vec![],
     };
@@ -444,6 +448,7 @@ fn test_given_an_empty_facts_batch_when_applied_then_it_returns_no_facts_without
     let batch = FactsBatch {
         batch_id: VALID_BATCH_ID.to_string(),
         records: vec![],
+        agreements: None,
     };
 
     // when
@@ -472,6 +477,7 @@ fn test_given_an_invalid_batch_id_when_applied_then_it_throws() {
     let batch = FactsBatch {
         batch_id: "not-uuid".to_string(),
         records: sample_records(),
+        agreements: None,
     };
 
     // when
@@ -524,7 +530,8 @@ fn test_given_either_valid_record_arm_when_validated_directly_then_the_record_is
 }
 
 #[test]
-fn test_given_malformed_direct_values_when_validated_then_the_typed_validation_error_identifies_each_rejection() {
+fn test_given_malformed_direct_values_when_validated_then_the_typed_validation_error_identifies_each_rejection()
+ {
     let malformed = [
         serde_json::json!({ "scope": "project", "text": "missing date" }),
         serde_json::json!({ "scope": "other", "text": "bad scope", "date": "2026-08-10" }),
@@ -533,6 +540,10 @@ fn test_given_malformed_direct_values_when_validated_then_the_typed_validation_e
 
     for (index, val) in malformed.iter().enumerate() {
         let err = parse_facts_extraction_record(val, index).unwrap_err();
-        assert_eq!(err.message.starts_with(&format!("facts extraction line {}:", index + 1)), true);
+        assert_eq!(
+            err.message
+                .starts_with(&format!("facts extraction line {}:", index + 1)),
+            true
+        );
     }
 }

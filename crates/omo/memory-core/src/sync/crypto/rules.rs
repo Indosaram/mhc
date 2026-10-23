@@ -38,6 +38,47 @@ fn countersign_ok(
         sig,
     )
 }
+/// Every `signing_public_key` value anywhere in `value`; a non-string one counts as "" so it refuses.
+fn signing_keys_in(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Array(rows) => rows.iter().for_each(|v| signing_keys_in(v, out)),
+        serde_json::Value::Object(map) => {
+            for (key, field) in map {
+                if key == "signing_public_key" {
+                    out.push(field.as_str().unwrap_or("").to_owned());
+                } else {
+                    signing_keys_in(field, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+/// The signing keys a record brings into the authority; each must be a strong key.
+fn admitted_keys(entry: &KeyringEntry, body: &ParsedBody) -> Vec<String> {
+    match body {
+        ParsedBody::Genesis {
+            first_device,
+            recovery_key,
+            ..
+        } => vec![
+            first_device.signing_public_key.clone(),
+            recovery_key.signing_public_key.clone(),
+        ],
+        ParsedBody::RecoveryKey { key, .. } => vec![key.signing_public_key.clone()],
+        ParsedBody::Approval { principal, .. } | ParsedBody::RecoveryJoin { principal, .. } => {
+            vec![principal.signing_public_key.clone()]
+        }
+        ParsedBody::ForkResolution { .. } => {
+            let mut out = Vec::new();
+            signing_keys_in(&entry.body, &mut out);
+            out
+        }
+        ParsedBody::Rotation { .. }
+        | ParsedBody::RecoveryKeyRemoved { .. }
+        | ParsedBody::RecoveryJoinVetoed { .. } => Vec::new(),
+    }
+}
 pub fn check_record_rules(
     entry: &KeyringEntry,
     body: &ParsedBody,
@@ -46,6 +87,12 @@ pub fn check_record_rules(
     predecessor: &str,
 ) -> Option<&'static str> {
     let account = &entry.fields.account;
+    if !admitted_keys(entry, body)
+        .iter()
+        .all(|k| is_strong_key_text(k))
+    {
+        return Some("weak_key");
+    }
     if let ParsedBody::Genesis {
         first_device,
         recovery_key,

@@ -12,8 +12,8 @@ use senpi_desktop_core::backend::PointerEvent;
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use x11rb::protocol::xproto::Window;
 
-use super::server::InputServer;
 use super::X11Input;
+use super::server::InputServer;
 
 /// How long the window manager gets to restack under the pointer, and to
 /// replay the presses it holds.
@@ -23,7 +23,11 @@ const SETTLE_POLL: Duration = Duration::from_millis(2);
 impl<S: InputServer> X11Input<S> {
     /// XTEST `event` to `window` behind the focus guard; focus returns only
     /// once the window manager released every press it held.
-    pub(super) fn pointer_foreground(&mut self, window: Window, event: &PointerEvent) -> CoreResult<()> {
+    pub(super) fn pointer_foreground(
+        &mut self,
+        window: Window,
+        event: &PointerEvent,
+    ) -> CoreResult<()> {
         self.with_foreground(window, |this| {
             this.pointer_xtest(event, Some(window))?;
             this.await_pointer_released(window)
@@ -35,7 +39,11 @@ impl<S: InputServer> X11Input<S> {
     /// # Errors
     /// `InputFailed` when another window still covers the point after the
     /// timeout, so no button is sent to the wrong window.
-    pub(super) fn await_pointer_within(&self, window: Window, (x, y): (i16, i16)) -> CoreResult<()> {
+    pub(super) fn await_pointer_within(
+        &self,
+        window: Window,
+        (x, y): (i16, i16),
+    ) -> CoreResult<()> {
         settle(|| self.server.pointer_within(window)).and_then(|within| {
             within.then_some(()).ok_or_else(|| {
                 DesktopError::input_failed(format!(

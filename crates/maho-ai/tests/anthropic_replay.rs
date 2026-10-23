@@ -56,6 +56,7 @@ fn sse_fixture_bytes(spec: &Value) -> Vec<u8> {
 fn case_model(spec: &Value, base_url: &str) -> Model {
     let model = &spec["model"];
     let mut built = Model {
+        deprecated: None,
         id: model["id"].as_str().unwrap_or_default().to_owned(),
         name: model["name"].as_str().unwrap_or_default().to_owned(),
         api: spec["api"].as_str().expect("case api").to_owned(),

@@ -6,7 +6,7 @@ use image::RgbaImage;
 use senpi_desktop_core::frame::FrameGeometry;
 
 use super::screencast::MonitorStream;
-use super::{composite, Geometry};
+use super::{Geometry, composite};
 use crate::capture::layout::EisRegion;
 
 const fn monitor(node: u32, position: (i32, i32), size: Option<(i32, i32)>) -> MonitorStream {
@@ -39,11 +39,17 @@ fn a_stream_without_a_size_and_no_eis_layout_has_unknown_geometry() {
 fn a_stream_without_a_size_takes_its_logical_size_from_the_eis_region() {
     let regions = [region(0, 1280, 720, 2.0)];
 
-    let cast = composite(&[(monitor(1, (0, 0), None), RgbaImage::new(2560, 1440))], Some(&regions));
+    let cast = composite(
+        &[(monitor(1, (0, 0), None), RgbaImage::new(2560, 1440))],
+        Some(&regions),
+    );
 
     assert_eq!(cast.geometry, Geometry::FromEis);
     let display = &cast.displays[0];
-    assert_eq!((display.width, display.height, display.scale), (1280, 720, 2.0));
+    assert_eq!(
+        (display.width, display.height, display.scale),
+        (1280, 720, 2.0)
+    );
     assert_eq!(
         FrameGeometry::for_displays(&cast.displays).map_point(1000.0, 600.0, None),
         Ok((500.0, 300.0))
@@ -54,7 +60,10 @@ fn a_stream_without_a_size_takes_its_logical_size_from_the_eis_region() {
 fn an_eis_region_that_does_not_fit_the_unsized_frame_leaves_geometry_unknown() {
     let regions = [region(0, 1280, 720, 1.5)];
 
-    let cast = composite(&[(monitor(1, (0, 0), None), RgbaImage::new(2560, 1440))], Some(&regions));
+    let cast = composite(
+        &[(monitor(1, (0, 0), None), RgbaImage::new(2560, 1440))],
+        Some(&regions),
+    );
 
     assert_eq!(cast.geometry, Geometry::Unknown);
 }
@@ -73,13 +82,20 @@ fn one_unsized_stream_makes_the_whole_composite_unknown() {
         Some(&regions),
     );
 
-    assert_eq!(cast.geometry, Geometry::Unknown, "no region sits at (1280, 0)");
+    assert_eq!(
+        cast.geometry,
+        Geometry::Unknown,
+        "no region sits at (1280, 0)"
+    );
 }
 
 #[test]
 fn streams_that_report_their_size_need_no_eis_layout() {
     let cast = composite(
-        &[(monitor(1, (0, 0), Some((1280, 720))), RgbaImage::new(2560, 1440))],
+        &[(
+            monitor(1, (0, 0), Some((1280, 720))),
+            RgbaImage::new(2560, 1440),
+        )],
         None,
     );
     assert_eq!(cast.geometry, Geometry::Reported);

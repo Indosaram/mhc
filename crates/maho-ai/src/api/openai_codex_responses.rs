@@ -22,8 +22,7 @@ use crate::api::openai_prompt_cache::{
 use crate::api::openai_responses::{
     CachedWebSocket, CachedWebSocketConnection, ParseWebSocketOptions,
     SESSION_WEBSOCKET_CACHE_TTL_MS, TungsteniteWebSocket, WebSocketFailureSlot,
-    WebSocketStreamFailure, close_websocket_silently,
-    is_websocket_reusable, parse_web_socket,
+    WebSocketStreamFailure, close_websocket_silently, is_websocket_reusable, parse_web_socket,
 };
 use crate::api::openai_responses_shared::{
     ConvertResponsesMessagesOptions, ConvertResponsesToolsOptions, ResponsesStreamError,
@@ -59,7 +58,9 @@ use crate::utils::uuid::uuidv7;
 use crate::wire_identity::get_wire_identity;
 
 pub mod fallback_state;
+pub mod provider_diagnostic;
 pub mod reasoning;
+pub mod usage_limit;
 
 use fallback_state::{
     ChatGptSubscriptionWebSocketDebugStats, is_web_socket_sse_fallback_active,
@@ -128,6 +129,8 @@ pub struct CodexApiError {
     pub message: String,
     pub code: Option<String>,
     pub payload: Option<Value>,
+    /// The Codex-classified diagnostic (`attachProviderDiagnostic`), when the failure named one.
+    pub provider_diagnostic: Option<Box<crate::types::ProviderDiagnostic>>,
 }
 
 /// `CodexProtocolError`.
@@ -139,10 +142,16 @@ pub struct CodexProtocolError {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CodexError {
-    Api(CodexApiError),
+    Api(Box<CodexApiError>),
     Protocol(CodexProtocolError),
     Provider(Box<crate::api::openai_responses::ResponsesApiError>),
     WebSocketClose(crate::api::websocket_transport_failure::WebSocketCloseError),
+    /// A native transport failure whose typed source was classified before being formatted away
+    /// (`transportProviderDiagnosticFromError`).
+    Transport {
+        message: String,
+        diagnostic: Option<Box<crate::types::ProviderDiagnostic>>,
+    },
     /// A non-Codex thrown value (network failure, timeout, abort, ...).
     Other(String),
 }
@@ -154,6 +163,7 @@ impl CodexError {
             CodexError::Protocol(error) => error.message.clone(),
             CodexError::Provider(error) => error.to_string(),
             CodexError::WebSocketClose(error) => error.to_string(),
+            CodexError::Transport { message, .. } => message.clone(),
             CodexError::Other(message) => message.clone(),
         }
     }
@@ -161,7 +171,7 @@ impl CodexError {
 
 impl From<CodexApiError> for CodexError {
     fn from(error: CodexApiError) -> Self {
-        CodexError::Api(error)
+        CodexError::Api(Box::new(error))
     }
 }
 
@@ -176,7 +186,7 @@ pub fn build_request_body(
     model: &Model,
     context: &Context,
     options: &CodexResponsesOptions,
-    cache_session_id: Option<&str>,
+    cache_retention: Option<CacheRetention>,
     grammar_tool_input_properties: &BTreeMap<String, String>,
     extra_body: Option<&Map<String, Value>>,
 ) -> Result<Map<String, Value>, String> {
@@ -271,7 +281,15 @@ pub fn build_request_body(
         String::from("include"),
         json!(["reasoning.encrypted_content"]),
     );
-    body.insert(String::from("prompt_cache_key"), json!(cache_session_id));
+    let prompt_cache_key = if cache_retention == Some(CacheRetention::None) {
+        None
+    } else {
+        crate::api::openai_prompt_cache::derive_openai_prompt_cache_key(
+            &model.id,
+            &crate::types::transcript::normalize_context(context),
+        )
+    };
+    body.insert(String::from("prompt_cache_key"), json!(prompt_cache_key));
     body.insert(
         String::from("tool_choice"),
         json!(
@@ -989,7 +1007,14 @@ async fn acquire_web_socket(
     connect_timeout_ms: Option<u64>,
 ) -> Result<CodexWebSocketLease, CodexError> {
     let Some(session_id) = session_id else {
-        let socket = super::openai_responses::connect_web_socket_typed(url, headers, signal, connect_timeout_ms).await.map_err(CodexError::from)?;
+        let socket = super::openai_responses::connect_web_socket_typed(
+            url,
+            headers,
+            signal,
+            connect_timeout_ms,
+        )
+        .await
+        .map_err(CodexError::from)?;
         return Ok(CodexWebSocketLease {
             socket,
             entry: None,
@@ -1014,7 +1039,14 @@ async fn acquire_web_socket(
                 reused: true,
             });
         } else if cached.busy() {
-            let socket = super::openai_responses::connect_web_socket_typed(url, headers, signal, connect_timeout_ms).await.map_err(CodexError::from)?;
+            let socket = super::openai_responses::connect_web_socket_typed(
+                url,
+                headers,
+                signal,
+                connect_timeout_ms,
+            )
+            .await
+            .map_err(CodexError::from)?;
             return Ok(CodexWebSocketLease {
                 socket,
                 entry: None,
@@ -1026,7 +1058,10 @@ async fn acquire_web_socket(
         }
     }
 
-    let socket = super::openai_responses::connect_web_socket_typed(url, headers, signal, connect_timeout_ms).await.map_err(CodexError::from)?;
+    let socket =
+        super::openai_responses::connect_web_socket_typed(url, headers, signal, connect_timeout_ms)
+            .await
+            .map_err(CodexError::from)?;
     let entry = Arc::new(CodexCachedWebSocketConnection::new(socket.clone()));
     websocket_session_cache()
         .entry(session_id.to_owned())
@@ -1183,8 +1218,14 @@ async fn run_web_socket_request(
     if let Some(failure) = failure {
         return Err(match failure {
             WebSocketStreamFailure::Close(error) => CodexError::WebSocketClose(error),
-            WebSocketStreamFailure::DiagnosedTransport { message, diagnostic } => CodexError::from(
-                super::openai_responses::ResponsesApiError::Provider { message, diagnostic, error_cause: None }),
+            WebSocketStreamFailure::DiagnosedTransport {
+                message,
+                diagnostic,
+            } => CodexError::from(super::openai_responses::ResponsesApiError::Provider {
+                message,
+                diagnostic,
+                error_cause: None,
+            }),
             WebSocketStreamFailure::Protocol { message, payload } => {
                 CodexError::Protocol(CodexProtocolError {
                     message,
@@ -1455,7 +1496,14 @@ impl Stream for CodexEventStream {
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     if state.error.is_none() {
-                        state.error = Some(CodexError::Other(error.to_string()));
+                        state.error = Some(CodexError::Transport {
+                            message: error.to_string(),
+                            diagnostic:
+                                crate::utils::provider_diagnostic_carrier::diagnostic_from_transport(
+                                    &error,
+                                )
+                                .map(Box::new),
+                        });
                     }
                     return Poll::Ready(None);
                 }
@@ -1522,40 +1570,56 @@ fn map_codex_frame(
             let code = get_codex_event_error_code(&event);
             let message = get_codex_event_error_message(&event);
             let fallback = serde_json::to_string(&Value::Object(event.clone())).unwrap_or_default();
-            let base = format!(
-                "Codex error: {}",
-                if !message.is_empty() {
-                    message
-                } else if !code.is_empty() {
-                    code.clone()
-                } else {
-                    fallback
-                }
-            );
+            let base =
+                usage_limit::describe_chat_gpt_usage_limit_event(&event).unwrap_or_else(|| {
+                    format!(
+                        "Codex error: {}",
+                        if !message.is_empty() {
+                            message
+                        } else if !code.is_empty() {
+                            code.clone()
+                        } else {
+                            fallback
+                        }
+                    )
+                });
+            let diagnostic = provider_diagnostic::codex_event_provider_diagnostic(&event, now_ms());
             fail(
                 state,
-                CodexError::Api(CodexApiError {
+                CodexError::Api(Box::new(CodexApiError {
                     message: error_text_with_marker(base, &event),
                     code: (!code.is_empty()).then_some(code),
                     payload: Some(Value::Object(event)),
-                }),
+                    provider_diagnostic: diagnostic.map(Box::new),
+                })),
             )
         }
         "response.failed" => {
             let code = get_codex_event_error_code(&event);
             let message = get_codex_event_error_message(&event);
-            let base = if message.is_empty() {
-                String::from("Codex response failed")
+            let mut with_error = event.clone();
+            if let Some(error) = get_codex_event_error(&event) {
+                with_error.insert(String::from("error"), Value::Object(error.clone()));
             } else {
-                message
-            };
+                with_error.remove("error");
+            }
+            let base = usage_limit::describe_chat_gpt_usage_limit_event(&with_error)
+                .unwrap_or_else(|| {
+                    if message.is_empty() {
+                        String::from("Codex response failed")
+                    } else {
+                        message
+                    }
+                });
+            let diagnostic = provider_diagnostic::codex_event_provider_diagnostic(&event, now_ms());
             fail(
                 state,
-                CodexError::Api(CodexApiError {
+                CodexError::Api(Box::new(CodexApiError {
                     message: error_text_with_marker(base, &event),
                     code: Some(code),
                     payload: Some(Value::Object(event)),
-                }),
+                    provider_diagnostic: diagnostic.map(Box::new),
+                })),
             )
         }
         "response.done" | "response.completed" | "response.incomplete" => {
@@ -1614,6 +1678,8 @@ pub fn stream(
 
 fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
+        failure_source: None,
+        timing: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,
@@ -1669,12 +1735,21 @@ async fn run_stream(
         output.error_message = Some(format_codex_error(&error));
         if output.stop_reason != StopReason::Aborted {
             match &error {
-                CodexError::Provider(error) => super::openai_responses::apply_responses_failure(&mut output, error),
+                CodexError::Provider(error) => {
+                    super::openai_responses::apply_responses_failure(&mut output, error)
+                }
                 CodexError::Api(error) => {
+                    output.provider_diagnostic = error.provider_diagnostic.as_deref().cloned();
                     if let Some(payload) = &error.payload {
-                        output.provider_diagnostic = crate::api::github_copilot_errors::diagnostic_from_responses_event(payload);
-                        output.error_cause = crate::api::github_copilot_errors::usage_limit_cause(&model.provider, None, payload);
+                        output.error_cause = crate::api::github_copilot_errors::usage_limit_cause(
+                            &model.provider,
+                            None,
+                            payload,
+                        );
                     }
+                }
+                CodexError::Transport { diagnostic, .. } => {
+                    output.provider_diagnostic = diagnostic.as_deref().cloned();
                 }
                 CodexError::Protocol(_) | CodexError::WebSocketClose(_) | CodexError::Other(_) => {}
             }
@@ -1747,7 +1822,7 @@ async fn drive(
         model,
         context,
         codex_options,
-        cache_session_id.as_deref(),
+        options.cache_retention,
         &grammar_tool_input_properties,
         options.extra_body.as_ref(),
     )
@@ -1949,7 +2024,8 @@ async fn drive(
                 if signal.as_ref().is_some_and(|signal| signal.aborted()) {
                     return Err(CodexError::Other(String::from("Request was aborted")));
                 }
-                let error = CodexError::from(super::openai_responses::responses_transport_error(error));
+                let error =
+                    CodexError::from(super::openai_responses::responses_transport_error(error));
                 last_error = Some(error.clone());
                 if attempt < max_retries && !message.contains("usage limit") {
                     let delay = BASE_DELAY_MS * 2u64.pow(attempt);
@@ -2022,9 +2098,20 @@ async fn drive(
         // rejection or a usage-limit message while attempts remain.
         let error = CodexError::from(super::openai_responses::ResponsesApiError::Provider {
             message: error_message.clone(),
-            diagnostic: crate::api::github_copilot_errors::diagnostic_from_openai_error(Some(status), Some(&error_text)),
-            error_cause: serde_json::from_str::<Value>(&error_text).ok().and_then(|payload|
-                crate::api::github_copilot_errors::usage_limit_cause(&model.provider, Some(status), &payload)),
+            diagnostic: provider_diagnostic::codex_http_provider_diagnostic(
+                status,
+                &error_text,
+                now_ms(),
+            ),
+            error_cause: serde_json::from_str::<Value>(&error_text)
+                .ok()
+                .and_then(|payload| {
+                    crate::api::github_copilot_errors::usage_limit_cause(
+                        &model.provider,
+                        Some(status),
+                        &payload,
+                    )
+                }),
         });
         last_error = Some(error.clone());
         if attempt < max_retries && !error_message.contains("usage limit") {
@@ -2053,7 +2140,10 @@ async fn drive(
     let adapter_state = Arc::new(Mutex::new(CodexStreamAdapterState::default()));
     let provenance: super::openai_responses::ResponsesFailureSlot = Arc::default();
     let adapter = CodexEventStream {
-        body: super::openai_responses::observe_responses_transport(Box::pin(response.bytes_stream()), provenance.clone()),
+        body: super::openai_responses::observe_responses_transport(
+            Box::pin(response.bytes_stream()),
+            provenance.clone(),
+        ),
         buffer: String::new(),
         done: false,
         state: adapter_state.clone(),
@@ -2078,7 +2168,16 @@ async fn drive(
         .clone();
     if let Some(error) = adapter_error {
         return Err(match error {
-            CodexError::Other(message) => CodexError::from(super::openai_responses::responses_stream_error(message, &provenance)),
+            CodexError::Other(message) => CodexError::from(
+                super::openai_responses::responses_stream_error(message, &provenance),
+            ),
+            CodexError::Transport {
+                message,
+                diagnostic: None,
+            } => CodexError::from(super::openai_responses::responses_stream_error(
+                message,
+                &provenance,
+            )),
             error => error,
         });
     }
@@ -2307,14 +2406,27 @@ mod tests {
     fn codex_failed_event_retains_structured_usage_payload() {
         // Given the backend's structured terminal error after any partial content.
         let state = Arc::new(Mutex::new(CodexStreamAdapterState::default()));
-        let frame = format!("data: {}", json!({"type":"response.failed","response":{"error":{"code":"usage_limit_reached","message":"opaque"}}}));
+        let frame = format!(
+            "data: {}",
+            json!({"type":"response.failed","response":{"error":{"code":"usage_limit_reached","message":"opaque"}}})
+        );
         // When the wire adapter maps the failure.
         assert!(map_codex_frame(&frame, &state).is_err());
         let error = state.lock().expect("adapter").error.clone().expect("error");
         // Then structured scope can be projected without consulting the formatted message.
-        let CodexError::Api(error) = error else { panic!("API error"); };
-        assert_eq!(crate::api::github_copilot_errors::usage_limit_cause("chatgpt-subscription", None, error.payload.as_ref().expect("payload")),
-            Some(crate::types::AssistantErrorCause::UsageLimit { scope: crate::types::UsageLimitScope::Account }));
+        let CodexError::Api(error) = error else {
+            panic!("API error");
+        };
+        assert_eq!(
+            crate::api::github_copilot_errors::usage_limit_cause(
+                "chatgpt-subscription",
+                None,
+                error.payload.as_ref().expect("payload")
+            ),
+            Some(crate::types::AssistantErrorCause::UsageLimit {
+                scope: crate::types::UsageLimitScope::Account
+            })
+        );
     }
 
     #[test]

@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use senpi_desktop_core::error::{DesktopError, ErrorCode, TccPermission};
 
-use super::{gate, FrameContext, FrameId, GateError, LockState, PermissionGate, StopPathReason};
+use super::{FrameContext, FrameId, GateError, LockState, PermissionGate, StopPathReason, gate};
 use crate::{
     action::MutatingAction,
     clock::FakeClock,
-    supervisor::{StopPathId, StopPolicy, StopSource, Supervisor, HEARTBEAT_FRESH_MS},
+    supervisor::{HEARTBEAT_FRESH_MS, StopPathId, StopPolicy, StopSource, Supervisor},
 };
 
 struct FakePerms {
@@ -112,7 +112,10 @@ fn no_live_stop_path_rejects_with_no_global_listener() {
 
     // When / Then
     let result = scene.run(MutatingAction::Click, None);
-    assert_eq!(result, stop_path_unavailable(StopPathReason::NoGlobalListener));
+    assert_eq!(
+        result,
+        stop_path_unavailable(StopPathReason::NoGlobalListener)
+    );
 }
 
 #[test]
@@ -123,7 +126,10 @@ fn stale_heartbeat_rejects_with_heartbeat_stale() {
 
     // When / Then
     let result = scene.run(MutatingAction::TypeText, None);
-    assert_eq!(result, stop_path_unavailable(StopPathReason::HeartbeatStale));
+    assert_eq!(
+        result,
+        stop_path_unavailable(StopPathReason::HeartbeatStale)
+    );
 }
 
 #[test]
@@ -153,7 +159,10 @@ fn stale_host_relay_rejects_with_heartbeat_stale_when_allowed() {
 
     // When / Then
     let result = scene.run(MutatingAction::Click, None);
-    assert_eq!(result, stop_path_unavailable(StopPathReason::HeartbeatStale));
+    assert_eq!(
+        result,
+        stop_path_unavailable(StopPathReason::HeartbeatStale)
+    );
 }
 
 #[test]
@@ -188,7 +197,9 @@ fn missing_permission_rejects() {
     // When / Then
     assert_eq!(
         scene.run(MutatingAction::MoveMouse, None),
-        Err(GateError::PermissionDenied { permission: TccPermission::Accessibility })
+        Err(GateError::PermissionDenied {
+            permission: TccPermission::Accessibility
+        })
     );
 }
 
@@ -263,7 +274,9 @@ fn gate_order_peels_one_failing_check_at_a_time() {
         [
             stop_path_unavailable(StopPathReason::NoGlobalListener),
             Err(GateError::ScreenLocked),
-            Err(GateError::PermissionDenied { permission: TccPermission::Accessibility }),
+            Err(GateError::PermissionDenied {
+                permission: TccPermission::Accessibility
+            }),
             Err(GateError::InvalidCoordinateFrame),
         ]
     );
@@ -281,5 +294,8 @@ fn stop_path_rejection_converts_to_wire_error_with_reason_as_message() {
 
     // Then
     assert_eq!(wire.code, ErrorCode::StopPathUnavailable);
-    assert_eq!(wire.to_string(), "StopPathUnavailable: host-relay-not-allowed");
+    assert_eq!(
+        wire.to_string(),
+        "StopPathUnavailable: host-relay-not-allowed"
+    );
 }

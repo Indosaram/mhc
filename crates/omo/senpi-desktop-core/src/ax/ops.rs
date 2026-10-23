@@ -1,6 +1,6 @@
 //! `ax.query` / `ax.elementAt` / ref registration and the press action.
 
-use super::walk::{label, walk_raw, WalkState};
+use super::walk::{WalkState, label, walk_raw};
 use super::{AxBackend, AxHandle, AxProps, AxRegistry};
 use crate::error::CoreResult;
 use crate::types::{AxNode, AxQuery, DesktopWindow};
@@ -48,9 +48,11 @@ pub fn query(
     let role = query.role.as_deref().map(str::to_lowercase);
     let title = query.title.as_deref().map(str::to_lowercase);
     let value = query.value.as_deref().map(str::to_lowercase);
-    let limit = usize::try_from(query.limit.unwrap_or(100).min(QUERY_MAX_NODES)).unwrap_or(usize::MAX);
+    let limit =
+        usize::try_from(query.limit.unwrap_or(100).min(QUERY_MAX_NODES)).unwrap_or(usize::MAX);
     let contains = |actual: Option<&str>, expected: Option<&String>| {
-        expected.is_none_or(|needle| actual.is_some_and(|text| text.to_lowercase().contains(needle)))
+        expected
+            .is_none_or(|needle| actual.is_some_and(|text| text.to_lowercase().contains(needle)))
     };
     let mut result = Vec::new();
     let mut stack = vec![root];

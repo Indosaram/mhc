@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const START_GUARD: Duration = Duration::from_secs(10);
 const BUSY_GUARD: Duration = Duration::from_secs(5);
@@ -25,7 +25,10 @@ pub fn default_endpoint() -> io::Result<String> {
     let base = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
     let dir = base.join("senpi-desktop");
     let owner = private_dir(&dir)?;
-    Ok(dir.join(format!("{owner}.sock")).to_string_lossy().into_owned())
+    Ok(dir
+        .join(format!("{owner}.sock"))
+        .to_string_lossy()
+        .into_owned())
 }
 
 /// The resume token file beside `endpoint`.
@@ -79,7 +82,9 @@ fn connect_until(
     loop {
         match connect(endpoint) {
             Ok(stream) => return Ok(stream),
-            Err(error) if retry(&error) && Instant::now() < deadline => std::thread::sleep(CONNECT_RETRY),
+            Err(error) if retry(&error) && Instant::now() < deadline => {
+                std::thread::sleep(CONNECT_RETRY)
+            }
             Err(error) => return Err(error),
         }
     }
@@ -103,7 +108,10 @@ fn connect(endpoint: &str) -> io::Result<std::os::unix::net::UnixStream> {
 
 #[cfg(not(unix))]
 fn connect(endpoint: &str) -> io::Result<std::fs::File> {
-    std::fs::OpenOptions::new().read(true).write(true).open(endpoint)
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(endpoint)
 }
 
 /// Connects to the daemon at `endpoint`, starting it detached with
@@ -111,7 +119,11 @@ fn connect(endpoint: &str) -> io::Result<std::fs::File> {
 ///
 /// # Errors
 /// The daemon could not be started or never accepted within the guard.
-pub fn exchange_or_start(endpoint: &str, serve_args: &[String], request: &Value) -> io::Result<Value> {
+pub fn exchange_or_start(
+    endpoint: &str,
+    serve_args: &[String],
+    request: &Value,
+) -> io::Result<Value> {
     // The connection that finds the daemon carries the request: a separate probe would take a
     // named pipe's only free instance, and the real connect would then find it busy.
     let stream = match connect_until(endpoint, Instant::now() + BUSY_GUARD, &is_busy) {
@@ -165,10 +177,9 @@ fn detach(_command: &mut Command) {}
 /// The token file is unreadable, the daemon is unreachable, or it refused.
 pub fn resume(endpoint: &str) -> Result<Value, String> {
     let file = token_file(endpoint);
-    let token =
-        std::fs::read_to_string(&file).map_err(|error| format!("cannot read {}: {error}", file.display()))?;
-    let request =
-        json!({"jsonrpc": "2.0", "id": 1, "method": "stopPath.resume", "params": {"token": token.trim()}});
+    let token = std::fs::read_to_string(&file)
+        .map_err(|error| format!("cannot read {}: {error}", file.display()))?;
+    let request = json!({"jsonrpc": "2.0", "id": 1, "method": "stopPath.resume", "params": {"token": token.trim()}});
     let reply = exchange(endpoint, &request).map_err(|error| format!("{endpoint}: {error}"))?;
     match reply.get("error") {
         Some(error) => Err(format!("resume refused: {error}")),

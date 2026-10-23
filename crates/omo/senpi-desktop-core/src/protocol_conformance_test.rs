@@ -6,10 +6,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::validator::{definition, Validator};
 use super::METHOD_NOT_FOUND;
+use super::validator::{Validator, definition};
 
 const REQUIRED_CASES: [&str; 9] = [
     "hello",
@@ -49,7 +49,12 @@ struct Expected {
 }
 
 impl Validator<'_> {
-    fn check_reply(&self, message: &Value, method: Option<&String>, at: &str) -> Result<(), String> {
+    fn check_reply(
+        &self,
+        message: &Value,
+        method: Option<&String>,
+        at: &str,
+    ) -> Result<(), String> {
         self.check(&definition("RpcResponse"), message, at)?;
         let method = method.ok_or_else(|| format!("{at}: reply to an id that was never sent"))?;
         if let Some(result) = message.get("result") {
@@ -84,7 +89,11 @@ impl Validator<'_> {
                 case.scenario
             ));
         }
-        if let Some(key) = case.env.keys().find(|key| !key.starts_with("SENPI_DESKTOP_")) {
+        if let Some(key) = case
+            .env
+            .keys()
+            .find(|key| !key.starts_with("SENPI_DESKTOP_"))
+        {
             return Err(format!("env {key} is not an engine variable"));
         }
         let mut sent: HashMap<String, String> = HashMap::new();
@@ -143,7 +152,10 @@ fn conformance_fixtures_match_schema() {
     let mut paths: Vec<PathBuf> = std::fs::read_dir(crate_path("fixtures/conformance"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "json"))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
         .collect();
     paths.sort();
     // When

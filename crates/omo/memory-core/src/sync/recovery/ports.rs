@@ -201,6 +201,7 @@ pub struct RecoveryWrapRow {
     pub record: RecoveryWrapRecord,
     pub entry: WrapEntry,
 }
+#[derive(Clone)]
 pub struct KeyringAppendRequest {
     pub record: KeyringBody,
     pub base_seq: u64,
@@ -234,6 +235,8 @@ pub enum RecoveryEvent {
     EnrollRefused,
     #[serde(rename = "sync.recovery.recovered")]
     Recovered,
+    #[serde(rename = "sync.recovery.joined_read_only")]
+    JoinedReadOnly,
     #[serde(rename = "sync.recovery.recover_refused")]
     RecoverRefused,
     #[serde(rename = "sync.recovery.removed")]

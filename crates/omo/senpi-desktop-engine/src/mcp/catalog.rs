@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::oneshot::METHOD_PREFIX;
 
@@ -19,7 +19,10 @@ pub struct Catalog {
 
 impl Catalog {
     pub fn new(schema: &Value, allow_host_relay_only_stop: bool) -> Self {
-        let definitions = schema["definitions"].as_object().cloned().unwrap_or_default();
+        let definitions = schema["definitions"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
         let mut entries: BTreeMap<String, (String, Value)> = BTreeMap::new();
         for (name, spec) in schema["methods"].as_object().into_iter().flatten() {
             let host_only = spec["hostOnly"].as_bool().unwrap_or(true);
@@ -93,7 +96,11 @@ fn input_schema(params: &Value, definitions: &Map<String, Value>) -> Value {
     schema
 }
 
-fn collect_references(node: &Value, definitions: &Map<String, Value>, reached: &mut Map<String, Value>) {
+fn collect_references(
+    node: &Value,
+    definitions: &Map<String, Value>,
+    reached: &mut Map<String, Value>,
+) {
     match node {
         Value::Array(items) => items
             .iter()

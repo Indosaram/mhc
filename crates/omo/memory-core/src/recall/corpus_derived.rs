@@ -11,8 +11,13 @@ use super::provider::{RecallCorpus, RecallDocument};
 #[derive(Default)]
 pub(crate) struct CorpusDerived {
     pub(crate) haystacks: OnceLock<Vec<String>>,
-    pub(crate) bm25: OnceLock<Arc<RecallBm25Index>>,
+    /// Rebuilt when the dictionary generation moved past the cached index.
+    pub(crate) bm25: Mutex<Option<Arc<RecallBm25Index>>>,
+    /// Told after a build of this corpus' index tokenized at least one document.
+    pub(crate) encoded_listener: Mutex<Option<EncodedListener>>,
 }
+
+pub(crate) type EncodedListener = Arc<dyn Fn() + Send + Sync>;
 
 struct RegisteredCorpus {
     corpus: Arc<RecallCorpus>,
@@ -30,7 +35,10 @@ pub(crate) fn register(corpus: &Arc<RecallCorpus>) {
         return;
     }
     let mut entries = registry();
-    if entries.iter().any(|entry| Arc::ptr_eq(&entry.corpus, corpus)) {
+    if entries
+        .iter()
+        .any(|entry| Arc::ptr_eq(&entry.corpus, corpus))
+    {
         return;
     }
     entries.push(RegisteredCorpus {

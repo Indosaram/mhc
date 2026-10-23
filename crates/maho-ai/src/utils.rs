@@ -28,10 +28,12 @@ pub mod prompt_cache_ttl;
 #[path = "provider_diagnostic.rs"]
 pub mod provider_diagnostic;
 pub mod provider_diagnostic_carrier;
+pub mod provider_diagnostic_sources;
 pub mod provider_diagnostic_vocabulary;
 pub mod provider_env;
 pub mod provider_failure_description;
 pub mod provider_retry;
+pub mod reported_count;
 pub mod retry;
 pub mod retry_hint;
 pub mod retry_profile;

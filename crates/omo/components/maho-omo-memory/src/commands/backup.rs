@@ -12,11 +12,7 @@ pub const BACKUP_PREFIX: &str = "memory-backup-";
 
 pub fn backup_timestamp(epoch_ms: i64) -> String {
     match chrono::DateTime::from_timestamp_millis(epoch_ms) {
-        Some(instant) => format!(
-            "{}-{}",
-            instant.format("%Y%m%d"),
-            instant.format("%H%M%S")
-        ),
+        Some(instant) => format!("{}-{}", instant.format("%Y%m%d"), instant.format("%H%M%S")),
         None => String::new(),
     }
 }
@@ -38,7 +34,8 @@ pub fn create_repo_backup(
         candidate = root.join(format!("{BACKUP_PREFIX}{stamp}-{suffix}"));
         suffix += 1;
     }
-    copy_dir_recursive(&identity.identity_paths.repo, &candidate).map_err(|error| error.to_string())?;
+    copy_dir_recursive(&identity.identity_paths.repo, &candidate)
+        .map_err(|error| error.to_string())?;
     Ok(candidate)
 }
 
@@ -67,18 +64,28 @@ pub fn restore_repo_backup(
 ) -> Result<RestoreResult, String> {
     let source = backup_root(identity).join(name);
     let repo_dir = &identity.identity_paths.repo;
-    let safety_backup = if repo_dir.exists() {
-        Some(create_repo_backup(deps, identity)?)
-    } else {
-        None
-    };
-    if let Err(error) = fs::remove_dir_all(repo_dir)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        return Err(error.to_string());
-    }
-    copy_dir_recursive(&source, repo_dir).map_err(|error| error.to_string())?;
-    Ok(RestoreResult { restored: name.to_owned(), safety_backup })
+    // No recall term-store save may write into the repository while it is replaced.
+    let safety_backup = memory_core::recall::with_recall_term_saves_excluded(
+        repo_dir,
+        || -> Result<Option<PathBuf>, String> {
+            let safety_backup = if repo_dir.exists() {
+                Some(create_repo_backup(deps, identity)?)
+            } else {
+                None
+            };
+            if let Err(error) = fs::remove_dir_all(repo_dir)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(error.to_string());
+            }
+            copy_dir_recursive(&source, repo_dir).map_err(|error| error.to_string())?;
+            Ok(safety_backup)
+        },
+    )?;
+    Ok(RestoreResult {
+        restored: name.to_owned(),
+        safety_backup,
+    })
 }
 
 fn copy_dir_recursive(source: &Path, destination: &Path) -> std::io::Result<()> {

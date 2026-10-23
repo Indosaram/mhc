@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{fake_backend, Engine, TWO_DISPLAYS};
+use super::{Engine, TWO_DISPLAYS, fake_backend};
 
 pub const CHORD: &str = "ctrl+alt+shift+escape";
 
@@ -81,7 +81,10 @@ pub fn snapshot_ref(engine: &mut Engine, target: &str, label: &str) -> String {
 
 /// Captures `target` and returns the frame id.
 pub fn capture(engine: &mut Engine, target: &str) -> String {
-    let captured = engine.invoke("capture", json!({"target": target, "caps": {"maxWidth": 320}}));
+    let captured = engine.invoke(
+        "capture",
+        json!({"target": target, "caps": {"maxWidth": 320}}),
+    );
     captured["result"]["frameId"]
         .as_str()
         .unwrap_or_else(|| panic!("capture of {target} failed: {captured}"))

@@ -6,8 +6,9 @@ use senpi_desktop_core::keys::KeyName;
 
 use super::held::{Held, HeldButton, HeldKey, Route};
 use super::keys::{
-    chord_virtual_keys, key_message, modifier_virtual_keys, named_virtual_key, Stroke, VK_CONTROL, VK_DELETE,
-    VK_ESCAPE, VK_F1, VK_LWIN, VK_MENU, VK_SHIFT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    Stroke, VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_F1, VK_LWIN, VK_MENU, VK_SHIFT, WM_KEYDOWN,
+    WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, chord_virtual_keys, key_message, modifier_virtual_keys,
+    named_virtual_key,
 };
 use super::messages::{
     absolute_coordinate, button_messages, modifier_flags, packed_point, scroll_steps, wheel_wparam,
@@ -71,7 +72,10 @@ fn pointer_modifiers_press_ctrl_alt_shift_meta_in_order() {
         modifier_virtual_keys(all),
         [VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN]
     );
-    assert_eq!(modifier_virtual_keys(Modifiers::default()), Vec::<u16>::new());
+    assert_eq!(
+        modifier_virtual_keys(Modifiers::default()),
+        Vec::<u16>::new()
+    );
 }
 
 #[test]
@@ -114,10 +118,12 @@ fn wheel_deltas_ride_in_the_high_word() {
 
 #[test]
 fn scroll_pixels_become_notches_of_forty_pixels() {
-    let steps: Vec<i32> = [0.0, 1.0, -1.0, 19.0, 59.0, 60.0, 120.0, -120.0, -100.0, 300.0]
-        .into_iter()
-        .map(scroll_steps)
-        .collect();
+    let steps: Vec<i32> = [
+        0.0, 1.0, -1.0, 19.0, 59.0, 60.0, 120.0, -120.0, -100.0, 300.0,
+    ]
+    .into_iter()
+    .map(scroll_steps)
+    .collect();
 
     // 40 px per notch, rounded half up, never zero for a non-zero delta; the
     // sign is the caller's (it maps positive `dy` to a negative wheel delta).
@@ -161,7 +167,11 @@ fn held_keys_release_most_recent_first_and_once() {
         vk: VK_CONTROL,
     });
 
-    let keys: Vec<(Route, u16)> = held.keys().into_iter().map(|key| (key.route, key.vk)).collect();
+    let keys: Vec<(Route, u16)> = held
+        .keys()
+        .into_iter()
+        .map(|key| (key.route, key.vk))
+        .collect();
 
     assert_eq!(
         keys,

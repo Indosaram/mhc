@@ -5,8 +5,8 @@ use atspi::{Interface, Role};
 use senpi_desktop_core::ax::AxBackend;
 use senpi_desktop_core::error::ErrorCode;
 
-use crate::fake::{editor, node, FakeNode};
 use crate::AtSpiAx;
+use crate::fake::{FakeNode, editor, node};
 
 #[test]
 fn press_invokes_the_default_action_not_the_literal_press() {
@@ -36,7 +36,9 @@ fn an_unlisted_action_is_ax_failed_without_a_call() {
 fn a_refused_action_is_ax_failed() {
     let mut bus = editor();
     bus.nodes.get_mut(&11).unwrap().action_succeeds = false;
-    let error = AtSpiAx::with_bus(bus).perform(&node(11), "click").unwrap_err();
+    let error = AtSpiAx::with_bus(bus)
+        .perform(&node(11), "click")
+        .unwrap_err();
     assert_eq!(error.code, ErrorCode::AxFailed);
 }
 

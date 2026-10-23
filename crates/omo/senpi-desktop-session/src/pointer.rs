@@ -67,7 +67,11 @@ impl FrameCache {
 
     /// The geometry of `target`'s latest capture; a named `frame_id` must be
     /// that capture.
-    pub(crate) fn latest(&self, target: &Target, frame_id: Option<&str>) -> CoreResult<FrameGeometry> {
+    pub(crate) fn latest(
+        &self,
+        target: &Target,
+        frame_id: Option<&str>,
+    ) -> CoreResult<FrameGeometry> {
         let key = target.key();
         let frame = self.latest.get(key).ok_or_else(|| {
             DesktopError::invalid_coordinate_frame(format!(
@@ -76,11 +80,13 @@ impl FrameCache {
             ))
         })?;
         match frame_id {
-            Some(requested) if requested != frame.id => Err(DesktopError::invalid_coordinate_frame(format!(
-                "{requested} is not the latest capture of '{key}' ({}); capture it again before coordinate \
+            Some(requested) if requested != frame.id => {
+                Err(DesktopError::invalid_coordinate_frame(format!(
+                    "{requested} is not the latest capture of '{key}' ({}); capture it again before coordinate \
                  input",
-                frame.id
-            ))),
+                    frame.id
+                )))
+            }
             Some(_) | None => Ok(frame.geometry.clone()),
         }
     }

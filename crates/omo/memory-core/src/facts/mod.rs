@@ -1,5 +1,6 @@
 //! Facts queue, failure management, extraction payload, and person routing.
 
+pub mod agreements_target;
 pub mod assets;
 pub mod extraction;
 pub mod failures_backoff;
@@ -20,7 +21,8 @@ pub use assets::{FACTS_PERSONA, load_facts_persona};
 pub use extraction::{
     ApplyFactsBatchOptions, ApplyFactsBatchResult, FactsBatch, FactsExtractionError,
     FactsExtractionRecord, FactsExtractionValidationError, FactsPersonReference, apply_facts_batch,
-    parse_facts_extraction_jsonl, parse_facts_extraction_record, validate_facts_recovery,
+    facts_batch_size, parse_facts_extraction_jsonl, parse_facts_extraction_record,
+    validate_facts_recovery,
 };
 pub use failures_backoff::{
     ApplyFailureInput, FactsFailureFilter, FactsFailureTarget, apply_failure, clear_for_retry,

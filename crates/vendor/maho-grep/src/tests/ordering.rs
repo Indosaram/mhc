@@ -1,6 +1,6 @@
 use super::corpus::{Corpus, PREFIX};
-use crate::walk::{order_candidates, Candidate};
 use crate::GrepMode;
+use crate::walk::{Candidate, order_candidates};
 
 #[test]
 fn ordered_limit_ignores_walk_completion_order() {
@@ -45,10 +45,20 @@ fn overlapping_roots_dedupe_by_canonical_identity() {
     std::os::unix::fs::symlink("src", c.0.join("alias")).unwrap();
     #[cfg(windows)]
     if std::os::windows::fs::symlink_dir(c.0.join("src"), c.0.join("alias")).is_err() {
-        let cmd = format!("mklink /J \"{}\" \"{}\"", c.0.join("alias").display(), c.0.join("src").display());
-        let ok = std::process::Command::new("cmd").args(["/C", &cmd]).status().map(|s| s.success()).unwrap_or(false);
+        let cmd = format!(
+            "mklink /J \"{}\" \"{}\"",
+            c.0.join("alias").display(),
+            c.0.join("src").display()
+        );
+        let ok = std::process::Command::new("cmd")
+            .args(["/C", &cmd])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
         if !ok {
-            eprintln!("skipping test: symlinks and junctions not supported without elevation on this Windows environment");
+            eprintln!(
+                "skipping test: symlinks and junctions not supported without elevation on this Windows environment"
+            );
             return;
         }
     }
@@ -134,10 +144,11 @@ fn chunk_boundary_count_files_and_regex_options() {
     let r = c.search(&o);
     assert_eq!(r.file_counts.len(), 257);
     assert_eq!(r.counts.matches, None);
-    assert!(r
-        .file_counts
-        .iter()
-        .all(|f| f.count.is_none() && !f.limit_reached));
+    assert!(
+        r.file_counts
+            .iter()
+            .all(|f| f.count.is_none() && !f.limit_reached)
+    );
     o.mode = Some(GrepMode::Content);
     o.max_count = Some(513);
     let r = c.search(&o);

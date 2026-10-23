@@ -133,6 +133,7 @@ pub async fn generate_images(
         stop_reason: ImagesStopReason::Stop,
         error_message: None,
         timestamp: now_ms(),
+        provider_diagnostic: None,
     };
 
     let result = run_generate(model, context, options_ref, &mut output).await;

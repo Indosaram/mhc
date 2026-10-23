@@ -14,14 +14,16 @@ use senpi_desktop_core::keys::parse_keys;
 use senpi_desktop_core::protocol_params::{KeyChordParams, TypeTextParams};
 use senpi_desktop_core::types::Target;
 use senpi_desktop_safety::{
-    FakeClock, GateError, MutatingAction, StopPathId, StopPathReason, StopSource, Supervisor,
-    HEARTBEAT_FRESH_MS,
+    FakeClock, GateError, HEARTBEAT_FRESH_MS, MutatingAction, StopPathId, StopPathReason,
+    StopSource, Supervisor,
 };
 use serde_json::json;
 
-use super::{Mutation, INPUT_TRANSACTION};
+use super::{INPUT_TRANSACTION, Mutation};
 use crate::request::{Op, Response};
-use crate::test_support::{delivery, foreground_click_mutation, harness, op_names, two_windows, Harness};
+use crate::test_support::{
+    Harness, delivery, foreground_click_mutation, harness, op_names, two_windows,
+};
 use crate::worker::Worker;
 
 const HANG_GUARD: Duration = Duration::from_secs(30);
@@ -178,7 +180,10 @@ fn cancelled_before_transaction_admission_does_not_capture_or_restore() {
         .mutate(&foreground_click_mutation(), &|| true, |_| Ok(()))
         .map(|((), _audit)| ());
     // Then
-    assert_eq!(result.map_err(|error| error.code), Err(ErrorCode::Cancelled));
+    assert_eq!(
+        result.map_err(|error| error.code),
+        Err(ErrorCode::Cancelled)
+    );
     assert_eq!(harness.sink.ops(), Vec::new());
 }
 
@@ -205,13 +210,18 @@ fn mutex_admission_observes_cancellation_without_capturing_cursor() {
     // When
     let result = harness
         .worker
-        .mutate(&foreground_click_mutation(), &cancel_on_third_poll, |_| Ok(()))
+        .mutate(&foreground_click_mutation(), &cancel_on_third_poll, |_| {
+            Ok(())
+        })
         .map(|((), _audit)| ());
     // The holder may already have given up waiting.
     release_tx.send(()).unwrap_or(());
     holder.join().expect("the holder exits");
     // Then
-    assert_eq!(result.map_err(|error| error.code), Err(ErrorCode::Cancelled));
+    assert_eq!(
+        result.map_err(|error| error.code),
+        Err(ErrorCode::Cancelled)
+    );
     assert_eq!(harness.sink.ops(), Vec::new());
 }
 
@@ -221,7 +231,10 @@ fn mutex_admission_observes_cancellation_without_capturing_cursor() {
 #[test]
 fn cancellation_after_capture_sends_no_input_and_restores_once() {
     let cases = [
-        ("foreground", vec!["front", "release", "restore-front", "warp"]),
+        (
+            "foreground",
+            vec!["front", "release", "restore-front", "warp"],
+        ),
         ("background", vec!["front", "release", "restore-key-focus"]),
     ];
     for (mode, expected) in cases {

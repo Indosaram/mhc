@@ -740,7 +740,7 @@ fn binding_clone_and_lineage_options_preserve_private_state_and_drop_minted_id()
 
 #[test]
 fn stream_guidance_prioritizes_blocked_auth_and_appends_entitlement_guidance() {
-    let blocked=anyhow::Error::new(maho_ext_anthropic_subscription::affinity::AllAccountsBlockedError {soonest_unblock_at:Some(1.0),block_reason:Some("auth_error")});
+    let blocked=anyhow::Error::new(maho_ext_anthropic_subscription::affinity::AllAccountsBlockedError {soonest_unblock_at:Some(1.0),block_reason:Some("auth_error"),unavailable_account:None});
     let text=with_auth_guidance(&blocked);
     assert!(text.starts_with("All Claude accounts for anthropic-subscription are currently blocked (authentication error)."));
     let message="Fable 5 requires usage credits. Run /usage-credits to continue";

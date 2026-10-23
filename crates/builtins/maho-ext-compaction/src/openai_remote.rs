@@ -42,7 +42,6 @@ pub fn openai_remote_compaction_uses_v2(model: &Model) -> bool {
         && crate::openai_remote_responses_v2::supports_openai_responses_remote_compaction_v2(model)
 }
 
-
 pub struct RemoteCompactionOptions<'a> {
     pub model: &'a Model,
     pub request: &'a OpenAiRemoteCompactionRequest,
@@ -183,6 +182,7 @@ pub async fn run_remote_compaction(
     }
     let request = OpenAiRemoteCompactionRequest {
         body,
+        session_id: options.request.session_id.clone(),
         input_item_count: options.request.input_item_count,
         tokens_before: options.request.tokens_before,
     };
@@ -324,6 +324,7 @@ pub async fn run_openai_compact_endpoint_compaction(
 
 pub struct OpenAiRemoteCompactionRequest {
     pub body: Value,
+    pub session_id: Option<String>,
     pub input_item_count: usize,
     pub tokens_before: u64,
 }
@@ -334,7 +335,7 @@ pub fn create_openai_remote_compaction_request(
     branch_entries: &[Value],
     messages: Option<&[Value]>,
     tokens_before: u64,
-    prompt_cache_key: Option<&str>,
+    session_id: Option<&str>,
     service_tier: Option<&str>,
 ) -> Option<OpenAiRemoteCompactionRequest> {
     if !is_openai_remote_compaction_model(model) {
@@ -354,7 +355,15 @@ pub fn create_openai_remote_compaction_request(
     if !system_prompt.is_empty() {
         body["instructions"] = json!(system_prompt);
     }
-    if let Some(key) = prompt_cache_key.filter(|key| !key.is_empty()) {
+    let transcript = maho_ai::utils::transcript::normalize_context(&maho_ai::types::Context {
+        system_prompt: (!system_prompt.is_empty()).then(|| system_prompt.to_owned()),
+        messages: Vec::new(),
+        tools: None,
+        active_tool_names: None,
+    });
+    if let Some(key) =
+        maho_ai::api::openai_prompt_cache::derive_openai_prompt_cache_key(&model.id, &transcript)
+    {
         body["prompt_cache_key"] = json!(key);
     }
     if let Some(tier) = service_tier.filter(|tier| !tier.is_empty()) {
@@ -362,6 +371,7 @@ pub fn create_openai_remote_compaction_request(
     }
     Some(OpenAiRemoteCompactionRequest {
         body,
+        session_id: session_id.filter(|id| !id.is_empty()).map(str::to_owned),
         input_item_count,
         tokens_before,
     })
@@ -414,7 +424,7 @@ pub fn create_openai_responses_stream_compaction_payload(
     input.push(json!({"type":"context_compaction"}));
     payload.insert("input".into(), json!(input));
     payload.insert("model".into(), request.body["model"].clone());
-    for key in ["prompt_cache_key", "service_tier"] {
+    for key in ["service_tier"] {
         if let Some(value) = request
             .body
             .get(key)
@@ -489,6 +499,7 @@ pub async fn run_openai_responses_stream_compaction(
                         payload,
                         &OpenAiRemoteCompactionRequest {
                             body: request_body.clone(),
+                            session_id: None,
                             input_item_count: 0,
                             tokens_before: 0,
                         },
@@ -498,7 +509,13 @@ pub async fn run_openai_responses_stream_compaction(
             },
             cache_retention: Some(maho_ai::types::CacheRetention::Short),
             extra_body: options.extra_body,
-            session_id: Some(options.session_id),
+            session_id: Some(
+                options
+                    .request
+                    .session_id
+                    .clone()
+                    .unwrap_or_else(|| options.session_id.to_owned()),
+            ),
             transport: Some(maho_ai::types::Transport::Websocket),
             ..Default::default()
         },

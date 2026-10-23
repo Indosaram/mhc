@@ -12,6 +12,9 @@ use maho_ext_api::JsonValue;
 pub const DEFAULT_COMMIT_FOOTER: &str =
     "Ultraworked with [omo](https://github.com/code-yeongyu/oh-my-openagent)";
 
+/// Upstream schema default of `git_master.git_env_prefix` (`GitEnvPrefixSchema.default(...)`).
+pub const DEFAULT_GIT_ENV_PREFIX: &str = "GIT_MASTER=1";
+
 /// The resolved `git_master` settings: the typed view of the object returned by
 /// `omo_config_core::resolve_omo_git_master_settings`.
 ///
@@ -25,6 +28,9 @@ pub struct GitMasterSettings {
     /// Upstream `include_co_authored_by`: a deprecated no-op. Kept on the parsed view so a
     /// caller can observe the resolved value; the directive never reads it.
     pub include_co_authored_by: bool,
+    /// Upstream `git_env_prefix`: bash-form env assignments (`GIT_MASTER=1`) prefixed to every git
+    /// command the skill shows; the empty string disables the prefix.
+    pub git_env_prefix: String,
 }
 
 /// Upstream `OmoGitMasterSettings["commit_footer"]` (`boolean | string`, default `false`).
@@ -56,19 +62,35 @@ impl GitMasterSettings {
             .get("include_co_authored_by")
             .and_then(JsonValue::as_bool)
             .unwrap_or(false);
+        let git_env_prefix = match resolved.get("git_env_prefix") {
+            Some(JsonValue::String(text)) => text.clone(),
+            _ => DEFAULT_GIT_ENV_PREFIX.to_owned(),
+        };
         Self {
             commit_footer,
             include_co_authored_by,
+            git_env_prefix,
         }
     }
 }
 
 /// Upstream `buildGitMasterAttributionDirective`: the directive appended to the read result, or
 /// `None` when the footer is disabled.
-pub fn build_git_master_attribution_directive(settings: &GitMasterSettings) -> Option<String> {
+///
+/// `git_command_prefix` (upstream default `""`) is prepended to the example `git commit` line.
+pub fn build_git_master_attribution_directive(
+    settings: &GitMasterSettings,
+    git_command_prefix: &str,
+) -> Option<String> {
     let footer_text = resolve_footer_text(&settings.commit_footer)?;
     let footer_line = format!("1. **Footer in the commit body:** {footer_text}");
-    let example_line = format!("git commit -m \"{{Commit Message}}\" -m \"{footer_text}\"");
+    let command_prefix = if git_command_prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{git_command_prefix} ")
+    };
+    let example_line =
+        format!("{command_prefix}git commit -m \"{{Commit Message}}\" -m \"{footer_text}\"");
 
     Some(
         [

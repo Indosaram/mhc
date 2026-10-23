@@ -6,13 +6,18 @@ use std::rc::Rc;
 use maho_tui::components::markdown::{MarkdownOptions, MarkdownTheme};
 use maho_tui::components::spacer::Spacer;
 use maho_tui::components::text::Text;
-use maho_tui::tui::{Component, Container, TuiMouseButton, TuiMouseEvent, TuiMouseEventResult, TuiMouseEventType};
-use serde_json::{json, Value};
+use maho_tui::tui::{
+    Component, Container, TuiMouseButton, TuiMouseEvent, TuiMouseEventResult, TuiMouseEventType,
+};
+use serde_json::{Value, json};
 
 use super::assistant_render_descriptors::{
-    create_assistant_render_descriptors, AssistantRenderDescriptor, AssistantRenderDescriptorOptions, DescriptorKind,
+    AssistantRenderDescriptor, AssistantRenderDescriptorOptions, DescriptorKind,
+    create_assistant_render_descriptors,
 };
-use super::markdown_transform::{create_markdown_transform, get_markdown_theme, MessageType, TransformedMarkdown};
+use super::markdown_transform::{
+    MessageType, TransformedMarkdown, create_markdown_transform, shared_markdown_theme,
+};
 use super::render_signature::{serialize_bounded_render_summary, summarize_bounded_render_value};
 use crate::theme::{Theme, ThemeColor};
 
@@ -44,7 +49,10 @@ impl Component for ThinkingToggle {
     fn handle_mouse(&mut self, event: &TuiMouseEvent) -> Option<TuiMouseEventResult> {
         if event.event_type == TuiMouseEventType::Click && event.button == TuiMouseButton::Left {
             self.pending_toggle.set(Some(self.run_index));
-            return Some(TuiMouseEventResult { handled: true, ..Default::default() });
+            return Some(TuiMouseEventResult {
+                handled: true,
+                ..Default::default()
+            });
         }
         self.inner.borrow_mut().handle_mouse(event)
     }
@@ -153,9 +161,12 @@ impl AssistantMessageComponent {
     }
 
     pub fn is_exploration_detail(&self) -> bool {
-        self.render_descriptors
-            .iter()
-            .all(|part| matches!(part.kind, DescriptorKind::Spacer | DescriptorKind::ThinkingLabel))
+        self.render_descriptors.iter().all(|part| {
+            matches!(
+                part.kind,
+                DescriptorKind::Spacer | DescriptorKind::ThinkingLabel
+            )
+        })
     }
 
     pub fn set_output_pad(&mut self, padding: usize) {
@@ -210,9 +221,15 @@ impl AssistantMessageComponent {
             .find(|(run, _)| *run == run_index)
             .map(|(_, hidden)| *hidden)
             .unwrap_or(self.hide_thinking_block);
-        match self.thinking_visibility_overrides.iter_mut().find(|(run, _)| *run == run_index) {
+        match self
+            .thinking_visibility_overrides
+            .iter_mut()
+            .find(|(run, _)| *run == run_index)
+        {
             Some(entry) => entry.1 = !hidden,
-            None => self.thinking_visibility_overrides.push((run_index, !hidden)),
+            None => self
+                .thinking_visibility_overrides
+                .push((run_index, !hidden)),
         }
         self.refresh_content();
     }
@@ -228,7 +245,10 @@ impl AssistantMessageComponent {
             }
             if previous.text != next.text {
                 let updated = match (&next.kind, self.markdown_slots.get(divergent_index)) {
-                    (DescriptorKind::TextMarkdown | DescriptorKind::ThinkingMarkdown, Some(Some(slot))) => {
+                    (
+                        DescriptorKind::TextMarkdown | DescriptorKind::ThinkingMarkdown,
+                        Some(Some(slot)),
+                    ) => {
                         slot.borrow_mut().set_raw(&next.text);
                         true
                     }
@@ -253,7 +273,10 @@ impl AssistantMessageComponent {
         self.render_descriptors = descriptors;
     }
 
-    fn create_render_child(&mut self, descriptor: &AssistantRenderDescriptor) -> Rc<RefCell<dyn Component>> {
+    fn create_render_child(
+        &mut self,
+        descriptor: &AssistantRenderDescriptor,
+    ) -> Rc<RefCell<dyn Component>> {
         match descriptor.kind {
             DescriptorKind::Spacer => {
                 self.markdown_slots.push(None);
@@ -290,7 +313,9 @@ impl AssistantMessageComponent {
                     0,
                     self.markdown_theme.clone(),
                     Some(maho_tui::components::markdown::DefaultTextStyle {
-                        color: Some(std::sync::Arc::new(move |text| theme.fg(ThemeColor::ThinkingText, text))),
+                        color: Some(std::sync::Arc::new(move |text| {
+                            theme.fg(ThemeColor::ThinkingText, text)
+                        })),
                         italic: true,
                         ..Default::default()
                     }),
@@ -302,12 +327,20 @@ impl AssistantMessageComponent {
             }
             DescriptorKind::ThinkingLabel => {
                 self.markdown_slots.push(None);
-                let text = Rc::new(RefCell::new(Text::with_padding(&descriptor.text, self.output_pad, 0)));
+                let text = Rc::new(RefCell::new(Text::with_padding(
+                    &descriptor.text,
+                    self.output_pad,
+                    0,
+                )));
                 self.wrap_thinking_toggle(text, descriptor)
             }
             DescriptorKind::ErrorText => {
                 self.markdown_slots.push(None);
-                Rc::new(RefCell::new(Text::with_padding(&descriptor.text, self.output_pad, 0)))
+                Rc::new(RefCell::new(Text::with_padding(
+                    &descriptor.text,
+                    self.output_pad,
+                    0,
+                )))
             }
             DescriptorKind::ProviderNativeSummary => {
                 self.markdown_slots.push(None);
@@ -350,7 +383,10 @@ impl AssistantMessageComponent {
             0,
         );
         if let Some(object) = signature.as_object_mut() {
-            object.insert(String::from("content"), summarize_bounded_render_value(&message["content"], 1));
+            object.insert(
+                String::from("content"),
+                summarize_bounded_render_value(&message["content"], 1),
+            );
         }
         serialize_bounded_render_summary(&signature)
     }
@@ -383,7 +419,11 @@ impl Component for AssistantMessageComponent {
                 last.insert_str(0, &format!("{OSC133_ZONE_END}{OSC133_ZONE_FINAL}"));
             }
         }
-        self.render_cache = Some(RenderCache { lines: lines.clone(), signature, width });
+        self.render_cache = Some(RenderCache {
+            lines: lines.clone(),
+            signature,
+            width,
+        });
         lines
     }
 
@@ -409,5 +449,5 @@ impl Component for AssistantMessageComponent {
 }
 
 pub fn default_markdown_theme(theme: &Theme) -> MarkdownTheme {
-    get_markdown_theme(theme)
+    shared_markdown_theme(theme)
 }

@@ -94,6 +94,9 @@ pub(super) fn at_verified_head(state: &ChainState, head: Head) -> Option<ChainSt
     if !state.anchored || old.keyring_link != head.keyring_link || head.seq < old.seq {
         return None;
     }
+    if head.seq == old.seq && head.link != old.link {
+        return None;
+    }
     let mut next = state.clone();
     next.head = Some(head);
     Some(next)

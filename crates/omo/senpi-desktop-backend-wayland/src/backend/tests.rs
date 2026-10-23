@@ -12,7 +12,7 @@ use senpi_desktop_core::types::Target;
 use super::WaylandBackend;
 use crate::capture::Probe;
 use crate::test_support::fake_eis::{EisConfig, FakeEis};
-use crate::test_support::{env_lock, LibeiSocketEnv};
+use crate::test_support::{LibeiSocketEnv, env_lock};
 
 pub const FR: &str = include_str!("../../testdata/fr.xkb");
 
@@ -38,7 +38,9 @@ fn readonly_backend_creation_does_not_connect_to_libei() {
     let dir = socket_dir();
     let socket = dir.path().join("eis-0");
     let listener = UnixListener::bind(&socket).expect("bind fake libei socket");
-    listener.set_nonblocking(true).expect("nonblocking listener");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
     let _libei = LibeiSocketEnv::set(Some(&socket));
 
     // When: the backend is built and asked for its capabilities
@@ -63,7 +65,10 @@ fn desktop_input_connects_to_libei_lazily() {
     let socket = dir.path().join("eis-0");
     let eis = FakeEis::listen(
         UnixListener::bind(&socket).expect("bind fake libei socket"),
-        EisConfig { keymap: FR, group: 0 },
+        EisConfig {
+            keymap: FR,
+            group: 0,
+        },
     );
     let _libei = LibeiSocketEnv::set(Some(&socket));
     let mut backend = backend_without_services();

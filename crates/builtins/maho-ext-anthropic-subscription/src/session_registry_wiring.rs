@@ -1,14 +1,33 @@
-use std::sync::Arc;
-use maho_ext_api::{ExtensionApi, ExtensionEvent, EventKind, EventResult, SessionCompactEvent};
 use crate::session_stream::SessionRegistry;
+use maho_ext_api::{EventKind, EventResult, ExtensionApi, ExtensionEvent, SessionCompactEvent};
+use std::sync::Arc;
 
 pub fn register(api: &mut ExtensionApi, registry: Arc<tokio::sync::Mutex<SessionRegistry>>) {
-    let boundary = Arc::new(std::sync::Mutex::new(crate::session_commit_boundary::AssistantCommitBoundary::default()));
+    let boundary = Arc::new(std::sync::Mutex::new(
+        crate::session_commit_boundary::AssistantCommitBoundary::default(),
+    ));
     // Latest resident streamed assistant per session; serialized and hashed once at MessageEnd instead of per delta.
-    let provider_final = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String, maho_ext_api::AgentMessage>::new()));
-    for kind in [EventKind::SessionStart, EventKind::SessionCompact, EventKind::SessionTree, EventKind::ModelSelect, EventKind::ThinkingLevelSelect, EventKind::SessionShutdown, EventKind::SessionExtensionsRemoved, EventKind::MessageUpdate, EventKind::MessageEnd] {
-        let registry = registry.clone(); let boundary = boundary.clone(); let provider_final = provider_final.clone();
-        let runtime = api.runtime.clone(); let cwd = api.cwd.clone(); let profile = api.profile.clone();
+    let provider_final = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<
+        String,
+        maho_ext_api::AgentMessage,
+    >::new()));
+    for kind in [
+        EventKind::SessionStart,
+        EventKind::SessionCompact,
+        EventKind::SessionTree,
+        EventKind::ModelSelect,
+        EventKind::ThinkingLevelSelect,
+        EventKind::SessionShutdown,
+        EventKind::SessionExtensionsRemoved,
+        EventKind::MessageUpdate,
+        EventKind::MessageEnd,
+    ] {
+        let registry = registry.clone();
+        let boundary = boundary.clone();
+        let provider_final = provider_final.clone();
+        let runtime = api.runtime.clone();
+        let cwd = api.cwd.clone();
+        let profile = api.profile.clone();
         api.on(kind, Arc::new(move |event, ctx| {
             let registry = registry.clone(); let boundary = boundary.clone(); let provider_final = provider_final.clone();
             let runtime = runtime.clone(); let cwd = cwd.clone(); let profile = profile.clone(); Box::pin(async move {
@@ -44,7 +63,7 @@ pub fn register(api: &mut ExtensionApi, registry: Arc<tokio::sync::Mutex<Session
                     },
                     ExtensionEvent::ModelSelect(event) => {
                         if event.model.provider == "anthropic-subscription" {
-                            if !crate::session_entry_annotations::switch_entry_model(registry.entries.get_mut(&session), &event.model.id, now).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))? { registry.close(&session).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?; }
+                            if !crate::session_entry_annotations::switch_entry_model(registry.entries.get_mut(&session), &event.model.id, &crate::context_window::sdk_model_id_now(&event.model.id, event.model.context_window), now).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))? { registry.close(&session).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?; }
                         } else { registry.close(&session).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?; }
                     },
                     ExtensionEvent::ThinkingLevelSelect { .. } | ExtensionEvent::SessionShutdown(_) => { registry.close(&session).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?; },

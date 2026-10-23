@@ -2,11 +2,11 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::*;
 use crate::engine_schema;
-use crate::methods::{Effect, Exposure, Method, Notification, METHODS};
+use crate::methods::{Effect, Exposure, METHODS, Method, Notification};
 
 const SCHEMA_PATH: &str = "schema/engine.schema.json";
 const DOC_PATH: &str = "docs/engine-protocol.md";
@@ -41,7 +41,9 @@ fn enum_names(schema: &Value) -> BTreeSet<String> {
         let listed = branch["enum"].as_array().cloned().unwrap_or_default();
         listed.into_iter().chain(branch.get("const").cloned())
     });
-    names.map(|name| name.as_str().unwrap().to_owned()).collect()
+    names
+        .map(|name| name.as_str().unwrap().to_owned())
+        .collect()
 }
 
 #[test]
@@ -63,7 +65,11 @@ fn method_enum_lists_exactly_the_table_in_order() {
     let table: Vec<&str> = METHODS.iter().map(|spec| spec.name).collect();
     assert_eq!(schema["definitions"]["Method"]["enum"], json!(table));
     assert_eq!(
-        schema["methods"].as_object().unwrap().keys().collect::<Vec<_>>(),
+        schema["methods"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
         table
     );
 }
@@ -81,8 +87,12 @@ fn every_row_is_reachable_from_its_method_and_its_wire_name() {
 #[test]
 fn only_session_and_stop_path_controls_are_host_only() {
     // When
-    let host_only = METHODS.iter().filter(|spec| spec.exposure == Exposure::HostOnly);
-    let test_only = METHODS.iter().filter(|spec| spec.exposure == Exposure::TestOnly);
+    let host_only = METHODS
+        .iter()
+        .filter(|spec| spec.exposure == Exposure::HostOnly);
+    let test_only = METHODS
+        .iter()
+        .filter(|spec| spec.exposure == Exposure::TestOnly);
     // Then: a bridge may still forward `stopPath.stop` and `stopPath.status`.
     assert_eq!(
         string_set(host_only.map(|spec| spec.name)),
@@ -116,7 +126,9 @@ fn error_table_lists_every_error_code_in_ordinal_order() {
     let codes: Vec<i64> = ERROR_CODES.into_iter().map(rpc_error_code).collect();
     assert_eq!(
         codes,
-        (0..21).map(|ordinal| -32_000 - ordinal).collect::<Vec<i64>>()
+        (0..21)
+            .map(|ordinal| -32_000 - ordinal)
+            .collect::<Vec<i64>>()
     );
     assert_eq!(schema["errors"]["Cancelled"], json!(-32_017));
 }
@@ -135,19 +147,11 @@ fn notification_names_are_their_wire_form() {
 
 /// The unit result `()` is JSON `null` on the wire.
 fn wire_type(rust_type: &str) -> &str {
-    if rust_type == "()" {
-        "null"
-    } else {
-        rust_type
-    }
+    if rust_type == "()" { "null" } else { rust_type }
 }
 
 fn yes_no(flag: bool) -> &'static str {
-    if flag {
-        "yes"
-    } else {
-        "no"
-    }
+    if flag { "yes" } else { "no" }
 }
 
 /// Renders `docs/engine-protocol.md` from the method table.
@@ -191,7 +195,13 @@ fn protocol_doc() -> String {
     }
     doc.push_str("\n## Notifications\n\n| Notification | Params |\n|---|---|\n");
     for notification in Notification::ALL {
-        writeln!(doc, "| `{}` | `{}` |", notification.name(), notification.params()).unwrap();
+        writeln!(
+            doc,
+            "| `{}` | `{}` |",
+            notification.name(),
+            notification.params()
+        )
+        .unwrap();
     }
     doc.push_str(
         "\n## Errors\n\n\

@@ -1,10 +1,18 @@
 #[path = "native_question/context.rs"]
 mod context;
 use maho_ai::providers::faux::{RegisterFauxProviderOptions, faux_provider, faux_streams};
-use maho_core::agent_session::{AgentSession, AgentSessionConfig, ExtensionBindings, ExecuteToolOptions};
+use maho_core::agent_session::{
+    AgentSession, AgentSessionConfig, ExecuteToolOptions, ExtensionBindings,
+};
 use maho_ext_api::*;
-use maho_ext_host::{ExtensionRunner, loader::{NativeExtensionFactory, load_extensions}};
-use maho_ext_ask_user::{AskUser, AskUserAskedEvent, AskUserSettledEvent, registry::{get_pending_questions, unregister_pending_question}};
+use maho_ext_ask_user::{
+    AskUser, AskUserAskedEvent, AskUserSettledEvent,
+    registry::{get_pending_questions, unregister_pending_question},
+};
+use maho_ext_host::{
+    ExtensionRunner,
+    loader::{NativeExtensionFactory, load_extensions},
+};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 
@@ -12,99 +20,223 @@ struct CaptureStart(Arc<Mutex<Option<ExtensionContext>>>);
 impl Extension for CaptureStart {
     fn register(&self, api: &mut ExtensionApi) {
         let captured = self.0.clone();
-        api.on(EventKind::SessionStart, Arc::new(move |_, ctx| {
-            *captured.lock().expect("start context") = Some(ctx.clone());
-            Box::pin(async { Ok(EventResult::None) })
-        }));
+        api.on(
+            EventKind::SessionStart,
+            Arc::new(move |_, ctx| {
+                *captured.lock().expect("start context") = Some(ctx.clone());
+                Box::pin(async { Ok(EventResult::None) })
+            }),
+        );
     }
 }
 
-struct AgentTurnGate { hit: tokio::sync::mpsc::UnboundedSender<()>, release: Arc<tokio::sync::Notify>, armed: Arc<std::sync::atomic::AtomicBool> }
+struct AgentTurnGate {
+    hit: tokio::sync::mpsc::UnboundedSender<()>,
+    release: Arc<tokio::sync::Notify>,
+    armed: Arc<std::sync::atomic::AtomicBool>,
+}
 impl Extension for AgentTurnGate {
     fn register(&self, api: &mut ExtensionApi) {
         let hit = self.hit.clone();
         let release = self.release.clone();
         let armed = self.armed.clone();
-        api.on(EventKind::MessageStart, Arc::new(move |_, _| {
-            let hit = hit.clone();
-            let release = release.clone();
-            let armed = armed.clone();
-            Box::pin(async move {
-                if armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                    let _ = hit.send(());
-                    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), release.notified()).await;
-                }
-                Ok(EventResult::None)
-            })
-        }));
+        api.on(
+            EventKind::MessageStart,
+            Arc::new(move |_, _| {
+                let hit = hit.clone();
+                let release = release.clone();
+                let armed = armed.clone();
+                Box::pin(async move {
+                    if armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        let _ = hit.send(());
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            release.notified(),
+                        )
+                        .await;
+                    }
+                    Ok(EventResult::None)
+                })
+            }),
+        );
     }
 }
 
 #[derive(Clone, Copy, Default)]
-struct Scenario { cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool, late_rebind: bool, recovering: bool, fail_ui: bool, empty_submission: bool }
+struct Scenario {
+    cancel: bool,
+    fail_append: bool,
+    abort: bool,
+    timeout: bool,
+    reload: bool,
+    late_rebind: bool,
+    recovering: bool,
+    fail_ui: bool,
+    empty_submission: bool,
+}
 async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let Scenario { cancel, fail_append, abort, timeout, reload, late_rebind, recovering, fail_ui, empty_submission } = opts;
+    let Scenario {
+        cancel,
+        fail_append,
+        abort,
+        timeout,
+        reload,
+        late_rebind,
+        recovering,
+        fail_ui,
+        empty_submission,
+    } = opts;
     let root = tempfile::tempdir()?;
     let project = root.path();
-    let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() })?;
-    let model = provider.get_model(Some("faux-1")).ok_or("Missing faux model")?;
-    let streams = faux_streams(provider.core.clone());
-    let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
-        models_path: Some(project.join("models.json")), auth_path: Some(project.join("auth.json")),
-        providers: Some(vec![provider.provider.clone()]), ..Default::default()
+    let provider = faux_provider(RegisterFauxProviderOptions {
+        tokens_per_second: Some(0.0),
+        ..Default::default()
     })?;
+    let model = provider
+        .get_model(Some("faux-1"))
+        .ok_or("Missing faux model")?;
+    let streams = faux_streams(provider.core.clone());
+    let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+        maho_core::model_runtime::CreateModelRuntimeOptions {
+            models_path: Some(project.join("models.json")),
+            auth_path: Some(project.join("auth.json")),
+            providers: Some(vec![provider.provider.clone()]),
+            ..Default::default()
+        },
+    )?;
     let cwd = project.to_string_lossy().into_owned();
-    let mut session_manager = maho_core::session_manager::SessionManager::in_memory(&cwd, None, None);
+    let mut session_manager =
+        maho_core::session_manager::SessionManager::in_memory(&cwd, None, None);
     if recovering {
         session_manager.append_message(json!({"role":"assistant","content":[{"type":"toolCall","id":"recovered-question","name":"ask_user_question","arguments":{"waitForAnswer":true,"questions":[{"header":"Choice","question":"Pick?","multiSelect":false,"options":[{"label":"A","description":"First"},{"label":"B","description":"Second"}]}]}}],"api":"faux","provider":"faux","model":"faux-1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":0}));
     }
     let session = AgentSession::new(AgentSessionConfig {
         agent: maho_agent::Agent::new(maho_agent::AgentOptions {
-            initial_state: Some(maho_agent::agent::PartialAgentState { model: Some(model), ..Default::default() }),
-            stream_fn: Some(Arc::new(move |model, context, options| streams.stream_simple(model, context, options.map(|options| options.simple)))), ..Default::default()
+            initial_state: Some(maho_agent::agent::PartialAgentState {
+                model: Some(model),
+                ..Default::default()
+            }),
+            stream_fn: Some(Arc::new(move |model, context, options| {
+                streams.stream_simple(model, context, options.map(|options| options.simple))
+            })),
+            ..Default::default()
         }),
         session_manager,
-        settings_manager: maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()), true),
-        cwd: cwd.clone(), agent_dir: Some(cwd), fallback_now: Some(Arc::new(|| 0.0)), retry_random: Some(Arc::new(|| 0.5)),
-        scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: Default::default(), custom_tools: Vec::new(),
-        model_runtime: Some(runtime), model_registry: None, uses_default_stream_function: Some(false),
-        initial_active_tool_names: None, default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None,
-        excluded_tool_names: None, base_tools_override: None, session_start_event: recovering.then_some(SessionStartEvent {reason:SessionReason::Resume,initial_model_provenance:None,previous_session_file:None}), auto_title_sessions: Some(false),
+        settings_manager: maho_core::settings_manager::SettingsManager::from_storage(
+            Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),
+            true,
+        ),
+        cwd: cwd.clone(),
+        agent_dir: Some(cwd),
+        fallback_now: Some(Arc::new(|| 0.0)),
+        retry_random: Some(Arc::new(|| 0.5)),
+        scoped_models: Vec::new(),
+        favorite_models: Vec::new(),
+        flag_values: Default::default(),
+        custom_tools: Vec::new(),
+        model_runtime: Some(runtime),
+        model_registry: None,
+        uses_default_stream_function: Some(false),
+        initial_active_tool_names: None,
+        default_tool_names: None,
+        eval_only_tool_names: None,
+        allowed_tool_names: None,
+        excluded_tool_names: None,
+        base_tools_override: None,
+        session_start_event: recovering.then_some(SessionStartEvent {
+            reason: SessionReason::Resume,
+            initial_model_provenance: None,
+            previous_session_file: None,
+            attended: None,
+        }),
+        auto_title_sessions: Some(false),
     })?;
     let (gate_hit_tx, mut gate_hit_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let gate_release = Arc::new(tokio::sync::Notify::new());
     let gate_armed = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let loaded = load_extensions(vec![
-        NativeExtensionFactory { path: "<ask-user-native>".into(), source_info: SourceInfo::default(), extension: Box::new(AskUser) },
-        NativeExtensionFactory { path: "<agent-turn-gate>".into(), source_info: SourceInfo::default(), extension: Box::new(AgentTurnGate { hit: gate_hit_tx, release: gate_release.clone(), armed: gate_armed }) },
-    ], project, ExtensionSessionProfile::default());
+    let loaded = load_extensions(
+        vec![
+            NativeExtensionFactory {
+                path: "<ask-user-native>".into(),
+                source_info: SourceInfo::default(),
+                extension: Box::new(AskUser),
+            },
+            NativeExtensionFactory {
+                path: "<agent-turn-gate>".into(),
+                source_info: SourceInfo::default(),
+                extension: Box::new(AgentTurnGate {
+                    hit: gate_hit_tx,
+                    release: gate_release.clone(),
+                    armed: gate_armed,
+                }),
+            },
+        ],
+        project,
+        ExtensionSessionProfile::default(),
+    );
     let extension_runtime = loaded.runtime.clone();
-    if !loaded.errors.is_empty() { return Err(format!("Factory errors: {:?}", loaded.errors).into()); }
+    if !loaded.errors.is_empty() {
+        return Err(format!("Factory errors: {:?}", loaded.errors).into());
+    }
     let (opened, mut opened_rx) = tokio::sync::mpsc::unbounded_channel();
     let (responses, response_rx) = tokio::sync::watch::channel(None);
-    let mut responses=Some(responses);
-    let ui = Arc::new(context::DecisionUi { opened, responses: response_rx });
+    let mut responses = Some(responses);
+    let ui = Arc::new(context::DecisionUi {
+        opened,
+        responses: response_rx,
+    });
     let mut event_context = context::create(&session, ui.clone());
     event_context.mode = ExtensionMode::Tui;
     let bus = loaded.events.clone();
     let settlements = Arc::new(Mutex::new(Vec::new()));
     let captured = settlements.clone();
-    let _subscription = bus.on_native::<AskUserSettledEvent>("ask-user:settled", Arc::new(move |value| captured.lock().expect("settlements").push(value.clone())));
+    let _subscription = bus.on_native::<AskUserSettledEvent>(
+        "ask-user:settled",
+        Arc::new(move |value| captured.lock().expect("settlements").push(value.clone())),
+    );
     let asked = Arc::new(Mutex::new(Vec::new()));
     let captured = asked.clone();
-    let _asked = bus.on_native::<AskUserAskedEvent>("ask-user:asked", Arc::new(move |value| captured.lock().expect("asked").push(value.clone())));
+    let _asked = bus.on_native::<AskUserAskedEvent>(
+        "ask-user:asked",
+        Arc::new(move |value| captured.lock().expect("asked").push(value.clone())),
+    );
     let ferryx_asked = Arc::new(Mutex::new(Vec::new()));
     let captured = ferryx_asked.clone();
-    let _ferryx_asked = bus.on("ask-user:asked", Arc::new(move |value| captured.lock().expect("ferryx asked").push(value.clone())));
+    let _ferryx_asked = bus.on(
+        "ask-user:asked",
+        Arc::new(move |value| captured.lock().expect("ferryx asked").push(value.clone())),
+    );
     let legacy = Arc::new(Mutex::new(0));
     let captured = legacy.clone();
-    let _legacy = bus.on("ask-user:settled", Arc::new(move |_| *captured.lock().expect("legacy") += 1));
-    let runner = ExtensionRunner::new(loaded.extensions, loaded.runtime, loaded.events, event_context);
+    let _legacy = bus.on(
+        "ask-user:settled",
+        Arc::new(move |_| *captured.lock().expect("legacy") += 1),
+    );
+    let runner = ExtensionRunner::new(
+        loaded.extensions,
+        loaded.runtime,
+        loaded.events,
+        event_context,
+    );
     session.set_extension_runner(runner).await;
-    session.bind_extensions(ExtensionBindings { ui_context: Some(ui.clone() as Arc<dyn ExtensionUi>), mode: Some(ExtensionMode::Tui), ..Default::default() }).await;
+    session
+        .bind_extensions(ExtensionBindings {
+            ui_context: Some(ui.clone() as Arc<dyn ExtensionUi>),
+            mode: Some(ExtensionMode::Tui),
+            ..Default::default()
+        })
+        .await;
     let (end_tx, mut end_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let _end_subscription = session.subscribe(Arc::new(move |event| {
-        if matches!(event, maho_ext_api::AgentSessionEvent::AgentEnd { .. } | maho_ext_api::AgentSessionEvent::Agent(maho_agent::types::AgentEvent::AgentEnd { .. })) { let _ = end_tx.send(()); }
+        if matches!(
+            event,
+            maho_ext_api::AgentSessionEvent::AgentEnd { .. }
+                | maho_ext_api::AgentSessionEvent::Agent(
+                    maho_agent::types::AgentEvent::AgentEnd { .. }
+                )
+        ) {
+            let _ = end_tx.send(());
+        }
     }));
     let controller = maho_ai::utils::abort::AbortController::new();
     let signal = controller.signal();
@@ -279,60 +411,159 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
         let mut completion = entry.completion.clone();
         let settled = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while completion.borrow().is_none() {
-                if completion.changed().await.is_err() { break; }
+                if completion.changed().await.is_err() {
+                    break;
+                }
             }
-        }).await;
-        if settled.is_err() { cleanup_error = Some("Question teardown did not settle"); }
+        })
+        .await;
+        if settled.is_err() {
+            cleanup_error = Some("Question teardown did not settle");
+        }
         unregister_pending_question(&session.session_id(), &entry.request.request_id);
     }
     session.emit_session_shutdown(SessionReason::Quit).await;
     session.dispose().await;
     root.close()?;
     outcome?;
-    if let Some(error) = cleanup_error { return Err(error.into()); }
+    if let Some(error) = cleanup_error {
+        return Err(error.into());
+    }
     Ok(())
 }
 
 #[tokio::test]
-async fn registered_async_question_delivers_one_settlement() { scenario(Scenario::default()).await.expect("registered answer"); }
-#[tokio::test]
-async fn registered_ui_empty_submission_preserves_response_and_retires_timer() {
-    scenario(Scenario { empty_submission: true, ..Default::default() }).await.expect("UI-owned empty submission");
+async fn registered_async_question_delivers_one_settlement() {
+    scenario(Scenario::default())
+        .await
+        .expect("registered answer");
 }
 #[tokio::test]
-async fn registered_shutdown_settles_and_unregisters_before_returning() { scenario(Scenario { cancel: true, ..Default::default() }).await.expect("registered shutdown"); }
+async fn registered_ui_empty_submission_preserves_response_and_retires_timer() {
+    scenario(Scenario {
+        empty_submission: true,
+        ..Default::default()
+    })
+    .await
+    .expect("UI-owned empty submission");
+}
+#[tokio::test]
+async fn registered_shutdown_settles_and_unregisters_before_returning() {
+    scenario(Scenario {
+        cancel: true,
+        ..Default::default()
+    })
+    .await
+    .expect("registered shutdown");
+}
 
 #[tokio::test]
-async fn registered_abort_settles_and_unregisters_owned_question() { scenario(Scenario { abort: true, ..Default::default() }).await.expect("registered abort"); }
+async fn registered_abort_settles_and_unregisters_owned_question() {
+    scenario(Scenario {
+        abort: true,
+        ..Default::default()
+    })
+    .await
+    .expect("registered abort");
+}
 
 #[tokio::test(start_paused = true)]
-async fn registered_timeout_settles_once_and_unregisters_owned_question() { scenario(Scenario { timeout: true, ..Default::default() }).await.expect("registered timeout"); }
+async fn registered_timeout_settles_once_and_unregisters_owned_question() {
+    scenario(Scenario {
+        timeout: true,
+        ..Default::default()
+    })
+    .await
+    .expect("registered timeout");
+}
 
 #[tokio::test(start_paused = true)]
-async fn detached_timeout_queues_outcome_once_on_new_registered_runner() { scenario(Scenario { timeout: true, reload: true, ..Default::default() }).await.expect("registered reload timeout"); }
+async fn detached_timeout_queues_outcome_once_on_new_registered_runner() {
+    scenario(Scenario {
+        timeout: true,
+        reload: true,
+        ..Default::default()
+    })
+    .await
+    .expect("registered reload timeout");
+}
 
 #[tokio::test]
-async fn detached_owner_rebinds_before_late_registered_publication() { scenario(Scenario { reload: true, late_rebind: true, ..Default::default() }).await.expect("registered late rebind"); }
+async fn detached_owner_rebinds_before_late_registered_publication() {
+    scenario(Scenario {
+        reload: true,
+        late_rebind: true,
+        ..Default::default()
+    })
+    .await
+    .expect("registered late rebind");
+}
 
 #[tokio::test]
-async fn resumed_waiting_call_opens_original_request_without_duplicate_recovery() { scenario(Scenario { recovering: true, ..Default::default() }).await.expect("registered resume recovery"); }
+async fn resumed_waiting_call_opens_original_request_without_duplicate_recovery() {
+    scenario(Scenario {
+        recovering: true,
+        ..Default::default()
+    })
+    .await
+    .expect("registered resume recovery");
+}
 
 #[tokio::test]
-async fn recovered_ui_failure_settles_orphaned_with_comment_and_tears_down(){scenario(Scenario { recovering: true, fail_ui: true, ..Default::default() }).await.expect("recovered failure");}
+async fn recovered_ui_failure_settles_orphaned_with_comment_and_tears_down() {
+    scenario(Scenario {
+        recovering: true,
+        fail_ui: true,
+        ..Default::default()
+    })
+    .await
+    .expect("recovered failure");
+}
 
 #[tokio::test]
-async fn initial_ui_failure_cancels_without_model_injection_and_tears_down(){scenario(Scenario { fail_ui: true, ..Default::default() }).await.expect("initial UI failure");}
+async fn initial_ui_failure_cancels_without_model_injection_and_tears_down() {
+    scenario(Scenario {
+        fail_ui: true,
+        ..Default::default()
+    })
+    .await
+    .expect("initial UI failure");
+}
 
 struct FailingPersistence;
 impl ExtensionActions for FailingPersistence {
-    fn send_message(&self, _: CustomMessage, _: SendMessageOptions) -> Result<(), ExtensionFailure> { panic!("failed setup must not deliver") }
-    fn send_user_message(&self, _: UserMessageContent, _: SendUserMessageOptions) -> Result<(), ExtensionFailure> { panic!("failed setup must not inject") }
-    fn append_entry(&self, _: &str, _: Option<JsonValue>) -> Result<(), ExtensionFailure> { Err(ExtensionFailure::new("append failed")) }
-    fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> { Ok(Vec::new()) }
+    fn send_message(
+        &self,
+        _: CustomMessage,
+        _: SendMessageOptions,
+    ) -> Result<(), ExtensionFailure> {
+        panic!("failed setup must not deliver")
+    }
+    fn send_user_message(
+        &self,
+        _: UserMessageContent,
+        _: SendUserMessageOptions,
+    ) -> Result<(), ExtensionFailure> {
+        panic!("failed setup must not inject")
+    }
+    fn append_entry(&self, _: &str, _: Option<JsonValue>) -> Result<(), ExtensionFailure> {
+        Err(ExtensionFailure::new("append failed"))
+    }
+    fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> {
+        Ok(Vec::new())
+    }
 }
 #[tokio::test]
-async fn failed_persistence_leaves_no_pending_owner_or_notification() { scenario(Scenario { fail_append: true, ..Default::default() }).await.expect("failed setup cleanup"); }
+async fn failed_persistence_leaves_no_pending_owner_or_notification() {
+    scenario(Scenario {
+        fail_append: true,
+        ..Default::default()
+    })
+    .await
+    .expect("failed setup cleanup");
+}
 
-fn maho_frame_matches(text:&str,id:&str)->bool{
-    maho_ext_ask_user::format::parse_ask_user_answer_frame(text).is_some_and(|(request,_)|request==id)
+fn maho_frame_matches(text: &str, id: &str) -> bool {
+    maho_ext_ask_user::format::parse_ask_user_answer_frame(text)
+        .is_some_and(|(request, _)| request == id)
 }

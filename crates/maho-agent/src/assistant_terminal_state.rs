@@ -286,8 +286,10 @@ pub fn create_terminal_failure_assistant_message(
         provider_diagnostic,
         error_cause: partial_message.and_then(|message| message.error_cause),
         abort_source,
+        failure_source: None,
         raw_stop_reason: None,
         end_turn: None,
+        timing: None,
         timestamp: partial_message
             .map(|message| message.timestamp)
             .unwrap_or_else(now_ms),
@@ -335,7 +337,7 @@ mod diagnostic_tests {
     };
 
     fn diagnostic() -> ProviderDiagnostic {
-        ProviderDiagnostic {
+        ProviderDiagnostic { resets_at: None,
             category: ProviderDiagnosticCategory::Quota,
             http_status: Some(429),
             code: Some("insufficient_quota".into()),
@@ -346,12 +348,26 @@ mod diagnostic_tests {
     #[test]
     fn terminal_failure_retains_typed_usage_limit_without_parsing_text() {
         let model = crate::agent::default_model();
-        let error = AgentStreamError::OAuthRefreshUnavailable { message: "ordinary failure".into() };
-        let mut partial = create_terminal_failure_assistant_message(&model, StopReason::Error, &error, None);
-        partial.error_cause = Some(maho_ai::types::AssistantErrorCause::UsageLimit { scope: maho_ai::types::UsageLimitScope::Model });
-        let terminal = create_terminal_failure_assistant_message(&model, StopReason::Error, &error, Some(&partial));
+        let error = AgentStreamError::OAuthRefreshUnavailable {
+            message: "ordinary failure".into(),
+        };
+        let mut partial =
+            create_terminal_failure_assistant_message(&model, StopReason::Error, &error, None);
+        partial.error_cause = Some(maho_ai::types::AssistantErrorCause::UsageLimit {
+            scope: maho_ai::types::UsageLimitScope::Model,
+        });
+        let terminal = create_terminal_failure_assistant_message(
+            &model,
+            StopReason::Error,
+            &error,
+            Some(&partial),
+        );
         assert_eq!(terminal.error_cause, partial.error_cause);
-        assert!(create_terminal_failure_assistant_message(&model, StopReason::Error, &error, None).error_cause.is_none());
+        assert!(
+            create_terminal_failure_assistant_message(&model, StopReason::Error, &error, None)
+                .error_cause
+                .is_none()
+        );
     }
 
     #[test]

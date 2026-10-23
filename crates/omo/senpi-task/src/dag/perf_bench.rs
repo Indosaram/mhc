@@ -203,6 +203,7 @@ fn run_once(fixture: &Fixture, definition: DagDefinition) -> DagRunId {
         pre_attached_tasks: None,
         subscriber_ring: None,
         now: None,
+        schedule_retry: None,
     })
     .unwrap();
     scheduler.run().unwrap();

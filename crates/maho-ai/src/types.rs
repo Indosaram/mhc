@@ -1015,6 +1015,9 @@ pub struct ProviderDiagnostic {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     pub evidence: ProviderDiagnosticEvidence,
+    /// When a `quota` or `rate_limit` failure resets (epoch ms), when the provider named it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
 }
 
 pub const PROVIDER_DIAGNOSTIC_MAX_BYTES: usize = 512;
@@ -1024,6 +1027,12 @@ pub fn sanitize_provider_diagnostic(value: &ProviderDiagnostic) -> Option<Provid
     use ProviderDiagnosticEvidence as Evidence;
     let status = value.http_status;
     if status.is_some_and(|status| !(400..=599).contains(&status)) {
+        return None;
+    }
+    if value
+        .resets_at
+        .is_some_and(|at| at <= 946_684_800_000 || at >= 4_102_444_800_000)
+    {
         return None;
     }
     let valid = match value.evidence {
@@ -1059,14 +1068,24 @@ pub fn sanitize_provider_diagnostic(value: &ProviderDiagnostic) -> Option<Provid
                 )
         }
         Evidence::StructuredCode => {
-            let (category, compatible) = match value.code.as_deref()? {
+            let code = value.code.as_deref()?;
+            if crate::utils::provider_diagnostic_vocabulary::is_opaque_provider_code(code) {
+                return if value.category == Category::Unknown && status.is_none() {
+                    finish_provider_diagnostic(value)
+                } else {
+                    None
+                };
+            }
+            let (category, compatible) = match code {
                 "authentication_error" | "invalid_api_key" => {
                     (Category::Auth, status.is_none_or(|s| s == 401))
                 }
                 "rate_limit_error" | "rate_limit_exceeded" => {
                     (Category::RateLimit, status.is_none_or(|s| s == 429))
                 }
-                "insufficient_quota" => (Category::Quota, status.is_none_or(|s| s == 429)),
+                "insufficient_quota" | "usage_limit_reached" | "usage_not_included" => {
+                    (Category::Quota, status.is_none_or(|s| s == 429))
+                }
                 "context_length_exceeded" => {
                     (Category::ContextLimit, status.is_none_or(|s| s == 400))
                 }
@@ -1088,6 +1107,20 @@ pub fn sanitize_provider_diagnostic(value: &ProviderDiagnostic) -> Option<Provid
     if !valid {
         return None;
     }
+    finish_provider_diagnostic(value)
+}
+
+fn finish_provider_diagnostic(value: &ProviderDiagnostic) -> Option<ProviderDiagnostic> {
+    let mut value = value.clone();
+    // A reset instant is only meaningful on a limit, and never rides a transport diagnostic.
+    let limit = matches!(
+        value.category,
+        ProviderDiagnosticCategory::Quota | ProviderDiagnosticCategory::RateLimit
+    );
+    if !limit || value.evidence == ProviderDiagnosticEvidence::StructuredTransport {
+        value.resets_at = None;
+    }
+    let value = &value;
     match serde_json::to_vec(value) {
         Ok(wire) if wire.len() <= PROVIDER_DIAGNOSTIC_MAX_BYTES => {}
         Ok(_) | Err(_) => return None,
@@ -1107,6 +1140,26 @@ pub enum UsageLimitScope {
 pub enum AssistantErrorCause {
     #[serde(rename = "usage_limit")]
     UsageLimit { scope: UsageLimitScope },
+}
+
+/// When the agent loop asked for a response and when it streamed (Unix ms), stamped on the final
+/// message so it is persisted with the session (senpi#3879).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssistantMessageTiming {
+    /// Just before the stream function was called; an empty-response retry keeps the first value.
+    pub requested_at: i64,
+    /// First streamed text, thinking or tool-call delta.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_token_at: Option<i64>,
+    /// Last streamed text, thinking or tool-call delta.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_token_at: Option<i64>,
+    /// When the response settled: done, error or abort.
+    pub ended_at: i64,
+    /// Streamed generation time in ms by the TPS notice's rule; also stamped on aborted/failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -1145,11 +1198,24 @@ pub struct AssistantMessage {
     pub provider_diagnostic: Option<ProviderDiagnostic>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub abort_source: Option<AbortSource>,
+    /// Set when the run failed in local code rather than a provider request; retry and model
+    /// fallback must not act on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_source: Option<AssistantFailureSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_stop_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_turn: Option<bool>,
+    /// Response timing stamped by the agent loop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<AssistantMessageTiming>,
     pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AssistantFailureSource {
+    Local,
 }
 
 /// Writes a field only when the TS optional is present (senpi omits an absent key rather than
@@ -1172,7 +1238,7 @@ fn serialize_optional<S: serde::ser::SerializeStruct, T: Serialize + ?Sized>(
 impl Serialize for AssistantMessage {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("AssistantMessage", 21)?;
+        let mut state = serializer.serialize_struct("AssistantMessage", 23)?;
         state.serialize_field("role", "assistant")?;
         state.serialize_field("content", &self.content)?;
         state.serialize_field("api", &self.api)?;
@@ -1203,10 +1269,12 @@ impl Serialize for AssistantMessage {
         serialize_optional(&mut state, "errorCause", self.error_cause.as_ref())?;
         serialize_optional(&mut state, "stopDetails", self.stop_details.as_ref())?;
         serialize_optional(&mut state, "abortSource", self.abort_source.as_ref())?;
+        serialize_optional(&mut state, "failureSource", self.failure_source.as_ref())?;
         serialize_optional(&mut state, "endTurn", self.end_turn.as_ref())?;
         serialize_optional(&mut state, "responseModel", self.response_model.as_ref())?;
         serialize_optional(&mut state, "diagnostics", self.diagnostics.as_ref())?;
         serialize_optional(&mut state, "deferred", self.deferred.as_ref())?;
+        serialize_optional(&mut state, "timing", self.timing.as_ref())?;
         state.end()
     }
 }
@@ -1330,6 +1398,9 @@ pub struct AssistantImages {
     pub stop_reason: ImagesStopReason,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    /// Structured classification of a provider rejection (HTTP status, category); set only on `error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_diagnostic: Option<ProviderDiagnostic>,
     pub timestamp: i64,
 }
 

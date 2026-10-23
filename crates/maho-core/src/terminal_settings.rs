@@ -29,8 +29,11 @@ impl TerminalMouseMode {
     }
 }
 
-pub const TERMINAL_MOUSE_MODES: [TerminalMouseMode; 3] =
-    [TerminalMouseMode::Off, TerminalMouseMode::WhilePending, TerminalMouseMode::Always];
+pub const TERMINAL_MOUSE_MODES: [TerminalMouseMode; 3] = [
+    TerminalMouseMode::Off,
+    TerminalMouseMode::WhilePending,
+    TerminalMouseMode::Always,
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,6 +80,12 @@ pub struct TerminalSettings {
     pub monitor_max_lines_per_injection: Option<i64>,
     pub monitor_max_chars_per_injection: Option<i64>,
     pub monitor_wake_budget: Option<i64>,
+    /// Default 12 (average wakes an hour of a persistent command monitor; extra lines batch into the next wake, max 3600).
+    pub monitor_wakes_per_hour: Option<i64>,
+    /// Default 120 (runaway guard: matched lines a minute that count as a flood).
+    pub monitor_runaway_lines_per_minute: Option<i64>,
+    /// Default 5 (runaway guard: consecutive flood minutes before a persistent command monitor is paused, max 1440).
+    pub monitor_runaway_minutes: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -92,8 +101,14 @@ mod tests {
 
     #[test]
     fn mouse_modes_round_trip() {
-        assert_eq!(TerminalMouseMode::parse("whilePending"), Some(TerminalMouseMode::WhilePending));
-        assert_eq!(TerminalMouseMode::parse("always").map(TerminalMouseMode::as_str), Some("always"));
+        assert_eq!(
+            TerminalMouseMode::parse("whilePending"),
+            Some(TerminalMouseMode::WhilePending)
+        );
+        assert_eq!(
+            TerminalMouseMode::parse("always").map(TerminalMouseMode::as_str),
+            Some("always")
+        );
         assert_eq!(TerminalMouseMode::parse("nope"), None);
         assert_eq!(TERMINAL_MOUSE_MODES.len(), 3);
     }
@@ -108,6 +123,17 @@ mod tests {
         assert_eq!(settings.image_width_cells, Some(80));
         assert_eq!(settings.timeout_action, Some(TimeoutAction::Kill));
         assert_eq!(settings.notify, Some(TerminalNotify::Off));
+    }
+
+    #[test]
+    fn monitor_pacing_settings_deserialize() {
+        let settings: TerminalSettings = serde_json::from_str(
+            r#"{"monitorWakesPerHour":6,"monitorRunawayLinesPerMinute":300,"monitorRunawayMinutes":10}"#,
+        )
+        .expect("settings");
+        assert_eq!(settings.monitor_wakes_per_hour, Some(6));
+        assert_eq!(settings.monitor_runaway_lines_per_minute, Some(300));
+        assert_eq!(settings.monitor_runaway_minutes, Some(10));
     }
 
     #[test]

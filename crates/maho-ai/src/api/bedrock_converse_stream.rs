@@ -147,6 +147,8 @@ fn append_bedrock_failure_diagnostic(output: &mut AssistantMessage, failure: &Be
 
 fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
+        failure_source: None,
+        timing: None,
         error_cause: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,

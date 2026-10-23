@@ -324,6 +324,7 @@ fn assert_matches_golden(case: &str, events: &[AssistantMessageEvent], shared_co
 
 fn replay_model(api: &str, provider: &str, id: &str) -> Model {
     Model {
+        deprecated: None,
         id: id.to_owned(),
         name: id.to_owned(),
         api: api.to_owned(),

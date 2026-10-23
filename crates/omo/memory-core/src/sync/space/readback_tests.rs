@@ -50,7 +50,10 @@ fn metadata_allowances_are_bounded_and_multiline_values_are_not_vouched_linewise
     let fused = block("---\nk: \"v\"\n---");
     // When / Then
     for source in [format!("x\n{marker}"), format!("x\n{fused}")] {
-        assert_eq!(read_back::first_missing_fact(with_key, &source, None), None);
+        assert_eq!(
+            read_back::first_missing_fact(with_key, &source, &std::collections::BTreeMap::new()),
+            None
+        );
     }
     for (rendered, source, reason) in [
         (
@@ -75,7 +78,8 @@ fn metadata_allowances_are_bounded_and_multiline_values_are_not_vouched_linewise
         ),
     ] {
         assert_eq!(
-            read_back::first_missing_fact(rendered, source, None).as_deref(),
+            read_back::first_missing_fact(rendered, source, &std::collections::BTreeMap::new())
+                .as_deref(),
             Some(reason)
         );
     }
@@ -83,7 +87,7 @@ fn metadata_allowances_are_bounded_and_multiline_values_are_not_vouched_linewise
         read_back::first_missing_fact(
             "---\ntags:\n  - a\n  - b\n---\nx\n",
             "---\ntags: [a, b]\n---\nx\n",
-            None
+            &std::collections::BTreeMap::new()
         ),
         None
     );
@@ -113,4 +117,19 @@ fn crlf_side_and_line_deletion_are_normalized_without_duplicate_shared_lines() {
         .expect("plan");
         assert!(matches!(plan.action, AdoptionAction::None));
     }
+}
+#[test]
+fn joined_register_lines_count_only_inside_the_result_header() {
+    // Given: a body line that looks like the joined register key line
+    let rendered = "---\nk: \"a / b\"\n---\nk: \"a / b\"\n";
+    let source = "k: \"a / b\"\n";
+    let registers = std::collections::BTreeMap::from([(
+        "k".to_string(),
+        vec!["a".to_string(), "b".to_string()],
+    )]);
+    // When / Then: the body line is held text, so the source line is held
+    assert_eq!(
+        read_back::first_missing_fact(rendered, source, &registers),
+        None
+    );
 }

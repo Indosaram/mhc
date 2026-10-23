@@ -4,7 +4,7 @@ use senpi_desktop_core::error::{CoreResult, DesktopError};
 use senpi_desktop_core::types::{DesktopDisplay, DisplaySelector};
 use xcap::Monitor;
 
-use super::frame::{lay_out, MonitorSample};
+use super::frame::{MonitorSample, lay_out};
 
 /// The monitors matching `selector`, each with its laid-out logical display.
 pub(crate) fn read(selector: &DisplaySelector) -> CoreResult<Vec<(Monitor, DesktopDisplay)>> {
@@ -26,8 +26,12 @@ fn sample(monitor: &Monitor) -> CoreResult<MonitorSample> {
             .friendly_name()
             .or_else(|_| monitor.name())
             .unwrap_or_else(|_| format!("Display {id}")),
-        x: monitor.x().map_err(|error| metadata_error("display x", error))?,
-        y: monitor.y().map_err(|error| metadata_error("display y", error))?,
+        x: monitor
+            .x()
+            .map_err(|error| metadata_error("display x", error))?,
+        y: monitor
+            .y()
+            .map_err(|error| metadata_error("display y", error))?,
         width: monitor
             .width()
             .map_err(|error| metadata_error("display width", error))?,

@@ -3,5 +3,6 @@
 
 pub mod classify;
 pub mod failover;
+pub mod kinds;
 pub mod select;
 pub mod slots;

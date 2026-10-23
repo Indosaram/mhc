@@ -16,6 +16,7 @@ pub mod rejection;
 pub mod rules;
 pub mod signatures;
 pub mod snapshot;
+pub mod strict_ed25519;
 pub mod trust_pin;
 pub mod unwrap;
 pub mod vendor;

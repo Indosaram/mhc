@@ -17,8 +17,8 @@ use senpi_desktop_core::backend::DeliveryMode;
 use senpi_desktop_core::error::{CoreResult, DesktopError, ErrorCode};
 use senpi_desktop_core::protocol_results::AuditEvent;
 use senpi_desktop_safety::{
-    gate, FrameContext, FrameId, GateError, LockState, MonotonicClock, MutatingAction, PermissionGate,
-    StopPolicy, Supervisor,
+    FrameContext, FrameId, GateError, LockState, MonotonicClock, MutatingAction, PermissionGate,
+    StopPolicy, Supervisor, gate,
 };
 
 use crate::audit::audit_event;
@@ -72,7 +72,11 @@ pub(crate) struct Mutation<'a> {
 }
 
 impl Mutation<'_> {
-    pub(crate) const fn new(action: MutatingAction, target: String, delivery: DeliveryMode) -> Self {
+    pub(crate) const fn new(
+        action: MutatingAction,
+        target: String,
+        delivery: DeliveryMode,
+    ) -> Self {
         Self {
             action,
             target,
@@ -163,7 +167,10 @@ impl Worker {
         if let Err(primary) = &mut result {
             // Recorded on the primary error, never in place of it.
             if let Err(release) = guarded(|| self.backend()?.release_all()) {
-                primary.message = format!("{}; releasing held input also failed: {release}", primary.message);
+                primary.message = format!(
+                    "{}; releasing held input also failed: {release}",
+                    primary.message
+                );
             }
         }
         guard.restore(self, result)
@@ -262,6 +269,6 @@ mod permission_tests;
 #[cfg(test)]
 mod stop_tests;
 #[cfg(test)]
-mod typing_tests;
-#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod typing_tests;

@@ -17,15 +17,24 @@ use memory_core::compile::{
     ProjectedChanges, ProjectedChangesOptions, is_empty_projected_changes,
     projected_changes_between, revision_exists,
 };
-use memory_core::git::GitMemoryRepo;
 use memory_core::git::errors::GitError;
+use memory_core::git::{GitMemoryRepo, MemoryCommit};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// Resolves a sync principal to the device name it signed in as.
+pub type DeviceNameLookup = dyn Fn(&str) -> Option<String> + Send + Sync;
 
 pub const PROJECTION_PIN_ENTRY_TYPE: &str = "omo-memory:projection-pin";
 pub const MEMORY_CHANGES_METADATA_TOKEN: &str =
     "Memory changed after this session's prompt was pinned to";
 const MAX_LISTED_PATHS: usize = 20;
+/// The trailer the sync engine writes on each sync commit: the principals whose batches it applied.
+const SYNC_PRINCIPALS_TRAILER: &str = "Sync-Principals";
+const UNKNOWN_DEVICE: &str = "another device";
+
+/// A principal's device name from this device's local device list.
+pub type DeviceNameResolver = std::sync::Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 /// The persisted pin, read back from a session entry on resume.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -54,6 +63,8 @@ pub struct ProjectionTurn {
     pub revision: Option<String>,
     pub changes: Option<ProjectedChanges>,
     pub repinned: Option<ProjectionRepinReason>,
+    /// Devices whose synced commits brought these changes, by name; empty when none were synced.
+    pub sources: Vec<String>,
 }
 
 /// Everything `advance`/`peek` read for one turn.
@@ -99,6 +110,7 @@ pub struct NativeProjectionPins {
     live: Mutex<BTreeMap<String, LivePin>>,
     refresh_epoch: AtomicU64,
     refresh_requested_at_ms: Mutex<f64>,
+    device_name: Option<DeviceNameResolver>,
 }
 
 impl Default for NativeProjectionPins {
@@ -119,7 +131,14 @@ impl NativeProjectionPins {
             live: Mutex::new(BTreeMap::new()),
             refresh_epoch: AtomicU64::new(0),
             refresh_requested_at_ms: Mutex::new(f64::NEG_INFINITY),
+            device_name: None,
         }
+    }
+
+    /// Names the sync principals behind synced changes; unknown principals read "another device".
+    pub fn with_device_name(mut self, device_name: DeviceNameResolver) -> Self {
+        self.device_name = Some(device_name);
+        self
     }
 
     fn now_ms(&self) -> f64 {
@@ -163,7 +182,12 @@ impl NativeProjectionPins {
         let reason = if stale_by_refresh {
             Some(ProjectionRepinReason::Refresh)
         } else {
-            self.repin_reason(repo, state.as_ref(), cached.is_none(), compaction_id.as_deref())?
+            self.repin_reason(
+                repo,
+                state.as_ref(),
+                cached.is_none(),
+                compaction_id.as_deref(),
+            )?
         };
         Ok(Resolved {
             compaction_id,
@@ -218,7 +242,11 @@ impl ProjectionPins for NativeProjectionPins {
 
     fn peek(&self, input: ProjectionAdvanceInput<'_>) -> Result<Option<String>, GitError> {
         let resolved = self.resolve(input.repo, input.session_id, input.branch)?;
-        let pinned = resolved.reason.is_none().then_some(resolved.state).flatten();
+        let pinned = resolved
+            .reason
+            .is_none()
+            .then_some(resolved.state)
+            .flatten();
         Ok(match pinned {
             Some(state) => state.revision,
             None => input.head,
@@ -252,6 +280,7 @@ impl ProjectionPins for NativeProjectionPins {
                 revision: input.head,
                 changes: None,
                 repinned: Some(reason.unwrap_or(ProjectionRepinReason::FirstTurn)),
+                sources: Vec::new(),
             });
         };
 
@@ -261,14 +290,22 @@ impl ProjectionPins for NativeProjectionPins {
                 revision: state.revision,
                 changes: None,
                 repinned: None,
+                sources: Vec::new(),
             });
         }
+        let range_commits: std::sync::Arc<Mutex<Vec<MemoryCommit>>> = Default::default();
+        let sink = std::sync::Arc::clone(&range_commits);
         let changes = projected_changes_between(
             input.repo,
             state.noticed_through.as_deref(),
             input.head.as_deref(),
             &ProjectedChangesOptions {
                 exclude_session_id: Some(input.session_id.to_string()),
+                on_commits: Some(std::sync::Arc::new(move |commits: &[MemoryCommit]| {
+                    *sink
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = commits.to_vec();
+                })),
             },
         )?;
         let advanced = ProjectionPinRecord {
@@ -282,12 +319,20 @@ impl ProjectionPins for NativeProjectionPins {
                 revision: state.revision,
                 changes: None,
                 repinned: None,
+                sources: Vec::new(),
             });
         }
+        let sources = {
+            let commits = range_commits
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            synced_sources(&commits, &changes, self.device_name.as_deref())
+        };
         Ok(ProjectionTurn {
             revision: state.revision,
             changes: Some(changes),
             repinned: None,
+            sources,
         })
     }
 }
@@ -363,6 +408,7 @@ fn latest_compaction_id(branch: &[SessionEntry]) -> Option<String> {
 pub fn render_projected_changes_line(
     changes: &ProjectedChanges,
     pinned_revision: Option<&str>,
+    sources: &[String],
 ) -> String {
     let groups = [
         ("added", &changes.added),
@@ -388,10 +434,76 @@ pub fn render_projected_changes_line(
         Some(revision) => revision.chars().take(7).collect::<String>(),
         None => "an empty memory repo".to_string(),
     };
+    let synced = if sources.is_empty() {
+        String::new()
+    } else {
+        format!(", synced from {}", sources.join(", "))
+    };
     format!(
-        "- {MEMORY_CHANGES_METADATA_TOKEN} {pin}: {}. The prompt keeps the pinned copy; read a file when it matters now.",
+        "- {MEMORY_CHANGES_METADATA_TOKEN} {pin}: {}{synced}. The prompt keeps the pinned copy; read a file when it matters now.",
         parts.join("; ")
     )
+}
+
+/// The paths the notice line actually shows (the first `MAX_LISTED_PATHS`, in group order).
+fn shown_paths(changes: &ProjectedChanges) -> std::collections::BTreeSet<&str> {
+    changes
+        .added
+        .iter()
+        .chain(&changes.updated)
+        .chain(&changes.removed)
+        .take(MAX_LISTED_PATHS)
+        .map(String::as_str)
+        .collect()
+}
+
+/// A device name as it may appear in the prompt: one line, no control characters, bounded.
+fn prompt_safe_name(name: &str) -> Option<String> {
+    let spaced: String = name.chars().map(|c| if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{feff}') { ' ' } else { c }).collect();
+    let clean: String = spaced
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(64)
+        .collect();
+    let clean = clean.trim().to_string();
+    (!clean.is_empty()).then_some(clean)
+}
+
+/// Device names behind the sync commits in the range that touched a shown path.
+fn synced_sources(
+    commits: &[MemoryCommit],
+    changes: &ProjectedChanges,
+    device_name: Option<&DeviceNameLookup>,
+) -> Vec<String> {
+    let listed = shown_paths(changes);
+    let mut names = std::collections::BTreeSet::new();
+    for commit in commits {
+        let Some(principals) = commit.trailers.get(SYNC_PRINCIPALS_TRAILER) else {
+            continue;
+        };
+        if !commit
+            .paths
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|path| listed.contains(path.as_str()))
+        {
+            continue;
+        }
+        for principal in principals
+            .split(',')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        {
+            let known = device_name
+                .and_then(|resolve| resolve(principal))
+                .and_then(|name| prompt_safe_name(&name));
+            names.insert(known.unwrap_or_else(|| UNKNOWN_DEVICE.to_string()));
+        }
+    }
+    names.into_iter().collect()
 }
 
 #[cfg(test)]
@@ -423,7 +535,9 @@ mod tests {
         std::fs::write(&full, format!("---\ndescription: {path}\n---\n{body}\n")).expect("write");
         repo.commit_write(
             &[path],
-            &format!("record {path}\n\nOmo-Writer: memory-tool\nOmo-Session: {session_id}\nOmo-Turn: 1"),
+            &format!(
+                "record {path}\n\nOmo-Writer: memory-tool\nOmo-Session: {session_id}\nOmo-Turn: 1"
+            ),
             &GitCommitAuthor {
                 agent_id: "pin-agent".to_string(),
                 author_name: "Pin Agent".to_string(),
@@ -515,7 +629,8 @@ mod tests {
         let changes = second.changes.expect("announced changes");
         assert_eq!(changes.added, vec!["reference/new.md"]);
         assert_eq!(changes.updated, vec!["system/persona.md"]);
-        let line = render_projected_changes_line(&changes, second.revision.as_deref());
+        let line =
+            render_projected_changes_line(&changes, second.revision.as_deref(), &second.sources);
         assert!(line.contains(MEMORY_CHANGES_METADATA_TOKEN));
         assert!(line.contains("added reference/new.md"));
         assert!(line.contains("updated system/persona.md"));
@@ -696,13 +811,11 @@ mod tests {
             removed: Vec::new(),
         };
 
-        let line = render_projected_changes_line(&changes, Some("abcdef0123456789"));
+        let line = render_projected_changes_line(&changes, Some("abcdef0123456789"), &[]);
 
-        assert!(
-            line.starts_with(&format!(
-                "- {MEMORY_CHANGES_METADATA_TOKEN} abcdef0: added reference/0.md"
-            ))
-        );
+        assert!(line.starts_with(&format!(
+            "- {MEMORY_CHANGES_METADATA_TOKEN} abcdef0: added reference/0.md"
+        )));
         assert!(line.contains("reference/19.md"));
         assert!(!line.contains("reference/20.md"));
         assert!(line.contains("5 more"));

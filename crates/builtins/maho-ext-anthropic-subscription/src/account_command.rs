@@ -1,28 +1,60 @@
+use crate::account_management::{
+    ANTHROPIC_SUBSCRIPTION_PROVIDER_ID as PROVIDER, get_provider_accounts,
+    pin_provider_account_in_runtime, remove_provider_account_in_runtime, unblock_provider_account,
+};
+use maho_ext_api::{ExtensionApi, ExtensionFailure, NotificationType};
 use std::{collections::BTreeMap, sync::Arc};
-use maho_ext_api::{ExtensionApi, NotificationType, ExtensionFailure};
-use crate::account_management::{get_provider_accounts, pin_provider_account_in_runtime, remove_provider_account_in_runtime, unblock_provider_account, ANTHROPIC_SUBSCRIPTION_PROVIDER_ID as PROVIDER};
-static SESSION_PINS: std::sync::LazyLock<std::sync::Mutex<BTreeMap<String, String>>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(BTreeMap::new()));
-pub fn session_pin(session: Option<&str>) -> Option<String> { SESSION_PINS.lock().expect("session pins").get(session?).cloned() }
+static SESSION_PINS: std::sync::LazyLock<std::sync::Mutex<BTreeMap<String, String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(BTreeMap::new()));
+pub fn session_pin(session: Option<&str>) -> Option<String> {
+    SESSION_PINS
+        .lock()
+        .expect("session pins")
+        .get(session?)
+        .cloned()
+}
 
-pub fn register(api: &mut ExtensionApi, oauth: Arc<crate::oauth_login::AnthropicSubscriptionOAuth>, environment: Arc<BTreeMap<String, String>>) {
+pub fn register(
+    api: &mut ExtensionApi,
+    oauth: Arc<crate::oauth_login::AnthropicSubscriptionOAuth>,
+    environment: Arc<BTreeMap<String, String>>,
+) {
     let store = oauth.store.clone();
-    api.register_flag("claude-account", maho_ext_api::FlagType::String { default: None }, Some("Pin Anthropic Subscription account for this session.".into()));
-    for kind in [maho_ext_api::EventKind::SessionStart, maho_ext_api::EventKind::SessionShutdown] {
+    api.register_flag(
+        "claude-account",
+        maho_ext_api::FlagType::String { default: None },
+        Some("Pin Anthropic Subscription account for this session.".into()),
+    );
+    for kind in [
+        maho_ext_api::EventKind::SessionStart,
+        maho_ext_api::EventKind::SessionShutdown,
+    ] {
         let runtime = api.runtime.clone();
-        api.on(kind, Arc::new(move |event, ctx| {
-            let runtime = runtime.clone(); Box::pin(async move {
-                let mut pins = SESSION_PINS.lock().expect("session pins");
-                let session = ctx.session_manager.session_id();
-                crate::guidance::PRESET_APPEND_DEPRECATION.lock().expect("prompt guidance").reset(Some(session));
-                pins.remove(session);
-                if event.kind() == maho_ext_api::EventKind::SessionStart
-                    && let Some(maho_ext_api::FlagValue::String(pin)) = runtime.get_flag("claude-account")
-                    && !pin.is_empty() { pins.insert(session.into(), pin); }
-                Ok(maho_ext_api::EventResult::None)
-            })
-        }));
+        api.on(
+            kind,
+            Arc::new(move |event, ctx| {
+                let runtime = runtime.clone();
+                Box::pin(async move {
+                    let mut pins = SESSION_PINS.lock().expect("session pins");
+                    let session = ctx.session_manager.session_id();
+                    crate::guidance::PRESET_APPEND_DEPRECATION
+                        .lock()
+                        .expect("prompt guidance")
+                        .reset(Some(session));
+                    pins.remove(session);
+                    if event.kind() == maho_ext_api::EventKind::SessionStart
+                        && let Some(maho_ext_api::FlagValue::String(pin)) =
+                            runtime.get_flag("claude-account")
+                        && !pin.is_empty()
+                    {
+                        pins.insert(session.into(), pin);
+                    }
+                    Ok(maho_ext_api::EventResult::None)
+                })
+            }),
+        );
     }
-    let runtime=api.runtime.clone();
+    let runtime = api.runtime.clone();
     api.register_command("claude-account", Some("List and manage Anthropic Subscription accounts.".into()), Some("[remove <id> | pin <id> | unpin]".into()), Arc::new(move |raw, ctx| {
         let store = store.clone(); let environment = environment.clone(); let oauth = oauth.clone();let runtime=runtime.clone();
         Box::pin(async move {
@@ -74,7 +106,17 @@ pub fn register(api: &mut ExtensionApi, oauth: Arc<crate::oauth_login::Anthropic
                     [] | ["list"] => {
                         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as f64;
                         let accounts = get_provider_accounts(store.as_ref(), PROVIDER, &environment, now).await?;
-                        let message = if accounts.is_empty() { "Anthropic Subscription accounts:\n  (none)\nPinned account: none\nAffinity pick: none".into() } else { let selected=accounts.iter().find(|account| account.pinned).map(|account|account.name.clone()).unwrap_or_else(||"none".into()); let mut lines=vec!["Anthropic Subscription accounts:".to_owned()]; lines.extend(accounts.into_iter().map(|account|format!("  {} | {} | {}{}",account.display_name.as_deref().unwrap_or(&account.name),match account.source {crate::accounts::AccountSource::Env=>"env",crate::accounts::AccountSource::Login=>"login",crate::accounts::AccountSource::Import=>"import"},if account.blocked {"blocked"} else {"available"},if account.pinned {" | pinned"} else {""}))); lines.push(format!("Pinned account: {selected}")); lines.push("Affinity pick: unavailable - no affinity context".into());lines.join("\n") };
+                        let cli_pin = crate::account_command::session_pin(Some(ctx.session_manager.session_id()));
+                        let settings_pin = (oauth.settings)().values.get("pinnedAccount").and_then(serde_json::Value::as_str).map(str::to_owned);
+                        let stored_pin = accounts.iter().find(|account| account.pinned).map(|account| account.name.clone());
+                        let pin_source = if cli_pin.is_some() { Some(crate::affinity::PinSource::Cli) } else if settings_pin.is_some() { Some(crate::affinity::PinSource::Settings) } else if stored_pin.is_some() { Some(crate::affinity::PinSource::Stored) } else { None };
+                        let pinned = cli_pin.or(settings_pin).or(stored_pin);
+                        let pin_label = match pin_source { Some(crate::affinity::PinSource::Cli) => "CLI", Some(crate::affinity::PinSource::Settings) => "settings", _ => "stored" }.to_lowercase();
+                        let message = if accounts.is_empty() { "Anthropic Subscription accounts:\n  (none)\nPinned account: none\nAffinity pick: none".into() } else {
+                            let mut lines=vec!["Anthropic Subscription accounts:".to_owned()];
+                            lines.extend(accounts.into_iter().map(|account|format!("  {} | {} | {}{}",account.display_name.as_deref().unwrap_or(&account.name),match account.source {crate::accounts::AccountSource::Env=>"env",crate::accounts::AccountSource::Login=>"login",crate::accounts::AccountSource::Import=>"import"},if account.blocked {"blocked"} else {"available"},if pinned.as_deref()==Some(account.name.as_str()) {" | pinned"} else {""})));
+                            lines.push(format!("Pinned account: {}",match &pinned {Some(name)=>format!("{name} ({pin_label})"),None=>"none".into()}));
+                            lines.push("Affinity pick: unavailable - no affinity context".into());lines.join("\n") };
                         runtime.assert_active()?;
                         ctx.ui.notify(&message, NotificationType::Info);
                     },

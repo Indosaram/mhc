@@ -2,6 +2,10 @@
 
 use crate::git::{GitCommitAuthor, GitError, GitLogOptions, GitMemoryRepo, MemoryCommit};
 
+use crate::agreements::{
+    AGREEMENTS_PATH, agreement_items_of, read_agreements_at, read_agreements_worktree,
+};
+
 use super::mutation_plan::FactsApplyRecovery;
 use super::recovery_mutation::{
     FactsMutationError, FactsMutationTransaction, FactsOwnershipLostError,
@@ -141,7 +145,8 @@ pub fn apply_facts_recovery(
         transaction.restore_pre_state()?;
         transaction.apply_post_state()?;
         let paths: Vec<String> = recovery.paths.iter().map(|e| e.path.clone()).collect();
-        let message = commit_message(&recovery.batch_id, record_count);
+        let evicted = evicted_agreement_ids(repo, recovery)?;
+        let message = commit_message(&recovery.batch_id, record_count, &evicted);
         let commit_res = repo
             .commit_prepared(&paths, &message, author)
             .map_err(FactsRecoveryError::Git)?;
@@ -168,11 +173,40 @@ pub fn apply_facts_recovery(
     }
 }
 
-fn commit_message(batch_id: &str, count: usize) -> String {
+/// The facts lane removes an agreement only by evicting it at the cap; each removal is named in the commit.
+fn evicted_agreement_ids(
+    repo: &GitMemoryRepo,
+    recovery: &FactsApplyRecovery,
+) -> Result<Vec<String>, FactsRecoveryError> {
+    if !recovery
+        .paths
+        .iter()
+        .any(|entry| entry.path == AGREEMENTS_PATH)
+    {
+        return Ok(Vec::new());
+    }
+    let worktree = read_agreements_worktree(&repo.dir).map_err(GitError::Io)?;
+    let after: std::collections::HashSet<String> = agreement_items_of(worktree.as_deref())
+        .into_iter()
+        .map(|item| item.id)
+        .collect();
+    let before = read_agreements_at(repo, &recovery.head_before_apply)?;
+    Ok(agreement_items_of(before.as_deref())
+        .into_iter()
+        .filter(|item| !after.contains(&item.id))
+        .map(|item| item.id)
+        .collect())
+}
+
+fn commit_message(batch_id: &str, count: usize, evicted: &[String]) -> String {
     let fact_word = if count == 1 { "fact" } else { "facts" };
-    format!(
+    let mut message = format!(
         "chore(facts): extract {count} {fact_word}\n\nGenerated-By: facts-extractor\nOmo-Writer: facts-extractor\nOmo-Facts-Batch: {batch_id}"
-    )
+    );
+    for id in evicted {
+        message.push_str(&format!("\nOmo-Agreement-Evicted: {id}"));
+    }
+    message
 }
 
 #[cfg(test)]

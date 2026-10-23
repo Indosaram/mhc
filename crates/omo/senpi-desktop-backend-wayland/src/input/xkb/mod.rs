@@ -17,8 +17,8 @@ use std::os::fd::OwnedFd;
 use std::sync::Arc;
 
 use symbols::{extract_section, infer_type, parse_keycodes, parse_keys, resolve_keysyms};
-use types::{expand_virtual_modifiers, holdable_modifiers, parse_types, parse_virtual_modifiers};
 use types::{ModifierReq, TypeDef};
+use types::{expand_virtual_modifiers, holdable_modifiers, parse_types, parse_virtual_modifiers};
 
 /// One evdev key press plus the evdev modifier keys held around it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,15 +101,21 @@ impl KeyboardLayout {
                     let Some(&character) = keysyms.get(symbol) else {
                         continue;
                     };
-                    table.entry(character).or_insert_with(Vec::new).push(Candidate {
-                        keycode: key.keycode.saturating_sub(8),
-                        level,
-                        key_type: Arc::clone(key_type),
-                    });
+                    table
+                        .entry(character)
+                        .or_insert_with(Vec::new)
+                        .push(Candidate {
+                            keycode: key.keycode.saturating_sub(8),
+                            level,
+                            key_type: Arc::clone(key_type),
+                        });
                 }
             }
         }
-        let us_groups = groups.iter().map(|group| group_is_us(group, &virtuals)).collect();
+        let us_groups = groups
+            .iter()
+            .map(|group| group_is_us(group, &virtuals))
+            .collect();
         Some(Self {
             groups,
             us_groups,
@@ -119,7 +125,13 @@ impl KeyboardLayout {
     }
 
     /// Applies a libei `keyboard.modifiers` event.
-    pub const fn update_modifiers(&mut self, depressed: u32, latched: u32, locked: u32, group: u32) {
+    pub const fn update_modifiers(
+        &mut self,
+        depressed: u32,
+        latched: u32,
+        locked: u32,
+        group: u32,
+    ) {
         self.modifiers = ModifierState {
             depressed,
             latched,

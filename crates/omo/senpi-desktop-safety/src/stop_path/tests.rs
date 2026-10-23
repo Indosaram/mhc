@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use super::{Chord, HostRelay, StopPathError, StopPathListener};
 use crate::clock::FakeClock;
-use crate::supervisor::{ActiveStopPath, StopPolicy, Supervisor, HEARTBEAT_FRESH_MS, HEARTBEAT_INTERVAL_MS};
+use crate::supervisor::{
+    ActiveStopPath, HEARTBEAT_FRESH_MS, HEARTBEAT_INTERVAL_MS, StopPolicy, Supervisor,
+};
 
 const HOST_RELAY_ALLOWED: StopPolicy = StopPolicy {
     allow_host_relay_only: true,

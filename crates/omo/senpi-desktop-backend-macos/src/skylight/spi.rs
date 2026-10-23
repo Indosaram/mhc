@@ -4,7 +4,7 @@
 //! Nothing here posts events; it only hands back atomically resolved,
 //! exact-signature function pointers (see the per-field types).
 
-use std::ffi::{c_void, CStr};
+use std::ffi::{CStr, c_void};
 use std::mem;
 use std::sync::LazyLock;
 
@@ -22,7 +22,8 @@ type SLSGetConnectionPSNFn = unsafe extern "C" fn(u32, *mut ProcessSerialNumber)
 type GetProcessForPIDFn = unsafe extern "C" fn(libc::pid_t, *mut ProcessSerialNumber) -> i32;
 type GetProcessPIDFn = unsafe extern "C" fn(*const ProcessSerialNumber, *mut libc::pid_t) -> i32;
 type CGEventSetWindowLocationFn = unsafe extern "C" fn(*mut c_void, CGPoint);
-type SLPSSetFrontProcessWithOptionsFn = unsafe extern "C" fn(*const ProcessSerialNumber, u32, u32) -> i32;
+type SLPSSetFrontProcessWithOptionsFn =
+    unsafe extern "C" fn(*const ProcessSerialNumber, u32, u32) -> i32;
 type SLEventSetAuthenticationMessageFn = unsafe extern "C" fn(*mut c_void, *mut c_void);
 pub(super) type ObjcGetClassFn = unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void;
 pub(super) type SelRegisterNameFn = unsafe extern "C" fn(*const std::ffi::c_char) -> *mut c_void;
@@ -83,14 +84,16 @@ impl PsnLookup {
 
 static REQUIRED: LazyLock<Option<RequiredSpi>> = LazyLock::new(resolve_required);
 static FOREGROUND: LazyLock<Option<ForegroundSpi>> = LazyLock::new(resolve_foreground);
-pub(super) static AUTHENTICATION: LazyLock<Option<AuthenticationSpi>> = LazyLock::new(resolve_authentication);
-static FRONT_PID: LazyLock<Option<(SLPSGetFrontProcessFn, GetProcessPIDFn)>> = LazyLock::new(|| {
-    if disabled_by_env() {
-        return None;
-    }
-    ensure_skylight_loaded()?;
-    Some((symbol(c"_SLPSGetFrontProcess")?, symbol(c"GetProcessPID")?))
-});
+pub(super) static AUTHENTICATION: LazyLock<Option<AuthenticationSpi>> =
+    LazyLock::new(resolve_authentication);
+static FRONT_PID: LazyLock<Option<(SLPSGetFrontProcessFn, GetProcessPIDFn)>> =
+    LazyLock::new(|| {
+        if disabled_by_env() {
+            return None;
+        }
+        ensure_skylight_loaded()?;
+        Some((symbol(c"_SLPSGetFrontProcess")?, symbol(c"GetProcessPID")?))
+    });
 
 /// The front process's pid as WindowServer reports it now. Unlike
 /// `NSWorkspace.frontmostApplication`, this does not depend on an AppKit run

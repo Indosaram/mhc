@@ -33,6 +33,7 @@ globset = "=0.4.20"
 fancy-regex = "=0.16.2"
 semver = "=1.0.27"
 base64 = "=0.22.1"
+jiff = { workspace = true }
 photon-rs = { version = "=0.3.3", default-features = false }
 
 [target.'cfg(unix)'.dependencies]

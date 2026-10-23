@@ -50,7 +50,7 @@ pub fn unique_suffix() -> String {
 pub type RecordedCalls = Arc<Mutex<Vec<(Model, Context, Option<AgentStreamOptions>)>>>;
 
 pub fn test_model() -> Model {
-    Model {
+    Model { deprecated: None,
         id: "mock".to_owned(),
         name: "mock".to_owned(),
         api: "openai-responses".to_owned(),
@@ -85,6 +85,8 @@ pub fn test_model() -> Model {
 
 pub fn assistant(content: Vec<ContentBlock>, stop_reason: StopReason) -> AssistantMessage {
     AssistantMessage {
+        failure_source: None,
+        timing: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,

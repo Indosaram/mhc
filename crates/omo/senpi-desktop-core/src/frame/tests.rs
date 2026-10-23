@@ -116,5 +116,11 @@ fn pixels_only_frame_refuses_coordinate_input_and_hit_tests() {
         ErrorCode::InvalidCoordinateFrame
     );
     // An out-of-frame pixel keeps the ordinary bounds error.
-    assert!(frame.map_point(5000.0, 1.0, None).unwrap_err().message.contains("outside the last capture frame"));
+    assert!(
+        frame
+            .map_point(5000.0, 1.0, None)
+            .unwrap_err()
+            .message
+            .contains("outside the last capture frame")
+    );
 }

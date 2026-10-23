@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Map, Value, json};
 
 use crate::api::constrained_sampling::create_grammar_tool_input_properties;
-use crate::api::openai_prompt_cache::clamp_openai_prompt_cache_key;
+use crate::api::openai_prompt_cache::derive_openai_prompt_cache_key;
 use crate::api::openai_responses_shared::{
     ConvertResponsesMessagesOptions, ConvertResponsesToolsOptions, ResponsesStreamOptions,
     convert_responses_messages, convert_responses_tools, get_done_reason, process_responses_stream,
@@ -113,7 +113,8 @@ pub fn format_azure_openai_error(error: &ResponsesApiError) -> String {
             body: (!body.trim().is_empty()).then(|| json!(body)),
             ..SdkErrorShape::default()
         })),
-        ResponsesApiError::Message(_) | ResponsesApiError::WebSocketClose(_)
+        ResponsesApiError::Message(_)
+        | ResponsesApiError::WebSocketClose(_)
         | ResponsesApiError::Provider { .. } => {
             ThrownProviderError::Error(Box::new(SdkErrorShape {
                 message: error.to_string(),
@@ -292,7 +293,10 @@ pub fn build_params(
     params.insert("input".into(), Value::Array(messages));
     params.insert("stream".into(), json!(true));
     if options.cache_retention.or(model.cache_retention) != Some(CacheRetention::None)
-        && let Some(key) = clamp_openai_prompt_cache_key(options.session_id.as_deref())
+        && let Some(key) = derive_openai_prompt_cache_key(
+            &model.id,
+            &crate::types::transcript::normalize_context(context),
+        )
     {
         params.insert("prompt_cache_key".into(), json!(key));
     }
@@ -377,6 +381,8 @@ pub fn build_params(
 
 fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
+        failure_source: None,
+        timing: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,
@@ -577,7 +583,10 @@ async fn drive(
     let provenance: super::openai_responses::ResponsesFailureSlot = std::sync::Arc::default();
     let observer = super::openai_responses::observe_responses_events(options, provenance.clone());
     process_responses_stream(
-        super::openai_responses::observe_responses_transport(Box::pin(response.bytes_stream()), provenance.clone()),
+        super::openai_responses::observe_responses_transport(
+            Box::pin(response.bytes_stream()),
+            provenance.clone(),
+        ),
         output,
         sink,
         model,
@@ -686,7 +695,9 @@ mod source_contract_tests {
     #[test]
     fn azure_error_projection_keeps_structured_code() {
         // Given an HTTP error whose status alone does not imply quota.
-        let model = crate::models_generated::get_builtin_provider_models("openai").expect("models")[0].clone();
+        let model = crate::models_generated::get_builtin_provider_models("openai").expect("models")
+            [0]
+        .clone();
         let mut output = create_output(&model);
         let error = ResponsesApiError::Http {
             status_code: 429,
@@ -695,7 +706,14 @@ mod source_contract_tests {
         // When applying the same projection used by the Azure terminal path.
         super::super::openai_responses::apply_responses_failure(&mut output, &error);
         // Then the code is preserved instead of being downgraded to status-only evidence.
-        assert_eq!(output.provider_diagnostic.expect("diagnostic").code.as_deref(), Some("insufficient_quota"));
+        assert_eq!(
+            output
+                .provider_diagnostic
+                .expect("diagnostic")
+                .code
+                .as_deref(),
+            Some("insufficient_quota")
+        );
         assert!(output.error_cause.is_none());
     }
 }

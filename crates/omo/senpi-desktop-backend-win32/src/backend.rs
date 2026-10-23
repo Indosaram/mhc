@@ -14,7 +14,7 @@ use senpi_desktop_core::types::{
 };
 
 use crate::ax::Win32Ax;
-use crate::capture::{enable_per_monitor_awareness, Win32Capture};
+use crate::capture::{Win32Capture, enable_per_monitor_awareness};
 use crate::input::{self, Win32Input};
 use crate::integrity::{self, IntegrityRid};
 
@@ -39,7 +39,9 @@ impl Win32Backend {
     pub fn new(display: DisplaySelector) -> CoreResult<Self> {
         enable_per_monitor_awareness()?;
         let integrity = integrity::current_process().map_err(|error| {
-            DesktopError::capture_failed(format!("Win32 process integrity level query failed: {error}"))
+            DesktopError::capture_failed(format!(
+                "Win32 process integrity level query failed: {error}"
+            ))
         })?;
         let capture = Win32Capture::new(display, integrity);
         capture.displays()?;
@@ -52,16 +54,20 @@ impl Win32Backend {
     }
 
     pub fn capabilities(&self) -> DesktopCapabilities {
-        let display_count = self
-            .capture
-            .displays()
-            .map_or(0, |displays| u32::try_from(displays.len()).unwrap_or(u32::MAX));
+        let display_count = self.capture.displays().map_or(0, |displays| {
+            u32::try_from(displays.len()).unwrap_or(u32::MAX)
+        });
         let input = self.input.is_ok();
         DesktopCapabilities {
             backend: "win32".to_string(),
             display_server: Some("win32".to_string()),
             capture: display_count > 0,
-            capture_permission: if display_count > 0 { "granted" } else { "unknown" }.to_string(),
+            capture_permission: if display_count > 0 {
+                "granted"
+            } else {
+                "unknown"
+            }
+            .to_string(),
             input,
             background_window_input: input,
             delivery_modes: if input {
@@ -109,7 +115,11 @@ impl Backend for Win32Backend {
         self.capture.windows()
     }
 
-    fn capture(&mut self, target: &Target, _caps: &CaptureCaps) -> CoreResult<(RgbaImage, FrameGeometry)> {
+    fn capture(
+        &mut self,
+        target: &Target,
+        _caps: &CaptureCaps,
+    ) -> CoreResult<(RgbaImage, FrameGeometry)> {
         self.capture.capture(target)
     }
 
@@ -144,10 +154,16 @@ impl Backend for Win32Backend {
         check_stop: &dyn Fn() -> CoreResult<()>,
         delivered: &mut dyn FnMut(),
     ) -> CoreResult<()> {
-        self.input()?.type_text_interruptible(target, text, mode, check_stop, delivered)
+        self.input()?
+            .type_text_interruptible(target, text, mode, check_stop, delivered)
     }
 
-    fn key_chord(&mut self, target: &Target, keys: &[KeyName], mode: DeliveryMode) -> CoreResult<()> {
+    fn key_chord(
+        &mut self,
+        target: &Target,
+        keys: &[KeyName],
+        mode: DeliveryMode,
+    ) -> CoreResult<()> {
         self.input()?.key_chord(target, keys, mode)
     }
 

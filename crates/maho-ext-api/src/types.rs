@@ -1,5 +1,9 @@
 //! Rust mirror of senpi core/extensions/types.ts at fe8c564b.
 //! Session, resource, registry and theme ports live here to keep the dependency graph acyclic.
+use crate::offload::{
+    AccountLimits, ChildModuleRegistration, InputOrigin, OffloadOptions, RegisteredChildModule,
+    SubscriptionLimitsListener, UploadRedaction, validate_child_module_registration,
+};
 pub use maho_agent::types::{AgentEvent, AgentMessage};
 pub use maho_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 pub use maho_ai::types::{AssistantMessage, ContentBlock, Message, UserContent, UserMessage};
@@ -714,8 +718,16 @@ pub struct NamedMemoryReporter {
 /// Sections owned by the report, never by an extension.
 /// Includes `tui`, which the upstream builder also publishes as a core section.
 pub const RESERVED_MEMORY_REPORT_KEYS: &[&str] = &[
-    "sessionId", "takenAt", "pid", "main", "kernels", "residentStore",
-    "tuiRenderCache", "tui", "heapSnapshot", "reporterErrors",
+    "sessionId",
+    "takenAt",
+    "pid",
+    "main",
+    "kernels",
+    "residentStore",
+    "tuiRenderCache",
+    "tui",
+    "heapSnapshot",
+    "reporterErrors",
 ];
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ToolNamespace {
@@ -871,9 +883,10 @@ pub enum EventKind {
     AgentBeforeSettle,
     SessionControlWake,
     ToolActivated,
+    HeldWakesReleased,
 }
 impl EventKind {
-    pub const ALL: [Self; 47] = [
+    pub const ALL: [Self; 48] = [
         Self::ProjectTrust,
         Self::ResourcesDiscover,
         Self::SessionStart,
@@ -921,6 +934,7 @@ impl EventKind {
         Self::AgentBeforeSettle,
         Self::SessionControlWake,
         Self::ToolActivated,
+        Self::HeldWakesReleased,
     ];
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -971,6 +985,7 @@ impl EventKind {
             Self::AgentBeforeSettle => "agent_before_settle",
             Self::SessionControlWake => "session_control_wake",
             Self::ToolActivated => "tool_activated",
+            Self::HeldWakesReleased => "held_wakes_released",
         }
     }
     pub fn parse(name: &str) -> Option<Self> {
@@ -1129,6 +1144,8 @@ pub struct CredentialAccountSummary {
     pub source: CredentialAccountSource,
     pub blocked: bool,
     pub pinned: bool,
+    /// A slot of the other kind than the stored credential: kept, never used, cannot be pinned (senpi#3486).
+    pub unused: bool,
 }
 
 /// Host implementations adapt their owning registry, without an ext-api -> core edge.
@@ -1327,6 +1344,16 @@ pub trait SessionManager: ToolSessionManager {
     }
     fn get_entries(&self) -> Vec<SessionEntry>;
     fn get_branch(&self) -> Vec<SessionEntry>;
+    /// Folds `reduce` over the resident entries, oldest first, starting from `initial`.
+    fn reduce_history(
+        &self,
+        initial: JsonValue,
+        reduce: &mut dyn FnMut(JsonValue, &SessionEntry) -> JsonValue,
+    ) -> JsonValue {
+        self.get_entries()
+            .iter()
+            .fold(initial, &mut *reduce)
+    }
     fn get_usage_totals(&self) -> Option<JsonValue> {
         None
     }
@@ -1589,6 +1616,25 @@ pub trait ExtensionContextActions: Send + Sync {
     fn get_scoped_models(&self) -> Vec<ScopedModel>;
     fn get_agent_dir(&self) -> PathBuf;
     fn is_idle(&self) -> bool;
+    /// True while engine turns are held (unattended, or `session_start` handlers still running).
+    fn engine_turns_held(&self) -> bool {
+        false
+    }
+    /// Records a wake that was held rather than delivered.
+    fn note_held_wake(&self, _source: &str) {}
+    /// Runs a registered child module; `None` when no session backs this context.
+    fn offload(
+        &self,
+        _id: &str,
+        _args: JsonValue,
+        _options: OffloadOptions,
+    ) -> Option<ExtensionFuture<'_, JsonValue>> {
+        None
+    }
+    /// Present only when the host reports question answers delivered as person input.
+    fn question_input(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        None
+    }
     fn is_project_trusted(&self) -> bool;
     fn get_signal(&self) -> Option<AbortSignal>;
     fn get_steering_signal(&self) -> Option<AbortSignal> {
@@ -1660,9 +1706,17 @@ pub struct ExtensionUiDialogOptions {
     pub signal: Option<AbortSignal>,
     pub timeout_ms: Option<u64>,
 }
+/// A clickable action shown beside a string-array widget.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtensionWidgetAction {
+    pub label: String,
+    pub command: String,
+}
 #[derive(Clone, Debug, Default)]
 pub struct ExtensionWidgetOptions {
     pub placement: WidgetPlacement,
+    /// Clickable command buttons shown beside a string-array widget.
+    pub actions: Option<Vec<ExtensionWidgetAction>>,
 }
 #[derive(Clone, Debug, Default)]
 pub struct WorkingIndicatorOptions {
@@ -2230,6 +2284,45 @@ impl ExtensionContext {
         actions.assert_active()?;
         Ok(actions)
     }
+    pub fn engine_turns_held(&self) -> Result<bool, ExtensionFailure> {
+        Ok(match self.session_manager.extension_context_actions() {
+            Some(actions) => {
+                actions.assert_active()?;
+                actions.engine_turns_held()
+            }
+            None => false,
+        })
+    }
+    pub fn note_held_wake(&self, source: &str) -> Result<(), ExtensionFailure> {
+        if let Some(actions) = self.session_manager.extension_context_actions() {
+            actions.assert_active()?;
+            actions.note_held_wake(source);
+        }
+        Ok(())
+    }
+    /// Runs the child module registered under `id`.
+    ///
+    /// # Errors
+    /// Fails with `offload_unavailable` when no session backs this context.
+    pub fn offload<'a>(
+        &'a self,
+        id: &'a str,
+        args: JsonValue,
+        options: OffloadOptions,
+    ) -> ExtensionFuture<'a, JsonValue> {
+        Box::pin(async move {
+            let actions = self.session_manager.extension_context_actions();
+            if let Some(actions) = actions {
+                actions.assert_active()?;
+            }
+            match actions.and_then(|actions| actions.offload(id, args, options)) {
+                Some(future) => future.await,
+                None => Err(ExtensionFailure::new(format!(
+                    "offload_unavailable: no session backs this context (offload {id})"
+                ))),
+            }
+        })
+    }
     pub fn current_model(&self) -> Result<Option<Model>, ExtensionFailure> {
         Ok(match self.session_manager.extension_context_actions() {
             Some(actions) => {
@@ -2780,6 +2873,8 @@ pub struct SessionStartEvent {
     pub reason: SessionReason,
     pub initial_model_provenance: Option<String>,
     pub previous_session_file: Option<String>,
+    /// Whether a human is attending this session (`None` = unknown).
+    pub attended: Option<bool>,
 }
 #[derive(Clone, Debug)]
 pub struct SessionShutdownEvent {
@@ -2984,6 +3079,10 @@ pub enum ExtensionEvent {
     ToolActivated {
         tool_names: Vec<String>,
     },
+    /// Sources released by real input or an explicit Resume; handlers revalidate current state.
+    HeldWakesReleased {
+        sources: BTreeMap<String, u32>,
+    },
 }
 impl ExtensionEvent {
     pub const fn kind(&self) -> EventKind {
@@ -3035,6 +3134,7 @@ impl ExtensionEvent {
             Self::AgentBeforeSettle { .. } => EventKind::AgentBeforeSettle,
             Self::SessionControlWake { .. } => EventKind::SessionControlWake,
             Self::ToolActivated { .. } => EventKind::ToolActivated,
+            Self::HeldWakesReleased { .. } => EventKind::HeldWakesReleased,
         }
     }
 }
@@ -3634,6 +3734,36 @@ pub trait ExtensionActions: Send + Sync {
         data: Option<JsonValue>,
     ) -> Result<(), ExtensionFailure>;
     fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure>;
+    /// `send_user_message` with the origin captured at call admission.
+    fn send_user_message_with_origin(
+        &self,
+        content: UserMessageContent,
+        options: SendUserMessageOptions,
+        _input_origin: InputOrigin,
+    ) -> Result<(), ExtensionFailure> {
+        self.send_user_message(content, options)
+    }
+    /// Host upload redactor; `None` when the host has none (nothing may then be uploaded).
+    fn redact_for_upload(
+        &self,
+        _text: &str,
+        _extra_literals: &[String],
+    ) -> Option<UploadRedaction> {
+        None
+    }
+    /// The running host version, when the host reports one.
+    fn host_version(&self) -> Option<String> {
+        None
+    }
+    fn get_subscription_limits(&self) -> Vec<AccountLimits> {
+        Vec::new()
+    }
+    fn on_subscription_limits(
+        &self,
+        _listener: SubscriptionLimitsListener,
+    ) -> Option<UiUnsubscribe> {
+        None
+    }
 }
 
 #[derive(Clone, Default)]
@@ -4137,6 +4267,8 @@ pub struct LoadedExtension {
     pub erased_tool_renderers: BTreeMap<String, Arc<dyn ErasedToolRenderers>>,
     pub config_watch_registrations: Vec<RegisteredConfigWatch>,
     pub fast_mode_action: Option<FastModeAction>,
+    /// Child modules registered through `register_child_module`, keyed by registration id.
+    pub child_modules: BTreeMap<String, RegisteredChildModule>,
 }
 impl LoadedExtension {
     pub fn new(path: &str, cwd: PathBuf, source_info: SourceInfo) -> Self {
@@ -4170,6 +4302,7 @@ impl LoadedExtension {
             erased_tool_renderers: BTreeMap::new(),
             config_watch_registrations: Vec::new(),
             fast_mode_action: None,
+            child_modules: BTreeMap::new(),
         }
     }
 }
@@ -4219,6 +4352,7 @@ pub struct ExtensionRuntime {
     registration_stale: Arc<Mutex<Option<String>>>,
     registration_pending: Arc<Mutex<Option<RegistrationPending>>>,
     registration_classifiers: Arc<Mutex<Vec<u64>>>,
+    person_answer_pending: Arc<std::sync::atomic::AtomicBool>,
 }
 #[derive(Default)]
 struct RegistrationPending {
@@ -4243,6 +4377,30 @@ impl ExtensionRuntime {
             registration_stale: Arc::new(Mutex::new(None)),
             registration_pending: Arc::new(Mutex::new(Some(RegistrationPending::default()))),
             registration_classifiers: Arc::default(),
+            person_answer_pending: self.person_answer_pending.clone(),
+        }
+    }
+    /// Marks that a question answer is being delivered: the `send_user_message` that follows
+    /// synchronously is a person's input. The mark also lapses on the next scheduler turn.
+    pub fn mark_person_answer_pending(&self) {
+        self.person_answer_pending
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let pending = self.person_answer_pending.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            drop(handle.spawn(async move {
+                pending.store(false, std::sync::atomic::Ordering::SeqCst);
+            }));
+        }
+    }
+    /// Classifies a message at admission and resets the token.
+    pub fn take_input_origin(&self) -> InputOrigin {
+        if self
+            .person_answer_pending
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            InputOrigin::Person
+        } else {
+            InputOrigin::Extension
         }
     }
     pub fn commit_registration(&self) -> Result<(), ExtensionFailure> {
@@ -4262,7 +4420,11 @@ impl ExtensionRuntime {
                     state.flags.entry(name).or_insert(value);
                 }
                 for (path, reporters) in pending.memory_reporters {
-                    state.memory_reporters.entry(path).or_default().extend(reporters);
+                    state
+                        .memory_reporters
+                        .entry(path)
+                        .or_default()
+                        .extend(reporters);
                 }
                 state
                     .extension_tool_executors
@@ -4322,23 +4484,43 @@ impl ExtensionRuntime {
                 "Memory reporter name \"{name}\" is reserved by the memory report"
             )));
         }
-        let mut pending = self.registration_pending.lock()
+        let mut pending = self
+            .registration_pending
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(pending) = pending.as_mut() {
-            pending.memory_reporters.entry(path.into()).or_default().insert(name.into(), reporter);
+            pending
+                .memory_reporters
+                .entry(path.into())
+                .or_default()
+                .insert(name.into(), reporter);
         } else {
-            self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                .memory_reporters.entry(path.into()).or_default().insert(name.into(), reporter);
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .memory_reporters
+                .entry(path.into())
+                .or_default()
+                .insert(name.into(), reporter);
         }
         Ok(())
     }
     /// Clones a loaded extension's callbacks; no extension code runs under the registry lock.
     pub fn memory_reporters(&self, path: &str) -> Vec<NamedMemoryReporter> {
-        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.memory_reporters.get(path).into_iter().flat_map(|reporters| reporters.iter())
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .memory_reporters
+            .get(path)
+            .into_iter()
+            .flat_map(|reporters| reporters.iter())
             .map(|(name, reporter)| NamedMemoryReporter {
-                name: name.clone(), reporter: Arc::clone(reporter),
-            }).collect()
+                name: name.clone(),
+                reporter: Arc::clone(reporter),
+            })
+            .collect()
     }
     pub fn invalidate_registration(&self, message: &str) {
         self.registration_stale
@@ -4968,7 +5150,8 @@ impl ExtensionApi {
         name: &str,
         reporter: MemoryReporter,
     ) -> Result<(), ExtensionFailure> {
-        self.runtime.register_memory_reporter(&self.registered.identity.path, name, reporter)
+        self.runtime
+            .register_memory_reporter(&self.registered.identity.path, name, reporter)
     }
     pub fn on(&mut self, event: EventKind, handler: ExtensionHandler) {
         self.on_with_options(event, handler, ExtensionHandlerOptions::default());
@@ -5857,7 +6040,56 @@ impl ExtensionApi {
         content: UserMessageContent,
         options: SendUserMessageOptions,
     ) -> Result<(), ExtensionFailure> {
-        self.runtime.actions()?.send_user_message(content, options)
+        let origin = self.runtime.take_input_origin();
+        self.runtime
+            .actions()?
+            .send_user_message_with_origin(content, options, origin)
+    }
+    /// Registers a file-backed child module under `registration.id`.
+    ///
+    /// # Errors
+    /// Fails for a stale registration or an invalid registration.
+    pub fn register_child_module(
+        &mut self,
+        registration: ChildModuleRegistration,
+    ) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        validate_child_module_registration(&registration)?;
+        let id = registration.id.clone();
+        self.registered.child_modules.insert(
+            id,
+            RegisteredChildModule {
+                registration,
+                source_info: self.registered.source_info.clone(),
+            },
+        );
+        Ok(())
+    }
+    /// Redacts `text` for upload with the host's redactor; `None` when the host has none.
+    ///
+    /// # Errors
+    /// Fails for a stale registration or when actions are not bound.
+    pub fn redact_for_upload(
+        &self,
+        text: &str,
+        extra_literals: &[String],
+    ) -> Result<Option<UploadRedaction>, ExtensionFailure> {
+        Ok(self
+            .runtime
+            .actions()?
+            .redact_for_upload(text, extra_literals))
+    }
+    pub fn host_version(&self) -> Result<Option<String>, ExtensionFailure> {
+        Ok(self.runtime.actions()?.host_version())
+    }
+    pub fn get_subscription_limits(&self) -> Result<Vec<AccountLimits>, ExtensionFailure> {
+        Ok(self.runtime.actions()?.get_subscription_limits())
+    }
+    pub fn on_subscription_limits(
+        &self,
+        listener: SubscriptionLimitsListener,
+    ) -> Result<Option<UiUnsubscribe>, ExtensionFailure> {
+        Ok(self.runtime.actions()?.on_subscription_limits(listener))
     }
     pub fn append_entry(
         &self,
@@ -6236,7 +6468,9 @@ mod memory_reporter_tests {
     fn api(runtime: ExtensionRuntime) -> ExtensionApi {
         ExtensionApi::new(
             LoadedExtension::new("<memory-test>", PathBuf::new(), SourceInfo::default()),
-            ExtensionSessionProfile::default(), EventBus::default(), runtime,
+            ExtensionSessionProfile::default(),
+            EventBus::default(),
+            runtime,
         )
     }
 
@@ -6247,10 +6481,14 @@ mod memory_reporter_tests {
         let api = api(runtime.registration_scope());
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed = calls.clone();
-        api.register_memory_reporter("cache", Arc::new(move || {
-            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            [("bytes".into(), 42)].into()
-        })).expect("register");
+        api.register_memory_reporter(
+            "cache",
+            Arc::new(move || {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                [("bytes".into(), 42)].into()
+            }),
+        )
+        .expect("register");
         assert!(runtime.memory_reporters("<memory-test>").is_empty());
         // When
         api.runtime.commit_registration().expect("commit");
@@ -6267,13 +6505,17 @@ mod memory_reporter_tests {
         // Given
         let runtime = ExtensionRuntime::default();
         let api = api(runtime.registration_scope());
-        api.register_memory_reporter("cache", Arc::new(BTreeMap::new)).expect("register");
+        api.register_memory_reporter("cache", Arc::new(BTreeMap::new))
+            .expect("register");
         // When
         api.runtime.invalidate_registration("factory failed");
         // Then
         assert!(runtime.memory_reporters("<memory-test>").is_empty());
         assert!(api.runtime.commit_registration().is_err());
-        assert!(api.register_memory_reporter("late", Arc::new(BTreeMap::new)).is_err());
+        assert!(
+            api.register_memory_reporter("late", Arc::new(BTreeMap::new))
+                .is_err()
+        );
     }
 
     #[test]
@@ -6282,9 +6524,13 @@ mod memory_reporter_tests {
         let runtime = ExtensionRuntime::default();
         let api = api(runtime.clone());
         // When
-        let rejected: Vec<_> = RESERVED_MEMORY_REPORT_KEYS.iter().map(|name| {
-            api.register_memory_reporter(name, Arc::new(BTreeMap::new)).is_err()
-        }).collect();
+        let rejected: Vec<_> = RESERVED_MEMORY_REPORT_KEYS
+            .iter()
+            .map(|name| {
+                api.register_memory_reporter(name, Arc::new(BTreeMap::new))
+                    .is_err()
+            })
+            .collect();
         // Then
         assert!(rejected.into_iter().all(|rejected| rejected));
         assert!(runtime.memory_reporters("<memory-test>").is_empty());
@@ -6295,14 +6541,19 @@ mod memory_reporter_tests {
         // Given
         let runtime = ExtensionRuntime::default();
         let api = api(runtime.registration_scope());
-        api.register_memory_reporter("cache", Arc::new(|| [("bytes".into(), 99)].into())).expect("register");
+        api.register_memory_reporter("cache", Arc::new(|| [("bytes".into(), 99)].into()))
+            .expect("register");
         api.runtime.commit_registration().expect("commit");
         let reentrant = runtime.clone();
         // When
-        api.register_memory_reporter("cache", Arc::new(move || {
-            let count = reentrant.memory_reporters("<memory-test>").len();
-            [("bytes".into(), count)].into()
-        })).expect("replace");
+        api.register_memory_reporter(
+            "cache",
+            Arc::new(move || {
+                let count = reentrant.memory_reporters("<memory-test>").len();
+                [("bytes".into(), count)].into()
+            }),
+        )
+        .expect("replace");
         // Then
         let reporters = runtime.memory_reporters("<memory-test>");
         assert_eq!(reporters.len(), 1);
@@ -6316,10 +6567,14 @@ mod memory_reporter_tests {
         let api = api(runtime.clone());
         let captured = Arc::new(());
         let weak = Arc::downgrade(&captured);
-        api.register_memory_reporter("cache", Arc::new(move || {
-            let _capture = &captured;
-            BTreeMap::new()
-        })).expect("register");
+        api.register_memory_reporter(
+            "cache",
+            Arc::new(move || {
+                let _capture = &captured;
+                BTreeMap::new()
+            }),
+        )
+        .expect("register");
         // When
         runtime.invalidate("reloaded");
         // Then

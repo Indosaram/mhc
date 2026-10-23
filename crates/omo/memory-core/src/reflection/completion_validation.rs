@@ -4,6 +4,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::agreements::AGREEMENTS_PATH;
 use crate::git::exec::GitExec;
 use crate::memfs::{describe_frontmatter_violation, is_memory_content_path, split_frontmatter};
 
@@ -34,13 +35,36 @@ pub enum CompletionValidation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DreamTokenBudgetValidation { Valid { total_tokens: usize, target_tokens: usize }, BudgetNotMet { total_tokens: usize, target_tokens: usize, detail: String } }
+pub enum DreamTokenBudgetValidation {
+    Valid {
+        total_tokens: usize,
+        target_tokens: usize,
+    },
+    BudgetNotMet {
+        total_tokens: usize,
+        target_tokens: usize,
+        detail: String,
+    },
+}
 
-pub fn validate_dream_token_budget(origin: super::machine::DreamOrigin, total_tokens: usize, target_tokens: usize) -> DreamTokenBudgetValidation {
+pub fn validate_dream_token_budget(
+    origin: super::machine::DreamOrigin,
+    total_tokens: usize,
+    target_tokens: usize,
+) -> DreamTokenBudgetValidation {
     if origin != super::machine::DreamOrigin::Pressure || total_tokens < target_tokens {
-        DreamTokenBudgetValidation::Valid { total_tokens, target_tokens }
+        DreamTokenBudgetValidation::Valid {
+            total_tokens,
+            target_tokens,
+        }
     } else {
-        DreamTokenBudgetValidation::BudgetNotMet { total_tokens, target_tokens, detail: format!("Committed system/ estimate is {total_tokens} tokens; pressure dream target is below {target_tokens} tokens") }
+        DreamTokenBudgetValidation::BudgetNotMet {
+            total_tokens,
+            target_tokens,
+            detail: format!(
+                "Committed system/ estimate is {total_tokens} tokens; pressure dream target is below {target_tokens} tokens"
+            ),
+        }
     }
 }
 
@@ -150,6 +174,34 @@ pub fn validate_completion(
                 detail: format!("Changed path escapes the memory repository: {path}"),
             };
         }
+    }
+
+    // Rename detection is off here on purpose: `git mv system/agreements.md elsewhere` must read as a deletion.
+    let ledger = match exec.run_in(
+        &worktree.dir,
+        &[
+            "diff",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            &range,
+            "--",
+            AGREEMENTS_PATH,
+        ],
+    ) {
+        Ok(res) => res,
+        Err(err) => {
+            return CompletionValidation::Failed {
+                detail: format!("git diff failed: {err}"),
+            };
+        }
+    };
+    if ledger.stdout.split('\0').any(|path| !path.is_empty()) {
+        return CompletionValidation::Failed {
+            detail: format!(
+                "Reflection may not modify {AGREEMENTS_PATH}; agreements change only through the facts lane and /agreements"
+            ),
+        };
     }
 
     match find_frontmatter_failure(exec, &worktree.dir, recorded_base, &tip_sha, &changed_paths) {

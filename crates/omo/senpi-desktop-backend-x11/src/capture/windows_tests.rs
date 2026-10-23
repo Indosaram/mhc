@@ -3,8 +3,8 @@
 use x11rb::protocol::xproto::{Atom, AtomEnum, Window};
 
 use super::connection::Placement;
-use super::fake::{viewable, FakeServer};
-use super::windows::{windows, MAX_WINDOWS};
+use super::fake::{FakeServer, viewable};
+use super::windows::{MAX_WINDOWS, windows};
 
 fn server() -> FakeServer {
     FakeServer::new(1280, 800)
@@ -102,7 +102,10 @@ fn a_window_reports_its_utf8_title_class_pid_and_root_geometry() {
         (window.x, window.y, window.width, window.height),
         window.elevated,
     );
-    assert_eq!(summary, ("héllo", "XTerm", Some(4242), (40, 50, 640, 480), None));
+    assert_eq!(
+        summary,
+        ("héllo", "XTerm", Some(4242), (40, 50, 640, 480), None)
+    );
 }
 
 #[test]
