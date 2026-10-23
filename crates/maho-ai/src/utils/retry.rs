@@ -129,6 +129,8 @@ static RETRYABLE_PROVIDER_ERROR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
         "upstream.?unavailable",
         "reset before headers",
         "socket hang up",
+        // reqwest's body-read failure: the Rust analogue of Node fetch's "terminated"
+        "error decoding response body",
         "socket connection was closed",
         "timed? out",
         "timeout",
@@ -1058,6 +1060,13 @@ mod tests {
     fn matches_openai_responses_streams_that_end_before_terminal_events() {
         assert!(is_retryable_assistant_error(&error_message(
             OPENAI_RESPONSES_EARLY_EOF_MESSAGE
+        )));
+    }
+
+    #[test]
+    fn classifies_reqwest_body_decode_failures_as_retryable() {
+        assert!(is_retryable_assistant_error(&error_message(
+            "error decoding response body"
         )));
     }
 

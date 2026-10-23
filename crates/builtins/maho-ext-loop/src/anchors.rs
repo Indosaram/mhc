@@ -3,7 +3,14 @@ use crate::{index::LOOP_TICK_ENTRY_TYPE,types::SentinelDeliveryState};
 /// `anchorPresent(ctx, ..)` which reads `ctx.sessionManager.buildContextEntries()`
 /// (`loop/index.ts:287`): entries dropped by an accepted compaction no longer anchor a reminder.
 pub fn compaction_aware_entries(context:&maho_ext_api::ExtensionContext)->Vec<maho_ext_api::SessionEntry> {
-    let entries=context.session_manager.get_branch();
+    // Context entries are the newest compaction plus everything from its `firstKeptEntryId` on, so the
+    // walk can stop at that id; with no compaction (or no such id) the whole branch is returned.
+    let mut first_kept:Option<String>=None;
+    let (_,entries)=context.session_manager.get_branch_tail(0,&mut |data|{
+        if let Some(id)=&first_kept { return data.get("id").and_then(serde_json::Value::as_str)==Some(id.as_str()); }
+        if data.get("type").and_then(serde_json::Value::as_str)==Some("compaction") { first_kept=Some(data.get("firstKeptEntryId").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned()); }
+        false
+    });
     let values:Vec<serde_json::Value>=entries.iter().map(|entry|entry.data.clone()).collect();
     let surviving=maho_core::session_manager::build_context_entries(&values,context.session_manager.get_leaf_id().as_deref());
     let ids:std::collections::BTreeSet<&str>=surviving.iter().filter_map(|value|value.get("id").and_then(serde_json::Value::as_str)).collect();

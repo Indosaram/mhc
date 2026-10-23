@@ -471,11 +471,11 @@ mod tests {
                 Some(&mut ui),
             )
             .unwrap();
-        assert!(ui.0.last().unwrap().ends_with("reflecting]"));
+        assert!(ui.0.last().unwrap().ends_with("reflecting"));
         wiring
             .on_live_reflection_completed("agent", "run", &api, now, Some(&mut ui))
             .unwrap();
-        assert_eq!(ui.0.last().unwrap(), "[mem:agent just now]");
+        assert_eq!(ui.0.last().unwrap(), "mem:agent just now");
         let events = events.lock().unwrap();
         assert_eq!(events.len(), 3);
         assert_eq!(events[1]["data"]["reflection"]["activeRun"]["runId"], "run");
@@ -541,8 +541,8 @@ mod tests {
             )
             .unwrap();
         assert!(wiring.footer.is_animating());
-        assert_eq!(ui.0.last().unwrap(), "[mem:agent ⠋ reflecting]");
+        assert_eq!(ui.0.last().unwrap(), "mem:agent ⠋ reflecting");
         wiring.footer.tick(&mut ui);
-        assert_eq!(ui.0.last().unwrap(), "[mem:agent ⠙ reflecting]");
+        assert_eq!(ui.0.last().unwrap(), "mem:agent ⠙ reflecting");
     }
 }

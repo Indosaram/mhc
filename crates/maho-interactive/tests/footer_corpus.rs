@@ -11,6 +11,14 @@ fn original_footer_corpus_is_byte_equal_at_required_widths() {
     }
 }
 #[test]
+fn extension_statuses_are_separated_by_pipes() {
+    let mut snapshot: FooterSnapshot = serde_json::from_str(include_str!("golden/footer-input.json")).unwrap();
+    snapshot.extension_statuses = [("brand".into(), "Maho Code".into()), ("memory".into(), "mem:agent 3h ago".into())].into_iter().collect();
+    let theme = Theme::builtin("dark", ColorMode::Truecolor).unwrap();
+    let lines = FooterComponent::new(snapshot).render(200, &theme).unwrap();
+    assert_eq!(lines.last().map(String::as_str), Some("Maho Code | mem:agent 3h ago"));
+}
+#[test]
 fn all_theme_tokens_match_pinned_palette_ansi() {
     let palettes: Vec<Value> = serde_json::from_str(include_str!("golden/palettes.json")).unwrap();
     for palette in palettes {

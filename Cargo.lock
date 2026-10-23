@@ -4602,6 +4602,8 @@ dependencies = [
 name = "maho-ext-todotools"
 version = "0.0.0"
 dependencies = [
+ "maho-ai",
+ "maho-core",
  "maho-ext-api",
  "maho-ext-host",
  "maho-interactive",
@@ -5779,9 +5781,12 @@ dependencies = [
  "libc",
  "maho-ai",
  "maho-delegate-core",
+ "maho-ext-api",
  "maho-isolation-core",
  "maho-model-core",
  "maho-omo-config-core",
+ "maho-omo-mass-ulw",
+ "maho-omo-ultrawork",
  "maho-team-core",
  "maho-utils",
  "pretty_assertions",

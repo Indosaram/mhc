@@ -195,13 +195,23 @@ pub fn create_eval_input_schema(
         "'detach' (interactive default): the call returns after {}s of the cell's own work (a host tool call in flight can hold it up to the {}s foreground window) while the cell keeps running; completion arrives as a notification. 'error' (print/json default): the call blocks until the cell settles or a deadline kills it.",
         deadlines.detach_after_seconds, deadlines.foreground_window_seconds
     );
-    Ok(json!({"type":"object","properties":{
+    // Run fields are optional at the root for control calls, but required in the run branch.
+    let properties = json!({
         "action":{"anyOf":[{"const":"run","type":"string"},{"const":"peek","type":"string"},{"const":"stop","type":"string"},{"const":"list","type":"string"}],"description":"Defaults to run. peek and stop require cell_id. list: live and recently settled cells."},
-        "language":{"anyOf":languages},"code":{"type":"string","description":"Cell body, verbatim."},
+        "language":{"anyOf":languages,"description":"REQUIRED for run. Kernel that runs the cell; each language keeps its own persistent state across eval calls."},"code":{"type":"string","description":"REQUIRED for run. Cell body, verbatim."},
         "summary":{"type":"string","description":"REQUIRED for run. One line in the language the user writes in: a progress update saying what you are doing and why, not a label for the code; shown in the TUI while the cell runs."},
         "timeout":{"type":"number","minimum":1,"description":timeout_description},
         "on_timeout":{"anyOf":[{"const":"detach","type":"string"},{"const":"error","type":"string"}],"description":on_timeout_description},
         "reset":{"type":"boolean","description":"Reset this language kernel before running; refused while that language has live cells."},
         "cell_id":{"type":"string","minLength":1,"description":"Eval cell id for peek or stop."}
-    },"anyOf":[{"properties":{"action":{"enum":["run","list"]}}},{"properties":{"action":{"enum":["peek","stop"]}},"required":["action","cell_id"]}]}))
+    });
+    let cell_id = properties["cell_id"].clone();
+    let mut run_properties = properties.clone();
+    run_properties["action"] = json!({"const":"run","type":"string"});
+    // Keep branches self-contained for Mistral-hosted GLM (senpi #2240).
+    Ok(json!({"type":"object","properties":properties,"anyOf":[
+        {"type":"object","properties":run_properties,"required":["language","code","summary"]},
+        {"type":"object","properties":{"action":{"const":"list","type":"string"}},"required":["action"]},
+        {"type":"object","properties":{"action":{"anyOf":[{"const":"peek","type":"string"},{"const":"stop","type":"string"}]},"cell_id":cell_id},"required":["action","cell_id"]}
+    ]}))
 }

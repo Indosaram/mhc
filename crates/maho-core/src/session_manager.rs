@@ -717,6 +717,17 @@ impl crate::session_write_reservation::SessionWriterOwner for SessionWriterToken
     }
 }
 
+/// Lazily materialized non-header entries shared by every reader until the next mutation of
+/// `file_entries`. A clone starts empty so clones never share a stale view.
+#[derive(Debug, Default)]
+struct EntriesCache(Mutex<Option<Arc<Vec<Value>>>>);
+
+impl Clone for EntriesCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionManager {
     session_id: String,
@@ -726,6 +737,7 @@ pub struct SessionManager {
     persist: bool,
     flushed: bool,
     file_entries: Vec<Value>,
+    entries_cache: EntriesCache,
     by_id: HashMap<String, usize>,
     labels_by_id: HashMap<String, String>,
     label_timestamps_by_id: HashMap<String, String>,
@@ -783,6 +795,7 @@ impl SessionManager {
             persist,
             flushed: false,
             file_entries: Vec::new(),
+            entries_cache: EntriesCache::default(),
             by_id: HashMap::new(),
             labels_by_id: HashMap::new(),
             label_timestamps_by_id: HashMap::new(),
@@ -879,7 +892,13 @@ impl SessionManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = self.blobs_dir();
     }
 
+    /// Must follow every mutation of `file_entries`: drops the shared materialized view.
+    fn invalidate_entries_cache(&mut self) {
+        *self.entries_cache.0.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
     fn externalize_file_entries(&mut self) {
+        self.invalidate_entries_cache();
         let store = self.resident_store.clone();
         self.file_entries = self
             .file_entries
@@ -1223,6 +1242,7 @@ impl SessionManager {
                 return Ok(());
             }
             self.file_entries = entries;
+            self.invalidate_entries_cache();
             self.session_id = self
                 .file_entries
                 .iter()
@@ -1302,6 +1322,7 @@ impl SessionManager {
         self.file_entries = vec![Value::Object(header)];
         self.history_generation += 1;
         self.verbatim_from_count = 0;
+        self.invalidate_entries_cache();
         self.mirror_trimmed = false;
         self.trimmed_entry_count = 0;
         self.full_entry_count = 0;
@@ -1477,6 +1498,7 @@ impl SessionManager {
         let entry = self.resident_store.externalize(&entry);
         let id = entry.get("id").and_then(Value::as_str).map(str::to_owned);
         self.file_entries.push(entry.clone());
+        self.invalidate_entries_cache();
         if let Some(id) = id {
             self.by_id.insert(id.clone(), self.file_entries.len() - 1);
             self.leaf_id = Some(id);
@@ -1730,6 +1752,7 @@ impl SessionManager {
         self.mirror_trimmed = true;
         self.trimmed_entry_count = self.full_entry_count;
         self.file_entries = header.into_iter().chain(retained).collect();
+        self.invalidate_entries_cache();
         self.externalize_file_entries();
         // A trim keeps the history; only a replacement of it changes the reduction memo's generation.
         let generation = self.history_generation;
@@ -1918,17 +1941,21 @@ impl SessionManager {
 
     /// The resident mirror's entries, materialized; after a compaction trim this is the bounded
     /// post-compaction view rather than the full history.
-    fn compact_entries(&self) -> Vec<Value> {
-        let entries = self
-            .file_entries
-            .iter()
-            .filter(|entry| entry_type(entry) != "session");
-        crate::session_entry_materializer::materialize_session_entries(
+    /// Materialized once per mutation and shared; readers borrow the same `Arc`.
+    fn compact_entries(&self) -> Arc<Vec<Value>> {
+        let mut cache = self.entries_cache.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(cached) = cache.as_ref() {
+            return Arc::clone(cached);
+        }
+        let entries = self.file_entries.iter().filter(|entry| entry_type(entry) != "session");
+        let materialized = Arc::new(crate::session_entry_materializer::materialize_session_entries(
             entries,
             &self.resident_store,
             || self.load_full_history_entries(),
             |_| {},
-        )
+        ));
+        *cache = Some(Arc::clone(&materialized));
+        materialized
     }
 
     pub fn header(&self) -> Option<Value> {
@@ -2006,7 +2033,7 @@ impl SessionManager {
                 .map(|entry| self.resident_store.materialize(&entry))
                 .collect();
         }
-        self.compact_entries()
+        self.compact_entries().as_ref().clone()
     }
 
     pub fn entry(&self, id: &str) -> Option<Value> {
@@ -2438,6 +2465,7 @@ impl SessionManager {
             self.sync_session_file_ownership();
             self.check_session_hold()?;
             self.file_entries = file_entries;
+            self.invalidate_entries_cache();
             self.build_index();
             // Defer the write to the first assistant response when the branch has none, matching
             // the new_session contract.
@@ -2459,6 +2487,7 @@ impl SessionManager {
         }
 
         self.file_entries = file_entries;
+        self.invalidate_entries_cache();
         self.session_id = new_session_id;
         self.build_index();
         Ok(None)
@@ -2771,6 +2800,18 @@ mod tests {
             .map(|entry| format!("{}\n", serialize_entry(entry)))
             .collect();
         assert_eq!(reserialized, content);
+    }
+
+    #[test]
+    fn appending_after_a_read_invalidates_the_shared_entries_cache() {
+        let mut manager = SessionManager::in_memory("/tmp", None, None);
+        manager.append_message(json!({ "role": "user", "content": "one", "timestamp": 1 }));
+        assert_eq!(manager.entries().len(), 1);
+        let second = manager.append_message(json!({ "role": "user", "content": "two", "timestamp": 2 }));
+        let entries = manager.entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1]["id"], second["id"]);
+        assert_eq!(manager.current_branch().last().map(|entry| &entry["id"]), Some(&second["id"]));
     }
 
     #[test]

@@ -816,6 +816,15 @@ impl SettingsManager {
         self.project_trusted
     }
 
+    /// senpi `getTodoFirstTurnPlan`: `remind` and `off` are honored; anything else is `force`.
+    pub fn get_todo_first_turn_plan(&self) -> &'static str {
+        match self.settings.get("todo").and_then(|todo| todo.get("firstTurnPlan")).and_then(Value::as_str) {
+            Some("remind") => "remind",
+            Some("off") => "off",
+            _ => "force",
+        }
+    }
+
     /// senpi `getAskUserSettings`.
     pub fn get_ask_user_settings(&self) -> AskUserSettings {
         let configured = self.settings.get("askUser");

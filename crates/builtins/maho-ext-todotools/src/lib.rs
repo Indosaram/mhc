@@ -12,6 +12,7 @@ pub mod todo_widget;
 pub mod state;
 pub mod commands;
 pub mod prompt;
+pub mod first_turn;
 pub mod tools_todo;
 pub mod todo_widget_component;
 pub mod index;
