@@ -4613,17 +4613,29 @@ impl InteractiveMode {
     }
 
     pub async fn bind_extensions(&mut self) {
+        let binding = self.start_extension_binding();
+        tokio::pin!(binding);
+        loop {
+            tokio::select! { () = &mut binding => break, Some(request) = self.ui_requests.recv() => self.handle_ui_request(request) }
+        }
+        self.finish_extension_binding().await;
+    }
+
+    /// The session-side half of `bind_extensions`. It does not borrow the mode, so the caller can
+    /// keep reading input and painting while it runs (senpi's event loop serves keystrokes during
+    /// `await rebindCurrentSession()`); UI requests it raises arrive through `drain_events`.
+    pub fn start_extension_binding(&self) -> impl std::future::Future<Output = ()> + 'static {
         let session = self.session.clone();
         let bindings = maho_core::agent_session::ExtensionBindings {
             ui_context: Some(self.extension_ui.clone()),
             mode: Some(maho_ext_api::ExtensionMode::Tui),
             ..Default::default()
         };
-        let binding = session.bind_extensions(bindings);
-        tokio::pin!(binding);
-        loop {
-            tokio::select! { () = &mut binding => break, Some(request) = self.ui_requests.recv() => self.handle_ui_request(request) }
-        }
+        async move { session.bind_extensions(bindings).await }
+    }
+
+    /// The mode-side half of `bind_extensions`, run once the binding future settles.
+    pub async fn finish_extension_binding(&mut self) {
         self.drain_ui_requests();
         self.register_discovered_themes();
         // senpi `rebindCurrentSession` -> `setupAutocompleteProvider`: extension commands and skills
