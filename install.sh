@@ -50,8 +50,22 @@ valid_version() {
   esac
   [ "${#1}" -le 128 ]
 }
+# Prints the version; the binary's stdout, stderr and exit status are kept under $work for probe_report.
 payload_version() {
-  "$1" --version 2>/dev/null | tr -d '\r' | head -n 1 | sed 's/^[vV]//'
+  echo 0 >"$work/probe.status"
+  "$1" --version >"$work/probe.out" 2>"$work/probe.err" || echo "$?" >"$work/probe.status"
+  tr -d '\r' <"$work/probe.out" | head -n 1 | sed 's/^[vV]//'
+}
+# Why the last probe failed: exit status, first stderr lines, and a hint for a too-old system glibc.
+probe_report() {
+  printf ' (exit status %s)' "$(cat "$work/probe.status")"
+  if [ -s "$work/probe.err" ]; then
+    printf '\n'
+    head -n 5 "$work/probe.err" | tr -d '\r' | sed 's/^/  /'
+    if grep -q 'GLIBC_' "$work/probe.err"; then
+      printf 'This mhc build needs a newer glibc than this system provides; please report it at https://github.com/Indosaram/mhc/issues'
+    fi
+  fi
 }
 pointer_field() {
   sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$1" | head -n 1
@@ -94,7 +108,7 @@ fi
 [ -f "$pkg/manifest.json" ] || die "archive does not contain mhc-$target/manifest.json"
 
 new=$(payload_version "$pkg/mhc")
-valid_version "$new" || die "cannot determine the packaged mhc version (got '$new')"
+valid_version "$new" || die "cannot determine the packaged mhc version (got '$new')$(probe_report)"
 
 # Pointer state before this install.
 old_current=""
@@ -163,10 +177,10 @@ mv -f "$install_dir/.current.json.$$" "$install_dir/current.json"
 
 ln -sfn "$install_dir/mhc" "$bin_dir/mhc"
 
-installed=$("$install_dir/mhc" --version 2>/dev/null | tr -d '\r' | head -n 1 | sed 's/^[vV]//' || true)
+installed=$(payload_version "$install_dir/mhc")
 if [ "$installed" != "$new" ]; then
   if [ "$had_pointer" = 1 ]; then mv -f "$work/current.json.bak" "$install_dir/current.json"; fi
-  die "installed launcher reports '$installed', expected '$new'"
+  die "installed launcher reports '$installed', expected '$new'$(probe_report)"
 fi
 
 say "Installed mhc $installed to $install_dir"
