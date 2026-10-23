@@ -2556,11 +2556,12 @@ impl SessionManager {
 
 impl SessionManager {
     /// senpi `SessionManager.list(cwd, sessionDir)`: one project's sessions, newest first. A custom
-    /// session dir that is not this cwd's default dir is filtered to sessions started in `cwd`.
+    /// session dir that is not this cwd's default dir is filtered to sessions started in `cwd`;
+    /// published partial rows are filtered the same way.
     pub fn list(
         cwd: &str,
         session_dir: Option<&str>,
-        on_progress: Option<crate::session_discovery::SessionListProgress<'_>>,
+        mut on_progress: Option<crate::session_discovery::SessionListProgress<'_>>,
     ) -> Vec<crate::session_discovery::SessionInfo> {
         let options = PathInputOptions::default();
         let dir = session_dir
@@ -2569,79 +2570,61 @@ impl SessionManager {
         let filter_cwd =
             session_dir.is_some() && dir != get_default_session_dir_path(cwd, &get_agent_dir());
         let resolved_cwd = resolve_path(cwd, cwd, &options);
+        let include = |session: &crate::session_discovery::SessionInfo| {
+            !filter_cwd
+                || (!session.cwd.is_empty()
+                    && resolve_path(&session.cwd, &session.cwd, &options) == resolved_cwd)
+        };
+        let mut forward = |loaded: usize, total: usize, rows: Option<Vec<crate::session_discovery::SessionInfo>>| {
+            if let Some(progress) = on_progress.as_deref_mut() {
+                progress(loaded, total, rows.map(|rows| rows.into_iter().filter(|row| include(row)).collect()));
+            }
+        };
         let mut sessions: Vec<_> =
-            crate::session_discovery::list_sessions_from_dir(&dir, on_progress, 0, None)
+            crate::session_discovery::list_sessions_from_dir(&dir, Some(&mut forward), 0, None)
                 .into_iter()
-                .filter(|session| {
-                    !filter_cwd
-                        || (!session.cwd.is_empty()
-                            && resolve_path(&session.cwd, &session.cwd, &options) == resolved_cwd)
-                })
+                .filter(|session| include(session))
                 .collect();
         sessions.sort_by_key(|session| std::cmp::Reverse(session.modified));
         sessions
     }
 
     /// senpi `SessionManager.listAll(sessionDir)`: every session in a custom dir, or across every
-    /// project directory under the agent sessions dir, newest first.
-    /// `on_progress` reports `(loaded, total)` across every directory, counted up front as upstream does.
+    /// project directory under the agent sessions dir, newest first. `on_progress` reports
+    /// `(loaded, total)` across every directory and publishes partial rows every
+    /// [`crate::session_discovery::ALL_SESSION_LIST_PUBLISH_INTERVAL`] files. Files load newest first
+    /// across all directories (see [`crate::session_discovery::session_files_newest_first`]).
     pub fn list_all(
         session_dir: Option<&str>,
-        mut on_progress: Option<crate::session_discovery::SessionListProgress<'_>>,
+        on_progress: Option<crate::session_discovery::SessionListProgress<'_>>,
     ) -> Vec<crate::session_discovery::SessionInfo> {
-        let mut sessions = Vec::new();
-        match session_dir {
-            Some(dir) => {
-                sessions = crate::session_discovery::list_sessions_from_dir(
-                    &normalize_path(dir, &PathInputOptions::default()),
+        let mut sessions = match session_dir {
+            Some(dir) => crate::session_discovery::list_sessions_from_dir(
+                &normalize_path(dir, &PathInputOptions::default()),
+                on_progress,
+                0,
+                None,
+            ),
+            None => {
+                let dirs: Vec<PathBuf> = std::fs::read_dir(get_sessions_dir())
+                    .map(|entries| {
+                        entries
+                            .filter_map(Result::ok)
+                            .map(|entry| entry.path())
+                            .filter(|path| path.is_dir())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let files = crate::session_discovery::session_files_newest_first(&dirs);
+                crate::session_discovery::list_session_files(
+                    &files,
                     on_progress,
                     0,
-                    None,
+                    files.len(),
+                    crate::session_discovery::ALL_SESSION_LIST_PUBLISH_INTERVAL,
                 )
             }
-            None => {
-                if let Ok(entries) = std::fs::read_dir(get_sessions_dir()) {
-                    let dirs: Vec<PathBuf> = entries
-                        .filter_map(Result::ok)
-                        .map(|entry| entry.path())
-                        .filter(|path| path.is_dir())
-                        .collect();
-                    // senpi: count total files first for accurate progress.
-                    let total_files: usize = dirs
-                        .iter()
-                        .map(|dir| {
-                            std::fs::read_dir(dir)
-                                .map(|files| {
-                                    files
-                                        .filter_map(Result::ok)
-                                        .filter(|file| {
-                                            file.path().extension().and_then(|ext| ext.to_str())
-                                                == Some("jsonl")
-                                        })
-                                        .count()
-                                })
-                                .unwrap_or(0)
-                        })
-                        .sum();
-                    let mut loaded = 0usize;
-                    for dir in dirs {
-                        let offset = loaded;
-                        let mut forward = |done: usize, total: usize| {
-                            loaded = done;
-                            if let Some(progress) = on_progress.as_deref_mut() {
-                                progress(done, total);
-                            }
-                        };
-                        sessions.extend(crate::session_discovery::list_sessions_from_dir(
-                            &dir.to_string_lossy(),
-                            Some(&mut forward),
-                            offset,
-                            Some(total_files),
-                        ));
-                    }
-                }
-            }
-        }
+        };
         sessions.sort_by_key(|session| std::cmp::Reverse(session.modified));
         sessions
     }
@@ -2912,14 +2895,14 @@ mod tests {
         let sessions = SessionManager::list(
             &dir,
             Some(&dir),
-            Some(&mut |loaded, total| updates.push((loaded, total))),
+            Some(&mut |loaded, total, _rows| updates.push((loaded, total))),
         );
         assert_eq!(sessions.len(), 1);
         assert_eq!(updates, vec![(1, 1)]);
         let mut all_updates = Vec::new();
         SessionManager::list_all(
             Some(&dir),
-            Some(&mut |loaded, total| all_updates.push((loaded, total))),
+            Some(&mut |loaded, total, _rows| all_updates.push((loaded, total))),
         );
         assert_eq!(all_updates, vec![(1, 1)]);
     }

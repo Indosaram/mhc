@@ -32,8 +32,9 @@ pub enum SessionScope {
     All,
 }
 
-/// senpi's SessionListProgress.
-pub use maho_core::session_discovery::SessionListProgress;
+/// senpi's SessionListProgress: `(loaded, total, rows)`, where `rows` holds only the rows finished
+/// since the previous publication (senpi passes the sorted cumulative list).
+pub type SessionListProgress<'a> = &'a mut dyn FnMut(usize, usize, Option<Vec<SessionInfo>>);
 /// senpi's SessionsLoader.
 pub type SessionsLoader = Box<dyn FnMut(Option<SessionListProgress<'_>>) -> Vec<SessionInfo> + Send>;
 
@@ -48,6 +49,7 @@ enum LoadUpdate {
         seq: Option<u64>,
         loaded: usize,
         total: usize,
+        rows: Option<Vec<SessionInfo>>,
     },
     Finished {
         scope: SessionScope,
@@ -1105,6 +1107,10 @@ impl SessionSelectorComponent {
             self.all_load_seq
         });
         self.set_load_inflight(scope, true);
+        match scope {
+            SessionScope::Current => self.current_sessions = None,
+            SessionScope::All => self.all_sessions = None,
+        }
         let mut loader = self.take_loader(scope);
         let tx = self.load_tx.clone();
         #[cfg(test)]
@@ -1112,12 +1118,13 @@ impl SessionSelectorComponent {
         let finished = take_load_finished_hook();
         spawn_session_load(move || {
             let progress_tx = tx.clone();
-            let mut on_progress = move |loaded: usize, total: usize| {
+            let mut on_progress = move |loaded: usize, total: usize, rows: Option<Vec<SessionInfo>>| {
                 let _ = progress_tx.send(LoadUpdate::Progress {
                     scope,
                     seq,
                     loaded,
                     total,
+                    rows,
                 });
             };
             let sessions = loader(Some(&mut on_progress));
@@ -1164,7 +1171,28 @@ impl SessionSelectorComponent {
         let mut changed = false;
         for update in updates {
             match update {
-                LoadUpdate::Progress { scope, seq, loaded, total } => {
+                LoadUpdate::Progress { scope, seq, loaded, total, rows } => {
+                    if seq.is_some_and(|seq| seq != self.all_load_seq) {
+                        continue;
+                    }
+                    // senpi publishes partial lists while the load runs. The loaders start
+                    // files newest first (intentional mhc divergence, see
+                    // maho_core::session_discovery::session_files_newest_first), so the first
+                    // rows painted are the sessions most likely to be resumed.
+                    if let Some(rows) = rows {
+                        let partial = match scope {
+                            SessionScope::Current => self.current_sessions.get_or_insert_with(Vec::new),
+                            SessionScope::All => self.all_sessions.get_or_insert_with(Vec::new),
+                        };
+                        partial.extend(rows);
+                        partial.sort_by_key(|session| std::cmp::Reverse(session.modified_ms));
+                        if scope == self.scope {
+                            let sessions = partial.clone();
+                            self.session_list
+                                .borrow_mut()
+                                .set_sessions(sessions, scope == SessionScope::All);
+                        }
+                    }
                     if self.load_update_applies(scope, seq) {
                         self.header.set_progress(loaded, total);
                         changed = true;
@@ -1236,7 +1264,7 @@ impl SessionSelectorComponent {
                 self.scope = SessionScope::All;
                 self.header.set_scope(self.scope);
                 if let Some(sessions) = self.all_sessions.clone() {
-                    self.header.set_loading(false);
+                    self.header.set_loading(self.all_load_inflight);
                     self.session_list.borrow_mut().set_sessions(sessions, true);
                     (self.request_render)();
                     return;
@@ -1247,7 +1275,7 @@ impl SessionSelectorComponent {
                 self.scope = SessionScope::Current;
                 self.header.set_scope(self.scope);
                 if let Some(sessions) = self.current_sessions.clone() {
-                    self.header.set_loading(false);
+                    self.header.set_loading(self.current_load_inflight);
                     self.session_list.borrow_mut().set_sessions(sessions, false);
                 } else {
                     self.header.set_loading(true);
