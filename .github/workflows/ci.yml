@@ -79,7 +79,7 @@ jobs:
           cargo build --locked -p maho-senpi-desktop-engine
       - name: run tests (shard ${{ matrix.shard }}/6)
         timeout-minutes: 20
-        run: cargo nextest run --locked --no-fail-fast --tool-config-file "ci:$GITHUB_WORKSPACE/.github/nextest.toml" $CRATES
+        run: cargo nextest run --locked --no-fail-fast $CRATES
       - name: disk usage
         if: always()
         run: df -h / && du -sh target 2>/dev/null || true
@@ -146,4 +146,4 @@ jobs:
           cargo build --locked -p maho-senpi-desktop-engine
       - name: run tests (shard ${{ matrix.shard }}/3)
         timeout-minutes: 40
-        run: cargo nextest run --locked --no-fail-fast --tool-config-file "ci:$GITHUB_WORKSPACE/.github/nextest.toml" $CRATES
+        run: cargo nextest run --locked --no-fail-fast $CRATES

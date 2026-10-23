@@ -2449,6 +2449,26 @@ fn settings_theme_preview_swaps_the_live_theme_without_persisting_it() {
     assert_eq!(session.with_settings_manager(|settings| settings.get_string("theme")), before);
 }
 
+#[tokio::test]
+async fn theme_switch_recolors_existing_transcript_and_keeps_the_status_line() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("before-switch", Default::default()).await.expect("turn");
+    mode.set_tools_expanded(true);
+    let light = maho_interactive::theme::Theme::builtin("light", mode.active_theme().get_color_mode()).expect("light theme");
+    let light_bg = light.get_bg_ansi(maho_interactive::theme::ThemeBg::UserMessageBg);
+    let dark_bg = mode.active_theme().get_bg_ansi(maho_interactive::theme::ThemeBg::UserMessageBg);
+    assert_ne!(light_bg, dark_bg, "the builtin themes differ in the user message background");
+    let rendered = mode.render(80).join("\n");
+    assert!(rendered.contains(&dark_bg) && !rendered.contains(&light_bg), "{rendered:?}");
+    mode.handle_ui_request(maho_interactive::interactive_extension_ui::UiRequest::SettingChanged("theme".into(), serde_json::json!("light")));
+    let rendered = mode.render(80).join("\n");
+    assert!(rendered.contains("before-switch"), "{rendered}");
+    assert!(rendered.contains(&light_bg), "the message rendered before the switch uses the new theme: {rendered:?}");
+    assert!(!rendered.contains(&dark_bg), "no stale dark background remains: {rendered:?}");
+    assert!(rendered.contains("Tool output: expanded"), "the status line survives the switch: {rendered}");
+}
+
 #[test]
 fn unloadable_theme_setting_falls_back_to_dark_and_shows_an_error() {
     use maho_tui::tui::Component;
