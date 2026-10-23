@@ -21,6 +21,39 @@ pub async fn connect_and_refresh_mcp_catalog(entry:&mut crate::service_types::Mc
     Ok(())
 }
 pub const MCP_STARTUP_RACE_MS:f64=250.0;
+/// Startup-race connect that never holds the entry lock across network I/O.
+// PERF-DIVERGENCE(senpi mcp startup-race.ts): upstream entries are plain objects, so a backgrounded
+// connect blocks nobody; the port's entry is a tokio Mutex and the earlier deferred connect held it for
+// the whole connect, stalling session_start registration (~5s on macOS). This snapshots what the
+// connect needs, runs it unlocked, and writes the catalog back under a short lock. Same calls and results.
+pub async fn connect_and_refresh_mcp_catalog_unlocked(handle:&std::sync::Arc<tokio::sync::Mutex<crate::service_types::McpConnectionEntry>>,config:&crate::config_schema::McpServerConfig)->Result<(),crate::errors::McpError> {
+    let (auth,connection,logger,agent_dir,name,config_hash)={
+        let entry=handle.lock().await;
+        (crate::auth::context::ServerAuthPlan {mode:entry.auth_plan.mode,provider:entry.auth_plan.provider.clone(),refresh:entry.auth_plan.refresh.clone()},entry.connection.clone(),entry.logger.clone(),entry.agent_dir.clone(),entry.name.clone(),entry.config_hash.clone())
+    };
+    if let Err(error)=auth.ensure_fresh().await {
+        return Err(crate::health::mark_mcp_connection_needs_auth(&connection,&error).unwrap_or(error));
+    }
+    let client=match connection.connect().await {
+        Ok(client)=>client,
+        Err(error)=>{let _=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&error.to_string(),None,None);return Ok(());}
+    };
+    {
+        let mut entry=handle.lock().await;
+        if entry.cache_refreshed_after_connect{return Ok(());}
+        entry.cache_refreshed_after_connect=true;
+    }
+    let timeout=Duration::from_secs_f64(config.request_timeout_ms.unwrap_or(30000.0)/1000.0);
+    match crate::catalog_cache::collect_server_catalog_for_cache(&connection,timeout,&config_hash).await {
+        Ok(catalog)=>{
+            if let Some(agent_dir)=&agent_dir && let Err(error)=crate::catalog_cache::write_mcp_cached_server(agent_dir,&name,catalog.clone()) {let _=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&format!("Failed to refresh MCP catalog cache: {error}"),None,None);}
+            crate::resources::ensure_mcp_resource_subscriptions(client.clone(),&catalog.resources,timeout).await;
+            handle.lock().await.cached_catalog=Some(catalog);
+        }
+        Err(error)=>{let _=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&format!("Failed to refresh MCP catalog cache: {error}"),None,None);}
+    }
+    Ok(())
+}
 pub const MCP_STARTUP_TIMEOUT_ENV:&str="SENPI_MCP_STARTUP_TIMEOUT_MS";
 pub const MCP_ATTACH_SETTLE_TIMEOUT_MS:u64=5000;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]

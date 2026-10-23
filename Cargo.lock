@@ -4861,6 +4861,7 @@ dependencies = [
  "filetime",
  "flate2",
  "icu_collator",
+ "libc",
  "loro",
  "pkcs8",
  "pretty_assertions",
