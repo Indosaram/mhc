@@ -31,9 +31,18 @@ impl MemoryFactsWiring {
         let Some(extractor) = &mut self.options.extractor else { return; };
         let work = if reconcile { extractor.reconcile_pending(None) } else { extractor.launch_pending(None) };
         let warn = self.options.warn.clone();
-        tokio::spawn(async move {
-            if let Err(error) = work.await { warn(&format!("facts extractor {} failed: {error}", if reconcile { "reconcile" } else { "launch" })); }
+        let kind = if reconcile { "reconcile" } else { "launch" };
+        // The extractor scans and parses every retained queue file synchronously. The interactive
+        // host runs a current-thread runtime, so a task spawned there froze the UI for the whole
+        // scan on session start and `/new`; the work gets its own thread and runtime instead.
+        let thread_warn = warn.clone();
+        let spawned = std::thread::Builder::new().name("memory-facts".into()).spawn(move || {
+            match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(runtime) => if let Err(error) = runtime.block_on(work) { thread_warn(&format!("facts extractor {kind} failed: {error}")); },
+                Err(error) => thread_warn(&format!("facts extractor {kind} failed: {error}")),
+            }
         });
+        if let Err(error) = spawned { warn(&format!("facts extractor {kind} failed: {error}")); }
     }
     pub fn enqueue_settled(&self, conversation: &str, signal: Option<&FactsAbortSignal>) -> FactsEnqueueResult {
         if signal.is_some_and(FactsAbortSignal::is_aborted) || !(self.options.facts_enabled)() { return disabled(); }
@@ -145,6 +154,24 @@ mod tests {
         drop(release);
         let error = tokio::time::timeout(std::time::Duration::from_secs(5), report).await.unwrap().unwrap();
         assert!(!error.is_empty());
+    }
+    struct ThreadProbe(Option<tokio::sync::oneshot::Sender<std::thread::ThreadId>>);
+    impl FactsExtractorPort for ThreadProbe {
+        fn launch_pending(&mut self, _: Option<&FactsAbortSignal>) -> FactsExtractorWork {
+            let report = self.0.take().unwrap();
+            Box::pin(async move { report.send(std::thread::current().id()).map_err(|_| "probe receiver dropped".to_owned()) })
+        }
+        fn reconcile_pending(&mut self, signal: Option<&FactsAbortSignal>) -> FactsExtractorWork { self.launch_pending(signal) }
+    }
+    #[tokio::test]
+    async fn reconcile_work_runs_off_the_calling_thread() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut wiring, _) = fixture(root.path(), true, Rc::new(Cell::new(4)));
+        let (report, reported) = tokio::sync::oneshot::channel();
+        wiring.options.extractor = Some(Box::new(ThreadProbe(Some(report))));
+        wiring.reconcile_extractor();
+        let worker = tokio::time::timeout(std::time::Duration::from_secs(5), reported).await.unwrap().unwrap();
+        assert_ne!(worker, std::thread::current().id());
     }
     #[tokio::test] async fn debounce_counts_settles_even_without_new_entries() { let root=tempfile::tempdir().unwrap(); let (mut wiring,calls)=fixture(root.path(),true,Rc::new(Cell::new(4))); for _ in 0..3 { assert!(!wiring.on_settled("conversation").is_enqueued()); } assert_eq!(calls.get(),0); wiring.on_settled("conversation"); assert_eq!(calls.get(),1); }
     #[tokio::test] async fn repeated_session_admission_is_not_reconciled_again(){let root=tempfile::tempdir().unwrap();let (mut wiring,calls)=fixture(root.path(),true,Rc::new(Cell::new(4)));wiring.on_settled("same");assert_eq!(calls.get(),0);wiring.on_settled("same");assert_eq!(calls.get(),0);}
