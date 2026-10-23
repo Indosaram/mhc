@@ -151,6 +151,9 @@ fn view_contents(dir: &Path) -> Result<Vec<(String, String)>, UlwLoopError> {
 pub fn materialize_sync(dir: impl AsRef<Path>) -> Result<(), UlwLoopError> {
     let dir = dir.as_ref();
     let contents = view_contents(dir)?;
+    if contents.is_empty() {
+        return Ok(());
+    }
     let tmp_dir = dir.join("tmp");
     let _ = fs::create_dir_all(&tmp_dir);
 

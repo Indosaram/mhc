@@ -149,7 +149,7 @@ pub fn build_external_watch_targets(cwd: &Path, registrations: &[crate::protocol
     }
     targets
 }
-pub fn group_changed_paths(paths: &[PathBuf], targets: &[ActiveTarget]) -> BTreeMap<String, Vec<PathBuf>> {
+pub fn group_changed_paths(paths: &[PathBuf], targets: &[ActiveTarget], rearmed_containers: &[PathBuf]) -> BTreeMap<String, Vec<PathBuf>> {
     let mut groups: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     for path in paths {
         let mut matched = false;
@@ -159,9 +159,11 @@ pub fn group_changed_paths(paths: &[PathBuf], targets: &[ActiveTarget]) -> BTree
             if (target.kind == WatchKind::Dir && relative.components().count() > 1)
                 || target.allow_list.as_ref().is_some_and(|allowed| !allowed.iter().any(|allowed| relative == allowed || relative.starts_with(allowed)))
                 || target.filter.as_ref().is_some_and(|filter| !filter(relative)) { continue; }
+            matched = true;
+            // The project container only rearms discovery; newly discovered config files carry the change.
+            if target.id == "builtin-project-presence" && rearmed_containers.contains(path) { continue; }
             let group = groups.entry(active.registration_id.clone()).or_default();
             if !group.contains(path) { group.push(path.clone()); }
-            matched = true;
         }
         if !matched { groups.entry("builtin".into()).or_default().push(path.clone()); }
     }

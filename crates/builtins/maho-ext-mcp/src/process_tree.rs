@@ -58,7 +58,7 @@ pub async fn is_process_alive(pid:u32)->bool {
     if pid==0{return false;}
     #[cfg(unix)]
     {
-        Command::new("/bin/kill").args(["-0","--",&pid.to_string()]).output().await.is_ok_and(|output|output.status.success())
+        i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw).is_some_and(|pid|match rustix::process::test_kill_process(pid){Ok(())=>true,Err(error)=>error==rustix::io::Errno::PERM})
     }
     #[cfg(windows)]
     {
@@ -79,7 +79,10 @@ pub async fn is_process_alive(pid:u32)->bool {
 
 async fn kill_pids(pids:&[u32],signal:&str) {
     #[cfg(unix)]
-    for pid in pids.iter().rev().filter(|pid|**pid>1) {let _=Command::new("/bin/kill").args([signal,"--",&pid.to_string()]).output().await;}
+    {
+        let signal=if signal=="-KILL"{rustix::process::Signal::KILL}else{rustix::process::Signal::TERM};
+        for pid in pids.iter().rev().filter(|pid|**pid>1).filter_map(|pid|i32::try_from(*pid).ok().and_then(rustix::process::Pid::from_raw)) {let _=rustix::process::kill_process(pid,signal);}
+    }
     #[cfg(windows)]
     {
         let _=signal;

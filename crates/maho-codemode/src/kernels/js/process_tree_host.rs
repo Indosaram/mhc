@@ -58,8 +58,18 @@ pub async fn is_process_alive(pid: u32) -> bool {
     { tokio::process::Command::new("kill").args(["-0", "--", &pid.to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).status().await.is_ok_and(|status| status.success()) }
 }
 
+#[cfg(unix)]
+fn unix_signal(signal: &str) -> Option<rustix::process::Signal> {
+    use rustix::process::Signal;
+    Some(match signal.strip_prefix('-')? { "HUP" | "1" => Signal::HUP, "INT" | "2" => Signal::INT, "QUIT" | "3" => Signal::QUIT, "KILL" | "9" => Signal::KILL, "TERM" | "15" => Signal::TERM, _ => return None })
+}
+
 pub async fn signal_process(pid: u32, signal: &str) -> bool {
     if pid == 0 { return false; }
+    #[cfg(unix)]
+    if let Some(sig) = unix_signal(signal) {
+        return i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw).is_some_and(|pid| rustix::process::kill_process(pid, sig).is_ok());
+    }
     tokio::process::Command::new("kill").args([signal, "--", &pid.to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).status().await.is_ok_and(|status| status.success())
 }
 

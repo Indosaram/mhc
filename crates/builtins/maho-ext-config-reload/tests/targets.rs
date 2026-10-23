@@ -8,7 +8,7 @@ fn external_file_filters_and_literal_dot_directory_are_grouped() {
     let targets = build_external_watch_targets(root.path(), &registrations);
     assert_eq!(targets[1].target.allow_list.as_ref().unwrap(), &[std::path::PathBuf::from(".omo")]);
     let paths = vec![root.path().join("settings.json"), root.path().join(".omo"), root.path().join("unmatched")];
-    let groups = group_changed_paths(&paths, &targets);
+    let groups = group_changed_paths(&paths, &targets, &[]);
     assert_eq!(groups["external"], paths[..2]);
     assert_eq!(groups["builtin"], paths[2..]);
 }
@@ -53,4 +53,14 @@ fn skill_and_external_paths_resolve_like_senpi_resolve_path() {
     assert_eq!(resolve_watch_path("~/my-skills", root.path()), std::path::Path::new(&home).join("my-skills"));
     assert_eq!(resolve_watch_path("file:///tmp/skills", root.path()), std::path::PathBuf::from("/tmp/skills"));
     assert_eq!(resolve_watch_path("a/../b", root.path()), root.path().join("b"));
+}
+#[test]
+fn rearmed_project_container_is_skipped_by_presence_group() {
+    let root = tempfile::tempdir().unwrap();
+    let settings = resolve_config_reload_settings(&json!({}), &json!({}));
+    let targets = build_builtin_watch_targets(root.path(), root.path(), true, &settings, &[]);
+    let container = root.path().join(maho_core::config::config_dir_name());
+    let paths = vec![container.clone()];
+    assert_eq!(group_changed_paths(&paths, &targets, &[]).get("builtin"), Some(&paths));
+    assert!(group_changed_paths(&paths, &targets, &[container]).is_empty());
 }

@@ -149,7 +149,7 @@ impl Extension for ConfigReload {
                                 let significant = significant_changed_paths(&changed, &snapshot, &mut state.contents, &ctx.agent_dir, &ctx.cwd, &mut logger);
                                 let registrations = state.registrations.snapshot();
                                 let targets = build_external_watch_targets(&ctx.cwd, &registrations);
-                                for (registration_id, paths) in group_changed_paths(&significant, &targets) {
+                                for (registration_id, paths) in group_changed_paths(&significant, &targets, &[]) {
                                     if registration_id == "builtin" {
                                         ungrouped.extend(paths);
                                     } else {
@@ -447,7 +447,7 @@ async fn start(
                 },
                 result = cancelled.changed() => { if result.is_err() || *cancelled.borrow() { break; } else { continue; } },
             };
-            let paths = {
+            let mut paths = {
                 let mut logger = logger.lock().map_err(|error| error.to_string())?;
                 significant_changed_paths(
                     &change.changed_paths,
@@ -458,12 +458,64 @@ async fn start(
                     &mut logger,
                 )
             };
+            // Rebuilding recomputes the targets, so record which created paths were presence containers first.
+            let rearmed_containers: Vec<PathBuf> = change.created.iter().filter(|path| targets.iter().any(|target| target.rearm_on_creation.as_ref() == Some(*path))).cloned().collect();
+            if !rearmed_containers.is_empty() {
+                let previous = engine.engine.get_baseline_snapshot();
+                engine.close_async().await?;
+                targets = build_builtin_watch_targets(
+                    &ctx.cwd,
+                    &ctx.agent_dir,
+                    ctx.is_project_trusted(),
+                    &resolved,
+                    &skill_paths,
+                );
+                let registrations = shared
+                    .lock()
+                    .map_err(|error| error.to_string())?
+                    .registrations
+                    .snapshot();
+                targets.extend(build_external_watch_targets(&ctx.cwd, &registrations));
+                let mut watched = build_builtin_watch_targets(
+                    &ctx.cwd,
+                    &ctx.agent_dir,
+                    ctx.is_project_trusted(),
+                    &resolved,
+                    &skill_paths,
+                );
+                watched.extend(build_external_watch_targets(&ctx.cwd, &registrations));
+                let watched = watched.into_iter().map(|active| active.target).collect();
+                engine =
+                    NativeWatchEngine::with_debounce(watched, Arc::clone(&on_error), debounce)?;
+                if let Some(clock) = &shared.lock().map_err(|error| error.to_string())?.clock {
+                    engine.set_clock(Arc::clone(clock));
+                }
+                let current = engine.engine.get_baseline_snapshot();
+                // Files discovered by the rearm pass through the same self-write, routine and shim filters.
+                let discovered = {
+                    let mut logger = logger.lock().map_err(|error| error.to_string())?;
+                    significant_changed_paths(&compare_snapshots(&previous, &current), &current, &mut contents, &ctx.agent_dir, &ctx.cwd, &mut logger)
+                };
+                paths.extend(discovered);
+                crate::routine_settings::refresh_settings_content_snapshots(
+                    &mut contents,
+                    &ctx.agent_dir,
+                    &ctx.cwd,
+                );
+                logger.lock().map_err(|error| error.to_string())?.log(
+                    LogLevel::Info,
+                    LogEvent::WatcherStarted {
+                        target_count: targets.len() as f64,
+                    },
+                );
+                events.emit(CONFIG_WATCH_READY, &serde_json::json!({"enabled":true}));
+            }
             {
                 let mut state = shared.lock().map_err(|error| error.to_string())?;
                 state.hashes = engine.engine.get_baseline_snapshot();
                 state.contents = contents.clone();
             }
-            for (id, paths) in group_changed_paths(&paths, &targets) {
+            for (id, paths) in group_changed_paths(&paths, &targets, &rearmed_containers) {
                 let errors = if id == "builtin" {
                     validate_builtin_paths(&paths, &ctx.agent_dir, &ctx.cwd)
                 } else {
@@ -537,52 +589,6 @@ async fn start(
                     CONFIG_WATCH_CHANGED,
                     &serde_json::json!({"registrationId":id,"paths":paths,"deferred":deferred}),
                 );
-            }
-            if change.created.iter().any(|path| {
-                targets
-                    .iter()
-                    .any(|target| target.rearm_on_creation.as_ref() == Some(path))
-            }) {
-                engine.close_async().await?;
-                targets = build_builtin_watch_targets(
-                    &ctx.cwd,
-                    &ctx.agent_dir,
-                    ctx.is_project_trusted(),
-                    &resolved,
-                    &skill_paths,
-                );
-                let registrations = shared
-                    .lock()
-                    .map_err(|error| error.to_string())?
-                    .registrations
-                    .snapshot();
-                targets.extend(build_external_watch_targets(&ctx.cwd, &registrations));
-                let mut watched = build_builtin_watch_targets(
-                    &ctx.cwd,
-                    &ctx.agent_dir,
-                    ctx.is_project_trusted(),
-                    &resolved,
-                    &skill_paths,
-                );
-                watched.extend(build_external_watch_targets(&ctx.cwd, &registrations));
-                let watched = watched.into_iter().map(|active| active.target).collect();
-                engine =
-                    NativeWatchEngine::with_debounce(watched, Arc::clone(&on_error), debounce)?;
-                if let Some(clock) = &shared.lock().map_err(|error| error.to_string())?.clock {
-                    engine.set_clock(Arc::clone(clock));
-                }
-                crate::routine_settings::refresh_settings_content_snapshots(
-                    &mut contents,
-                    &ctx.agent_dir,
-                    &ctx.cwd,
-                );
-                logger.lock().map_err(|error| error.to_string())?.log(
-                    LogLevel::Info,
-                    LogEvent::WatcherStarted {
-                        target_count: targets.len() as f64,
-                    },
-                );
-                events.emit(CONFIG_WATCH_READY, &serde_json::json!({"enabled":true}));
             }
             schedule_flush(Arc::clone(&shared), ctx.clone(), Some(generation))
                 .map_err(|error| error.to_string())?;

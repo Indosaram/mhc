@@ -101,7 +101,7 @@ fn native_config_change_reaches_validation_and_pending_registration() {
     let change = engine.next_change(Duration::from_secs(5)).unwrap();
     let mut logger = ConfigReloadLogger::new(root.path(), None).unwrap();
     let paths = significant_changed_paths(&change.changed_paths, &engine.engine.get_baseline_snapshot(), &mut contents, root.path(), root.path(), &mut logger);
-    let groups = group_changed_paths(&paths, &targets);
+    let groups = group_changed_paths(&paths, &targets, &[]);
     assert!(validate_builtin_paths(&groups["builtin"], root.path(), root.path()).is_empty());
     let mut pending = PendingChanges::default();
     pending.add("builtin", &groups["builtin"]);

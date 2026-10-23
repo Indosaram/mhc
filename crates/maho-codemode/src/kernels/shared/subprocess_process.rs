@@ -225,13 +225,10 @@ impl SubprocessProcess {
     }
     async fn sweep_group(&self, pid: Option<u32>) {
         #[cfg(unix)]
-        if let Some(pid) = pid {
-            let _ = tokio::process::Command::new("kill")
-                .args(["-KILL", "--", &format!("-{pid}")])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .await;
+        if let Some(pid) = pid
+            && let Some(pid) = i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw)
+        {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
         }
         #[cfg(not(unix))]
         let _ = pid;
@@ -247,6 +244,26 @@ impl SubprocessProcess {
         let _ = signal;
         #[cfg(unix)]
         if let Some(pid) = self.child.id() {
+            use rustix::process::Signal;
+            let known = match signal {
+                "HUP" | "1" => Some(Signal::HUP),
+                "INT" | "2" => Some(Signal::INT),
+                "QUIT" | "3" => Some(Signal::QUIT),
+                "KILL" | "9" => Some(Signal::KILL),
+                "TERM" | "15" => Some(Signal::TERM),
+                _ => None,
+            };
+            if let Some(sig) = known {
+                let sent = i32::try_from(pid)
+                    .ok()
+                    .and_then(rustix::process::Pid::from_raw)
+                    .is_some_and(|pid| rustix::process::kill_process_group(pid, sig).is_ok());
+                if sent {
+                    return Ok(());
+                }
+                self.child.start_kill()?;
+                return Ok(());
+            }
             let status = tokio::process::Command::new("kill")
                 .args([format!("-{signal}"), "--".into(), format!("-{pid}")])
                 .stdout(Stdio::null())

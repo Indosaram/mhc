@@ -1,5 +1,5 @@
 use std::io;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use comment_checker_core::*;
 use tokio::io::AsyncWriteExt;
@@ -52,10 +52,24 @@ impl SpawnProcess for Process {
             SpawnSignal::Sigterm => "-TERM",
             SpawnSignal::Sigkill => "-KILL",
         };
-        let status = Command::new("kill")
+        #[cfg(unix)]
+        let sent = {
+            let sig = if signal == "-TERM" {
+                rustix::process::Signal::TERM
+            } else {
+                rustix::process::Signal::KILL
+            };
+            i32::try_from(pid)
+                .ok()
+                .and_then(rustix::process::Pid::from_raw)
+                .is_some_and(|pid| rustix::process::kill_process(pid, sig).is_ok())
+        };
+        #[cfg(not(unix))]
+        let sent = std::process::Command::new("kill")
             .args([signal, &pid.to_string()])
-            .status()?;
-        if status.success() {
+            .status()?
+            .success();
+        if sent {
             Ok(())
         } else {
             Err(io::Error::other("failed to signal checker"))

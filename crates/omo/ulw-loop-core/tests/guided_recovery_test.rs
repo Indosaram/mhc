@@ -22,6 +22,13 @@ fn test_missing_plan_names_create_goals_command() {
 }
 
 #[test]
+fn test_missing_plan_read_creates_no_directories() {
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(read_ulw_loop_plan(tmp.path(), None).is_err());
+    assert!(!tmp.path().join(".omo").exists());
+}
+
+#[test]
 fn test_missing_plan_lists_existing_session_ids() {
     let tmp = tempfile::tempdir().unwrap();
     fs::create_dir_all(ulw_loop_dir(tmp.path(), None).join("session-alpha")).unwrap();
