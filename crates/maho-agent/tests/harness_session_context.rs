@@ -1,7 +1,7 @@
 //! Port of senpi packages/agent/test/harness/context.test.ts and the session-context cases of
 //! senpi packages/agent/test/harness/compaction.test.ts.
 
-mod support;
+use crate::support;
 
 use maho_agent::harness::context::{BACKGROUND_CONTEXT, TODO_CONTEXT, get_telemetry_context, with_telemetry_context};
 use maho_agent::harness::messages::{BRANCH_SUMMARY_PREFIX, COMPACTION_SUMMARY_PREFIX, convert_to_llm};

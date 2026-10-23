@@ -1,4 +1,4 @@
-pub mod support;
+use crate::support;
 
 use indexmap::IndexMap;
 use maho_omo_model_profile::builtin_profiles::{

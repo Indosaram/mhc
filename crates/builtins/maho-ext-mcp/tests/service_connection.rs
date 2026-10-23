@@ -1,5 +1,5 @@
 use maho_ext_mcp::{config_schema::{McpServerConfig,Transport},host_registry::HostMcpRegistry,service_connection::*,startup_race::connect_and_refresh_mcp_catalog};
-mod support;
+use crate::support;
 #[tokio::test]
 async fn session_connection_refreshes_catalog_and_disposes_registry_owner() {
     let root=tempfile::tempdir().unwrap();let registry=HostMcpRegistry::default();

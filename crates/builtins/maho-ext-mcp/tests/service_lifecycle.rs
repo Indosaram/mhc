@@ -12,7 +12,7 @@ use maho_ext_mcp::host_registry::HostMcpRegistry;
 use maho_ext_mcp::service::McpService;
 use maho_ext_mcp::startup_race::McpStartupRaceResult;
 use maho_ext_mcp::tool_registrar::McpToolRegistrar;
-mod support;
+use crate::support;
 
 const FIXTURE: &str = "packages/coding-agent/test/mcp/fixtures/stdio-server.ts";
 

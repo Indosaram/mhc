@@ -4,7 +4,7 @@
 //! The pinned suites capture the outgoing payload through a fake SDK client and assert on the
 //! blocks the request carries; `anthropic_common::capture_params` reproduces that seam.
 
-mod anthropic_common;
+use crate::anthropic_common;
 
 use anthropic_common::{capture_params, capture_params_on, harness_haiku, harness_sonnet};
 use maho_ai::types::{

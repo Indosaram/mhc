@@ -1,5 +1,4 @@
-#[path = "native_account/support.rs"]
-pub mod support;
+use crate::support;
 use maho_core::{auth_storage::AuthStorage, credential_accounts, credential_pool::state_store::CredentialSlotRepository};
 use maho_ext_api::*;
 use maho_ext_host::{ExtensionRunner, loader::{load_extensions, NativeExtensionFactory}};

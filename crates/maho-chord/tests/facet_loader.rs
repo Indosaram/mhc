@@ -1,4 +1,4 @@
-mod facets_support;
+use crate::facets_support;
 use facets_support::*;
 use maho_chord::{*, context::BACKGROUND_CONTEXT, facets::host::FacetServiceHandle, services::consumer::ServiceFacade, types::{BoxFuture, ServiceError}};
 use std::sync::{Arc, Mutex};

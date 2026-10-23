@@ -1,5 +1,4 @@
-#[path = "support.rs"]
-pub mod support;
+use crate::support;
 
 use maho_ai::types::ImagesBackground;
 use serde_json::json;

@@ -1,4 +1,4 @@
-pub mod support;
+use crate::support;
 use maho_ext_api::{ExtensionMode, ExtensionWidgetOptions, WidgetContent};
 use maho_omo_task::{dag_status_ui::{DagStatusUi,DagStatusUiManager},runtime_context::TaskRuntimeContext,status_ui::StatusUiTimers};
 use senpi_task::dag::{manager::DagRunSummary,types::DagRunSnapshot};

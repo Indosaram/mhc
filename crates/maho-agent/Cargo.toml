@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license = "MIT"
+autotests = false
 
 [lints]
 workspace = true
@@ -35,3 +36,7 @@ maho-test-support = { path = "../maho-test-support" }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "test-util"] }
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

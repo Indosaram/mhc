@@ -1,7 +1,7 @@
 //! Ports of daemon-client-retry.test.ts, daemon-client.test.ts and client-surface.test.ts.
 #![cfg(unix)]
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

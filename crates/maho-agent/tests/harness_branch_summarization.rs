@@ -1,7 +1,5 @@
 //! Port of senpi packages/agent/test/harness/branch-summarization.test.ts (the entry-collection cases).
 
-mod support;
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

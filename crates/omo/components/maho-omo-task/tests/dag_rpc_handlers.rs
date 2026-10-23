@@ -1,4 +1,4 @@
-pub mod support;
+use crate::support;
 use std::sync::{Arc,Mutex};
 use maho_omo_task::dag_rpc_handlers::query_dag_rpc;
 use senpi_task::dag::{manager::{DagManager, DagManagerOptions, DagStartParams, create_dag_manager}, store::{DagStoreConfig, DagStoreOptions, create_dag_file_store}};

@@ -1,6 +1,6 @@
 use std::{sync::Arc,collections::BTreeMap};
 use maho_ext_mcp::{service::McpService,host_registry::HostMcpRegistry,service_types::{McpLifecycleState,McpUnspawnedState}};
-mod support;
+use crate::support;
 #[tokio::test]
 async fn skill_attachment_retains_matching_connections_and_system_precedence() {
     use maho_ext_mcp::{skills::*,config_schema::*};

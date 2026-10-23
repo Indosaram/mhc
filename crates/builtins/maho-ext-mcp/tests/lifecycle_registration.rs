@@ -6,7 +6,7 @@ use maho_ext_mcp::config::{hash_config, normalize_server};
 use maho_ext_mcp::config_schema::ServerConfigWire;
 use maho_ext_mcp::host_registry::HostMcpRegistry;
 use serde_json::json;
-mod support;
+use crate::support;
 
 struct TestSession;
 impl ToolSessionManager for TestSession {

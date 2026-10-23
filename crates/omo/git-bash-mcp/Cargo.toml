@@ -5,6 +5,7 @@ edition.workspace = true
 license = "LicenseRef-SUL-1.0"
 publish.workspace = true
 description = "Windows Git Bash stdio MCP server and command runner (port of @oh-my-opencode/git-bash-mcp)"
+autotests = false
 
 [lib]
 name = "git_bash_mcp"
@@ -25,3 +26,7 @@ pretty_assertions.workspace = true
 
 [lints]
 workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

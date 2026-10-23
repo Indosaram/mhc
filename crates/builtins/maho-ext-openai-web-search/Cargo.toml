@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 license = "MIT"
 autoexamples = false
+autotests = false
 
 [[example]]
 name = "openai_search_native_lifecycle"
@@ -21,3 +22,7 @@ tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

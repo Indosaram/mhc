@@ -1,6 +1,6 @@
 //! Port of senpi packages/ai/test/google-shared-signed-empty-blocks.test.ts.
 
-mod google_fixtures;
+use crate::google_fixtures;
 
 use google_fixtures::{
     assistant, context, text, text_model, text_with_signature, thinking, thinking_with_signature, tool_call, user_text,

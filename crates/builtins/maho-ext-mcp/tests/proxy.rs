@@ -2,7 +2,7 @@ use std::{sync::{Arc, Mutex}, time::Duration};
 use maho_ext_api::{AbortSignal, ToolCall, ToolContent};
 use maho_ext_mcp::{catalog::collect_tool_catalog, config_schema::*, expose::{proxy::*, register::build_mcp_tool_definitions}, guard::output_guard::McpOutputArtifacts, log::McpLogger, transport::*};
 use serde_json::json;
-mod support;
+use crate::support;
 
 #[tokio::test]
 async fn proxy_describe_and_call_use_real_catalog_and_guide_invalid_arguments() {

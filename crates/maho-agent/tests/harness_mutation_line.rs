@@ -4,8 +4,6 @@
 //! release points, so a release raised before the job parks is never lost and no test waits on a
 //! scheduling accident.
 
-mod support;
-
 use std::sync::{Arc, Mutex};
 
 use maho_agent::harness::session::session::{SessionError, SessionErrorKind};

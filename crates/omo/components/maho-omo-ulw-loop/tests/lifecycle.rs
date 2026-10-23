@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 use maho_ext_api::*;
 use std::sync::{Arc, Mutex};
 #[tokio::test]

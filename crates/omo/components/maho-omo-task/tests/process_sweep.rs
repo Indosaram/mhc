@@ -8,7 +8,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
-mod support;
+use crate::support;
 #[test]
 fn production_sweep_resolves_paired_daemon_override_before_running_families() {
     let root = tempfile::tempdir().expect("root");

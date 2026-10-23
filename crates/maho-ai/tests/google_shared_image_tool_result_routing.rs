@@ -1,6 +1,6 @@
 //! Port of senpi packages/ai/test/google-shared-image-tool-result-routing.test.ts.
 
-mod google_fixtures;
+use crate::google_fixtures;
 
 use google_fixtures::{assistant, context, image, image_model, text, tool_call, tool_call_with_signature, tool_result, user_text};
 use maho_ai::api::google_shared::{convert_messages, ConvertMessagesOptions};

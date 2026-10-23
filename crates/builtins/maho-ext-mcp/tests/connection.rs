@@ -1,5 +1,5 @@
 use std::{sync::{Arc,Mutex},time::Duration};
-mod support;
+use crate::support;
 use maho_ext_mcp::{connection::*,config_schema::*,log::McpLogger};
 fn config()->McpServerConfig {McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),"--tools".into(),"2".into()]),connect_timeout_ms:Some(30000.0),..Default::default()}}
 #[tokio::test]

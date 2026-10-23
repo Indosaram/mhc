@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use ast_grep_mcp::tools::search::SEARCH_TOOL_DESCRIPTION;
 use ast_grep_mcp::tools::search::SEARCH_TOOL_NAME;

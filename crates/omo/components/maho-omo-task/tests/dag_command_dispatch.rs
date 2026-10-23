@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 use std::sync::Arc;
 use maho_ext_api::ExtensionFailure;
 use maho_omo_task::dag_commands::{DagCommandManager,register_dag_commands};

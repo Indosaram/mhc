@@ -1,4 +1,4 @@
-pub mod support;
+use crate::support;
 use std::{collections::BTreeMap,sync::{Arc,Mutex,Condvar},time::Duration};
 use maho_omo_task::task_rpc_bridge::wire_task_rpc_bridge;
 use senpi_task::{host::HostError,manager::{ManagedChildHandle,ManagedChildListener,Unsubscribe,types::{ManagedRunner,ManagedRunnerResult,ManagedStartSpec,ManagedRunners,TaskManagerOptions,ManagerStartSpec,ResolvedChildPlan,StartResult},create_task_manager},runners::RunnerOutcome,store::{StateDirConfig,TaskRecordStore},shared::ManagedChildEvent};

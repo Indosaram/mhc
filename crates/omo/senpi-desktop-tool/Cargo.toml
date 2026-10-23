@@ -3,6 +3,7 @@ name = "maho-senpi-desktop-tool"
 version.workspace = true
 edition.workspace = true
 license = "MIT"
+autotests = false
 
 [lib]
 name = "senpi_desktop_tool"
@@ -36,3 +37,7 @@ unsafe_code = "forbid"
 
 [lints.clippy]
 unwrap_used = "deny"
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

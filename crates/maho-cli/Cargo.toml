@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license = "MIT"
+autotests = false
 
 [dependencies]
 maho-chord = { path = "../maho-chord" }
@@ -134,3 +135,7 @@ path = "src/bin/mhc_update_probe.rs"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

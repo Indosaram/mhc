@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use maho_ext_mcp::{config_schema::*,transport::*,transport_sdk::*,errors::McpErrorKind};
-mod support;
+use crate::support;
 #[test]
 fn invalid_endpoints_fail_with_create_phase() {
     for config in [McpServerConfig {transport:Some(Transport::Stdio),command:Some(" ".into()),..Default::default()},McpServerConfig {transport:Some(Transport::Http),url:Some("nota url".into()),..Default::default()}] {

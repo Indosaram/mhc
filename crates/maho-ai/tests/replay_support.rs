@@ -6,7 +6,7 @@
 //! recorded from senpi for the same fixture. The round-trip test below drives the real goldens
 //! through the Rust event types, which is the parity check available before the wire APIs land.
 
-mod support;
+use crate::support;
 
 use axum::http::StatusCode;
 use maho_ai::types::AssistantMessageEvent;

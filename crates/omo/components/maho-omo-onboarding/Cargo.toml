@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license = "LicenseRef-SUL-1.0"
+autotests = false
 
 [dependencies]
 maho-ai = { path = "../../../maho-ai" }
@@ -26,3 +27,7 @@ tokio = { version = "=1.52.3", features = ["macros", "rt", "process", "io-util",
 
 [lints]
 workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

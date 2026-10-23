@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license = "LicenseRef-SUL-1.0"
 publish.workspace = true
+autotests = false
 
 [lib]
 name = "ulw_loop_core"
@@ -44,3 +45,7 @@ useless_vec = "allow"
 needless_lifetimes = "allow"
 double_ended_iterator_last = "allow"
 io_other_error = "allow"
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

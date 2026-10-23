@@ -1,6 +1,6 @@
 //! Port of senpi packages/ai/test/google-raw-stop-reason.test.ts.
 
-mod google_fixtures;
+use crate::google_fixtures;
 
 use google_fixtures::server::{sse_body, RecordingServer};
 use google_fixtures::{builtin_model, context, user_text};

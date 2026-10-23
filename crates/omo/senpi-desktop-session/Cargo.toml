@@ -3,6 +3,7 @@ name = "maho-senpi-desktop-session"
 version.workspace = true
 edition = "2021"
 license = "MIT"
+autotests = false
 
 [lib]
 name = "senpi_desktop_session"
@@ -41,3 +42,7 @@ senpi-desktop-backend-win32 = { package = "maho-senpi-desktop-backend-win32", pa
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"
