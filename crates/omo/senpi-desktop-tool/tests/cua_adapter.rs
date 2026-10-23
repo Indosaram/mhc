@@ -8,7 +8,7 @@ use senpi_desktop_tool::cua_definition::computer_actions_permission_parser;
 use senpi_desktop_tool::tool::ComputerToolDeps;
 use serde_json::json;
 
-pub mod fixtures;
+use crate::fixtures;
 use fixtures::{desktop_fixture, methods_of, TestToolContext};
 
 #[tokio::test]

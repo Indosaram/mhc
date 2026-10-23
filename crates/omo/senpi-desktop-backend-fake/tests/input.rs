@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use senpi_desktop_backend_fake::{FakeBackend, FakeScenario, RecordedPointer, SinkOp};
 use senpi_desktop_core::backend::{Backend, DeliveryMode, Modifiers, MouseButton, PointerEvent};

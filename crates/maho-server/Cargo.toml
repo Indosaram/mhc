@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license = "MIT"
+autotests = false
 
 [dependencies]
 serde = { version = "=1.0.228", features = ["derive"] }
@@ -48,3 +49,7 @@ maho-tools = { path = "../maho-tools" }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

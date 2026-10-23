@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 use maho_ext_api::*;
 use maho_omo_task::{
     member_extension::register_task_member_extension,

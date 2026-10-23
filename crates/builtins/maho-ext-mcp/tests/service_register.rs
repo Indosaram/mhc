@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc};
 use maho_ext_mcp::{host_registry::HostMcpRegistry, service::McpService, service_register::prepare_mcp_service_registration_entries};
-mod support;
+use crate::support;
 
 /// Seed a valid on-disk catalog for `name` so the lazy server is cached and does
 /// not race at attach (upstream: `shouldRaceMcpStartup(lifecycle) || cachedCatalog === undefined`).

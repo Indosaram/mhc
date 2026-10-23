@@ -1,7 +1,7 @@
 //! Port of senpi `packages/tui/test/image-markers.test.ts` and the paste-marker cases of
 //! `editor-paste-expansion.test.ts` / `editor-paste-removal.test.ts`.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 

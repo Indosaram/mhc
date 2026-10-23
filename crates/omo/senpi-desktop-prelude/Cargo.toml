@@ -3,6 +3,7 @@ name = "maho-senpi-desktop-prelude"
 version.workspace = true
 edition = "2021"
 license = "MIT"
+autotests = false
 
 [lib]
 name = "senpi_desktop_prelude"
@@ -18,3 +19,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 sha2.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

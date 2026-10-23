@@ -1,6 +1,6 @@
 //! Port of senpi packages/ai/test/google-shared-convert-tools.test.ts.
 
-mod google_fixtures;
+use crate::google_fixtures;
 
 use google_fixtures::tool;
 use maho_ai::api::google_shared::{

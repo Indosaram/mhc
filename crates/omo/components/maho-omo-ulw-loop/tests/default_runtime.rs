@@ -1,4 +1,4 @@
-pub mod support;
+use crate::support;
 
 use maho_ext_api::*;
 use maho_omo_ulw_loop::index::UlwLoopComponent;

@@ -1,6 +1,6 @@
 //! Port of src/tmux-utils/pane-spawn-runner.test.ts
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 

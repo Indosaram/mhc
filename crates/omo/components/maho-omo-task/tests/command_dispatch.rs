@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 use std::sync::{Arc,Mutex};
 use maho_ext_api::*;
 use maho_omo_task::commands::{CommandManager,register_task_commands};

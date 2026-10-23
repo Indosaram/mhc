@@ -9,7 +9,7 @@ use senpi_desktop_tool::settings::ComputerSettingsInput;
 use senpi_desktop_tool::tool::{create_computer_tool, ComputerToolDeps};
 use serde_json::json;
 
-pub mod fixtures;
+use crate::fixtures;
 use fixtures::{desktop_fixture, host_context, methods_of, TestToolContext};
 
 #[tokio::test]

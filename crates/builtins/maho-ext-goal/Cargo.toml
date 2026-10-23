@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license = "MIT"
+autotests = false
 
 [dependencies]
 dirs = "=6.0.0"
@@ -32,3 +33,7 @@ tokio = { version = "=1.52.3", features = ["test-util", "sync"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

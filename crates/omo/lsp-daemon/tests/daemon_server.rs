@@ -1,7 +1,7 @@
 //! Ports of auth-ownership.test.ts and daemon-roundtrip.test.ts against a real daemon.
 #![cfg(unix)]
 
-mod common;
+use crate::common;
 
 #[cfg(unix)]
 use std::sync::{Arc, Mutex};

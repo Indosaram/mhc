@@ -1,6 +1,6 @@
 use maho_ext_mcp::resources::*;
 use serde_json::json;
-mod support;
+use crate::support;
 #[test]
 fn binary_resource_preserves_placeholder_size() {
     assert_eq!(flatten_resource_contents(&[json!({"blob":"QUFBQQ==","mimeType":"image/png","uri":"fake://bin"})]),"[binary resource fake://bin (image/png), ~6 bytes]");

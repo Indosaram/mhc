@@ -1,16 +1,23 @@
 //! Port of senpi packages/coding-agent/src/core/session-discovery.ts.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use crate::session_summary_cache::read_cached_session_summary;
 
-/// senpi `SessionListProgress`: `(loaded, total)` as each session file is read.
-pub type SessionListProgress<'a> = &'a mut dyn FnMut(usize, usize);
+/// senpi `SessionListProgress`: `(loaded, total, rows)` as each session file is read. senpi passes
+/// the sorted cumulative partial list at each publication; here `rows` carries only the rows
+/// finished since the previous publication, so each row is cloned once.
+pub type SessionListProgress<'a> = &'a mut dyn FnMut(usize, usize, Option<Vec<SessionInfo>>);
 
 pub const MAX_CONCURRENT_SESSION_INFO_LOADS: usize = 10;
+/// Loaded-row counts between partial-list publications: one directory, and every directory.
+pub const CURRENT_SESSION_LIST_PUBLISH_INTERVAL: usize = 10;
+pub const ALL_SESSION_LIST_PUBLISH_INTERVAL: usize = 100;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionInfo {
@@ -71,60 +78,106 @@ fn build_session_info_with_text(file_path: &str, include_text: bool) -> Option<S
     })
 }
 
-/// Builds picker rows for an explicit file list, dropping files that are not sessions.
-pub fn list_session_infos(files: &[String], on_loaded: impl FnMut()) -> Vec<SessionInfo> {
+/// Builds picker rows for an explicit file list, dropping files that are not sessions. `on_loaded`
+/// runs once per file, in completion order.
+pub fn list_session_infos(files: &[String], on_loaded: impl FnMut(Option<&SessionInfo>)) -> Vec<SessionInfo> {
     list_session_infos_with_text(files, true, on_loaded)
 }
 
-fn list_session_infos_with_text(files: &[String], include_text: bool, mut on_loaded: impl FnMut()) -> Vec<SessionInfo> {
-    let mut sessions = Vec::new();
-    for file in files {
-        let info = build_session_info_with_text(file, include_text);
-        on_loaded();
-        if let Some(info) = info {
-            sessions.push(info);
+/// senpi `buildSessionInfosWithConcurrency`: up to [`MAX_CONCURRENT_SESSION_INFO_LOADS`] files load
+/// at once, started in `files` order; the rows come back in `files` order.
+fn list_session_infos_with_text(
+    files: &[String],
+    include_text: bool,
+    mut on_loaded: impl FnMut(Option<&SessionInfo>),
+) -> Vec<SessionInfo> {
+    let mut results: Vec<Option<SessionInfo>> = (0..files.len()).map(|_| None).collect();
+    let next = AtomicUsize::new(0);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        for _ in 0..MAX_CONCURRENT_SESSION_INFO_LOADS.min(files.len()) {
+            let (sender, next) = (sender.clone(), &next);
+            scope.spawn(move || {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(file) = files.get(index) else { break };
+                    if sender.send((index, build_session_info_with_text(file, include_text))).is_err() {
+                        break;
+                    }
+                }
+            });
         }
-    }
-    sessions
+        drop(sender);
+        for (index, info) in receiver {
+            on_loaded(info.as_ref());
+            results[index] = info;
+        }
+    });
+    results.into_iter().flatten().collect()
+}
+
+/// Builds picker rows for `files` and reports `(progress_offset + loaded, total)` per file. Rows
+/// are published on the first file, every `interval` files and the last file (senpi's partial-list
+/// publication points).
+pub fn list_session_files(
+    files: &[String],
+    mut on_progress: Option<SessionListProgress<'_>>,
+    progress_offset: usize,
+    total: usize,
+    interval: usize,
+) -> Vec<SessionInfo> {
+    let mut loaded = 0usize;
+    let mut pending = Vec::new();
+    list_session_infos(files, |info| {
+        loaded += 1;
+        let Some(progress) = on_progress.as_deref_mut() else { return };
+        pending.extend(info.cloned());
+        let done = progress_offset + loaded;
+        let publish = done == 1 || done.is_multiple_of(interval.max(1)) || done == total;
+        progress(done, total, publish.then(|| std::mem::take(&mut pending)));
+    })
 }
 
 /// Builds picker rows for every .jsonl file in one session directory.
 pub fn list_sessions_from_dir(
     dir: &str,
-    mut on_progress: Option<SessionListProgress<'_>>,
+    on_progress: Option<SessionListProgress<'_>>,
     progress_offset: usize,
     progress_total: Option<usize>,
 ) -> Vec<SessionInfo> {
-    let files = sorted_session_files(dir);
+    let files = session_files_newest_first(&[PathBuf::from(dir)]);
     let total = progress_total.unwrap_or(files.len());
-    let mut loaded = 0usize;
-    list_session_infos(&files, || {
-        loaded += 1;
-        if let Some(progress) = on_progress.as_deref_mut() {
-            progress(progress_offset + loaded, total);
-        }
-    })
+    list_session_files(&files, on_progress, progress_offset, total, CURRENT_SESSION_LIST_PUBLISH_INTERVAL)
 }
 
 /// Same rows as [`list_sessions_from_dir`] with `all_messages_text` left empty, for callers that
 /// never search transcript text and should not copy it out of the summary cache.
 pub fn list_sessions_from_dir_without_text(dir: &str) -> Vec<SessionInfo> {
-    list_session_infos_with_text(&sorted_session_files(dir), false, || {})
+    list_session_infos_with_text(&session_files_newest_first(&[PathBuf::from(dir)]), false, |_| {})
 }
 
-fn sorted_session_files(dir: &str) -> Vec<String> {
-    if !Path::new(dir).exists() {
-        return Vec::new();
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut files: Vec<String> = entries
-        .filter_map(Result::ok)
+/// Every .jsonl file directly inside `dirs`, newest modification time first.
+///
+/// Intentional mhc divergence: senpi starts row loads in readdir order, one directory after another.
+/// mhc stats every file first (cheap next to parsing it) and starts loads newest first across all
+/// `dirs`, so a progressive picker shows the sessions most likely to be resumed first. Listings
+/// are still sorted by activity time afterwards, so only load and publication order differ.
+pub fn session_files_newest_first(dirs: &[PathBuf]) -> Vec<String> {
+    let mut files: Vec<(SystemTime, String)> = dirs
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flat_map(|entries| entries.filter_map(Result::ok))
         .map(|entry| entry.path())
         .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"))
-        .map(|path: PathBuf| path.to_string_lossy().into_owned())
+        .map(|path| {
+            let modified = std::fs::metadata(&path)
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            (modified, path.to_string_lossy().into_owned())
+        })
         .collect();
-    files.sort();
-    files
+    files.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    files.into_iter().map(|(_, path)| path).collect()
 }
 
 #[cfg(test)]
@@ -187,6 +240,54 @@ mod tests {
         assert_eq!(full[0].all_messages_text, "hi");
         assert_eq!(lean[0].all_messages_text, "");
         assert_eq!(SessionInfo { all_messages_text: String::new(), ..full[0].clone() }, lean[0]);
+    }
+
+    #[test]
+    fn session_files_are_ordered_newest_first_across_directories() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let nested = tmp.path().join("nested");
+        std::fs::create_dir(&nested).expect("nested dir");
+        let base = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        for (dir, name, age) in [(tmp.path(), "old.jsonl", 30), (nested.as_path(), "newest.jsonl", 0), (tmp.path(), "mid.jsonl", 10)] {
+            let path = write(dir, name, &session_content());
+            let file = std::fs::File::options().write(true).open(&path).expect("open");
+            file.set_modified(base - std::time::Duration::from_secs(age)).expect("set mtime");
+        }
+        write(tmp.path(), "ignored.txt", "x");
+        let files = session_files_newest_first(&[tmp.path().to_path_buf(), nested]);
+        let names: Vec<_> = files
+            .iter()
+            .filter_map(|file| std::path::Path::new(file).file_name()?.to_str())
+            .collect();
+        assert_eq!(names, ["newest.jsonl", "mid.jsonl", "old.jsonl"]);
+    }
+
+    #[test]
+    fn progress_publishes_every_row_once_at_senpi_publication_points() {
+        crate::session_summary_cache::clear_session_summary_cache();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut files: Vec<String> = (0..25)
+            .map(|index| write(tmp.path(), &format!("{index:02}.jsonl"), &session_content()))
+            .collect();
+        files.push(write(tmp.path(), "bad.jsonl", "not json"));
+        let mut publications = Vec::new();
+        let mut published_rows = 0;
+        let sessions = list_session_files(
+            &files,
+            Some(&mut |loaded, total, rows: Option<Vec<SessionInfo>>| {
+                assert_eq!(total, 26);
+                if let Some(rows) = rows {
+                    publications.push(loaded);
+                    published_rows += rows.len();
+                }
+            }),
+            0,
+            files.len(),
+            10,
+        );
+        assert_eq!(publications, [1, 10, 20, 26]);
+        assert_eq!(published_rows, 25, "the non-session file yields no row");
+        assert_eq!(sessions.len(), 25);
     }
 
     #[test]

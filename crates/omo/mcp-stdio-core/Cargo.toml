@@ -5,6 +5,7 @@ edition.workspace = true
 license = "LicenseRef-SUL-1.0"
 publish.workspace = true
 description = "JSON-RPC stdio framing and dispatch primitives for MCP servers"
+autotests = false
 
 [lib]
 name = "mcp_stdio_core"
@@ -28,3 +29,7 @@ unsafe_code = "allow"
 
 [lints.clippy]
 unwrap_used = "deny"
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

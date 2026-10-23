@@ -8371,20 +8371,30 @@ impl InteractiveMode {
             self.ui_dialog = Some(Box::new(SessionSelectorComponent::new(
                 &self.theme,
                 self.keybindings(),
-                Box::new(move |on_progress| {
+                Box::new(move |mut on_progress| {
+                    let mut forward = |loaded: usize, total: usize, rows: Option<Vec<maho_core::session_discovery::SessionInfo>>| {
+                        if let Some(progress) = on_progress.as_deref_mut() {
+                            progress(loaded, total, rows.map(|rows| rows.into_iter().map(convert).collect()));
+                        }
+                    };
                     maho_core::session_manager::SessionManager::list(
                         &cwd,
                         Some(&current_directory),
-                        on_progress,
+                        Some(&mut forward),
                     )
                     .into_iter()
                     .map(convert)
                     .collect()
                 }),
-                Box::new(move |on_progress| {
+                Box::new(move |mut on_progress| {
+                    let mut forward = |loaded: usize, total: usize, rows: Option<Vec<maho_core::session_discovery::SessionInfo>>| {
+                        if let Some(progress) = on_progress.as_deref_mut() {
+                            progress(loaded, total, rows.map(|rows| rows.into_iter().map(convert).collect()));
+                        }
+                    };
                     maho_core::session_manager::SessionManager::list_all(
                         (!default_directory).then_some(directory.as_str()),
-                        on_progress,
+                        Some(&mut forward),
                     )
                     .into_iter()
                     .map(convert)

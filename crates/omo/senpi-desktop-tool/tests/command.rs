@@ -7,7 +7,7 @@ use std::sync::Arc;
 use senpi_desktop_tool::command::{run_computer_command, COMPUTER_COMMAND_USAGE};
 use senpi_desktop_tool::settings::ComputerSettingsInput;
 
-pub mod fixtures;
+use crate::fixtures;
 use fixtures::{desktop_fixture, host_context, methods_of};
 
 #[tokio::test]

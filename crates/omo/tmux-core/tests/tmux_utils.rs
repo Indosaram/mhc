@@ -1,6 +1,6 @@
 //! Port of src/tmux-utils.test.ts
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

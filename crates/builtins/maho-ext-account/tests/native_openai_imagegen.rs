@@ -1,7 +1,5 @@
-#[path="native_account/support.rs"]
-pub mod support;
-#[path="native_account/native_state.rs"]
-mod native_state;
+use crate::support;
+use crate::native_state;
 use maho_ext_api::*;
 use std::sync::Arc;
 struct Registry;

@@ -2,7 +2,7 @@
 //! `editor-image-marker.test.ts`, `editor-mention-highlight.test.ts`,
 //! `editor-history-keybindings.test.ts` and `editor-render-row.test.ts`.
 
-mod common;
+use crate::common;
 
 use std::cell::RefCell;
 use std::rc::Rc;

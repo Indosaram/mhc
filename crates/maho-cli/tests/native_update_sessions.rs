@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-mod native_update_support;
+use crate::native_update_support;
 
 use std::path::{Path, PathBuf};
 use std::process::Output;

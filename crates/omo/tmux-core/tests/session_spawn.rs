@@ -1,6 +1,6 @@
 //! Port of src/tmux-utils/session-spawn.test.ts
 
-mod common;
+use crate::common;
 
 use common::{Recorder, enabled_config, failed, healthy_deps, strings, success};
 use pretty_assertions::assert_eq;

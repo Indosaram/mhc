@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 
 use pretty_assertions::assert_eq;
 use serde_json::Value;

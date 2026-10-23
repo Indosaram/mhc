@@ -1,5 +1,4 @@
-#[path="native_account/support.rs"]
-pub mod support;
+use crate::support;
 use maho_ext_api::*;
 use maho_ext_builtin_loose::service_tier::{ServiceTierExtension,ServiceTierHost,CODEX_RESPONSES_API};
 use std::sync::{Arc,Mutex};

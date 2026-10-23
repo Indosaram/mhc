@@ -1,6 +1,6 @@
 use std::{sync::{Arc,Mutex},time::Duration};
 use maho_ext_mcp::{config_schema::{McpServerConfig,Transport},connection::ServerConnection,log::McpLogger,shared_connection::SharedMcpConnection};
-mod support;
+use crate::support;
 #[tokio::test(start_paused=true)]
 async fn last_owner_idle_disposal_waits_for_in_flight_request_cancellation() {
     let root=tempfile::tempdir().unwrap();let physical=ServerConnection::new("shared",McpServerConfig {enabled:Some(true),..Default::default()},None,Arc::new(Mutex::new(McpLogger::new("shared",root.path(),None).unwrap())));

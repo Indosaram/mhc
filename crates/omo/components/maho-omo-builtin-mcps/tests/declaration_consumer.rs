@@ -1,4 +1,3 @@
-mod support;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};

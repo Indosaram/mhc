@@ -1,7 +1,7 @@
 //! Port of src/runner.test.ts (unix only: the scripts drive /bin/sh).
 #![cfg(unix)]
 
-mod common;
+use crate::common;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;

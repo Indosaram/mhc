@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

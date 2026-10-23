@@ -16,7 +16,7 @@ fn from(key: &str, value: &str) -> maho_ext_pi_rules::rules::types::PiRulesConfi
     assert_eq!(from("PI_RULES_MAX_RULE_CHARS","\u{85}50\u{85}").max_rule_chars,12000);
 }
 #[test] fn process_env_is_read_in_isolated_child() {
-    let output=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","environment_child","--nocapture"]).env("PI_RULES_MAX_RULE_CHARS","77").env("PI_RULES_CONFIG_CHILD","1").output().unwrap();
+    let output=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","config::environment_child","--nocapture"]).env("PI_RULES_MAX_RULE_CHARS","77").env("PI_RULES_CONFIG_CHILD","1").output().unwrap();
     assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
 }
 #[test] fn environment_child() { if std::env::var("PI_RULES_CONFIG_CHILD").ok().as_deref()==Some("1") { let r=config_from_environment(); assert_eq!(r.max_rule_chars,77); } }

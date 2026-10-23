@@ -10,7 +10,7 @@
 //! Scenarios are recorded in `authoring/config.md` BEFORE these edits; every command is UNRUN until the
 //! global gate. Each case uses a private `tempfile` HOME removed on drop; no daemon, PTY or subprocess is
 //! started.
-mod support;
+use crate::support;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

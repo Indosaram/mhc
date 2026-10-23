@@ -8,7 +8,7 @@ use maho_ext_mcp::guard::output_guard::McpOutputArtifacts;
 use maho_ext_mcp::tool_registrar::McpToolRegistrar;
 use maho_ext_tool_search::service::ToolSearchService;
 use serde_json::json;
-mod support;
+use crate::support;
 use maho_ext_api::{ExtensionSessionActions,ExecuteToolOptions,ExecuteToolFuture,LazyToolActivator,SlashCommandInfo,Model,ExtensionFuture,ThinkingLevel,ExecOptions,ExecResult};
 
 struct SessionActions(Arc<RecordingRegistrar>);
