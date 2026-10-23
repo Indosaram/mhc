@@ -563,7 +563,11 @@ impl SteeringEngine {
     /// Lets an in-process child reach its exact outcome boundary before lifecycle disposes it.
     fn destroy_after_settlement(&self, handle: Arc<dyn ManagedChildHandle>, task_id: String) {
         let destruction = Arc::clone(&self.port.destruction);
+        #[cfg(test)]
+        crate::manager::outcome::test_barrier::grant_spawned();
         std::thread::spawn(move || {
+            #[cfg(test)]
+            let _done = crate::manager::outcome::test_barrier::GrantDone;
             handle.wait_for_outcome();
             if let Err(error) =
                 destruction.destroy_resident_task(&task_id, DestroyCause::CancelWithoutAbort)
