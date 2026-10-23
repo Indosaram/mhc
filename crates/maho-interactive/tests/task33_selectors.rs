@@ -548,10 +548,10 @@ fn session_selector_loader_progress_requests_renders() {
             seen.store(true, Ordering::SeqCst);
             step_tx.send("ready").expect("step");
             go_rx.recv().expect("go");
-            progress(1, 2);
+            progress(1, 2, Some(vec![session("early", "/s/early.jsonl", None, 2_000)]));
             step_tx.send("p1").expect("step");
             go_rx.recv().expect("go");
-            progress(2, 2);
+            progress(2, 2, None);
             step_tx.send("p2").expect("step");
             go_rx.recv().expect("go");
             vec![session("a", "/s/a.jsonl", None, 1_000)]
@@ -577,6 +577,7 @@ fn session_selector_loader_progress_requests_renders() {
     assert_eq!(step_rx.recv().expect("step"), "p1");
     let first = component.render(120).join("\n");
     assert!(first.contains("Loading 1/2"), "{first}");
+    assert!(first.contains("message from early"), "a published partial row paints before the load finishes: {first}");
     assert_eq!(renders.load(Ordering::SeqCst), 2, "first progress update requests a render");
 
     go_tx.send(()).expect("go");
