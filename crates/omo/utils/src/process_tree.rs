@@ -329,6 +329,28 @@ fn is_zombie(pid: u32) -> bool {
             return rest.trim_start().starts_with('Z');
         }
     }
+    // PERF-DIVERGENCE(senpi process-tree is_zombie): upstream forks `ps -o stat=` per pid; this port queries proc_pidinfo(PROC_PIDTBSDINFO) on macOS and falls back to `ps` only on failure. Output is identical.
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(signed) = libc::pid_t::try_from(pid) {
+            let size = std::mem::size_of::<libc::proc_bsdinfo>();
+            // SAFETY: proc_bsdinfo is plain-old-data, valid when zeroed.
+            let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+            // SAFETY: the buffer pointer/size describe `info`, which outlives the call.
+            let written = unsafe {
+                libc::proc_pidinfo(
+                    signed,
+                    libc::PROC_PIDTBSDINFO,
+                    0,
+                    (&raw mut info).cast::<libc::c_void>(),
+                    size as libc::c_int,
+                )
+            };
+            if usize::try_from(written).is_ok_and(|n| n == size) {
+                return info.pbi_status == libc::SZOMB;
+            }
+        }
+    }
     Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])
         .output()
