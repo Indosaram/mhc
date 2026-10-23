@@ -103,6 +103,8 @@ pub struct ToolExecutionComponent {
     execution_started: bool,
     args_complete: bool,
     spinner_frame: Option<i64>,
+    /// senpi's `#spinner` timer; `spinner_frame` alone is shared with the strike animation.
+    spinner_running: bool,
     todo_strike_frames_left: Option<i64>,
     result: Option<ToolExecutionResult>,
     cached_lines: Option<Vec<String>>,
@@ -160,6 +162,7 @@ impl ToolExecutionComponent {
             execution_started: false,
             args_complete: false,
             spinner_frame: None,
+            spinner_running: false,
             todo_strike_frames_left: None,
             result: None,
             cached_lines: None,
@@ -317,6 +320,7 @@ impl ToolExecutionComponent {
 
     pub fn stop_animation(&mut self) {
         self.spinner_frame = None;
+        self.spinner_running = false;
         self.todo_strike_frames_left = None;
         self.invalidate_render_cache();
     }
@@ -347,7 +351,7 @@ impl ToolExecutionComponent {
             self.rebuild_now();
             changed = true;
         }
-        if self.spinner_frame.is_some() {
+        if self.spinner_running {
             let due = self
                 .spinner_tick_ms
                 .is_none_or(|last| now_ms.saturating_sub(last) >= 80);
@@ -367,7 +371,7 @@ impl ToolExecutionComponent {
                 let next = frames_left - 1;
                 if next < 0 {
                     self.todo_strike_frames_left = None;
-                    if self.spinner_frame.is_none() {
+                    if !self.spinner_running {
                         self.spinner_frame = None;
                     }
                 } else {
@@ -393,7 +397,7 @@ impl ToolExecutionComponent {
     }
 
     fn animation_running(&self) -> bool {
-        self.spinner_frame.is_some() || self.todo_strike_frames_left.is_some()
+        self.spinner_running || self.todo_strike_frames_left.is_some()
     }
 
     fn update_display(&mut self) {
@@ -512,9 +516,13 @@ impl ToolExecutionComponent {
                 .and_then(|result| result.details.as_ref())
                 .is_some_and(|details| read_tool_progress(details).is_some());
         if is_streaming_args || is_partial_task || is_partial_progress {
+            self.spinner_running = true;
             self.spinner_frame.get_or_insert(0);
         } else {
-            self.spinner_frame = None;
+            self.spinner_running = false;
+            if self.todo_strike_frames_left.is_none() {
+                self.spinner_frame = None;
+            }
         }
     }
 
