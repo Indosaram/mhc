@@ -251,6 +251,7 @@ impl ChaosHarness {
     /// microtask queue the chaos bench drains with `flushMicrotasks()`; this port hands the settle to
     /// a watcher thread, so the harness waits for the watcher to consume it before it reads state.
     pub fn flush_outcomes(&self) {
+        crate::manager::outcome::test_barrier::wait_until_grants_idle();
         for engine in &self.engines {
             for handle in engine.in_process_runner.all_handles() {
                 self.flush_handle_outcome(handle.as_ref());

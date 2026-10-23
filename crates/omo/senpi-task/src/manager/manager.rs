@@ -255,6 +255,18 @@ impl Drop for StopSettlementGuard<'_> {
     }
 }
 
+/// Runs a queue grant on its own thread. Under test the in-flight grant is counted so the chaos
+/// harness can wait for the exact launch it triggered instead of racing the scheduler.
+fn spawn_grant(grant: Grant) {
+    #[cfg(test)]
+    crate::manager::outcome::test_barrier::grant_spawned();
+    std::thread::spawn(move || {
+        #[cfg(test)]
+        let _done = crate::manager::outcome::test_barrier::GrantDone;
+        grant();
+    });
+}
+
 /// Cheap cloneable handle onto one manager instance.
 #[derive(Clone)]
 pub struct TaskManager {
@@ -482,7 +494,7 @@ impl TaskManager {
                 (concurrency.enqueue(model, task_id, grant.take().expect("pending grant")), false)
             }
         };
-        if immediate { std::thread::spawn(grant.expect("immediate grant")); }
+        if immediate { spawn_grant(grant.expect("immediate grant")); }
         (position, immediate)
     }
 
@@ -1925,7 +1937,7 @@ impl Inner {
             }
         };
         if let Some(grant) = immediate {
-            std::thread::spawn(grant);
+            spawn_grant(grant);
         }
         true
     }
@@ -2029,7 +2041,7 @@ impl Inner {
         }
         let grant = lock(&self.concurrency).release(model);
         if let Some(grant) = grant {
-            std::thread::spawn(grant);
+            spawn_grant(grant);
         }
     }
 
