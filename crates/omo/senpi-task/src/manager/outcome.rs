@@ -322,13 +322,20 @@ pub(crate) mod test_barrier {
         }
     }
 
+    /// A settle is only outstanding while a watcher is tracking the handle. A handle the manager
+    /// discarded before tracking it (a refused reattach or a stale launch) never gets a watcher, so
+    /// a settle on it can never be consumed and must not be waited for.
+    fn is_outstanding(entry: &Entry) -> bool {
+        entry.watching > 0 && entry.consumed < entry.issued
+    }
+
     pub(crate) fn has_outstanding(ptr: usize) -> bool {
-        lock().get(&ptr).is_some_and(|entry| entry.consumed < entry.issued)
+        lock().get(&ptr).is_some_and(is_outstanding)
     }
 
     pub(crate) fn wait_until_all_consumed() {
         let mut entries = lock();
-        while entries.values().any(|entry| entry.consumed < entry.issued) {
+        while entries.values().any(is_outstanding) {
             entries = state()
                 .cv
                 .wait_timeout(entries, std::time::Duration::from_secs(30))
@@ -349,10 +356,7 @@ pub(crate) mod test_barrier {
     /// Blocks until every settle issued for `ptr` has been consumed by its watcher.
     pub(crate) fn wait_until_consumed(ptr: usize) {
         let mut entries = lock();
-        while entries
-            .get(&ptr)
-            .is_some_and(|entry| entry.consumed < entry.issued)
-        {
+        while entries.get(&ptr).is_some_and(is_outstanding) {
             entries = state()
                 .cv
                 .wait_timeout(entries, std::time::Duration::from_secs(30))
@@ -369,6 +373,7 @@ pub(crate) mod test_barrier {
         let ptr = usize::MAX;
         register(ptr);
 
+        track(ptr);
         note_issue(ptr);
         note_consume(ptr);
         assert!(!has_outstanding(ptr));
@@ -377,6 +382,7 @@ pub(crate) mod test_barrier {
         assert!(!has_outstanding(ptr));
 
         register(ptr);
+        track(ptr);
         note_issue(ptr);
         assert!(has_outstanding(ptr));
 

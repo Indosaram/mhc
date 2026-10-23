@@ -224,6 +224,10 @@ pub fn mass_revive_at_cap(state: &ChaosState) {
         state.harness.observe_reconcile();
     }
     state.harness.observe_live_handles();
+    // A settle issued by an earlier, unflushed action is applied by a watcher thread; TS applies it
+    // on a microtask that cannot run inside this synchronous action. Land it before the resident is
+    // chosen so it cannot complete the task between the `before` read and the reclaim.
+    state.harness.flush_outcomes();
 
     let resident = state.harness.store.list().ok().and_then(|listed| {
         listed.records.into_iter().find(|record| {
