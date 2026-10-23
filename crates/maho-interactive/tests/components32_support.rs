@@ -115,3 +115,38 @@ fn raw_key_hints_match_pinned_senpi() {
         );
     }
 }
+
+#[test]
+fn todo_strike_animation_runs_once_then_stops_ticking() {
+    use maho_interactive::components::todo_strike::{TODO_STRIKE_FRAME_INTERVAL_MS, TODO_STRIKE_TOTAL_FRAMES};
+    use maho_interactive::components::tool_execution::{
+        ToolExecutionComponent, ToolExecutionOptions, ToolExecutionPresentation,
+    };
+    use maho_interactive::components::tool_execution_types::ToolExecutionResult;
+    let mut card = ToolExecutionComponent::new(
+        "todo",
+        "call",
+        serde_json::json!({}),
+        ToolExecutionOptions::default(),
+        None,
+        "/tmp",
+        ToolExecutionPresentation::Classic,
+        None,
+        theme(),
+    );
+    card.mark_execution_started();
+    let details = serde_json::json!({ "completedTasks": [{ "phase": "Fix", "content": "done" }] });
+    card.update_result(
+        ToolExecutionResult { content: Vec::new(), details: Some(details), is_error: false },
+        false,
+    );
+    let mut now = 0;
+    let mut animated_ticks = 0;
+    while card.tick(now) {
+        animated_ticks += 1;
+        assert!(animated_ticks <= TODO_STRIKE_TOTAL_FRAMES + 1, "strike animation never stopped");
+        now += TODO_STRIKE_FRAME_INTERVAL_MS;
+    }
+    assert_eq!(animated_ticks, TODO_STRIKE_TOTAL_FRAMES + 1);
+    assert!(!card.tick(now + 10 * TODO_STRIKE_FRAME_INTERVAL_MS));
+}
