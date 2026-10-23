@@ -800,6 +800,78 @@ export async function stage(options) {
 	return { ok: true, output, manifestPath: join(output, MANIFEST_NAME), manifest };
 }
 
+// ---------- GLIBC ceiling ----------
+
+const DEFAULT_GLIBC_CEILING = "2.28";
+
+export function compareGlibcVersions(a, b) {
+	const left = String(a).split(".").map(Number);
+	const right = String(b).split(".").map(Number);
+	for (let index = 0; index < Math.max(left.length, right.length); index++) {
+		const delta = (left[index] ?? 0) - (right[index] ?? 0);
+		if (delta !== 0) return delta < 0 ? -1 : 1;
+	}
+	return 0;
+}
+
+// Highest GLIBC_x.y symbol version an ELF64 little-endian image requires (via .gnu.version_r), or
+// null when the image is not such an ELF or needs no versioned glibc symbol. Pure JS: no binutils.
+export function highestGlibcRequirement(buffer) {
+	if (buffer.length < 64 || buffer[0] !== 0x7f || buffer[1] !== 0x45 || buffer[2] !== 0x4c || buffer[3] !== 0x46) return null;
+	if (buffer[4] !== 2 || buffer[5] !== 1) return null;
+	const shoff = Number(buffer.readBigUInt64LE(0x28));
+	const shentsize = buffer.readUInt16LE(0x3a);
+	const shnum = buffer.readUInt16LE(0x3c);
+	let highest = null;
+	for (let index = 0; index < shnum; index++) {
+		const header = shoff + index * shentsize;
+		if (header + 64 > buffer.length) break;
+		if (buffer.readUInt32LE(header + 4) !== 0x6ffffffe) continue;
+		const offset = Number(buffer.readBigUInt64LE(header + 0x18));
+		const link = buffer.readUInt32LE(header + 0x28);
+		const info = buffer.readUInt32LE(header + 0x2c);
+		const strtab = shoff + link * shentsize;
+		const strOffset = Number(buffer.readBigUInt64LE(strtab + 0x18));
+		const readString = (at) => {
+			const start = strOffset + at;
+			return buffer.toString("latin1", start, buffer.indexOf(0, start));
+		};
+		let verneed = offset;
+		for (let entry = 0; entry < info; entry++) {
+			const auxCount = buffer.readUInt16LE(verneed + 2);
+			let aux = verneed + buffer.readUInt32LE(verneed + 8);
+			for (let k = 0; k < auxCount; k++) {
+				const match = /^GLIBC_(\d+(?:\.\d+)+)$/.exec(readString(buffer.readUInt32LE(aux + 8)));
+				if (match && (highest === null || compareGlibcVersions(match[1], highest) > 0)) highest = match[1];
+				aux += buffer.readUInt32LE(aux + 12);
+			}
+			verneed += buffer.readUInt32LE(verneed + 12);
+		}
+	}
+	return highest;
+}
+
+async function glibcCeilingErrors(directory) {
+	const ceiling = process.env.MHC_GLIBC_CEILING || DEFAULT_GLIBC_CEILING;
+	if (!/^\d+(\.\d+)+$/.test(ceiling)) return [`MHC_GLIBC_CEILING must look like 2.28 (found ${JSON.stringify(ceiling)})`];
+	const errors = [];
+	const walk = async (dir) => {
+		for (const entry of await readdir(dir, { withFileTypes: true })) {
+			const absolute = join(dir, entry.name);
+			if (entry.isDirectory()) await walk(absolute);
+			else if (entry.isFile()) {
+				const buffer = await readFile(absolute);
+				const required = highestGlibcRequirement(buffer);
+				if (required !== null && compareGlibcVersions(required, ceiling) > 0) {
+					errors.push(`${absolute.slice(directory.length + 1)} requires GLIBC_${required}, above the GLIBC_${ceiling} ceiling`);
+				}
+			}
+		}
+	};
+	await walk(directory);
+	return errors;
+}
+
 // ---------- verification ----------
 
 export async function verify(directory) {
@@ -929,6 +1001,7 @@ export async function verify(directory) {
 		if (!skillFiles.some((entry) => entry?.path === skillMd)) errors.push(`declared skill SKILL.md is not in the hashed manifest: ${skillMd}`);
 		if (!existsSync(join(directory, skillsDir, name, "SKILL.md"))) errors.push(`missing skill: ${name}`);
 	}
+	for (const error of await glibcCeilingErrors(directory)) errors.push(error);
 	return { ok: errors.length === 0, errors, manifest };
 }
 
@@ -954,6 +1027,7 @@ async function selfTest() {
 		}
 	};
 	try {
+		check("glibc version comparison is numeric, not lexical", compareGlibcVersions("2.9", "2.28") < 0 && compareGlibcVersions("2.43", "2.28") > 0 && compareGlibcVersions("2.28", "2.28.0") === 0);
 		const repo = join(root, "repo");
 		const omo = join(root, "omo");
 		const binDir = join(root, "bin");
