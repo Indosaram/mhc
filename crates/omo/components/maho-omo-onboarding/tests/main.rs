@@ -1,6 +1,8 @@
 //! Single integration-test binary for this crate: each file under tests/ is one module, so
 //! the crate links one test executable instead of one per file.
 
+#[path = "claim_takeover_race.rs"]
+mod claim_takeover_race;
 #[path = "component.rs"]
 mod component;
 #[path = "faux_session.rs"]
