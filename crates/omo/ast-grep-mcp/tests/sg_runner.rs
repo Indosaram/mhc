@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-mod common;
+use crate::common;
 
 use std::ffi::CString;
 use std::io::BufRead;

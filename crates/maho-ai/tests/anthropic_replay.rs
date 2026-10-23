@@ -5,8 +5,8 @@
 //! writes the resulting event JSON; these tests serve the same fixture bytes to the Rust `stream()`
 //! and require the same event sequence.
 
-mod anthropic_common;
-mod support;
+use crate::anthropic_common;
+use crate::support;
 
 use anthropic_common::{CaptureServer, harness_haiku};
 use maho_ai::api::anthropic_messages;

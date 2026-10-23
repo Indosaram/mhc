@@ -1,2 +1,8 @@
 # Intentionally no `build.target-dir`: every lane sets its own cache with
 # CARGO_TARGET_DIR=$HOME/.cargo-target/maho-code/lane-<N>.
+
+# Debug info is ~95% of every debug/test binary; zlib-compressing it at link time shrinks each one
+# ~4-5x. zlib (not zstd): std's backtrace symbolizer only reads zlib-compressed sections, so
+# panics keep their file:line frames.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,--compress-debug-sections=zlib"]

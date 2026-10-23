@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license = "MIT"
+autotests = false
 
 [dependencies]
 maho-ai = { path = "../../maho-ai" }
@@ -20,3 +21,7 @@ serde_json = "=1.0.149"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

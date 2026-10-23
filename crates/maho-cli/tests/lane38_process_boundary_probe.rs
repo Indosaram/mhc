@@ -21,7 +21,7 @@ fn role_consumption_does_not_leak_to_ordinary_descendants() {
         return;
     }
     let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
-        .args(["--exact", "role_consumption_does_not_leak_to_ordinary_descendants", "--nocapture"])
+        .args(["--exact", "lane38_process_boundary_probe::role_consumption_does_not_leak_to_ordinary_descendants", "--nocapture"])
         .env(PROBE, "1").env("__PI_INTERNAL_SPAWN", "coordinator")
         .output().expect("isolated role process");
     assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
@@ -49,7 +49,7 @@ fn intentional_internal_spawns_keep_only_the_requested_role() {
         let original = env.clone();
         let status = runtime.block_on(async {
             let mut child = spawn_internal_process(role,
-                &["--exact".into(), "intentional_internal_spawns_keep_only_the_requested_role".into()],
+                &["--exact".into(), "lane38_process_boundary_probe::intentional_internal_spawns_keep_only_the_requested_role".into()],
                 &std::env::current_dir().expect("cwd"), &env).expect("internal child");
             match tokio::time::timeout(std::time::Duration::from_secs(10), child.wait()).await {
                 Ok(status) => status.expect("reaped child"),

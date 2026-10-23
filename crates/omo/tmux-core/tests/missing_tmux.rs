@@ -1,6 +1,6 @@
 //! Port of src/missing-tmux.test.ts
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 

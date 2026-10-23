@@ -1,7 +1,5 @@
 //! Port of senpi packages/agent/test/harness/storage-backed-session.test.ts.
 
-mod support;
-
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 

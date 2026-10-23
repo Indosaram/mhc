@@ -6,7 +6,7 @@
 //! sequence with `crates/maho-ai/tests/golden/replay/<case>.json`; `assert_matches_golden` reproduces
 //! senpi's own harness normalization (see its doc comment).
 
-mod support;
+use crate::support;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;

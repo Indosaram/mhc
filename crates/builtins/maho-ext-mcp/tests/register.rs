@@ -2,7 +2,7 @@ use std::{sync::{Arc,Mutex},time::Duration};
 use maho_ext_api::{ToolCall,AbortSignal,ToolContent};
 use maho_ext_mcp::{config_schema::*,transport::*,catalog::collect_tool_catalog,log::McpLogger,guard::output_guard::McpOutputArtifacts,expose::register::*};
 use serde_json::json;
-mod support;
+use crate::support;
 #[tokio::test]
 async fn native_tool_registration_calls_the_real_fixture_and_rejects_errors_before_spill() {
     let root=tempfile::tempdir().unwrap();

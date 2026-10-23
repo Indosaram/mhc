@@ -4,7 +4,7 @@
 //! suites belong to todo 12-misc (its `mistral-conversations` port); this file ports the two Google
 //! describe blocks and records the Mistral ones as excluded.
 
-mod google_fixtures;
+use crate::google_fixtures;
 
 use google_fixtures::{builtin_model, context, user_text};
 use maho_ai::api::google_generative_ai::stream_simple as stream_simple_google;

@@ -1,7 +1,5 @@
-#[path = "native_account/native_state.rs"]
-mod native_state;
-#[path = "native_account/support.rs"]
-pub mod support;
+use crate::native_state;
+use crate::support;
 use maho_ai::types::{
     AssistantImages, BoxFuture, ContentBlock, ImageContent, ImagesBackground, ImagesContext,
     ImagesModel, ImagesOptions, ImagesStopReason, ProviderImages, TextContent,

@@ -1,6 +1,6 @@
 use maho_ext_mcp::auth::{oauth::*,oauth_provider::McpOAuthProvider,token_store::McpTokenStore};
 use tokio::{io::{AsyncBufReadExt,BufReader},process::Command};
-mod support;
+use crate::support;
 #[tokio::test]
 async fn real_idp_authorization_persists_tokens_and_rejects_replayed_state() {
     let mut child=Command::new(support::node()).arg(support::senpi("packages/coding-agent/test/mcp/fixtures/oauth-idp.ts")).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::inherit()).kill_on_drop(true).spawn().unwrap();

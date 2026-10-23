@@ -2,7 +2,7 @@ use maho_ext_api::InputSource;
 use maho_omo_task::skill_invocation_tracker::SkillInvocationTracker;
 use senpi_task::agents::SkillInvocationState;
 use serde_json::json;
-mod support;
+use crate::support;
 #[tokio::test] async fn registered_expanded_start_work_forbids_review_after_human_plan_request() {
     use maho_ext_api::{EventKind,ExtensionEvent,InputEvent};
     use senpi_task::tools::task::spawn_policy::SpawnPolicyDeps;

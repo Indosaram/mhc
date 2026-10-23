@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 
 use maho_agent::assistant_terminal_state::{
     demote_tool_use_without_tool_calls, promote_stop_with_pending_tool_calls, should_terminate_assistant_turn,

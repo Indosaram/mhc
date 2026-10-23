@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 use std::{path::Path, sync::Arc};
 use maho_ext_api::*;
 use maho_omo_comment_checker::hook_input::to_hook_input;

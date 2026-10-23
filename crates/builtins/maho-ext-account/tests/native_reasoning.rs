@@ -1,5 +1,4 @@
-#[path="native_account/support.rs"]
-pub mod support;
+use crate::support;
 use maho_ext_api::*;
 use maho_ext_reasoning::{Reasoning,ReasoningHost,ThinkingPreferences};
 use maho_ai::types::{ModelThinkingLevel,ThinkingLevel};

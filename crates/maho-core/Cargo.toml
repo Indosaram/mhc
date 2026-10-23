@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license = "MIT"
+autotests = false
 
 [dependencies]
 maho-ai = { path = "../maho-ai" }
@@ -45,3 +46,7 @@ maho-ext-permission-system = { path = "../builtins/maho-ext-permission-system" }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 use maho_ext_api::*;
 #[tokio::test] async fn apply_patch_checks_each_changed_file() -> Result<(), Box<dyn std::error::Error>> {
  use std::sync::{Arc,Mutex};

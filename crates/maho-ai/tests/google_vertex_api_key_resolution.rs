@@ -5,7 +5,7 @@
 //! same options live on `GoogleClientConfig`; the assertions below read that struct and the request
 //! URL it derives, and the streaming cases drive a real request against a recording server.
 
-mod google_fixtures;
+use crate::google_fixtures;
 
 use google_fixtures::server::{sse_body, RecordingServer};
 use google_fixtures::{builtin_model, context, user_text};

@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 use std::sync::{Arc,Mutex};
 use maho_ext_api::*;
 #[tokio::test] async fn queued_user_transform_preserves_images_and_extension_is_silent() {

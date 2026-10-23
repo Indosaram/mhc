@@ -1,6 +1,6 @@
 //! Port of src/tmux-utils/pane-dimensions.test.ts
 
-mod common;
+use crate::common;
 
 use common::{Recorder, healthy_deps, strings, success};
 use pretty_assertions::assert_eq;

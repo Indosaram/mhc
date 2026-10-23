@@ -99,7 +99,7 @@ jobs:
         with:
           tool: cargo-nextest
       - name: native update integration tests
-        run: "cargo nextest run --locked -p maho-cli -E 'binary(/^native_update/)'"
+        run: "cargo nextest run --locked -p maho-cli -E 'test(/^native_update/)'"
 
   windows:
     runs-on: windows-2025

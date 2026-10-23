@@ -7,7 +7,7 @@ use senpi_desktop_tool::cua_errors::computer_failure;
 use senpi_desktop_tool::tool::{create_computer_tool, ComputerToolDeps};
 use serde_json::json;
 
-pub mod fixtures;
+use crate::fixtures;
 use fixtures::{desktop_fixture, methods_of, TestToolContext};
 
 #[tokio::test]

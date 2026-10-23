@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 use maho_ext_api::*;
 use maho_omo_task::{member_extension::register_task_member_extension, tools::{task_cancel_renderers, task_output_renderers, task_send_renderers, task_tool_renderers}};

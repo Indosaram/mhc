@@ -1,5 +1,4 @@
-#[path = "support.rs"]
-pub mod support;
+use crate::support;
 
 use maho_ext_api::*;
 use maho_ext_imagegen::{ImageGen, IMAGE_GEN_SECTION};

@@ -1,7 +1,5 @@
 //! Port of senpi packages/agent/test/harness/session-create-branch.test.ts.
 
-mod support;
-
 use std::sync::Arc;
 
 use maho_agent::harness::context::BACKGROUND_CONTEXT;

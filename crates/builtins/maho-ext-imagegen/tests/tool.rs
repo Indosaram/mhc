@@ -1,5 +1,4 @@
-#[path = "support.rs"]
-pub mod support;
+use crate::support;
 
 use maho_ai::types::{Usage, UsageCost};
 use maho_ext_imagegen::state::set_native_bypass;

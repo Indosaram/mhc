@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 
 use lsp_core::LspClientOptions;
 use lsp_core::LspClientTimeoutOptions;

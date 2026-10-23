@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license = "LicenseRef-SUL-1.0"
 publish.workspace = true
+autotests = false
 
 [lib]
 name = "comment_checker_core"
@@ -32,3 +33,7 @@ unsafe_code = "forbid"
 
 [lints.clippy]
 unwrap_used = "deny"
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

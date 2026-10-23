@@ -1,6 +1,6 @@
 //! Port of senpi packages/ai/test/google-shared-tool-call-id.test.ts.
 
-mod google_fixtures;
+use crate::google_fixtures;
 
 use google_fixtures::{assistant, context, text, text_model, tool_call, tool_result, user_text};
 use maho_ai::api::google_shared::{convert_messages, ConvertMessagesOptions};

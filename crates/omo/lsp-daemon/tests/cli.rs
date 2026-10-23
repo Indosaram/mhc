@@ -1,7 +1,7 @@
 //! CLI contract (cli.ts): `lsp-daemon [mcp | daemon]`, default `mcp`, env overrides.
 #![cfg(unix)]
 
-mod common;
+use crate::common;
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};

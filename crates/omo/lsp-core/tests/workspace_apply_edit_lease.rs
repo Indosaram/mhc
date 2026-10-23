@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 
 use lsp_core::AbortController;
 use lsp_core::WorkspaceEditCommitIo;

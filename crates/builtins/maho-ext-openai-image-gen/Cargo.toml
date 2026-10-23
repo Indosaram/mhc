@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license = "MIT"
+autotests = false
 
 [dependencies]
 serde_json.workspace = true
@@ -22,3 +23,7 @@ tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"
