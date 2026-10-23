@@ -8,17 +8,21 @@ use senpi_desktop_core::backend::PointerEvent;
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use x11rb::protocol::xproto::{KeyButMask, Window};
 
+use super::X11Input;
 use super::held::{HeldButton, Route};
 use super::keys::modifiers_mask;
 use super::server::{InputServer, SentEvent, Spot};
-use super::xtest::{button_detail, point, scroll_buttons, CLICK_DELAY, DRAG_STEP_DELAY};
-use super::X11Input;
+use super::xtest::{CLICK_DELAY, DRAG_STEP_DELAY, button_detail, point, scroll_buttons};
 
 impl<S: InputServer> X11Input<S> {
     /// `top` is the requested top-level window; each event goes to its
     /// deepest mapped descendant under the event's first point (a drag keeps
     /// the window its press landed in, as a real grab would).
-    pub(super) fn pointer_send_event(&mut self, top: Window, event: &PointerEvent) -> CoreResult<()> {
+    pub(super) fn pointer_send_event(
+        &mut self,
+        top: Window,
+        event: &PointerEvent,
+    ) -> CoreResult<()> {
         let (x, y) = first_point(event)?;
         let (root_x, root_y) = point(x, y)?;
         let window = self.server.target_at(top, root_x, root_y)?;
@@ -47,7 +51,8 @@ impl<S: InputServer> X11Input<S> {
             }
             PointerEvent::Move { x, y } => {
                 let at = self.spot(window, *x, *y)?;
-                self.server.send(window, SentEvent::Motion { at, state: 0 })?;
+                self.server
+                    .send(window, SentEvent::Motion { at, state: 0 })?;
             }
             PointerEvent::Drag {
                 path,

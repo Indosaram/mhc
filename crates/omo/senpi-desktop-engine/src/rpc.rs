@@ -3,9 +3,9 @@
 
 use senpi_desktop_core::error::{DesktopError, ErrorCode};
 use senpi_desktop_core::protocol::{
-    rpc_error_code, EngineErrorData, JsonRpcVersion, MethodRejection, MethodRejectionData, RequestId,
-    RpcError, RpcErrorData, RpcFailure, RpcSuccess, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,
-    PARSE_ERROR,
+    EngineErrorData, INVALID_PARAMS, INVALID_REQUEST, JsonRpcVersion, METHOD_NOT_FOUND,
+    MethodRejection, MethodRejectionData, PARSE_ERROR, RequestId, RpcError, RpcErrorData,
+    RpcFailure, RpcSuccess, rpc_error_code,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -63,8 +63,11 @@ const fn bare(code: i64, message: String) -> RpcError {
 
 /// Serializes a method result for the wire.
 pub fn to_result(value: impl Serialize) -> Result<Value, Failure> {
-    serde_json::to_value(value)
-        .map_err(|error| Failure::Engine(DesktopError::internal(format!("cannot encode result: {error}"))))
+    serde_json::to_value(value).map_err(|error| {
+        Failure::Engine(DesktopError::internal(format!(
+            "cannot encode result: {error}"
+        )))
+    })
 }
 
 /// The reply line for request `id`.
@@ -93,7 +96,9 @@ fn line(message: &impl Serialize) -> String {
         let internal = rpc_error_code(ErrorCode::Internal);
         let message = serde_json::to_string(&format!("cannot encode reply: {error}"))
             .unwrap_or_else(|_| "\"cannot encode reply\"".to_owned());
-        format!(r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":{internal},"message":{message}}}}}"#)
+        format!(
+            r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":{internal},"message":{message}}}}}"#
+        )
     })
 }
 
@@ -112,27 +117,35 @@ mod tests {
         use senpi_desktop_core::error::{PermissionDeniedData, TccPermission};
         let data = PermissionDeniedData {
             permission: TccPermission::Accessibility,
-            settings_url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility".into(),
+            settings_url:
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+                    .into(),
             app: "QA App".into(),
             relaunch_required: true,
         };
         let error = DesktopError::permission_denied_with(data, "marked backend refusal");
         let line = reply_line(RequestId::Number(9), Err(Failure::Engine(error)));
-        assert_eq!(parsed(&line)["error"], json!({
-            "code": -32000,
-            "message": "marked backend refusal",
-            "data": {
-                "code": "PermissionDenied", "hint": null,
-                "permission": { "permission": "accessibility",
-                    "settingsUrl": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-                    "app": "QA App", "relaunchRequired": true }
-            }
-        }));
+        assert_eq!(
+            parsed(&line)["error"],
+            json!({
+                "code": -32000,
+                "message": "marked backend refusal",
+                "data": {
+                    "code": "PermissionDenied", "hint": null,
+                    "permission": { "permission": "accessibility",
+                        "settingsUrl": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+                        "app": "QA App", "relaunchRequired": true }
+                }
+            })
+        );
     }
 
     #[test]
     fn desktop_errors_carry_their_numeric_code_and_error_code_name() {
-        let line = reply_line(RequestId::Number(7), Err(Failure::Engine(DesktopError::closed())));
+        let line = reply_line(
+            RequestId::Number(7),
+            Err(Failure::Engine(DesktopError::closed())),
+        );
         assert_eq!(
             parsed(&line)["error"],
             json!({"code": -32012, "message": "desktop session is closed", "data": {"code": "Closed", "hint": null}})
@@ -147,7 +160,10 @@ mod tests {
         );
         assert_eq!(parsed(&line)["id"], json!("a"));
         assert_eq!(parsed(&line)["error"]["code"], json!(-32601));
-        assert_eq!(parsed(&line)["error"]["data"], json!({"reason": "testOnly"}));
+        assert_eq!(
+            parsed(&line)["error"]["data"],
+            json!({"reason": "testOnly"})
+        );
     }
 
     #[test]

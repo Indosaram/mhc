@@ -303,6 +303,8 @@ impl StreamMapper {
                 abort_source: None,
                 raw_stop_reason: None,
                 end_turn: None,
+                failure_source: None,
+                timing: None,
                 timestamp: at,
             },
             started: false,
@@ -458,11 +460,21 @@ mod tests {
     async fn failure_text_does_not_invent_a_structured_limit_cause() {
         let model = model();
 
-        let events = failed_stream(&model, 123, "account usage limit").collect().await.expect("events");
+        let events = failed_stream(&model, 123, "account usage limit")
+            .collect()
+            .await
+            .expect("events");
 
-        let Some(Event::Error { error, .. }) = events.first() else { panic!("error event"); };
+        let Some(Event::Error { error, .. }) = events.first() else {
+            panic!("error event");
+        };
         assert_eq!(error.error_cause, None);
-        assert!(serde_json::to_value(error).expect("message").get("errorCause").is_none());
+        assert!(
+            serde_json::to_value(error)
+                .expect("message")
+                .get("errorCause")
+                .is_none()
+        );
     }
     #[tokio::test]
     async fn snapshots_tool_boundaries_and_telemetry() {

@@ -8,10 +8,10 @@
 use senpi_desktop_core::backend::{MouseButton, PointerEvent};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 
-use super::dispatch::{to_physical, Via, Win32Input};
+use super::dispatch::{Via, Win32Input, to_physical};
 use super::held::{HeldButton, Route};
 use super::keys::modifier_virtual_keys;
-use super::messages::{scroll_steps, WHEEL_DELTA};
+use super::messages::{WHEEL_DELTA, scroll_steps};
 use super::native::Window;
 use super::system;
 
@@ -30,13 +30,17 @@ impl Win32Input {
                 modifiers,
             } => {
                 system::place_cursor(to_physical(*x, *y)?, target)?;
-                self.holding(Via::SendInput(target), &modifier_virtual_keys(*modifiers), |this| {
-                    for _ in 0..*count {
-                        this.system_button(*button, true, target)?;
-                        this.system_button(*button, false, target)?;
-                    }
-                    Ok(())
-                })
+                self.holding(
+                    Via::SendInput(target),
+                    &modifier_virtual_keys(*modifiers),
+                    |this| {
+                        for _ in 0..*count {
+                            this.system_button(*button, true, target)?;
+                            this.system_button(*button, false, target)?;
+                        }
+                        Ok(())
+                    },
+                )
             }
             PointerEvent::Move { x, y } => system::place_cursor(to_physical(*x, *y)?, target),
             PointerEvent::Drag {
@@ -48,15 +52,18 @@ impl Win32Input {
                     return Err(DesktopError::input_failed("drag path is empty"));
                 };
                 system::place_cursor(to_physical(x, y)?, target)?;
-                self.holding(Via::SendInput(target), &modifier_virtual_keys(*modifiers), |this| {
-                    this.system_button(*button, true, target)?;
-                    let movement = path
-                        .iter()
-                        .skip(1)
-                        .try_for_each(|&(x, y)| system::place_cursor(to_physical(x, y)?, target));
-                    let release = this.system_button(*button, false, target);
-                    movement.and(release)
-                })
+                self.holding(
+                    Via::SendInput(target),
+                    &modifier_virtual_keys(*modifiers),
+                    |this| {
+                        this.system_button(*button, true, target)?;
+                        let movement = path.iter().skip(1).try_for_each(|&(x, y)| {
+                            system::place_cursor(to_physical(x, y)?, target)
+                        });
+                        let release = this.system_button(*button, false, target);
+                        movement.and(release)
+                    },
+                )
             }
             PointerEvent::Scroll { x, y, dx, dy } => {
                 system::place_cursor(to_physical(*x, *y)?, target)?;

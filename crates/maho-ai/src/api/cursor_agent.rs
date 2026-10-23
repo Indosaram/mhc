@@ -5957,11 +5957,7 @@ pub async fn fetch_cursor_usable_models(
                 id: id.clone(),
                 name,
                 reasoning: model.thinking_details.is_some(),
-                input: if has_multimodal_family(&id.to_lowercase()) {
-                    vec!["text".to_owned(), "image".to_owned()]
-                } else {
-                    vec!["text".to_owned()]
-                },
+                input: crate::cursor::model_input::cursor_discovered_input(&id),
                 context_window,
                 max_tokens: CURSOR_DEFAULT_MAX_TOKENS,
                 cursor_max_mode: max_mode,
@@ -6053,10 +6049,6 @@ fn has_1m_label(value: &str) -> bool {
 
 fn has_max_mode_1m_family(id: &str) -> bool {
     id.contains("claude") || id.contains("gemini")
-}
-
-fn has_multimodal_family(id: &str) -> bool {
-    id.contains("claude") || id.contains("gemini") || id.contains("gpt-") || id.contains("codex")
 }
 
 fn pick_model_display_name(model: &ModelDetails, fallback_id: &str) -> String {
@@ -6401,6 +6393,8 @@ async fn run_stream(
     stream: AssistantMessageEventStream,
 ) {
     let mut output = AssistantMessage {
+        failure_source: None,
+        timing: None,
         error_cause: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
@@ -6752,6 +6746,7 @@ mod tests {
 
     fn model(id: &str, compat: Option<Value>) -> Model {
         Model {
+            deprecated: None,
             prompt_cache: None,
             supports_assistant_prefill: None,
             id: id.to_owned(),
@@ -6779,6 +6774,8 @@ mod tests {
 
     fn assistant_for_tests() -> AssistantMessage {
         AssistantMessage {
+            failure_source: None,
+            timing: None,
             error_cause: None,
             prompt_cache_diagnostics: None,
             thinking_level: None,

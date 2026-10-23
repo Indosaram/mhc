@@ -37,7 +37,9 @@ enum FrameKind {
     Identity,
     /// Pixels only: the capture source did not report the displays' logical
     /// geometry, so no pixel can be mapped to an input coordinate.
-    PixelsOnly { reason: String },
+    PixelsOnly {
+        reason: String,
+    },
 }
 
 /// The pixel <-> logical mapping of one capture of one target.
@@ -111,17 +113,21 @@ impl FrameGeometry {
             width,
             height,
             regions: Vec::new(),
-            kind: FrameKind::PixelsOnly { reason: reason.into() },
+            kind: FrameKind::PixelsOnly {
+                reason: reason.into(),
+            },
         }
     }
 
     fn refuse_pixels_only(&self) -> CoreResult<()> {
         match &self.kind {
-            FrameKind::PixelsOnly { reason } => Err(DesktopError::invalid_coordinate_frame(format!(
-                "the last capture of this target has no known logical geometry ({reason}), so its \
+            FrameKind::PixelsOnly { reason } => {
+                Err(DesktopError::invalid_coordinate_frame(format!(
+                    "the last capture of this target has no known logical geometry ({reason}), so its \
                  pixels cannot be used as input coordinates; use accessibility actions, or make a \
                  capture with known geometry available and capture again"
-            ))),
+                )))
+            }
             _ => Ok(()),
         }
     }
@@ -177,15 +183,19 @@ impl FrameGeometry {
                 captured_width,
                 captured_height,
             } => {
-                let current = current_window
-                    .ok_or_else(|| DesktopError::window_not_found("target window is no longer available"))?;
+                let current = current_window.ok_or_else(|| {
+                    DesktopError::window_not_found("target window is no longer available")
+                })?;
                 if current.width != captured_width || current.height != captured_height {
                     return Err(DesktopError::invalid_coordinate_frame(
                         "target window was resized since capture; capture it again before coordinate \
                          input",
                     ));
                 }
-                Ok((f64::from(current.x) + local_x, f64::from(current.y) + local_y))
+                Ok((
+                    f64::from(current.x) + local_x,
+                    f64::from(current.y) + local_y,
+                ))
             }
             FrameKind::Desktop => Ok((region.x + local_x, region.y + local_y)),
             FrameKind::Identity | FrameKind::PixelsOnly { .. } => Ok((x, y)),

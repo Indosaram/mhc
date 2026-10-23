@@ -21,11 +21,11 @@ use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 
 use self::psn::{
-    front_process, post_focus_record, process_psn, FocusMarker, ProcessSerialNumber,
-    SET_FRONT_NO_WINDOWS,
+    FocusMarker, ProcessSerialNumber, SET_FRONT_NO_WINDOWS, front_process, post_focus_record,
+    process_psn,
 };
-pub(crate) use self::spi::{front_pid, is_available};
 use self::spi::required;
+pub(crate) use self::spi::{front_pid, is_available};
 
 /// Ensures the required background SPI resolved; the error names the missing
 /// SkyLight symbols.
@@ -168,12 +168,15 @@ pub(crate) fn with_foreground<T>(
     });
     thread::sleep(Duration::from_millis(40));
     let now_front = crate::front_app::current_front_pid();
-    let reclaim = crate::front_app::restore_step(0, now_front, Some(pid), crate::front_app::is_regular)
-        == crate::front_app::RestoreStep::Reclaim;
+    let reclaim =
+        crate::front_app::restore_step(0, now_front, Some(pid), crate::front_app::is_regular)
+            == crate::front_app::RestoreStep::Reclaim;
     // Hand the front back only while our own activation (or an accessory panel) holds it; a regular app the
     // user switched to during the action stays front (#9056).
     if let Some(previous) = previous.filter(|&previous| previous != pid && reclaim) {
-        if let Some((spi, psn)) = spi::foreground().and_then(|spi| psn_for_pid(spi.psn, previous).map(|psn| (spi, psn))) {
+        if let Some((spi, psn)) =
+            spi::foreground().and_then(|spi| psn_for_pid(spi.psn, previous).map(|psn| (spi, psn)))
+        {
             // SAFETY: The PSN came from WindowServer for the live front app;
             // window id 0 restores that process after foreground input.
             unsafe { (spi.set_front)(&psn, 0, SET_FRONT_NO_WINDOWS) };

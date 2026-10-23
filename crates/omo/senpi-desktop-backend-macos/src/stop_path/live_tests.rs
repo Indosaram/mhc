@@ -11,7 +11,7 @@ use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use senpi_desktop_safety::{Chord, MonotonicClock, StopPathError, StopPathListener, Supervisor};
 
 use super::tap::Simulate;
-use super::{CgEventTapListener, Control, Shared, DEFAULT_STOP_CHORD};
+use super::{CgEventTapListener, Control, DEFAULT_STOP_CHORD, Shared};
 
 /// Hang guard only; the latency bound is asserted separately.
 const HANG_GUARD: Duration = Duration::from_secs(30);
@@ -31,7 +31,10 @@ fn started(supervisor: &Arc<Supervisor>) -> CgEventTapListener {
     );
     let mut listener = CgEventTapListener::new();
     listener
-        .start(&Chord::parse(DEFAULT_STOP_CHORD).unwrap(), Arc::clone(supervisor))
+        .start(
+            &Chord::parse(DEFAULT_STOP_CHORD).unwrap(),
+            Arc::clone(supervisor),
+        )
         .unwrap();
     listener
 }
@@ -113,7 +116,9 @@ fn tap_disabled_by_timeout_re_arms() {
     let shared = shared(&listener);
     // When: the OS disables the tap and reports the timeout to the callback
     shared.update(|control| control.hooks.simulate = Some(Simulate::DisabledByTimeout));
-    wait_for(shared, |control| control.hooks.simulated_step_live.is_some());
+    wait_for(shared, |control| {
+        control.hooks.simulated_step_live.is_some()
+    });
     // Then: the callback re-enabled it before the path could drop
     let timeout_step = shared.control.lock().hooks.simulated_step_live;
     println!("timeout_step_live={timeout_step:?}");
@@ -125,7 +130,9 @@ fn tap_disabled_by_timeout_re_arms() {
         control.hooks.simulated_step_live = None;
         control.hooks.simulate = Some(Simulate::Disabled);
     });
-    wait_for(shared, |control| control.hooks.simulated_step_live.is_some());
+    wait_for(shared, |control| {
+        control.hooks.simulated_step_live.is_some()
+    });
     let disabled = Instant::now();
     let disabled_step = shared.control.lock().hooks.simulated_step_live;
     // Then: the path dropped, a new tap came up on the ladder, and it stops

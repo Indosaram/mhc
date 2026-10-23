@@ -78,17 +78,15 @@ pub enum PooledCredentialType {
 impl From<Credential> for PooledCredential {
     fn from(credential: Credential) -> Self {
         match credential {
-            Credential::ApiKey(c) => {
-                Self {
-                    credential_type: PooledCredentialType::ApiKey,
-                    key: c.key,
-                    env: c.env,
-                    accounts: accounts_from_extra(&c.extra),
-                    pinned: pinned_from_extra(&c.extra),
-                    extra: provider_fields(c.extra),
-                    ..Default::default()
-                }
-            }
+            Credential::ApiKey(c) => Self {
+                credential_type: PooledCredentialType::ApiKey,
+                key: c.key,
+                env: c.env,
+                accounts: accounts_from_extra(&c.extra),
+                pinned: pinned_from_extra(&c.extra),
+                extra: provider_fields(c.extra),
+                ..Default::default()
+            },
             Credential::OAuth(c) => Self {
                 credential_type: PooledCredentialType::OAuth,
                 access: Some(c.access),
@@ -106,7 +104,9 @@ impl From<Credential> for PooledCredential {
 
 /// The credential's provider-specific fields: its flattened extra minus the keys this struct
 /// models itself.
-fn provider_fields(mut extra: serde_json::Map<String, serde_json::Value>) -> serde_json::Map<String, serde_json::Value> {
+fn provider_fields(
+    mut extra: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
     for key in ["env", "accounts", "pinned"] {
         extra.remove(key);
     }
@@ -125,26 +125,33 @@ fn env_from_extra(extra: &serde_json::Map<String, serde_json::Value>) -> Option<
 /// senpi stores the pooled object itself, so a credential read back from the store still carries
 /// its `accounts`/`pinned` bookkeeping. `OAuthCredential`'s flattened extra keeps those keys, and
 /// this reconstructs them; without it a slot-scoped resolution could never see a stored pool.
-fn accounts_from_extra(extra: &serde_json::Map<String, serde_json::Value>) -> Option<Vec<CredentialSlot>> {
+fn accounts_from_extra(
+    extra: &serde_json::Map<String, serde_json::Value>,
+) -> Option<Vec<CredentialSlot>> {
     serde_json::from_value(extra.get("accounts")?.clone()).ok()
 }
 
 fn pinned_from_extra(extra: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
-    extra.get("pinned").and_then(serde_json::Value::as_str).map(str::to_owned)
+    extra
+        .get("pinned")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
 }
 
 impl PooledCredential {
     pub fn to_flat_credential(&self) -> Option<Credential> {
         match self.credential_type {
-            PooledCredentialType::ApiKey => {
-                Some(Credential::ApiKey(ApiKeyCredential {
-                    key: self.key.clone(),
-                    env: self.env.clone(),
-                    extra: self.extra.clone(),
-                }))
-            }
+            PooledCredentialType::ApiKey => Some(Credential::ApiKey(ApiKeyCredential {
+                key: self.key.clone(),
+                env: self.env.clone(),
+                extra: self.extra.clone(),
+            })),
             PooledCredentialType::OAuth => {
-                let mut cred = OAuthCredential::new(self.access.clone()?, self.refresh.clone()?, self.expires?);
+                let mut cred = OAuthCredential::new(
+                    self.access.clone()?,
+                    self.refresh.clone()?,
+                    self.expires?,
+                );
                 cred.extra = self.extra.clone();
                 if let Some(env) = &self.env {
                     cred = cred.with_extra("env", serde_json::to_value(env).unwrap_or_default());
@@ -166,10 +173,14 @@ impl PooledCredential {
                     extra: self.extra.clone(),
                 };
                 if let Some(accounts) = &self.accounts {
-                    cred.extra.insert("accounts".into(), serde_json::to_value(accounts).unwrap_or_default());
+                    cred.extra.insert(
+                        "accounts".into(),
+                        serde_json::to_value(accounts).unwrap_or_default(),
+                    );
                 }
                 if let Some(pinned) = &self.pinned {
-                    cred.extra.insert("pinned".into(), serde_json::Value::String(pinned.clone()));
+                    cred.extra
+                        .insert("pinned".into(), serde_json::Value::String(pinned.clone()));
                 }
                 Credential::ApiKey(cred)
             }
@@ -184,10 +195,14 @@ impl PooledCredential {
                     cred = cred.with_extra("env", serde_json::to_value(env).unwrap_or_default());
                 }
                 if let Some(accounts) = &self.accounts {
-                    cred = cred.with_extra("accounts", serde_json::to_value(accounts).unwrap_or_default());
+                    cred = cred.with_extra(
+                        "accounts",
+                        serde_json::to_value(accounts).unwrap_or_default(),
+                    );
                 }
                 if let Some(pinned) = &self.pinned {
-                    cred = cred.with_extra("pinned", serde_json::to_value(pinned).unwrap_or_default());
+                    cred =
+                        cred.with_extra("pinned", serde_json::to_value(pinned).unwrap_or_default());
                 }
                 Credential::OAuth(cred)
             }
@@ -202,7 +217,9 @@ pub fn assert_valid_slot_name(name: &str) -> Result<(), String> {
     if SLOT_NAME_PATTERN.is_match(name).unwrap_or(false) {
         Ok(())
     } else {
-        Err(format!("Invalid account name '{name}': use letters, digits, '-' or '_', starting with a letter or digit"))
+        Err(format!(
+            "Invalid account name '{name}': use letters, digits, '-' or '_', starting with a letter or digit"
+        ))
     }
 }
 
@@ -218,8 +235,10 @@ fn is_mark(c: char) -> bool {
 }
 
 fn is_invisible(base: char) -> bool {
-    matches!(base, '\u{115f}' | '\u{1160}' | '\u{17b4}' | '\u{17b5}' | '\u{2800}' | '\u{3164}' | '\u{ffa0}')
-        || is_mark(base)
+    matches!(
+        base,
+        '\u{115f}' | '\u{1160}' | '\u{17b4}' | '\u{17b5}' | '\u{2800}' | '\u{3164}' | '\u{ffa0}'
+    ) || is_mark(base)
 }
 
 fn is_wide(base: char) -> bool {
@@ -239,11 +258,17 @@ fn is_blank_render(base: char) -> bool {
 pub fn display_name_columns(value: &str) -> usize {
     let mut columns = 0usize;
     for segment in value.graphemes(true) {
-        let Some(base) = segment.chars().next() else { continue };
+        let Some(base) = segment.chars().next() else {
+            continue;
+        };
         if is_invisible(base) {
             continue;
         }
-        columns += if is_wide(base) || segment.contains('\u{fe0f}') { 2 } else { 1 };
+        columns += if is_wide(base) || segment.contains('\u{fe0f}') {
+            2
+        } else {
+            1
+        };
     }
     columns
 }
@@ -290,8 +315,13 @@ fn cyrillic_lookalike(ch: char) -> char {
 
 fn display_name_key(value: &str) -> String {
     let normalized = normalize_display_name(value);
-    let nfkc: String = unicode_normalization::UnicodeNormalization::nfkc(normalized.as_str()).collect();
-    nfkc.to_lowercase().chars().filter(|c| !is_invisible(*c)).map(cyrillic_lookalike).collect()
+    let nfkc: String =
+        unicode_normalization::UnicodeNormalization::nfkc(normalized.as_str()).collect();
+    nfkc.to_lowercase()
+        .chars()
+        .filter(|c| !is_invisible(*c))
+        .map(cyrillic_lookalike)
+        .collect()
 }
 
 const UNSAFE_DISPLAY_CATEGORIES: &[unicode_general_category::GeneralCategory] = &[];
@@ -323,7 +353,11 @@ pub fn account_display_name(value: Option<&str>) -> Option<String> {
     if normalized.chars().all(is_blank_render) {
         return None;
     }
-    if display_name_columns(&normalized) <= DISPLAY_NAME_MAX_COLUMNS { Some(normalized) } else { None }
+    if display_name_columns(&normalized) <= DISPLAY_NAME_MAX_COLUMNS {
+        Some(normalized)
+    } else {
+        None
+    }
 }
 
 pub fn account_label(name: &str, display_name: Option<&str>) -> String {
@@ -339,12 +373,17 @@ pub fn rename_slot_display_name(
     value: Option<&str>,
 ) -> Result<PooledCredential, String> {
     assert_valid_slot_name(name)?;
-    let accounts = credential.accounts.clone().unwrap_or_else(|| list_slots(Some(credential)));
+    let accounts = credential
+        .accounts
+        .clone()
+        .unwrap_or_else(|| list_slots(Some(credential)));
     let Some(target) = accounts.iter().find(|slot| slot.name == name) else {
         return Err(format!("Stored provider account not found: {name}"));
     };
     if target.source == Some(CredentialSlotSource::Env) {
-        return Err(format!("Environment provider account cannot be renamed: {name}"));
+        return Err(format!(
+            "Environment provider account cannot be renamed: {name}"
+        ));
     }
     let display_name = match value {
         None => None,
@@ -359,11 +398,16 @@ pub fn rename_slot_display_name(
         let key = display_name_key(display_name);
         let duplicate = accounts.iter().any(|slot| {
             slot.name != name
-                && display_name_key(account_display_name(slot.display_name.as_deref()).unwrap_or_default().as_str())
-                    == key
+                && display_name_key(
+                    account_display_name(slot.display_name.as_deref())
+                        .unwrap_or_default()
+                        .as_str(),
+                ) == key
         });
         if duplicate {
-            return Err("Display name is already used by another account for this provider.".to_string());
+            return Err(
+                "Display name is already used by another account for this provider.".to_string(),
+            );
         }
     }
     let mut next = credential.clone();
@@ -419,7 +463,9 @@ fn slot_from_flat_credential(credential: &PooledCredential) -> Option<Credential
 }
 
 pub fn list_slots(credential: Option<&PooledCredential>) -> Vec<CredentialSlot> {
-    let Some(credential) = credential else { return vec![] };
+    let Some(credential) = credential else {
+        return vec![];
+    };
     let slots = stored_slots(credential);
     if !slots.is_empty() {
         return slots;
@@ -428,10 +474,15 @@ pub fn list_slots(credential: Option<&PooledCredential>) -> Vec<CredentialSlot> 
 }
 
 pub fn find_slot(credential: Option<&PooledCredential>, name: &str) -> Option<CredentialSlot> {
-    list_slots(credential).into_iter().find(|slot| slot.name == name)
+    list_slots(credential)
+        .into_iter()
+        .find(|slot| slot.name == name)
 }
 
-pub fn upsert_slot(credential: Option<PooledCredential>, slot: CredentialSlot) -> Result<PooledCredential, String> {
+pub fn upsert_slot(
+    credential: Option<PooledCredential>,
+    slot: CredentialSlot,
+) -> Result<PooledCredential, String> {
     assert_valid_slot_name(&slot.name)?;
     let base = credential.unwrap_or_else(|| {
         if slot.access.is_some() || slot.refresh.is_some() {
@@ -443,15 +494,27 @@ pub fn upsert_slot(credential: Option<PooledCredential>, slot: CredentialSlot) -
                 ..Default::default()
             }
         } else {
-            PooledCredential { credential_type: PooledCredentialType::ApiKey, key: slot.key.clone(), ..Default::default() }
+            PooledCredential {
+                credential_type: PooledCredentialType::ApiKey,
+                key: slot.key.clone(),
+                ..Default::default()
+            }
         }
     });
     let existing = list_slots(Some(&base));
-    let index = existing.iter().position(|candidate| candidate.name == slot.name);
+    let index = existing
+        .iter()
+        .position(|candidate| candidate.name == slot.name);
     let accounts = match index {
         Some(_) => existing
             .into_iter()
-            .map(|candidate| if candidate.name == slot.name { merge_slot(&candidate, &slot) } else { candidate })
+            .map(|candidate| {
+                if candidate.name == slot.name {
+                    merge_slot(&candidate, &slot)
+                } else {
+                    candidate
+                }
+            })
             .collect(),
         None => {
             let mut v = existing;
@@ -459,7 +522,10 @@ pub fn upsert_slot(credential: Option<PooledCredential>, slot: CredentialSlot) -
             v
         }
     };
-    Ok(PooledCredential { accounts: Some(accounts), ..base })
+    Ok(PooledCredential {
+        accounts: Some(accounts),
+        ..base
+    })
 }
 
 fn merge_slot(base: &CredentialSlot, over: &CredentialSlot) -> CredentialSlot {
@@ -467,7 +533,10 @@ fn merge_slot(base: &CredentialSlot, over: &CredentialSlot) -> CredentialSlot {
     extra.extend(over.extra.clone());
     CredentialSlot {
         name: over.name.clone(),
-        display_name: over.display_name.clone().or_else(|| base.display_name.clone()),
+        display_name: over
+            .display_name
+            .clone()
+            .or_else(|| base.display_name.clone()),
         source: over.source.or(base.source),
         key: over.key.clone().or_else(|| base.key.clone()),
         access: over.access.clone().or_else(|| base.access.clone()),
@@ -480,7 +549,9 @@ fn merge_slot(base: &CredentialSlot, over: &CredentialSlot) -> CredentialSlot {
 
 fn slot_mirrors_flat(credential: &PooledCredential, slot: &CredentialSlot) -> bool {
     match credential.credential_type {
-        PooledCredentialType::OAuth => slot.access == credential.access || slot.refresh == credential.refresh,
+        PooledCredentialType::OAuth => {
+            slot.access == credential.access || slot.refresh == credential.refresh
+        }
         PooledCredentialType::ApiKey => slot.key == credential.key,
     }
 }
@@ -499,9 +570,11 @@ fn project_flat_fields(credential: &PooledCredential, slot: &CredentialSlot) -> 
                 ..credential.clone()
             }
         }
-        PooledCredentialType::ApiKey => {
-            PooledCredential { key: slot.key.clone(), env: slot.env.clone().or_else(|| credential.env.clone()), ..credential.clone() }
-        }
+        PooledCredentialType::ApiKey => PooledCredential {
+            key: slot.key.clone(),
+            env: slot.env.clone().or_else(|| credential.env.clone()),
+            ..credential.clone()
+        },
     }
 }
 
@@ -509,15 +582,23 @@ pub fn remove_slot(credential: Option<PooledCredential>, name: &str) -> Option<P
     let credential = credential?;
     let existing = list_slots(Some(&credential));
     let removed = existing.iter().find(|slot| slot.name == name).cloned();
-    let accounts: Vec<CredentialSlot> = existing.into_iter().filter(|slot| slot.name != name).collect();
+    let accounts: Vec<CredentialSlot> = existing
+        .into_iter()
+        .filter(|slot| slot.name != name)
+        .collect();
     if accounts.is_empty() {
         return None;
     }
     let reprojected = match &removed {
-        Some(removed) if slot_mirrors_flat(&credential, removed) => project_flat_fields(&credential, &accounts[0]),
+        Some(removed) if slot_mirrors_flat(&credential, removed) => {
+            project_flat_fields(&credential, &accounts[0])
+        }
         _ => credential,
     };
-    let mut next = PooledCredential { accounts: Some(accounts), ..reprojected };
+    let mut next = PooledCredential {
+        accounts: Some(accounts),
+        ..reprojected
+    };
     if next.pinned.as_deref() == Some(name) {
         next.pinned = None;
     }
@@ -526,7 +607,10 @@ pub fn remove_slot(credential: Option<PooledCredential>, name: &str) -> Option<P
 
 pub fn pin_slot(credential: PooledCredential, name: &str) -> Result<PooledCredential, String> {
     assert_valid_slot_name(name)?;
-    Ok(PooledCredential { pinned: Some(name.to_string()), ..credential })
+    Ok(PooledCredential {
+        pinned: Some(name.to_string()),
+        ..credential
+    })
 }
 
 pub fn project_slot(credential: Option<&PooledCredential>, name: &str) -> Option<Credential> {
@@ -552,7 +636,10 @@ pub fn project_slot(credential: Option<&PooledCredential>, name: &str) -> Option
 }
 
 pub fn next_login_slot_name(credential: &PooledCredential) -> Result<String, String> {
-    let taken: std::collections::HashSet<String> = list_slots(Some(credential)).into_iter().map(|s| s.name).collect();
+    let taken: std::collections::HashSet<String> = list_slots(Some(credential))
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
     for index in 2..1000 {
         let candidate = format!("login-{index}");
         if !taken.contains(&candidate) {
@@ -564,7 +651,11 @@ pub fn next_login_slot_name(credential: &PooledCredential) -> Result<String, Str
 
 fn provided_slots(credential: &PooledCredential) -> Option<Vec<CredentialSlot>> {
     let accounts = credential.accounts.clone()?;
-    if accounts.is_empty() { None } else { Some(accounts) }
+    if accounts.is_empty() {
+        None
+    } else {
+        Some(accounts)
+    }
 }
 
 fn merge_provided_pool(
@@ -573,13 +664,20 @@ fn merge_provided_pool(
     provided: &[CredentialSlot],
 ) -> PooledCredential {
     let known: std::collections::HashSet<&str> = existing.iter().map(|s| s.name.as_str()).collect();
-    let added: Vec<CredentialSlot> = provided.iter().filter(|slot| !known.contains(slot.name.as_str())).cloned().collect();
+    let added: Vec<CredentialSlot> = provided
+        .iter()
+        .filter(|slot| !known.contains(slot.name.as_str()))
+        .cloned()
+        .collect();
     if added.is_empty() {
         current.clone()
     } else {
         let mut accounts = existing.to_vec();
         accounts.extend(added);
-        PooledCredential { accounts: Some(accounts), ..current.clone() }
+        PooledCredential {
+            accounts: Some(accounts),
+            ..current.clone()
+        }
     }
 }
 
@@ -589,19 +687,32 @@ pub enum LoginSlotOrigin {
 }
 
 pub fn append_login_slot(
-    current: Option<PooledCredential>,
+    stored: Option<PooledCredential>,
     flat: PooledCredential,
     mut on_allocated: impl FnMut(&str, LoginSlotOrigin),
 ) -> Result<PooledCredential, String> {
+    // A pool holds one kind: a login of the other kind replaces the credential instead of joining
+    // it as a slot nothing can project (senpi#3448). The caller backs up what it replaces.
+    let current = stored.filter(|stored| stored.credential_type == flat.credential_type);
     let provided = provided_slots(&flat);
     if let Some(provided) = &provided {
         let previous: std::collections::HashSet<String> = match &current {
-            Some(current) if current.accounts.is_some() => {
-                current.accounts.clone().unwrap_or_default().into_iter().map(|s| s.name).collect()
-            }
-            _ => list_slots(current.as_ref()).into_iter().map(|s| s.name).collect(),
+            Some(current) if current.accounts.is_some() => current
+                .accounts
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| s.name)
+                .collect(),
+            _ => list_slots(current.as_ref())
+                .into_iter()
+                .map(|s| s.name)
+                .collect(),
         };
-        let added: Vec<&CredentialSlot> = provided.iter().filter(|slot| !previous.contains(&slot.name)).collect();
+        let added: Vec<&CredentialSlot> = provided
+            .iter()
+            .filter(|slot| !previous.contains(&slot.name))
+            .collect();
         if added.len() == 1
             && SLOT_NAME_PATTERN.is_match(&added[0].name).unwrap_or(false)
             && added[0].source != Some(CredentialSlotSource::Env)
@@ -623,8 +734,13 @@ pub fn append_login_slot(
         });
     }
     let name = next_login_slot_name(&current)?;
-    let flat_credential = flat.to_flat_credential().ok_or("cannot derive flat credential")?;
-    let next = upsert_slot(Some(current), slot_from_flat_credential_named(&flat_credential, &name))?;
+    let flat_credential = flat
+        .to_flat_credential()
+        .ok_or("cannot derive flat credential")?;
+    let next = upsert_slot(
+        Some(current),
+        slot_from_flat_credential_named(&flat_credential, &name),
+    )?;
     on_allocated(&name, LoginSlotOrigin::Generated);
     Ok(next)
 }
@@ -635,7 +751,10 @@ pub fn managed_sentinel_material(provider_id: &str) -> String {
 
 pub fn managed_sentinel_materials(provider_id: &str) -> Vec<String> {
     let mut materials = vec![managed_sentinel_material(provider_id)];
-    if let Some((legacy_id, _)) = LEGACY_PROVIDER_IDS.iter().find(|(_, canonical)| *canonical == provider_id) {
+    if let Some((legacy_id, _)) = LEGACY_PROVIDER_IDS
+        .iter()
+        .find(|(_, canonical)| *canonical == provider_id)
+    {
         let legacy_material = managed_sentinel_material(legacy_id);
         if !materials.contains(&legacy_material) {
             materials.push(legacy_material);
@@ -650,31 +769,51 @@ pub fn is_managed_sentinel_slot(provider_id: &str, slot: &CredentialSlot) -> boo
     materials.iter().any(|m| m == access) && slot.refresh.as_deref() == Some(access)
 }
 
-pub fn repair_managed_sentinel_slots(provider_id: &str, credential: &PooledCredential) -> Option<PooledCredential> {
+pub fn repair_managed_sentinel_slots(
+    provider_id: &str,
+    credential: &PooledCredential,
+) -> Option<PooledCredential> {
     let accounts = credential.accounts.clone()?;
-    let kept: Vec<CredentialSlot> =
-        accounts.iter().filter(|slot| !is_managed_sentinel_slot(provider_id, slot)).cloned().collect();
+    let kept: Vec<CredentialSlot> = accounts
+        .iter()
+        .filter(|slot| !is_managed_sentinel_slot(provider_id, slot))
+        .cloned()
+        .collect();
     if kept.len() == accounts.len() {
         return None;
     }
-    let mut repaired = PooledCredential { accounts: Some(kept.clone()), ..credential.clone() };
+    let mut repaired = PooledCredential {
+        accounts: Some(kept.clone()),
+        ..credential.clone()
+    };
     if let Some(pinned) = &repaired.pinned
-        && !kept.iter().any(|slot| &slot.name == pinned) {
-            repaired.pinned = None;
-        }
+        && !kept.iter().any(|slot| &slot.name == pinned)
+    {
+        repaired.pinned = None;
+    }
     Some(repaired)
 }
 
-pub fn merge_refreshed_slot(current: &PooledCredential, name: &str, refreshed: &Credential) -> PooledCredential {
-    let Credential::OAuth(refreshed_oauth) = refreshed else { return current.clone() };
+pub fn merge_refreshed_slot(
+    current: &PooledCredential,
+    name: &str,
+    refreshed: &Credential,
+) -> PooledCredential {
+    let Credential::OAuth(refreshed_oauth) = refreshed else {
+        return current.clone();
+    };
     if current.credential_type != PooledCredentialType::OAuth {
         return current.clone();
     }
-    let Some(accounts) = &current.accounts else { return merge_refreshed(current, refreshed) };
+    let Some(accounts) = &current.accounts else {
+        return merge_refreshed(current, refreshed);
+    };
     if accounts.is_empty() {
         return merge_refreshed(current, refreshed);
     }
-    let Some(target) = accounts.iter().find(|slot| slot.name == name).cloned() else { return current.clone() };
+    let Some(target) = accounts.iter().find(|slot| slot.name == name).cloned() else {
+        return current.clone();
+    };
     let mirrors_flat = target.access == current.access || target.refresh == current.refresh;
     let rotated_accounts: Vec<CredentialSlot> = accounts
         .iter()
@@ -700,20 +839,30 @@ pub fn merge_refreshed_slot(current: &PooledCredential, name: &str, refreshed: &
             ..current.clone()
         }
     } else {
-        PooledCredential { accounts: Some(rotated_accounts), ..current.clone() }
+        PooledCredential {
+            accounts: Some(rotated_accounts),
+            ..current.clone()
+        }
     }
 }
 
 pub fn merge_refreshed(current: &PooledCredential, refreshed: &Credential) -> PooledCredential {
-    let Some(accounts) = &current.accounts else { return refreshed.clone().into() };
+    let Some(accounts) = &current.accounts else {
+        return refreshed.clone().into();
+    };
     if accounts.is_empty() {
         return refreshed.clone().into();
     }
-    let Credential::OAuth(refreshed_oauth) = refreshed else { return refreshed.clone().into() };
+    let Credential::OAuth(refreshed_oauth) = refreshed else {
+        return refreshed.clone().into();
+    };
     if current.credential_type != PooledCredentialType::OAuth {
         return refreshed.clone().into();
     }
-    let target = accounts.iter().find(|slot| slot.access == current.access || slot.refresh == current.refresh).cloned();
+    let target = accounts
+        .iter()
+        .find(|slot| slot.access == current.access || slot.refresh == current.refresh)
+        .cloned();
     let rotated_accounts: Vec<CredentialSlot> = match &target {
         Some(target) => accounts
             .iter()
@@ -755,20 +904,36 @@ mod tests {
                  "blockReason": "auth_error"}
             ]
         });
-        let credential: super::Credential = serde_json::from_value(original.clone()).expect("credential");
+        let credential: super::Credential =
+            serde_json::from_value(original.clone()).expect("credential");
         let pool = super::PooledCredential::from(credential);
         // When a generic slot upsert updates only presentation metadata.
-        let next = super::upsert_slot(Some(pool), super::CredentialSlot {
-            name: "default".into(), display_name: Some("Work".into()), ..Default::default()
-        }).expect("upsert");
+        let next = super::upsert_slot(
+            Some(pool),
+            super::CredentialSlot {
+                name: "default".into(),
+                display_name: Some("Work".into()),
+                ..Default::default()
+            },
+        )
+        .expect("upsert");
         let stored = serde_json::to_value(next.to_stored_credential()).expect("stored");
         // Then block state and unknown fields survive the complete pool round trip.
-        assert_eq!(stored["accounts"][0]["blockedUntil"], original["accounts"][0]["blockedUntil"]);
-        assert_eq!(stored["accounts"][0]["blockReason"], original["accounts"][0]["blockReason"]);
+        assert_eq!(
+            stored["accounts"][0]["blockedUntil"],
+            original["accounts"][0]["blockedUntil"]
+        );
+        assert_eq!(
+            stored["accounts"][0]["blockReason"],
+            original["accounts"][0]["blockReason"]
+        );
         assert_eq!(stored["accounts"][0]["providerSlotField"], "kept");
         assert_eq!(stored["accounts"][1], original["accounts"][1]);
         let next = super::remove_slot(Some(next), "default").expect("survivor");
-        assert_eq!(serde_json::to_value(next.to_stored_credential()).expect("stored")["accounts"][0], original["accounts"][1]);
+        assert_eq!(
+            serde_json::to_value(next.to_stored_credential()).expect("stored")["accounts"][0],
+            original["accounts"][1]
+        );
     }
 
     use super::*;
@@ -785,7 +950,13 @@ mod tests {
     }
 
     fn slot(name: &str, access: &str, refresh: &str) -> CredentialSlot {
-        CredentialSlot { name: name.into(), access: Some(access.into()), refresh: Some(refresh.into()), expires: Some(1.0), ..Default::default() }
+        CredentialSlot {
+            name: name.into(),
+            access: Some(access.into()),
+            refresh: Some(refresh.into()),
+            expires: Some(1.0),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -810,13 +981,20 @@ mod tests {
 
     #[test]
     fn remove_slot_drops_pool_when_empty_and_clears_pin() {
-        let credential = PooledCredential { pinned: Some("only".into()), ..oauth_pool("a1", "r1", vec![slot("only", "a1", "r1")]) };
+        let credential = PooledCredential {
+            pinned: Some("only".into()),
+            ..oauth_pool("a1", "r1", vec![slot("only", "a1", "r1")])
+        };
         assert_eq!(remove_slot(Some(credential), "only"), None);
     }
 
     #[test]
     fn remove_slot_reprojects_flat_fields_when_removed_slot_mirrored_flat() {
-        let credential = oauth_pool("a1", "r1", vec![slot("default", "a1", "r1"), slot("secondary", "a2", "r2")]);
+        let credential = oauth_pool(
+            "a1",
+            "r1",
+            vec![slot("default", "a1", "r1"), slot("secondary", "a2", "r2")],
+        );
         let next = remove_slot(Some(credential), "default").unwrap();
         assert_eq!(next.access, Some("a2".into()));
         assert_eq!(next.refresh, Some("r2".into()));
@@ -824,7 +1002,11 @@ mod tests {
 
     #[test]
     fn project_slot_returns_flat_credential_for_named_slot() {
-        let credential = oauth_pool("a1", "r1", vec![slot("default", "a1", "r1"), slot("secondary", "a2", "r2")]);
+        let credential = oauth_pool(
+            "a1",
+            "r1",
+            vec![slot("default", "a1", "r1"), slot("secondary", "a2", "r2")],
+        );
         let projected = project_slot(Some(&credential), "secondary").unwrap();
         assert_eq!(projected.as_oauth().unwrap().access, "a2");
     }
@@ -834,7 +1016,10 @@ mod tests {
         assert_eq!(managed_sentinel_material("anthropic"), "anthropic-managed");
         let sentinel_slot = slot("default", "anthropic-managed", "anthropic-managed");
         assert!(is_managed_sentinel_slot("anthropic", &sentinel_slot));
-        assert!(!is_managed_sentinel_slot("anthropic", &slot("default", "real", "real")));
+        assert!(!is_managed_sentinel_slot(
+            "anthropic",
+            &slot("default", "real", "real")
+        ));
     }
 
     #[test]
@@ -843,9 +1028,13 @@ mod tests {
         let credential = oauth_pool(
             &sentinel,
             &sentinel,
-            vec![slot("default", "real-access", "real-refresh"), slot("login-2", &sentinel, &sentinel)],
+            vec![
+                slot("default", "real-access", "real-refresh"),
+                slot("login-2", &sentinel, &sentinel),
+            ],
         );
-        let repaired = repair_managed_sentinel_slots("anthropic-subscription", &credential).unwrap();
+        let repaired =
+            repair_managed_sentinel_slots("anthropic-subscription", &credential).unwrap();
         assert_eq!(repaired.accounts.clone().unwrap().len(), 1);
         assert_eq!(repaired.accounts.unwrap()[0].name, "default");
 
@@ -867,14 +1056,19 @@ mod tests {
         let mut credential = oauth_pool(
             &sentinel,
             &sentinel,
-            vec![slot("default", "real-access", "real-refresh"), slot("login-2", &sentinel, &sentinel)],
+            vec![
+                slot("default", "real-access", "real-refresh"),
+                slot("login-2", &sentinel, &sentinel),
+            ],
         );
         credential.pinned = Some("login-2".into());
-        let repaired = repair_managed_sentinel_slots("anthropic-subscription", &credential).unwrap();
+        let repaired =
+            repair_managed_sentinel_slots("anthropic-subscription", &credential).unwrap();
         assert!(repaired.pinned.is_none());
 
         credential.pinned = Some("default".into());
-        let repaired = repair_managed_sentinel_slots("anthropic-subscription", &credential).unwrap();
+        let repaired =
+            repair_managed_sentinel_slots("anthropic-subscription", &credential).unwrap();
         assert_eq!(repaired.pinned.as_deref(), Some("default"));
     }
 
@@ -897,8 +1091,14 @@ mod tests {
 
     fn assert_copilot_enterprise_fields(credential: &Credential) {
         let oauth = credential.as_oauth().expect("oauth");
-        assert_eq!(oauth.get_extra_str("enterpriseUrl"), Some("company.ghe.com"));
-        assert_eq!(oauth.get_extra("availableModelIds"), Some(&serde_json::json!(["gpt-4o"])));
+        assert_eq!(
+            oauth.get_extra_str("enterpriseUrl"),
+            Some("company.ghe.com")
+        );
+        assert_eq!(
+            oauth.get_extra("availableModelIds"),
+            Some(&serde_json::json!(["gpt-4o"]))
+        );
     }
 
     #[test]
@@ -909,8 +1109,12 @@ mod tests {
         assert_copilot_enterprise_fields(&refreshed.to_stored_credential());
 
         // Pooled refresh: senpi spreads the current credential, so its fields stay.
-        let pooled = upsert_slot(Some(current.clone()), slot("default", "old-a", "old-r")).expect("upsert");
-        let refreshed = merge_refreshed(&pooled, &Credential::OAuth(OAuthCredential::new("new-a", "new-r", 2.0)));
+        let pooled =
+            upsert_slot(Some(current.clone()), slot("default", "old-a", "old-r")).expect("upsert");
+        let refreshed = merge_refreshed(
+            &pooled,
+            &Credential::OAuth(OAuthCredential::new("new-a", "new-r", 2.0)),
+        );
         let stored = refreshed.to_stored_credential();
         assert_copilot_enterprise_fields(&stored);
         assert_eq!(PooledCredential::from(stored), refreshed);
@@ -918,17 +1122,32 @@ mod tests {
         // First and second login keep the fields; a slot projection carries them too.
         let first = append_login_slot(None, current.clone(), |_, _| {}).expect("first login");
         assert_copilot_enterprise_fields(&first.to_stored_credential());
-        let second = append_login_slot(Some(first), copilot_enterprise("a2", "r2").into(), |_, _| {}).expect("second login");
+        let second = append_login_slot(
+            Some(first),
+            copilot_enterprise("a2", "r2").into(),
+            |_, _| {},
+        )
+        .expect("second login");
         assert_copilot_enterprise_fields(&second.to_stored_credential());
-        assert_copilot_enterprise_fields(&project_slot(Some(&second), "login-2").expect("projected"));
+        assert_copilot_enterprise_fields(
+            &project_slot(Some(&second), "login-2").expect("projected"),
+        );
     }
 
     #[test]
     fn merge_refreshed_slot_only_rotates_named_slot() {
-        let current = oauth_pool("a1", "r1", vec![slot("default", "a1", "r1"), slot("secondary", "a2", "r2")]);
+        let current = oauth_pool(
+            "a1",
+            "r1",
+            vec![slot("default", "a1", "r1"), slot("secondary", "a2", "r2")],
+        );
         let refreshed = Credential::OAuth(OAuthCredential::new("new-a2", "new-r2", 2.0));
         let merged = merge_refreshed_slot(&current, "secondary", &refreshed);
-        assert_eq!(merged.access, Some("a1".into()), "flat fields untouched when non-mirroring slot rotates");
+        assert_eq!(
+            merged.access,
+            Some("a1".into()),
+            "flat fields untouched when non-mirroring slot rotates"
+        );
         let accounts = merged.accounts.unwrap();
         assert_eq!(accounts[1].access, Some("new-a2".into()));
         assert_eq!(accounts[0].access, Some("a1".into()));
@@ -957,18 +1176,36 @@ mod tests {
     #[test]
     fn append_login_slot_generates_default_for_first_login() {
         let mut allocated = None;
-        let flat = PooledCredential { credential_type: PooledCredentialType::ApiKey, key: Some("k".into()), ..Default::default() };
-        let result = append_login_slot(None, flat, |name, _origin| allocated = Some(name.to_string())).unwrap();
+        let flat = PooledCredential {
+            credential_type: PooledCredentialType::ApiKey,
+            key: Some("k".into()),
+            ..Default::default()
+        };
+        let result = append_login_slot(None, flat, |name, _origin| {
+            allocated = Some(name.to_string())
+        })
+        .unwrap();
         assert_eq!(allocated, Some(DEFAULT_SLOT_NAME.to_string()));
         assert_eq!(result.key, Some("k".into()));
     }
 
     #[test]
     fn append_login_slot_allocates_incrementing_name_for_second_login() {
-        let current = PooledCredential { credential_type: PooledCredentialType::ApiKey, key: Some("k1".into()), ..Default::default() };
-        let flat = PooledCredential { credential_type: PooledCredentialType::ApiKey, key: Some("k2".into()), ..Default::default() };
+        let current = PooledCredential {
+            credential_type: PooledCredentialType::ApiKey,
+            key: Some("k1".into()),
+            ..Default::default()
+        };
+        let flat = PooledCredential {
+            credential_type: PooledCredentialType::ApiKey,
+            key: Some("k2".into()),
+            ..Default::default()
+        };
         let mut allocated = None;
-        let result = append_login_slot(Some(current), flat, |name, _| allocated = Some(name.to_string())).unwrap();
+        let result = append_login_slot(Some(current), flat, |name, _| {
+            allocated = Some(name.to_string())
+        })
+        .unwrap();
         assert_eq!(allocated, Some("login-2".to_string()));
         assert_eq!(result.accounts.unwrap().len(), 2);
     }
@@ -1011,11 +1248,15 @@ mod tests {
             ],
             "pinned": "work"
         });
-        let credential: Credential = serde_json::from_value(stored).expect("senpi's pooled shape parses");
+        let credential: Credential =
+            serde_json::from_value(stored).expect("senpi's pooled shape parses");
         let pooled: PooledCredential = credential.into();
 
         assert_eq!(
-            list_slots(Some(&pooled)).iter().map(|slot| slot.name.clone()).collect::<Vec<_>>(),
+            list_slots(Some(&pooled))
+                .iter()
+                .map(|slot| slot.name.clone())
+                .collect::<Vec<_>>(),
             vec!["default", "work"]
         );
         assert_eq!(pooled.pinned.as_deref(), Some("work"));
@@ -1048,7 +1289,10 @@ mod tests {
         let work = project_slot(Some(&pooled), "work").unwrap();
         let key = work.as_api_key().unwrap();
         assert_eq!(key.key.as_deref(), Some("second"));
-        assert_eq!(key.env.as_ref().unwrap().get("REGION").map(String::as_str), Some("global"));
+        assert_eq!(
+            key.env.as_ref().unwrap().get("REGION").map(String::as_str),
+            Some("global")
+        );
         assert!(!key.extra.contains_key("accounts"));
         assert!(!key.extra.contains_key("pinned"));
     }
@@ -1056,17 +1300,23 @@ mod tests {
     #[test]
     fn second_api_key_login_keeps_the_first_account_after_store_round_trip() {
         // Given
-        let initial = login(None, PooledCredential {
-            key: Some("first".into()),
-            ..Default::default()
-        });
+        let initial = login(
+            None,
+            PooledCredential {
+                key: Some("first".into()),
+                ..Default::default()
+            },
+        );
         let stored = PooledCredential::from(initial.to_stored_credential());
 
         // When
-        let added = login(Some(stored), PooledCredential {
-            key: Some("second".into()),
-            ..Default::default()
-        });
+        let added = login(
+            Some(stored),
+            PooledCredential {
+                key: Some("second".into()),
+                ..Default::default()
+            },
+        );
         let restored = PooledCredential::from(added.to_stored_credential());
 
         // Then
@@ -1081,14 +1331,20 @@ mod tests {
     #[test]
     fn api_key_logout_reprojects_survivor_and_clears_removed_pin_after_store_round_trip() {
         // Given
-        let initial = login(None, PooledCredential {
-            key: Some("first".into()),
-            ..Default::default()
-        });
-        let pool = login(Some(initial), PooledCredential {
-            key: Some("second".into()),
-            ..Default::default()
-        });
+        let initial = login(
+            None,
+            PooledCredential {
+                key: Some("first".into()),
+                ..Default::default()
+            },
+        );
+        let pool = login(
+            Some(initial),
+            PooledCredential {
+                key: Some("second".into()),
+                ..Default::default()
+            },
+        );
         let pinned = pin_slot(pool, "default").unwrap();
         let stored = PooledCredential::from(pinned.to_stored_credential());
 
@@ -1110,10 +1366,19 @@ mod tests {
         let mainland = region_env("mainland-cn");
         let global = region_env("global");
         let pooled = login(None, oauth_flat("cn-access", Some(mainland.clone())));
-        let pooled = login(Some(pooled), oauth_flat("intl-access", Some(global.clone())));
+        let pooled = login(
+            Some(pooled),
+            oauth_flat("intl-access", Some(global.clone())),
+        );
 
         let slots = list_slots(Some(&pooled));
-        assert_eq!(slots.iter().map(|slot| slot.env.clone()).collect::<Vec<_>>(), vec![Some(mainland), Some(global)]);
+        assert_eq!(
+            slots
+                .iter()
+                .map(|slot| slot.env.clone())
+                .collect::<Vec<_>>(),
+            vec![Some(mainland), Some(global)]
+        );
 
         let default = project_slot(Some(&pooled), "default").expect("default slot");
         assert_eq!(default.as_oauth().expect("oauth").access, "cn-access");
@@ -1137,8 +1402,14 @@ mod tests {
 
     #[test]
     fn removing_the_projected_account_re_projects_the_survivors_env_onto_the_flat_fields() {
-        let pooled = login(None, oauth_flat("cn-access", Some(region_env("mainland-cn"))));
-        let pooled = login(Some(pooled), oauth_flat("intl-access", Some(region_env("global"))));
+        let pooled = login(
+            None,
+            oauth_flat("cn-access", Some(region_env("mainland-cn"))),
+        );
+        let pooled = login(
+            Some(pooled),
+            oauth_flat("intl-access", Some(region_env("global"))),
+        );
 
         let survivor = remove_slot(Some(pooled), "default").expect("a survivor remains");
         assert_eq!(survivor.access, Some("intl-access".into()));
@@ -1171,7 +1442,10 @@ mod tests {
     }
 
     fn slot_names(credential: Option<&PooledCredential>) -> Vec<String> {
-        list_slots(credential).into_iter().map(|slot| slot.name).collect()
+        list_slots(credential)
+            .into_iter()
+            .map(|slot| slot.name)
+            .collect()
     }
 
     fn flat_oauth(access: &str, refresh: &str, expires: f64) -> PooledCredential {
@@ -1223,7 +1497,12 @@ mod tests {
     fn upsert_slot_preserves_the_pin() {
         let next = upsert_slot(
             Some(api_key_pool()),
-            CredentialSlot { name: "default".into(), key: Some("rotated".into()), source: Some(CredentialSlotSource::Login), ..Default::default() },
+            CredentialSlot {
+                name: "default".into(),
+                key: Some("rotated".into()),
+                source: Some(CredentialSlotSource::Login),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(next.pinned.as_deref(), Some("work"));
@@ -1238,7 +1517,12 @@ mod tests {
         };
         let next = upsert_slot(
             Some(flat),
-            CredentialSlot { name: "second".into(), key: Some("s".into()), source: Some(CredentialSlotSource::Login), ..Default::default() },
+            CredentialSlot {
+                name: "second".into(),
+                key: Some("s".into()),
+                source: Some(CredentialSlotSource::Login),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(next.credential_type, PooledCredentialType::ApiKey);
@@ -1258,7 +1542,10 @@ mod tests {
         assert_eq!(next.refresh, Some("first-refresh".into()));
         assert_eq!(next.expires, Some(1.0));
         assert_eq!(slot_names(Some(&next)), vec!["default", "login-2"]);
-        let login_two = list_slots(Some(&next)).into_iter().find(|slot| slot.name == "login-2").expect("login-2");
+        let login_two = list_slots(Some(&next))
+            .into_iter()
+            .find(|slot| slot.name == "login-2")
+            .expect("login-2");
         assert_eq!(login_two.access, Some("second-access".into()));
         assert_eq!(login_two.refresh, Some("second-refresh".into()));
         assert_eq!(login_two.expires, Some(2.0));
@@ -1266,7 +1553,10 @@ mod tests {
 
     #[test]
     fn remove_slot_deletes_only_the_named_slot() {
-        assert_eq!(slot_names(remove_slot(Some(api_key_pool()), "default").as_ref()), vec!["work"]);
+        assert_eq!(
+            slot_names(remove_slot(Some(api_key_pool()), "default").as_ref()),
+            vec!["work"]
+        );
     }
 
     #[test]
@@ -1289,8 +1579,16 @@ mod tests {
     #[test]
     fn remove_slot_re_projects_an_api_key_survivor_when_the_projected_slot_is_removed() {
         let promoted = append_login_slot(
-            Some(PooledCredential { credential_type: PooledCredentialType::ApiKey, key: Some("legacy-key".into()), ..Default::default() }),
-            PooledCredential { credential_type: PooledCredentialType::ApiKey, key: Some("second-key".into()), ..Default::default() },
+            Some(PooledCredential {
+                credential_type: PooledCredentialType::ApiKey,
+                key: Some("legacy-key".into()),
+                ..Default::default()
+            }),
+            PooledCredential {
+                credential_type: PooledCredentialType::ApiKey,
+                key: Some("second-key".into()),
+                ..Default::default()
+            },
             |_, _| {},
         )
         .unwrap();
@@ -1306,13 +1604,20 @@ mod tests {
         let current = sentinel_pool();
         let mut accounts = list_slots(Some(&current));
         accounts.push(login_slot("account-2", "real-b", "refresh-b", 999.0));
-        let provider_login_result = PooledCredential { accounts: Some(accounts), ..current.clone() };
+        let provider_login_result = PooledCredential {
+            accounts: Some(accounts),
+            ..current.clone()
+        };
 
-        let next = append_login_slot(Some(current), provider_login_result.clone(), |_, _| {}).unwrap();
+        let next =
+            append_login_slot(Some(current), provider_login_result.clone(), |_, _| {}).unwrap();
 
         assert_eq!(next, provider_login_result);
         assert_eq!(slot_names(Some(&next)), vec!["default", "account-2"]);
-        assert_eq!(list_slots(Some(&next)).pop().unwrap().access, Some("real-b".into()));
+        assert_eq!(
+            list_slots(Some(&next)).pop().unwrap().access,
+            Some("real-b".into())
+        );
     }
 
     #[test]
@@ -1320,25 +1625,52 @@ mod tests {
         // The provider builds its pool from a snapshot read BEFORE the interactive login; the value
         // under the credential lock at commit time may have moved on since.
         let snapshot = sentinel_pool();
-        let rotated = login_slot("default", "rotated-access", "rotated-refresh", 4_102_444_800_000.0);
-        let authoritative =
-            PooledCredential { pinned: Some("default".into()), accounts: Some(vec![rotated.clone()]), ..snapshot.clone() };
+        let rotated = login_slot(
+            "default",
+            "rotated-access",
+            "rotated-refresh",
+            4_102_444_800_000.0,
+        );
+        let authoritative = PooledCredential {
+            pinned: Some("default".into()),
+            accounts: Some(vec![rotated.clone()]),
+            ..snapshot.clone()
+        };
         let mut provided = list_slots(Some(&snapshot));
         provided.push(login_slot("account-2", "real-b", "refresh-b", 999.0));
-        let provider_login_result = PooledCredential { accounts: Some(provided), ..snapshot.clone() };
+        let provider_login_result = PooledCredential {
+            accounts: Some(provided),
+            ..snapshot.clone()
+        };
 
-        let next = append_login_slot(Some(authoritative.clone()), provider_login_result, |_, _| {}).unwrap();
+        let next = append_login_slot(
+            Some(authoritative.clone()),
+            provider_login_result,
+            |_, _| {},
+        )
+        .unwrap();
 
         assert_eq!(slot_names(Some(&next)), vec!["default", "account-2"]);
-        let stored = next.accounts.as_ref().unwrap().iter().find(|slot| slot.name == "default").unwrap();
-        assert_eq!(stored, authoritative.accounts.as_ref().unwrap().first().unwrap());
+        let stored = next
+            .accounts
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|slot| slot.name == "default")
+            .unwrap();
+        assert_eq!(
+            stored,
+            authoritative.accounts.as_ref().unwrap().first().unwrap()
+        );
     }
 
     #[test]
     fn a_provider_owned_pool_onto_a_flat_current_keeps_the_whole_write_shape() {
         let flat = flat_oauth("legacy-a", "legacy-r", 999.0);
-        let provider_login_result =
-            PooledCredential { accounts: Some(vec![login_slot("default", "fresh-a", "fresh-r", 999.0)]), ..flat_oauth("legacy-a", "legacy-r", 999.0) };
+        let provider_login_result = PooledCredential {
+            accounts: Some(vec![login_slot("default", "fresh-a", "fresh-r", 999.0)]),
+            ..flat_oauth("legacy-a", "legacy-r", 999.0)
+        };
 
         let next = append_login_slot(Some(flat), provider_login_result.clone(), |_, _| {}).unwrap();
 
@@ -1347,7 +1679,12 @@ mod tests {
 
     #[test]
     fn append_login_slot_still_appends_an_unnamed_flat_oauth_credential_as_login_2() {
-        let next = append_login_slot(Some(sentinel_pool()), flat_oauth("fresh-access", "fresh-refresh", 999.0), |_, _| {}).unwrap();
+        let next = append_login_slot(
+            Some(sentinel_pool()),
+            flat_oauth("fresh-access", "fresh-refresh", 999.0),
+            |_, _| {},
+        )
+        .unwrap();
 
         assert_eq!(slot_names(Some(&next)), vec!["default", "login-2"]);
         let last = list_slots(Some(&next)).pop().unwrap();
@@ -1359,19 +1696,33 @@ mod tests {
     fn append_login_slot_still_appends_an_unnamed_flat_api_key_credential() {
         let next = append_login_slot(
             Some(api_key_pool()),
-            PooledCredential { credential_type: PooledCredentialType::ApiKey, key: Some("third-key".into()), ..Default::default() },
+            PooledCredential {
+                credential_type: PooledCredentialType::ApiKey,
+                key: Some("third-key".into()),
+                ..Default::default()
+            },
             |_, _| {},
         )
         .unwrap();
 
         assert_eq!(slot_names(Some(&next)), vec!["default", "work", "login-2"]);
-        assert_eq!(list_slots(Some(&next)).pop().unwrap().key, Some("third-key".into()));
+        assert_eq!(
+            list_slots(Some(&next)).pop().unwrap().key,
+            Some("third-key".into())
+        );
     }
 
     #[test]
     fn append_login_slot_without_a_current_credential_writes_the_flat_credential_as_is() {
-        let flat = PooledCredential { credential_type: PooledCredentialType::ApiKey, key: Some("only-key".into()), ..Default::default() };
-        assert_eq!(append_login_slot(None, flat.clone(), |_, _| {}).unwrap(), flat);
+        let flat = PooledCredential {
+            credential_type: PooledCredentialType::ApiKey,
+            key: Some("only-key".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            append_login_slot(None, flat.clone(), |_, _| {}).unwrap(),
+            flat
+        );
     }
 
     // --- account-display-names-unicode.test.ts ---
@@ -1408,14 +1759,23 @@ mod tests {
 
     #[test]
     fn normalizes_to_nfc_and_collapses_internal_whitespace_runs_in_the_stored_form() {
-        assert_eq!(account_display_name(Some(&format!("  {NFD_CAFE} "))), Some(NFC_CAFE.to_string()));
-        assert_eq!(account_display_name(Some("Work  account")), Some("Work account".into()));
+        assert_eq!(
+            account_display_name(Some(&format!("  {NFD_CAFE} "))),
+            Some(NFC_CAFE.to_string())
+        );
+        assert_eq!(
+            account_display_name(Some("Work  account")),
+            Some("Work account".into())
+        );
     }
 
     #[test]
     fn measures_the_limit_in_terminal_columns_not_utf16_code_units() {
         assert_eq!(account_display_name(Some(&"\u{4e2d}".repeat(20))), None);
-        assert_eq!(account_display_name(Some(&"\u{4e2d}".repeat(16))), Some("\u{4e2d}".repeat(16)));
+        assert_eq!(
+            account_display_name(Some(&"\u{4e2d}".repeat(16))),
+            Some("\u{4e2d}".repeat(16))
+        );
         let emoji = "\u{1f389}".repeat(16);
         assert_eq!(account_display_name(Some(&emoji)), Some(emoji.clone()));
         assert_eq!(account_display_name(Some(&"\u{1f389}".repeat(17))), None);
@@ -1426,8 +1786,14 @@ mod tests {
     #[test]
     fn rejects_names_that_render_as_blank_or_begin_with_a_combining_mark() {
         assert_eq!(account_display_name(Some(&HANGUL_FILLER.to_string())), None);
-        assert_eq!(account_display_name(Some(&HANGUL_FILLER.to_string().repeat(3))), None);
-        assert_eq!(account_display_name(Some(&BRAILLE_BLANK.to_string().repeat(3))), None);
+        assert_eq!(
+            account_display_name(Some(&HANGUL_FILLER.to_string().repeat(3))),
+            None
+        );
+        assert_eq!(
+            account_display_name(Some(&BRAILLE_BLANK.to_string().repeat(3))),
+            None
+        );
         assert_eq!(account_display_name(Some(" \t ")), None);
         assert_eq!(account_display_name(Some("\u{0301}abc")), None);
         let with_filler = format!("Work{HANGUL_FILLER}");
@@ -1436,8 +1802,14 @@ mod tests {
 
     #[test]
     fn omits_hand_written_metadata_that_fails_validation_from_labels() {
-        assert_eq!(account_label("default", Some(&HANGUL_FILLER.to_string())), "default");
-        assert_eq!(account_label("default", Some(&format!(" {NFD_CAFE} "))), format!("{NFC_CAFE} (default)"));
+        assert_eq!(
+            account_label("default", Some(&HANGUL_FILLER.to_string())),
+            "default"
+        );
+        assert_eq!(
+            account_label("default", Some(&format!(" {NFD_CAFE} "))),
+            format!("{NFC_CAFE} (default)")
+        );
     }
 
     #[test]
@@ -1450,27 +1822,44 @@ mod tests {
             ("Bork", "\u{0412}ork"),
         ];
         for (existing, duplicate) in cases {
-            let credential =
-                rename_slot_display_name(&display_pool(&[None, Some(existing)]), "slot-2", Some(existing)).unwrap();
-            let error = rename_slot_display_name(&credential, "slot-1", Some(duplicate)).unwrap_err();
-            assert!(error.contains("already used"), "{existing} vs {duplicate}: {error}");
+            let credential = rename_slot_display_name(
+                &display_pool(&[None, Some(existing)]),
+                "slot-2",
+                Some(existing),
+            )
+            .unwrap();
+            let error =
+                rename_slot_display_name(&credential, "slot-1", Some(duplicate)).unwrap_err();
+            assert!(
+                error.contains("already used"),
+                "{existing} vs {duplicate}: {error}"
+            );
         }
     }
 
     #[test]
     fn keeps_distinct_renderings_distinct() {
-        let credential = rename_slot_display_name(&display_pool(&[None, None]), "slot-1", Some("Work account")).unwrap();
+        let credential =
+            rename_slot_display_name(&display_pool(&[None, None]), "slot-1", Some("Work account"))
+                .unwrap();
         assert!(rename_slot_display_name(&credential, "slot-2", Some("Workaccount")).is_ok());
         assert!(rename_slot_display_name(&credential, "slot-2", Some("W\u{00f6}rk")).is_ok());
     }
 
     #[test]
     fn pins_the_rejection_message_for_invalid_labels() {
-        let error = rename_slot_display_name(&display_pool(&[None]), "slot-1", Some(&"\u{4e2d}".repeat(40))).unwrap_err();
+        let error = rename_slot_display_name(
+            &display_pool(&[None]),
+            "slot-1",
+            Some(&"\u{4e2d}".repeat(40)),
+        )
+        .unwrap_err();
         assert!(error.contains("1-32 terminal columns"), "{error}");
-        let error = rename_slot_display_name(&display_pool(&[None]), "slot-1", Some("")).unwrap_err();
+        let error =
+            rename_slot_display_name(&display_pool(&[None]), "slot-1", Some("")).unwrap_err();
         assert!(error.contains("1-32 terminal columns"), "{error}");
-        let error = rename_slot_display_name(&display_pool(&[None]), "missing", Some("Valid")).unwrap_err();
+        let error =
+            rename_slot_display_name(&display_pool(&[None]), "missing", Some("Valid")).unwrap_err();
         assert!(error.contains("not found"), "{error}");
     }
 
@@ -1478,15 +1867,24 @@ mod tests {
 
     #[test]
     fn normalizes_the_legacy_claude_sdk_oauth_id_to_anthropic_subscription() {
-        assert_eq!(crate::legacy_provider_ids::normalize_provider_id("claude-sdk-oauth"), "anthropic-subscription");
-        assert_eq!(crate::legacy_provider_ids::normalize_provider_id("anthropic-subscription"), "anthropic-subscription");
+        assert_eq!(
+            crate::legacy_provider_ids::normalize_provider_id("claude-sdk-oauth"),
+            "anthropic-subscription"
+        );
+        assert_eq!(
+            crate::legacy_provider_ids::normalize_provider_id("anthropic-subscription"),
+            "anthropic-subscription"
+        );
     }
 
     #[test]
     fn exposes_a_widened_managed_sentinel_materials_helper() {
         assert_eq!(
             managed_sentinel_materials("anthropic-subscription"),
-            vec!["anthropic-subscription-managed".to_string(), "claude-sdk-oauth-managed".to_string()]
+            vec![
+                "anthropic-subscription-managed".to_string(),
+                "claude-sdk-oauth-managed".to_string()
+            ]
         );
     }
 
@@ -1499,7 +1897,10 @@ mod tests {
                 refresh: Some(material.into()),
                 ..Default::default()
             };
-            assert!(is_managed_sentinel_slot("anthropic-subscription", &slot), "{material} must be recognized");
+            assert!(
+                is_managed_sentinel_slot("anthropic-subscription", &slot),
+                "{material} must be recognized"
+            );
         }
     }
 
@@ -1523,10 +1924,14 @@ mod tests {
 
     #[test]
     fn keeps_the_wire_api_id_frozen_on_the_prompt_cache_ttl_table() {
-        let models = crate::models_generated::get_builtin_provider_models("anthropic").expect("anthropic catalog");
+        let models = crate::models_generated::get_builtin_provider_models("anthropic")
+            .expect("anthropic catalog");
         let mut model = (**models.first().expect("at least one anthropic model")).clone();
         model.api = "claude-sdk-oauth".into();
-        assert_eq!(crate::utils::prompt_cache_ttl::resolve_prompt_cache_ttl_seconds(&model, None), Some(300));
+        assert_eq!(
+            crate::utils::prompt_cache_ttl::resolve_prompt_cache_ttl_seconds(&model, None),
+            Some(300)
+        );
     }
 }
 
@@ -1540,7 +1945,8 @@ mod pool_resolution_tests {
     use crate::auth::credential_store::InMemoryCredentialStore;
     use crate::auth::resolve::resolve_provider_auth;
     use crate::auth::types::{
-        AuthContext, Credential, CredentialStore, ModelAuth, OAuthAuth, OAuthCredential, ProviderAuth, ProviderAuthInteraction,
+        AuthContext, Credential, CredentialStore, ModelAuth, OAuthAuth, OAuthCredential,
+        ProviderAuth, ProviderAuthInteraction,
     };
     use crate::utils::abort::{AbortController, AbortSignal};
     use async_trait::async_trait;
@@ -1588,14 +1994,24 @@ mod pool_resolution_tests {
         fn name(&self) -> &str {
             "passthrough"
         }
-        async fn login(&self, _interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
+        async fn login(
+            &self,
+            _interaction: &ProviderAuthInteraction,
+        ) -> anyhow::Result<OAuthCredential> {
             unimplemented!()
         }
-        async fn refresh(&self, credential: &OAuthCredential, _signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
+        async fn refresh(
+            &self,
+            credential: &OAuthCredential,
+            _signal: &AbortSignal,
+        ) -> anyhow::Result<OAuthCredential> {
             Ok(credential.clone())
         }
         async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<ModelAuth> {
-            Ok(ModelAuth { api_key: Some(credential.access.clone()), ..Default::default() })
+            Ok(ModelAuth {
+                api_key: Some(credential.access.clone()),
+                ..Default::default()
+            })
         }
     }
 
@@ -1605,16 +2021,29 @@ mod pool_resolution_tests {
         pooled.to_stored_credential()
     }
 
-    async fn seeded_store(provider_id: &str, pooled: &PooledCredential) -> Arc<dyn CredentialStore> {
+    async fn seeded_store(
+        provider_id: &str,
+        pooled: &PooledCredential,
+    ) -> Arc<dyn CredentialStore> {
         let store = Arc::new(InMemoryCredentialStore::new());
-        let stored = stored_pool(pooled);        store
-            .modify(provider_id, Box::new(move |_| Box::pin(async move { Ok(Some(stored)) })), None)
+        let stored = stored_pool(pooled);
+        store
+            .modify(
+                provider_id,
+                Box::new(move |_| Box::pin(async move { Ok(Some(stored)) })),
+                None,
+            )
             .await
             .unwrap();
         store
     }
 
-    async fn resolve(provider_id: &str, provider_auth: &ProviderAuth, store: &Arc<dyn CredentialStore>, slot_name: Option<&str>) -> Option<crate::auth::types::AuthResult> {
+    async fn resolve(
+        provider_id: &str,
+        provider_auth: &ProviderAuth,
+        store: &Arc<dyn CredentialStore>,
+        slot_name: Option<&str>,
+    ) -> Option<crate::auth::types::AuthResult> {
         let ctx = EmptyCtx;
         let overrides = crate::auth::resolve::AuthResolutionOverrides {
             slot_name: slot_name.map(str::to_owned),
@@ -1640,13 +2069,20 @@ mod pool_resolution_tests {
             |_, _| {},
         )
         .unwrap();
-        let remaining = remove_slot(Some(promoted), "default").expect("remove_slot dropped a pool that still had a slot");
+        let remaining = remove_slot(Some(promoted), "default")
+            .expect("remove_slot dropped a pool that still had a slot");
         let store = seeded_store("removeoauth", &remaining).await;
 
-        let provider_auth = ProviderAuth { api_key: None, oauth: Some(Arc::new(PassthroughOAuth)) };
+        let provider_auth = ProviderAuth {
+            api_key: None,
+            oauth: Some(Arc::new(PassthroughOAuth)),
+        };
         let resolved = resolve("removeoauth", &provider_auth, &store, None).await;
 
-        assert_eq!(resolved.expect("resolved").auth.api_key, Some("second-access".into()));
+        assert_eq!(
+            resolved.expect("resolved").auth.api_key,
+            Some("second-access".into())
+        );
     }
 
     #[tokio::test]
@@ -1657,13 +2093,20 @@ mod pool_resolution_tests {
             |_, _| {},
         )
         .unwrap();
-        let remaining = remove_slot(Some(promoted), "login-2").expect("remove_slot dropped a pool that still had a slot");
+        let remaining = remove_slot(Some(promoted), "login-2")
+            .expect("remove_slot dropped a pool that still had a slot");
         let store = seeded_store("removeoauth", &remaining).await;
 
-        let provider_auth = ProviderAuth { api_key: None, oauth: Some(Arc::new(PassthroughOAuth)) };
+        let provider_auth = ProviderAuth {
+            api_key: None,
+            oauth: Some(Arc::new(PassthroughOAuth)),
+        };
         let resolved = resolve("removeoauth", &provider_auth, &store, None).await;
 
-        assert_eq!(resolved.expect("resolved").auth.api_key, Some("legacy-access".into()));
+        assert_eq!(
+            resolved.expect("resolved").auth.api_key,
+            Some("legacy-access".into())
+        );
     }
 
     struct RotatingOAuth;
@@ -1673,10 +2116,17 @@ mod pool_resolution_tests {
         fn name(&self) -> &str {
             "rotating"
         }
-        async fn login(&self, _interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
+        async fn login(
+            &self,
+            _interaction: &ProviderAuthInteraction,
+        ) -> anyhow::Result<OAuthCredential> {
             unimplemented!()
         }
-        async fn refresh(&self, credential: &OAuthCredential, _signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
+        async fn refresh(
+            &self,
+            credential: &OAuthCredential,
+            _signal: &AbortSignal,
+        ) -> anyhow::Result<OAuthCredential> {
             Ok(OAuthCredential::new(
                 format!("refreshed-{}", credential.refresh),
                 format!("{}-next", credential.refresh),
@@ -1684,12 +2134,16 @@ mod pool_resolution_tests {
             ))
         }
         async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<ModelAuth> {
-            Ok(ModelAuth { api_key: Some(credential.access.clone()), ..Default::default() })
+            Ok(ModelAuth {
+                api_key: Some(credential.access.clone()),
+                ..Default::default()
+            })
         }
     }
 
     #[tokio::test]
-    async fn resolve_provider_auth_refreshes_the_matching_slot_and_leaves_siblings_byte_identical() {
+    async fn resolve_provider_auth_refreshes_the_matching_slot_and_leaves_siblings_byte_identical()
+    {
         let pooled = PooledCredential {
             credential_type: PooledCredentialType::OAuth,
             access: Some("expired-access".into()),
@@ -1704,20 +2158,36 @@ mod pool_resolution_tests {
         };
         let store = seeded_store("pooloauth", &pooled).await;
 
-        let provider_auth = ProviderAuth { api_key: None, oauth: Some(Arc::new(RotatingOAuth)) };
+        let provider_auth = ProviderAuth {
+            api_key: None,
+            oauth: Some(Arc::new(RotatingOAuth)),
+        };
         let resolved = resolve("pooloauth", &provider_auth, &store, Some("default")).await;
 
-        assert_eq!(resolved.expect("resolved").auth.api_key, Some("refreshed-r1".into()));
+        assert_eq!(
+            resolved.expect("resolved").auth.api_key,
+            Some("refreshed-r1".into())
+        );
 
-        let stored = store.read("pooloauth", None).await.unwrap().expect("stored credential");
+        let stored = store
+            .read("pooloauth", None)
+            .await
+            .unwrap()
+            .expect("stored credential");
         let pooled: PooledCredential = stored.into();
         let slots = list_slots(Some(&pooled));
-        let work = slots.iter().find(|slot| slot.name == "work").expect("work slot");
+        let work = slots
+            .iter()
+            .find(|slot| slot.name == "work")
+            .expect("work slot");
         assert_eq!(work.access, Some("work-access".into()));
         assert_eq!(work.refresh, Some("r2".into()));
         assert_eq!(work.expires, Some(FUTURE));
         assert_eq!(pooled.pinned.as_deref(), Some("work"));
-        let default = slots.iter().find(|slot| slot.name == "default").expect("default slot");
+        let default = slots
+            .iter()
+            .find(|slot| slot.name == "default")
+            .expect("default slot");
         assert_eq!(default.access, Some("refreshed-r1".into()));
         assert_eq!(default.refresh, Some("r1-next".into()));
     }

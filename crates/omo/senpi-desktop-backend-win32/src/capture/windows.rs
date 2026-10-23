@@ -10,15 +10,18 @@ use senpi_desktop_core::types::{DesktopDisplay, DesktopWindow};
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow};
 use xcap::Window;
 
-use super::frame::{logical_window_rect, PhysicalRect};
-use crate::integrity::{process_elevated, IntegrityRid};
+use super::frame::{PhysicalRect, logical_window_rect};
+use crate::integrity::{IntegrityRid, process_elevated};
 
 const MAX_LISTED_WINDOWS: usize = 48;
 const MIN_WINDOW_EDGE: u32 = 16;
 
 /// Up to 48 live, non-minimized, at-least-16px, titled-or-owned top-level
 /// windows in xcap's z-order, deduplicated by HWND, in logical coordinates.
-pub(crate) fn enumerate(displays: &[DesktopDisplay], own: IntegrityRid) -> CoreResult<Vec<DesktopWindow>> {
+pub(crate) fn enumerate(
+    displays: &[DesktopDisplay],
+    own: IntegrityRid,
+) -> CoreResult<Vec<DesktopWindow>> {
     let windows = Window::all().map_err(|error| {
         DesktopError::capture_failed(format!("Win32 window enumeration query failed: {error}"))
     })?;
@@ -32,11 +35,20 @@ pub(crate) fn enumerate(displays: &[DesktopDisplay], own: IntegrityRid) -> CoreR
         if !seen.insert(id) || window.is_minimized().unwrap_or(true) || !is_window(id) {
             continue;
         }
-        let (Ok(x), Ok(y), Ok(width), Ok(height)) = (window.x(), window.y(), window.width(), window.height())
+        let (Ok(x), Ok(y), Ok(width), Ok(height)) =
+            (window.x(), window.y(), window.width(), window.height())
         else {
             continue;
         };
-        let (x, y, width, height) = logical_window_rect(PhysicalRect { x, y, width, height }, displays);
+        let (x, y, width, height) = logical_window_rect(
+            PhysicalRect {
+                x,
+                y,
+                width,
+                height,
+            },
+            displays,
+        );
         if width < MIN_WINDOW_EDGE || height < MIN_WINDOW_EDGE {
             continue;
         }
@@ -68,8 +80,11 @@ pub(crate) fn find_native(id: &str) -> CoreResult<Window> {
     let hwnd = id
         .parse::<u32>()
         .map_err(|_| DesktopError::invalid_target(format!("invalid Win32 window id '{id}'")))?;
-    let not_found =
-        || DesktopError::window_not_found(format!("target window '{id}' was not found; refresh windows()"));
+    let not_found = || {
+        DesktopError::window_not_found(format!(
+            "target window '{id}' was not found; refresh windows()"
+        ))
+    };
     if !is_window(hwnd) {
         return Err(not_found());
     }

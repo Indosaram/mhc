@@ -11,7 +11,7 @@ use image::RgbaImage;
 use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_core::types::{DesktopDisplay, DisplaySelector, Target};
 
-use super::{capture_permission, MacCapture, Screencapture};
+use super::{MacCapture, Screencapture, capture_permission};
 use crate::MacosBackend;
 
 fn primary_display() -> DesktopDisplay {
@@ -33,7 +33,10 @@ fn save(image: &RgbaImage, name: &str) -> PathBuf {
 #[ignore = "live: needs a Screen Recording grant for the launcher"]
 fn captures_primary_display_png() {
     let primary = primary_display();
-    let capture = MacCapture::new(DisplaySelector::Id(primary.id.clone()), Screencapture::system());
+    let capture = MacCapture::new(
+        DisplaySelector::Id(primary.id.clone()),
+        Screencapture::system(),
+    );
     let (image, _geometry) = capture.capture(&Target::Desktop).unwrap();
     let path = save(&image, "primary");
     println!(
@@ -108,7 +111,9 @@ fn reports_tcc_identity_when_screen_recording_is_denied() {
     assert_eq!(error.code, ErrorCode::PermissionDenied);
     assert!(
         error.message.contains("TCC identity: responsible=")
-            || error.message.contains("TCC identity: unresolved (engine executable=")
+            || error
+                .message
+                .contains("TCC identity: unresolved (engine executable=")
     );
 }
 

@@ -108,6 +108,8 @@ pub struct ToolExecutionComponent {
     cached_lines: Option<Vec<String>>,
     cached_width: Option<usize>,
     last_display_signature: Option<String>,
+    /// senpi `displayReleased`: the renderer's content was released and is rebuilt on the next render.
+    display_released: bool,
     theme: Theme,
     on_change: Option<Rc<dyn Fn()>>,
     spinner_tick_ms: Option<u64>,
@@ -163,6 +165,7 @@ impl ToolExecutionComponent {
             cached_lines: None,
             cached_width: None,
             last_display_signature: None,
+            display_released: false,
             theme,
             on_change: None,
             spinner_tick_ms: None,
@@ -341,7 +344,7 @@ impl ToolExecutionComponent {
         self.now_ms = now_ms as f64;
         let mut changed = false;
         if self.renderer_invalidated.replace(false) {
-            self.invalidate();
+            self.rebuild_now();
             changed = true;
         }
         if self.spinner_frame.is_some() {
@@ -380,7 +383,24 @@ impl ToolExecutionComponent {
         changed
     }
 
+    /// senpi `rebuildNow`: a renderer-initiated invalidate rebuilds the display in place, keeping
+    /// the renderer's last component.
+    fn rebuild_now(&mut self) {
+        self.display_released = false;
+        self.invalidate_render_cache();
+        self.last_display_signature = None;
+        self.update_display();
+    }
+
+    fn animation_running(&self) -> bool {
+        self.spinner_frame.is_some() || self.todo_strike_frames_left.is_some()
+    }
+
     fn update_display(&mut self) {
+        if self.display_released {
+            self.invalidate_render_cache();
+            return;
+        }
         let display_signature = self.create_render_signature();
         if self.last_display_signature.as_ref() == Some(&display_signature) {
             return;
@@ -529,6 +549,11 @@ impl ToolExecutionComponent {
 
 impl Component for ToolExecutionComponent {
     fn render(&mut self, width: usize) -> Vec<String> {
+        if self.display_released {
+            self.display_released = false;
+            self.last_display_signature = None;
+            self.update_display();
+        }
         if self.presentation == ToolExecutionPresentation::Grok {
             let mut lines: Vec<String> = Vec::new();
             lines.extend(Spacer::new(1).render(width));
@@ -579,13 +604,20 @@ impl Component for ToolExecutionComponent {
 
     fn invalidate(&mut self) {
         self.invalidate_render_cache();
-        if let Some(renderer) = &mut self.renderer {
-            renderer.invalidate();
-        }
         if let Some(images) = &mut self.images {
             images.invalidate();
         }
         self.last_display_signature = None;
+        if !self.animation_running() {
+            if let Some(renderer) = &mut self.renderer {
+                renderer.release_content();
+            }
+            self.display_released = true;
+            return;
+        }
+        if let Some(renderer) = &mut self.renderer {
+            renderer.invalidate();
+        }
         self.update_display();
     }
 

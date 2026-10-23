@@ -103,6 +103,7 @@ impl PanelUi for NativePanelUi {
                     } else {
                         maho_ext_api::WidgetPlacement::BelowEditor
                     },
+                    actions: None,
                 },
             );
         }
@@ -134,7 +135,10 @@ impl PanelUi for NativePanelUi {
                 if crate::popups::wheel::parse_panel_wheel_event(data).is_none() {
                     return false;
                 }
-                wheel_popup.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handle_input(data);
+                wheel_popup
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .handle_input(data);
                 if let Err(error) = ui.request_render() {
                     ui.notify(&error.to_string(), NotificationType::Warning);
                 }
@@ -159,12 +163,14 @@ impl PanelUi for NativePanelUi {
                     factory,
                     maho_ext_api::CustomUiFactoryOptions {
                         overlay: true,
-                        overlay_options: Some(maho_ext_api::ExtensionOverlayOptions::Static(Arc::new(|| maho_tui::tui::OverlayOptions {
-                            width: Some(maho_tui::tui::SizeValue::Percent(70.0)),
-                            min_width: Some(52),
-                            max_height: Some(maho_tui::tui::SizeValue::Percent(100.0)),
-                            ..Default::default()
-                        }))),
+                        overlay_options: Some(maho_ext_api::ExtensionOverlayOptions::Static(
+                            Arc::new(|| maho_tui::tui::OverlayOptions {
+                                width: Some(maho_tui::tui::SizeValue::Percent(70.0)),
+                                min_width: Some(52),
+                                max_height: Some(maho_tui::tui::SizeValue::Percent(100.0)),
+                                ..Default::default()
+                            }),
+                        )),
                         ..Default::default()
                     },
                 )
@@ -216,7 +222,10 @@ impl maho_tui::tui::Component for NativePopup {
         let amount = usize::try_from(delta.unsigned_abs())
             .unwrap_or(usize::MAX)
             .saturating_mul(3);
-        let mut popup = self.popup.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut popup = self
+            .popup
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         popup.scroll = if delta < 0 {
             popup.scroll.saturating_sub(amount)
         } else {
@@ -229,15 +238,22 @@ impl maho_tui::tui::Component for NativePopup {
         })
     }
     fn render(&mut self, width: usize) -> Vec<String> {
-        self.popup.lock().unwrap_or_else(std::sync::PoisonError::into_inner).render(
-            width,
-            usize::from((self.dimensions)().1),
-            &self.rows,
-            Some(&self.theme),
-        )
+        self.popup
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .render(
+                width,
+                usize::from((self.dimensions)().1),
+                &self.rows,
+                Some(&self.theme),
+            )
     }
     fn handle_input(&mut self, data: &str) {
-        let result = self.popup.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handle_input(data);
+        let result = self
+            .popup
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .handle_input(data);
         if result == PopupInput::Close {
             (self.done)(serde_json::Value::Null);
         }
@@ -265,23 +281,36 @@ mod tests {
         let sink = actions.clone();
         let mut body = NativeBody {
             body: Arc::new(Body),
-            action: Some(Arc::new(move |action| sink.lock().expect("actions").push(action))),
+            action: Some(Arc::new(move |action| {
+                sink.lock().expect("actions").push(action)
+            })),
             lines: Vec::new(),
         };
         body.render(40);
         let mut click = TuiMouseEvent {
-            event_type: TuiMouseEventType::Click, button: TuiMouseButton::Left,
-            x: 0, y: 0, screen_x: 0, screen_y: 0,
-            width: 40, height: 1,
-            shift: false, alt: false, ctrl: false,
-            wheel_delta: None, click_count: Some(1),
+            event_type: TuiMouseEventType::Click,
+            button: TuiMouseButton::Left,
+            x: 0,
+            y: 0,
+            screen_x: 0,
+            screen_y: 0,
+            width: 40,
+            height: 1,
+            shift: false,
+            alt: false,
+            ctrl: false,
+            wheel_delta: None,
+            click_count: Some(1),
         };
         assert!(body.handle_mouse(&click).is_none());
         click.x = 6;
         assert!(body.handle_mouse(&click).is_some());
         click.x = 10;
         assert!(body.handle_mouse(&click).is_none());
-        assert_eq!(*actions.lock().expect("actions"), vec![crate::links::PanelAction::Goal]);
+        assert_eq!(
+            *actions.lock().expect("actions"),
+            vec![crate::links::PanelAction::Goal]
+        );
     }
 
     #[test]

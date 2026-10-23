@@ -222,6 +222,7 @@ where
 
 fn build_model(base_url: &str) -> Model {
     Model {
+        deprecated: None,
         id: "claude-4.6-opus-high".to_owned(),
         name: "Opus 4.6".to_owned(),
         api: "cursor-agent".to_owned(),

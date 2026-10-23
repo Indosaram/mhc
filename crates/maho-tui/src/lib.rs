@@ -14,6 +14,7 @@ pub mod image_stub; // todo 9 facade over terminal_image.rs, kept for the todo 7
 pub mod keybindings; // todo 6
 pub mod keys; // todo 6
 pub mod kill_ring; // todo 8
+pub mod kitty_graphics_probe;
 pub mod layout; // todo 7
 pub mod layout_node; // todo 7
 pub mod mouse_input; // todo 7

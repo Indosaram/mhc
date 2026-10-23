@@ -218,6 +218,8 @@ fn clone_start_message(message: &AssistantMessage) -> AssistantMessage {
         raw_stop_reason: None,
         end_turn: None,
         timestamp: message.timestamp,
+        failure_source: None,
+        timing: None,
     }
 }
 
@@ -909,6 +911,8 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 1,
+            failure_source: None,
+            timing: None,
         }
     }
 

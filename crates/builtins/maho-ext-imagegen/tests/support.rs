@@ -136,7 +136,8 @@ impl ModelRegistry for FixtureRegistry {
         let headers = self.provider_headers.clone();
         let provider = model.provider.clone();
         Box::pin(async move {
-            Ok(ResolvedRequestAuth { ambient: false,
+            Ok(ResolvedRequestAuth {
+                ambient: false,
                 auth: maho_ai::models::ProviderAuthResult {
                     api_key: key,
                     headers,
@@ -426,6 +427,7 @@ impl maho_ai::types::ProviderImages for StubImages {
                 background: None,
                 stop_reason: ImagesStopReason::Stop,
                 error_message: None,
+                provider_diagnostic: None,
                 timestamp: 0,
             };
             if let Some(error) = error {

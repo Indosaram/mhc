@@ -22,11 +22,12 @@ use std::time::Duration;
 
 use parking_lot::{Condvar, Mutex};
 use senpi_desktop_safety::{
-    Chord, StopPathError, StopPathId, StopPathListener, StopSource, Supervisor, HEARTBEAT_INTERVAL_MS,
+    Chord, HEARTBEAT_INTERVAL_MS, StopPathError, StopPathId, StopPathListener, StopSource,
+    Supervisor,
 };
 
-use chord::Hotkey;
 pub use chord::DEFAULT_STOP_CHORD;
+use chord::Hotkey;
 
 const THREAD_NAME: &str = "senpi-desktop-killswitch";
 const THREAD_UNAVAILABLE: &str = "killswitch-thread-unavailable";
@@ -99,8 +100,9 @@ impl Shared {
     /// Parks until a restart (`true`) or shutdown (`false`) request.
     fn wait_restart(&self) -> bool {
         let mut control = self.control.lock();
-        self.changed
-            .wait_while(&mut control, |control| !control.restart && !control.shutdown);
+        self.changed.wait_while(&mut control, |control| {
+            !control.restart && !control.shutdown
+        });
         control.restart = false;
         !control.shutdown
     }

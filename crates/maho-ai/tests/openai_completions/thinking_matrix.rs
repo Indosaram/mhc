@@ -117,7 +117,9 @@ async fn uses_deep_seek_s_max_tier_on_alibaba_token_plan() {
 
 #[tokio::test]
 async fn uses_openrouter_deep_seek_s_high_only_ladder() {
-    let deepseek = catalog_model("openrouter", "deepseek/deepseek-r1");
+    // deepseek/deepseek-r1 left the catalog; use the reasoning-mandatory OpenRouter DeepSeek model without its catalog ladder.
+    let mut deepseek = catalog_model("openrouter", "deepseek/deepseek-r1-0528");
+    deepseek.thinking_level_map = None;
 
     let payload = capture_payload(&deepseek, Some(ThinkingLevel::Minimal)).await;
 
@@ -287,7 +289,8 @@ async fn uses_ollama_s_none_off_sentinel_and_clamps_max_to_its_highest_supported
 
 #[tokio::test]
 async fn does_not_send_openrouter_s_none_sentinel_for_mandatory_kimi_k3_thinking() {
-    let kimi = catalog_model("openrouter", "moonshotai/kimi-k3");
+    let mut kimi = catalog_model("openrouter", "moonshotai/kimi-k3");
+    kimi.thinking_level_map = None;
 
     let payload = capture_payload(&kimi, None).await;
 

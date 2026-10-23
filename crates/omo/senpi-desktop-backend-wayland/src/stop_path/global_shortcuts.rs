@@ -3,22 +3,23 @@
 //! task beats the `Global` heartbeat every `HEARTBEAT_INTERVAL_MS` while the
 //! session is open; a closed session takes the path down.
 
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
 use ashpd::desktop::Session;
+use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
 use futures::StreamExt;
 use parking_lot::{Condvar, Mutex};
 use senpi_desktop_safety::{
-    Chord, StopPathError, StopPathId, StopPathListener, StopSource, Supervisor, HEARTBEAT_INTERVAL_MS,
+    Chord, HEARTBEAT_INTERVAL_MS, StopPathError, StopPathId, StopPathListener, StopSource,
+    Supervisor,
 };
 use tokio::sync::watch;
-use zbus::zvariant::serialized::Context;
 use zbus::zvariant::OwnedObjectPath;
+use zbus::zvariant::serialized::Context;
 
-use super::trigger::{preferred_trigger, STOP_SHORTCUT_ID};
-use crate::portal::{portal_runtime, CLOSE_TIMEOUT};
+use super::trigger::{STOP_SHORTCUT_ID, preferred_trigger};
+use crate::portal::{CLOSE_TIMEOUT, portal_runtime};
 
 /// `stopReason` when the portal is missing, refuses, or never answers;
 /// Wayland input then needs `computer.allowHostRelayOnlyStop=true`.
@@ -162,7 +163,12 @@ type Ready = mpsc::SyncSender<Result<(), ashpd::Error>>;
 
 /// The session's whole life: subscribe to `Activated` first so no signal is
 /// missed, open the session, bind, report, then serve until closed.
-async fn run(shared: Arc<Shared>, trigger: String, ready: Ready, mut shutdown: watch::Receiver<bool>) {
+async fn run(
+    shared: Arc<Shared>,
+    trigger: String,
+    ready: Ready,
+    mut shutdown: watch::Receiver<bool>,
+) {
     let portal = match GlobalShortcuts::new().await {
         Ok(portal) => portal,
         Err(error) => return report(ready, Err(error)),
@@ -175,7 +181,8 @@ async fn run(shared: Arc<Shared>, trigger: String, ready: Ready, mut shutdown: w
         Ok(session) => session,
         Err(error) => return report(ready, Err(error)),
     };
-    let shortcut = NewShortcut::new(STOP_SHORTCUT_ID, DESCRIPTION).preferred_trigger(trigger.as_str());
+    let shortcut =
+        NewShortcut::new(STOP_SHORTCUT_ID, DESCRIPTION).preferred_trigger(trigger.as_str());
     let bound = async {
         let closed = session_closed(&portal, &session).await?;
         portal
@@ -238,14 +245,18 @@ async fn session_closed(
 
 fn report(ready: Ready, outcome: Result<(), ashpd::Error>) {
     if ready.send(outcome).is_err() {
-        eprintln!("senpi-desktop-backend-wayland: GlobalShortcuts bind finished after start gave up");
+        eprintln!(
+            "senpi-desktop-backend-wayland: GlobalShortcuts bind finished after start gave up"
+        );
     }
 }
 
 async fn close(session: &Session<'_, GlobalShortcuts<'_>>) {
     match tokio::time::timeout(CLOSE_TIMEOUT, session.close()).await {
         Ok(Ok(())) => {}
-        Ok(Err(error)) => eprintln!("senpi-desktop-backend-wayland: GlobalShortcuts Close: {error}"),
+        Ok(Err(error)) => {
+            eprintln!("senpi-desktop-backend-wayland: GlobalShortcuts Close: {error}")
+        }
         Err(_) => eprintln!("senpi-desktop-backend-wayland: GlobalShortcuts Close timed out"),
     }
 }

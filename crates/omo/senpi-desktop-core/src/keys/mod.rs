@@ -115,7 +115,11 @@ pub fn parse_key(value: &str) -> CoreResult<KeyName> {
                 (Some(character), None) => {
                     KeyName::Char(character.to_lowercase().next().unwrap_or(character))
                 }
-                _ => return Err(DesktopError::invalid_key(format!("unsupported key `{value}`"))),
+                _ => {
+                    return Err(DesktopError::invalid_key(format!(
+                        "unsupported key `{value}`"
+                    )));
+                }
             }
         }
     };

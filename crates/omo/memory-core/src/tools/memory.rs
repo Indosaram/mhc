@@ -11,13 +11,14 @@ use crate::git::repo_types::GitCommitAuthor;
 use crate::support::paths::to_git_path;
 use crate::support::time::now_iso;
 
+use super::agreements_write_guard::refuse_agreements_violation;
 use super::memfs::{
     MemoryFrontmatter, ValidateMemoryPathOptions, parse_memory_file, render_memory_file,
     validate_memory_path,
 };
-use crate::memfs::validate_repository_path_with_field;
 use super::soul::{SOUL_EDIT_RESULT_LINE, touches_soul_path};
 use super::tool_errors::MemoryToolError;
+use crate::memfs::validate_repository_path_with_field;
 
 /// Supported CRUD commands for the memory tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,6 +139,26 @@ fn require_str<'a>(
     }
 }
 
+/// Who is writing: the model through the memory tool, or the person through a slash command.
+///
+/// Only `MemoryTool` writes are held to the agreements ledger rules; the trailer
+/// `Omo-Writer: <writer>` records the choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MemoryWriter {
+    #[default]
+    MemoryTool,
+    HumanCommand,
+}
+
+impl MemoryWriter {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MemoryTool => "memory-tool",
+            Self::HumanCommand => "human-command",
+        }
+    }
+}
+
 /// Executes a memory tool operation against the repository with git commit persistence.
 pub fn run_memory_tool(
     repo: &GitMemoryRepo,
@@ -145,11 +166,22 @@ pub fn run_memory_tool(
     params: &MemoryToolParams,
     lock: Option<&dyn MemoryToolLock>,
 ) -> Result<MemoryToolResult, MemoryToolError> {
+    run_memory_tool_as(repo, author, params, lock, MemoryWriter::MemoryTool)
+}
+
+/// [`run_memory_tool`] with an explicit writer identity.
+pub fn run_memory_tool_as(
+    repo: &GitMemoryRepo,
+    author: &GitCommitAuthor,
+    params: &MemoryToolParams,
+    lock: Option<&dyn MemoryToolLock>,
+    writer: MemoryWriter,
+) -> Result<MemoryToolResult, MemoryToolError> {
     let default_lock = NoopMemoryToolLock;
     let effective_lock = lock.unwrap_or(&default_lock);
 
     effective_lock.with_lock("memory-write", &mut || {
-        run_memory_tool_inner(repo, author, params)
+        run_memory_tool_inner(repo, author, params, writer)
     })
 }
 
@@ -157,6 +189,7 @@ fn run_memory_tool_inner(
     repo: &GitMemoryRepo,
     author: &GitCommitAuthor,
     params: &MemoryToolParams,
+    writer: MemoryWriter,
 ) -> Result<MemoryToolResult, MemoryToolError> {
     if params.reason.trim().is_empty() {
         return Err(err("'reason' must be a non-empty string"));
@@ -271,8 +304,15 @@ fn run_memory_tool_inner(
                 let path_str = require_str("delete", "file_path", params.file_path.as_deref())?;
                 // Pin `remove` resolves the repository path first so a directory target is deleted as
                 // a tree and reports every tracked file under it, not the directory label.
-                let repository_path = validate_repository_path_with_field(root, path_str, "file_path")
-                    .map_err(|e| err(e.message.strip_prefix("memory path: ").unwrap_or(&e.message)))?;
+                let repository_path =
+                    validate_repository_path_with_field(root, path_str, "file_path").map_err(
+                        |e| {
+                            err(e
+                                .message
+                                .strip_prefix("memory path: ")
+                                .unwrap_or(&e.message))
+                        },
+                    )?;
                 if repository_path.is_dir() {
                     assert_dir_not_readonly(&repository_path, root)?;
                     let mut tracked = Vec::new();
@@ -360,9 +400,16 @@ fn run_memory_tool_inner(
 
     execute_command()?;
 
+    if writer == MemoryWriter::MemoryTool
+        && let Some(violation) = refuse_agreements_violation(repo, &affected_relative_paths)
+            .map_err(|e| err(e.to_string()))?
+    {
+        return Err(err(violation));
+    }
+
     let commit_res = repo.commit_write(
         &affected_relative_paths,
-        &memory_commit_message(&params.reason, params.provenance.as_ref()),
+        &memory_commit_message(&params.reason, params.provenance.as_ref(), writer),
         author,
     );
 
@@ -418,12 +465,15 @@ fn run_memory_tool_inner(
 pub(crate) fn memory_commit_message(
     reason: &str,
     provenance: Option<&MemoryToolProvenanceInput>,
+    writer: MemoryWriter,
 ) -> String {
     match provenance {
         None => reason.to_string(),
         Some(provenance) => format!(
-            "{reason}\n\nOmo-Writer: memory-tool\nOmo-Session: {}\nOmo-Turn: {}",
-            provenance.session_id, provenance.user_turns
+            "{reason}\n\nOmo-Writer: {}\nOmo-Session: {}\nOmo-Turn: {}",
+            writer.as_str(),
+            provenance.session_id,
+            provenance.user_turns
         ),
     }
 }

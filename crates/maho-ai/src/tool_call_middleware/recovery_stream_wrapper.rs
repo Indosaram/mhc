@@ -624,6 +624,8 @@ mod tests {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 0,
+            failure_source: None,
+            timing: None,
         }
     }
 
@@ -634,11 +636,13 @@ mod tests {
                 let inner = AssistantMessageEventStream::assistant();
                 let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
                 let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-                inner.set_cancellation_handler(Box::new(move || Box::pin(async move {
-                    entered_tx.send(()).expect("cleanup subscriber");
-                    release_rx.await.expect("release");
-                    Ok(())
-                })));
+                inner.set_cancellation_handler(Box::new(move || {
+                    Box::pin(async move {
+                        entered_tx.send(()).expect("cleanup subscriber");
+                        release_rx.await.expect("release");
+                        Ok(())
+                    })
+                }));
                 let outer = match wrapper {
                     0 => wrap_stream_with_invoke_recovery(inner.clone(), vec![], InvokeRecoveryOptions::default()),
                     1 => crate::tool_call_middleware::stream_wrapper::wrap_stream_with_tool_call_middleware(
@@ -648,20 +652,42 @@ mod tests {
                     ),
                     _ => crate::tool_call_middleware::protocols::kimi_xtml::thinking_recovery_stream::wrap_stream_with_kimi_thinking_recovery(inner.clone()),
                 };
-                let terminal = message(vec![], if terminal_error { StopReason::Error } else { StopReason::Stop });
+                let terminal = message(
+                    vec![],
+                    if terminal_error {
+                        StopReason::Error
+                    } else {
+                        StopReason::Stop
+                    },
+                );
                 if terminal_error {
-                    inner.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error: terminal });
+                    inner.push(AssistantMessageEvent::Error {
+                        reason: ErrorReason::Error,
+                        error: terminal,
+                    });
                 } else {
-                    inner.push(AssistantMessageEvent::Done { reason: DoneReason::Stop, message: terminal });
+                    inner.push(AssistantMessageEvent::Done {
+                        reason: DoneReason::Stop,
+                        message: terminal,
+                    });
                 }
                 let bound = std::time::Duration::from_secs(5);
-                let expected = tokio::time::timeout(bound, outer.result()).await.expect("result deadline").expect("result");
+                let expected = tokio::time::timeout(bound, outer.result())
+                    .await
+                    .expect("result deadline")
+                    .expect("result");
                 let mut cancellation = Box::pin(outer.cancel());
                 assert!(futures::poll!(cancellation.as_mut()).is_pending());
-                tokio::time::timeout(bound, entered_rx).await.expect("cleanup deadline").expect("cleanup");
+                tokio::time::timeout(bound, entered_rx)
+                    .await
+                    .expect("cleanup deadline")
+                    .expect("cleanup");
                 assert!(futures::poll!(cancellation.as_mut()).is_pending());
                 release_tx.send(()).expect("release subscriber");
-                tokio::time::timeout(bound, cancellation).await.expect("cancel deadline").expect("cancel");
+                tokio::time::timeout(bound, cancellation)
+                    .await
+                    .expect("cancel deadline")
+                    .expect("cancel");
                 assert_eq!(outer.result_if_ready(), Some(Ok(expected)));
             }
         }
@@ -673,39 +699,79 @@ mod tests {
             let inner = AssistantMessageEventStream::assistant();
             let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
             let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-            inner.set_cancellation_handler(Box::new(move || Box::pin(async move {
-                entered_tx.send(()).expect("close subscriber");
-                release_rx.await.expect("release");
-                Ok(())
-            })));
+            inner.set_cancellation_handler(Box::new(move || {
+                Box::pin(async move {
+                    entered_tx.send(()).expect("close subscriber");
+                    release_rx.await.expect("release");
+                    Ok(())
+                })
+            }));
             let outer = if recovery {
-                wrap_stream_with_invoke_recovery(inner.clone(), vec![], InvokeRecoveryOptions::default())
+                wrap_stream_with_invoke_recovery(
+                    inner.clone(),
+                    vec![],
+                    InvokeRecoveryOptions::default(),
+                )
             } else {
                 crate::tool_call_middleware::stream_wrapper::wrap_stream_with_tool_call_middleware(
                     inner.clone(),
-                    crate::tool_call_middleware::context_transformer::get_protocol(ToolCallFormat::Gemma4Delimiter),
+                    crate::tool_call_middleware::context_transformer::get_protocol(
+                        ToolCallFormat::Gemma4Delimiter,
+                    ),
                     vec![],
                 )
             };
-            let partial = message(vec![ContentBlock::Text(TextContent::default())], StopReason::Pending);
-            inner.push(AssistantMessageEvent::Start { partial: partial.clone() });
-            inner.push(AssistantMessageEvent::TextStart { content_index: 0, partial: partial.clone() });
-            inner.push(AssistantMessageEvent::TextDelta { content_index: 0, delta: "hello".into(), partial });
+            let partial = message(
+                vec![ContentBlock::Text(TextContent::default())],
+                StopReason::Pending,
+            );
+            inner.push(AssistantMessageEvent::Start {
+                partial: partial.clone(),
+            });
+            inner.push(AssistantMessageEvent::TextStart {
+                content_index: 0,
+                partial: partial.clone(),
+            });
+            inner.push(AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: "hello".into(),
+                partial,
+            });
             let bound = std::time::Duration::from_secs(5);
             loop {
-                let event = tokio::time::timeout(bound, outer.next()).await.expect("delta deadline").expect("event").expect("some");
-                if matches!(event, AssistantMessageEvent::TextDelta { .. }) { break; }
+                let event = tokio::time::timeout(bound, outer.next())
+                    .await
+                    .expect("delta deadline")
+                    .expect("event")
+                    .expect("some");
+                if matches!(event, AssistantMessageEvent::TextDelta { .. }) {
+                    break;
+                }
             }
             let mut cancellation = Box::pin(outer.cancel());
             assert!(futures::poll!(cancellation.as_mut()).is_pending());
-            tokio::time::timeout(bound, entered_rx).await.expect("close deadline").expect("close");
+            tokio::time::timeout(bound, entered_rx)
+                .await
+                .expect("close deadline")
+                .expect("close");
             assert!(outer.result_if_ready().is_none());
             release_tx.send(()).expect("release subscriber");
-            tokio::time::timeout(bound, cancellation).await.expect("cancel deadline").expect("cancel");
+            tokio::time::timeout(bound, cancellation)
+                .await
+                .expect("cancel deadline")
+                .expect("cancel");
             let events = outer.collect().await.expect("events");
-            assert!(matches!(events.last(), Some(AssistantMessageEvent::Error { .. })));
+            assert!(matches!(
+                events.last(),
+                Some(AssistantMessageEvent::Error { .. })
+            ));
             let result = outer.result_if_ready().expect("settled").expect("result");
-            assert!(result.content.iter().any(|block| matches!(block, ContentBlock::Text(text) if text.text == "hello")));
+            assert!(
+                result
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::Text(text) if text.text == "hello"))
+            );
         }
     }
 

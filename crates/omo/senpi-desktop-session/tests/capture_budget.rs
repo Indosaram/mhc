@@ -16,7 +16,7 @@ use senpi_desktop_core::types::{
     CaptureCaps, DesktopCapabilities, DesktopDisplay, DesktopSessionOptions, DesktopWindow, Target,
 };
 use senpi_desktop_session::{BackendFactory, Op, Session, SessionTimeouts};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Scenario `capture_size`: one 7680x4320 display.
 const CAPTURE_SIZE: &str = r#"{
@@ -53,7 +53,11 @@ impl Backend for NoisyFake {
     fn windows(&mut self) -> CoreResult<Vec<DesktopWindow>> {
         self.fake.windows()
     }
-    fn capture(&mut self, target: &Target, caps: &CaptureCaps) -> CoreResult<(RgbaImage, FrameGeometry)> {
+    fn capture(
+        &mut self,
+        target: &Target,
+        caps: &CaptureCaps,
+    ) -> CoreResult<(RgbaImage, FrameGeometry)> {
         let (_, geometry) = self.fake.capture(target, caps)?;
         Ok(((*self.noise).clone(), geometry))
     }
@@ -69,7 +73,12 @@ impl Backend for NoisyFake {
     fn type_text(&mut self, target: &Target, text: &str, mode: DeliveryMode) -> CoreResult<()> {
         self.fake.type_text(target, text, mode)
     }
-    fn key_chord(&mut self, target: &Target, keys: &[KeyName], mode: DeliveryMode) -> CoreResult<()> {
+    fn key_chord(
+        &mut self,
+        target: &Target,
+        keys: &[KeyName],
+        mode: DeliveryMode,
+    ) -> CoreResult<()> {
         self.fake.key_chord(target, keys, mode)
     }
     fn raise_window(&mut self, id: &str) -> CoreResult<()> {
@@ -167,7 +176,12 @@ async fn capture_size_degrades_png_then_jpeg_then_artifact_as_max_bytes_shrinks(
             result["sourceWidth"],
             result["sourceHeight"]
         ]);
-        assert_eq!(metadata, json!([1280, 720, 7680, 4320]), "{}", result["mode"]);
+        assert_eq!(
+            metadata,
+            json!([1280, 720, 7680, 4320]),
+            "{}",
+            result["mode"]
+        );
     }
     assert!(
         inline_bytes(&results[0]) <= 5 * 1024 * 1024,
@@ -190,5 +204,8 @@ async fn a_zero_byte_budget_fails_invalid_target_never_an_inline_result() {
     // When
     let reply = capture(&session, with_bytes(0)).await;
     // Then
-    assert_eq!(reply.map_err(|error| error.code), Err(ErrorCode::InvalidTarget));
+    assert_eq!(
+        reply.map_err(|error| error.code),
+        Err(ErrorCode::InvalidTarget)
+    );
 }

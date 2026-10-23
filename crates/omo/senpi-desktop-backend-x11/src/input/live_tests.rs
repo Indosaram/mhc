@@ -18,10 +18,10 @@ use std::time::Duration;
 use senpi_desktop_core::backend::{DeliveryMode, Modifiers, MouseButton, PointerEvent};
 use senpi_desktop_core::error::ErrorCode;
 use senpi_desktop_core::types::Target;
+use x11rb::CURRENT_TIME;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{ConnectionExt, InputFocus, Window};
 use x11rb::rust_connection::RustConnection;
-use x11rb::CURRENT_TIME;
 use xkeysym::Keysym;
 
 use super::{InputServer, X11Input};
@@ -194,7 +194,11 @@ fn background_click_into_a_gtk_window_is_refused() {
     };
 
     let error = input
-        .pointer(&Target::Window(gtk.to_string()), &click, DeliveryMode::Background)
+        .pointer(
+            &Target::Window(gtk.to_string()),
+            &click,
+            DeliveryMode::Background,
+        )
         .unwrap_err();
 
     let active_after = input.active_window();

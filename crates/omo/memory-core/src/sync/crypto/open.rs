@@ -1,6 +1,7 @@
 use super::{
     rejection::RejectionCounter,
     signatures::*,
+    strict_ed25519::{strict_ed25519_key, strict_ed25519_precheck},
     vendor::sync_format::{
         object::{decode_object, verify_object},
         object_types::*,
@@ -33,7 +34,9 @@ pub fn open_batch(
     rejections: &mut RejectionCounter,
 ) -> OpenOutcome {
     let result = (|| {
-        let key = decode_b64(binding.signing_public_key, Some(32)).ok_or("bad_key")?;
+        let key = decode_b64(binding.signing_public_key, Some(32))
+            .filter(|k| strict_ed25519_key(k))
+            .ok_or("bad_key")?;
         let ctx = ObjectContext {
             account: binding.account,
             epoch: binding.epoch,
@@ -41,6 +44,9 @@ pub fn open_batch(
             author_signing_public_key: &key,
         };
         let header = verify_object(bytes, &ctx)?;
+        if strict_ed25519_precheck(&key, &bytes[bytes.len().saturating_sub(64)..]).is_err() {
+            return Err("bad_signature");
+        }
         if header.kind != binding.kind || header.chunk != binding.chunk {
             return Err("kind_mismatch");
         }

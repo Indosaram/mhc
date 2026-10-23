@@ -12,7 +12,7 @@ fn main() {
             .expect("spawn runner thread")
             .join();
         match run_result {
-            Ok(Ok(())) => {},
+            Ok(Ok(())) => {}
             Ok(Err(error)) => {
                 use std::io::Write;
                 let _ = writeln!(std::io::stderr(), "{error}");
@@ -134,9 +134,10 @@ fn run() -> Result<(), String> {
     )? {
         return output(&text);
     }
-    let internal_role = std::env::var_os(maho_cli::experimental::process::INTERNAL_PROCESS_ENV).is_some();
-    let version_only = !internal_role && argv.len() == 1
-        && matches!(argv[0].as_str(), "--version" | "-v");
+    let internal_role =
+        std::env::var_os(maho_cli::experimental::process::INTERNAL_PROCESS_ENV).is_some();
+    let version_only =
+        !internal_role && argv.len() == 1 && matches!(argv[0].as_str(), "--version" | "-v");
     let _installation_lease = if version_only {
         None
     } else {
@@ -732,15 +733,16 @@ fn run() -> Result<(), String> {
             .build()
             .map_err(|error| error.to_string())?;
         // senpi agent-session-services.ts:168: `ModelRuntime.create` restores the stored dynamic catalogs offline.
-        let runtime = runtime_host.block_on(maho_core::model_runtime::ModelRuntime::create(
-            maho_core::model_runtime::CreateModelRuntimeOptions {
-                models_path: Some(agent.join("models.json")),
-                auth_path: Some(agent.join("auth.json")),
-                agent_dir: Some(agent.clone()),
-                ..Default::default()
-            },
-        )).map_err(|error| error.to_string())?;
-        let auth_errors = runtime.credentials.errors();
+        let runtime = runtime_host
+            .block_on(maho_core::model_runtime::ModelRuntime::create(
+                maho_core::model_runtime::CreateModelRuntimeOptions {
+                    models_path: Some(agent.join("models.json")),
+                    auth_path: Some(agent.join("auth.json")),
+                    agent_dir: Some(agent.clone()),
+                    ..Default::default()
+                },
+            ))
+            .map_err(|error| error.to_string())?;
         // senpi main.ts:1066-1092: model listing builds the full services, so every builtin
         // (OAuth lanes included) and every settings/`-e` extension contributes its providers.
         let (loaded, settings) = runtime_host.block_on(async {
@@ -867,8 +869,12 @@ fn run() -> Result<(), String> {
         ) {
             eprintln!("Warning: {}", diagnostic.message);
         }
-        for error in auth_errors {
-            eprintln!("Warning: (model listing, auth storage) {error}");
+        for message in maho_cli::cli::runtime::collect_auth_diagnostics(
+            &runtime.credentials,
+            "model listing",
+            true,
+        ) {
+            eprintln!("Warning: {message}");
         }
         if let Some(error) = runtime.get_error() {
             eprintln!("Warning: errors loading models.json:\n{error}");

@@ -98,13 +98,17 @@ pub(super) fn run(input: &mut MacInput) -> CoreResult<CanaryResult> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|error| DesktopError::input_failed(format!("spawning the canary dialog failed: {error}")))?;
+        .map_err(|error| {
+            DesktopError::input_failed(format!("spawning the canary dialog failed: {error}"))
+        })?;
     let delivered = deliver_and_confirm(input, child);
     let focus_restored = restore(input, front.as_ref(), cursor_before);
     let passed = delivered.is_ok() && focus_restored;
     input.settle_canary(passed);
     if passed {
-        Ok(CanaryResult { focus_restored: true })
+        Ok(CanaryResult {
+            focus_restored: true,
+        })
     } else {
         let detail = match delivered {
             Err(error) => format!(" {error}"),
@@ -118,8 +122,9 @@ pub(super) fn run(input: &mut MacInput) -> CoreResult<CanaryResult> {
 }
 
 fn deliver_and_confirm(input: &mut MacInput, mut child: std::process::Child) -> CoreResult<()> {
-    let dialog = wait_for_dialog(i32::try_from(child.id()).unwrap_or(-1))
-        .ok_or_else(|| DesktopError::input_failed("the canary dialog never exposed its OK button"))?;
+    let dialog = wait_for_dialog(i32::try_from(child.id()).unwrap_or(-1)).ok_or_else(|| {
+        DesktopError::input_failed("the canary dialog never exposed its OK button")
+    })?;
     skylight::activate_without_raise(dialog.pid, dialog.wid)?;
     keys::type_text(
         &input.source,
@@ -169,7 +174,7 @@ fn deliver_and_confirm(input: &mut MacInput, mut child: std::process::Child) -> 
             Err(error) => {
                 return Err(DesktopError::input_failed(format!(
                     "waiting for the canary dialog failed: {error}"
-                )))
+                )));
             }
         }
     }
@@ -177,7 +182,11 @@ fn deliver_and_confirm(input: &mut MacInput, mut child: std::process::Child) -> 
 
 /// Puts the front window and cursor back after the dialog; `true` when every
 /// restoration ran and the front window matches what was captured.
-fn restore(input: &mut MacInput, front: Option<&FrontWindow>, before: Option<DesktopPoint>) -> bool {
+fn restore(
+    input: &mut MacInput,
+    front: Option<&FrontWindow>,
+    before: Option<DesktopPoint>,
+) -> bool {
     let mut restored = true;
     if let Some(front) = front {
         restored &= focus::restore_key_focus(input, front).is_ok();
@@ -237,7 +246,8 @@ fn dialog_of(window: &objc2_application_services::AXUIElement, pid: libc::pid_t)
     let children = ax::element::copy_elements(window, "AXChildren").unwrap_or_default();
     let marked = children.iter().any(|child| {
         ax::element::copy_string(child, "AXRole").as_deref() == Some("AXStaticText")
-            && ax::element::copy_string(child, "AXValue").is_some_and(|value| value.contains(DIALOG_MARKER))
+            && ax::element::copy_string(child, "AXValue")
+                .is_some_and(|value| value.contains(DIALOG_MARKER))
     });
     if !marked {
         return None;

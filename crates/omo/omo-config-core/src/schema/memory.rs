@@ -4,6 +4,10 @@ use crate::internal::validate::{
     Field, Node, boolean, defaulted, enumeration, integer, integer_between, non_empty_string,
     nonnegative_integer, optional, positive_integer, record, strict_object,
 };
+use crate::schema::memory_agreements::{
+    omo_memory_agreements_defaults, omo_memory_agreements_layer_schema,
+    omo_memory_agreements_schema,
+};
 
 fn default_reflection_trigger() -> Value {
     json!({ "step_count": 25, "on_compaction": true })
@@ -49,6 +53,10 @@ fn default_dream() -> Value {
 
 fn default_people() -> Value {
     json!({ "enabled": true, "max_entries": 40, "max_entry_chars": 200 })
+}
+
+fn default_agreements() -> Value {
+    omo_memory_agreements_defaults()
 }
 
 fn default_soul() -> Value {
@@ -310,7 +318,9 @@ pub fn omo_memory_recall_schema() -> Node {
 
 pub fn omo_memory_projection_schema() -> Node {
     strict_object(vec![
-        defaulted("max_entries_per_directory", nonnegative_integer(), || json!(40)),
+        defaulted("max_entries_per_directory", nonnegative_integer(), || {
+            json!(40)
+        }),
         defaulted("max_bytes", nonnegative_integer(), || json!(24576)),
     ])
 }
@@ -332,6 +342,7 @@ pub fn omo_memory_agent_overrides_schema() -> Node {
         optional_field("facts", omo_memory_facts_layer_schema()),
         optional_field("dream", omo_memory_dream_layer_schema()),
         optional_field("people", omo_memory_people_layer_schema()),
+        optional_field("agreements", omo_memory_agreements_layer_schema()),
         optional_field("soul", omo_memory_soul_layer_schema()),
         optional_field("write_notice", omo_memory_write_notice_layer_schema()),
         optional_field("sync", omo_memory_sync_layer_schema()),
@@ -345,9 +356,11 @@ pub fn omo_memory_settings_schema() -> Node {
     strict_object(vec![
         defaulted("enabled", boolean(), default_true),
         defaulted("agent", non_empty_string(), default_auto),
-        defaulted("projection", omo_memory_projection_schema(), || {
-            json!({ "max_entries_per_directory": 40, "max_bytes": 24576 })
-        }),
+        defaulted(
+            "projection",
+            omo_memory_projection_schema(),
+            || json!({ "max_entries_per_directory": 40, "max_bytes": 24576 }),
+        ),
         defaulted(
             "reflection",
             omo_memory_reflection_schema(),
@@ -357,6 +370,11 @@ pub fn omo_memory_settings_schema() -> Node {
         defaulted("facts", omo_memory_facts_schema(), default_facts),
         defaulted("dream", omo_memory_dream_schema(), default_dream),
         defaulted("people", omo_memory_people_schema(), default_people),
+        defaulted(
+            "agreements",
+            omo_memory_agreements_schema(),
+            default_agreements,
+        ),
         defaulted("soul", omo_memory_soul_schema(), default_soul),
         defaulted(
             "write_notice",
@@ -389,6 +407,7 @@ pub fn omo_memory_settings_layer_schema() -> Node {
         optional_field("facts", omo_memory_facts_layer_schema()),
         optional_field("dream", omo_memory_dream_layer_schema()),
         optional_field("people", omo_memory_people_layer_schema()),
+        optional_field("agreements", omo_memory_agreements_layer_schema()),
         optional_field("soul", omo_memory_soul_layer_schema()),
         optional_field("write_notice", omo_memory_write_notice_layer_schema()),
         optional_field("sync", omo_memory_sync_layer_schema()),

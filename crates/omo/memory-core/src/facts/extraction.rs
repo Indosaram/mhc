@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::agreements::{AgreementExtractionRecord, AgreementsPolicy, FactsKnownAgreement};
 use crate::git::{GitCommitAuthor, GitError, GitMemoryRepo};
 
 use super::mutation_plan::{
@@ -57,6 +58,13 @@ pub struct FactsBatch {
     #[serde(rename = "batchId")]
     pub batch_id: String,
     pub records: Vec<FactsExtractionRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agreements: Option<Vec<AgreementExtractionRecord>>,
+}
+
+/// Number of records a batch carries: facts plus agreement records.
+pub fn facts_batch_size(batch: &FactsBatch) -> usize {
+    batch.records.len() + batch.agreements.as_ref().map_or(0, Vec::len)
 }
 
 /// A known person record in the facts index.
@@ -86,6 +94,8 @@ pub struct FactsPayload {
     pub known_people: Vec<FactsKnownPerson>,
     #[serde(rename = "primaryHuman")]
     pub primary_human: PrimaryHuman,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agreements: Option<Vec<FactsKnownAgreement>>,
 }
 
 /// Outcome of applying a facts extraction batch to the repository.
@@ -137,6 +147,7 @@ pub type PublishRecovery<'a> =
 #[derive(Default)]
 pub struct ApplyFactsBatchOptions<'a> {
     pub people: Option<FactsPeopleRouting>,
+    pub agreements: Option<AgreementsPolicy>,
     pub on_alias_tie: Option<&'a mut dyn FnMut(&FactsAliasTie)>,
     pub publish_recovery: Option<PublishRecovery<'a>>,
 }
@@ -258,23 +269,31 @@ pub fn apply_facts_batch(
     options: ApplyFactsBatchOptions<'_>,
 ) -> Result<ApplyFactsBatchResult, FactsExtractionError> {
     validate_facts_batch_id(&batch.batch_id)?;
-    if batch.records.is_empty() {
+    let count = facts_batch_size(&batch);
+    if count == 0 {
         return Ok(ApplyFactsBatchResult::NoFacts {
             affected_paths: Vec::new(),
         });
     }
-    let recovery =
-        match plan_facts_mutation(repo, &batch, options.people.as_ref(), options.on_alias_tie) {
-            Ok(rec) => rec,
-            Err(MutationPlanError::ParentDirty(_)) => {
-                return Ok(ApplyFactsBatchResult::ParentDirty);
-            }
-            Err(err) => return Err(FactsExtractionError::Plan(err)),
-        };
+    let policy = options.agreements.unwrap_or_default();
+    let recovery = match plan_facts_mutation(
+        repo,
+        &batch,
+        options.people.as_ref(),
+        options.on_alias_tie,
+        &policy,
+        None,
+    ) {
+        Ok(rec) => rec,
+        Err(MutationPlanError::ParentDirty(_)) => {
+            return Ok(ApplyFactsBatchResult::ParentDirty);
+        }
+        Err(err) => return Err(FactsExtractionError::Plan(err)),
+    };
     if let Some(mut publish) = options.publish_recovery {
         publish(&recovery)?;
     }
-    let recovery_result = apply_facts_recovery(repo, &recovery, batch.records.len(), author)?;
+    let recovery_result = apply_facts_recovery(repo, &recovery, count, author)?;
     match recovery_result {
         FactsRecoveryResult::Committed {
             sha,
@@ -295,7 +314,11 @@ pub fn validate_facts_recovery(
     validate_facts_batch_id(&batch.batch_id)?;
     if recovery.version != 1
         || recovery.batch_id != batch.batch_id
-        || recovery.records_hash != facts_records_hash(&batch.records)
+        || recovery.records_hash
+            != facts_records_hash(
+                &batch.records,
+                batch.agreements.as_deref().unwrap_or_default(),
+            )
         || recovery.paths.windows(2).any(|w| w[0].path >= w[1].path)
     {
         return Err(FactsExtractionError::InvalidRecovery(

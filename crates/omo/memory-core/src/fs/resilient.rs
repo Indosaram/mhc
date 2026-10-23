@@ -1,9 +1,11 @@
 //! EINTR-resilient filesystem boundary: the memory stack's only path to `std::fs`.
 
 use std::fs::{File, Metadata};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use super::rename_contention::{CONTENTION_DELAYS_MS, RenamePlatform, rename_with_contention_retry};
+use super::rename_contention::{
+    CONTENTION_DELAYS_MS, RenamePlatform, rename_with_contention_retry,
+};
 use super::retry::retry_on_eintr;
 use super::write_all::{open_with_exclusive_policy, write_path_all};
 
@@ -25,6 +27,11 @@ pub fn metadata(path: &Path) -> std::io::Result<Metadata> {
 /// True when the path exists; transient EINTR is retried rather than misread as missing.
 pub fn exists(path: &Path) -> bool {
     metadata(path).is_ok()
+}
+
+/// Resolves a path to its canonical form, retrying an interrupted call.
+pub fn canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+    retry_on_eintr(|| std::fs::canonicalize(path))
 }
 
 /// Creates a directory tree, retrying an interrupted call.

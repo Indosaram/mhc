@@ -32,18 +32,25 @@ impl ModelRegistry {
             model_runtime: runtime,
         }
     }
-    pub fn create(auth_storage: Arc<AuthStorage>, models_path: PathBuf) -> Result<Self, maho_ai::models::ModelsError> {
-        Ok(Self::new(ModelRuntime::create_sync(CreateModelRuntimeOptions {
-            credentials: Some(auth_storage),
-            models_path: Some(models_path),
-            ..Default::default()
-        })?))
+    pub fn create(
+        auth_storage: Arc<AuthStorage>,
+        models_path: PathBuf,
+    ) -> Result<Self, maho_ai::models::ModelsError> {
+        Ok(Self::new(ModelRuntime::create_sync(
+            CreateModelRuntimeOptions {
+                credentials: Some(auth_storage),
+                models_path: Some(models_path),
+                ..Default::default()
+            },
+        )?))
     }
     pub fn in_memory(auth_storage: Arc<AuthStorage>) -> Result<Self, maho_ai::models::ModelsError> {
-        Ok(Self::new(ModelRuntime::create_sync(CreateModelRuntimeOptions {
-            credentials: Some(auth_storage),
-            ..Default::default()
-        })?))
+        Ok(Self::new(ModelRuntime::create_sync(
+            CreateModelRuntimeOptions {
+                credentials: Some(auth_storage),
+                ..Default::default()
+            },
+        )?))
     }
     pub fn get_all(&self) -> Vec<Model> {
         self.model_runtime.get_models(None)
@@ -257,6 +264,7 @@ impl ModelRegistry {
                 display_name: account.display_name,
                 blocked: account.blocked,
                 pinned: account.pinned,
+                unused: account.unused,
                 source: match account.source {
                     crate::credential_accounts::CredentialAccountSource::Login => {
                         maho_ext_api::CredentialAccountSource::Login

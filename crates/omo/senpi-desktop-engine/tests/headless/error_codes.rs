@@ -4,13 +4,16 @@
 
 use std::thread;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::common::scenario::{capture, headless, make_stop_path_live, snapshot_ref, Scenario};
-use crate::common::{error_code, Engine};
 use crate::WINDOW;
+use crate::common::scenario::{Scenario, capture, headless, make_stop_path_live, snapshot_ref};
+use crate::common::{Engine, error_code};
 
-const ERROR_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../senpi-desktop-core/src/error.rs");
+const ERROR_RS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../senpi-desktop-core/src/error.rs"
+);
 
 /// The variants of `enum ErrorCode`, in declaration order.
 fn declared_codes() -> Vec<String> {
@@ -111,11 +114,15 @@ fn cases() -> Vec<Case> {
                 e.invoke("capture", json!({"target": "desktop"}))
             },
         ),
-        case("InputFailed", json!({"capabilities": {"input": false}}), |e| {
-            make_stop_path_live(e);
-            capture(e, WINDOW);
-            click(e, WINDOW)
-        }),
+        case(
+            "InputFailed",
+            json!({"capabilities": {"input": false}}),
+            |e| {
+                make_stop_path_live(e);
+                capture(e, WINDOW);
+                click(e, WINDOW)
+            },
+        ),
         case(
             "BackgroundUnavailable",
             json!({"capabilities": {"backgroundWindowInput": false}}),
@@ -131,7 +138,10 @@ fn cases() -> Vec<Case> {
         }),
         case("InvalidTarget", json!({}), |e| {
             open(e);
-            e.invoke("capture", json!({"target": "desktop", "caps": {"maxWidth": 0}}))
+            e.invoke(
+                "capture",
+                json!({"target": "desktop", "caps": {"maxWidth": 0}}),
+            )
         }),
         case("InvalidKey", json!({}), |e| {
             make_stop_path_live(e);
@@ -145,14 +155,21 @@ fn cases() -> Vec<Case> {
             open(e);
             e.invoke("ax.node", json!({"ref": "e9999"}))
         }),
-        case("AxUnsupported", json!({"capabilities": {"ax": false}}), |e| {
-            open(e);
-            e.invoke("ax.snapshot", json!({"target": WINDOW}))
-        }),
+        case(
+            "AxUnsupported",
+            json!({"capabilities": {"ax": false}}),
+            |e| {
+                open(e);
+                e.invoke("ax.snapshot", json!({"target": WINDOW}))
+            },
+        ),
         case("AxFailed", json!({}), |e| {
             make_stop_path_live(e);
             let textarea = snapshot_ref(e, WINDOW, "textarea");
-            e.invoke("ax.perform", json!({"ref": textarea, "action": "increment"}))
+            e.invoke(
+                "ax.perform",
+                json!({"ref": textarea, "action": "increment"}),
+            )
         }),
         Case {
             env: SHORT_DEADLINE,
@@ -197,13 +214,21 @@ fn cases() -> Vec<Case> {
             e.send(&json!({"jsonrpc": "2.0", "method": "$/cancel", "params": {"id": 10}}));
             e.next()
         }),
-        case("CursorRestoreFailed", fail_next("warp_cursor"), foreground_click),
+        case(
+            "CursorRestoreFailed",
+            fail_next("warp_cursor"),
+            foreground_click,
+        ),
         case(
             "FocusRestoreFailed",
             fail_next("restore_front_window"),
             foreground_click,
         ),
-        case("TransactionFailed", fail_next("front_window"), foreground_click),
+        case(
+            "TransactionFailed",
+            fail_next("front_window"),
+            foreground_click,
+        ),
     ]
 }
 
@@ -225,12 +250,17 @@ fn every_error_code_reaches_the_wire_with_its_numeric_code() {
         i64::try_from(ordinal).ok().map(|ordinal| -32_000 - ordinal)
     };
     // When: every case runs concurrently on its own engine
-    let running: Vec<_> = cases().into_iter().map(|case| (case.code, spawn(case))).collect();
+    let running: Vec<_> = cases()
+        .into_iter()
+        .map(|case| (case.code, spawn(case)))
+        .collect();
     let failures: Vec<String> = running
         .into_iter()
         .filter_map(|(code, driver)| {
             let Ok(reply) = driver.join() else {
-                return Some(format!("{code}: the driver panicked (see its output above)"));
+                return Some(format!(
+                    "{code}: the driver panicked (see its output above)"
+                ));
             };
             let expected = numeric(code).map(|numeric| (json!(code), json!(numeric)));
             let actual = (error_code(&reply).clone(), reply["error"]["code"].clone());
@@ -245,7 +275,10 @@ fn every_error_code_reaches_the_wire_with_its_numeric_code() {
 #[test]
 fn the_code_table_drives_every_error_code_declared_in_error_rs() {
     let mut declared = declared_codes();
-    let mut driven: Vec<String> = cases().into_iter().map(|case| case.code.to_owned()).collect();
+    let mut driven: Vec<String> = cases()
+        .into_iter()
+        .map(|case| case.code.to_owned())
+        .collect();
     declared.sort();
     driven.sort();
     assert_eq!(driven, declared);

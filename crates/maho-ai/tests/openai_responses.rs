@@ -107,6 +107,7 @@ fn allowed(providers: &[&str]) -> BTreeSet<String> {
 
 fn model(api: &str, provider: &str, id: &str) -> Model {
     Model {
+        deprecated: None,
         id: id.to_owned(),
         name: id.to_owned(),
         api: api.to_owned(),
@@ -142,6 +143,8 @@ fn azure_model() -> Model {
 
 fn output(model: &Model) -> AssistantMessage {
     AssistantMessage {
+        failure_source: None,
+        timing: None,
         thinking_level: None,
         provider_diagnostic: None,
         prompt_cache_diagnostics: None,
@@ -254,6 +257,14 @@ fn load_case(case: &str) -> Value {
         &std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path:?}: {error}")),
     )
     .expect("replay case JSON")
+}
+
+/// senpi#2097: the cache key is a bounded prefix hash, never the session id.
+fn assert_prefix_cache_key(key: &Value, session_id: &str) {
+    let key = key.as_str().expect("prompt_cache_key string");
+    assert!((1..=64).contains(&key.chars().count()), "{key}");
+    assert_ne!(key, session_id);
+    assert!(key.starts_with("maho-responses-prefix-v1-"), "{key}");
 }
 
 fn sse_frames(case: &str) -> Vec<(Option<String>, String)> {
@@ -1472,10 +1483,7 @@ fn azure_params_clamp_the_cache_key_and_disable_server_side_storage() {
         &BTreeMap::new(),
     )
     .expect("params");
-    assert_eq!(
-        params["prompt_cache_key"].as_str(),
-        Some("x".repeat(64).as_str())
-    );
+    assert_prefix_cache_key(&params["prompt_cache_key"], &"x".repeat(64));
     assert_eq!(params["store"], json!(false));
 
     let mut disabled = azure_options(&[]);
@@ -2023,14 +2031,15 @@ fn responses_tool_conversion_covers_function_freeform_and_grammar_tools() {
     )
     .expect("tools convert");
 
-    assert_eq!(tools[0]["type"].as_str(), Some("function"));
-    assert_eq!(tools[0]["strict"], json!(false));
+    // Wire order is sorted by name: patch, query, read.
+    assert_eq!(tools[2]["type"].as_str(), Some("function"));
+    assert_eq!(tools[2]["strict"], json!(false));
+    assert_eq!(tools[0]["type"].as_str(), Some("custom"));
+    assert_eq!(tools[0]["format"]["type"].as_str(), Some("grammar"));
     assert_eq!(tools[1]["type"].as_str(), Some("custom"));
-    assert_eq!(tools[1]["format"]["type"].as_str(), Some("grammar"));
-    assert_eq!(tools[2]["type"].as_str(), Some("custom"));
-    assert_eq!(tools[2]["format"]["syntax"].as_str(), Some("lark"));
+    assert_eq!(tools[1]["format"]["syntax"].as_str(), Some("lark"));
     assert_eq!(
-        tools[2]["format"]["definition"].as_str(),
+        tools[1]["format"]["definition"].as_str(),
         Some("start: \"query\"")
     );
 }
@@ -2078,7 +2087,7 @@ fn responses_params_default_to_short_cache_and_omit_none_retention() {
             .expect("params");
     assert_eq!(params["store"], json!(false));
     assert_eq!(params["stream"], json!(true));
-    assert_eq!(params["prompt_cache_key"].as_str(), Some("session-1"));
+    assert_prefix_cache_key(&params["prompt_cache_key"], "session-1");
     assert!(params.get("prompt_cache_retention").is_none());
 
     let mut long = responses_options();
@@ -2691,25 +2700,49 @@ fn configuration_updates_replace_an_adjacent_update_rather_than_adding_another()
 #[test]
 fn configuration_updates_follow_new_catalog_opt_in_flags() {
     for (provider, ids) in [
-        ("openai", &["gpt-6.1-sol", "gpt-6.1-sol-fast", "gpt-daybreak-blue-latest", "gpt-daybreak-red-latest"][..]),
-        ("chatgpt-subscription", &["gpt-6.1-sol", "gpt-6.1-sol-fast", "gpt-6.1-sol-ultrafast"][..]),
+        (
+            "openai",
+            &[
+                "gpt-6.1-sol",
+                "gpt-6.1-sol-fast",
+                "gpt-daybreak-blue-latest",
+                "gpt-daybreak-red-latest",
+            ][..],
+        ),
+        (
+            "chatgpt-subscription",
+            &["gpt-6.1-sol", "gpt-6.1-sol-fast", "gpt-6.1-sol-ultrafast"][..],
+        ),
     ] {
         for id in ids {
             let model = builtin(provider, id);
-            let input = convert_plain(&model, vec![configuration_update("high", 1), user_message("next")]);
+            let input = convert_plain(
+                &model,
+                vec![configuration_update("high", 1), user_message("next")],
+            );
             assert_eq!(input.len(), 2, "{provider}/{id}: {input:?}");
             assert_eq!(input[0]["type"], json!("configuration_update"));
             assert_eq!(input[0]["reasoning"], json!({ "effort": "high" }));
             assert_eq!(input[1]["role"], json!("user"));
         }
     }
-    let flagged: Vec<_> = maho_ai::models_generated::get_builtin_provider_models("chatgpt-subscription")
-        .expect("subscription catalog")
-        .into_iter()
-        .filter(|model| maho_ai::models::supports_configuration_update(model))
-        .map(|model| model.id.as_str())
-        .collect();
-    assert_eq!(flagged, ["gpt-6-astra", "gpt-6-astra-fast", "gpt-6.1-sol", "gpt-6.1-sol-fast", "gpt-6.1-sol-ultrafast"]);
+    let flagged: Vec<_> =
+        maho_ai::models_generated::get_builtin_provider_models("chatgpt-subscription")
+            .expect("subscription catalog")
+            .into_iter()
+            .filter(|model| maho_ai::models::supports_configuration_update(model))
+            .map(|model| model.id.as_str())
+            .collect();
+    assert_eq!(
+        flagged,
+        [
+            "gpt-6-astra",
+            "gpt-6-astra-fast",
+            "gpt-6.1-sol",
+            "gpt-6.1-sol-fast",
+            "gpt-6.1-sol-ultrafast"
+        ]
+    );
 }
 
 #[test]
@@ -2726,12 +2759,27 @@ fn sol_service_tiers_use_route_specific_rates_and_preserve_requested_tier() {
         ("gpt-6-luna", "ultrafast", 1.0, 1.0),
     ] {
         let model = builtin("chatgpt-subscription", id);
-        assert_close(openai_responses::get_service_tier_cost_multiplier(&model, Some(tier)), api_rate);
-        assert_close(get_codex_service_tier_cost_multiplier(&model, Some(tier)), subscription_rate);
-        assert_eq!(resolve_codex_service_tier(Some("default"), Some(tier)), Some(tier.into()));
-        assert_eq!(resolve_codex_service_tier(None, Some(tier)), Some(tier.into()));
+        assert_close(
+            openai_responses::get_service_tier_cost_multiplier(&model, Some(tier)),
+            api_rate,
+        );
+        assert_close(
+            get_codex_service_tier_cost_multiplier(&model, Some(tier)),
+            subscription_rate,
+        );
+        assert_eq!(
+            resolve_codex_service_tier(Some("default"), Some(tier)),
+            Some(tier.into())
+        );
+        assert_eq!(
+            resolve_codex_service_tier(None, Some(tier)),
+            Some(tier.into())
+        );
     }
-    assert_eq!(resolve_codex_service_tier(Some("priority"), Some("ultrafast")), Some("priority".into()));
+    assert_eq!(
+        resolve_codex_service_tier(Some("priority"), Some("ultrafast")),
+        Some("priority".into())
+    );
 }
 
 #[test]
@@ -2905,10 +2953,10 @@ async fn compat_sets_strict_mode_explicitly_for_cloudflare_responses_tools() {
 
     let payload = capture_payload(&model, &context, responses_options()).await;
     let tools = payload["tools"].as_array().expect("tools");
-    assert_eq!(tools[0]["name"], json!("ordinary"));
-    assert_eq!(tools[0]["strict"], json!(false));
-    assert_eq!(tools[1]["name"], json!("constrained"));
-    assert_eq!(tools[1]["strict"], json!(true));
+    assert_eq!(tools[0]["name"], json!("constrained"));
+    assert_eq!(tools[0]["strict"], json!(true));
+    assert_eq!(tools[1]["name"], json!("ordinary"));
+    assert_eq!(tools[1]["strict"], json!(false));
 }
 
 #[tokio::test]
@@ -2976,7 +3024,7 @@ async fn compat_clamps_prompt_cache_key_to_the_64_character_limit() {
     options.session_id = Some("x".repeat(67));
 
     let payload = capture_payload(&model, &hello_context(), options).await;
-    assert_eq!(payload["prompt_cache_key"], json!("x".repeat(64)));
+    assert_prefix_cache_key(&payload["prompt_cache_key"], &"x".repeat(64));
 }
 
 #[tokio::test]
@@ -3023,7 +3071,7 @@ async fn compat_uses_openrouter_session_affinity_header_when_configured() {
 
     let payload = capture_payload(&model, &hello_context(), options).await;
     assert!(payload.get("session_id").is_none());
-    assert_eq!(payload["prompt_cache_key"], json!("session-proxy"));
+    assert_prefix_cache_key(&payload["prompt_cache_key"], "session-proxy");
 }
 
 #[tokio::test]
@@ -3044,7 +3092,7 @@ async fn compat_auto_detects_openrouter_session_affinity_header() {
 
     let payload = capture_payload(&model, &hello_context(), options).await;
     assert!(payload.get("session_id").is_none());
-    assert_eq!(payload["prompt_cache_key"], json!("session-openrouter"));
+    assert_prefix_cache_key(&payload["prompt_cache_key"], "session-openrouter");
 }
 
 #[tokio::test]
@@ -3072,7 +3120,7 @@ async fn compat_uses_no_session_format_when_configured() {
 
     let payload = capture_payload(&model, &hello_context(), options).await;
     assert!(payload.get("session_id").is_none());
-    assert_eq!(payload["prompt_cache_key"], json!("session-proxy"));
+    assert_prefix_cache_key(&payload["prompt_cache_key"], "session-proxy");
 }
 
 #[tokio::test]
@@ -3094,7 +3142,7 @@ async fn compat_uses_no_session_format_for_opencode_responses_models() {
     assert!(header_value(&headers, "x-session-id").is_none());
 
     let payload = capture_payload(&model, &hello_context(), options).await;
-    assert_eq!(payload["prompt_cache_key"], json!("session-opencode"));
+    assert_prefix_cache_key(&payload["prompt_cache_key"], "session-opencode");
 }
 
 #[tokio::test]
@@ -3114,7 +3162,7 @@ async fn compat_can_omit_the_session_id_header_while_preserving_other_affinity_d
     );
 
     let payload = capture_payload(&model, &hello_context(), options).await;
-    assert_eq!(payload["prompt_cache_key"], json!("session-123"));
+    assert_prefix_cache_key(&payload["prompt_cache_key"], "session-123");
 }
 
 #[tokio::test]
@@ -3533,7 +3581,7 @@ async fn cache_retention_uses_the_supported_long_cache_field_per_model() {
         options.session_id = Some("session-2".into());
 
         let payload = capture_payload(&model, &hello_context(), options).await;
-        assert_eq!(payload["prompt_cache_key"], json!("session-2"), "{id}");
+        assert_prefix_cache_key(&payload["prompt_cache_key"], "session-2");
         match retention {
             Some(value) => assert_eq!(payload["prompt_cache_retention"], value, "{id}"),
             None => assert!(
@@ -3559,7 +3607,7 @@ async fn cache_retention_uses_the_model_default_when_options_omit_it() {
     options.session_id = Some("model-default-session".into());
 
     let payload = capture_payload(&model, &hello_context(), options).await;
-    assert_eq!(payload["prompt_cache_key"], json!("model-default-session"));
+    assert_prefix_cache_key(&payload["prompt_cache_key"], "model-default-session");
     assert_eq!(payload["prompt_cache_retention"], json!("24h"));
 }
 
@@ -3625,7 +3673,7 @@ async fn xai_uses_responses_with_bearer_auth_and_xai_compatible_request_fields()
     assert_eq!(payload["model"], json!("grok-4.5"));
     assert_eq!(payload["store"], json!(false));
     assert_eq!(payload["stream"], json!(true));
-    assert_eq!(payload["prompt_cache_key"], json!("pi-session-123"));
+    assert_prefix_cache_key(&payload["prompt_cache_key"], "pi-session-123");
     assert_eq!(payload["reasoning"]["effort"], json!("medium"), "{payload}");
     assert_eq!(payload["include"], json!(["reasoning.encrypted_content"]));
     assert!(payload.get("prompt_cache_retention").is_none(), "{payload}");

@@ -184,11 +184,21 @@ pub fn omo_components(
         maho_omo_onboarding::OnboardingComponent {
             state_dir: options.state_dir.clone(),
             skills_root: options.skills_root_string(),
-        },
+        }
+        .with_dependencies(maho_omo_onboarding::component::OnboardingDependencies {
+            applier: Some(std::sync::Arc::new(
+                crate::onboarding_memory_applier::PublishedMemoryFactsApplier,
+            )),
+            ..Default::default()
+        }),
     ));
     components.push(component(
         "init-deep-advisor",
         maho_omo_init_deep_advisor::index::InitDeepAdvisorComponent::new(skills_root.clone()),
+    ));
+    components.push(component(
+        "onboarding-scan",
+        maho_omo_onboarding::scan_component::OnboardingScanComponent::default(),
     ));
     components.push(component(
         "side-panel",
@@ -289,6 +299,15 @@ pub fn omo_components(
         },
     ));
     components.push(component(
+        "feedback",
+        maho_omo_feedback::FeedbackComponent::new(maho_omo_feedback::FeedbackComponentOptions {
+            env: Some(options.env.clone()),
+            state_dir: Some(options.state_dir.clone()),
+            omo_version: Some(env!("CARGO_PKG_VERSION").into()),
+            ..Default::default()
+        }),
+    ));
+    components.push(component(
         "browser-bridge",
         maho_omo_browser_bridge::BrowserBridgeComponent::default(),
     ));
@@ -354,6 +373,7 @@ pub fn omo_component_names() -> Vec<&'static str> {
         "skill-commands",
         "onboarding",
         "init-deep-advisor",
+        "onboarding-scan",
         "side-panel",
         "telemetry",
         "ultrawork",
@@ -368,6 +388,7 @@ pub fn omo_component_names() -> Vec<&'static str> {
         "ast-grep",
         "builtin-mcps",
         "x-search",
+        "feedback",
         "browser-bridge",
         "lsp",
         "task",

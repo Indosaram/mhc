@@ -11,7 +11,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse as kbm;
 use windows_sys::Win32::UI::WindowsAndMessaging as wm;
 
 use super::held::{HeldKey, Route};
-use super::{keys, messages, Win32Input};
+use super::{Win32Input, keys, messages};
 use crate::integrity;
 use crate::stop_path::chord;
 
@@ -53,7 +53,11 @@ fn background_text_reaches_an_unlisted_class_window() {
     // Given: a window of a class the matrix does not list
     let window = ProbeWindow::new("SomeCustomClass");
     // When
-    let typed = input().type_text(&Target::Window(window.id()), "hi\n", DeliveryMode::Background);
+    let typed = input().type_text(
+        &Target::Window(window.id()),
+        "hi\n",
+        DeliveryMode::Background,
+    );
     // Then: characters arrive as WM_CHAR and the newline as one Return
     // transition, never a raw carriage-return character.
     assert_eq!(typed, Ok(()));
@@ -86,7 +90,11 @@ fn background_text_into_a_chromium_class_window_is_refused_naming_it() {
     // Then: refused before anything was posted
     println!("code={} message={}", error.code.as_str(), error.message);
     assert_eq!(error.code, ErrorCode::BackgroundUnavailable);
-    assert!(error.message.contains("Chrome_WidgetWin_1"), "{}", error.message);
+    assert!(
+        error.message.contains("Chrome_WidgetWin_1"),
+        "{}",
+        error.message
+    );
     assert_eq!(window.drain(), []);
 }
 
@@ -130,7 +138,10 @@ fn release_all_posts_the_release_of_a_key_left_held() {
     let released = input.release_all();
     // Then
     assert_eq!(released, Ok(()));
-    assert_eq!(window.drain(), [(wm::WM_KEYUP, usize::from(keys::VK_SHIFT))]);
+    assert_eq!(
+        window.drain(),
+        [(wm::WM_KEYUP, usize::from(keys::VK_SHIFT))]
+    );
     assert!(input.held.is_empty());
 }
 

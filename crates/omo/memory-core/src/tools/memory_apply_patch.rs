@@ -12,11 +12,15 @@ use crate::git::repo_types::GitCommitAuthor;
 use crate::support::paths::to_git_path;
 use crate::support::time::now_iso;
 
+use super::agreements_write_guard::refuse_agreements_violation;
 use super::memfs::{
     MemoryFrontmatter, ValidateMemoryPathOptions, parse_memory_file, render_memory_file,
     validate_memory_path,
 };
-use super::memory::{MemoryToolCommit, MemoryToolLock, MemoryToolProvenanceInput, memory_commit_message};
+use super::memory::{
+    MemoryToolCommit, MemoryToolLock, MemoryToolProvenanceInput, MemoryWriter,
+    memory_commit_message,
+};
 use super::patch_parser::{PatchOperation, apply_memory_patch_hunk, parse_memory_patch};
 use super::soul::{SOUL_EDIT_RESULT_LINE, touches_soul_path};
 use super::tool_errors::MemoryToolError;
@@ -59,10 +63,19 @@ pub fn run_memory_apply_patch(
 
     let operations = parse_memory_patch(&params.input).map_err(|e| err(e.message))?;
     let affected_paths = apply_operations(&repo.dir, &operations)?;
+    if let Some(violation) =
+        refuse_agreements_violation(repo, &affected_paths).map_err(|e| err(e.to_string()))?
+    {
+        return Err(err(violation));
+    }
 
     let commit_res = repo.commit_write(
         &affected_paths,
-        &memory_commit_message(&params.reason, params.provenance.as_ref()),
+        &memory_commit_message(
+            &params.reason,
+            params.provenance.as_ref(),
+            MemoryWriter::MemoryTool,
+        ),
         &params.author,
     );
 

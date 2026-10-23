@@ -51,6 +51,8 @@ fn option_value(options: &StreamOptions, key: &str) -> Option<Value> {
 
 fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
+        failure_source: None,
+        timing: None,
         error_cause: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,

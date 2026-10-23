@@ -1,5 +1,5 @@
 use super::super::canonical_json::canonicalize_json;
-use super::{entry::*, fold::Authority};
+use super::{entry::*, fold::Authority, strict_ed25519::*};
 use aws_lc_rs::{
     digest,
     signature::{ED25519, UnparsedPublicKey},
@@ -60,7 +60,14 @@ pub fn verify_tagged(context: &str, payload: &Value, public_key: &str, signature
     ) else {
         return false;
     };
+    if strict_ed25519_precheck(&key, &sig).is_err() {
+        return false;
+    }
     verify_bytes(context, &bytes, &key, &sig)
+}
+/// True only for a base64url key that decodes to 32 bytes and passes the strict check.
+pub fn is_strong_key_text(public_key: &str) -> bool {
+    decode_b64(public_key, Some(32)).is_some_and(|key| strict_ed25519_key(&key))
 }
 pub fn tagged_hash(context: &str, payload: &Value) -> Option<String> {
     Some(sha256_b64(

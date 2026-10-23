@@ -26,19 +26,23 @@ use crate::model::Model;
 use crate::types::{AssistantMessageEventStream, Tool};
 use protocols::kimi_xtml::recovery_stream::create_xtml_recovery_stream_parser;
 use protocols::kimi_xtml::thinking_recovery_stream::wrap_stream_with_kimi_thinking_recovery;
-use recovery_stream_wrapper::{wrap_stream_with_invoke_recovery, InvokeRecoveryOptions};
+use recovery_stream_wrapper::{InvokeRecoveryOptions, wrap_stream_with_invoke_recovery};
 use types::ToolCallFormat;
 
 pub use context_transformer::{get_protocol, transform_context};
 pub use stream_wrapper::wrap_stream_with_tool_call_middleware;
 
 /// The Claude-family identifier pattern (case-insensitive, ASCII-alphanumeric delimited).
-static CLAUDE_MODEL_ID_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)(^|[^a-z0-9])claude([^a-z0-9]|$)").expect("CLAUDE_MODEL_ID_PATTERN is a valid fixed regex"));
+static CLAUDE_MODEL_ID_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(^|[^a-z0-9])claude([^a-z0-9]|$)")
+        .expect("CLAUDE_MODEL_ID_PATTERN is a valid fixed regex")
+});
 
 /// The Kimi-family identifier pattern (case-insensitive, ASCII-alphanumeric delimited).
-static KIMI_MODEL_ID_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)(^|[^a-z0-9])kimi([^a-z0-9]|$)").expect("KIMI_MODEL_ID_PATTERN is a valid fixed regex"));
+static KIMI_MODEL_ID_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(^|[^a-z0-9])kimi([^a-z0-9]|$)")
+        .expect("KIMI_MODEL_ID_PATTERN is a valid fixed regex")
+});
 
 /// Extracts the tool call format from a model's compatibility settings.
 /// Only applies to models using the openai-completions API with compat settings.
@@ -96,7 +100,9 @@ pub fn wrap_stream_with_model_recovery(
     }
     let options = if has_kimi_text_tool_call_recovery(model) {
         InvokeRecoveryOptions {
-            create_parser: Some(std::sync::Arc::new(|tools| create_xtml_recovery_stream_parser(tools, None))),
+            create_parser: Some(std::sync::Arc::new(|tools| {
+                create_xtml_recovery_stream_parser(tools, None)
+            })),
             protocol: ToolCallFormat::KimiXtml,
         }
     } else {
@@ -109,7 +115,7 @@ pub fn wrap_stream_with_model_recovery(
 mod tests {
     use super::*;
     use crate::types::{InputModality, ModelCost};
-    use serde_json::{json, Map, Value};
+    use serde_json::{Map, Value, json};
 
     fn create_model(id: &str) -> Model {
         Model {
@@ -135,12 +141,16 @@ mod tests {
             compat: None,
             default_thinking_level: None,
             input_limits: None,
+            deprecated: None,
         }
     }
 
     fn with_compat(mut model: Model, format: &str) -> Model {
         let mut compat = Map::new();
-        compat.insert("toolCallFormat".to_string(), Value::String(format.to_string()));
+        compat.insert(
+            "toolCallFormat".to_string(),
+            Value::String(format.to_string()),
+        );
         model.compat = Some(crate::model::ModelCompat(compat));
         model
     }
@@ -177,7 +187,9 @@ mod tests {
             assert!(should_recover_text_tool_calls(&create_model(id)), "{id}");
         }
 
-        for id in ["exclaude", "claudius", "claudel", "myclaude", "claude3", "xclaude", "claudex", "gpt-5"] {
+        for id in [
+            "exclaude", "claudius", "claudel", "myclaude", "claude3", "xclaude", "claudex", "gpt-5",
+        ] {
             assert!(!should_recover_text_tool_calls(&create_model(id)), "{id}");
         }
 
@@ -189,10 +201,22 @@ mod tests {
 
     #[test]
     fn rejects_substring_false_positives_and_gives_text_protocol_mutual_exclusion_precedence() {
-        for format in ["hermes", "xml", "morph-xml", "yaml-xml", "gemma4-delimiter", "anthropic-xml", "antml", "kimi-xtml"] {
+        for format in [
+            "hermes",
+            "xml",
+            "morph-xml",
+            "yaml-xml",
+            "gemma4-delimiter",
+            "anthropic-xml",
+            "antml",
+            "kimi-xtml",
+        ] {
             let mut model = with_compat(create_model(""), format);
             model.recover_text_tool_calls = Some(true);
-            assert_eq!(get_tool_call_format(&model).map(|parsed| parsed.as_str()), Some(format));
+            assert_eq!(
+                get_tool_call_format(&model).map(|parsed| parsed.as_str()),
+                Some(format)
+            );
             assert!(!should_recover_text_tool_calls(&model), "{format}");
         }
 
@@ -219,7 +243,9 @@ mod tests {
         // The TS case inspects the module graph (no compat.ts imports, no added globals) through a
         // node subprocess; Rust has no equivalent. The observable contract ported here is that the
         // helper is reachable from the crate root.
-        assert!(crate::should_recover_text_tool_calls(&create_model("claude")));
+        assert!(crate::should_recover_text_tool_calls(&create_model(
+            "claude"
+        )));
     }
 
     #[test]
@@ -281,12 +307,15 @@ mod repair_golden_tests {
     use crate::tool_call_middleware::protocols::antml::repair::repair_unicode_escapes;
     use crate::tool_call_middleware::types::ParserOptions;
     use crate::types::Tool;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     fn golden() -> Value {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/middleware-repair.json");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/golden/middleware-repair.json"
+        );
         let raw = std::fs::read_to_string(path).expect("middleware-repair golden is present");
         serde_json::from_str(&raw).expect("middleware-repair golden is valid JSON")
     }
@@ -294,7 +323,10 @@ mod repair_golden_tests {
     fn tool_from(value: &Value) -> Tool {
         Tool {
             name: value["name"].as_str().expect("tool name").to_string(),
-            description: value["description"].as_str().expect("tool description").to_string(),
+            description: value["description"]
+                .as_str()
+                .expect("tool description")
+                .to_string(),
             parameters: value["parameters"].clone(),
             output_schema: None,
             freeform: None,
@@ -305,12 +337,18 @@ mod repair_golden_tests {
     #[test]
     fn repairs_broken_unicode_escapes_like_senpi() {
         let golden = golden();
-        let cases = golden["repairUnicodeEscapes"].as_array().expect("repairUnicodeEscapes cases");
+        let cases = golden["repairUnicodeEscapes"]
+            .as_array()
+            .expect("repairUnicodeEscapes cases");
         assert!(!cases.is_empty(), "the golden carries repair cases");
         for case in cases {
             let input = case["input"].as_str().expect("input");
             let repaired = repair_unicode_escapes(input);
-            assert_eq!(repaired, case["repaired"].as_str().expect("repaired"), "{input}");
+            assert_eq!(
+                repaired,
+                case["repaired"].as_str().expect("repaired"),
+                "{input}"
+            );
             if case["parsed"]["ok"].as_bool() == Some(true) {
                 let parsed: Value = serde_json::from_str(&repaired).expect("repaired JSON parses");
                 assert_eq!(parsed, case["parsed"]["value"], "{input}");
@@ -328,22 +366,36 @@ mod repair_golden_tests {
         for case in cases {
             let label = case["label"].as_str().expect("label");
             let text = case["text"].as_str().expect("text");
-            let tools: Vec<Tool> = case["tools"].as_array().expect("tools").iter().map(tool_from).collect();
+            let tools: Vec<Tool> = case["tools"]
+                .as_array()
+                .expect("tools")
+                .iter()
+                .map(tool_from)
+                .collect();
             let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
             let sink = seen.clone();
             let options = ParserOptions {
                 emit_raw_tool_call_text_on_error: false,
-                on_error: Some(Arc::new(move |message: &str, metadata: Option<&HashMap<String, Value>>| {
-                    let tool_call = metadata.and_then(|metadata| metadata.get("toolCall")).and_then(Value::as_str).unwrap_or_default();
-                    sink.lock()
-                        .expect("error sink")
-                        .push(json!({ "message": message, "metadata": { "toolCall": tool_call } }));
-                })),
+                on_error: Some(Arc::new(
+                    move |message: &str, metadata: Option<&HashMap<String, Value>>| {
+                        let tool_call = metadata
+                            .and_then(|metadata| metadata.get("toolCall"))
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        sink.lock().expect("error sink").push(
+                            json!({ "message": message, "metadata": { "toolCall": tool_call } }),
+                        );
+                    },
+                )),
             };
             let calls = parse_antml_generated_text(text, &tools, Some(&options));
             let actual_calls: Vec<Value> =
                 calls.iter().map(|call| json!({ "name": call.name, "arguments": Value::Object(call.arguments.clone()) })).collect();
-            assert_eq!(Value::Array(actual_calls), case["calls"], "{label}: parsed calls");
+            assert_eq!(
+                Value::Array(actual_calls),
+                case["calls"],
+                "{label}: parsed calls"
+            );
             let actual_errors = Value::Array(seen.lock().expect("error sink").clone());
             assert_eq!(actual_errors, case["errors"], "{label}: onError reports");
         }
@@ -360,7 +412,12 @@ mod repair_golden_tests {
             for case in cases {
                 let label = case["label"].as_str().expect("label");
                 let text = case["text"].as_str().expect("text");
-                let tools: Vec<Tool> = case["tools"].as_array().expect("tools").iter().map(tool_from).collect();
+                let tools: Vec<Tool> = case["tools"]
+                    .as_array()
+                    .expect("tools")
+                    .iter()
+                    .map(tool_from)
+                    .collect();
                 let calls = if protocol == 0 {
                     crate::tool_call_middleware::protocols::anthropic_xml::parse::parse_anthropic_xml_generated_text(text, &tools, None)
                 } else {
@@ -368,7 +425,11 @@ mod repair_golden_tests {
                 };
                 let actual: Vec<Value> =
                     calls.iter().map(|call| json!({ "name": call.name, "arguments": Value::Object(call.arguments.clone()) })).collect();
-                assert_eq!(Value::Array(actual), case["calls"], "{section}/{label}: parsed calls");
+                assert_eq!(
+                    Value::Array(actual),
+                    case["calls"],
+                    "{section}/{label}: parsed calls"
+                );
             }
         }
     }

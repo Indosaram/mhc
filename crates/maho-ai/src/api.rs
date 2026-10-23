@@ -3,6 +3,7 @@
 
 pub mod anthropic_messages;
 pub mod anthropic_messages_lazy;
+pub mod anthropic_request_shape_log;
 pub mod anthropic_tool_pairs;
 pub mod anthropic_tool_references;
 pub mod azure_openai_responses;

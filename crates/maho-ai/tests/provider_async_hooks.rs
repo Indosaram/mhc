@@ -92,6 +92,7 @@ impl WireServer {
 
 fn model(api: &str, url: &str) -> Model {
     Model {
+        deprecated: None,
         id: "test-model".into(),
         name: "test-model".into(),
         api: api.into(),

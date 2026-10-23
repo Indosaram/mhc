@@ -29,10 +29,7 @@ pub struct CursorModelCapability {
     pub levels: BTreeMap<ModelThinkingLevel, CursorLevelSpec>,
 }
 
-const P: CursorLevelEncoding = "parameters";
-const V: CursorLevelEncoding = "variant-id";
-
-fn level_token_to_thinking_level(value: &str) -> ModelThinkingLevel {
+pub(crate) fn level_token_to_thinking_level(value: &str) -> ModelThinkingLevel {
     match value {
         "none" | "off" => ModelThinkingLevel::Off,
         "minimal" => ModelThinkingLevel::Minimal,
@@ -45,363 +42,7 @@ fn level_token_to_thinking_level(value: &str) -> ModelThinkingLevel {
     }
 }
 
-fn ladder(values: &[&str], encoding: CursorLevelEncoding) -> BTreeMap<ModelThinkingLevel, CursorLevelSpec> {
-    let mut out = BTreeMap::new();
-    for value in values {
-        out.insert(
-            level_token_to_thinking_level(value),
-            CursorLevelSpec { value: (*value).to_owned(), encoding },
-        );
-    }
-    out
-}
-
-const CLAUDE_ORDER: &[CursorParameterId] = &["thinking", "context", "effort"];
-const GPT_ORDER: &[CursorParameterId] = &["context", "reasoning", "fast"];
-
-fn claude(window: f64, max_window: f64, levels: &[&str], default_context: &str) -> CursorModelCapability {
-    CursorModelCapability {
-        catalog_key: None,
-        evidence: "available-models",
-        window,
-        max_window: Some(max_window),
-        parameter_order: CLAUDE_ORDER.to_vec(),
-        default_context: Some(default_context.to_owned()),
-        request_context: Some(if window >= 1_000_000.0 { "1m".to_owned() } else { default_context.to_owned() }),
-        levels: ladder(levels, P),
-    }
-}
-
-fn gpt_full(levels: &[&str], order: &[CursorParameterId], window: f64, max_window: f64) -> CursorModelCapability {
-    let default_context = "272k".to_owned();
-    let request_context =
-        if order.contains(&"context") && window >= 1_000_000.0 { Some("1m".to_owned()) } else { None };
-    CursorModelCapability {
-        catalog_key: None,
-        evidence: "available-models",
-        window,
-        max_window: Some(max_window),
-        parameter_order: order.to_vec(),
-        default_context: Some(default_context),
-        request_context,
-        levels: ladder(levels, P),
-    }
-}
-
-fn gpt(levels: &[&str]) -> CursorModelCapability {
-    gpt_full(levels, GPT_ORDER, 400_000.0, 400_000.0)
-}
-
-/// Static cursor capability table. Values come from the live
-/// aiserver.v1 AvailableModels capture of 2026-08-18 (evidence:
-/// local-ignore/qa-evidence/20260818-cursor-reasoning-levels/available-models-catalog.json).
-/// `GetUsableModels` carries no window or parameter field, so this table is the
-/// authoritative source; see .omo/plans/cursor-reasoning-levels.md §3.1/§6.
-pub static CURSOR_MODEL_CAPABILITIES: LazyLock<BTreeMap<&'static str, CursorModelCapability>> = LazyLock::new(|| {
-    let mut m = BTreeMap::new();
-    m.insert("claude-fable-5", claude(1_000_000.0, 1_000_000.0, &["low", "medium", "high", "xhigh", "max"], "300k"));
-    m.insert("claude-sonnet-5", claude(1_000_000.0, 1_000_000.0, &["low", "medium", "high", "xhigh", "max"], "300k"));
-    m.insert("claude-opus-4-7", claude(1_000_000.0, 1_000_000.0, &["low", "medium", "high", "xhigh", "max"], "300k"));
-    m.insert("claude-opus-4-8", claude(1_000_000.0, 1_000_000.0, &["low", "medium", "high", "xhigh", "max"], "300k"));
-    m.insert("claude-opus-5", claude(1_000_000.0, 1_000_000.0, &["low", "medium", "high", "xhigh", "max"], "300k"));
-    m.insert("claude-4.6-opus", claude(1_000_000.0, 1_000_000.0, &["high", "max"], "200k"));
-    m.insert("claude-4.6-sonnet", claude(1_000_000.0, 1_000_000.0, &["medium"], "200k"));
-    m.insert(
-        "claude-4.5-opus",
-        CursorModelCapability {
-            catalog_key: None,
-            evidence: "available-models",
-            window: 200_000.0,
-            max_window: None,
-            parameter_order: vec!["thinking"],
-            default_context: None,
-            request_context: None,
-            levels: BTreeMap::from([(
-                ModelThinkingLevel::High,
-                CursorLevelSpec { value: "high".to_owned(), encoding: V },
-            )]),
-        },
-    );
-    m.insert(
-        "gpt-5.6-sol",
-        gpt_full(&["none", "low", "medium", "high", "xhigh", "max"], GPT_ORDER, 1_000_000.0, 1_000_000.0),
-    );
-    m.insert(
-        "gpt-5.6-luna",
-        gpt_full(&["none", "low", "medium", "high", "xhigh", "max"], GPT_ORDER, 1_000_000.0, 1_000_000.0),
-    );
-    m.insert(
-        "gpt-5.6-terra",
-        gpt_full(&["none", "low", "medium", "high", "xhigh", "max"], GPT_ORDER, 272_000.0, 272_000.0),
-    );
-    m.insert("gpt-5.5", {
-        let mut cap = gpt_full(&["none", "low", "medium", "high"], GPT_ORDER, 1_000_000.0, 1_000_000.0);
-        let mut levels = ladder(&["none", "low", "medium", "high"], P);
-        levels.insert(ModelThinkingLevel::Xhigh, CursorLevelSpec { value: "extra-high".to_owned(), encoding: P });
-        cap.levels = levels;
-        cap
-    });
-    m.insert("gpt-5.3-codex", {
-        let mut cap = gpt(&[]);
-        cap.parameter_order = vec!["reasoning", "fast"];
-        cap.max_window = None;
-        cap.default_context = None;
-        cap.request_context = None;
-        let mut levels = ladder(&["low", "medium", "high"], P);
-        levels.insert(ModelThinkingLevel::Xhigh, CursorLevelSpec { value: "extra-high".to_owned(), encoding: P });
-        cap.levels = levels;
-        cap
-    });
-    m.insert("gpt-5.1", {
-        let mut cap = gpt(&[]);
-        cap.parameter_order = vec!["reasoning"];
-        cap.max_window = None;
-        cap.default_context = None;
-        cap.request_context = None;
-        cap.levels = ladder(&["low", "high"], P);
-        cap
-    });
-    m.insert("gpt-5.2", {
-        let mut cap = gpt(&[]);
-        cap.parameter_order = vec!["reasoning"];
-        cap.max_window = None;
-        cap.default_context = None;
-        cap.request_context = None;
-        let mut levels = ladder(&["low", "high"], P);
-        levels.insert(ModelThinkingLevel::Xhigh, CursorLevelSpec { value: "xhigh".to_owned(), encoding: V });
-        cap.levels = levels;
-        cap
-    });
-    m.insert("gpt-5.4", {
-        let mut cap = gpt(&[]);
-        cap.parameter_order = vec!["reasoning"];
-        cap.max_window = None;
-        cap.default_context = None;
-        cap.request_context = None;
-        let mut levels = ladder(&["low", "medium", "high"], P);
-        levels.insert(ModelThinkingLevel::Xhigh, CursorLevelSpec { value: "xhigh".to_owned(), encoding: V });
-        cap.levels = levels;
-        cap
-    });
-    m.insert(
-        "gpt-5.4-mini",
-        CursorModelCapability {
-            catalog_key: None,
-            evidence: "available-models",
-            window: 400_000.0,
-            max_window: None,
-            parameter_order: vec![],
-            default_context: None,
-            request_context: None,
-            levels: ladder(&["none", "low", "medium", "high", "xhigh"], V),
-        },
-    );
-    m.insert("gpt-5.4-nano", {
-        let mut cap = gpt(&[]);
-        cap.parameter_order = vec!["reasoning"];
-        cap.max_window = None;
-        cap.default_context = None;
-        cap.request_context = None;
-        cap.levels = ladder(&["none", "low", "medium", "high", "xhigh"], P);
-        cap
-    });
-    m.insert(
-        "gemini-3.7-flash",
-        CursorModelCapability {
-            catalog_key: None,
-            evidence: "cli-live",
-            window: 1_048_576.0,
-            max_window: None,
-            parameter_order: vec!["effort"],
-            default_context: None,
-            request_context: None,
-            levels: ladder(&["low", "medium", "high"], P),
-        },
-    );
-    m.insert(
-        "gemini-3.6-flash",
-        CursorModelCapability {
-            catalog_key: None,
-            evidence: "suffix-only",
-            window: 1_048_576.0,
-            max_window: None,
-            parameter_order: vec![],
-            default_context: None,
-            request_context: None,
-            levels: ladder(&["minimal", "low", "medium", "high"], V),
-        },
-    );
-    m.insert(
-        "cursor-grok-4.6",
-        CursorModelCapability {
-            catalog_key: None,
-            evidence: "available-models",
-            window: 500_000.0,
-            max_window: None,
-            parameter_order: vec!["effort", "fast"],
-            default_context: None,
-            request_context: None,
-            levels: ladder(&["low", "medium", "high", "xhigh"], P),
-        },
-    );
-    m.insert(
-        "cursor-grok-4.5",
-        CursorModelCapability {
-            catalog_key: None,
-            evidence: "suffix-only",
-            window: 500_000.0,
-            max_window: None,
-            parameter_order: vec![],
-            default_context: None,
-            request_context: None,
-            levels: ladder(&["low", "medium", "high"], V),
-        },
-    );
-    m.insert(
-        "glm-5.2",
-        CursorModelCapability {
-            catalog_key: None,
-            evidence: "available-models",
-            window: 1_000_000.0,
-            max_window: None,
-            parameter_order: vec!["reasoning"],
-            default_context: None,
-            request_context: None,
-            levels: ladder(&["high", "max"], P),
-        },
-    );
-    m.insert(
-        "kimi-k3",
-        CursorModelCapability {
-            catalog_key: None,
-            evidence: "available-models",
-            window: 1_048_576.0,
-            max_window: None,
-            parameter_order: vec!["reasoning"],
-            default_context: None,
-            request_context: None,
-            levels: ladder(&["low", "high", "max"], P),
-        },
-    );
-    m.insert(
-        "composer-2.5",
-        CursorModelCapability {
-            catalog_key: None,
-            evidence: "available-models",
-            window: 200_000.0,
-            max_window: None,
-            parameter_order: vec!["fast"],
-            default_context: None,
-            request_context: None,
-            levels: BTreeMap::new(),
-        },
-    );
-    m.insert(
-        "claude-haiku-4-5",
-        CursorModelCapability {
-            catalog_key: None,
-            evidence: "available-models",
-            window: 200_000.0,
-            max_window: None,
-            parameter_order: vec!["thinking"],
-            default_context: None,
-            request_context: None,
-            levels: BTreeMap::new(),
-        },
-    );
-    m.insert(
-        "claude-4-sonnet",
-        CursorModelCapability {
-            catalog_key: None,
-            evidence: "available-models",
-            window: 200_000.0,
-            max_window: None,
-            parameter_order: vec!["thinking", "context"],
-            default_context: Some("200k".to_owned()),
-            request_context: None,
-            levels: BTreeMap::new(),
-        },
-    );
-    m.insert(
-        "claude-4.5-sonnet",
-        CursorModelCapability {
-            catalog_key: None,
-            evidence: "available-models",
-            window: 200_000.0,
-            max_window: None,
-            parameter_order: vec!["thinking", "context"],
-            default_context: Some("200k".to_owned()),
-            request_context: None,
-            levels: BTreeMap::new(),
-        },
-    );
-    m.insert(
-        "kimi-k2.7-code",
-        CursorModelCapability {
-            catalog_key: None,
-            evidence: "available-models",
-            window: 262_144.0,
-            max_window: None,
-            parameter_order: vec![],
-            default_context: None,
-            request_context: None,
-            levels: BTreeMap::new(),
-        },
-    );
-    m.insert(
-        "gemini-3-flash",
-        CursorModelCapability {
-            catalog_key: None,
-            evidence: "available-models",
-            window: 1_000_000.0,
-            max_window: None,
-            parameter_order: vec![],
-            default_context: None,
-            request_context: None,
-            levels: BTreeMap::new(),
-        },
-    );
-    m.insert(
-        "gemini-3.1-pro",
-        CursorModelCapability {
-            catalog_key: None,
-            evidence: "available-models",
-            window: 1_000_000.0,
-            max_window: None,
-            parameter_order: vec![],
-            default_context: None,
-            request_context: None,
-            levels: BTreeMap::new(),
-        },
-    );
-    m.insert(
-        "gemini-3.5-flash",
-        CursorModelCapability {
-            catalog_key: None,
-            evidence: "available-models",
-            window: 1_048_576.0,
-            max_window: None,
-            parameter_order: vec![],
-            default_context: None,
-            request_context: None,
-            levels: BTreeMap::new(),
-        },
-    );
-    m.insert(
-        "gpt-5-mini",
-        CursorModelCapability {
-            catalog_key: None,
-            evidence: "available-models",
-            window: 400_000.0,
-            max_window: None,
-            parameter_order: vec![],
-            default_context: None,
-            request_context: None,
-            levels: BTreeMap::new(),
-        },
-    );
-    m
-});
+pub use crate::cursor::capability_table::CURSOR_MODEL_CAPABILITIES;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CursorVariantAlias {
@@ -428,8 +69,8 @@ struct RawAliasData {
 }
 
 static ALIASES: LazyLock<BTreeMap<String, CursorVariantAlias>> = LazyLock::new(|| {
-    let raw: RawAliasData =
-        serde_json::from_str(include_str!("cursor-variant-aliases.json")).expect("cursor-variant-aliases.json");
+    let raw: RawAliasData = serde_json::from_str(include_str!("cursor-variant-aliases.json"))
+        .expect("cursor-variant-aliases.json");
     raw.aliases
         .into_iter()
         .map(|(id, entry)| {
@@ -447,7 +88,16 @@ static ALIASES: LazyLock<BTreeMap<String, CursorVariantAlias>> = LazyLock::new(|
         .collect()
 });
 
-const LEVEL_TOKENS: &[&str] = &["minimal", "low", "medium", "high", "extra-high", "xhigh", "max", "none"];
+const LEVEL_TOKENS: &[&str] = &[
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "extra-high",
+    "xhigh",
+    "max",
+    "none",
+];
 
 static THINKING_LEVEL_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(&format!(r"-thinking-({})$", LEVEL_TOKENS.join("|"))).expect("valid regex")
@@ -455,8 +105,9 @@ static THINKING_LEVEL_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
 static LEVEL_THINKING_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(&format!(r"-({})-thinking$", LEVEL_TOKENS.join("|"))).expect("valid regex")
 });
-static LEVEL_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(&format!(r"-({})$", LEVEL_TOKENS.join("|"))).expect("valid regex"));
+static LEVEL_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(&format!(r"-({})$", LEVEL_TOKENS.join("|"))).expect("valid regex")
+});
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CursorVariantParse {
@@ -508,7 +159,13 @@ pub fn parse_cursor_variant_id(original_id: &str) -> CursorVariantParse {
         (rest.clone(), None, None)
     };
 
-    CursorVariantParse { base_id, level, thinking, fast, original_id: original_id.to_owned() }
+    CursorVariantParse {
+        base_id,
+        level,
+        thinking,
+        fast,
+        original_id: original_id.to_owned(),
+    }
 }
 
 pub fn get_cursor_variant_alias(original_id: &str) -> Option<CursorVariantAlias> {
@@ -592,7 +249,10 @@ mod tests {
 
     #[test]
     fn resolves_a_variant_id_to_its_base_capability_with_the_same_window() {
-        assert_eq!(get_cursor_base_id_for_variant("kimi-k3-max"), Some("kimi-k3".to_owned()));
+        assert_eq!(
+            get_cursor_base_id_for_variant("kimi-k3-max"),
+            Some("kimi-k3".to_owned())
+        );
         assert_eq!(
             get_cursor_base_id_for_variant("claude-fable-5-thinking-xhigh"),
             Some("claude-fable-5".to_owned())
@@ -602,7 +262,10 @@ mod tests {
             Some("claude-opus-4-7".to_owned())
         );
         let base = get_cursor_base_id_for_variant("kimi-k3-max").expect("base");
-        assert_eq!(get_cursor_capability_for_base(&base).expect("cap").window, 1_048_576.0);
+        assert_eq!(
+            get_cursor_capability_for_base(&base).expect("cap").window,
+            1_048_576.0
+        );
     }
 
     #[test]
@@ -623,14 +286,15 @@ mod tests {
             }
         }
         let uncovered: Vec<String> = uncovered.into_iter().collect();
-        assert_eq!(uncovered, vec!["default".to_owned()]);
+        // `default` (Auto) gained its server-reported window in senpi#3620.
+        assert_eq!(uncovered, Vec::<String>::new());
     }
 
     #[test]
     fn marks_evidence_provenance_for_every_entry() {
         for (id, cap) in CURSOR_MODEL_CAPABILITIES.iter() {
             assert!(
-                ["available-models", "cli-live", "suffix-only"].contains(&cap.evidence),
+                ["available-models", "cli-live", "suffix-only", "served-checkpoint"].contains(&cap.evidence),
                 "{id} evidence"
             );
         }
@@ -684,8 +348,14 @@ mod tests {
         let ssot = window_ssot();
         let mut drift: Vec<String> = Vec::new();
         for (family, capability) in CURSOR_MODEL_CAPABILITIES.iter() {
-            let Some(expected) = expected_window(&ssot, family) else { continue };            if capability.window != expected {
-                drift.push(format!("{family}: committed {} != SSOT {expected}", capability.window));
+            let Some(expected) = expected_window(&ssot, family) else {
+                continue;
+            };
+            if capability.window != expected {
+                drift.push(format!(
+                    "{family}: committed {} != SSOT {expected}",
+                    capability.window
+                ));
             }
         }
         assert_eq!(drift, Vec::<String>::new());
@@ -695,7 +365,9 @@ mod tests {
     fn never_advertises_a_window_above_the_largest_context_option_cursor_offers() {
         let ssot = window_ssot();
         for (family, capability) in CURSOR_MODEL_CAPABILITIES.iter() {
-            let Some(options) = ssot.cursor_context_options_by_family.get(*family) else { continue };
+            let Some(options) = ssot.cursor_context_options_by_family.get(*family) else {
+                continue;
+            };
             if options.is_empty() {
                 continue;
             }
@@ -704,7 +376,10 @@ mod tests {
                 .filter_map(|option| ssot.cursor_context_enum.get(option))
                 .copied()
                 .fold(f64::NEG_INFINITY, f64::max);
-            assert!(capability.window <= cap, "{family} exceeds the context cursor offers it");
+            assert!(
+                capability.window <= cap,
+                "{family} exceeds the context cursor offers it"
+            );
         }
     }
 
@@ -715,7 +390,10 @@ mod tests {
             if expected_window(&ssot, family).is_some() {
                 continue;
             }
-            assert!(capability.window > 0.0, "{family} must carry a positive window");
+            assert!(
+                capability.window > 0.0,
+                "{family} must carry a positive window"
+            );
         }
     }
 
@@ -745,16 +423,26 @@ mod tests {
     #[test]
     fn keeps_genuinely_small_window_families_off_the_1m_promotion() {
         for family in ["claude-4.5-opus", "claude-haiku-4-5", "composer-2.5"] {
-            let capability = CURSOR_MODEL_CAPABILITIES.get(family).unwrap_or_else(|| panic!("missing capability for {family}"));
-            assert_eq!(capability.window, 200_000.0, "{family} must stay at its first-party 200000");
+            let capability = CURSOR_MODEL_CAPABILITIES
+                .get(family)
+                .unwrap_or_else(|| panic!("missing capability for {family}"));
+            assert_eq!(
+                capability.window, 200_000.0,
+                "{family} must stay at its first-party 200000"
+            );
         }
     }
 
     #[test]
     fn never_lets_a_family_advertise_more_than_its_own_max_window_when_one_is_declared() {
         for (family, capability) in CURSOR_MODEL_CAPABILITIES.iter() {
-            let Some(max_window) = capability.max_window else { continue };
-            assert!(capability.window <= max_window, "{family} window exceeds maxWindow");
+            let Some(max_window) = capability.max_window else {
+                continue;
+            };
+            assert!(
+                capability.window <= max_window,
+                "{family} window exceeds maxWindow"
+            );
         }
     }
 }

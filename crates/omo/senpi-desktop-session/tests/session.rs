@@ -50,7 +50,8 @@ fn live_stop_path() -> SessionSafety {
 }
 
 fn start_supervised(factory: impl BackendFactory) -> Session {
-    Session::start_supervised(factory, SessionTimeouts::default(), live_stop_path()).expect("session starts")
+    Session::start_supervised(factory, SessionTimeouts::default(), live_stop_path())
+        .expect("session starts")
 }
 
 fn capture_desktop() -> Op {
@@ -131,14 +132,25 @@ async fn capture_returns_a_frame_that_later_clicks_map_through() {
         .await
         .expect("opens");
     // When
-    let capture = session.submit(capture_desktop()).wait().await.expect("captures");
+    let capture = session
+        .submit(capture_desktop())
+        .wait()
+        .await
+        .expect("captures");
     // Then
     let Response::Capture(capture) = capture else {
         panic!("expected a capture, got {capture:?}");
     };
     assert_eq!((capture.source_width, capture.source_height), (4800, 1800));
-    assert!(capture.data.is_some_and(|data| data.starts_with("iVBORw0KGgo")));
-    assert_eq!(session.submit(click_desktop()).wait().await, Ok(Response::Unit));
+    assert!(
+        capture
+            .data
+            .is_some_and(|data| data.starts_with("iVBORw0KGgo"))
+    );
+    assert_eq!(
+        session.submit(click_desktop()).wait().await,
+        Ok(Response::Unit)
+    );
 }
 
 #[tokio::test]
@@ -150,7 +162,11 @@ async fn a_session_started_without_a_supervisor_refuses_input() {
         .wait()
         .await
         .expect("opens");
-    session.submit(capture_desktop()).wait().await.expect("captures");
+    session
+        .submit(capture_desktop())
+        .wait()
+        .await
+        .expect("captures");
     // When
     let clicked = session.submit(click_desktop()).wait().await;
     // Then
@@ -188,7 +204,11 @@ async fn an_abandoned_request_never_reaches_the_backend() {
         .wait()
         .await
         .expect("opens");
-    session.submit(capture_desktop()).wait().await.expect("captures");
+    session
+        .submit(capture_desktop())
+        .wait()
+        .await
+        .expect("captures");
     let slow = session.submit(Op::Windows);
     // When: the click's waiter gives up before the thread reaches it.
     drop(session.submit(click_desktop()));
@@ -200,13 +220,19 @@ async fn an_abandoned_request_never_reaches_the_backend() {
         .expect("barrier answers");
     // Then
     let sink = sinks.lock().last().cloned().expect("open built a backend");
-    assert!(!sink.ops().iter().any(|op| matches!(op, SinkOp::Pointer { .. })));
+    assert!(
+        !sink
+            .ops()
+            .iter()
+            .any(|op| matches!(op, SinkOp::Pointer { .. }))
+    );
 }
 
 #[tokio::test]
 async fn a_panicking_backend_fails_internal_and_the_session_keeps_serving() {
     // Given
-    let session = Session::start(PanickingFactory, SessionTimeouts::default()).expect("session starts");
+    let session =
+        Session::start(PanickingFactory, SessionTimeouts::default()).expect("session starts");
     session
         .open(DesktopSessionOptions::default())
         .wait()
@@ -276,7 +302,13 @@ impl Backend for PanicsOnDisplays {
     fn capture(&mut self, _: &Target, _: &CaptureCaps) -> CoreResult<(RgbaImage, FrameGeometry)> {
         unreachable!("capture is not exercised")
     }
-    fn pointer(&mut self, _: &Target, _: PointerEvent, _: &FrameGeometry, _: DeliveryMode) -> CoreResult<()> {
+    fn pointer(
+        &mut self,
+        _: &Target,
+        _: PointerEvent,
+        _: &FrameGeometry,
+        _: DeliveryMode,
+    ) -> CoreResult<()> {
         unreachable!("pointer is not exercised")
     }
     fn type_text(&mut self, _: &Target, _: &str, _: DeliveryMode) -> CoreResult<()> {

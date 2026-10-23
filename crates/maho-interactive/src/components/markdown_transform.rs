@@ -1,15 +1,19 @@
 //! Port of components/markdown-transform.ts.
-use std::rc::Rc;
-use std::sync::Arc;
 use crate::theme::{Theme, ThemeColor};
 use maho_tui::components::markdown::{MarkdownTheme, ThemeFn};
+use std::rc::Rc;
+use std::sync::Arc;
 
 pub type MarkdownRenderTransform = Rc<dyn Fn(&str, usize) -> String>;
 
 pub struct MarkdownComponent(pub maho_tui::components::markdown::Markdown);
 impl maho_tui::tui::Component for MarkdownComponent {
-    fn render(&mut self, width: usize) -> Vec<String> { self.0.render(width) }
-    fn invalidate(&mut self) { self.0.invalidate(); }
+    fn render(&mut self, width: usize) -> Vec<String> {
+        self.0.render(width)
+    }
+    fn invalidate(&mut self) {
+        self.0.invalidate();
+    }
 }
 
 /// A `Markdown` whose source is rewritten by transformers at render time.
@@ -35,7 +39,9 @@ impl TransformedMarkdown {
         transform: MarkdownRenderTransform,
     ) -> Self {
         Self {
-            markdown: maho_tui::components::markdown::Markdown::new(raw, padding_x, padding_y, theme, style, options),
+            markdown: maho_tui::components::markdown::Markdown::new(
+                raw, padding_x, padding_y, theme, style, options,
+            ),
             raw: raw.to_owned(),
             transform,
             padding_x,
@@ -73,14 +79,19 @@ impl maho_tui::tui::Component for TransformedMarkdown {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MessageType { User, Assistant, AssistantThinking }
+pub enum MessageType {
+    User,
+    Assistant,
+    AssistantThinking,
+}
 #[derive(Clone, Copy, Debug)]
 pub struct MarkdownTransformContext {
     pub message_type: MessageType,
     pub is_streaming: bool,
     pub available_width: usize,
 }
-pub type MarkdownTransformer = Rc<dyn Fn(&str, MarkdownTransformContext) -> Result<Option<String>, String>>;
+pub type MarkdownTransformer =
+    Rc<dyn Fn(&str, MarkdownTransformContext) -> Result<Option<String>, String>>;
 
 pub fn get_markdown_theme(theme: &Theme) -> MarkdownTheme {
     static NEXT_THEME_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(32000);
@@ -95,17 +106,46 @@ pub fn get_markdown_theme(theme: &Theme) -> MarkdownTheme {
     let highlight = theme.clone();
     MarkdownTheme {
         id: NEXT_THEME_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        heading: fg(ThemeColor::MdHeading), link: fg(ThemeColor::MdLink),
-        link_url: fg(ThemeColor::MdLinkUrl), code: fg(ThemeColor::MdCode),
-        code_block: fg(ThemeColor::MdCodeBlock), code_block_border: fg(ThemeColor::MdCodeBlockBorder),
-        quote: fg(ThemeColor::MdQuote), quote_border: fg(ThemeColor::MdQuoteBorder),
-        hr: fg(ThemeColor::MdHr), list_bullet: fg(ThemeColor::MdListBullet),
-        bold: Arc::new(move |text| bold.bold(text)), italic: Arc::new(move |text| italic.italic(text)),
+        heading: fg(ThemeColor::MdHeading),
+        link: fg(ThemeColor::MdLink),
+        link_url: fg(ThemeColor::MdLinkUrl),
+        code: fg(ThemeColor::MdCode),
+        code_block: fg(ThemeColor::MdCodeBlock),
+        code_block_border: fg(ThemeColor::MdCodeBlockBorder),
+        quote: fg(ThemeColor::MdQuote),
+        quote_border: fg(ThemeColor::MdQuoteBorder),
+        hr: fg(ThemeColor::MdHr),
+        list_bullet: fg(ThemeColor::MdListBullet),
+        bold: Arc::new(move |text| bold.bold(text)),
+        italic: Arc::new(move |text| italic.italic(text)),
         underline: Arc::new(move |text| underline.underline(text)),
         strikethrough: Arc::new(move |text| strike.strikethrough(text)),
-        highlight_code: Some(Arc::new(move |code, language| crate::theme::highlight_code(&highlight, code, language))),
+        highlight_code: Some(Arc::new(move |code, language| {
+            crate::theme::highlight_code(&highlight, code, language)
+        })),
         code_block_indent: None,
     }
+}
+
+/// senpi `getSharedMarkdownTheme`: one cached `MarkdownTheme` per active theme object, rebuilt when
+/// the theme changes, so render caches keyed on theme identity stay warm. `get_markdown_theme`
+/// still returns a fresh theme each call for callers that customize it.
+pub fn shared_markdown_theme(theme: &Theme) -> MarkdownTheme {
+    thread_local! {
+        static CACHE: std::cell::RefCell<Option<(usize, MarkdownTheme)>> = const { std::cell::RefCell::new(None) };
+    }
+    let identity = theme.identity();
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        match cache.as_ref() {
+            Some((cached, shared)) if *cached == identity => shared.clone(),
+            _ => {
+                let fresh = get_markdown_theme(theme);
+                *cache = Some((identity, fresh.clone()));
+                fresh
+            }
+        }
+    })
 }
 
 pub fn create_markdown_transform(
@@ -114,7 +154,11 @@ pub fn create_markdown_transform(
     transformers: Vec<MarkdownTransformer>,
 ) -> impl Fn(&str, usize) -> String {
     move |markdown, available_width| {
-        let context = MarkdownTransformContext { message_type, is_streaming, available_width };
+        let context = MarkdownTransformContext {
+            message_type,
+            is_streaming,
+            available_width,
+        };
         let mut transformed = markdown.to_owned();
         for transformer in &transformers {
             if let Ok(Some(next)) = transformer(&transformed, context) {

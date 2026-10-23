@@ -5,7 +5,7 @@ use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use super::{warn, AuditRecord};
+use super::{AuditRecord, warn};
 
 /// Rotate when the live file reaches this size.
 pub(crate) const ROTATE_BYTES: u64 = 50 * 1024 * 1024;
@@ -33,8 +33,8 @@ fn try_append(path: &Path, record: &AuditRecord, rotate_bytes: u64) -> io::Resul
         options.mode(0o600);
     }
     let mut file = options.open(path)?;
-    let line =
-        serde_json::to_string(record).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let line = serde_json::to_string(record)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     file.write_all(line.as_bytes())?;
     file.write_all(b"\n")?;
     Ok(())

@@ -8,8 +8,8 @@ use senpi_desktop_safety::{Chord, FakeClock, StopPathError, StopPathListener, Su
 use super::global_shortcuts::Control;
 use super::{GlobalShortcutsListener, STOP_SHORTCUT_ID, UNAVAILABLE};
 use crate::test_support::fake_eis::EisConfig;
-use crate::test_support::fake_portal::{fake_bus, FakeBus, Mode, Reply, Shot};
-use crate::test_support::{env_lock, HANG_GUARD};
+use crate::test_support::fake_portal::{FakeBus, Mode, Reply, Shot, fake_bus};
+use crate::test_support::{HANG_GUARD, env_lock};
 
 const CHORD: &str = "ctrl+alt+shift+escape";
 
@@ -18,7 +18,10 @@ fn portal(global_shortcuts: Reply) -> &'static FakeBus {
         remote_desktop: Reply::Absent,
         global_shortcuts,
         screenshot: Shot::Absent,
-        eis: EisConfig { keymap: "", group: 0 },
+        eis: EisConfig {
+            keymap: "",
+            group: 0,
+        },
     })
 }
 
@@ -26,7 +29,10 @@ fn supervisor() -> Arc<Supervisor> {
     Arc::new(Supervisor::new(Arc::new(FakeClock::new(0))))
 }
 
-fn start(listener: &mut GlobalShortcutsListener, supervisor: &Arc<Supervisor>) -> Result<(), StopPathError> {
+fn start(
+    listener: &mut GlobalShortcutsListener,
+    supervisor: &Arc<Supervisor>,
+) -> Result<(), StopPathError> {
     listener.start(&Chord::parse(CHORD).expect("chord"), Arc::clone(supervisor))
 }
 
@@ -157,5 +163,8 @@ fn an_invalid_chord_is_refused_before_touching_the_portal() {
 
     let started = listener.start(&Chord::parse("ctrl+alt").expect("chord"), supervisor);
 
-    assert_eq!(started, Err(StopPathError::InvalidChord("ctrl+alt".to_owned())));
+    assert_eq!(
+        started,
+        Err(StopPathError::InvalidChord("ctrl+alt".to_owned()))
+    );
 }

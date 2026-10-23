@@ -187,15 +187,23 @@ impl FooterComponent {
             .filter(|m| !m.is_empty())
             .unwrap_or("no-model");
         let fast = if s.fast_mode { "⚡ " } else { "" };
-        let level = s.thinking_level.as_deref().filter(|s| !s.is_empty()).unwrap_or("off");
+        let level = s
+            .thinking_level
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("off");
         let model_runs = || {
             let mut runs = Vec::new();
-            if !fast.is_empty() { runs.push((fast.to_owned(), ThemeColor::Warning)); }
+            if !fast.is_empty() {
+                runs.push((fast.to_owned(), ThemeColor::Warning));
+            }
             runs.push((model.to_owned(), ThemeColor::Accent));
             runs
         };
         let mut compact_runs = model_runs();
-        if s.reasoning { compact_runs.push((format!(":{level}"), ThemeColor::Dim)); }
+        if s.reasoning {
+            compact_runs.push((format!(":{level}"), ThemeColor::Dim));
+        }
         let color_runs = |runs: &[(&str, ThemeColor)], plain: &str| {
             let text = maho_tui::utils::strip_terminal_sequences(plain);
             let mut remaining = text.as_str();
@@ -227,11 +235,27 @@ impl FooterComponent {
         let mut label_runs = model_runs();
         label_runs.push((" • ".to_owned(), ThemeColor::BorderMuted));
         label_runs.push((format!("effort {level}"), ThemeColor::Muted));
-        let provider = if provider_prefix.is_empty() { Vec::new() } else { vec![(provider_prefix.clone(), ThemeColor::Muted)] };
+        let provider = if provider_prefix.is_empty() {
+            Vec::new()
+        } else {
+            vec![(provider_prefix.clone(), ThemeColor::Muted)]
+        };
         let make_form = |runs: Vec<(String, ThemeColor)>, fit| {
-            let plain = runs.iter().map(|(text, _)| text.as_str()).collect::<String>();
-            let refs = runs.iter().map(|(text, color)| (text.as_str(), *color)).collect::<Vec<_>>();
-            FooterRightForm { segment: FooterSegment { colored: color_runs(&refs, &plain), plain }, fits_with: fit }
+            let plain = runs
+                .iter()
+                .map(|(text, _)| text.as_str())
+                .collect::<String>();
+            let refs = runs
+                .iter()
+                .map(|(text, color)| (text.as_str(), *color))
+                .collect::<Vec<_>>();
+            FooterRightForm {
+                segment: FooterSegment {
+                    colored: color_runs(&refs, &plain),
+                    plain,
+                },
+                fits_with: fit,
+            }
         };
         let mut forms = Vec::new();
         if s.reasoning {
@@ -298,9 +322,14 @@ impl FooterComponent {
                 None,
                 None,
             ),
-            FooterLayout::LeftElided { left_plain } => {
-                (0, false, right_labels.forms.len() - 1, None, Some(left_plain), None)
-            }
+            FooterLayout::LeftElided { left_plain } => (
+                0,
+                false,
+                right_labels.forms.len() - 1,
+                None,
+                Some(left_plain),
+                None,
+            ),
             FooterLayout::RightTruncated { right_plain } => {
                 (0, false, 0, None, None, Some(right_plain))
             }
@@ -336,7 +365,13 @@ impl FooterComponent {
         let right = if let Some(p) = right_plain {
             FooterSegment {
                 plain: p.clone(),
-                colored: color_runs(&compact_runs.iter().map(|(text, color)| (text.as_str(), *color)).collect::<Vec<_>>(), p),
+                colored: color_runs(
+                    &compact_runs
+                        .iter()
+                        .map(|(text, color)| (text.as_str(), *color))
+                        .collect::<Vec<_>>(),
+                    p,
+                ),
             }
         } else {
             right_labels
@@ -344,7 +379,12 @@ impl FooterComponent {
                 .get(right_form)
                 .or_else(|| right_labels.forms.last())
                 .map(|form| form.segment.clone())
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "footer right-label ladder is empty"))?
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "footer right-label ladder is empty",
+                    )
+                })?
         };
         let padding = " ".repeat(width.saturating_sub(left_width + visible_width(&right.plain)));
         let mut lines = vec![format!("{left}{padding}{}", right.colored)];
@@ -375,9 +415,9 @@ pub fn account_footer_suffix(
     credential: Option<&maho_ai::auth::pool::slots::PooledCredential>,
     session_id: &str,
 ) -> String {
-    use maho_ai::auth::pool::slots::{account_label, list_slots};
+    use maho_ai::auth::pool::slots::account_label;
     use sha2::{Digest, Sha256};
-    let slots = list_slots(credential);
+    let slots = credential.map_or_else(Vec::new, maho_ai::auth::pool::kinds::slots_of_own_kind);
     if slots.len() < 2 {
         return String::new();
     }

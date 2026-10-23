@@ -16,8 +16,8 @@ use senpi_desktop_core::types::{
     CaptureCaps, DesktopCapabilities, DesktopDisplay, DesktopWindow, DisplaySelector, Target,
 };
 
-use crate::capture::layout::EisRegion;
 use crate::capture::PortalCapture;
+use crate::capture::layout::EisRegion;
 use crate::input::Libei;
 use crate::portal::{portal_runtime, remote_desktop, token_cleanup};
 
@@ -84,7 +84,9 @@ impl WaylandBackend {
         match &mut self.input {
             Input::Connected(libei) => Ok(libei),
             Input::Failed(error) => Err(error.clone()),
-            Input::Untried => Err(DesktopError::input_failed(remote_desktop::INPUT_PATH_REQUIRED)),
+            Input::Untried => Err(DesktopError::input_failed(
+                remote_desktop::INPUT_PATH_REQUIRED,
+            )),
         }
     }
 
@@ -148,16 +150,22 @@ impl Backend for WaylandBackend {
     /// Reads the layout of an already connected libei session only; capture
     /// never opens an input session. A layout that cannot be read leaves the
     /// geometry unproven, so the frame refuses coordinate input.
-    fn capture(&mut self, target: &Target, _caps: &CaptureCaps) -> CoreResult<(RgbaImage, FrameGeometry)> {
+    fn capture(
+        &mut self,
+        target: &Target,
+        _caps: &CaptureCaps,
+    ) -> CoreResult<(RgbaImage, FrameGeometry)> {
         let layout = match &mut self.input {
             Input::Connected(libei) => libei.regions().ok(),
             Input::Untried | Input::Failed(_) => None,
         };
         let ax = &mut self.ax;
-        let captured = self.capture.capture(target, layout.as_deref(), || match ax {
-            Ok(ax) => ax.windows(),
-            Err(error) => Err(error.clone()),
-        })?;
+        let captured = self
+            .capture
+            .capture(target, layout.as_deref(), || match ax {
+                Ok(ax) => ax.windows(),
+                Err(error) => Err(error.clone()),
+            })?;
         self.frame_layout = layout.filter(|_| self.capture.eis_derived);
         Ok(captured)
     }
@@ -180,7 +188,8 @@ impl Backend for WaylandBackend {
     }
 
     fn type_text(&mut self, target: &Target, text: &str, _mode: DeliveryMode) -> CoreResult<()> {
-        self.prepare_input(target, "keyboard input")?.type_text(text)
+        self.prepare_input(target, "keyboard input")?
+            .type_text(text)
     }
 
     fn clipboard_read(&mut self) -> CoreResult<String> {
@@ -199,11 +208,18 @@ impl Backend for WaylandBackend {
         check_stop: &dyn Fn() -> CoreResult<()>,
         delivered: &mut dyn FnMut(),
     ) -> CoreResult<()> {
-        self.prepare_input(target, "keyboard input")?.type_text_interruptible(text, check_stop, delivered)
+        self.prepare_input(target, "keyboard input")?
+            .type_text_interruptible(text, check_stop, delivered)
     }
 
-    fn key_chord(&mut self, target: &Target, keys: &[KeyName], _mode: DeliveryMode) -> CoreResult<()> {
-        self.prepare_input(target, "keyboard input")?.key_chord(keys)
+    fn key_chord(
+        &mut self,
+        target: &Target,
+        keys: &[KeyName],
+        _mode: DeliveryMode,
+    ) -> CoreResult<()> {
+        self.prepare_input(target, "keyboard input")?
+            .key_chord(keys)
     }
 
     fn raise_window(&mut self, id: &str) -> CoreResult<()> {

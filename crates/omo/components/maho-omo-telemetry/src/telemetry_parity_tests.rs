@@ -166,6 +166,7 @@ async fn live_opt_out_gates_feature_and_summary_emissions() {
             reason: SessionReason::Startup,
             initial_model_provenance: None,
             previous_session_file: None,
+            attended: None,
         }),
         &ctx,
     )

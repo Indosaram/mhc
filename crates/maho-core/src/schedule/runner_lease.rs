@@ -42,10 +42,10 @@ pub struct LiveRunner {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Holder {
-    pid: u32,
-    boot_at_ms: u64,
-    process_started_at_ms: u64,
+pub(crate) struct Holder {
+    pub(crate) pid: u32,
+    pub(crate) boot_at_ms: u64,
+    pub(crate) process_started_at_ms: u64,
 }
 
 fn native_identity() -> std::result::Result<(u64, u64), String> {
@@ -104,39 +104,114 @@ fn holder_records() -> &'static Mutex<HashMap<PathBuf, Weak<HolderRecord>>> {
 }
 impl Drop for HolderRecord {
     fn drop(&mut self) {
-        let _records = holder_records().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _records = holder_records()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let result = (|| -> Result<()> {
             if read_lease_text(&self.path)?.as_deref() == Some(self.mine.as_str()) {
                 unlink_if_present(&self.path)?;
             }
             Ok(())
         })();
-        if let Err(error) = result { eprintln!("cannot release session holder {}: {error}", self.path.display()); }
+        if let Err(error) = result {
+            eprintln!(
+                "cannot release session holder {}: {error}",
+                self.path.display()
+            );
+        }
     }
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct SessionHold { _record: Arc<HolderRecord> }
-
-pub(crate) fn hold_session_file(session_file: &Path, session_id: &str, cwd: &str, expect_existing: bool) -> Result<SessionHold> {
-    let (boot, start) = native_identity().map_err(ScheduleError::Invalid)?;
-    let now = u64::try_from(std::time::SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| ScheduleError::Invalid(error.to_string()))?.as_millis()).map_err(|error| ScheduleError::Invalid(error.to_string()))?;
-    hold_session_file_with_identity(session_file, session_id, cwd, expect_existing,
-        Holder { pid: std::process::id(), boot_at_ms: boot, process_started_at_ms: start }, now)
+pub(crate) struct SessionHold {
+    _record: Arc<HolderRecord>,
 }
 
-fn hold_session_file_with_identity(session_file: &Path, session_id: &str, cwd: &str, expect_existing: bool, identity: Holder, now: u64) -> Result<SessionHold> {
+/// The host endpoint a holder record names (senpi `SessionHolderEndpoint`), so a foreign process can
+/// tell which host generation holds the session.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionHolderEndpoint {
+    pub host_instance: Option<String>,
+    pub host_socket: Option<String>,
+    pub host_daemon_dir: Option<String>,
+}
+
+pub(crate) fn hold_session_file(
+    session_file: &Path,
+    session_id: &str,
+    cwd: &str,
+    expect_existing: bool,
+) -> Result<SessionHold> {
+    hold_session_file_with_endpoint(session_file, session_id, cwd, expect_existing, None)
+}
+
+pub(crate) fn hold_session_file_with_endpoint(
+    session_file: &Path,
+    session_id: &str,
+    cwd: &str,
+    expect_existing: bool,
+    endpoint: Option<&SessionHolderEndpoint>,
+) -> Result<SessionHold> {
+    let (boot, start) = native_identity().map_err(ScheduleError::Invalid)?;
+    let now = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| ScheduleError::Invalid(error.to_string()))?
+            .as_millis(),
+    )
+    .map_err(|error| ScheduleError::Invalid(error.to_string()))?;
+    hold_session_file_with_identity(
+        session_file,
+        session_id,
+        cwd,
+        expect_existing,
+        Holder {
+            pid: std::process::id(),
+            boot_at_ms: boot,
+            process_started_at_ms: start,
+        },
+        now,
+        endpoint,
+    )
+}
+
+fn hold_session_file_with_identity(
+    session_file: &Path,
+    session_id: &str,
+    cwd: &str,
+    expect_existing: bool,
+    identity: Holder,
+    now: u64,
+    endpoint: Option<&SessionHolderEndpoint>,
+) -> Result<SessionHold> {
     let directory = session_holders_dir(session_file, session_id)?;
     let path = directory.join(format!("{}.json", identity.pid));
-    let mut records = holder_records().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut records = holder_records()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     records.retain(|_, record| record.strong_count() > 0);
     let record = match records.get(&path).and_then(Weak::upgrade) {
         Some(record) => record,
         None => {
             ensure_dir(&directory)?;
-            let mine = serde_json::to_string(&serde_json::json!({"pid":identity.pid,"bootAtMs":identity.boot_at_ms,"processStartedAtMs":identity.process_started_at_ms,"cwd":cwd,"token":uuid::Uuid::new_v4().to_string()}))?;
+            let mut record_json = serde_json::json!({"pid":identity.pid,"bootAtMs":identity.boot_at_ms,"processStartedAtMs":identity.process_started_at_ms,"cwd":cwd,"token":uuid::Uuid::new_v4().to_string()});
+            if let (Some(endpoint), Some(object)) = (endpoint, record_json.as_object_mut()) {
+                for (key, value) in [
+                    ("host_instance", &endpoint.host_instance),
+                    ("host_socket", &endpoint.host_socket),
+                    ("host_daemon_dir", &endpoint.host_daemon_dir),
+                ] {
+                    if let Some(value) = value {
+                        object.insert(key.to_owned(), serde_json::Value::String(value.clone()));
+                    }
+                }
+            }
+            let mine = serde_json::to_string(&record_json)?;
             write_atomic(&path, &mine)?;
-            let record = Arc::new(HolderRecord { path: path.clone(), mine });
+            let record = Arc::new(HolderRecord {
+                path: path.clone(),
+                mine,
+            });
             records.insert(path, Arc::downgrade(&record));
             record
         }
@@ -145,13 +220,19 @@ fn hold_session_file_with_identity(session_file: &Path, session_id: &str, cwd: &
     let hold = SessionHold { _record: record };
     if let Some(raw) = read_lease_text(&directory.join("move.lock"))? {
         let age = lock_age(&directory.join("move.lock"), now)?;
-        let pid = serde_json::from_str::<serde_json::Value>(&raw).ok().and_then(|value| value["pid"].as_u64()).and_then(|pid| u32::try_from(pid).ok());
+        let pid = serde_json::from_str::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|value| value["pid"].as_u64())
+            .and_then(|pid| u32::try_from(pid).ok());
         if age <= 30_000 && pid.is_none_or(native_pid_alive) {
             return Err(ScheduleError::Invalid("session is being moved".into()));
         }
     }
     if expect_existing && !session_file.try_exists()? {
-        return Err(ScheduleError::Invalid(format!("session file was moved: {}", session_file.display())));
+        return Err(ScheduleError::Invalid(format!(
+            "session file was moved: {}",
+            session_file.display()
+        )));
     }
     Ok(hold)
 }
@@ -159,7 +240,9 @@ fn hold_session_file_with_identity(session_file: &Path, session_id: &str, cwd: &
 fn native_pid_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        let Ok(pid) = i32::try_from(pid) else { return false };
+        let Ok(pid) = i32::try_from(pid) else {
+            return false;
+        };
         match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
             Ok(()) | Err(nix::errno::Errno::EPERM) => true,
             Err(nix::errno::Errno::ESRCH) => false,
@@ -167,19 +250,30 @@ fn native_pid_alive(pid: u32) -> bool {
         }
     }
     #[cfg(windows)]
-    { std::process::Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &format!("if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{exit 0}} else {{exit 1}}")]).status().map_or(true, |status| status.success()) }
+    {
+        std::process::Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &format!("if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{exit 0}} else {{exit 1}}")]).status().map_or(true, |status| status.success())
+    }
     #[cfg(not(any(unix, windows)))]
-    { let _ = pid; true }
+    {
+        let _ = pid;
+        true
+    }
 }
 
-fn session_holders_dir(session_file: &Path, session_id: &str) -> Result<PathBuf> {
+pub(crate) fn session_holders_dir(session_file: &Path, session_id: &str) -> Result<PathBuf> {
     let resolved = super::moved_paths::resolve(&session_file.to_string_lossy());
-    let parent = Path::new(&resolved).parent().ok_or_else(|| ScheduleError::Invalid("session file has no parent".into()))?;
-    Ok(parent.join("session-holders").join(encode_session_id(session_id)))
+    let parent = Path::new(&resolved)
+        .parent()
+        .ok_or_else(|| ScheduleError::Invalid("session file has no parent".into()))?;
+    Ok(parent
+        .join("session-holders")
+        .join(encode_session_id(session_id)))
 }
-enum LockState {
+pub(crate) enum LockState {
     Free,
-    Held(Option<Holder>),
+    /// `unproven`: the holder pid is alive but its start time could not be read, so a caller with
+    /// positive evidence that the holder's host generation ended may still reclaim it.
+    Held(Option<Holder>, bool),
     Stale(String),
 }
 pub fn read_lease_text(path: &Path) -> Result<Option<String>> {
@@ -235,7 +329,10 @@ fn lock_age(path: &Path, now: u64) -> Result<u64> {
         Err(error) => Err(error.into()),
     }
 }
-async fn reclaim_lock_state(path: &Path, probes: &dyn ProcessProbes) -> Result<LockState> {
+pub(crate) async fn reclaim_lock_state(
+    path: &Path,
+    probes: &dyn ProcessProbes,
+) -> Result<LockState> {
     let Some(raw) = read_lease_text(path)? else {
         return Ok(LockState::Free);
     };
@@ -245,7 +342,7 @@ async fn reclaim_lock_state(path: &Path, probes: &dyn ProcessProbes) -> Result<L
             return Ok(if lock_age(path, probes.now())? > 30_000 {
                 LockState::Stale(raw)
             } else {
-                LockState::Held(None)
+                LockState::Held(None, false)
             });
         }
     };
@@ -256,7 +353,7 @@ async fn reclaim_lock_state(path: &Path, probes: &dyn ProcessProbes) -> Result<L
     if holder.pid == own.pid {
         return Ok(
             if same_process_start(holder.process_started_at_ms, own.process_started_at_ms) {
-                LockState::Held(Some(holder))
+                LockState::Held(Some(holder), false)
             } else {
                 LockState::Stale(raw)
             },
@@ -269,10 +366,11 @@ async fn reclaim_lock_state(path: &Path, probes: &dyn ProcessProbes) -> Result<L
         Some(observed) if !same_process_start(holder.process_started_at_ms, observed) => {
             Ok(LockState::Stale(raw))
         }
-        _ => Ok(LockState::Held(Some(holder))),
+        None => Ok(LockState::Held(Some(holder), true)),
+        Some(_) => Ok(LockState::Held(Some(holder), false)),
     }
 }
-fn break_stale_lock(path: &Path, inspected: &str) -> Result<()> {
+pub(crate) fn break_stale_lock(path: &Path, inspected: &str) -> Result<()> {
     let aside = temp_path(path, "broken");
     match fs::rename(path, &aside) {
         Ok(()) => {}
@@ -320,7 +418,7 @@ pub async fn live_runners(dir: &Path, probes: &dyn ProcessProbes) -> Result<Vec<
         let path = runners_dir(dir).join(name);
         match reclaim_lock_state(&path, probes).await? {
             LockState::Stale(raw) => break_stale_lock(&path, &raw)?,
-            LockState::Held(Some(holder)) => {
+            LockState::Held(Some(holder), _) => {
                 if let Some(raw) = read_lease_text(&path)?
                     && let Ok(mut runner) = serde_json::from_str::<LiveRunner>(&raw)
                 {
@@ -329,7 +427,7 @@ pub async fn live_runners(dir: &Path, probes: &dyn ProcessProbes) -> Result<Vec<
                     runners.push(runner);
                 }
             }
-            LockState::Free | LockState::Held(None) => {}
+            LockState::Free | LockState::Held(None, _) => {}
         }
     }
     Ok(runners)
@@ -459,7 +557,7 @@ pub async fn acquire_session_delivery_lock(
             Err(error) => return Err(error),
         }
         match reclaim_lock_state(&path, probes).await? {
-            LockState::Held(holder) => {
+            LockState::Held(holder, _) => {
                 return Ok(SessionDeliveryLock::Held {
                     held_by_pid: holder.map(|holder| holder.pid),
                 });
@@ -480,28 +578,44 @@ pub async fn acquire_session_delivery_lock(
     Ok(SessionDeliveryLock::Held { held_by_pid: None })
 }
 
+/// Lets plain `ProcessProbes` serve the holder-record reader (no host-generation evidence).
+struct PlainHolderProbes<'a>(&'a dyn ProcessProbes);
+
+#[async_trait::async_trait]
+impl ProcessProbes for PlainHolderProbes<'_> {
+    fn own_identity(&self) -> RunnerIdentity {
+        self.0.own_identity()
+    }
+    fn boot_at_ms(&self) -> u64 {
+        self.0.boot_at_ms()
+    }
+    fn now(&self) -> u64 {
+        self.0.now()
+    }
+    fn pid_alive(&self, pid: u32) -> Result<bool> {
+        self.0.pid_alive(pid)
+    }
+    fn delivery_group_alive(&self, pid: u32) -> Result<bool> {
+        self.0.delivery_group_alive(pid)
+    }
+    async fn process_start_ms(&self, pid: u32) -> Result<Option<u64>> {
+        self.0.process_start_ms(pid).await
+    }
+}
+impl crate::session_holder_records::SessionHolderProbes for PlainHolderProbes<'_> {}
+
 pub async fn live_session_holder_pids(
     session_file: &Path,
     session_id: &str,
     probes: &dyn ProcessProbes,
 ) -> Result<Vec<u32>> {
-    let directory = session_holders_dir(session_file, session_id)?;
-    let mut holders = Vec::new();
-    for name in names(&directory)? {
-        if !name
-            .strip_suffix(".json")
-            .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()))
-        {
-            continue;
-        }
-        let path = directory.join(name);
-        match reclaim_lock_state(&path, probes).await? {
-            LockState::Held(Some(holder)) => holders.push(holder.pid),
-            LockState::Stale(raw) => break_stale_lock(&path, &raw)?,
-            LockState::Free | LockState::Held(None) => {}
-        }
-    }
-    Ok(holders)
+    let holders = crate::session_holder_records::live_session_holders(
+        session_file,
+        session_id,
+        &PlainHolderProbes(probes),
+    )
+    .await?;
+    Ok(holders.into_iter().map(|holder| holder.pid).collect())
 }
 
 #[cfg(test)]
@@ -511,28 +625,58 @@ mod holder_tests {
     struct Probes;
     #[async_trait::async_trait]
     impl ProcessProbes for Probes {
-        fn own_identity(&self) -> RunnerIdentity { RunnerIdentity { pid: 101, process_started_at_ms: 1_000_000 } }
-        fn boot_at_ms(&self) -> u64 { 100_000 }
-        fn now(&self) -> u64 { 2_000_000 }
-        fn pid_alive(&self, pid: u32) -> Result<bool> { Ok(pid == 101) }
-        fn delivery_group_alive(&self, _: u32) -> Result<bool> { Ok(false) }
-        async fn process_start_ms(&self, pid: u32) -> Result<Option<u64>> { Ok((pid == 101).then_some(1_000_000)) }
+        fn own_identity(&self) -> RunnerIdentity {
+            RunnerIdentity {
+                pid: 101,
+                process_started_at_ms: 1_000_000,
+            }
+        }
+        fn boot_at_ms(&self) -> u64 {
+            100_000
+        }
+        fn now(&self) -> u64 {
+            2_000_000
+        }
+        fn pid_alive(&self, pid: u32) -> Result<bool> {
+            Ok(pid == 101)
+        }
+        fn delivery_group_alive(&self, _: u32) -> Result<bool> {
+            Ok(false)
+        }
+        async fn process_start_ms(&self, pid: u32) -> Result<Option<u64>> {
+            Ok((pid == 101).then_some(1_000_000))
+        }
     }
-    fn identity() -> Holder { Holder { pid: 101, boot_at_ms: 100_000, process_started_at_ms: 1_000_000 } }
+    fn identity() -> Holder {
+        Holder {
+            pid: 101,
+            boot_at_ms: 100_000,
+            process_started_at_ms: 1_000_000,
+        }
+    }
 
     #[tokio::test]
     async fn holder_remains_until_last_same_process_owner_releases() -> Result<()> {
         // Given
         let dir = tempfile::tempdir()?;
         let file = dir.path().join("session.jsonl");
-        let first = hold_session_file_with_identity(&file, "session", "/work", false, identity(), 0)?;
-        let second = hold_session_file_with_identity(&file, "session", "/work", false, identity(), 0)?;
+        let first =
+            hold_session_file_with_identity(&file, "session", "/work", false, identity(), 0, None)?;
+        let second =
+            hold_session_file_with_identity(&file, "session", "/work", false, identity(), 0, None)?;
         // When
         drop(first);
         // Then
-        assert_eq!(live_session_holder_pids(&file, "session", &Probes).await?, vec![101]);
+        assert_eq!(
+            live_session_holder_pids(&file, "session", &Probes).await?,
+            vec![101]
+        );
         drop(second);
-        assert!(live_session_holder_pids(&file, "session", &Probes).await?.is_empty());
+        assert!(
+            live_session_holder_pids(&file, "session", &Probes)
+                .await?
+                .is_empty()
+        );
         Ok(())
     }
 
@@ -542,7 +686,8 @@ mod holder_tests {
         let dir = tempfile::tempdir()?;
         let file = dir.path().join("missing.jsonl");
         // When
-        let result = hold_session_file_with_identity(&file, "session", "/work", true, identity(), 0);
+        let result =
+            hold_session_file_with_identity(&file, "session", "/work", true, identity(), 0, None);
         // Then
         assert!(result.is_err());
         assert!(names(&session_holders_dir(&file, "session")?)?.is_empty());
@@ -556,9 +701,13 @@ mod holder_tests {
         let file = dir.path().join("session.jsonl");
         let holders = session_holders_dir(&file, "session")?;
         ensure_dir(&holders)?;
-        write_atomic(&holders.join("move.lock"), &serde_json::json!({"pid": std::process::id()}).to_string())?;
+        write_atomic(
+            &holders.join("move.lock"),
+            &serde_json::json!({"pid": std::process::id()}).to_string(),
+        )?;
         // When
-        let result = hold_session_file_with_identity(&file, "session", "/work", false, identity(), 0);
+        let result =
+            hold_session_file_with_identity(&file, "session", "/work", false, identity(), 0, None);
         // Then
         assert!(result.is_err());
         assert!(!holders.join("101.json").try_exists()?);

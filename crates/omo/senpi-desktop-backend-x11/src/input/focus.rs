@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use x11rb::protocol::xproto::Window;
 
-use super::server::InputServer;
 use super::X11Input;
+use super::server::InputServer;
 
 /// How long the window manager gets to honour an activation request.
 const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(1);
@@ -78,7 +78,10 @@ impl<S: InputServer> X11Input<S> {
     }
 
     fn focus_confirmed(&self, window: Window, tracks_active: bool) -> CoreResult<bool> {
-        Ok((!tracks_active || self.active_window() == Some(window)) && self.focus_within(window)?)
+        Ok(
+            (!tracks_active || self.active_window() == Some(window))
+                && self.focus_within(window)?,
+        )
     }
 
     fn focus_within(&self, window: Window) -> CoreResult<bool> {

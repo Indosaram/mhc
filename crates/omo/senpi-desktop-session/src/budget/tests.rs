@@ -6,7 +6,7 @@ use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{CaptureCaps, CaptureMode};
 
 use super::encode::format_bytes;
-use super::{plan_screenshot, Budget, Delivery, ScreenshotResult};
+use super::{Budget, Delivery, ScreenshotResult, plan_screenshot};
 
 /// Deterministic per-pixel noise: PNG cannot compress it, JPEG q70 can.
 fn noise(width: u32, height: u32) -> RgbaImage {
@@ -60,13 +60,21 @@ fn assert_dimensions(cases: Vec<DimensionCase>) {
     for (name, source, session, expected) in cases {
         let source_size = source.dimensions();
         let result = plan(source, &session, dir.path());
-        assert_eq!((result.width, result.height), expected, "{name}: capped size");
+        assert_eq!(
+            (result.width, result.height),
+            expected,
+            "{name}: capped size"
+        );
         assert_eq!(
             (result.source_width, result.source_height),
             source_size,
             "{name}: source size"
         );
-        assert_eq!(result.delivery.mode(), CaptureMode::InlinePng, "{name}: mode");
+        assert_eq!(
+            result.delivery.mode(),
+            CaptureMode::InlinePng,
+            "{name}: mode"
+        );
     }
 }
 
@@ -113,7 +121,10 @@ fn artifact_only() {
     assert_eq!(path.parent(), Some(dir.path()));
     let saved = image::open(path).expect("artifact is a PNG");
     assert_eq!((saved.width(), saved.height()), (1600, 1200));
-    assert_eq!((result.width, result.height, result.scale()), (800, 600, 0.5));
+    assert_eq!(
+        (result.width, result.height, result.scale()),
+        (800, 600, 0.5)
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -134,7 +145,12 @@ fn coordinate_safe_caps_1280x896() {
             caps(None, None, true),
             (1280, 800),
         ),
-        ("portrait", solid(1600, 2560), caps(None, None, true), (560, 896)),
+        (
+            "portrait",
+            solid(1600, 2560),
+            caps(None, None, true),
+            (560, 896),
+        ),
         (
             "host-tighter",
             solid(2560, 1600),
@@ -187,8 +203,12 @@ fn a_call_can_tighten_but_never_loosen_the_session_caps() {
     };
     // When
     let budget = Budget::new(&session, Some(&loosening), PathBuf::new()).expect("valid caps");
-    let tightening =
-        Budget::new(&session, Some(&caps(Some(640), None, false)), PathBuf::new()).expect("valid");
+    let tightening = Budget::new(
+        &session,
+        Some(&caps(Some(640), None, false)),
+        PathBuf::new(),
+    )
+    .expect("valid");
     // Then
     let resolved = |budget: &Budget| {
         (
@@ -205,7 +225,11 @@ fn a_call_can_tighten_but_never_loosen_the_session_caps() {
 fn a_zero_byte_budget_is_invalid_target() {
     // Given / When
     let from_session = Budget::new(&with_bytes(0), None, PathBuf::new());
-    let from_call = Budget::new(&CaptureCaps::default(), Some(&with_bytes(0)), PathBuf::new());
+    let from_call = Budget::new(
+        &CaptureCaps::default(),
+        Some(&with_bytes(0)),
+        PathBuf::new(),
+    );
     // Then
     for budget in [from_session, from_call] {
         assert_eq!(

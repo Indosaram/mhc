@@ -18,6 +18,7 @@ team-core = { package = "maho-team-core", path = "../../team-core" }
 regex = "=1.12.3"
 utils = { package = "maho-utils", path = "../../utils" }
 maho-omo-lsp = { path = "../maho-omo-lsp" }
+maho-omo-git-master = { path = "../maho-omo-git-master" }
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 
 [dev-dependencies]

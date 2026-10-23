@@ -199,23 +199,21 @@ pub async fn create_agent_session(
         .agent_dir
         .take()
         .unwrap_or_else(crate::config::get_agent_dir);
-    let runtime = match options
-        .model_runtime
-        .take()
-        .or_else(|| {
-            options
-                .model_registry
-                .as_ref()
-                .map(|registry| registry.model_runtime.clone())
-        }) {
+    let runtime = match options.model_runtime.take().or_else(|| {
+        options
+            .model_registry
+            .as_ref()
+            .map(|registry| registry.model_runtime.clone())
+    }) {
         Some(runtime) => runtime,
         None => ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
-                credentials: options.auth_storage.take(),
-                models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
-                auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")),
-                providers: None,
-                ..Default::default()
-            }).map_err(|error| error.to_string())?,
+            credentials: options.auth_storage.take(),
+            models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
+            auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")),
+            providers: None,
+            ..Default::default()
+        })
+        .map_err(|error| error.to_string())?,
     };
     let registry = options
         .model_registry
@@ -527,6 +525,7 @@ pub async fn create_agent_session(
                         reason: maho_ext_api::SessionReason::Startup,
                         initial_model_provenance: None,
                         previous_session_file: None,
+                        attended: None,
                     });
             event.initial_model_provenance = Some(provenance);
             Some(event)

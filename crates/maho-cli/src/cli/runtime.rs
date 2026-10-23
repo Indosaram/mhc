@@ -2,6 +2,85 @@ use super::{args::Args, startup};
 use maho_core::{project_trust::AppMode, session_manager::SessionManager};
 use std::{io::IsTerminal, sync::Arc};
 
+/// Auth problems for a run's diagnostics (senpi `collectAuthDiagnostics`). Each credential notice
+/// appears once per process; with `persist_seen` it is also recorded as seen, so later runs stay quiet
+/// until the problem changes (senpi#3486).
+pub fn collect_auth_diagnostics(
+    storage: &maho_core::auth_storage::AuthStorage,
+    context: &str,
+    persist_seen: bool,
+) -> Vec<String> {
+    let mut messages = storage.drain_errors();
+    messages.extend(
+        storage
+            .take_pending_notices(persist_seen)
+            .into_iter()
+            .map(|notice| notice.message),
+    );
+    messages
+        .into_iter()
+        .map(|message| format!("({context}, auth storage) {message}"))
+        .collect()
+}
+
+/// The TUI shows auth problems at startup; returns the messages and the ids to pass to
+/// `AuthStorage::mark_notices_seen` once shown (senpi `interactiveAuthNotices`).
+pub fn interactive_auth_notices(
+    storage: &maho_core::auth_storage::AuthStorage,
+) -> (Vec<String>, Vec<String>) {
+    let pending = storage.take_pending_notices(false);
+    let mut messages = storage.drain_errors();
+    messages.extend(pending.iter().map(|notice| notice.message.clone()));
+    (
+        messages,
+        pending.into_iter().map(|notice| notice.id).collect(),
+    )
+}
+
+/// senpi main.ts `startSubscriptionUsagePolling({ agentDir, report })`: limits are known before the first
+/// turn. Must run inside a tokio runtime; `report` receives a pass that failed as a whole.
+pub fn start_usage_polling(agent_dir: &str, report: Arc<dyn Fn(String) + Send + Sync>) {
+    use maho_core::subscription_limits::{
+        limit_store::subscription_limits,
+        usage_accounts::{AccountSources, list_poll_accounts},
+        usage_poller::{UsagePollingOptions, start_subscription_usage_polling},
+    };
+    let store = super::credentials::AuthStorageCredentialStore::create(
+        &std::path::Path::new(agent_dir)
+            .join("auth.json")
+            .to_string_lossy(),
+    )
+    .into_shared();
+    let sources = AccountSources {
+        store,
+        env: Arc::new(|name| std::env::var(name).ok()),
+        refresher: Arc::new(|refresh, signal| {
+            Box::pin(async move {
+                let credential = maho_ai::auth::types::OAuthCredential::new("", refresh, 0.0);
+                maho_ai::auth::oauth::anthropic::anthropic_oauth()
+                    .refresh(&credential, &signal)
+                    .await
+            })
+        }),
+        now: Arc::new(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_millis() as i64)
+        }),
+    };
+    let _ = start_subscription_usage_polling(UsagePollingOptions {
+        agent_dir: std::path::PathBuf::from(agent_dir),
+        report,
+        report_limits: Arc::new(|provider, account, outcome| {
+            subscription_limits().report(provider, account, outcome)
+        }),
+        list_accounts: Arc::new(move || {
+            let sources = sources.clone();
+            Box::pin(async move { list_poll_accounts(&sources).await })
+        }),
+    });
+}
+
 pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     super::setup::register_builtin_apis();
     let stdin_tty = std::io::stdin().is_terminal();
@@ -143,6 +222,20 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
                     .map_err(|error| error.to_string())?
             }
         };
+        // senpi main.ts:1361-1363: the host polls subscription limits too, unless offline.
+        if !(parsed.offline
+            || super::shared_host::is_truthy_env_flag(
+                maho_core::brand::env_value("OFFLINE", &maho_core::config::current_env())
+                    .as_deref(),
+            ))
+        {
+            start_usage_polling(
+                &agent_dir,
+                Arc::new(|message| {
+                    maho_core::output_guard::maho_write_stderr(&format!("{message}\n"));
+                }),
+            );
+        }
         maho_core::timings::print_timings();
         return super::host_runtime::serve_multi_session_host(core, parsed.listen.clone())
             .await
@@ -361,7 +454,8 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
             ..Default::default()
         },
     )
-    .await.map_err(|error| error.to_string())?;
+    .await
+    .map_err(|error| error.to_string())?;
     let has_context_messages = manager.has_context_messages();
     // senpi main.ts:1181-1188: a blank `--name` is rejected before the runtime is built.
     let session_name = match parsed.name.as_deref() {
@@ -449,11 +543,15 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         ))
     }));
     if mode != AppMode::Interactive {
-        runtime_diagnostics.extend(models.credentials.errors().into_iter().map(|error| {
-            maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(format!(
-                "(runtime creation, auth storage) {error}"
-            ))
-        }));
+        runtime_diagnostics.extend(
+            collect_auth_diagnostics(
+                &models.credentials,
+                "runtime creation",
+                mode != AppMode::Rpc,
+            )
+            .into_iter()
+            .map(maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning),
+        );
     }
     indicator.during_surface_write(|| {
         for diagnostic in &runtime_diagnostics {
@@ -528,7 +626,10 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let scope_models = if model_patterns.is_empty() {
         Vec::new()
     } else {
-        models.get_available(None).await.map_err(|error| error.to_string())?
+        models
+            .get_available(None)
+            .await
+            .map_err(|error| error.to_string())?
     };
     let scope =
         maho_core::model_resolver::resolve_model_scope_from_models(model_patterns, &scope_models);
@@ -770,6 +871,24 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         },
         matches!(mode, AppMode::Rpc | AppMode::AppServer),
     );
+    // senpi main.ts:1569-1576: subscription limits are known before the first turn; print runs never poll.
+    if matches!(mode, AppMode::Rpc | AppMode::Interactive)
+        && !(parsed.offline
+            || super::shared_host::is_truthy_env_flag(
+                maho_core::brand::env_value("OFFLINE", &maho_core::config::current_env())
+                    .as_deref(),
+            ))
+    {
+        // The TUI owns stderr in interactive mode.
+        let report: Arc<dyn Fn(String) + Send + Sync> = if mode == AppMode::Interactive {
+            Arc::new(|_| {})
+        } else {
+            Arc::new(|message| {
+                maho_core::output_guard::maho_write_stderr(&format!("{message}\n"));
+            })
+        };
+        start_usage_polling(&agent_dir, report);
+    }
     let run = async {
         match mode {
             AppMode::Rpc => {
@@ -825,18 +944,26 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
                         ..Default::default()
                     })
                     .await;
-                use tokio::io::AsyncReadExt;
-                // senpi main.ts `readPipedStdin`: `data.trim() || undefined`.
-                let stdin = if stdin_tty {
-                    None
-                } else {
-                    let mut text = String::new();
-                    tokio::io::stdin()
-                        .read_to_string(&mut text)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    Some(text.trim().to_owned()).filter(|text| !text.is_empty())
-                };
+                // senpi main.ts `readPipedStdin`: skip a silent pipe after the grace window when a prompt
+                // argument was given, unless `-` forces the read.
+                let stdin_options = super::piped_stdin_options::piped_stdin_options(&parsed);
+                let mut on_skip =
+                    || super::piped_stdin_options::write_skip_hint(&mut std::io::stderr());
+                let stdin = crate::utils::piped_stdin::read_piped_stdin(
+                    &mut tokio::io::stdin(),
+                    crate::utils::piped_stdin::ReadPipedStdinOptions {
+                        is_tty: stdin_tty,
+                        has_prompt_argument: stdin_options.has_prompt_argument,
+                        force_read: stdin_options.force_read,
+                        grace: std::time::Duration::from_millis(
+                            crate::utils::piped_stdin::PIPED_STDIN_GRACE_MS,
+                        ),
+                        is_regular_file: crate::utils::piped_stdin::stdin_is_regular_file(),
+                        on_skip: Some(&mut on_skip),
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
                 maho_core::timings::time("readPipedStdin", maho_core::timings::TimingLabel::Main);
                 let initial = startup::prepare_initial_message(
                     &mut parsed,
@@ -868,9 +995,13 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
                 .map_err(|error| error.to_string())
                 .inspect(|_| {
                     // senpi main.ts:1385 `collectAuthDiagnostics(services.authStorage, "print mode")`.
-                    for error in session.model_runtime().credentials.drain_errors() {
+                    for message in collect_auth_diagnostics(
+                        &session.model_runtime().credentials,
+                        "print mode",
+                        true,
+                    ) {
                         maho_core::output_guard::maho_write_stderr(&format!(
-                            "Warning: (print mode, auth storage) {error}\n"
+                            "Warning: {message}\n"
                         ));
                     }
                     // senpi main.ts:1387.
@@ -935,9 +1066,9 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
             crate::utils::shell::kill_tracked_detached_children();
         }
     }
-    session
-        .emit_session_shutdown(maho_ext_api::SessionReason::Quit)
-        .await;
+    // senpi `runtime.dispose({ processExit: true })`: the process exits right after, so quit-time handlers
+    // share the total quit budget.
+    session.emit_session_shutdown_for_quit(true).await;
     session.dispose().await;
     drop(process_lifetime);
     if let Some(code) = signal_code {
@@ -959,6 +1090,8 @@ pub enum ResolvedSession {
     NotFound(String),
 }
 
+use maho_core::session_manager::session_file_name_id;
+
 /// senpi `findLocalSessionByExactId`.
 pub fn find_local_session_by_exact_id(
     session_id: &str,
@@ -971,9 +1104,14 @@ pub fn find_local_session_by_exact_id(
         SessionManager::list(cwd, None, None)
     };
     sessions
-        .into_iter()
+        .iter()
         .find(|session| session.id == session_id)
-        .map(|session| session.path)
+        .or_else(|| {
+            sessions
+                .iter()
+                .find(|session| session_file_name_id(&session.path).as_deref() == Some(session_id))
+        })
+        .map(|session| session.path.clone())
 }
 
 /// senpi `resolveSessionPath`: a path is resolved against `cwd`; otherwise the argument is an id or
@@ -994,6 +1132,11 @@ pub fn resolve_session_path(
         sessions
             .iter()
             .find(|session| session.id == session_arg)
+            .or_else(|| {
+                sessions.iter().find(|session| {
+                    session_file_name_id(&session.path).as_deref() == Some(session_arg)
+                })
+            })
             .or_else(|| {
                 sessions
                     .iter()

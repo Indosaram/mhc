@@ -28,9 +28,9 @@ fn test_facts_records_hash_deterministic() {
     records3.reverse();
 
     // when
-    let hash1 = facts_records_hash(&records1);
-    let hash2 = facts_records_hash(&records2);
-    let hash3 = facts_records_hash(&records3);
+    let hash1 = facts_records_hash(&records1, &[]);
+    let hash2 = facts_records_hash(&records2, &[]);
+    let hash3 = facts_records_hash(&records3, &[]);
 
     // then
     assert_eq!(hash1.len(), 64);
@@ -85,10 +85,12 @@ fn test_plan_facts_mutation_clean_repo() {
     let batch = FactsBatch {
         batch_id: "00000000-0000-4000-8000-000000000001".to_string(),
         records: sample_records(),
+        agreements: None,
     };
 
     // when
-    let recovery = plan_facts_mutation(&repo, &batch, None, None).expect("plan mutation");
+    let recovery = plan_facts_mutation(&repo, &batch, None, None, &Default::default(), None)
+        .expect("plan mutation");
 
     // then
     assert_eq!(recovery.version, 1);
@@ -107,11 +109,36 @@ fn test_plan_facts_mutation_parent_dirty() {
     let batch = FactsBatch {
         batch_id: "00000000-0000-4000-8000-000000000002".to_string(),
         records: sample_records(),
+        agreements: None,
     };
 
     // when
-    let result = plan_facts_mutation(&repo, &batch, None, None);
+    let result = plan_facts_mutation(&repo, &batch, None, None, &Default::default(), None);
 
     // then
     assert!(matches!(result, Err(MutationPlanError::ParentDirty(_))));
+}
+
+#[test]
+fn test_facts_records_hash_is_stable_without_agreements_and_changes_with_them() {
+    use crate::agreements::{AgreementExtractionRecord, AgreementScope};
+
+    // given
+    let records = sample_records();
+    let agreements = vec![AgreementExtractionRecord::New {
+        applies: AgreementScope::Global,
+        text: "Run tests".to_string(),
+        date: "2026-08-10".to_string(),
+    }];
+
+    // when
+    let plain = facts_records_hash(&records, &[]);
+    let with_agreements = facts_records_hash(&records, &agreements);
+
+    // then
+    let legacy = crate::support::sha256::sha256_hex(
+        serde_json::to_string(&records).expect("json").as_bytes(),
+    );
+    assert_eq!(plain, legacy);
+    assert!(plain != with_agreements);
 }

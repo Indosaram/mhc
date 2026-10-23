@@ -176,6 +176,8 @@ pub fn faux_assistant_message(
         raw_stop_reason: None,
         end_turn: None,
         timestamp: options.timestamp.unwrap_or_else(now_ms),
+        failure_source: None,
+        timing: None,
     }
 }
 
@@ -261,8 +263,7 @@ fn estimate_tokens(text: &str) -> u64 {
 
 fn clone_context_for_log(context: &Context) -> Context {
     let transcript = crate::types::transcript::normalize_context(context);
-    let system_prompt =
-        crate::types::transcript::get_current_system_prompt(&transcript.messages);
+    let system_prompt = crate::types::transcript::get_current_system_prompt(&transcript.messages);
     let tools = crate::types::transcript::get_current_tools(&transcript.messages);
     Context {
         system_prompt: (!system_prompt.is_empty()).then_some(system_prompt),
@@ -501,6 +502,8 @@ fn create_deferred_message(model: &Model, handle: &DeferredHandle) -> AssistantM
         raw_stop_reason: None,
         end_turn: None,
         timestamp: now_ms(),
+        failure_source: None,
+        timing: None,
     }
 }
 
@@ -532,6 +535,8 @@ fn create_error_message(
         raw_stop_reason: None,
         end_turn: None,
         timestamp: now_ms(),
+        failure_source: None,
+        timing: None,
     }
 }
 
@@ -1327,6 +1332,7 @@ pub fn create_faux_core(options: &RegisterFauxProviderOptions) -> Arc<FauxCore> 
             recover_text_tool_calls: None,
             compat: None,
             input_limits: definition.input_limits,
+            deprecated: None,
         })
         .collect();
 
@@ -1490,7 +1496,9 @@ impl crate::auth::types::ApiKeyAuth for FauxApiKeyAuth {
     }
 }
 
-pub fn faux_provider(options: RegisterFauxProviderOptions) -> Result<FauxProviderHandle, crate::models::ModelsError> {
+pub fn faux_provider(
+    options: RegisterFauxProviderOptions,
+) -> Result<FauxProviderHandle, crate::models::ModelsError> {
     let core = create_faux_core(&options);
     let provider = create_provider(CreateProviderOptions {
         id: core.provider.clone(),

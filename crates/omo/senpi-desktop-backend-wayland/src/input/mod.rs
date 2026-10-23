@@ -76,7 +76,7 @@ impl Libei {
             Err(err) => {
                 return Err(DesktopError::permission_denied(format!(
                     "LIBEI_SOCKET: {err}"
-                )))
+                )));
             }
         };
         let (_connection, events) = runtime
@@ -109,10 +109,12 @@ impl Libei {
     pub fn regions(&mut self) -> CoreResult<Vec<EisRegion>> {
         self.refresh_devices()?;
         let mut regions = Vec::new();
-        let pointers = self
-            .devices
-            .iter()
-            .filter(|device| device.resumed && device.device.has_capability(DeviceCapability::PointerAbsolute));
+        let pointers = self.devices.iter().filter(|device| {
+            device.resumed
+                && device
+                    .device
+                    .has_capability(DeviceCapability::PointerAbsolute)
+        });
         for region in pointers.flat_map(|device| device.device.regions()) {
             let region = EisRegion {
                 x: region.x,

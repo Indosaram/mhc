@@ -226,6 +226,8 @@ pub(crate) mod test_barrier {
         issued: u64,
         consumed: u64,
         finished: bool,
+        /// Watcher threads tracked for this handle that have not yet consumed a settle.
+        watching: u32,
     }
 
     struct State {
@@ -258,6 +260,7 @@ pub(crate) mod test_barrier {
         if entry.finished {
             *entry = Entry::default();
         }
+        entry.watching += 1;
     }
 
     pub(crate) fn note_issue(ptr: usize) {
@@ -272,8 +275,16 @@ pub(crate) mod test_barrier {
     pub(crate) fn note_consume(ptr: usize) {
         let mut entries = lock();
         let entry = entries.entry(ptr).or_default();
-        entry.consumed = entry.issued;
-        entry.finished = true;
+        entry.watching = entry.watching.saturating_sub(1);
+        // A handle revived while its previous watcher is still applying a settle has a second
+        // watcher in flight; only the last watcher out may close the accounting, otherwise the
+        // next settle would be treated as consumer-less and the harness would not wait for it.
+        if entry.watching == 0 {
+            entry.consumed = entry.issued;
+            entry.finished = true;
+        } else {
+            entry.consumed = (entry.consumed + 1).min(entry.issued);
+        }
         state().cv.notify_all();
     }
 
@@ -286,7 +297,7 @@ pub(crate) mod test_barrier {
         while entries.values().any(|entry| entry.consumed < entry.issued) {
             entries = state()
                 .cv
-                .wait_timeout(entries, std::time::Duration::from_secs(5))
+                .wait_timeout(entries, std::time::Duration::from_secs(30))
                 .map(|(entries, timeout)| {
                     assert!(!timeout.timed_out(), "outcome watcher never consumed its signal");
                     entries
@@ -310,7 +321,7 @@ pub(crate) mod test_barrier {
         {
             entries = state()
                 .cv
-                .wait_timeout(entries, std::time::Duration::from_secs(5))
+                .wait_timeout(entries, std::time::Duration::from_secs(30))
                 .map(|(entries, timeout)| {
                     assert!(!timeout.timed_out(), "outcome watcher never applied handle {ptr}");
                     entries

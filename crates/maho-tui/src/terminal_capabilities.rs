@@ -21,6 +21,12 @@ pub struct CellDimensions {
     pub height_px: u32,
 }
 
+/// Which image protocol the TUI must probe for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageProbe {
+    Kitty,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DetectedTerminalCapabilities {
     pub images: Option<ImageProtocol>,
@@ -29,6 +35,9 @@ pub struct DetectedTerminalCapabilities {
     pub tmux_passthrough: Option<bool>,
     pub kitty_unicode_placeholders: Option<bool>,
     pub cell_dimensions: Option<CellDimensions>,
+    /// Set only while image support is unknown from the environment: the TUI must query the
+    /// terminal and record the answer via `set_probed_image_protocol`.
+    pub image_probe: Option<ImageProbe>,
 }
 
 /// Result of the tmux image probe plus capability decision (todo 9).
@@ -68,6 +77,7 @@ const fn caps(
         tmux_passthrough: None,
         kitty_unicode_placeholders: None,
         cell_dimensions: None,
+        image_probe: None,
     }
 }
 
@@ -87,7 +97,8 @@ pub fn detect_terminal_capabilities_in(
     let term_program = get("TERM_PROGRAM").to_lowercase();
     let terminal_emulator = get("TERMINAL_EMULATOR");
     let color_term = get("COLORTERM");
-    let true_color = color_term == "truecolor" || color_term == "24bit" || term.ends_with("-direct");
+    let true_color =
+        color_term == "truecolor" || color_term == "24bit" || term.ends_with("-direct");
 
     if has("TMUX") || term.starts_with("tmux") {
         let detector = *TMUX_IMAGE_DETECTOR
@@ -101,6 +112,7 @@ pub fn detect_terminal_capabilities_in(
             tmux_passthrough: decision.enabled.then_some(true),
             kitty_unicode_placeholders: (decision.enabled && decision.placeholder).then_some(true),
             cell_dimensions: decision.cell_dimensions,
+            image_probe: None,
         };
     }
 

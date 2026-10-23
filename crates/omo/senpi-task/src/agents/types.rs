@@ -108,6 +108,7 @@ pub enum AgentLoaderDiagnosticKind {
     Read,
     Validation,
     ConfigParse,
+    CategoryShadowsAgent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -168,7 +168,13 @@ pub async fn run_openai_responses_v2_compaction(
             },
             cache_retention: Some(maho_ai::types::CacheRetention::Short),
             extra_body: options.extra_body,
-            session_id: Some(options.session_id),
+            session_id: Some(
+                options
+                    .request
+                    .session_id
+                    .clone()
+                    .unwrap_or_else(|| options.session_id.clone()),
+            ),
             transport: Some(maho_ai::types::Transport::Sse),
             ..Default::default()
         },
@@ -331,13 +337,20 @@ mod timeout_tests {
             let cleanup = std::sync::Mutex::new(Some((started, cleanup_release)));
             let runner: crate::openai_remote_dependencies::OpenAiResponsesStreamRunner =
                 std::sync::Arc::new(move |model, _, _| {
-                    let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
-                    let (started, release) = cleanup.lock().expect("cleanup gate").take().expect("one request");
-                    stream.set_cancellation_handler(Box::new(move || Box::pin(async move {
-                        started.send(()).expect("cleanup observed");
-                        release.await.expect("cleanup release");
-                        Ok(())
-                    })));
+                    let stream =
+                        maho_ai::utils::event_stream::create_assistant_message_event_stream();
+                    let (started, release) = cleanup
+                        .lock()
+                        .expect("cleanup gate")
+                        .take()
+                        .expect("one request");
+                    stream.set_cancellation_handler(Box::new(move || {
+                        Box::pin(async move {
+                            started.send(()).expect("cleanup observed");
+                            release.await.expect("cleanup release");
+                            Ok(())
+                        })
+                    }));
                     stream.push(maho_ai::types::AssistantMessageEvent::Error {
                         reason: maho_ai::types::ErrorReason::Error,
                         error: maho_ai::utils::lazy::setup_error_message(model, "provider failed"),
@@ -349,13 +362,23 @@ mod timeout_tests {
             let operation = tokio::spawn(async move {
                 let model = model("openai-responses");
                 let request = crate::openai_remote::OpenAiRemoteCompactionRequest {
-                    body: serde_json::json!({"input":[]}), input_item_count: 0, tokens_before: 1,
+                    session_id: None,
+                    body: serde_json::json!({"input":[]}),
+                    input_item_count: 0,
+                    tokens_before: 1,
                 };
                 let options = ResponsesV2Options {
-                    model: &model, request: &request, first_kept_entry_id: "anchor",
-                    origin: serde_json::json!({}), system_prompt: String::new(), session_id: "s".into(),
-                    api_key: None, headers: BTreeMap::new(), extra_body: None,
-                    signal: maho_ai::utils::abort::AbortController::new().signal(), runner: &runner,
+                    model: &model,
+                    request: &request,
+                    first_kept_entry_id: "anchor",
+                    origin: serde_json::json!({}),
+                    system_prompt: String::new(),
+                    session_id: "s".into(),
+                    api_key: None,
+                    headers: BTreeMap::new(),
+                    extra_body: None,
+                    signal: maho_ai::utils::abort::AbortController::new().signal(),
+                    runner: &runner,
                 };
                 if websocket {
                     crate::openai_remote::run_openai_responses_stream_compaction(options, 0).await
@@ -363,14 +386,18 @@ mod timeout_tests {
                     run_openai_responses_v2_compaction(options).await
                 }
             });
-            tokio::time::timeout(std::time::Duration::from_secs(5), cleanup_started).await
-                .expect("cleanup starts").expect("cleanup notification");
+            tokio::time::timeout(std::time::Duration::from_secs(5), cleanup_started)
+                .await
+                .expect("cleanup starts")
+                .expect("cleanup notification");
 
             // Then fallback cannot run until relay cleanup is acknowledged.
             assert!(!operation.is_finished());
             release.send(()).expect("release cleanup");
-            let result = tokio::time::timeout(std::time::Duration::from_secs(5), operation).await
-                .expect("route settles").expect("route task");
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), operation)
+                .await
+                .expect("route settles")
+                .expect("route task");
             assert!(result.expect("fallback").is_none());
         }
     }

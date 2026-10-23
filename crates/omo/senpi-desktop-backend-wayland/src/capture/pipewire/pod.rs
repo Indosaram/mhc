@@ -43,7 +43,9 @@ impl VideoFormat {
     ];
 
     fn from_raw(raw: u32) -> Option<Self> {
-        Self::OFFERED.into_iter().find(|format| *format as u32 == raw)
+        Self::OFFERED
+            .into_iter()
+            .find(|format| *format as u32 == raw)
     }
 
     pub const fn bytes_per_pixel(self) -> usize {
@@ -98,7 +100,11 @@ fn choice(kind: u32, child_type: u32, child_size: u32, values: &[Vec<u32>]) -> V
 /// any size up to 16384x16384, preferring BGRx at 1920x1080.
 pub fn enum_format() -> Vec<u8> {
     let mut formats = vec![vec![VideoFormat::Bgrx as u32]];
-    formats.extend(VideoFormat::OFFERED.iter().map(|format| vec![*format as u32]));
+    formats.extend(
+        VideoFormat::OFFERED
+            .iter()
+            .map(|format| vec![*format as u32]),
+    );
     let size = choice(
         CHOICE_RANGE,
         TYPE_RECTANGLE,
@@ -144,7 +150,8 @@ fn first_value(pod: &[u8]) -> Option<(u32, &[u8])> {
     if kind != TYPE_CHOICE {
         return Some((kind, body));
     }
-    let (choice_kind, child_size, child_type) = (word(body, 0)?, word(body, 8)? as usize, word(body, 12)?);
+    let (choice_kind, child_size, child_type) =
+        (word(body, 0)?, word(body, 8)? as usize, word(body, 12)?);
     if ![CHOICE_NONE, CHOICE_RANGE, CHOICE_ENUM].contains(&choice_kind) {
         return None;
     }
@@ -164,9 +171,15 @@ pub fn parse_format(pod: &[u8]) -> Option<Negotiated> {
         let value = pod.get(at + 8..end)?;
         let value_size = word(value, 0)? as usize;
         match (key, first_value(value)?) {
-            (FORMAT_VIDEO_FORMAT, (TYPE_ID, body)) => format = VideoFormat::from_raw(word(body, 0)?),
-            (FORMAT_VIDEO_SIZE, (TYPE_RECTANGLE, body)) => dims = Some((word(body, 0)?, word(body, 4)?)),
-            (FORMAT_MEDIA_TYPE, (TYPE_ID, body)) if word(body, 0)? != MEDIA_TYPE_VIDEO => return None,
+            (FORMAT_VIDEO_FORMAT, (TYPE_ID, body)) => {
+                format = VideoFormat::from_raw(word(body, 0)?)
+            }
+            (FORMAT_VIDEO_SIZE, (TYPE_RECTANGLE, body)) => {
+                dims = Some((word(body, 0)?, word(body, 4)?))
+            }
+            (FORMAT_MEDIA_TYPE, (TYPE_ID, body)) if word(body, 0)? != MEDIA_TYPE_VIDEO => {
+                return None;
+            }
             _ => {}
         }
         at += 8 + (8 + value_size).next_multiple_of(8);

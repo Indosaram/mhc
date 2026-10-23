@@ -11,10 +11,10 @@ mod props;
 use senpi_desktop_core::ax::{AxBackend, AxHandle, AxOwner, AxProps};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 use senpi_desktop_core::types::{DesktopDisplay, DesktopWindow};
-use uiautomation::types::ControlType;
 use uiautomation::UIElement;
+use uiautomation::types::ControlType;
 use windows_sys::Win32::Foundation::{HWND, POINT};
-use windows_sys::Win32::UI::WindowsAndMessaging::{GetAncestor, WindowFromPoint, GA_ROOT};
+use windows_sys::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, WindowFromPoint};
 
 use self::action::UiaAction;
 use self::automation::Automation;
@@ -33,9 +33,9 @@ impl Win32Ax {
     }
 
     fn element(handle: &AxHandle) -> CoreResult<&UIElement> {
-        handle
-            .downcast_native::<UIElement>()
-            .ok_or_else(|| DesktopError::ax_failed("UI Automation backend received a non-UIA handle"))
+        handle.downcast_native::<UIElement>().ok_or_else(|| {
+            DesktopError::ax_failed("UI Automation backend received a non-UIA handle")
+        })
     }
 
     /// The cached layout, read on first use. Bounds are optional props: an
@@ -55,9 +55,9 @@ impl Win32Ax {
             if let Ok(handle) = current.get_native_window_handle() {
                 let raw: isize = handle.into();
                 if raw != 0 {
-                    let hwnd = std::ptr::with_exposed_provenance_mut(
-                        usize::from_ne_bytes(raw.to_ne_bytes()),
-                    );
+                    let hwnd = std::ptr::with_exposed_provenance_mut(usize::from_ne_bytes(
+                        raw.to_ne_bytes(),
+                    ));
                     // SAFETY: [Category 8 - FFI boundary] UIA supplied the
                     // opaque HWND and Win32 validates it before returning its
                     // root.

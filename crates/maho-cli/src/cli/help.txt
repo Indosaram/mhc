@@ -22,6 +22,7 @@ Commands:
   mhc <command> --help          Show help for install/remove/uninstall/update/list/config/auth
 
 Options:
+  -                              Wait for stdin to close and prepend it to the prompt (a silent stdin pipe is otherwise skipped after 2 s when a prompt argument is given)
   --provider <name>              Provider name (default: google)
   --model <pattern>              Model pattern or ID (supports "provider/id" and optional ":<thinking>")
   --api-key <key>                API key (defaults to env vars)
@@ -194,7 +195,8 @@ Environment Variables:
   PI_RULES_MAX_RULE_CHARS          - Per-rule formatted payload character cap (default: 12000)
   PI_RULES_MAX_RESULT_CHARS        - Complete static/dynamic block character cap (default: 40000)
   PI_TELEMETRY                     - Override install telemetry when set to 1/true/yes or 0/false/no
-  PI_SHARE_VIEWER_URL              - Base URL for /share command (default: https://pi.dev/session/)
+  PI_SHARE_VIEWER_URL              - Opt-in viewer base URL for /share (default: none, gist link only)
+  PI_DISABLE_SHARE                 - Set to 1 to turn /share off
 
 Built-in Tool Names:
   read       - Read file contents

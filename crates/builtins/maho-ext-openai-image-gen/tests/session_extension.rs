@@ -24,7 +24,7 @@ impl maho_ext_imagegen::auth::ImageGenAuthRegistry for AuthFixture {
     fn get_provider_auth(&self, _: &str) -> maho_ext_imagegen::auth::AuthFuture<'_> {
         let key = self.provider_api_key.clone();
         let headers = self.provider_headers.clone().unwrap_or_default();
-        Box::pin(async move { Ok(key.map(|api_key| maho_ext_imagegen::auth::Credentials { api_key: Some(api_key), headers })) })
+        Box::pin(async move { Ok(key.map(|api_key| maho_ext_imagegen::auth::Credentials { api_key: Some(api_key), headers, base_url: None })) })
     }
     fn get_api_key_and_headers<'a>(&'a self, _: &'a Model) -> maho_ext_imagegen::auth::AuthFuture<'a> {
         self.get_provider_auth("")

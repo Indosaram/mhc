@@ -215,7 +215,10 @@ pub trait ModelsAuth: Send + Sync {
         _options: ModelsLoginOptions,
     ) -> BoxFuture<'a, Result<crate::auth::types::Credential, ModelsError>> {
         Box::pin(async move {
-            Err(ModelsError::new(ModelsErrorCode::Auth, format!("Login is not supported for {}", provider.id())))
+            Err(ModelsError::new(
+                ModelsErrorCode::Auth,
+                format!("Login is not supported for {}", provider.id()),
+            ))
         })
     }
 
@@ -225,7 +228,10 @@ pub trait ModelsAuth: Send + Sync {
         _options: ModelsLogoutOptions,
     ) -> BoxFuture<'a, Result<(), ModelsError>> {
         Box::pin(async move {
-            Err(ModelsError::new(ModelsErrorCode::Auth, format!("Logout is not supported for {provider_id}")))
+            Err(ModelsError::new(
+                ModelsErrorCode::Auth,
+                format!("Logout is not supported for {provider_id}"),
+            ))
         })
     }
 
@@ -388,48 +394,108 @@ impl ModelsAuth for ProviderModelsAuth {
         options: ModelsLoginOptions,
     ) -> BoxFuture<'a, Result<crate::auth::types::Credential, ModelsError>> {
         use crate::auth::pool::slots::{LoginSlotOrigin, PooledCredential, append_login_slot};
-        use crate::auth::types::{AccountLoginOrigin, AccountLoginReceipt, AuthOperationOptions, AuthType, Credential, ProviderAuthInteraction};
+        use crate::auth::types::{
+            AccountLoginOrigin, AccountLoginReceipt, AuthOperationOptions, AuthType, Credential,
+            ProviderAuthInteraction,
+        };
         Box::pin(async move {
             let signal = operation_signal(interaction.signal());
-            let abort_error = |reason: AbortReason| ModelsError::new(ModelsErrorCode::Auth, reason.message);
+            let abort_error =
+                |reason: AbortReason| ModelsError::new(ModelsErrorCode::Auth, reason.message);
             signal.throw_if_aborted().map_err(abort_error)?;
-            let unsupported = || ModelsError::new(ModelsErrorCode::Auth, format!("{} does not support {auth_type:?} login", provider.name()));
+            let unsupported = || {
+                ModelsError::new(
+                    ModelsErrorCode::Auth,
+                    format!("{} does not support {auth_type:?} login", provider.name()),
+                )
+            };
             let auth = provider.auth().ok_or_else(unsupported)?;
-            let mut provider_interaction = ProviderAuthInteraction::new(signal.clone(), interaction.clone());
+            let mut provider_interaction =
+                ProviderAuthInteraction::new(signal.clone(), interaction.clone());
             if let Some(device_id) = options.device_id {
                 provider_interaction = provider_interaction.with_device_id(device_id);
             }
             let login = async {
                 match auth_type {
                     AuthType::ApiKey => {
-                        let method = auth.api_key.as_ref().filter(|method| method.has_login()).ok_or_else(unsupported)?;
-                        method.login(&provider_interaction).await.map(Credential::ApiKey)
+                        let method = auth
+                            .api_key
+                            .as_ref()
+                            .filter(|method| method.has_login())
+                            .ok_or_else(unsupported)?;
+                        method
+                            .login(&provider_interaction)
+                            .await
+                            .map(Credential::ApiKey)
                     }
                     AuthType::OAuth => {
                         let method = auth.oauth.as_ref().ok_or_else(unsupported)?;
-                        method.login(&provider_interaction).await.map(Credential::OAuth)
+                        method
+                            .login(&provider_interaction)
+                            .await
+                            .map(Credential::OAuth)
                     }
-                }.map_err(|error| ModelsError::with_cause(ModelsErrorCode::Auth, format!("Login failed for {}", provider.id()), &error.to_string()))
+                }
+                .map_err(|error| {
+                    ModelsError::with_cause(
+                        ModelsErrorCode::Auth,
+                        format!("Login failed for {}", provider.id()),
+                        &error.to_string(),
+                    )
+                })
             };
-            let credential = race_with_abort_signal(login, &signal).await.map_err(abort_error)??;
+            let credential = race_with_abort_signal(login, &signal)
+                .await
+                .map_err(abort_error)??;
             let flat = PooledCredential::from(credential.clone());
             let (receipt_tx, receipt_rx) = tokio::sync::oneshot::channel();
-            self.credentials.modify(provider.id(), Box::new(move |current| Box::pin(async move {
-                let mut allocated = None;
-                let next = append_login_slot(current.map(PooledCredential::from), flat, |name, origin| {
-                    allocated = Some((name.to_owned(), match origin {
-                        LoginSlotOrigin::Generated => AccountLoginOrigin::Generated,
-                        LoginSlotOrigin::Provider => AccountLoginOrigin::Provider,
-                    }));
-                }).map_err(anyhow::Error::msg)?;
-                // The receipt is published to the caller only after modify succeeds.
-                let _ = receipt_tx.send(allocated);
-                Ok(Some(next.to_stored_credential()))
-            })), Some(AuthOperationOptions { signal: Some(signal) })).await.map_err(|error| {
-                ModelsError::with_cause(ModelsErrorCode::Auth, format!("Credential store modify failed for {}", provider.id()), &error.to_string())
-            })?;
+            self.credentials
+                .modify(
+                    provider.id(),
+                    Box::new(move |current| {
+                        Box::pin(async move {
+                            let mut allocated = None;
+                            let next = append_login_slot(
+                                current.map(PooledCredential::from),
+                                flat,
+                                |name, origin| {
+                                    allocated = Some((
+                                        name.to_owned(),
+                                        match origin {
+                                            LoginSlotOrigin::Generated => {
+                                                AccountLoginOrigin::Generated
+                                            }
+                                            LoginSlotOrigin::Provider => {
+                                                AccountLoginOrigin::Provider
+                                            }
+                                        },
+                                    ));
+                                },
+                            )
+                            .map_err(anyhow::Error::msg)?;
+                            // The receipt is published to the caller only after modify succeeds.
+                            let _ = receipt_tx.send(allocated);
+                            Ok(Some(next.to_stored_credential()))
+                        })
+                    }),
+                    Some(AuthOperationOptions {
+                        signal: Some(signal),
+                    }),
+                )
+                .await
+                .map_err(|error| {
+                    ModelsError::with_cause(
+                        ModelsErrorCode::Auth,
+                        format!("Credential store modify failed for {}", provider.id()),
+                        &error.to_string(),
+                    )
+                })?;
             if let Ok(Some((name, origin))) = receipt_rx.await {
-                interaction.on_account_committed(AccountLoginReceipt { provider_id: provider.id().to_owned(), name, origin });
+                interaction.on_account_committed(AccountLoginReceipt {
+                    provider_id: provider.id().to_owned(),
+                    name,
+                    origin,
+                });
             }
             Ok(credential)
         })
@@ -444,19 +510,37 @@ impl ModelsAuth for ProviderModelsAuth {
         use crate::auth::types::AuthOperationOptions;
         Box::pin(async move {
             let signal = operation_signal(options.signal);
-            let operation = Some(AuthOperationOptions { signal: Some(signal) });
+            let operation = Some(AuthOperationOptions {
+                signal: Some(signal),
+            });
             let result = async {
                 if let Some(name) = options.slot_id {
-                    self.credentials.modify_or_delete(provider_id, Box::new(move |current| Box::pin(async move {
-                        let next = remove_slot(current.map(PooledCredential::from), &name);
-                        Ok(next.map(|pool| pool.to_stored_credential()))
-                    })), operation).await?;
+                    self.credentials
+                        .modify_or_delete(
+                            provider_id,
+                            Box::new(move |current| {
+                                Box::pin(async move {
+                                    let next =
+                                        remove_slot(current.map(PooledCredential::from), &name);
+                                    Ok(next.map(|pool| pool.to_stored_credential()))
+                                })
+                            }),
+                            operation,
+                        )
+                        .await?;
                 } else {
                     self.credentials.delete(provider_id, operation).await?;
                 }
                 Ok::<(), anyhow::Error>(())
-            }.await;
-            result.map_err(|error| ModelsError::with_cause(ModelsErrorCode::Auth, format!("Credential store delete failed for {provider_id}"), &error.to_string()))
+            }
+            .await;
+            result.map_err(|error| {
+                ModelsError::with_cause(
+                    ModelsErrorCode::Auth,
+                    format!("Credential store delete failed for {provider_id}"),
+                    &error.to_string(),
+                )
+            })
         })
     }
 
@@ -1690,14 +1774,32 @@ impl Models {
         interaction: Arc<dyn crate::auth::types::AuthInteraction>,
         options: Option<ModelsLoginOptions>,
     ) -> Result<crate::auth::types::Credential, ModelsError> {
-        let provider = self.get_provider(provider_id).ok_or_else(|| ModelsError::new(
-            ModelsErrorCode::Provider, format!("Unknown provider: {provider_id}"),
-        ))?;
-        self.inner.auth.login(provider.as_ref(), auth_type, interaction, options.unwrap_or_default()).await
+        let provider = self.get_provider(provider_id).ok_or_else(|| {
+            ModelsError::new(
+                ModelsErrorCode::Provider,
+                format!("Unknown provider: {provider_id}"),
+            )
+        })?;
+        self.inner
+            .auth
+            .login(
+                provider.as_ref(),
+                auth_type,
+                interaction,
+                options.unwrap_or_default(),
+            )
+            .await
     }
 
-    pub async fn logout(&self, provider_id: &str, options: Option<ModelsLogoutOptions>) -> Result<(), ModelsError> {
-        self.inner.auth.logout(provider_id, options.unwrap_or_default()).await
+    pub async fn logout(
+        &self,
+        provider_id: &str,
+        options: Option<ModelsLogoutOptions>,
+    ) -> Result<(), ModelsError> {
+        self.inner
+            .auth
+            .logout(provider_id, options.unwrap_or_default())
+            .await
     }
 
     async fn apply_auth(
@@ -1795,7 +1897,9 @@ impl Models {
         crate::api::lazy::lazy_stream_typed(model, async move {
             setup.await.map_err(|error| {
                 if error.code == ModelsErrorCode::OAuth {
-                    crate::utils::event_stream::StreamError::oauth_refresh_unavailable(error.message)
+                    crate::utils::event_stream::StreamError::oauth_refresh_unavailable(
+                        error.message,
+                    )
                 } else {
                     crate::utils::event_stream::StreamError::new(error.message)
                 }
@@ -1960,6 +2064,7 @@ impl Models {
                 },
                 error_message: Some(error),
                 timestamp: now_ms(),
+                provider_diagnostic: None,
             },
         }
     }
@@ -2297,7 +2402,9 @@ mod models_api_audit_tests {
 
     #[async_trait::async_trait]
     impl crate::auth::types::AuthInteraction for LoginInteraction {
-        fn signal(&self) -> Option<AbortSignal> { None }
+        fn signal(&self) -> Option<AbortSignal> {
+            None
+        }
         async fn prompt(&self, _: crate::auth::types::AuthPrompt) -> anyhow::Result<String> {
             Ok("second-key".into())
         }
@@ -2307,26 +2414,68 @@ mod models_api_audit_tests {
         }
     }
 
-    async fn pooled_auth() -> (Models, Arc<dyn crate::auth::types::CredentialStore>, Arc<LoginInteraction>) {
+    async fn pooled_auth() -> (
+        Models,
+        Arc<dyn crate::auth::types::CredentialStore>,
+        Arc<LoginInteraction>,
+    ) {
         use crate::auth::types::{ApiKeyAuth, CredentialStore};
-        let store: Arc<dyn CredentialStore> = Arc::new(crate::auth::credential_store::InMemoryCredentialStore::new());
+        let store: Arc<dyn CredentialStore> =
+            Arc::new(crate::auth::credential_store::InMemoryCredentialStore::new());
         let credential = serde_json::from_value(serde_json::json!({
             "type": "api_key", "key": "first-key", "pinned": "default", "order": ["default"],
             "providerField": "retained"
-        })).expect("credential");
-        store.modify("pool", Box::new(move |_| Box::pin(async move { Ok(Some(credential)) })), None).await.expect("seed");
-        let auth = ProviderModelsAuth::new(store.clone(), Arc::new(crate::auth::context::default_provider_auth_context()));
-        let models = create_models(Some(CreateModelsOptions { auth: Some(Arc::new(auth)), models_store: None }));
-        let api_key: Arc<dyn ApiKeyAuth> = Arc::new(crate::auth::helpers::env_api_key_auth("test key", &[]));
+        }))
+        .expect("credential");
+        store
+            .modify(
+                "pool",
+                Box::new(move |_| Box::pin(async move { Ok(Some(credential)) })),
+                None,
+            )
+            .await
+            .expect("seed");
+        let auth = ProviderModelsAuth::new(
+            store.clone(),
+            Arc::new(crate::auth::context::default_provider_auth_context()),
+        );
+        let models = create_models(Some(CreateModelsOptions {
+            auth: Some(Arc::new(auth)),
+            models_store: None,
+        }));
+        let api_key: Arc<dyn ApiKeyAuth> =
+            Arc::new(crate::auth::helpers::env_api_key_auth("test key", &[]));
         let classifier: Arc<dyn ProviderClassifier> = Arc::new(BuiltinClassifier);
-        let provider = create_provider_with_classifiers(CreateProviderOptions {
-            id: "pool".into(), name: None, base_url: None, headers: None,
-            auth: Some(crate::auth::types::ProviderAuth { api_key: Some(api_key), oauth: None }),
-            models: Vec::new(), fetch_models: None, restore_models: None, filter_models: None,
-            api: ProviderApi::ByApi(IndexMap::new()), images: IndexMap::new(),
-        }, None, Vec::new(), [("test".into(), classifier)].into_iter().collect()).expect("provider");
+        let provider = create_provider_with_classifiers(
+            CreateProviderOptions {
+                id: "pool".into(),
+                name: None,
+                base_url: None,
+                headers: None,
+                auth: Some(crate::auth::types::ProviderAuth {
+                    api_key: Some(api_key),
+                    oauth: None,
+                }),
+                models: Vec::new(),
+                fetch_models: None,
+                restore_models: None,
+                filter_models: None,
+                api: ProviderApi::ByApi(IndexMap::new()),
+                images: IndexMap::new(),
+            },
+            None,
+            Vec::new(),
+            [("test".into(), classifier)].into_iter().collect(),
+        )
+        .expect("provider");
         models.set_provider(provider);
-        (models, store, Arc::new(LoginInteraction { receipts: Mutex::new(Vec::new()) }))
+        (
+            models,
+            store,
+            Arc::new(LoginInteraction {
+                receipts: Mutex::new(Vec::new()),
+            }),
+        )
     }
 
     #[tokio::test]
@@ -2334,35 +2483,88 @@ mod models_api_audit_tests {
         // Given a stored credential with pool metadata.
         let (models, store, interaction) = pooled_auth().await;
         // When the provider logs in a second account.
-        models.login("pool", crate::auth::types::AuthType::ApiKey, interaction.clone(), None).await.expect("login");
+        models
+            .login(
+                "pool",
+                crate::auth::types::AuthType::ApiKey,
+                interaction.clone(),
+                None,
+            )
+            .await
+            .expect("login");
         // Then the serialized pool and committed receipt retain both accounts.
-        let stored = serde_json::to_value(store.read("pool", None).await.expect("read").expect("stored")).expect("json");
+        let stored = serde_json::to_value(
+            store
+                .read("pool", None)
+                .await
+                .expect("read")
+                .expect("stored"),
+        )
+        .expect("json");
         assert_eq!(stored["accounts"][0]["key"], "first-key");
         assert_eq!(stored["accounts"][1]["key"], "second-key");
         assert_eq!(stored["pinned"], "default");
         assert_eq!(stored["order"], serde_json::json!(["default"]));
         assert_eq!(stored["providerField"], "retained");
-        assert_eq!(interaction.receipts.lock().expect("receipts")[0].name, "login-2");
+        assert_eq!(
+            interaction.receipts.lock().expect("receipts")[0].name,
+            "login-2"
+        );
     }
 
     #[tokio::test]
     async fn slot_logout_reprojects_survivor_and_deletes_last_account() {
         // Given two accounts in the stored pool.
         let (models, store, interaction) = pooled_auth().await;
-        models.login("pool", crate::auth::types::AuthType::ApiKey, interaction, None).await.expect("login");
+        models
+            .login(
+                "pool",
+                crate::auth::types::AuthType::ApiKey,
+                interaction,
+                None,
+            )
+            .await
+            .expect("login");
         // When each account is removed through slot-scoped logout.
-        models.logout("pool", Some(ModelsLogoutOptions { slot_id: Some("default".into()), ..Default::default() })).await.expect("logout");
+        models
+            .logout(
+                "pool",
+                Some(ModelsLogoutOptions {
+                    slot_id: Some("default".into()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .expect("logout");
         // Then the survivor is projected without discarding provider metadata.
-        let stored = serde_json::to_value(store.read("pool", None).await.expect("read").expect("stored")).expect("json");
+        let stored = serde_json::to_value(
+            store
+                .read("pool", None)
+                .await
+                .expect("read")
+                .expect("stored"),
+        )
+        .expect("json");
         assert_eq!(stored["key"], "second-key");
         assert_eq!(stored["providerField"], "retained");
         assert!(stored.get("pinned").is_none());
-        models.logout("pool", Some(ModelsLogoutOptions { slot_id: Some("login-2".into()), ..Default::default() })).await.expect("last logout");
+        models
+            .logout(
+                "pool",
+                Some(ModelsLogoutOptions {
+                    slot_id: Some("login-2".into()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .expect("last logout");
         assert!(store.read("pool", None).await.expect("read").is_none());
     }
 
     fn relay_model() -> Model {
-        crate::models_generated::get_builtin_model("anthropic", "claude-fable-5").expect("model").clone()
+        crate::models_generated::get_builtin_model("anthropic", "claude-fable-5")
+            .expect("model")
+            .clone()
     }
 
     #[tokio::test]
@@ -2370,12 +2572,21 @@ mod models_api_audit_tests {
         // Given a typed OAuth setup failure.
         let models = create_models(None);
         let stream = models.lazy(&relay_model(), async {
-            Err(ModelsError::new(ModelsErrorCode::OAuth, "refresh unavailable"))
+            Err(ModelsError::new(
+                ModelsErrorCode::OAuth,
+                "refresh unavailable",
+            ))
         });
         // When the wrapper publishes its terminal error message.
-        let result = tokio::time::timeout(std::time::Duration::from_secs(5), stream.result()).await.expect("result deadline").expect("message");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), stream.result())
+            .await
+            .expect("result deadline")
+            .expect("message");
         // Then the machine-consumed OAuth diagnostic remains attached.
-        assert_eq!(result.diagnostics.expect("diagnostics")[0].kind, crate::utils::retry::OAUTH_REFRESH_UNAVAILABLE_DIAGNOSTIC);
+        assert_eq!(
+            result.diagnostics.expect("diagnostics")[0].kind,
+            crate::utils::retry::OAUTH_REFRESH_UNAVAILABLE_DIAGNOSTIC
+        );
         stream.cancel().await.expect("cleanup");
     }
 
@@ -2387,11 +2598,20 @@ mod models_api_audit_tests {
         let source = AssistantMessageEventStream::assistant();
         source.set_cancellation_handler(Box::new(|| Box::pin(async { Ok(()) })));
         let partial = crate::utils::lazy::setup_error_message(&model, "partial");
-        source.push(crate::types::AssistantMessageEvent::Start { partial: partial.clone() });
+        source.push(crate::types::AssistantMessageEvent::Start {
+            partial: partial.clone(),
+        });
         let stream = models.lazy(&model, async move { Ok(source) });
-        tokio::time::timeout(std::time::Duration::from_secs(5), stream.next()).await.expect("event deadline").expect("event result").expect("start");
+        tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+            .await
+            .expect("event deadline")
+            .expect("event result")
+            .expect("start");
         // When cancellation interrupts forwarding.
-        tokio::time::timeout(std::time::Duration::from_secs(5), stream.cancel()).await.expect("cancel deadline").expect("cancel");
+        tokio::time::timeout(std::time::Duration::from_secs(5), stream.cancel())
+            .await
+            .expect("cancel deadline")
+            .expect("cancel");
         // Then the last partial is settled instead of waiting forever for a source result.
         assert_eq!(stream.result_if_ready(), Some(Ok(partial)));
     }
@@ -2407,11 +2627,20 @@ mod models_api_audit_tests {
             entered_tx.send(()).expect("entered subscriber");
             std::future::pending().await
         });
-        tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx).await.expect("setup deadline").expect("entered");
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx)
+            .await
+            .expect("setup deadline")
+            .expect("entered");
         // When explicit cancellation is acknowledged.
-        tokio::time::timeout(std::time::Duration::from_secs(5), stream.cancel()).await.expect("cancel deadline").expect("cancel");
+        tokio::time::timeout(std::time::Duration::from_secs(5), stream.cancel())
+            .await
+            .expect("cancel deadline")
+            .expect("cancel");
         // Then setup has been dropped, not detached.
-        assert!(matches!(resource_rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Closed)));
+        assert!(matches!(
+            resource_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
     }
 
     #[tokio::test]
@@ -2423,27 +2652,39 @@ mod models_api_audit_tests {
             let source = AssistantMessageEventStream::assistant();
             let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
             let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-            source.set_cancellation_handler(Box::new(move || Box::pin(async move {
-                entered_tx.send(()).expect("cleanup subscriber");
-                release_rx.await.expect("cleanup release");
-                Ok(())
-            })));
+            source.set_cancellation_handler(Box::new(move || {
+                Box::pin(async move {
+                    entered_tx.send(()).expect("cleanup subscriber");
+                    release_rx.await.expect("cleanup release");
+                    Ok(())
+                })
+            }));
             let message = crate::utils::lazy::setup_error_message(&model, "terminal");
             if failed {
-                source.fail(crate::utils::event_stream::StreamError::new("terminal failure"));
+                source.fail(crate::utils::event_stream::StreamError::new(
+                    "terminal failure",
+                ));
             } else {
                 source.end(Some(message));
             }
             let stream = models.lazy(&model, async move { Ok(source) });
-            let before = tokio::time::timeout(std::time::Duration::from_secs(5), stream.result()).await.expect("terminal deadline");
+            let before = tokio::time::timeout(std::time::Duration::from_secs(5), stream.result())
+                .await
+                .expect("terminal deadline");
             // When cancellation races with a relay that may already have exited.
             let cancellation = stream.cancel();
             tokio::pin!(cancellation);
             assert!(futures::poll!(cancellation.as_mut()).is_pending());
-            tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx).await.expect("cleanup deadline").expect("entered");
+            tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx)
+                .await
+                .expect("cleanup deadline")
+                .expect("entered");
             assert!(futures::poll!(cancellation.as_mut()).is_pending());
             release_tx.send(()).expect("release subscriber");
-            tokio::time::timeout(std::time::Duration::from_secs(5), cancellation).await.expect("cancel deadline").expect("cancel");
+            tokio::time::timeout(std::time::Duration::from_secs(5), cancellation)
+                .await
+                .expect("cancel deadline")
+                .expect("cancel");
             // Then upstream cleanup is joined without changing the terminal result.
             assert_eq!(stream.result_if_ready(), Some(before));
         }

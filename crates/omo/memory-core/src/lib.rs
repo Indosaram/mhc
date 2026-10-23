@@ -1,5 +1,6 @@
 //! Rust port of the `@oh-my-opencode/memory-core` package (SUL-1.0, internal use only).
 
+pub mod agreements;
 pub mod compile;
 pub mod facts;
 pub mod fs;
@@ -10,8 +11,8 @@ pub mod locks;
 pub mod memfs;
 pub mod people;
 pub mod personas;
-pub mod receipts;
 pub mod recall;
+pub mod receipts;
 pub mod reflection;
 pub mod reminders;
 pub mod search;

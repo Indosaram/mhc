@@ -6,8 +6,8 @@ use serde_json::Value;
 
 pub use senpi_desktop_core::error::{PermissionDeniedData, TccPermission};
 pub use senpi_desktop_core::protocol::{
-    rpc_error_code, JsonRpcVersion, MethodRejection, RequestId,
-    INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR,
+    INVALID_PARAMS, INVALID_REQUEST, JsonRpcVersion, METHOD_NOT_FOUND, MethodRejection,
+    PARSE_ERROR, RequestId, rpc_error_code,
 };
 
 use crate::engine_schema_generated::ErrorCode;

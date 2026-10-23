@@ -17,14 +17,15 @@ use senpi_desktop_core::types::{
     DesktopCapabilities, DesktopSessionOptions, PointerOptions, Target,
 };
 use senpi_desktop_safety::{Clock, FakeClock, MutatingAction, StopPathId, Supervisor};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::mutate::{Mutation, SessionSafety};
 use crate::request::{Op, Response};
 use crate::selection::BackendFactory;
 use crate::worker::Worker;
 
-const FIXTURE: &str = include_str!("../../senpi-desktop-backend-fake/fixtures/two-displays-one-window.json");
+const FIXTURE: &str =
+    include_str!("../../senpi-desktop-backend-fake/fixtures/two-displays-one-window.json");
 
 pub(crate) struct Harness {
     pub(crate) worker: Worker,
@@ -190,5 +191,9 @@ pub(crate) fn foreground_click(worker: &mut Worker) -> CoreResult<()> {
 }
 
 pub(crate) fn foreground_click_mutation() -> Mutation<'static> {
-    Mutation::new(MutatingAction::Click, "101".to_owned(), DeliveryMode::Foreground)
+    Mutation::new(
+        MutatingAction::Click,
+        "101".to_owned(),
+        DeliveryMode::Foreground,
+    )
 }

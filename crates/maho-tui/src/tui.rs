@@ -21,8 +21,8 @@ use crate::image_stub::{
 };
 use crate::terminal::Terminal;
 use crate::terminal_colors::{
-    is_terminal_color_da1, parse_osc_color_response,
-    parse_terminal_color_scheme_report, TerminalColorScheme,
+    TerminalColorScheme, is_terminal_color_da1, parse_osc_color_response,
+    parse_terminal_color_scheme_report,
 };
 use crate::utils::{
     extract_segments, normalize_terminal_output, slice_by_column, slice_with_width, visible_width,
@@ -63,7 +63,10 @@ fn parse_cell_size_response(data: &str) -> Option<(u32, u32)> {
     if !digits(height) || !digits(width) {
         return None;
     }
-    Some((height.parse().unwrap_or(u32::MAX), width.parse().unwrap_or(u32::MAX)))
+    Some((
+        height.parse().unwrap_or(u32::MAX),
+        width.parse().unwrap_or(u32::MAX),
+    ))
 }
 
 /// Resolution of a terminal protocol query (senpi's `queryTerminalBackgroundColor` /
@@ -78,7 +81,9 @@ impl<T: Clone> TerminalQueryTicket<T> {
         Self(Rc::new(RefCell::new(None)))
     }
 
-    pub fn result(&self) -> Option<T> { self.0.borrow().clone() }
+    pub fn result(&self) -> Option<T> {
+        self.0.borrow().clone()
+    }
 
     fn settle(&self, value: T) {
         let mut slot = self.0.borrow_mut();
@@ -215,7 +220,10 @@ pub fn dispatch_mouse_event(
 }
 
 /// Recreate local coordinates for a previously dispatched mouse target.
-pub fn retarget_mouse_event(event: &TuiMouseEvent, target: &TuiMouseDispatchTarget) -> TuiMouseEvent {
+pub fn retarget_mouse_event(
+    event: &TuiMouseEvent,
+    target: &TuiMouseDispatchTarget,
+) -> TuiMouseEvent {
     TuiMouseEvent {
         x: event.screen_x - target.origin_x,
         y: event.screen_y - target.origin_y,
@@ -306,11 +314,13 @@ pub trait Component {
 const DIAGNOSTIC_LOG_MODE: u32 = 0o600;
 
 /// senpi `renderErrorLoggedClasses`: component names whose render error was already logged.
-static RENDER_ERROR_LOGGED_CLASSES: std::sync::Mutex<Option<HashSet<String>>> = std::sync::Mutex::new(None);
+static RENDER_ERROR_LOGGED_CLASSES: std::sync::Mutex<Option<HashSet<String>>> =
+    std::sync::Mutex::new(None);
 
 /// senpi `renderErrorLogDirectory`: render containment logs from module scope because
 /// `Container` has no TUI instance, so the host-resolved log directory is published here.
-static RENDER_ERROR_LOG_DIRECTORY: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+static RENDER_ERROR_LOG_DIRECTORY: std::sync::Mutex<Option<std::path::PathBuf>> =
+    std::sync::Mutex::new(None);
 
 /// senpi `defaultDiagnosticLogDirectory`: `~/.senpi/agent`.
 fn default_diagnostic_log_directory() -> std::path::PathBuf {
@@ -339,11 +349,19 @@ fn component_render_error_name(component: &Rc<RefCell<dyn Component>>) -> String
 
 /// senpi `logRenderErrorOnce`: append one `render error` line per component name to
 /// `<logDir>/senpi-debug.log`.
-fn log_render_error_once(component: &Rc<RefCell<dyn Component>>, error: &(dyn std::any::Any + Send)) {
+fn log_render_error_once(
+    component: &Rc<RefCell<dyn Component>>,
+    error: &(dyn std::any::Any + Send),
+) {
     let component_name = component_render_error_name(component);
     {
-        let mut logged = RENDER_ERROR_LOGGED_CLASSES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !logged.get_or_insert_with(HashSet::new).insert(component_name.clone()) {
+        let mut logged = RENDER_ERROR_LOGGED_CLASSES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !logged
+            .get_or_insert_with(HashSet::new)
+            .insert(component_name.clone())
+        {
             return;
         }
     }
@@ -358,7 +376,10 @@ fn log_render_error_once(component: &Rc<RefCell<dyn Component>>, error: &(dyn st
         .clone()
         .unwrap_or_else(default_diagnostic_log_directory);
     let log_path = log_directory.join("senpi-debug.log");
-    let msg = format!("[{}] render error: {component_name}: {error_text}\n", diagnostic_timestamp());
+    let msg = format!(
+        "[{}] render error: {component_name}: {error_text}\n",
+        diagnostic_timestamp()
+    );
     append_render_error_log_best_effort(&log_path, &msg);
 }
 
@@ -402,7 +423,8 @@ fn write_render_diagnostic_best_effort(log_path: &std::path::Path, data: &str) -
     {
         return false;
     }
-    let written = open_diagnostic_log(log_path, false).and_then(|mut file| file.write_all(data.as_bytes()));
+    let written =
+        open_diagnostic_log(log_path, false).and_then(|mut file| file.write_all(data.as_bytes()));
     if written.is_err() {
         return false;
     }
@@ -411,7 +433,12 @@ fn write_render_diagnostic_best_effort(log_path: &std::path::Path, data: &str) -
 }
 
 /// senpi `formatOverWideRenderDiagnostic`.
-fn format_over_wide_render_diagnostic(lines: &[String], terminal_width: usize, line_index: usize, line_width: usize) -> String {
+fn format_over_wide_render_diagnostic(
+    lines: &[String],
+    terminal_width: usize,
+    line_index: usize,
+    line_width: usize,
+) -> String {
     let mut parts = vec![
         format!("Crash at {}", diagnostic_timestamp()),
         format!("Terminal width: {terminal_width}"),
@@ -419,7 +446,12 @@ fn format_over_wide_render_diagnostic(lines: &[String], terminal_width: usize, l
         String::new(),
         "=== All rendered lines ===".to_owned(),
     ];
-    parts.extend(lines.iter().enumerate().map(|(index, line)| format!("[{index}] (w={}) {line}", visible_width(line))));
+    parts.extend(
+        lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| format!("[{index}] (w={}) {line}", visible_width(line))),
+    );
     parts.push(String::new());
     parts.join("\n")
 }
@@ -429,7 +461,10 @@ fn chmod_diagnostic_log_best_effort(log_path: &std::path::Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(log_path, std::fs::Permissions::from_mode(DIAGNOSTIC_LOG_MODE));
+        let _ = std::fs::set_permissions(
+            log_path,
+            std::fs::Permissions::from_mode(DIAGNOSTIC_LOG_MODE),
+        );
     }
     #[cfg(not(unix))]
     let _ = log_path;
@@ -492,7 +527,10 @@ impl Container {
     /// `Rc<RefCell<dyn Component>>` and so cannot go through the top-level
     /// [`dispatch_mouse_event`] (senpi's `TuiBase extends Container`, where `this` is always
     /// such a handle; this crate's `TuiBase` holds its `Container` unwrapped).
-    pub fn dispatch_mouse_with_target(&mut self, event: &TuiMouseEvent) -> Option<TuiMouseDispatchResult> {
+    pub fn dispatch_mouse_with_target(
+        &mut self,
+        event: &TuiMouseEvent,
+    ) -> Option<TuiMouseDispatchResult> {
         if event.y < 0 || event.y >= event.height as i64 {
             return None;
         }
@@ -564,7 +602,9 @@ impl Component for Container {
         let mut lines = Vec::new();
         let mut mouse_children = Vec::with_capacity(self.children.len());
         for child in &self.children {
-            let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| child.borrow_mut().render(width)));
+            let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                child.borrow_mut().render(width)
+            }));
             let child_lines = match rendered {
                 Ok(child_lines) => child_lines,
                 Err(error) => {
@@ -648,7 +688,13 @@ pub fn composite_tui_line(
     overlay_width: usize,
     total_width: usize,
 ) -> String {
-    composite_line_at(base_line, overlay_line, start_col, overlay_width, total_width)
+    composite_line_at(
+        base_line,
+        overlay_line,
+        start_col,
+        overlay_width,
+        total_width,
+    )
 }
 
 fn composite_line_at(
@@ -673,7 +719,8 @@ fn composite_line_at(
         total_width.saturating_sub(after_start),
         true,
     );
-    let (overlay_text, overlay_actual_width) = slice_with_width(overlay_line, 0, overlay_width, true);
+    let (overlay_text, overlay_actual_width) =
+        slice_with_width(overlay_line, 0, overlay_width, true);
 
     let before_pad = start_col.saturating_sub(base.before_width);
     let overlay_pad = overlay_width.saturating_sub(overlay_actual_width);
@@ -951,7 +998,13 @@ pub struct MouseAnchor {
 
 impl Default for MouseAnchor {
     fn default() -> Self {
-        Self { kind: MouseAnchorKind::Unknown, frame_top_screen_row: None, epoch: 0, rows: 0, columns: 0 }
+        Self {
+            kind: MouseAnchorKind::Unknown,
+            frame_top_screen_row: None,
+            epoch: 0,
+            rows: 0,
+            columns: 0,
+        }
     }
 }
 
@@ -998,7 +1051,8 @@ impl Default for TuiBaseState {
             input_render_pending: false,
             cursor_row: 0,
             hardware_cursor_row: 0,
-            show_hardware_cursor: crate::process_env::var("PI_HARDWARE_CURSOR").as_deref() == Some("1"),
+            show_hardware_cursor: crate::process_env::var("PI_HARDWARE_CURSOR").as_deref()
+                == Some("1"),
             clear_on_shrink: crate::process_env::var("PI_CLEAR_ON_SHRINK").as_deref() == Some("1"),
             max_lines_rendered: 0,
             previous_viewport_top: 0,
@@ -1065,7 +1119,11 @@ impl TuiBaseState {
         }
     }
 
-    fn retarget_overlay_pre_focus(&mut self, removed: &Rc<RefCell<dyn Component>>, removed_pre_focus: Option<Rc<RefCell<dyn Component>>>) {
+    fn retarget_overlay_pre_focus(
+        &mut self,
+        removed: &Rc<RefCell<dyn Component>>,
+        removed_pre_focus: Option<Rc<RefCell<dyn Component>>>,
+    ) {
         for overlay in &mut self.overlay_stack {
             if ptr_eq_opt(&overlay.pre_focus, removed) {
                 overlay.pre_focus = removed_pre_focus.clone();
@@ -1114,7 +1172,11 @@ impl TuiBaseState {
         state.render_due_at_ms = Some(0);
     }
 
-    fn set_overlay_hidden(this: &Rc<RefCell<Self>>, component: &Rc<RefCell<dyn Component>>, hidden: bool) {
+    fn set_overlay_hidden(
+        this: &Rc<RefCell<Self>>,
+        component: &Rc<RefCell<dyn Component>>,
+        hidden: bool,
+    ) {
         let mut state = this.borrow_mut();
         let Some(index) = state
             .overlay_stack
@@ -1219,9 +1281,10 @@ impl TuiBaseState {
             _ => false,
         };
         if blocked_on_this_entry_focused_on_blocker {
-            if let OverlayFocusRestore::Blocked { blocked_by, .. } =
-                std::mem::replace(&mut state.overlay_focus_restore, OverlayFocusRestore::Inactive)
-                && let Some(options) = options
+            if let OverlayFocusRestore::Blocked { blocked_by, .. } = std::mem::replace(
+                &mut state.overlay_focus_restore,
+                OverlayFocusRestore::Inactive,
+            ) && let Some(options) = options
             {
                 state.overlay_focus_restore = OverlayFocusRestore::Blocked {
                     overlay_component: Rc::clone(&state.overlay_stack[index].component),
@@ -1289,12 +1352,22 @@ pub struct TuiBase {
     next_terminal_color_scheme_listener_id: u64,
     pending_terminal_colors_queries: Vec<PendingTerminalColorsQuery>,
     pending_terminal_color_scheme_queries: Vec<PendingTerminalQuery<Option<TerminalColorScheme>>>,
+    /// senpi's `pendingKittyGraphicsProbe`: the in-flight probe's image id and timeout start.
+    pending_kitty_graphics_probe: Option<PendingKittyGraphicsProbe>,
+    /// Set when a successful probe needs the cell-size query written; flushed by the next render
+    /// because input handling has no terminal handle.
+    cell_size_query_pending: bool,
     /// senpi's `#muxDetector` (`TuiConstructorOptions.muxDetector`, default
     /// [`crate::mux::is_multiplexer_session`]).
     mux_detector: Box<dyn Fn() -> bool>,
     /// senpi `logDirectory`: directory for debug/crash logs (`PI_DEBUG_REDRAW`, render errors),
     /// defaulting to `~/.senpi/agent`.
     log_directory: std::path::PathBuf,
+}
+
+struct PendingKittyGraphicsProbe {
+    image_id: u32,
+    started: std::time::Instant,
 }
 
 struct PendingTerminalColorsQuery {
@@ -1319,6 +1392,8 @@ impl TuiBase {
             next_terminal_color_scheme_listener_id: 0,
             pending_terminal_colors_queries: Vec::new(),
             pending_terminal_color_scheme_queries: Vec::new(),
+            pending_kitty_graphics_probe: None,
+            cell_size_query_pending: false,
             mux_detector: Box::new(crate::mux::is_multiplexer_session),
             log_directory: default_diagnostic_log_directory(),
         }
@@ -1327,7 +1402,9 @@ impl TuiBase {
     /// senpi's `logDirectory` constructor argument: the host-resolved log directory, also
     /// published for module-scope render containment (`renderErrorLogDirectory`).
     pub fn set_log_directory(&mut self, log_directory: std::path::PathBuf) {
-        *RENDER_ERROR_LOG_DIRECTORY.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(log_directory.clone());
+        *RENDER_ERROR_LOG_DIRECTORY
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(log_directory.clone());
         self.log_directory = log_directory;
     }
 
@@ -1372,6 +1449,62 @@ impl TuiBase {
             terminal.write(ENABLE_TERMINAL_COLOR_SCHEME_NOTIFICATIONS);
         }
         self.query_cell_size(terminal);
+        self.probe_kitty_graphics(terminal);
+        self.request_render(false, 0);
+    }
+
+    /// senpi's `probeKittyGraphics`: terminals whose environment says nothing about image
+    /// support are asked directly; the answer or a timeout latches the result.
+    fn probe_kitty_graphics(&mut self, terminal: &mut dyn Terminal) {
+        if self.pending_kitty_graphics_probe.is_some() {
+            return;
+        }
+        if crate::terminal_image::get_capabilities().image_probe
+            != Some(crate::terminal_capabilities::ImageProbe::Kitty)
+        {
+            return;
+        }
+        let image_id = crate::terminal_image::allocate_image_id();
+        self.pending_kitty_graphics_probe = Some(PendingKittyGraphicsProbe {
+            image_id,
+            started: std::time::Instant::now(),
+        });
+        terminal.write(&crate::kitty_graphics_probe::build_kitty_graphics_query(
+            image_id,
+        ));
+    }
+
+    /// senpi's `consumeKittyGraphicsProbeResponse`.
+    fn consume_kitty_graphics_probe_response(&mut self, data: &str) -> bool {
+        let Some(probe) = &self.pending_kitty_graphics_probe else {
+            return false;
+        };
+        let Some(outcome) =
+            crate::kitty_graphics_probe::parse_kitty_graphics_probe_response(data, probe.image_id)
+        else {
+            return false;
+        };
+        self.resolve_kitty_graphics_probe(
+            outcome == crate::kitty_graphics_probe::KittyGraphicsProbeOutcome::Ok,
+        );
+        true
+    }
+
+    /// senpi's `resolveKittyGraphicsProbe`.
+    fn resolve_kitty_graphics_probe(&mut self, supported: bool) {
+        if self.pending_kitty_graphics_probe.take().is_none() {
+            return;
+        }
+        crate::terminal_image::set_probed_image_protocol(
+            supported.then_some(crate::terminal_capabilities::ImageProtocol::Kitty),
+        );
+        if self.state.borrow().stopped {
+            return;
+        }
+        if supported {
+            self.cell_size_query_pending = true;
+        }
+        self.invalidate();
         self.request_render(false, 0);
     }
 
@@ -1408,6 +1541,9 @@ impl TuiBase {
             state.input_render_pending = false;
             state.render_due_at_ms = None;
         }
+        // Clears the probe timer without resolving the latch.
+        self.pending_kitty_graphics_probe = None;
+        self.cell_size_query_pending = false;
         if self.terminal_color_scheme_notifications_enabled {
             terminal.write(DISABLE_TERMINAL_COLOR_SCHEME_NOTIFICATIONS);
         }
@@ -1420,7 +1556,11 @@ impl TuiBase {
         self.reset_mouse_capture_state();
         let (line_count, hardware_cursor_row, cursor_hidden) = {
             let state = self.state.borrow();
-            (state.previous_lines.len(), state.hardware_cursor_row, state.last_cursor_visibility == Some(false))
+            (
+                state.previous_lines.len(),
+                state.hardware_cursor_row,
+                state.last_cursor_visibility == Some(false),
+            )
         };
         if !preserve_screen && line_count > 0 {
             if cursor_hidden {
@@ -1451,7 +1591,10 @@ impl TuiBase {
 
     /// senpi's `onTerminalColorSchemeChange`; returns the id for
     /// [`TuiBase::remove_terminal_color_scheme_listener`].
-    pub fn on_terminal_color_scheme_change(&mut self, listener: TerminalColorSchemeListener) -> u64 {
+    pub fn on_terminal_color_scheme_change(
+        &mut self,
+        listener: TerminalColorSchemeListener,
+    ) -> u64 {
         let id = self.next_terminal_color_scheme_listener_id;
         self.next_terminal_color_scheme_listener_id += 1;
         self.terminal_color_scheme_listeners.push((id, listener));
@@ -1459,11 +1602,16 @@ impl TuiBase {
     }
 
     pub fn remove_terminal_color_scheme_listener(&mut self, id: u64) {
-        self.terminal_color_scheme_listeners.retain(|(listener_id, _)| *listener_id != id);
+        self.terminal_color_scheme_listeners
+            .retain(|(listener_id, _)| *listener_id != id);
     }
 
     /// senpi's `setTerminalColorSchemeNotifications` (`CSI ? 2031 h/l`).
-    pub fn set_terminal_color_scheme_notifications(&mut self, enabled: bool, terminal: &mut dyn Terminal) {
+    pub fn set_terminal_color_scheme_notifications(
+        &mut self,
+        enabled: bool,
+        terminal: &mut dyn Terminal,
+    ) {
         if self.terminal_color_scheme_notifications_enabled == enabled {
             return;
         }
@@ -1479,28 +1627,51 @@ impl TuiBase {
 
     /// senpi's `queryTerminalBackgroundColor` (OSC 11). The ticket settles with the parsed color,
     /// or `None` once `now_ms + timeout_ms` passes in [`TuiBase::poll_terminal_queries`].
-    pub fn query_terminal_colors(&mut self, terminal: &mut dyn Terminal, timeout_ms: u64, now_ms: u64) -> TerminalQueryTicket<crate::terminal_colors::TerminalColors> {
+    pub fn query_terminal_colors(
+        &mut self,
+        terminal: &mut dyn Terminal,
+        timeout_ms: u64,
+        now_ms: u64,
+    ) -> TerminalQueryTicket<crate::terminal_colors::TerminalColors> {
         let ticket = TerminalQueryTicket::pending();
-        self.pending_terminal_colors_queries.push(PendingTerminalColorsQuery {
-            ticket: ticket.clone(), deadline_ms: now_ms.saturating_add(timeout_ms),
-            colors: crate::terminal_colors::TerminalColors { palette: vec![None; 16], ..Default::default() },
-            replied: HashSet::new(),
-        });
+        self.pending_terminal_colors_queries
+            .push(PendingTerminalColorsQuery {
+                ticket: ticket.clone(),
+                deadline_ms: now_ms.saturating_add(timeout_ms),
+                colors: crate::terminal_colors::TerminalColors {
+                    palette: vec![None; 16],
+                    ..Default::default()
+                },
+                replied: HashSet::new(),
+            });
         terminal.write("\x1b]10;?\x07\x1b]11;?\x07");
-        for index in 0..16 { terminal.write(&format!("\x1b]4;{index};?\x07")); }
+        for index in 0..16 {
+            terminal.write(&format!("\x1b]4;{index};?\x07"));
+        }
         terminal.write("\x1b[c");
         ticket
     }
 
     pub fn terminal_colors_snapshot(&self) -> Option<crate::terminal_colors::TerminalColors> {
-        self.pending_terminal_colors_queries.first().map(|query| query.colors.clone())
+        self.pending_terminal_colors_queries
+            .first()
+            .map(|query| query.colors.clone())
     }
 
     /// senpi's `queryTerminalColorScheme` (DSR 996): settles with the next color-scheme report,
     /// or `None` on timeout.
-    pub fn query_terminal_color_scheme(&mut self, terminal: &mut dyn Terminal, timeout_ms: u64, now_ms: u64) -> TerminalQueryTicket<Option<TerminalColorScheme>> {
+    pub fn query_terminal_color_scheme(
+        &mut self,
+        terminal: &mut dyn Terminal,
+        timeout_ms: u64,
+        now_ms: u64,
+    ) -> TerminalQueryTicket<Option<TerminalColorScheme>> {
         let ticket = TerminalQueryTicket::pending();
-        self.pending_terminal_color_scheme_queries.push(PendingTerminalQuery { ticket: ticket.clone(), deadline_ms: now_ms.saturating_add(timeout_ms) });
+        self.pending_terminal_color_scheme_queries
+            .push(PendingTerminalQuery {
+                ticket: ticket.clone(),
+                deadline_ms: now_ms.saturating_add(timeout_ms),
+            });
         terminal.write(QUERY_TERMINAL_COLOR_SCHEME);
         ticket
     }
@@ -1508,8 +1679,25 @@ impl TuiBase {
     /// Settles every terminal query whose timeout has passed (senpi's per-query `setTimeout`);
     /// call once per driver loop iteration.
     pub fn poll_terminal_queries(&mut self, now_ms: u64) {
+        if self
+            .pending_kitty_graphics_probe
+            .as_ref()
+            .is_some_and(|probe| {
+                probe.started.elapsed()
+                    >= std::time::Duration::from_millis(
+                        crate::kitty_graphics_probe::KITTY_GRAPHICS_PROBE_TIMEOUT_MS,
+                    )
+            })
+        {
+            self.resolve_kitty_graphics_probe(false);
+        }
         self.pending_terminal_colors_queries.retain(|query| {
-            if query.deadline_ms <= now_ms { query.ticket.settle(query.colors.clone()); false } else { true }
+            if query.deadline_ms <= now_ms {
+                query.ticket.settle(query.colors.clone());
+                false
+            } else {
+                true
+            }
         });
         self.pending_terminal_color_scheme_queries.retain(|query| {
             if query.deadline_ms <= now_ms {
@@ -1522,20 +1710,28 @@ impl TuiBase {
 
     /// Consumes the next matching OSC color response or DA1 terminator.
     fn consume_terminal_color_response(&mut self, data: &str) -> bool {
-        let Some(query) = self.pending_terminal_colors_queries.first_mut() else { return false; };
+        let Some(query) = self.pending_terminal_colors_queries.first_mut() else {
+            return false;
+        };
         if is_terminal_color_da1(data) {
             let query = self.pending_terminal_colors_queries.remove(0);
             query.ticket.settle(query.colors);
             return true;
         }
-        let Some(response) = parse_osc_color_response(data) else { return false; };
+        let Some(response) = parse_osc_color_response(data) else {
+            return false;
+        };
         let (key, slot) = match response.target {
             crate::terminal_colors::OscColorTarget::Foreground => ("foreground".to_string(), 0),
             crate::terminal_colors::OscColorTarget::Background => ("background".to_string(), 1),
-            crate::terminal_colors::OscColorTarget::Palette(index) if index < 16 => (index.to_string(), usize::from(index) + 2),
+            crate::terminal_colors::OscColorTarget::Palette(index) if index < 16 => {
+                (index.to_string(), usize::from(index) + 2)
+            }
             crate::terminal_colors::OscColorTarget::Palette(_) => return true,
         };
-        if !query.replied.insert(key) { return true; }
+        if !query.replied.insert(key) {
+            return true;
+        }
         match slot {
             0 => query.colors.foreground = response.rgb,
             1 => query.colors.background = response.rgb,
@@ -1570,7 +1766,10 @@ impl TuiBase {
         if height_px == 0 || width_px == 0 {
             return true;
         }
-        crate::terminal_image::set_cell_dimensions(crate::terminal_capabilities::CellDimensions { width_px, height_px });
+        crate::terminal_image::set_cell_dimensions(crate::terminal_capabilities::CellDimensions {
+            width_px,
+            height_px,
+        });
         self.invalidate();
         self.request_render(false, 0);
         true
@@ -1597,7 +1796,9 @@ impl TuiBase {
     }
 
     fn mounted_roots(&self) -> Vec<Rc<RefCell<dyn Component>>> {
-        self.mounted_roots_override.clone().unwrap_or_else(|| self.container.children.clone())
+        self.mounted_roots_override
+            .clone()
+            .unwrap_or_else(|| self.container.children.clone())
     }
 
     /// Registers a listener invoked with every input chunk before it reaches the focused
@@ -1610,7 +1811,8 @@ impl TuiBase {
     }
 
     pub fn remove_input_listener(&mut self, id: u64) {
-        self.input_listeners.retain(|(listener_id, _)| *listener_id != id);
+        self.input_listeners
+            .retain(|(listener_id, _)| *listener_id != id);
     }
 
     pub fn children(&self) -> &[Rc<RefCell<dyn Component>>] {
@@ -1675,8 +1877,10 @@ impl TuiBase {
                         overlay_component,
                         blocked_by,
                         resume,
-                    } = std::mem::replace(&mut state.overlay_focus_restore, OverlayFocusRestore::Inactive)
-                    {
+                    } = std::mem::replace(
+                        &mut state.overlay_focus_restore,
+                        OverlayFocusRestore::Inactive,
+                    ) {
                         let mounted = self.is_component_mounted_locked(&state, &blocked_by);
                         let resume_is_target = matches!(resume, OverlayFocusResume::FocusTarget(_));
                         if resume_is_target || !mounted {
@@ -1698,15 +1902,17 @@ impl TuiBase {
                         OverlayFocusRestore::Eligible { overlay_component }
                         | OverlayFocusRestore::Blocked { overlay_component, .. }
                             if Rc::ptr_eq(overlay_component, &state.overlay_stack[overlay_index].component)
-                    ) && !matches!(&state.overlay_focus_restore, OverlayFocusRestore::Inactive);
-                    let is_ancestor = self.is_overlay_focus_ancestor_locked(
-                        &state,
-                        overlay_index,
-                        &next,
+                    ) && !matches!(
+                        &state.overlay_focus_restore,
+                        OverlayFocusRestore::Inactive
                     );
+                    let is_ancestor =
+                        self.is_overlay_focus_ancestor_locked(&state, overlay_index, &next);
                     if is_current_restore_target && !is_ancestor {
                         state.overlay_focus_restore = OverlayFocusRestore::Blocked {
-                            overlay_component: Rc::clone(&state.overlay_stack[overlay_index].component),
+                            overlay_component: Rc::clone(
+                                &state.overlay_stack[overlay_index].component,
+                            ),
                             blocked_by: next,
                             resume: OverlayFocusResume::RestoreOverlay,
                         };
@@ -1724,8 +1930,10 @@ impl TuiBase {
                     overlay_component,
                     resume,
                     ..
-                } = std::mem::replace(&mut state.overlay_focus_restore, OverlayFocusRestore::Inactive)
-                {
+                } = std::mem::replace(
+                    &mut state.overlay_focus_restore,
+                    OverlayFocusRestore::Inactive,
+                ) {
                     next_focus = match resume {
                         OverlayFocusResume::RestoreOverlay => Some(overlay_component),
                         OverlayFocusResume::FocusTarget(target) => target,
@@ -1739,10 +1947,9 @@ impl TuiBase {
         state.set_focus_component(next_focus.clone());
 
         if let Some(next) = &next_focus
-            && let Some(index) = state
-                .overlay_stack
-                .iter()
-                .position(|entry| Rc::ptr_eq(&entry.component, next) && TuiBaseState::is_overlay_visible(entry, 0, 0))
+            && let Some(index) = state.overlay_stack.iter().position(|entry| {
+                Rc::ptr_eq(&entry.component, next) && TuiBaseState::is_overlay_visible(entry, 0, 0)
+            })
         {
             state.overlay_focus_restore = OverlayFocusRestore::Eligible {
                 overlay_component: Rc::clone(&state.overlay_stack[index].component),
@@ -1750,13 +1957,20 @@ impl TuiBase {
         }
     }
 
-    fn is_component_mounted_locked(&self, _state: &TuiBaseState, component: &Rc<RefCell<dyn Component>>) -> bool {
+    fn is_component_mounted_locked(
+        &self,
+        _state: &TuiBaseState,
+        component: &Rc<RefCell<dyn Component>>,
+    ) -> bool {
         self.mounted_roots()
             .iter()
             .any(|child| Self::contains_component(child, component))
     }
 
-    fn contains_component(root: &Rc<RefCell<dyn Component>>, target: &Rc<RefCell<dyn Component>>) -> bool {
+    fn contains_component(
+        root: &Rc<RefCell<dyn Component>>,
+        target: &Rc<RefCell<dyn Component>>,
+    ) -> bool {
         if Rc::ptr_eq(root, target) {
             return true;
         }
@@ -1775,7 +1989,10 @@ impl TuiBase {
     /// `Component`; here the base [`Container`] is unwrapped, so this returns the matched
     /// child's own [`TuiMouseDispatchResult`] via [`Container::dispatch_mouse_with_target`]
     /// instead of a handle to the base itself).
-    pub fn dispatch_self_mouse_event(&mut self, event: &TuiMouseEvent) -> Option<TuiMouseDispatchResult> {
+    pub fn dispatch_self_mouse_event(
+        &mut self,
+        event: &TuiMouseEvent,
+    ) -> Option<TuiMouseDispatchResult> {
         self.container.dispatch_mouse_with_target(event)
     }
 
@@ -1793,10 +2010,15 @@ impl TuiBase {
     /// component itself when it can receive keys, else the nearest surrounding component that
     /// can. `None` when nothing in that chain can - a mouse-only control that owned focus would
     /// swallow every later keystroke.
-    pub fn resolve_mouse_focus_target(&self, component: &Rc<RefCell<dyn Component>>) -> Option<Rc<RefCell<dyn Component>>> {
+    pub fn resolve_mouse_focus_target(
+        &self,
+        component: &Rc<RefCell<dyn Component>>,
+    ) -> Option<Rc<RefCell<dyn Component>>> {
         let state = self.state.borrow();
         for overlay in state.overlay_stack.iter().rev() {
-            if TuiBaseState::is_overlay_visible(overlay, 0, 0) && Self::contains_component(&overlay.component, component) {
+            if TuiBaseState::is_overlay_visible(overlay, 0, 0)
+                && Self::contains_component(&overlay.component, component)
+            {
                 return Some(Rc::clone(&overlay.component));
             }
         }
@@ -1808,8 +2030,15 @@ impl TuiBase {
     }
 
     /// Deepest mounted ancestor of `target` that can receive keys, excluding `target` itself.
-    fn find_key_focus_owner(&self, target: &Rc<RefCell<dyn Component>>) -> Option<Rc<RefCell<dyn Component>>> {
-        fn walk(node: &Rc<RefCell<dyn Component>>, target: &Rc<RefCell<dyn Component>>, path: &mut Vec<Rc<RefCell<dyn Component>>>) -> bool {
+    fn find_key_focus_owner(
+        &self,
+        target: &Rc<RefCell<dyn Component>>,
+    ) -> Option<Rc<RefCell<dyn Component>>> {
+        fn walk(
+            node: &Rc<RefCell<dyn Component>>,
+            target: &Rc<RefCell<dyn Component>>,
+            path: &mut Vec<Rc<RefCell<dyn Component>>>,
+        ) -> bool {
             path.push(Rc::clone(node));
             if Rc::ptr_eq(node, target) {
                 return true;
@@ -1893,7 +2122,11 @@ impl TuiBase {
             state.placement_epoch += 1;
             let epoch = state.placement_epoch;
             state.anchor = MouseAnchor {
-                kind: if clear { MouseAnchorKind::Cleared } else { MouseAnchorKind::Unknown },
+                kind: if clear {
+                    MouseAnchorKind::Cleared
+                } else {
+                    MouseAnchorKind::Unknown
+                },
                 frame_top_screen_row: if clear { Some(0) } else { None },
                 epoch,
                 rows: terminal.rows(),
@@ -1913,7 +2146,11 @@ impl TuiBase {
             state.placement_epoch += 1;
         }
         state.mouse_committed_line_count = state.previous_lines.len();
-        if state.previous_lines.iter().any(|line| crate::image_stub::is_image_line(line)) {
+        if state
+            .previous_lines
+            .iter()
+            .any(|line| crate::image_stub::is_image_line(line))
+        {
             state.placement_epoch += 1;
             state.anchor.kind = MouseAnchorKind::Unknown;
             return;
@@ -1922,10 +2159,25 @@ impl TuiBase {
         let columns = terminal.columns();
         if state.previous_lines.len() >= rows as usize {
             let epoch = state.placement_epoch;
-            state.anchor = MouseAnchor { kind: MouseAnchorKind::Viewport, frame_top_screen_row: None, epoch, rows, columns };
-        } else if state.anchor.epoch != state.placement_epoch || state.anchor.rows != rows || state.anchor.columns != columns {
+            state.anchor = MouseAnchor {
+                kind: MouseAnchorKind::Viewport,
+                frame_top_screen_row: None,
+                epoch,
+                rows,
+                columns,
+            };
+        } else if state.anchor.epoch != state.placement_epoch
+            || state.anchor.rows != rows
+            || state.anchor.columns != columns
+        {
             let epoch = state.placement_epoch;
-            state.anchor = MouseAnchor { kind: MouseAnchorKind::Unknown, frame_top_screen_row: None, epoch, rows, columns };
+            state.anchor = MouseAnchor {
+                kind: MouseAnchorKind::Unknown,
+                frame_top_screen_row: None,
+                epoch,
+                rows,
+                columns,
+            };
         }
     }
 
@@ -1940,7 +2192,10 @@ impl TuiBase {
                 || state.mouse_anchor_pending
                 || state.mouse_external_write_pending
                 || state.previous_lines.is_empty()
-                || state.previous_lines.iter().any(|line| crate::image_stub::is_image_line(line))
+                || state
+                    .previous_lines
+                    .iter()
+                    .any(|line| crate::image_stub::is_image_line(line))
             {
                 return;
             }
@@ -2126,10 +2381,10 @@ impl TuiBase {
     pub fn is_overlay_focused(&self) -> bool {
         let state = self.state.borrow();
         state.focused_component.as_ref().is_some_and(|focused| {
-            state
-                .overlay_stack
-                .iter()
-                .any(|entry| Rc::ptr_eq(&entry.component, focused) && TuiBaseState::is_overlay_visible(entry, 0, 0))
+            state.overlay_stack.iter().any(|entry| {
+                Rc::ptr_eq(&entry.component, focused)
+                    && TuiBaseState::is_overlay_visible(entry, 0, 0)
+            })
         })
     }
 
@@ -2313,6 +2568,7 @@ impl TuiBase {
         }
         if self.consume_terminal_color_response(&data)
             || self.consume_terminal_color_scheme_report(&data)
+            || self.consume_kitty_graphics_probe_response(&data)
             || self.consume_cell_size_response(&data)
         {
             return None;
@@ -2345,19 +2601,19 @@ impl TuiBase {
                 if let Some(fallback) = fallback {
                     self.set_focus(Some(fallback));
                 } else {
-                    let pre_focus = self
-                        .state
-                        .borrow()
-                        .focused_component
-                        .as_ref()
-                        .and_then(|focused| {
-                            self.state
-                                .borrow()
-                                .overlay_stack
-                                .iter()
-                                .find(|entry| Rc::ptr_eq(&entry.component, focused))
-                                .and_then(|entry| entry.pre_focus.clone())
-                        });
+                    let pre_focus =
+                        self.state
+                            .borrow()
+                            .focused_component
+                            .as_ref()
+                            .and_then(|focused| {
+                                self.state
+                                    .borrow()
+                                    .overlay_stack
+                                    .iter()
+                                    .find(|entry| Rc::ptr_eq(&entry.component, focused))
+                                    .and_then(|entry| entry.pre_focus.clone())
+                            });
                     self.set_focus_internal(pre_focus, OverlayFocusRestorePolicy::Preserve);
                 }
             }
@@ -2384,8 +2640,9 @@ impl TuiBase {
                             blocked_by, resume, ..
                         } if !ptr_eq_opt(&state.focused_component, blocked_by) => match resume {
                             OverlayFocusResume::RestoreOverlay => {
-                                if let OverlayFocusRestore::Blocked { overlay_component, .. } =
-                                    &state.overlay_focus_restore
+                                if let OverlayFocusRestore::Blocked {
+                                    overlay_component, ..
+                                } = &state.overlay_focus_restore
                                 {
                                     Some(Some(Rc::clone(overlay_component)))
                                 } else {
@@ -2402,7 +2659,8 @@ impl TuiBase {
                         self.state.borrow().overlay_focus_restore,
                         OverlayFocusRestore::Blocked { .. }
                     ) {
-                        self.state.borrow_mut().overlay_focus_restore = OverlayFocusRestore::Inactive;
+                        self.state.borrow_mut().overlay_focus_restore =
+                            OverlayFocusRestore::Inactive;
                     }
                     self.set_focus(target);
                 }
@@ -2460,7 +2718,12 @@ impl TuiBase {
         }
     }
 
-    fn resolve_anchor_row(anchor: OverlayAnchor, height: i64, avail_height: i64, margin_top: i64) -> i64 {
+    fn resolve_anchor_row(
+        anchor: OverlayAnchor,
+        height: i64,
+        avail_height: i64,
+        margin_top: i64,
+    ) -> i64 {
         use OverlayAnchor::*;
         match anchor {
             TopLeft | TopCenter | TopRight => margin_top,
@@ -2469,7 +2732,12 @@ impl TuiBase {
         }
     }
 
-    fn resolve_anchor_col(anchor: OverlayAnchor, width: i64, avail_width: i64, margin_left: i64) -> i64 {
+    fn resolve_anchor_col(
+        anchor: OverlayAnchor,
+        width: i64,
+        avail_width: i64,
+        margin_left: i64,
+    ) -> i64 {
         use OverlayAnchor::*;
         match anchor {
             TopLeft | LeftCenter | BottomLeft => margin_left,
@@ -2508,7 +2776,9 @@ impl TuiBase {
 
         let effective_height = max_height.map_or(overlay_height, |mh| overlay_height.min(mh));
 
-        let anchor = options.and_then(|o| o.anchor).unwrap_or(OverlayAnchor::Center);
+        let anchor = options
+            .and_then(|o| o.anchor)
+            .unwrap_or(OverlayAnchor::Center);
         let mut row = match options.and_then(|o| o.row) {
             Some(value) => match value {
                 SizeValue::Percent(percent) => {
@@ -2537,14 +2807,21 @@ impl TuiBase {
             col += offset_x;
         }
 
-        row = row.max(margin_top).min(term_height - margin_bottom - effective_height);
+        row = row
+            .max(margin_top)
+            .min(term_height - margin_bottom - effective_height);
         col = col.max(margin_left).min(term_width - margin_right - width);
 
         (width, row, col, max_height)
     }
 
     /// Composite all overlays into content lines (sorted by focus order, higher = on top).
-    pub(crate) fn composite_overlays(&mut self, lines: Vec<String>, term_width: u16, term_height: u16) -> Vec<String> {
+    pub(crate) fn composite_overlays(
+        &mut self,
+        lines: Vec<String>,
+        term_width: u16,
+        term_height: u16,
+    ) -> Vec<String> {
         let has_overlays = !self.state.borrow().overlay_stack.is_empty();
         if !has_overlays {
             self.state.borrow_mut().rendered_overlay_layouts.clear();
@@ -2558,7 +2835,13 @@ impl TuiBase {
                 entry.bounds = None;
             }
             let mut indices: Vec<usize> = (0..state.overlay_stack.len())
-                .filter(|&i| TuiBaseState::is_overlay_visible(&state.overlay_stack[i], term_width, term_height))
+                .filter(|&i| {
+                    TuiBaseState::is_overlay_visible(
+                        &state.overlay_stack[i],
+                        term_width,
+                        term_height,
+                    )
+                })
                 .collect();
             indices.sort_by_key(|&i| state.overlay_stack[i].focus_order);
             indices
@@ -2582,8 +2865,12 @@ impl TuiBase {
                     state.overlay_stack[index].options.clone(),
                 )
             };
-            let (width, _, _, max_height) =
-                Self::resolve_overlay_layout(options.as_ref(), 0, term_width as i64, term_height as i64);
+            let (width, _, _, max_height) = Self::resolve_overlay_layout(
+                options.as_ref(),
+                0,
+                term_width as i64,
+                term_height as i64,
+            );
             let mut overlay_lines = component.borrow_mut().render(width.max(1) as usize);
             if let Some(max_height) = max_height {
                 let max_height = max_height.max(0) as usize;
@@ -2648,8 +2935,13 @@ impl TuiBase {
                     } else {
                         overlay_line.clone()
                     };
-                    result[idx as usize] =
-                        composite_line_at(&result[idx as usize], &truncated, r.col.max(0) as usize, r.width, term_width as usize);
+                    result[idx as usize] = composite_line_at(
+                        &result[idx as usize],
+                        &truncated,
+                        r.col.max(0) as usize,
+                        r.width,
+                        term_width as usize,
+                    );
                 }
             }
         }
@@ -2717,11 +3009,16 @@ impl TuiBase {
             return (cached.clone(), false);
         }
         let normalized = format!("{}{}", normalize_terminal_output(line), SEGMENT_RESET);
-        state.normalize_memo.insert(line.to_string(), normalized.clone());
+        state
+            .normalize_memo
+            .insert(line.to_string(), normalized.clone());
         (normalized, true)
     }
 
-    pub(crate) fn apply_line_reset_result(state: &mut TuiBaseState, lines: &[String]) -> NormalizedLinesResult {
+    pub(crate) fn apply_line_reset_result(
+        state: &mut TuiBaseState,
+        lines: &[String],
+    ) -> NormalizedLinesResult {
         let mut previous_memo = std::mem::take(&mut state.normalize_memo);
         let mut next_memo = std::collections::HashMap::new();
         let mut normalized_lines = Vec::with_capacity(lines.len());
@@ -2798,7 +3095,9 @@ impl TuiBase {
                 continue;
             }
             // The replaced raw row will not be looked up again; keep the memo from growing.
-            state.normalize_memo.remove(state.previous_raw_lines[i].as_str());
+            state
+                .normalize_memo
+                .remove(state.previous_raw_lines[i].as_str());
             let (normalized, _) = Self::normalize_line(state, &raw_lines[i]);
             lines[i] = normalized;
         }
@@ -2837,7 +3136,10 @@ impl TuiBase {
         let max_rows = rows.min(max_index + 1 - index).min(lines.len() - index);
         let mut reserved_rows = 1;
         while reserved_rows < max_rows {
-            let line = lines.get(index + reserved_rows).map(String::as_str).unwrap_or("");
+            let line = lines
+                .get(index + reserved_rows)
+                .map(String::as_str)
+                .unwrap_or("");
             if is_image_line(line) || visible_width(line) > 0 {
                 break;
             }
@@ -2853,6 +3155,9 @@ impl TuiBase {
     pub fn do_render(&mut self, terminal: &mut dyn Terminal) {
         if self.state.borrow().stopped {
             return;
+        }
+        if std::mem::take(&mut self.cell_size_query_pending) {
+            self.query_cell_size(terminal);
         }
         let width = terminal.columns() as usize;
         let height = terminal.rows() as usize;
@@ -2928,13 +3233,28 @@ impl TuiBase {
         // First render: emit everything without clearing.
         if previous_lines_len == 0 && !width_changed && !height_changed {
             self.log_redraw("first render", new_lines.len(), height);
-            self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, false, false);
+            self.full_render(
+                terminal, new_lines, raw_lines, cursor_pos, width, height, false, false,
+            );
             return;
         }
 
         if width_changed {
-            self.log_redraw(&format!("terminal width changed ({previous_width} -> {width})"), new_lines.len(), height);
-            self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, !preserve_mux_scrollback);
+            self.log_redraw(
+                &format!("terminal width changed ({previous_width} -> {width})"),
+                new_lines.len(),
+                height,
+            );
+            self.full_render(
+                terminal,
+                new_lines,
+                raw_lines,
+                cursor_pos,
+                width,
+                height,
+                true,
+                !preserve_mux_scrollback,
+            );
             return;
         }
 
@@ -2942,15 +3262,23 @@ impl TuiBase {
         // but Termux changes height when the software keyboard shows or hides; there a full
         // redraw would replay the entire history on every toggle, so fall through to the diff.
         if height_changed && !is_termux_session() {
-            self.log_redraw(&format!("terminal height changed ({previous_height} -> {height})"), new_lines.len(), height);
+            self.log_redraw(
+                &format!("terminal height changed ({previous_height} -> {height})"),
+                new_lines.len(),
+                height,
+            );
             if preserve_mux_scrollback {
-                if let Err((new_lines, raw_lines)) =
-                    self.render_mux_viewport_repaint(terminal, new_lines, raw_lines, cursor_pos, width, height, None)
-                {
-                    self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, false);
+                if let Err((new_lines, raw_lines)) = self.render_mux_viewport_repaint(
+                    terminal, new_lines, raw_lines, cursor_pos, width, height, None,
+                ) {
+                    self.full_render(
+                        terminal, new_lines, raw_lines, cursor_pos, width, height, true, false,
+                    );
                 }
             } else {
-                self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, true);
+                self.full_render(
+                    terminal, new_lines, raw_lines, cursor_pos, width, height, true, true,
+                );
             }
             return;
         }
@@ -2963,8 +3291,21 @@ impl TuiBase {
         };
         if clear_on_shrink_needed {
             let max_lines_rendered = self.state.borrow().max_lines_rendered;
-            self.log_redraw(&format!("clearOnShrink (maxLinesRendered={max_lines_rendered})"), new_lines.len(), height);
-            self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, !preserve_mux_scrollback);
+            self.log_redraw(
+                &format!("clearOnShrink (maxLinesRendered={max_lines_rendered})"),
+                new_lines.len(),
+                height,
+            );
+            self.full_render(
+                terminal,
+                new_lines,
+                raw_lines,
+                cursor_pos,
+                width,
+                height,
+                true,
+                !preserve_mux_scrollback,
+            );
             return;
         }
 
@@ -2984,7 +3325,11 @@ impl TuiBase {
         {
             let state = self.state.borrow();
             for i in diff_scan_start..diff_scan_end_exclusive {
-                let old_line = state.previous_lines.get(i).map(String::as_str).unwrap_or("");
+                let old_line = state
+                    .previous_lines
+                    .get(i)
+                    .map(String::as_str)
+                    .unwrap_or("");
                 let new_line = new_lines.get(i).map(String::as_str).unwrap_or("");
                 if old_line != new_line {
                     if first_changed.is_none() {
@@ -3013,9 +3358,7 @@ impl TuiBase {
                 })
             }
         });
-        if needs_kitty_expansion
-            && let Some(fc) = first_changed
-        {
+        if needs_kitty_expansion && let Some(fc) = first_changed {
             let (expanded_first, expanded_last) =
                 self.expand_changed_range_for_kitty_images(fc, last_changed, &new_lines);
             first_changed = Some(expanded_first);
@@ -3030,11 +3373,18 @@ impl TuiBase {
             return;
         };
 
-        let append_start = appended_lines && first_changed == previous_lines_len && first_changed > 0;
-        let insert_scroll_plan =
-            self.create_viewport_insert_scroll_plan(&new_lines, prev_viewport_top, height, line_count_delta);
+        let append_start =
+            appended_lines && first_changed == previous_lines_len && first_changed > 0;
+        let insert_scroll_plan = self.create_viewport_insert_scroll_plan(
+            &new_lines,
+            prev_viewport_top,
+            height,
+            line_count_delta,
+        );
         if let Some(plan) = insert_scroll_plan {
-            self.render_viewport_insert_scroll(terminal, plan, new_lines, raw_lines, cursor_pos, width, height);
+            self.render_viewport_insert_scroll(
+                terminal, plan, new_lines, raw_lines, cursor_pos, width, height,
+            );
             return;
         }
 
@@ -3063,7 +3413,8 @@ impl TuiBase {
             }
             if new_lines.len() > previous_lines_len {
                 let max_viewport_top = new_lines.len().saturating_sub(height);
-                viewport_top = max_viewport_top.min((prev_viewport_top as i64 + line_count_delta).max(0) as usize);
+                viewport_top = max_viewport_top
+                    .min((prev_viewport_top as i64 + line_count_delta).max(0) as usize);
             }
 
             let mut first_visible_changed: Option<usize> = None;
@@ -3076,7 +3427,10 @@ impl TuiBase {
                         .get(prev_viewport_top + row)
                         .map(String::as_str)
                         .unwrap_or("");
-                    let next_line = new_lines.get(viewport_top + row).map(String::as_str).unwrap_or("");
+                    let next_line = new_lines
+                        .get(viewport_top + row)
+                        .map(String::as_str)
+                        .unwrap_or("");
                     if previous_line != next_line {
                         if first_visible_changed.is_none() {
                             first_visible_changed = Some(row);
@@ -3091,13 +3445,28 @@ impl TuiBase {
                     if preserve_mux_scrollback {
                         // Above-viewport scrollback may stay stale in mux panes; only the visible viewport is repainted.
                         if let Err((new_lines, raw_lines)) = self.render_mux_viewport_repaint(
-                            terminal, new_lines, raw_lines, cursor_pos, width, height, Some(viewport_top),
+                            terminal,
+                            new_lines,
+                            raw_lines,
+                            cursor_pos,
+                            width,
+                            height,
+                            Some(viewport_top),
                         ) {
-                            self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, false);
+                            self.full_render(
+                                terminal, new_lines, raw_lines, cursor_pos, width, height, true,
+                                false,
+                            );
                         }
                     } else {
                         self.render_scrollback_replay(
-                            terminal, new_lines, raw_lines, cursor_pos, width, height, prev_viewport_top,
+                            terminal,
+                            new_lines,
+                            raw_lines,
+                            cursor_pos,
+                            width,
+                            height,
+                            prev_viewport_top,
                             hardware_cursor_row,
                         );
                     }
@@ -3118,32 +3487,65 @@ impl TuiBase {
                 if line_count_delta != 0 {
                     if preserve_mux_scrollback {
                         if let Err((new_lines, raw_lines)) = self.render_mux_viewport_repaint(
-                            terminal, new_lines, raw_lines, cursor_pos, width, height, Some(viewport_top),
+                            terminal,
+                            new_lines,
+                            raw_lines,
+                            cursor_pos,
+                            width,
+                            height,
+                            Some(viewport_top),
                         ) {
-                            self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, false);
+                            self.full_render(
+                                terminal, new_lines, raw_lines, cursor_pos, width, height, true,
+                                false,
+                            );
                         }
                     } else {
                         self.render_scrollback_replay(
-                            terminal, new_lines, raw_lines, cursor_pos, width, height, prev_viewport_top,
+                            terminal,
+                            new_lines,
+                            raw_lines,
+                            cursor_pos,
+                            width,
+                            height,
+                            prev_viewport_top,
                             hardware_cursor_row,
                         );
                     }
                     return;
                 }
                 self.render_viewport_shift(
-                    terminal, new_lines, raw_lines, cursor_pos, width, height, prev_viewport_top,
-                    viewport_top, hardware_cursor_row,
+                    terminal,
+                    new_lines,
+                    raw_lines,
+                    cursor_pos,
+                    width,
+                    height,
+                    prev_viewport_top,
+                    viewport_top,
+                    hardware_cursor_row,
                 );
                 return;
             }
 
             first_changed = viewport_top + first_visible_changed;
-            last_changed = (viewport_top + last_visible_changed).min(new_lines.len().saturating_sub(1));
+            last_changed =
+                (viewport_top + last_visible_changed).min(new_lines.len().saturating_sub(1));
         }
 
         self.render_changed_range(
-            terminal, new_lines, raw_lines, cursor_pos, width, height, first_changed, last_changed,
-            append_start, &mut prev_viewport_top, &mut viewport_top, &mut hardware_cursor_row,
+            terminal,
+            new_lines,
+            raw_lines,
+            cursor_pos,
+            width,
+            height,
+            first_changed,
+            last_changed,
+            append_start,
+            &mut prev_viewport_top,
+            &mut viewport_top,
+            &mut hardware_cursor_row,
             needs_kitty_expansion,
         );
     }
@@ -3161,7 +3563,8 @@ impl TuiBase {
                 if extract_kitty_image_ids(&lines[i]).is_empty() {
                     continue;
                 }
-                let block_end = i + Self::get_kitty_image_reserved_rows(lines, i, lines.len() - 1) - 1;
+                let block_end =
+                    i + Self::get_kitty_image_reserved_rows(lines, i, lines.len() - 1) - 1;
                 if i >= first_changed || (i <= last_changed && block_end >= first_changed) {
                     expanded_first = expanded_first.min(i);
                     expanded_last = expanded_last.max(block_end);
@@ -3226,13 +3629,16 @@ impl TuiBase {
             Self::get_viewport_rows(&state.previous_lines, prev_viewport_top, height)
         };
         let next_visible = Self::get_viewport_rows(new_lines, viewport_top, height);
-        if previous_visible.iter().any(|l| is_image_line(l)) || next_visible.iter().any(|l| is_image_line(l)) {
+        if previous_visible.iter().any(|l| is_image_line(l))
+            || next_visible.iter().any(|l| is_image_line(l))
+        {
             return None;
         }
 
         let mut stable_suffix_rows = 0usize;
         while stable_suffix_rows < height
-            && previous_visible[height - stable_suffix_rows - 1] == next_visible[height - stable_suffix_rows - 1]
+            && previous_visible[height - stable_suffix_rows - 1]
+                == next_visible[height - stable_suffix_rows - 1]
         {
             stable_suffix_rows += 1;
         }
@@ -3345,7 +3751,12 @@ impl TuiBase {
             buffer += new_lines.get(row).map(String::as_str).unwrap_or("");
         }
 
-        buffer = self.finish_frame(buffer, cursor_pos, new_lines.len(), buffer_length.saturating_sub(1));
+        buffer = self.finish_frame(
+            buffer,
+            cursor_pos,
+            new_lines.len(),
+            buffer_length.saturating_sub(1),
+        );
         write_bounded(terminal, &buffer);
 
         let kitty_image_ids = Self::collect_kitty_image_ids(&new_lines);
@@ -3379,7 +3790,8 @@ impl TuiBase {
         let viewport_top = viewport_top.unwrap_or_else(|| new_lines.len().saturating_sub(height));
         let (previous_viewport_top, hardware_cursor_row) = {
             let state = self.state.borrow();
-            let previous_visible = Self::get_viewport_rows(&state.previous_lines, state.previous_viewport_top, height);
+            let previous_visible =
+                Self::get_viewport_rows(&state.previous_lines, state.previous_viewport_top, height);
             let next_visible = Self::get_viewport_rows(&new_lines, viewport_top, height);
             if previous_visible.iter().any(|line| is_image_line(line))
                 || next_visible.iter().any(|line| is_image_line(line))
@@ -3402,7 +3814,10 @@ impl TuiBase {
                 buffer += "\r\n";
             }
             buffer += &format!("\r\x1b[2K{SEGMENT_RESET}");
-            buffer += new_lines.get(viewport_top + row).map(String::as_str).unwrap_or("");
+            buffer += new_lines
+                .get(viewport_top + row)
+                .map(String::as_str)
+                .unwrap_or("");
         }
 
         let final_cursor_row = viewport_top + height.saturating_sub(1);
@@ -3456,7 +3871,10 @@ impl TuiBase {
                 buffer += "\r\n";
             }
             buffer += &format!("\r\x1b[2K{SEGMENT_RESET}");
-            buffer += new_lines.get(viewport_top + row).map(String::as_str).unwrap_or("");
+            buffer += new_lines
+                .get(viewport_top + row)
+                .map(String::as_str)
+                .unwrap_or("");
         }
 
         let final_cursor_row = viewport_top + height.saturating_sub(1);
@@ -3494,14 +3912,42 @@ impl TuiBase {
         if previous_lines_len > new_lines.len() {
             let target_row = new_lines.len().saturating_sub(1);
             if target_row < prev_viewport_top {
-                self.log_redraw(&format!("deleted lines moved viewport up ({target_row} < {prev_viewport_top})"), new_lines.len(), height);
-                self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, !preserve_mux_scrollback);
+                self.log_redraw(
+                    &format!(
+                        "deleted lines moved viewport up ({target_row} < {prev_viewport_top})"
+                    ),
+                    new_lines.len(),
+                    height,
+                );
+                self.full_render(
+                    terminal,
+                    new_lines,
+                    raw_lines,
+                    cursor_pos,
+                    width,
+                    height,
+                    true,
+                    !preserve_mux_scrollback,
+                );
                 return;
             }
             let extra_lines = previous_lines_len - new_lines.len();
             if extra_lines > height {
-                self.log_redraw(&format!("extraLines > height ({extra_lines} > {height})"), new_lines.len(), height);
-                self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, !preserve_mux_scrollback);
+                self.log_redraw(
+                    &format!("extraLines > height ({extra_lines} > {height})"),
+                    new_lines.len(),
+                    height,
+                );
+                self.full_render(
+                    terminal,
+                    new_lines,
+                    raw_lines,
+                    cursor_pos,
+                    width,
+                    height,
+                    true,
+                    !preserve_mux_scrollback,
+                );
                 return;
             }
             let mut buffer = FRAME_BEGIN.to_string();
@@ -3552,8 +3998,13 @@ impl TuiBase {
         if std::fs::create_dir_all(debug_dir).is_err() {
             return;
         }
-        let suffix = std::collections::hash_map::RandomState::new().build_hasher().finish();
-        let debug_path = debug_dir.join(format!("render-{}-{suffix:x}.log", jiff::Timestamp::now().as_millisecond()));
+        let suffix = std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish();
+        let debug_path = debug_dir.join(format!(
+            "render-{}-{suffix:x}.log",
+            jiff::Timestamp::now().as_millisecond()
+        ));
         let state = self.state.borrow();
         let cursor_pos = frame.cursor_pos.map_or_else(
             || "null".to_owned(),
@@ -3606,7 +4057,11 @@ impl TuiBase {
         let mut buffer = FRAME_BEGIN.to_string();
         buffer += &self.delete_changed_kitty_images(first_changed, last_changed);
         let prev_viewport_bottom = *prev_viewport_top + height - 1;
-        let move_target_row = if append_start { first_changed - 1 } else { first_changed };
+        let move_target_row = if append_start {
+            first_changed - 1
+        } else {
+            first_changed
+        };
         if move_target_row > prev_viewport_bottom {
             let current_screen_row = (*hardware_cursor_row as i64 - *prev_viewport_top as i64)
                 .clamp(0, height as i64 - 1) as usize;
@@ -3660,7 +4115,11 @@ impl TuiBase {
             let line_width = visible_width(&line);
             if !is_image && line_width > width {
                 self.log_over_wide_render(&new_lines, width, i, line_width);
-                let truncated_line = format!("{}{}", slice_by_column(&line, 0, width, true), SEGMENT_RESET);
+                let truncated_line = format!(
+                    "{}{}",
+                    slice_by_column(&line, 0, width, true),
+                    SEGMENT_RESET
+                );
                 new_lines[i] = truncated_line.clone();
                 buffer += &truncated_line;
                 i += 1;
@@ -3689,19 +4148,31 @@ impl TuiBase {
 
         // senpi `PI_TUI_DEBUG=1`: dump each differential frame to `/tmp/tui/render-*.log`.
         if crate::process_env::var("PI_TUI_DEBUG").as_deref() == Some("1") {
-            self.write_tui_debug_dump(TuiDebugFrame {
-                first_changed, viewport_top: *viewport_top, height, line_diff,
-                hardware_cursor_row: *hardware_cursor_row, render_end, final_cursor_row, cursor_pos,
-            }, &new_lines, &buffer);
+            self.write_tui_debug_dump(
+                TuiDebugFrame {
+                    first_changed,
+                    viewport_top: *viewport_top,
+                    height,
+                    line_diff,
+                    hardware_cursor_row: *hardware_cursor_row,
+                    render_end,
+                    final_cursor_row,
+                    cursor_pos,
+                },
+                &new_lines,
+                &buffer,
+            );
         }
 
         write_bounded(terminal, &buffer);
 
-        let kitty_image_ids = needs_kitty_expansion.then(|| Self::collect_kitty_image_ids(&new_lines));
+        let kitty_image_ids =
+            needs_kitty_expansion.then(|| Self::collect_kitty_image_ids(&new_lines));
         let mut state = self.state.borrow_mut();
         state.cursor_row = new_lines.len().saturating_sub(1);
         state.max_lines_rendered = state.max_lines_rendered.max(new_lines.len());
-        state.previous_viewport_top = (*prev_viewport_top).max(final_cursor_row.saturating_sub(height) + 1);
+        state.previous_viewport_top =
+            (*prev_viewport_top).max(final_cursor_row.saturating_sub(height) + 1);
         state.previous_lines = new_lines;
         state.previous_raw_lines = raw_lines;
         if let Some(kitty_image_ids) = kitty_image_ids {
@@ -3784,7 +4255,11 @@ impl TuiBase {
         state.placement_epoch += 1;
     }
 
-    fn build_hardware_cursor_sequence(&mut self, cursor_pos: Option<(usize, usize)>, total_lines: usize) -> String {
+    fn build_hardware_cursor_sequence(
+        &mut self,
+        cursor_pos: Option<(usize, usize)>,
+        total_lines: usize,
+    ) -> String {
         let mut buffer = String::new();
         let mut state = self.state.borrow_mut();
         match cursor_pos {
@@ -3831,7 +4306,12 @@ impl TuiBase {
         )
     }
 
-    fn position_hardware_cursor(&mut self, terminal: &mut dyn Terminal, cursor_pos: Option<(usize, usize)>, total_lines: usize) {
+    fn position_hardware_cursor(
+        &mut self,
+        terminal: &mut dyn Terminal,
+        cursor_pos: Option<(usize, usize)>,
+        total_lines: usize,
+    ) {
         let buffer = self.build_hardware_cursor_sequence(cursor_pos, total_lines);
         if !buffer.is_empty() {
             terminal.write(&format!("{FRAME_BEGIN}{buffer}{FRAME_END}"));
@@ -3844,13 +4324,20 @@ impl TuiBase {
     /// `PI_TUI_STRICT_RENDER=1`). senpi additionally `stop()`s and throws under strict mode;
     /// that would panic across this crate's `unsafe_code = "forbid"`/`unwrap_used = "deny"`
     /// lint policy, so this port always truncates and logs instead of aborting the process.
-    fn log_over_wide_render(&mut self, lines: &[String], terminal_width: usize, line_index: usize, line_width: usize) {
+    fn log_over_wide_render(
+        &mut self,
+        lines: &[String],
+        terminal_width: usize,
+        line_index: usize,
+        line_width: usize,
+    ) {
         let strict = crate::process_env::var("PI_TUI_STRICT_RENDER").as_deref() == Some("1");
         let already_written = self.state.borrow().over_wide_crash_dump_written;
         if !strict && already_written {
             return;
         }
-        let body = format_over_wide_render_diagnostic(lines, terminal_width, line_index, line_width);
+        let body =
+            format_over_wide_render_diagnostic(lines, terminal_width, line_index, line_width);
         let crash_log_path = default_diagnostic_log_directory().join("senpi-crash.log");
         write_render_diagnostic_best_effort(&crash_log_path, &body);
         self.state.borrow_mut().over_wide_crash_dump_written = true;
@@ -3859,7 +4346,10 @@ impl TuiBase {
     /// Dispatch to the visually topmost overlay under the pointer (senpi's
     /// `dispatchMouseToOverlay`). Callers - the alt-screen and main-screen mouse routers -
     /// consult this before falling back to the base [`Container::handle_mouse`] dispatch.
-    pub fn dispatch_mouse_to_overlay(&mut self, event: &TuiMouseEvent) -> (bool, Option<TuiMouseDispatchResult>) {
+    pub fn dispatch_mouse_to_overlay(
+        &mut self,
+        event: &TuiMouseEvent,
+    ) -> (bool, Option<TuiMouseDispatchResult>) {
         struct OverlayHitLayout {
             component: Rc<RefCell<dyn Component>>,
             row: i64,
@@ -3881,7 +4371,14 @@ impl TuiBase {
                 })
                 .collect()
         };
-        for OverlayHitLayout { component, row, col, width, height } in layouts.into_iter().rev() {
+        for OverlayHitLayout {
+            component,
+            row,
+            col,
+            width,
+            height,
+        } in layouts.into_iter().rev()
+        {
             if event.screen_x < col
                 || event.screen_x >= col + width as i64
                 || event.screen_y < row

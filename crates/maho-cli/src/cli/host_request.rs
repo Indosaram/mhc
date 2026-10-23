@@ -12,14 +12,20 @@ use std::path::Path;
 use maho_rpc::host_daemon_env::{daemon_env_keys, daemon_env_overrides};
 use maho_rpc::host_daemon_paths::create_host_daemon_paths;
 use maho_rpc::host_daemon_state::HostDaemonSettings;
-use maho_rpc::host_decision::{HostDecisionClient, HostDecisionPolicy, HOST_PROTOCOL_VERSION, REQUIRED_HOST_CAPABILITIES};
-use maho_rpc::host_ensure::{ensure_supervisor_args, host_child_argv, host_env, HostStartOptions};
+use maho_rpc::host_decision::{
+    HOST_PROTOCOL_VERSION, HostDecisionClient, HostDecisionPolicy, REQUIRED_HOST_CAPABILITIES,
+};
+use maho_rpc::host_ensure::{HostStartOptions, ensure_supervisor_args, host_child_argv, host_env};
 use maho_rpc::host_handoff::HandoffOptions;
-use maho_rpc::host_launch::{default_host_launch, PINNED_HOST_CLIENT_CAPABILITIES};
-use maho_rpc::host_launch_spec::{load_host_launch_spec, HostLaunchSpecError, ResolvedHostLaunchSpec};
-use maho_rpc::host_lifecycle::{HostLifecyclePolicy, DEFAULT_HOST_IDLE_EXIT_MS};
-use maho_rpc::host_runner::{run_host_request, EnsureRequest, HostOutcome, HostRequest, HostTarget};
-use maho_rpc::protocol_identity::{host_launch_profile, resolve_instance_id, HOST_INSTANCE_ID_ENV};
+use maho_rpc::host_launch::{PINNED_HOST_CLIENT_CAPABILITIES, default_host_launch};
+use maho_rpc::host_launch_spec::{
+    HostLaunchSpecError, ResolvedHostLaunchSpec, load_host_launch_spec,
+};
+use maho_rpc::host_lifecycle::{DEFAULT_HOST_IDLE_EXIT_MS, HostLifecyclePolicy};
+use maho_rpc::host_runner::{
+    EnsureRequest, HostOutcome, HostRequest, HostTarget, run_host_request,
+};
+use maho_rpc::protocol_identity::{HOST_INSTANCE_ID_ENV, host_launch_profile, resolve_instance_id};
 
 use super::host_command::{HostSubcommand, ParsedHostArgs};
 
@@ -41,23 +47,40 @@ impl HostCommandError {
 
     pub fn payload(&self) -> serde_json::Value {
         match self {
-            Self::LaunchSpec { reason, detail } => serde_json::json!({ "action": "error", "reason": reason, "detail": detail }),
-            Self::Host(detail) => serde_json::json!({ "action": "error", "reason": "host_error", "detail": detail }),
+            Self::LaunchSpec { reason, detail } => {
+                serde_json::json!({ "action": "error", "reason": reason, "detail": detail })
+            }
+            Self::Host(detail) => {
+                serde_json::json!({ "action": "error", "reason": "host_error", "detail": detail })
+            }
         }
     }
 }
 
 fn platform() -> &'static str {
-    if cfg!(windows) { "win32" } else { std::env::consts::OS }
+    if cfg!(windows) {
+        "win32"
+    } else {
+        std::env::consts::OS
+    }
 }
 
 /// senpi `launchSpec(specPath)`: the trusted resolved spec, or the daemon defaults.
-pub fn resolve_launch_spec(spec_path: Option<&str>) -> Result<ResolvedHostLaunchSpec, HostCommandError> {
+pub fn resolve_launch_spec(
+    spec_path: Option<&str>,
+) -> Result<ResolvedHostLaunchSpec, HostCommandError> {
     match spec_path {
-        None => Ok(ResolvedHostLaunchSpec { host_args: Vec::new(), policy: Default::default(), env: BTreeMap::new() }),
-        Some(path) => load_host_launch_spec(Path::new(path), platform()).map_err(|error: HostLaunchSpecError| {
-            HostCommandError::LaunchSpec { reason: error.reason.to_owned(), detail: error.detail }
+        None => Ok(ResolvedHostLaunchSpec {
+            host_args: Vec::new(),
+            policy: Default::default(),
+            env: BTreeMap::new(),
         }),
+        Some(path) => load_host_launch_spec(Path::new(path), platform()).map_err(
+            |error: HostLaunchSpecError| HostCommandError::LaunchSpec {
+                reason: error.reason.to_owned(),
+                detail: error.detail,
+            },
+        ),
     }
 }
 
@@ -70,14 +93,23 @@ fn decision_policy(policy: &str) -> HostDecisionPolicy {
 }
 
 fn process_env() -> BTreeMap<String, Option<String>> {
-    std::env::vars().map(|(name, value)| (name, Some(value))).collect()
+    std::env::vars()
+        .map(|(name, value)| (name, Some(value)))
+        .collect()
 }
 
 pub fn host_target(socket: &str, agent_dir: &Path) -> HostTarget {
-    HostTarget { socket: socket.to_owned(), agent_dir: agent_dir.to_path_buf() }
+    HostTarget {
+        socket: socket.to_owned(),
+        agent_dir: agent_dir.to_path_buf(),
+    }
 }
 
-fn ensure_request(target: &HostTarget, spec: &ResolvedHostLaunchSpec, policy: HostDecisionPolicy) -> Result<EnsureRequest, HostCommandError> {
+fn ensure_request(
+    target: &HostTarget,
+    spec: &ResolvedHostLaunchSpec,
+    policy: HostDecisionPolicy,
+) -> Result<EnsureRequest, HostCommandError> {
     let agent_dir_text = target.agent_dir.to_string_lossy().into_owned();
     let daemon_dir = create_host_daemon_paths(&target.socket, &target.agent_dir).dir;
     let instance_id = resolve_instance_id(std::env::var(HOST_INSTANCE_ID_ENV).ok().as_deref());
@@ -86,24 +118,39 @@ fn ensure_request(target: &HostTarget, spec: &ResolvedHostLaunchSpec, policy: Ho
     // senpi host-ensure.ts:292 `hostLaunchProfile(hostChildArgv(hostArgs), process.cwd())`: the profile
     // describes the host child's argv, so its session runtime is resolved exactly as that host resolves it.
     let cwd = std::env::current_dir().map_err(|error| HostCommandError::Host(error.to_string()))?;
-    let launch_profile = host_launch_profile(&host_child_argv(&spec.host_args), &cwd.to_string_lossy()).ok();
+    let launch_profile =
+        host_launch_profile(&host_child_argv(&spec.host_args), &cwd.to_string_lossy()).ok();
     let client = HostDecisionClient {
         protocol_version: HOST_PROTOCOL_VERSION,
-        required_capabilities: REQUIRED_HOST_CAPABILITIES.iter().map(|value| (*value).into()).collect(),
+        required_capabilities: REQUIRED_HOST_CAPABILITIES
+            .iter()
+            .map(|value| (*value).into())
+            .collect(),
         identity: build,
         launch_profile: launch_profile.clone(),
         started_by_us: false,
         platform: platform().into(),
     };
     let supervisor_args = ensure_supervisor_args(&target.socket, &agent_dir_text, &spec.host_args);
-    let launch = default_host_launch(&supervisor_args).map_err(|error| HostCommandError::Host(error.to_string()))?;
+    let launch = default_host_launch(&supervisor_args)
+        .map_err(|error| HostCommandError::Host(error.to_string()))?;
     let host_policy = HostLifecyclePolicy {
-        cold_start: spec.policy.cold_start.clone().unwrap_or_else(|| "transient".into()),
-        idle_exit_ms: spec.policy.idle_exit_ms.unwrap_or(DEFAULT_HOST_IDLE_EXIT_MS),
+        cold_start: spec
+            .policy
+            .cold_start
+            .clone()
+            .unwrap_or_else(|| "transient".into()),
+        idle_exit_ms: spec
+            .policy
+            .idle_exit_ms
+            .unwrap_or(DEFAULT_HOST_IDLE_EXIT_MS),
     };
     let settings = HostDaemonSettings {
         socket: target.socket.clone(),
-        capabilities: PINNED_HOST_CLIENT_CAPABILITIES.iter().map(|value| (*value).into()).collect(),
+        capabilities: PINNED_HOST_CLIENT_CAPABILITIES
+            .iter()
+            .map(|value| (*value).into())
+            .collect(),
         cold_start: host_policy.cold_start.clone(),
         idle_exit_ms: host_policy.idle_exit_ms,
         generation: generation as f64,
@@ -112,7 +159,10 @@ fn ensure_request(target: &HostTarget, spec: &ResolvedHostLaunchSpec, policy: Ho
     let overrides = daemon_env_overrides(&process_env(), &spec.env, platform());
     let env = host_env(
         std::env::vars().collect(),
-        &overrides.iter().map(|(name, value)| (name.clone(), value.clone())).collect::<HashMap<_, _>>(),
+        &overrides
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect::<HashMap<_, _>>(),
         &agent_dir_text,
         &daemon_dir.to_string_lossy(),
         &instance_id,
@@ -133,43 +183,123 @@ fn ensure_request(target: &HostTarget, spec: &ResolvedHostLaunchSpec, policy: Ho
         readiness_ms: DEFAULT_READINESS_MS,
     };
     let env_keys = daemon_env_keys(&process_env(), &spec.env, platform());
-    Ok(EnsureRequest { client, policy, launch, start, handoff, env_keys })
+    Ok(EnsureRequest {
+        client,
+        policy,
+        launch,
+        start,
+        handoff,
+        env_keys,
+    })
 }
 
 /// senpi `hostRequest(parsed)`: the one request this invocation performs.
-pub fn build_host_request(parsed: &ParsedHostArgs, socket: &str, agent_dir: &Path) -> Result<HostRequest, HostCommandError> {
+pub fn build_host_request(
+    parsed: &ParsedHostArgs,
+    socket: &str,
+    agent_dir: &Path,
+) -> Result<HostRequest, HostCommandError> {
     let target = host_target(socket, agent_dir);
     match parsed.subcommand {
         HostSubcommand::Ensure => {
             let spec = resolve_launch_spec(parsed.spec_path.as_deref())?;
             let policy = decision_policy(&parsed.policy);
             let request = ensure_request(&target, &spec, policy)?;
-            Ok(HostRequest::Ensure { target, request: Box::new(request) })
+            Ok(HostRequest::Ensure {
+                target,
+                request: Box::new(request),
+            })
         }
-        HostSubcommand::Status => Ok(HostRequest::Status { target, include_workers: parsed.include_workers }),
-        HostSubcommand::Stop => Ok(HostRequest::Stop { target, drain: parsed.drain, force: parsed.force }),
+        HostSubcommand::Status => Ok(HostRequest::Status {
+            target,
+            include_workers: parsed.include_workers,
+            all: parsed.all,
+        }),
+        HostSubcommand::Stop => Ok(HostRequest::Stop {
+            target,
+            drain: parsed.drain,
+            force: parsed.force,
+            expected_generation: parsed.expected_generation.clone(),
+            instance_id: parsed.instance_id.clone(),
+            wait_ms: parsed.wait_ms,
+        }),
         HostSubcommand::Handoff => {
             let spec = resolve_launch_spec(parsed.spec_path.as_deref())?;
             let host_policy = HostLifecyclePolicy {
-                cold_start: spec.policy.cold_start.clone().unwrap_or_else(|| "transient".into()),
-                idle_exit_ms: spec.policy.idle_exit_ms.unwrap_or(DEFAULT_HOST_IDLE_EXIT_MS),
+                cold_start: spec
+                    .policy
+                    .cold_start
+                    .clone()
+                    .unwrap_or_else(|| "transient".into()),
+                idle_exit_ms: spec
+                    .policy
+                    .idle_exit_ms
+                    .unwrap_or(DEFAULT_HOST_IDLE_EXIT_MS),
             };
             let overrides = daemon_env_overrides(&process_env(), &spec.env, platform());
             let options = HandoffOptions {
-                host_args: ensure_supervisor_args(socket, &agent_dir.to_string_lossy(), &spec.host_args),
+                host_args: ensure_supervisor_args(
+                    socket,
+                    &agent_dir.to_string_lossy(),
+                    &spec.host_args,
+                ),
                 policy: Some(host_policy),
                 env: overrides.into_iter().collect(),
                 launch_profile_id: String::new(),
                 readiness_ms: DEFAULT_READINESS_MS,
             };
             let env_keys = daemon_env_keys(&process_env(), &spec.env, platform());
-            Ok(HostRequest::Handoff { target, options, env_keys })
+            let handover = parsed.handover.as_ref().map(|terms| {
+                maho_rpc::host_handover_request::IdleHandoverTerms {
+                    operation_id: terms.operation_id.clone(),
+                    if_instance_id: terms.if_instance_id.clone(),
+                    if_generation: terms.if_generation,
+                    target_runtime_build_id: terms.target_runtime_build_id.clone(),
+                }
+            });
+            // mhc has no runtime build id function yet: `None` makes an idle handoff refuse (target_build_mismatch).
+            Ok(HostRequest::Handoff {
+                target,
+                options,
+                env_keys,
+                handover,
+                client_runtime_build_id: None,
+            })
+        }
+        HostSubcommand::ShardPath => {
+            let root = parsed.root.as_ref().map_or_else(
+                || agent_dir.join("rpc").join("shards"),
+                std::path::PathBuf::from,
+            );
+            let root = std::path::absolute(&root).unwrap_or(root);
+            Ok(HostRequest::ShardPath {
+                kind: parsed
+                    .kind
+                    .unwrap_or(maho_rpc::host_endpoints::ShardKind::P),
+                owner: parsed.owner.clone().unwrap_or_default(),
+                root,
+            })
+        }
+        HostSubcommand::Gc => {
+            let dir = parsed
+                .agent_dir
+                .as_ref()
+                .map_or_else(|| agent_dir.to_path_buf(), std::path::PathBuf::from);
+            Ok(HostRequest::Gc {
+                agent_dir: std::path::absolute(&dir).unwrap_or(dir),
+            })
         }
     }
 }
 
 /// senpi `runHostCommand` body: perform the request and return its outcome.
-pub async fn run(parsed: &ParsedHostArgs, socket: &str, agent_dir: &Path) -> Result<HostOutcome, HostCommandError> {
+pub async fn run(
+    parsed: &ParsedHostArgs,
+    socket: &str,
+    agent_dir: &Path,
+) -> Result<HostOutcome, HostCommandError> {
     let request = build_host_request(parsed, socket, agent_dir)?;
-    run_host_request(request).await.map_err(|error| HostCommandError::Host(error.to_string()))
+    run_host_request(request)
+        .await
+        .map_err(|error| HostCommandError::Host(error.to_string()))
 }

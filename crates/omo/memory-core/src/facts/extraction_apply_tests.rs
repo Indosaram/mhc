@@ -40,7 +40,9 @@ fn author() -> GitCommitAuthor {
 
 fn fixture_with(exec: Option<Arc<dyn GitExec>>) -> (TempDir, PathBuf, GitMemoryRepo) {
     let tmp = TempDir::new().expect("tempdir");
-    let dir = crate::support::paths::strip_verbatim_prefix(&tmp.path().canonicalize().expect("canonical"));
+    let dir = crate::support::paths::strip_verbatim_prefix(
+        &tmp.path().canonicalize().expect("canonical"),
+    );
     let repo = GitMemoryRepo::new(GitMemoryRepoOptions {
         exec,
         ..GitMemoryRepoOptions::new(&dir, "facts-agent")
@@ -87,6 +89,7 @@ fn batch(id: &str, records: Vec<FactsExtractionRecord>) -> FactsBatch {
     FactsBatch {
         batch_id: id.to_string(),
         records,
+        agreements: None,
     }
 }
 
@@ -392,6 +395,7 @@ fn given_two_cards_with_equal_length_aliases_when_resolved_then_smallest_slug_wi
         &author(),
         ApplyFactsBatchOptions {
             people: Some(PEOPLE),
+            agreements: None,
             on_alias_tie: Some(&mut record_tie),
             publish_recovery: None,
         },

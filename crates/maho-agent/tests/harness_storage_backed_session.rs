@@ -668,7 +668,7 @@ async fn exposes_explicit_branch_scans_through_the_session_and_callback_scoped_m
 async fn rejects_pending_assistant_entries_at_the_durable_session_write_boundary() {
     let storage = Arc::new(InstrumentedStorage::new(memory()));
     let session = session_with(storage.clone());
-    let pending = AgentMessage::Llm(Message::Assistant(Box::new(AssistantMessage {
+    let pending = AgentMessage::Llm(Message::Assistant(Box::new(AssistantMessage { timing: None, failure_source: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,

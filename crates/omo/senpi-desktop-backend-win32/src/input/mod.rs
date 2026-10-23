@@ -5,15 +5,15 @@
 //! behind the `SetForegroundWindow` focus guard) and `PostMessageW` for
 //! background delivery gated by [`crate::delivery`].
 
-pub mod held;
-pub mod keys;
-pub mod messages;
 #[cfg(any(test, target_os = "windows"))]
 mod cursor_placement;
 #[cfg(any(test, target_os = "windows"))]
-mod focus_policy;
-#[cfg(any(test, target_os = "windows"))]
 mod events;
+#[cfg(any(test, target_os = "windows"))]
+mod focus_policy;
+pub mod held;
+pub mod keys;
+pub mod messages;
 #[cfg(any(test, target_os = "windows"))]
 mod recovery;
 #[cfg(any(test, target_os = "windows"))]
@@ -43,7 +43,7 @@ mod system;
 mod typing;
 
 #[cfg(target_os = "windows")]
-pub(crate) use dispatch::{cursor_position, warp_cursor, Win32Input};
+pub(crate) use dispatch::{Win32Input, cursor_position, warp_cursor};
 #[cfg(target_os = "windows")]
 pub(crate) use foreground::raise_window;
 #[cfg(target_os = "windows")]

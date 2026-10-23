@@ -9,11 +9,12 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::api::devin_agent::r#gen::cascade_pb::{
-    ClientModelConfig, DisplayOption, GetCliModelConfigsRequest, GetCliModelConfigsResponse, ModelDimensionKind,
+    ClientModelConfig, DisplayOption, GetCliModelConfigsRequest, GetCliModelConfigsResponse,
+    ModelDimensionKind,
 };
 use crate::api::devin_agent::metadata::devin_discovery_metadata;
 use crate::api::devin_agent::paths::{DEVIN_CLI_MODEL_CONFIGS_PATH, DEVIN_DEFAULT_BASE_URL};
-use crate::api::devin_agent::unary::{post_devin_unary, DevinUnaryInput};
+use crate::api::devin_agent::unary::{DevinUnaryInput, post_devin_unary};
 use crate::types::{Model, ModelCostRates};
 
 const DISCOVERY_TIMEOUT_MS: u64 = 5_000;
@@ -22,7 +23,10 @@ const DEFAULT_MAX_TOKENS: u64 = 64_000;
 
 /// Slots requested for parity with the native client but never surfaced as models.
 fn is_internal_display(display: DisplayOption) -> bool {
-    matches!(display, DisplayOption::QuickReview | DisplayOption::InternalDefault)
+    matches!(
+        display,
+        DisplayOption::QuickReview | DisplayOption::InternalDefault
+    )
 }
 
 /// Lanes whose configs advertise image support while the backend silently drops
@@ -40,8 +44,14 @@ pub struct DevinDiscoveryOptions<'a> {
 
 /// `fetchDevinModels`: the account's models, or `None` when the call fails or reports none.
 pub async fn fetch_devin_models(options: &DevinDiscoveryOptions<'_>) -> Option<Vec<Model>> {
-    let base_url = options.base_url.unwrap_or(DEVIN_DEFAULT_BASE_URL).trim_end_matches('/').to_owned();
-    let request = GetCliModelConfigsRequest { metadata: Some(devin_discovery_metadata(options.api_key)) };
+    let base_url = options
+        .base_url
+        .unwrap_or(DEVIN_DEFAULT_BASE_URL)
+        .trim_end_matches('/')
+        .to_owned();
+    let request = GetCliModelConfigsRequest {
+        metadata: Some(devin_discovery_metadata(options.api_key)),
+    };
     let call = post_devin_unary::<_, GetCliModelConfigsResponse>(DevinUnaryInput {
         client: options.client,
         base_url: &base_url,
@@ -49,10 +59,13 @@ pub async fn fetch_devin_models(options: &DevinDiscoveryOptions<'_>) -> Option<V
         request: &request,
         signal: options.signal,
     });
-    let response = tokio::time::timeout(Duration::from_millis(options.timeout_ms.unwrap_or(DISCOVERY_TIMEOUT_MS)), call)
-        .await
-        .ok()?
-        .ok()?;
+    let response = tokio::time::timeout(
+        Duration::from_millis(options.timeout_ms.unwrap_or(DISCOVERY_TIMEOUT_MS)),
+        call,
+    )
+    .await
+    .ok()?
+    .ok()?;
     let models = normalize_devin_models(&response.client_model_configs, &base_url);
     (!models.is_empty()).then_some(models)
 }
@@ -78,7 +91,10 @@ pub fn normalize_devin_models(configs: &[ClientModelConfig], base_url: &str) -> 
             continue;
         }
         let is_router = display == DisplayOption::ModelRouter
-            || config.model_info.as_ref().is_some_and(|info| info.is_model_router);
+            || config
+                .model_info
+                .as_ref()
+                .is_some_and(|info| info.is_model_router);
         models.push(to_model(config, &uid, base_url, is_router));
     }
     models.sort_by(|a, b| a.id.cmp(&b.id));
@@ -86,25 +102,43 @@ pub fn normalize_devin_models(configs: &[ClientModelConfig], base_url: &str) -> 
 }
 
 fn to_model(config: &ClientModelConfig, uid: &str, base_url: &str, is_router: bool) -> Model {
-    let features = config.model_info.as_ref().and_then(|info| info.model_features.as_ref());
-    let advertises_images = features.map(|features| features.supports_images).unwrap_or(config.supports_images);
+    let features = config
+        .model_info
+        .as_ref()
+        .and_then(|info| info.model_features.as_ref());
+    let advertises_images = features
+        .map(|features| features.supports_images)
+        .unwrap_or(config.supports_images);
     let supports_images = advertises_images && !IMAGE_BLIND_UIDS.contains(&uid);
-    let max_output_tokens = config.model_info.as_ref().map(|info| info.max_output_tokens).unwrap_or(0);
-    let supports_parallel_tool_calls = features.is_some_and(|features| features.supports_parallel_tool_calls);
+    let max_output_tokens = config
+        .model_info
+        .as_ref()
+        .map(|info| info.max_output_tokens)
+        .unwrap_or(0);
+    let supports_parallel_tool_calls =
+        features.is_some_and(|features| features.supports_parallel_tool_calls);
     let compat = (is_router || supports_parallel_tool_calls).then(|| {
         let mut compat = serde_json::Map::new();
         if is_router {
             compat.insert(String::from("modelRouter"), serde_json::Value::Bool(true));
         }
         if supports_parallel_tool_calls {
-            compat.insert(String::from("supportsParallelToolCalls"), serde_json::Value::Bool(true));
+            compat.insert(
+                String::from("supportsParallelToolCalls"),
+                serde_json::Value::Bool(true),
+            );
         }
         crate::model::ModelCompat(compat)
     });
     let label = config.label.trim();
     Model {
+        deprecated: None,
         id: uid.to_owned(),
-        name: if label.is_empty() { uid.to_owned() } else { label.to_owned() },
+        name: if label.is_empty() {
+            uid.to_owned()
+        } else {
+            label.to_owned()
+        },
         api: String::from("devin-agent"),
         provider: String::from("devin"),
         base_url: base_url.to_owned(),
@@ -118,13 +152,24 @@ fn to_model(config: &ClientModelConfig, uid: &str, base_url: &str, is_router: bo
         prompt_cache: None,
         supports_assistant_prefill: None,
         input: if supports_images {
-            vec![crate::types::InputModality::Text, crate::types::InputModality::Image]
+            vec![
+                crate::types::InputModality::Text,
+                crate::types::InputModality::Image,
+            ]
         } else {
             vec![crate::types::InputModality::Text]
         },
         cost: cost_of(config),
-        context_window: if config.max_tokens > 0 { config.max_tokens as u64 } else { DEFAULT_CONTEXT_WINDOW },
-        max_tokens: if max_output_tokens > 0 { max_output_tokens as u64 } else { DEFAULT_MAX_TOKENS },
+        context_window: if config.max_tokens > 0 {
+            config.max_tokens as u64
+        } else {
+            DEFAULT_CONTEXT_WINDOW
+        },
+        max_tokens: if max_output_tokens > 0 {
+            max_output_tokens as u64
+        } else {
+            DEFAULT_MAX_TOKENS
+        },
         sampling_params: None,
         headers: None,
         cache_retention: None,
@@ -141,13 +186,20 @@ fn to_model(config: &ClientModelConfig, uid: &str, base_url: &str, is_router: bo
 fn cost_of(config: &ClientModelConfig) -> crate::types::ModelCost {
     let mut cost = ModelCostRates::default();
     for dimension in &config.model_dimensions {
-        let Ok(kind) = ModelDimensionKind::try_from(dimension.kind) else { continue };
-        if !matches!(kind, ModelDimensionKind::Cost | ModelDimensionKind::CostFuzzy) {
+        let Ok(kind) = ModelDimensionKind::try_from(dimension.kind) else {
+            continue;
+        };
+        if !matches!(
+            kind,
+            ModelDimensionKind::Cost | ModelDimensionKind::CostFuzzy
+        ) {
             continue;
         }
         // Dimension values arrive as protobuf floats (0.1 decodes as 0.10000000149...); round at
         // sub-cent precision.
-        let per_million = ((dimension.value as f64) * 1_000_000.0 / denominator_tokens(&dimension.denominator) * 1e6)
+        let per_million = ((dimension.value as f64) * 1_000_000.0
+            / denominator_tokens(&dimension.denominator)
+            * 1e6)
             .round()
             / 1e6;
         match dimension.label.trim().to_lowercase().as_str() {
@@ -157,18 +209,32 @@ fn cost_of(config: &ClientModelConfig) -> crate::types::ModelCost {
             _ => {}
         }
     }
-    crate::types::ModelCost { input: cost.input, output: cost.output, cache_read: cost.cache_read, cache_write: cost.cache_write, ..Default::default() }
+    crate::types::ModelCost {
+        input: cost.input,
+        output: cost.output,
+        cache_read: cost.cache_read,
+        cache_write: cost.cache_write,
+        ..Default::default()
+    }
 }
 
 fn denominator_tokens(denominator: &str) -> f64 {
-    let Some(captures) = regex::Regex::new(r"(?i)(\d+(?:\.\d+)?)\s*([kmb])?").ok().and_then(|re| {
-        re.captures(denominator).map(|captures| {
-            (captures.get(1).map(|m| m.as_str().to_owned()), captures.get(2).map(|m| m.as_str().to_lowercase()))
+    let Some(captures) = regex::Regex::new(r"(?i)(\d+(?:\.\d+)?)\s*([kmb])?")
+        .ok()
+        .and_then(|re| {
+            re.captures(denominator).map(|captures| {
+                (
+                    captures.get(1).map(|m| m.as_str().to_owned()),
+                    captures.get(2).map(|m| m.as_str().to_lowercase()),
+                )
+            })
         })
-    }) else {
+    else {
         return 1_000_000.0;
     };
-    let (Some(number), scale) = captures else { return 1_000_000.0 };
+    let (Some(number), scale) = captures else {
+        return 1_000_000.0;
+    };
     let scale = match scale.as_deref() {
         Some("k") => 1_000.0,
         Some("m") => 1_000_000.0,

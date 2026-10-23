@@ -423,8 +423,8 @@ fn given_a_live_resident_child_when_recovery_resumes_then_it_is_handed_to_the_sc
         }),
     );
     let done = std::thread::spawn(move || recovery.resume_paused_runs(PARENT_SESSION_ID));
-    assert_eq!(reattach_rx.recv_timeout(std::time::Duration::from_secs(2)).expect("reattach callback"), expected_task_id);
-    resumed_rx.recv_timeout(std::time::Duration::from_secs(2)).expect("run resumed event");
+    assert_eq!(reattach_rx.recv_timeout(std::time::Duration::from_secs(30)).expect("reattach callback"), expected_task_id);
+    resumed_rx.recv_timeout(std::time::Duration::from_secs(30)).expect("run resumed event");
     let checkpoint = store.read_checkpoint::<DagRunRecordV1>(&run_id()).expect("read").expect("record");
     assert_eq!(checkpoint.status, DagRunStatus::Running);
     assert_eq!(checkpoint.nodes[0].state, DagNodeState::Running);

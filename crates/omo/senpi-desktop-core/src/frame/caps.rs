@@ -1,9 +1,9 @@
 use std::borrow::Cow;
 
-use image::imageops::FilterType;
 use image::RgbaImage;
+use image::imageops::FilterType;
 
-use super::{round_to_u32, FrameGeometry};
+use super::{FrameGeometry, round_to_u32};
 use crate::error::{CoreResult, DesktopError};
 use crate::types::CaptureCaps;
 
@@ -17,7 +17,9 @@ pub fn apply_capture_caps<'a>(
     caps: &CaptureCaps,
 ) -> CoreResult<Cow<'a, RgbaImage>> {
     if image.width() == 0 || image.height() == 0 {
-        return Err(DesktopError::capture_failed("capture returned an empty image"));
+        return Err(DesktopError::capture_failed(
+            "capture returned an empty image",
+        ));
     }
     if caps.max_width == Some(0) || caps.max_height == Some(0) {
         return Err(DesktopError::invalid_target(

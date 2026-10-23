@@ -83,6 +83,7 @@ pub fn diagnostic_from_openai_error(
             http_status: status,
             code: Some(code.into()),
             evidence: ProviderDiagnosticEvidence::StructuredCode,
+            resets_at: None,
         });
     }
     crate::utils::event_stream::StreamError::diagnostic_from_status(status)

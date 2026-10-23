@@ -4,9 +4,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
+use crate::cursor::display_name::{
+    CursorNamedMember, clean_cursor_group_name, drop_unserved_size_token,
+    sanitize_cursor_display_name,
+};
 use crate::cursor::model_capabilities::{
-    get_cursor_variant_alias, parse_cursor_variant_id, CursorVariantAlias, CursorVariantParse,
-    CURSOR_MODEL_CAPABILITIES,
+    CURSOR_MODEL_CAPABILITIES, CursorVariantAlias, CursorVariantParse, get_cursor_variant_alias,
+    parse_cursor_variant_id,
 };
 use crate::types::{ModelThinkingLevel, ThinkingLevelMap};
 
@@ -52,15 +56,11 @@ const ALL_LEVELS: [ModelThinkingLevel; 7] = [
 const FALLBACK_WINDOW: f64 = 200_000.0;
 
 static STATIC_TARGETS: LazyLock<BTreeSet<String>> = LazyLock::new(|| {
-    crate::cursor::model_capabilities::all_cursor_variant_aliases().into_iter().map(|alias| alias.target_id).collect()
+    crate::cursor::model_capabilities::all_cursor_variant_aliases()
+        .into_iter()
+        .map(|alias| alias.target_id)
+        .collect()
 });
-
-static NO_ZDR_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\s*\(NO ZDR\)\s*").expect("regex"));
-static LEVEL_WORD_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"\s+(Minimal|Low|Medium|High|Extra High|XHigh|Max|None)\b").expect("regex"));
-static FAST_WORD_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\s+Fast\b").expect("regex"));
-static THINKING_WORD_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\s+Thinking\b").expect("regex"));
-static WHITESPACE_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\s+").expect("regex"));
 
 struct GroupMember {
     raw: CursorCatalogRawEntry,
@@ -74,29 +74,10 @@ fn is_claude(base_id: &str) -> bool {
     base_id.starts_with("claude-")
 }
 
-fn clean_name(members: &[GroupMember], base_id: &str, thinking_mode: Option<bool>) -> String {
-    let representative = members
-        .iter()
-        .find(|m| m.level.as_deref() == Some("high"))
-        .or_else(|| members.iter().find(|m| m.level.as_deref() == Some("medium")))
-        .or_else(|| members.iter().find(|m| m.level.as_deref() == Some("low")))
-        .unwrap_or(&members[0]);
-    let mut name = representative.raw.name.clone();
-    name = NO_ZDR_RE.replace_all(&name, " \u{1}").trim().to_owned();
-    name = LEVEL_WORD_RE.replace_all(&name, "").into_owned();
-    name = FAST_WORD_RE.replace_all(&name, "").into_owned();
-    if thinking_mode != Some(true) {
-        name = THINKING_WORD_RE.replace_all(&name, "").into_owned();
-    }
-    name = name.replace('\u{1}', "(NO ZDR)");
-    name = WHITESPACE_RE.replace_all(&name, " ").trim().to_owned();
-    if name.is_empty() {
-        name = base_id.to_owned();
-    }
-    name
-}
-
-fn build_level_map(members: &[GroupMember], capability: Option<&crate::cursor::model_capabilities::CursorModelCapability>) -> ThinkingLevelMap {
+fn build_level_map(
+    members: &[GroupMember],
+    capability: Option<&crate::cursor::model_capabilities::CursorModelCapability>,
+) -> ThinkingLevelMap {
     let observed: BTreeSet<String> = members.iter().filter_map(|m| m.level.clone()).collect();
     let mut map: ThinkingLevelMap = BTreeMap::new();
     for level in ALL_LEVELS {
@@ -112,7 +93,9 @@ fn build_level_map(members: &[GroupMember], capability: Option<&crate::cursor::m
         }
         let spec = capability.and_then(|c| c.levels.get(&level));
         let value = match spec {
-            Some(spec) if observed.contains(level.as_str()) || observed.contains(&spec.value) => Some(spec.value.clone()),
+            Some(spec) if observed.contains(level.as_str()) || observed.contains(&spec.value) => {
+                Some(spec.value.clone())
+            }
             _ => None,
         };
         map.insert(level, value);
@@ -121,15 +104,40 @@ fn build_level_map(members: &[GroupMember], capability: Option<&crate::cursor::m
 }
 
 fn pick_representative(members: &[GroupMember]) -> String {
-    let with_levels: Vec<&GroupMember> =
-        members.iter().filter(|m| m.level.is_some() && m.level.as_deref() != Some("none")).collect();
-    let pool: Vec<&GroupMember> = if with_levels.is_empty() { members.iter().collect() } else { with_levels };
-    let order = ["medium", "low", "minimal", "high", "xhigh", "extra-high", "max", "none"];
+    let with_levels: Vec<&GroupMember> = members
+        .iter()
+        .filter(|m| m.level.is_some() && m.level.as_deref() != Some("none"))
+        .collect();
+    let pool: Vec<&GroupMember> = if with_levels.is_empty() {
+        members.iter().collect()
+    } else {
+        with_levels
+    };
+    let order = [
+        "medium",
+        "low",
+        "minimal",
+        "high",
+        "xhigh",
+        "extra-high",
+        "max",
+        "none",
+    ];
     let mut sorted = pool;
     sorted.sort_by(|a, b| {
-        let ai = order.iter().position(|&o| o == a.level.as_deref().unwrap_or("none")).unwrap_or(order.len());
-        let bi = order.iter().position(|&o| o == b.level.as_deref().unwrap_or("none")).unwrap_or(order.len());
-        if ai != bi { ai.cmp(&bi) } else { a.alias.legacy_variant_id.cmp(&b.alias.legacy_variant_id) }
+        let ai = order
+            .iter()
+            .position(|&o| o == a.level.as_deref().unwrap_or("none"))
+            .unwrap_or(order.len());
+        let bi = order
+            .iter()
+            .position(|&o| o == b.level.as_deref().unwrap_or("none"))
+            .unwrap_or(order.len());
+        if ai != bi {
+            ai.cmp(&bi)
+        } else {
+            a.alias.legacy_variant_id.cmp(&b.alias.legacy_variant_id)
+        }
     });
     sorted[0].alias.legacy_variant_id.clone()
 }
@@ -197,16 +205,23 @@ pub fn derive_cursor_variant_aliases(ids: &[String]) -> BTreeMap<String, CursorV
         if parsed.fast || parsed.level.is_none() || parsed.base_id.is_empty() {
             continue;
         }
-        let Some(level) = normalize_derived_level(parsed.level.as_deref().expect("checked")) else { continue };
-        let target_id =
-            if parsed.thinking == Some(true) { format!("{}-thinking", parsed.base_id) } else { parsed.base_id.clone() };
+        let Some(level) = normalize_derived_level(parsed.level.as_deref().expect("checked")) else {
+            continue;
+        };
+        let target_id = if parsed.thinking == Some(true) {
+            format!("{}-thinking", parsed.base_id)
+        } else {
+            parsed.base_id.clone()
+        };
         let family = families.entry(target_id.clone()).or_insert_with(|| Family {
             target_id: target_id.clone(),
             levels: BTreeSet::new(),
             members: Vec::new(),
         });
         family.levels.insert(level);
-        family.members.push((id.clone(), level, parsed.level.clone().expect("checked")));
+        family
+            .members
+            .push((id.clone(), level, parsed.level.clone().expect("checked")));
     }
     let mut derived: BTreeMap<String, CursorVariantAlias> = BTreeMap::new();
     for family in families.values() {
@@ -227,7 +242,8 @@ pub fn derive_cursor_variant_aliases(ids: &[String]) -> BTreeMap<String, CursorV
                     let previous_suffix = parse_cursor_variant_id(previous).level;
                     let level_token = level_to_token(*level);
                     let suffix_matches = *suffix == level_token;
-                    let previous_suffix_matches = previous_suffix.as_deref() == Some(level_token.as_str());
+                    let previous_suffix_matches =
+                        previous_suffix.as_deref() == Some(level_token.as_str());
                     if (suffix_matches && !previous_suffix_matches)
                         || (suffix_matches == previous_suffix_matches && *id < *previous)
                     {
@@ -295,13 +311,16 @@ pub fn normalize_cursor_catalog(raw_entries: &[CursorCatalogRawEntry]) -> Vec<Cu
                     order.push(key.clone());
                     groups.insert(key.clone(), Vec::new());
                 }
-                groups.get_mut(&key).expect("just inserted").push(GroupMember {
-                    raw: raw.clone(),
-                    alias,
-                    level: parsed.level,
-                    thinking: parsed.thinking,
-                    fast: parsed.fast,
-                });
+                groups
+                    .get_mut(&key)
+                    .expect("just inserted")
+                    .push(GroupMember {
+                        raw: raw.clone(),
+                        alias,
+                        level: parsed.level,
+                        thinking: parsed.thinking,
+                        fast: parsed.fast,
+                    });
             }
         }
     }
@@ -312,14 +331,24 @@ pub fn normalize_cursor_catalog(raw_entries: &[CursorCatalogRawEntry]) -> Vec<Cu
         let first = &members[0];
         let base_parsed = parse_cursor_variant_id(&first.alias.target_id);
         let derived_group = members.iter().all(|m| derived.contains_key(&m.raw.id));
-        let base_id = if derived_group { parse_cursor_variant_id(&first.raw.id).base_id } else { base_parsed.base_id };
+        let base_id = if derived_group {
+            parse_cursor_variant_id(&first.raw.id).base_id
+        } else {
+            base_parsed.base_id
+        };
         let capability = CURSOR_MODEL_CAPABILITIES.get(base_id.as_str());
         let is_grouped = members.len() > 1 || first.alias.target_id != first.raw.id;
-        let efforts: Vec<&GroupMember> =
-            members.iter().filter(|m| m.level.is_some() && m.level.as_deref() != Some("none")).collect();
+        let efforts: Vec<&GroupMember> = members
+            .iter()
+            .filter(|m| m.level.is_some() && m.level.as_deref() != Some("none"))
+            .collect();
 
         if is_grouped && !efforts.is_empty() && !first.fast {
-            let thinking_mode = if is_claude(&base_id) { Some(first.thinking == Some(true)) } else { None };
+            let thinking_mode = if is_claude(&base_id) {
+                Some(first.thinking == Some(true))
+            } else {
+                None
+            };
             let mut input: Vec<String> = Vec::new();
             for member in &members {
                 for modality in &member.raw.input {
@@ -328,11 +357,27 @@ pub fn normalize_cursor_catalog(raw_entries: &[CursorCatalogRawEntry]) -> Vec<Cu
                     }
                 }
             }
-            let mut legacy_aliases: Vec<String> = members.iter().map(|m| m.alias.legacy_variant_id.clone()).collect();
+            let mut legacy_aliases: Vec<String> = members
+                .iter()
+                .map(|m| m.alias.legacy_variant_id.clone())
+                .collect();
             legacy_aliases.sort();
             out.push(CursorCatalogEntry {
                 id: first.alias.target_id.clone(),
-                name: clean_name(&members, &base_id, thinking_mode),
+                name: drop_unserved_size_token(
+                    clean_cursor_group_name(
+                        &members
+                            .iter()
+                            .map(|m| CursorNamedMember {
+                                name: m.raw.name.as_str(),
+                                level: m.level.as_deref(),
+                            })
+                            .collect::<Vec<_>>(),
+                        &base_id,
+                        thinking_mode,
+                    ),
+                    capability,
+                ),
                 reasoning: true,
                 thinking_level_map: Some(if derived_group {
                     build_derived_level_map(&members)
@@ -347,7 +392,11 @@ pub fn normalize_cursor_catalog(raw_entries: &[CursorCatalogRawEntry]) -> Vec<Cu
                 thinking_mode,
                 representative_variant_id: Some(pick_representative(&members)),
                 legacy_aliases,
-                variant_ids: if derived_group { Some(build_derived_variant_ids(&members)) } else { None },
+                variant_ids: if derived_group {
+                    Some(build_derived_variant_ids(&members))
+                } else {
+                    None
+                },
             });
             continue;
         }
@@ -357,10 +406,15 @@ pub fn normalize_cursor_catalog(raw_entries: &[CursorCatalogRawEntry]) -> Vec<Cu
             let member_capability = CURSOR_MODEL_CAPABILITIES.get(member_base.as_str());
             out.push(CursorCatalogEntry {
                 id: member.raw.id.clone(),
-                name: member.raw.name.clone(),
+                name: drop_unserved_size_token(
+                    sanitize_cursor_display_name(&member.raw.name),
+                    member_capability,
+                ),
                 reasoning: false,
                 thinking_level_map: None,
-                window: member_capability.map(|c| c.window).unwrap_or(FALLBACK_WINDOW),
+                window: member_capability
+                    .map(|c| c.window)
+                    .unwrap_or(FALLBACK_WINDOW),
                 max_window: member_capability.and_then(|c| c.max_window),
                 input: member.raw.input.clone(),
                 cursor_max_mode: member.raw.cursor_max_mode,
@@ -395,7 +449,12 @@ mod tests {
         .expect("fixture");
         entries
             .into_iter()
-            .map(|e| CursorCatalogRawEntry { id: e.id, name: e.name, input: e.input, cursor_max_mode: e.cursor_max_mode })
+            .map(|e| CursorCatalogRawEntry {
+                id: e.id,
+                name: e.name,
+                input: e.input,
+                cursor_max_mode: e.cursor_max_mode,
+            })
             .collect()
     }
 
@@ -409,16 +468,28 @@ mod tests {
     #[test]
     fn splits_the_claude_boolean_axis_into_separate_selectable_identities() {
         let out = normalize_cursor_catalog(&fixture_204());
-        let plain = out.iter().find(|e| e.id == "claude-fable-5").expect("plain");
-        let thinking = out.iter().find(|e| e.id == "claude-fable-5-thinking").expect("thinking");
+        let plain = out
+            .iter()
+            .find(|e| e.id == "claude-fable-5")
+            .expect("plain");
+        let thinking = out
+            .iter()
+            .find(|e| e.id == "claude-fable-5-thinking")
+            .expect("thinking");
         assert!(plain.reasoning);
         assert!(thinking.reasoning);
         assert_eq!(plain.thinking_mode, Some(false));
         assert_eq!(thinking.thinking_mode, Some(true));
         for identity in [plain, thinking] {
             let map = identity.thinking_level_map.as_ref().expect("map");
-            assert_eq!(map.get(&ModelThinkingLevel::Low).cloned().flatten(), Some("low".to_owned()));
-            assert_eq!(map.get(&ModelThinkingLevel::Max).cloned().flatten(), Some("max".to_owned()));
+            assert_eq!(
+                map.get(&ModelThinkingLevel::Low).cloned().flatten(),
+                Some("low".to_owned())
+            );
+            assert_eq!(
+                map.get(&ModelThinkingLevel::Max).cloned().flatten(),
+                Some("max".to_owned())
+            );
         }
     }
 
@@ -428,7 +499,12 @@ mod tests {
         for entry in out.iter().filter(|e| e.reasoning) {
             let map = entry.thinking_level_map.as_ref().expect("map");
             for level in ALL_LEVELS {
-                assert!(map.contains_key(&level), "{} missing key {:?}", entry.id, level);
+                assert!(
+                    map.contains_key(&level),
+                    "{} missing key {:?}",
+                    entry.id,
+                    level
+                );
             }
         }
     }
@@ -436,36 +512,91 @@ mod tests {
     #[test]
     fn pins_per_family_maps_and_translations() {
         let out = normalize_cursor_catalog(&fixture_204());
-        let by_id: BTreeMap<&str, &CursorCatalogEntry> = out.iter().map(|e| (e.id.as_str(), e)).collect();
+        let by_id: BTreeMap<&str, &CursorCatalogEntry> =
+            out.iter().map(|e| (e.id.as_str(), e)).collect();
         let get = |id: &str, level: ModelThinkingLevel| -> Option<String> {
-            by_id.get(id).and_then(|e| e.thinking_level_map.as_ref()).and_then(|m| m.get(&level).cloned().flatten())
+            by_id
+                .get(id)
+                .and_then(|e| e.thinking_level_map.as_ref())
+                .and_then(|m| m.get(&level).cloned().flatten())
         };
-        assert_eq!(get("gpt-5.5", ModelThinkingLevel::Xhigh), Some("extra-high".to_owned()));
-        assert_eq!(get("gpt-5.3-codex", ModelThinkingLevel::Xhigh), Some("extra-high".to_owned()));
-        assert_eq!(get("gpt-5.6-sol", ModelThinkingLevel::Xhigh), Some("xhigh".to_owned()));
+        assert_eq!(
+            get("gpt-5.5", ModelThinkingLevel::Xhigh),
+            Some("extra-high".to_owned())
+        );
+        assert_eq!(
+            get("gpt-5.3-codex", ModelThinkingLevel::Xhigh),
+            Some("extra-high".to_owned())
+        );
+        assert_eq!(
+            get("gpt-5.6-sol", ModelThinkingLevel::Xhigh),
+            Some("xhigh".to_owned())
+        );
         assert_eq!(get("cursor-grok-4.5", ModelThinkingLevel::Xhigh), None);
-        assert_eq!(get("cursor-grok-4.6", ModelThinkingLevel::Xhigh), Some("xhigh".to_owned()));
-        assert_eq!(get("glm-5.2", ModelThinkingLevel::High), Some("high".to_owned()));
-        assert_eq!(get("glm-5.2", ModelThinkingLevel::Max), Some("max".to_owned()));
+        assert_eq!(
+            get("cursor-grok-4.6", ModelThinkingLevel::Xhigh),
+            Some("xhigh".to_owned())
+        );
+        assert_eq!(
+            get("glm-5.2", ModelThinkingLevel::High),
+            Some("high".to_owned())
+        );
+        assert_eq!(
+            get("glm-5.2", ModelThinkingLevel::Max),
+            Some("max".to_owned())
+        );
         assert_eq!(get("glm-5.2", ModelThinkingLevel::Low), None);
-        assert_eq!(get("kimi-k3", ModelThinkingLevel::Low), Some("low".to_owned()));
-        assert_eq!(get("kimi-k3", ModelThinkingLevel::High), Some("high".to_owned()));
-        assert_eq!(get("kimi-k3", ModelThinkingLevel::Max), Some("max".to_owned()));
+        assert_eq!(
+            get("kimi-k3", ModelThinkingLevel::Low),
+            Some("low".to_owned())
+        );
+        assert_eq!(
+            get("kimi-k3", ModelThinkingLevel::High),
+            Some("high".to_owned())
+        );
+        assert_eq!(
+            get("kimi-k3", ModelThinkingLevel::Max),
+            Some("max".to_owned())
+        );
         assert_eq!(get("kimi-k3", ModelThinkingLevel::Medium), None);
-        assert_eq!(get("gemini-3.6-flash", ModelThinkingLevel::Minimal), Some("minimal".to_owned()));
+        assert_eq!(
+            get("gemini-3.6-flash", ModelThinkingLevel::Minimal),
+            Some("minimal".to_owned())
+        );
         assert_eq!(get("gemini-3.7-flash", ModelThinkingLevel::Minimal), None);
     }
 
     #[test]
     fn exposes_off_equals_none_only_where_the_descriptor_declares_it() {
         let out = normalize_cursor_catalog(&fixture_204());
-        let by_id: BTreeMap<&str, &CursorCatalogEntry> = out.iter().map(|e| (e.id.as_str(), e)).collect();
-        for id in ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.4-mini", "gpt-5.4-nano"] {
-            let value = by_id.get(id).and_then(|e| e.thinking_level_map.as_ref()).and_then(|m| m.get(&ModelThinkingLevel::Off).cloned().flatten());
+        let by_id: BTreeMap<&str, &CursorCatalogEntry> =
+            out.iter().map(|e| (e.id.as_str(), e)).collect();
+        for id in [
+            "gpt-5.5",
+            "gpt-5.6-sol",
+            "gpt-5.6-luna",
+            "gpt-5.6-terra",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+        ] {
+            let value = by_id
+                .get(id)
+                .and_then(|e| e.thinking_level_map.as_ref())
+                .and_then(|m| m.get(&ModelThinkingLevel::Off).cloned().flatten());
             assert_eq!(value, Some("none".to_owned()), "{id}");
         }
-        for id in ["claude-fable-5", "kimi-k3", "glm-5.2", "cursor-grok-4.6", "gemini-3.7-flash", "gpt-5.3-codex"] {
-            let value = by_id.get(id).and_then(|e| e.thinking_level_map.as_ref()).and_then(|m| m.get(&ModelThinkingLevel::Off).cloned().flatten());
+        for id in [
+            "claude-fable-5",
+            "kimi-k3",
+            "glm-5.2",
+            "cursor-grok-4.6",
+            "gemini-3.7-flash",
+            "gpt-5.3-codex",
+        ] {
+            let value = by_id
+                .get(id)
+                .and_then(|e| e.thinking_level_map.as_ref())
+                .and_then(|m| m.get(&ModelThinkingLevel::Off).cloned().flatten());
             assert_eq!(value, None, "{id}");
         }
     }
@@ -478,7 +609,11 @@ mod tests {
         assert!(ids.contains("composer-2.5-fast"));
         assert!(ids.contains("claude-4-sonnet-thinking"));
         assert!(ids.contains("claude-4.5-sonnet-thinking"));
-        for raw_id in ["claude-opus-4-7-thinking-high-fast", "composer-2.5-fast", "claude-4-sonnet-thinking"] {
+        for raw_id in [
+            "claude-opus-4-7-thinking-high-fast",
+            "composer-2.5-fast",
+            "claude-4-sonnet-thinking",
+        ] {
             let entry = out.iter().find(|e| e.id == raw_id).expect(raw_id);
             assert!(!entry.reasoning, "{raw_id}");
         }
@@ -487,21 +622,55 @@ mod tests {
     #[test]
     fn assigns_static_windows_and_keeps_display_qualifiers() {
         let out = normalize_cursor_catalog(&fixture_204());
-        let by_id: BTreeMap<&str, &CursorCatalogEntry> = out.iter().map(|e| (e.id.as_str(), e)).collect();
+        let by_id: BTreeMap<&str, &CursorCatalogEntry> =
+            out.iter().map(|e| (e.id.as_str(), e)).collect();
         assert_eq!(by_id.get("kimi-k3").expect("kimi").window, 1_048_576.0);
-        assert_eq!(by_id.get("claude-fable-5").expect("fable").window, 1_000_000.0);
-        assert_eq!(by_id.get("claude-fable-5").expect("fable").max_window, Some(1_000_000.0));
-        assert!(by_id.get("claude-fable-5").expect("fable").name.contains("1M"));
-        assert!(by_id.get("claude-fable-5").expect("fable").name.contains("NO ZDR"));
+        assert_eq!(
+            by_id.get("claude-fable-5").expect("fable").window,
+            1_000_000.0
+        );
+        assert_eq!(
+            by_id.get("claude-fable-5").expect("fable").max_window,
+            Some(1_000_000.0)
+        );
+        assert!(
+            by_id
+                .get("claude-fable-5")
+                .expect("fable")
+                .name
+                .contains("1M")
+        );
+        assert!(
+            by_id
+                .get("claude-fable-5")
+                .expect("fable")
+                .name
+                .contains("NO ZDR")
+        );
     }
 
     #[test]
     fn records_legacy_aliases_for_grouped_identities() {
         let out = normalize_cursor_catalog(&fixture_204());
-        let fable = out.iter().find(|e| e.id == "claude-fable-5-thinking").expect("fable");
-        assert!(fable.legacy_aliases.contains(&"claude-fable-5-thinking-xhigh".to_owned()));
-        assert!(fable.legacy_aliases.contains(&"claude-fable-5-thinking-low".to_owned()));
-        assert!(!fable.legacy_aliases.contains(&"claude-fable-5-low".to_owned()));
+        let fable = out
+            .iter()
+            .find(|e| e.id == "claude-fable-5-thinking")
+            .expect("fable");
+        assert!(
+            fable
+                .legacy_aliases
+                .contains(&"claude-fable-5-thinking-xhigh".to_owned())
+        );
+        assert!(
+            fable
+                .legacy_aliases
+                .contains(&"claude-fable-5-thinking-low".to_owned())
+        );
+        assert!(
+            !fable
+                .legacy_aliases
+                .contains(&"claude-fable-5-low".to_owned())
+        );
     }
 
     #[test]
@@ -545,7 +714,12 @@ mod tests {
 
     #[test]
     fn never_authorizes_migration_for_syntactically_plausible_but_unknown_ids() {
-        for id in ["custom-high", "custom-none", "some-model-thinking-low", "gpt-5.5[effort=high]"] {
+        for id in [
+            "custom-high",
+            "custom-none",
+            "some-model-thinking-low",
+            "gpt-5.5[effort=high]",
+        ] {
             assert!(get_cursor_variant_alias(id).is_none(), "{id}");
         }
     }
@@ -610,7 +784,10 @@ mod tests {
     }
 
     fn variant_map(entries: &[(ModelThinkingLevel, &str)]) -> BTreeMap<ModelThinkingLevel, String> {
-        entries.iter().map(|(level, id)| (*level, (*id).to_owned())).collect()
+        entries
+            .iter()
+            .map(|(level, id)| (*level, (*id).to_owned()))
+            .collect()
     }
 
     #[test]
@@ -619,7 +796,10 @@ mod tests {
         assert_eq!(out.len(), 15);
         assert_eq!(out.iter().filter(|entry| entry.reasoning).count(), 6);
         assert_eq!(
-            out.iter().filter(|entry| entry.reasoning).map(|entry| entry.id.clone()).collect::<Vec<_>>(),
+            out.iter()
+                .filter(|entry| entry.reasoning)
+                .map(|entry| entry.id.clone())
+                .collect::<Vec<_>>(),
             vec![
                 FABLE1.to_owned(),
                 FABLE1_THINKING.to_owned(),
@@ -634,7 +814,8 @@ mod tests {
     #[test]
     fn pins_per_family_thinking_level_map_and_variant_ids() {
         let out = normalized_unlisted();
-        let by_id: BTreeMap<&str, &CursorCatalogEntry> = out.iter().map(|entry| (entry.id.as_str(), entry)).collect();
+        let by_id: BTreeMap<&str, &CursorCatalogEntry> =
+            out.iter().map(|entry| (entry.id.as_str(), entry)).collect();
 
         let grok = by_id.get("grok-4.7").expect("grok");
         assert_eq!(
@@ -682,8 +863,14 @@ mod tests {
             ]))
         );
         let fable_thinking_variants = fable_thinking.variant_ids.as_ref().expect("variant ids");
-        assert_eq!(fable_thinking_variants.get(&ModelThinkingLevel::Xhigh), Some(&format!("{FABLE1_THINKING}-xhigh")));
-        assert_eq!(fable_thinking_variants.get(&ModelThinkingLevel::Max), Some(&format!("{FABLE1_THINKING}-max")));
+        assert_eq!(
+            fable_thinking_variants.get(&ModelThinkingLevel::Xhigh),
+            Some(&format!("{FABLE1_THINKING}-xhigh"))
+        );
+        assert_eq!(
+            fable_thinking_variants.get(&ModelThinkingLevel::Max),
+            Some(&format!("{FABLE1_THINKING}-max"))
+        );
 
         let opus = by_id.get(OPUS55).expect("opus");
         assert_eq!(
@@ -697,7 +884,9 @@ mod tests {
             ]))
         );
         assert_eq!(
-            opus.variant_ids.as_ref().and_then(|map| map.get(&ModelThinkingLevel::Medium)),
+            opus.variant_ids
+                .as_ref()
+                .and_then(|map| map.get(&ModelThinkingLevel::Medium)),
             Some(&format!("{OPUS55}-medium"))
         );
 
@@ -732,7 +921,9 @@ mod tests {
             ]))
         );
         assert_eq!(
-            muse.variant_ids.as_ref().and_then(|map| map.get(&ModelThinkingLevel::Minimal)),
+            muse.variant_ids
+                .as_ref()
+                .and_then(|map| map.get(&ModelThinkingLevel::Minimal)),
             Some(&"muse-spark-1.3-minimal".to_owned())
         );
     }
@@ -740,15 +931,27 @@ mod tests {
     #[test]
     fn derives_identity_metadata_display_name_representative_legacy_aliases_window_capability_id() {
         let out = normalized_unlisted();
-        let grok = out.iter().find(|entry| entry.id == "grok-4.7").expect("grok");
+        let grok = out
+            .iter()
+            .find(|entry| entry.id == "grok-4.7")
+            .expect("grok");
         assert_eq!(grok.name, "Grok 4.7");
-        assert_eq!(grok.representative_variant_id.as_deref(), Some("grok-4.7-medium"));
+        assert_eq!(
+            grok.representative_variant_id.as_deref(),
+            Some("grok-4.7-medium")
+        );
         assert_eq!(
             grok.legacy_aliases,
-            vec!["grok-4.7-high", "grok-4.7-low", "grok-4.7-medium", "grok-4.7-xhigh"]
+            vec![
+                "grok-4.7-high",
+                "grok-4.7-low",
+                "grok-4.7-medium",
+                "grok-4.7-xhigh"
+            ]
         );
         assert_eq!(grok.capability_id.as_deref(), Some("grok-4.7"));
-        assert_eq!(grok.window, 200_000.0);
+        // Server-reported default context for the suffix variant (senpi#3620).
+        assert_eq!(grok.window, 256_000.0);
         assert_eq!(grok.thinking_mode, None);
         assert_eq!(grok.input, vec!["text".to_owned()]);
     }
@@ -756,11 +959,17 @@ mod tests {
     #[test]
     fn keeps_fast_variants_flat_singleton_entries() {
         let out = normalized_unlisted();
-        let fast_ids: Vec<String> =
-            out.iter().map(|entry| entry.id.clone()).filter(|id| id.ends_with("-fast")).collect();
+        let fast_ids: Vec<String> = out
+            .iter()
+            .map(|entry| entry.id.clone())
+            .filter(|id| id.ends_with("-fast"))
+            .collect();
         assert_eq!(fast_ids.len(), 9);
         for id in fast_ids {
-            let entry = out.iter().find(|candidate| candidate.id == id).expect("fast entry");
+            let entry = out
+                .iter()
+                .find(|candidate| candidate.id == id)
+                .expect("fast entry");
             assert!(!entry.reasoning, "{id}");
             assert_eq!(entry.variant_ids, None, "{id}");
             assert_eq!(entry.representative_variant_id, None, "{id}");
@@ -784,25 +993,45 @@ mod tests {
     fn rejects_derived_families_when_a_bare_target_id_is_listed() {
         let ids = ["grok-4.7", "grok-4.7-low", "grok-4.7-high"];
         let out = normalize_cursor_catalog(&ids.iter().map(|id| raw(id)).collect::<Vec<_>>());
-        assert_eq!(out.iter().map(|entry| entry.id.clone()).collect::<Vec<_>>(), ids.to_vec());
-        assert!(out.iter().all(|entry| !entry.reasoning && entry.variant_ids.is_none()));
+        assert_eq!(
+            out.iter().map(|entry| entry.id.clone()).collect::<Vec<_>>(),
+            ids.to_vec()
+        );
+        assert!(
+            out.iter()
+                .all(|entry| !entry.reasoning && entry.variant_ids.is_none())
+        );
     }
 
     #[test]
     fn rejects_a_derived_target_claimed_by_a_static_alias_even_when_that_alias_is_not_listed() {
         let ids = ["cursor-grok-4.6-none", "cursor-grok-4.6-minimal"];
         let out = normalize_cursor_catalog(&ids.iter().map(|id| raw(id)).collect::<Vec<_>>());
-        assert_eq!(out.iter().map(|entry| entry.id.clone()).collect::<Vec<_>>(), ids.to_vec());
-        assert!(out.iter().all(|entry| !entry.reasoning && entry.variant_ids.is_none()));
+        assert_eq!(
+            out.iter().map(|entry| entry.id.clone()).collect::<Vec<_>>(),
+            ids.to_vec()
+        );
+        assert!(
+            out.iter()
+                .all(|entry| !entry.reasoning && entry.variant_ids.is_none())
+        );
     }
 
     #[test]
     fn does_not_add_unlisted_levels_to_a_static_group() {
-        let ids = ["cursor-grok-4.6-high", "cursor-grok-4.6-none", "cursor-grok-4.6-minimal"];
+        let ids = [
+            "cursor-grok-4.6-high",
+            "cursor-grok-4.6-none",
+            "cursor-grok-4.6-minimal",
+        ];
         let out = normalize_cursor_catalog(&ids.iter().map(|id| raw(id)).collect::<Vec<_>>());
         assert_eq!(
             out.iter().map(|entry| entry.id.clone()).collect::<Vec<_>>(),
-            vec!["cursor-grok-4.6".to_owned(), ids[1].to_owned(), ids[2].to_owned()]
+            vec![
+                "cursor-grok-4.6".to_owned(),
+                ids[1].to_owned(),
+                ids[2].to_owned()
+            ]
         );
         assert_eq!(out[0].representative_variant_id.as_deref(), Some(ids[0]));
         assert_eq!(out[0].legacy_aliases, vec![ids[0].to_owned()]);
@@ -812,35 +1041,72 @@ mod tests {
 
     #[test]
     fn keeps_duplicate_normalized_levels_flat_and_chooses_xhigh_regardless_of_listing_order() {
-        let ids = ["probe-low", "probe-extra-high", "probe-xhigh", "probe-xhigh-fast"];
+        let ids = [
+            "probe-low",
+            "probe-extra-high",
+            "probe-xhigh",
+            "probe-xhigh-fast",
+        ];
         let mut reversed = ids;
         reversed.reverse();
         for listed in [ids, reversed] {
-            let out = normalize_cursor_catalog(&listed.iter().map(|id| raw(id)).collect::<Vec<_>>());
-            let group = out.iter().find(|entry| entry.id == "probe").expect("probe group");
+            let out =
+                normalize_cursor_catalog(&listed.iter().map(|id| raw(id)).collect::<Vec<_>>());
+            let group = out
+                .iter()
+                .find(|entry| entry.id == "probe")
+                .expect("probe group");
             assert_eq!(
                 group.variant_ids,
-                Some(variant_map(&[(ModelThinkingLevel::Low, "probe-low"), (ModelThinkingLevel::Xhigh, "probe-xhigh")]))
+                Some(variant_map(&[
+                    (ModelThinkingLevel::Low, "probe-low"),
+                    (ModelThinkingLevel::Xhigh, "probe-xhigh")
+                ]))
             );
             assert_eq!(
                 group.thinking_level_map,
-                Some(level_map(&[(ModelThinkingLevel::Low, "low"), (ModelThinkingLevel::Xhigh, "xhigh")]))
+                Some(level_map(&[
+                    (ModelThinkingLevel::Low, "low"),
+                    (ModelThinkingLevel::Xhigh, "xhigh")
+                ]))
             );
-            assert_eq!(group.legacy_aliases, vec!["probe-low".to_owned(), "probe-xhigh".to_owned()]);
-            assert!(!out.iter().find(|entry| entry.id == "probe-extra-high").expect("extra high").reasoning);
-            assert!(!out.iter().find(|entry| entry.id == "probe-xhigh-fast").expect("xhigh fast").reasoning);
+            assert_eq!(
+                group.legacy_aliases,
+                vec!["probe-low".to_owned(), "probe-xhigh".to_owned()]
+            );
+            assert!(
+                !out.iter()
+                    .find(|entry| entry.id == "probe-extra-high")
+                    .expect("extra high")
+                    .reasoning
+            );
+            assert!(
+                !out.iter()
+                    .find(|entry| entry.id == "probe-xhigh-fast")
+                    .expect("xhigh fast")
+                    .reasoning
+            );
         }
     }
 
     #[test]
-    fn uses_the_original_parser_base_for_derived_capability_and_window_and_leaves_a_static_alias_key_target_flat() {
+    fn uses_the_original_parser_base_for_derived_capability_and_window_and_leaves_a_static_alias_key_target_flat()
+     {
         let out = normalize_cursor_catalog(
-            &["probe-high-low", "probe-high-medium", "gpt-5.5-high-low", "gpt-5.5-high-medium"]
-                .iter()
-                .map(|id| raw(id))
-                .collect::<Vec<_>>(),
+            &[
+                "probe-high-low",
+                "probe-high-medium",
+                "gpt-5.5-high-low",
+                "gpt-5.5-high-medium",
+            ]
+            .iter()
+            .map(|id| raw(id))
+            .collect::<Vec<_>>(),
         );
-        let probe = out.iter().find(|entry| entry.id == "probe-high").expect("probe-high");
+        let probe = out
+            .iter()
+            .find(|entry| entry.id == "probe-high")
+            .expect("probe-high");
         assert_eq!(probe.capability_id.as_deref(), Some("probe-high"));
         assert_eq!(probe.window, 200_000.0);
         assert!(!out.iter().any(|entry| entry.id == "gpt-5.5-high"));
@@ -868,10 +1134,16 @@ mod tests {
             .map(|id| raw(id))
             .collect::<Vec<_>>(),
         );
-        let static_group = out.iter().find(|entry| entry.id == "cursor-grok-4.6").expect("static group");
+        let static_group = out
+            .iter()
+            .find(|entry| entry.id == "cursor-grok-4.6")
+            .expect("static group");
         assert!(static_group.reasoning);
         assert_eq!(static_group.variant_ids, None);
-        assert_eq!(static_group.capability_id.as_deref(), Some("cursor-grok-4.6"));
+        assert_eq!(
+            static_group.capability_id.as_deref(),
+            Some("cursor-grok-4.6")
+        );
         assert_eq!(static_group.window, 500_000.0);
         assert_eq!(
             static_group.thinking_level_map,
@@ -882,9 +1154,15 @@ mod tests {
                 (ModelThinkingLevel::Xhigh, "xhigh"),
             ]))
         );
-        let derived_group = out.iter().find(|entry| entry.id == "grok-4.7").expect("derived group");
+        let derived_group = out
+            .iter()
+            .find(|entry| entry.id == "grok-4.7")
+            .expect("derived group");
         assert_eq!(
-            derived_group.variant_ids.as_ref().and_then(|map| map.get(&ModelThinkingLevel::Low)),
+            derived_group
+                .variant_ids
+                .as_ref()
+                .and_then(|map| map.get(&ModelThinkingLevel::Low)),
             Some(&"grok-4.7-low".to_owned())
         );
     }

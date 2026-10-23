@@ -6,8 +6,9 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
 use crate::types::{
-    AnthropicMessagesCompat, Api, BedrockCompat, CacheRetention, InputModality, ModelCost, ModelThinkingLevel,
-    OpenAICompletionsCompat, OpenAIResponsesCompat, ProviderId, ServiceTierPreference, ThinkingLevelMap,
+    AnthropicMessagesCompat, Api, BedrockCompat, CacheRetention, InputModality, ModelCost,
+    ModelThinkingLevel, OpenAICompletionsCompat, OpenAIResponsesCompat, ProviderId,
+    ServiceTierPreference, ThinkingLevelMap,
 };
 
 /// Model interface for the unified model system.
@@ -43,6 +44,10 @@ pub struct Model {
     pub cache_retention: Option<CacheRetention>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_model_id: Option<String>,
+    /// True when the upstream catalog marks this model deprecated; it stays usable until it is
+    /// removed upstream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecated: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<ServiceTierPreference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

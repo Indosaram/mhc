@@ -7,6 +7,7 @@ pub mod classify;
 pub mod env_slots;
 pub mod failover;
 pub mod failover_consts;
+pub mod reset_time;
 pub mod rotation_events;
 pub mod rotation_stream;
 pub mod slots;

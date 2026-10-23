@@ -20,23 +20,36 @@ use crate::kibitzer_delivery::{
     KibitzerPendingFor, KibitzerSteerMessage, KibitzerToolResultGate,
 };
 use crate::kibitzer_events::KibitzerEventCaps;
-use crate::kibitzer_hooks::{BranchTail, KibitzerHookSink, KibitzerToolResultEvent, default_gate_resolver, register_kibitzer_hooks};
+use crate::kibitzer_hooks::{
+    BranchTail, KibitzerHookSink, KibitzerToolResultEvent, default_gate_resolver,
+    register_kibitzer_hooks,
+};
 use crate::kibitzer_session_resources::KibitzerSessionResources;
-use crate::kibitzer_sidecar::{KibitzerOfferInput, KibitzerSidecar, KibitzerSidecarOptions, KibitzerWakeSpawn};
+use crate::kibitzer_sidecar::{
+    KibitzerOfferInput, KibitzerSidecar, KibitzerSidecarOptions, KibitzerWakeSpawn,
+};
 use crate::kibitzer_sidecar_admission::KibitzerBlockingExecutor;
 use crate::kibitzer_sidecar_wake::KibitzerWakeDeliver;
 use crate::kibitzer_wake_slot::{KibitzerWakeSlot, KibitzerWakeSlotOptions};
-use crate::recall_consumer::{CollectedRecallCandidates, CollectRecallCandidatesInput, collect_recall_candidates};
-use crate::recall_drain::{DrainPendingFor, DrainQueued, EnvLookup, RecallDrainOptions, create_recall_drain};
+use crate::recall_consumer::{
+    CollectRecallCandidatesInput, CollectedRecallCandidates, collect_recall_candidates,
+};
+use crate::recall_drain::{
+    DrainPendingFor, DrainQueued, EnvLookup, RecallDrainOptions, create_recall_drain,
+};
 use crate::recall_planner_tools::{ToolArgWindow, tool_arg_texts};
 use crate::recall_session_read::{RecallSessionSnapshot, snapshot_session};
-use crate::recall_transcript_mentions::{BranchMentionIndex, TranscriptMentionIndex, TranscriptMentionInput, create_transcript_mention_index};
+use crate::recall_transcript_mentions::{
+    BranchMentionIndex, TranscriptMentionIndex, TranscriptMentionInput,
+    create_transcript_mention_index,
+};
 use crate::worker::completion_renderers::ResolveEntryTheme;
 
 const CHILD_SENTINELS: [&str; 2] = ["SENPI_MEMORY_REFLECTION", "SENPI_MEMORY_FACTS"];
 
 /// Open the identity's git memory repo (`options.createRepo`).
-pub type CreateRepo = Arc<dyn Fn(&MemoryIdentityContext) -> Result<GitMemoryRepo, String> + Send + Sync>;
+pub type CreateRepo =
+    Arc<dyn Fn(&MemoryIdentityContext) -> Result<GitMemoryRepo, String> + Send + Sync>;
 
 pub struct MemoryRecallWiringOptions {
     pub resolve_context: crate::prompt::PromptContextResolver,
@@ -86,8 +99,52 @@ pub struct MemoryRecallWiring {
     recall_settings: Mutex<BTreeMap<String, (String, Value)>>,
 }
 
+/// One recall corpus per memory repository, shared across every session of this host (pin
+/// `createSharedRecallCorpusCache`). The BM25 terms persist on disk, so a new process does not
+/// tokenize the corpus again; a term-store save that fails is logged and never fails recall.
+pub type RecallWarn = Arc<dyn Fn(&str) + Send + Sync>;
+
+pub fn create_shared_recall_corpus_cache(
+    warn: Option<RecallWarn>,
+) -> RecallCorpusCache {
+    RecallCorpusCache::new(RecallCorpusCacheOptions {
+        shared: true,
+        on_term_store_error: Some(Arc::new(move |error: &std::io::Error| {
+            if let Some(warn) = &warn {
+                warn(&format!(
+                    "omo-senpi memory recall term store skipped: {error}"
+                ));
+            }
+        })),
+        term_store: Some(Arc::new(|dir, on_error| {
+            Ok(memory_core::recall::RecallTermPersistence::new(
+                dir, on_error,
+            ))
+        })),
+        ..Default::default()
+    })
+}
+
 impl MemoryRecallWiring {
+    /// Blocks until no persisted-terms save of the corpus cache is running.
+    pub fn settled(&self) {
+        self.corpus_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .settled();
+    }
+
     pub fn new(options: MemoryRecallWiringOptions) -> Arc<Self> {
+        let cache = create_shared_recall_corpus_cache(Some(options.warn.clone()));
+        Self::with_corpus_cache(options, cache)
+    }
+
+    /// `new` with the corpus cache supplied (pin `options.createCorpusCache`): tests substitute one
+    /// whose pending term-store save they control.
+    pub fn with_corpus_cache(
+        options: MemoryRecallWiringOptions,
+        corpus_cache: RecallCorpusCache,
+    ) -> Arc<Self> {
         let delivery = KibitzerDelivery::new(KibitzerDeliveryOptions {
             ledger_for: options.ledger_for.clone(),
             pending_for: options.pending_for.clone(),
@@ -100,7 +157,7 @@ impl MemoryRecallWiring {
             options,
             delivery,
             sidecars: Mutex::new(BTreeMap::new()),
-            corpus_cache: Mutex::new(RecallCorpusCache::new(RecallCorpusCacheOptions::default())),
+            corpus_cache: Mutex::new(corpus_cache),
             mentions: Mutex::new(create_transcript_mention_index()),
             tool_args: Mutex::new(ToolArgWindow::new()),
             recall_settings: Mutex::new(BTreeMap::new()),
@@ -113,7 +170,11 @@ impl MemoryRecallWiring {
 
     /// `register`: the prompt drain (renderers + injection) plus the seven kibitzer hooks bound to
     /// the resident sidecar/delivery. Uses the ACTUAL `recall_drain` option types.
-    pub fn register(self: &Arc<Self>, api: &mut maho_ext_api::ExtensionApi, theme: ResolveEntryTheme) {
+    pub fn register(
+        self: &Arc<Self>,
+        api: &mut maho_ext_api::ExtensionApi,
+        theme: ResolveEntryTheme,
+    ) {
         let drain = create_recall_drain(RecallDrainOptions {
             resolve_context: self.options.resolve_context.clone(),
             resolve_settings: Arc::clone(&self.options.drain_resolve_settings),
@@ -134,11 +195,14 @@ impl MemoryRecallWiring {
         let settings = match (self.options.resolve_settings)() {
             Ok(value) => value,
             Err(error) => {
-                (self.options.warn)(&format!("memory recall settings read failed; using defaults: {error}"));
+                (self.options.warn)(&format!(
+                    "memory recall settings read failed; using defaults: {error}"
+                ));
                 Value::Null
             }
         };
-        crate::reflection_settings::resolve_agent_recall_settings(Some(&settings), identity).unwrap_or(Value::Null)
+        crate::reflection_settings::resolve_agent_recall_settings(Some(&settings), identity)
+            .unwrap_or(Value::Null)
     }
 
     /// The session's recall settings: resolved fresh (and cached for the turn) when `fresh`, else
@@ -146,7 +210,11 @@ impl MemoryRecallWiring {
     /// for this identity.
     fn recall_settings(&self, session_id: &str, identity: &str, fresh: bool) -> Value {
         if !fresh
-            && let Some((cached_identity, settings)) = self.recall_settings.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(session_id)
+            && let Some((cached_identity, settings)) = self
+                .recall_settings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(session_id)
             && cached_identity == identity
         {
             return settings.clone();
@@ -155,23 +223,38 @@ impl MemoryRecallWiring {
         self.recall_settings
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(session_id.to_owned(), (identity.to_owned(), settings.clone()));
+            .insert(
+                session_id.to_owned(),
+                (identity.to_owned(), settings.clone()),
+            );
         settings
     }
 
     fn child_sentinel(&self) -> bool {
-        CHILD_SENTINELS.iter().any(|name| (self.options.env)(name).as_deref() == Some("1"))
+        CHILD_SENTINELS
+            .iter()
+            .any(|name| (self.options.env)(name).as_deref() == Some("1"))
     }
 
     /// `collectCandidatesFromSnapshot`: the ctx-free collection over a captured snapshot.
-    pub fn collect_candidates_from_snapshot(&self, snapshot: &RecallSessionSnapshot<'_>, extra_texts: &[String]) -> Option<CollectedRecallCandidates> {
+    pub fn collect_candidates_from_snapshot(
+        &self,
+        snapshot: &RecallSessionSnapshot<'_>,
+        extra_texts: &[String],
+    ) -> Option<CollectedRecallCandidates> {
         self.collect(snapshot, snapshot.entries, extra_texts, true)
     }
 
     /// The collection behind both hook kinds. `mention_entries` is the branch whose last
     /// `RECALL_PATH_ENTRY_WINDOW` entries feed the mention exclusion; `snapshot.entries` feeds the
     /// planner texts and judge transcript. `fresh_settings` re-resolves the recall settings.
-    fn collect(&self, snapshot: &RecallSessionSnapshot<'_>, mention_entries: &[Value], extra_texts: &[String], fresh_settings: bool) -> Option<CollectedRecallCandidates> {
+    fn collect(
+        &self,
+        snapshot: &RecallSessionSnapshot<'_>,
+        mention_entries: &[Value],
+        extra_texts: &[String],
+        fresh_settings: bool,
+    ) -> Option<CollectedRecallCandidates> {
         if self.child_sentinel() {
             return None;
         }
@@ -183,19 +266,30 @@ impl MemoryRecallWiring {
         let repo = match (self.options.create_repo)(&context) {
             Ok(repo) => repo,
             Err(error) => {
-                (self.options.warn)(&format!("memory recall repo open failed; skipping this batch: {error}"));
+                (self.options.warn)(&format!(
+                    "memory recall repo open failed; skipping this batch: {error}"
+                ));
                 return None;
             }
         };
-        let corpus = self.corpus_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).load(&repo).ok()?;
+        let corpus = self
+            .corpus_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .load(&repo)
+            .ok()?;
         if corpus.documents.is_empty() {
             return None;
         }
-        let exclude_paths = self.mentions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).excluded_paths(TranscriptMentionInput {
-            session_id: &snapshot.id,
-            entries: mention_entries,
-            documents: &corpus.documents,
-        });
+        let exclude_paths = self
+            .mentions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .excluded_paths(TranscriptMentionInput {
+                session_id: &snapshot.id,
+                entries: mention_entries,
+                documents: &corpus.documents,
+            });
         let ledger = (self.options.ledger_for)(&context);
         collect_recall_candidates(CollectRecallCandidatesInput {
             documents: &corpus.documents,
@@ -211,25 +305,40 @@ impl MemoryRecallWiring {
     }
 
     /// `collectCandidates`: build the snapshot from a branch and delegate to the ctx-free path.
-    pub fn collect_candidates(&self, session_id: &str, entries: &[Value], extra_texts: &[String]) -> Option<CollectedRecallCandidates> {
+    pub fn collect_candidates(
+        &self,
+        session_id: &str,
+        entries: &[Value],
+        extra_texts: &[String],
+    ) -> Option<CollectedRecallCandidates> {
         let snapshot = snapshot_session(session_id, entries)?;
         self.collect_candidates_from_snapshot(&snapshot, extra_texts)
     }
 
     /// The lazily-created resident sidecar for a session.
-    fn sidecar_for(&self, session_id: &str, context: &MemoryIdentityContext) -> Arc<KibitzerSidecar> {
-        let mut sidecars = self.sidecars.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    fn sidecar_for(
+        &self,
+        session_id: &str,
+        context: &MemoryIdentityContext,
+    ) -> Arc<KibitzerSidecar> {
+        let mut sidecars = self
+            .sidecars
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(sidecar) = sidecars.get(session_id) {
             return Arc::clone(sidecar);
         }
         let now = Arc::clone(&self.options.now_ms);
-        let wake_slot = Arc::new(KibitzerWakeSlot::new(KibitzerWakeSlotOptions {
-            locks_directory: context.identity_paths.locks.clone(),
-            max_concurrent: self.options.max_concurrent_wakes.unwrap_or(2),
-            wait_timeout_ms: None,
-            poll_ms: None,
-            now: Arc::clone(&now),
-        }).expect("max_concurrent_wakes is validated positive by the config resolver"));
+        let wake_slot = Arc::new(
+            KibitzerWakeSlot::new(KibitzerWakeSlotOptions {
+                locks_directory: context.identity_paths.locks.clone(),
+                max_concurrent: self.options.max_concurrent_wakes.unwrap_or(2),
+                wait_timeout_ms: None,
+                poll_ms: None,
+                now: Arc::clone(&now),
+            })
+            .expect("max_concurrent_wakes is validated positive by the config resolver"),
+        );
         let sidecar = KibitzerSidecar::new(KibitzerSidecarOptions {
             session_id: session_id.to_string(),
             resources: (self.options.session_resources_for)(session_id),
@@ -259,7 +368,11 @@ impl MemoryRecallWiring {
     /// The EXISTING resident sidecar for a session, if any. NEVER creates one: a tool hook that fires
     /// after shutdown (or before the first wake) must not resurrect a terminal sidecar.
     fn existing_sidecar(&self, session_id: &str) -> Option<Arc<KibitzerSidecar>> {
-        self.sidecars.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(session_id).map(Arc::clone)
+        self.sidecars
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .map(Arc::clone)
     }
 }
 
@@ -273,7 +386,12 @@ struct WiringWakeDeliver {
 }
 
 impl KibitzerWakeDeliver for WiringWakeDeliver {
-    fn deliver(&self, nudges: Vec<memory_core::recall::RecallNudge>, _wake: u64, _generation: u64) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
+    fn deliver(
+        &self,
+        nudges: Vec<memory_core::recall::RecallNudge>,
+        _wake: u64,
+        _generation: u64,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
         let delivery = Arc::clone(&self.delivery);
         let session_id = self.session_id.clone();
         let context = self.context.clone();
@@ -289,14 +407,18 @@ impl KibitzerHookSink for MemoryRecallWiring {
     /// sidecar.
     fn wants_branch(&self, kind: maho_ext_api::EventKind, session_id: &str) -> bool {
         match kind {
-            maho_ext_api::EventKind::ToolCall | maho_ext_api::EventKind::ToolResult => self.existing_sidecar(session_id).is_some(),
+            maho_ext_api::EventKind::ToolCall | maho_ext_api::EventKind::ToolResult => {
+                self.existing_sidecar(session_id).is_some()
+            }
             _ => true,
         }
     }
 
     fn on_before_agent_start(&self, session_id: &str, prompt: &str, entries: &[Value]) {
         self.delivery.mark_running(session_id);
-        let Some(context) = (self.options.resolve_context)(session_id) else { return; };
+        let Some(context) = (self.options.resolve_context)(session_id) else {
+            return;
+        };
         let sidecar = self.sidecar_for(session_id, &context);
         // The branch snapshot is captured BEFORE the prompt that follows it; the cursor is the branch
         // length, so the events stream shares ONE cursor basis with the candidate collector.
@@ -304,7 +426,9 @@ impl KibitzerHookSink for MemoryRecallWiring {
         let _ = sidecar.on_branch(entries, cursor);
         let _ = sidecar.on_prompt(prompt, cursor);
         let extra = vec![prompt.to_owned()];
-        let Some(candidates) = self.collect_candidates(session_id, entries, &extra) else { return; };
+        let Some(candidates) = self.collect_candidates(session_id, entries, &extra) else {
+            return;
+        };
         // `task_summary` stays None: `on_prompt` already remembered the task line from the prompt.
         let input = KibitzerOfferInput {
             candidates: candidates.candidates,
@@ -322,7 +446,14 @@ impl KibitzerHookSink for MemoryRecallWiring {
         }));
     }
 
-    fn on_tool_call(&self, session_id: &str, tool_call_id: &str, tool_name: &str, input: &Value, branch: &BranchTail<'_>) {
+    fn on_tool_call(
+        &self,
+        session_id: &str,
+        tool_call_id: &str,
+        tool_name: &str,
+        input: &Value,
+        branch: &BranchTail<'_>,
+    ) {
         // Capture into the EXISTING sidecar only, and capture the branch BEFORE the tool event that
         // follows it; a tool hook after shutdown must never resurrect a terminal sidecar.
         let sidecar = self.existing_sidecar(session_id);
@@ -334,11 +465,24 @@ impl KibitzerHookSink for MemoryRecallWiring {
         // The exact tool_call_id keys the in-flight set so simultaneous same-name calls never collapse.
         self.delivery.mark_tool_started(session_id, tool_call_id);
         let texts = tool_arg_texts(tool_name, input);
-        self.tool_args.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(session_id, texts);
-        let Some(sidecar) = sidecar else { return; };
-        let extra = self.tool_args.lock().unwrap_or_else(std::sync::PoisonError::into_inner).texts(session_id);
-        let Some(snapshot) = snapshot_session(session_id, branch.summary) else { return; };
-        let Some(candidates) = self.collect(&snapshot, branch.entries, &extra, false) else { return; };
+        self.tool_args
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(session_id, texts);
+        let Some(sidecar) = sidecar else {
+            return;
+        };
+        let extra = self
+            .tool_args
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .texts(session_id);
+        let Some(snapshot) = snapshot_session(session_id, branch.summary) else {
+            return;
+        };
+        let Some(candidates) = self.collect(&snapshot, branch.entries, &extra, false) else {
+            return;
+        };
         let offer = KibitzerOfferInput {
             candidates: candidates.candidates,
             surfaced: candidates.surfaced,
@@ -353,7 +497,13 @@ impl KibitzerHookSink for MemoryRecallWiring {
         }));
     }
 
-    fn on_tool_result(&self, session_id: &str, event: &KibitzerToolResultEvent<'_>, branch: &BranchTail<'_>, gate: &KibitzerToolResultGate) {
+    fn on_tool_result(
+        &self,
+        session_id: &str,
+        event: &KibitzerToolResultEvent<'_>,
+        branch: &BranchTail<'_>,
+        gate: &KibitzerToolResultGate,
+    ) {
         // Capture the result head into the EXISTING sidecar only, before delivery may steer a held
         // nudge. The branch is captured first, then the result content and its error flag.
         if let Some(sidecar) = self.existing_sidecar(session_id) {
@@ -363,12 +513,16 @@ impl KibitzerHookSink for MemoryRecallWiring {
             // `Serialize`); an impossible failure is reported, never replaced by a fabricated Null.
             match serde_json::to_value(event.content) {
                 Ok(result) => {
-                    let _ = sidecar.on_tool_result(event.tool_name, &result, event.is_error, cursor);
+                    let _ =
+                        sidecar.on_tool_result(event.tool_name, &result, event.is_error, cursor);
                 }
-                Err(error) => (self.options.warn)(&format!("omo-senpi kibitzer tool result content serialization failed: {error}")),
+                Err(error) => (self.options.warn)(&format!(
+                    "omo-senpi kibitzer tool result content serialization failed: {error}"
+                )),
             }
         }
-        self.delivery.mark_tool_finished(session_id, event.tool_call_id);
+        self.delivery
+            .mark_tool_finished(session_id, event.tool_call_id);
         if let Some(context) = (self.options.resolve_context)(session_id) {
             self.delivery.on_tool_result(session_id, &context, gate);
         }
@@ -386,11 +540,22 @@ impl KibitzerHookSink for MemoryRecallWiring {
     /// SYNCHRONOUSLY, then dispose it on the retained executor and retract delivery AFTER it.
     fn on_session_shutdown(&self, session_id: &str) {
         // Obtain the EXISTING sidecar (never create one) under a short lock, then release the lock.
-        let sidecar = self.sidecars.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(session_id).map(Arc::clone);
+        let sidecar = self
+            .sidecars
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .map(Arc::clone);
         // `argWindow.clear(sessionId)`: drop the session's tool-argument window synchronously, before
         // the async cleanup, matching upstream's order.
-        self.tool_args.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear(session_id);
-        self.recall_settings.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
+        self.tool_args
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear(session_id);
+        self.recall_settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session_id);
         let Some(sidecar) = sidecar else {
             // No resident sidecar: retract delivery immediately (upstream's unconditional tail).
             self.delivery.on_session_shutdown(session_id);
@@ -401,7 +566,10 @@ impl KibitzerHookSink for MemoryRecallWiring {
         // turn. NO identity resolve guard: cleanup must still run after the runtime pruned contexts.
         sidecar.request_shutdown();
         // Take it out of the map; the lock is released before the async future is scheduled.
-        self.sidecars.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session_id);
+        self.sidecars
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session_id);
         // The async cleanup runs on the retained host executor and OWNS the delivery retraction: it
         // awaits `shutdown()` THEN retracts delivery, matching upstream's `await shutdown` before
         // `delivery.onSessionShutdown`. Idempotent: a second shutdown is a no-op.

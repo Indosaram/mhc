@@ -1,6 +1,7 @@
 //! Task agent definitions, loading, policies and resolution (`agents/*`).
 
 mod builtin;
+pub mod category_shadow;
 mod loader;
 mod policy;
 mod resolve;

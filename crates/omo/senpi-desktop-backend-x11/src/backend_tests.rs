@@ -10,11 +10,11 @@ use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::types::{DesktopPoint, DisplaySelector, FrontWindow, Target};
 use x11rb::protocol::xproto::AtomEnum;
 
-use crate::capture::fake::{viewable, FakeServer};
-use crate::capture::X11Capture;
-use crate::input::fake::{Call, FakeInputServer};
-use crate::input::X11Input;
 use crate::X11Backend;
+use crate::capture::X11Capture;
+use crate::capture::fake::{FakeServer, viewable};
+use crate::input::X11Input;
+use crate::input::fake::{Call, FakeInputServer};
 
 const EDITOR: u32 = 0x80_0001;
 const TERMINAL: u32 = 0x40_0001;
@@ -37,8 +37,14 @@ fn capture() -> X11Capture<FakeServer> {
     X11Capture::with_server(server, DisplaySelector::All).unwrap()
 }
 
-fn backend(input: Result<FakeInputServer, DesktopError>) -> X11Backend<FakeServer, FakeInputServer> {
-    X11Backend::with_parts(capture(), input.map(X11Input::with_server), Some(":99".into()))
+fn backend(
+    input: Result<FakeInputServer, DesktopError>,
+) -> X11Backend<FakeServer, FakeInputServer> {
+    X11Backend::with_parts(
+        capture(),
+        input.map(X11Input::with_server),
+        Some(":99".into()),
+    )
 }
 
 fn no_xtest() -> DesktopError {
@@ -65,7 +71,10 @@ fn capabilities_advertise_both_delivery_modes_and_the_focus_guard_once_xtest_is_
     );
     assert_eq!(caps.delivery_modes, ["background", "foreground"]);
     assert!(caps.focus_guard);
-    assert_eq!((caps.ax, caps.ax_permission.as_str()), (false, "bus-unreachable"));
+    assert_eq!(
+        (caps.ax, caps.ax_permission.as_str()),
+        (false, "bus-unreachable")
+    );
 }
 
 #[test]
@@ -92,8 +101,11 @@ fn capabilities_withhold_input_without_xtest_and_keep_the_core_focus_guard_witho
 
 #[test]
 fn capabilities_report_capture_unavailable_when_the_display_is_gone() {
-    let capture =
-        X11Capture::with_server(FakeServer::new(1280, 800), DisplaySelector::Id("DP-9".into())).unwrap();
+    let capture = X11Capture::with_server(
+        FakeServer::new(1280, 800),
+        DisplaySelector::Id("DP-9".into()),
+    )
+    .unwrap();
     let mut backend = X11Backend::with_parts(
         capture,
         Ok(X11Input::with_server(FakeInputServer::new(None))),
@@ -103,7 +115,11 @@ fn capabilities_report_capture_unavailable_when_the_display_is_gone() {
     let caps = Backend::capabilities(&mut backend);
 
     assert_eq!(
-        (caps.capture, caps.capture_permission.as_str(), caps.display_count),
+        (
+            caps.capture,
+            caps.capture_permission.as_str(),
+            caps.display_count
+        ),
         (false, "unavailable", 0)
     );
 }
@@ -168,7 +184,10 @@ fn foreground_input_restores_the_front_window_without_a_duplicate_restore() {
         .into_iter()
         .filter(|call| matches!(call, Call::Activate(_)))
         .collect();
-    assert_eq!(activations, [Call::Activate(TERMINAL), Call::Activate(EDITOR)]);
+    assert_eq!(
+        activations,
+        [Call::Activate(TERMINAL), Call::Activate(EDITOR)]
+    );
 }
 
 #[test]
@@ -190,7 +209,12 @@ fn restore_front_window_preserves_a_newer_user_focus() {
             DeliveryMode::Foreground,
         )
         .unwrap();
-    backend.input_ref().unwrap().server().active.set(Some(BROWSER));
+    backend
+        .input_ref()
+        .unwrap()
+        .server()
+        .active
+        .set(Some(BROWSER));
 
     backend.restore_front_window(&front).unwrap();
 
@@ -223,7 +247,10 @@ fn restore_cursor_preserves_a_newer_user_pointer_position() {
         .warp_cursor(DesktopPoint { x: 12.0, y: 34.0 })
         .unwrap();
 
-    assert_eq!(backend.input_ref().unwrap().server().pointer.get(), (900, 700));
+    assert_eq!(
+        backend.input_ref().unwrap().server().pointer.get(),
+        (900, 700)
+    );
     assert!(
         !backend
             .input_ref()

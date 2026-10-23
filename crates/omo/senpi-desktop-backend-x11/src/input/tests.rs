@@ -7,9 +7,9 @@ use senpi_desktop_core::keys::KeyName;
 use senpi_desktop_core::types::Target;
 use x11rb::protocol::xproto::Window;
 
+use super::X11Input;
 use super::fake::{Call, FakeInputServer, KEY_A, KEY_C, KEY_CONTROL_L, KEY_SHIFT_L};
 use super::server::{FakeInput, SentEvent, Spot};
-use super::X11Input;
 
 const TERMINAL: Window = 0x40_0001;
 const GTK_APP: Window = 0x60_0001;
@@ -51,7 +51,11 @@ fn a_desktop_click_is_xtest_motion_then_press_then_release() {
     let mut input = input();
 
     input
-        .pointer(&Target::Desktop, &click(10.4, 20.6), DeliveryMode::Background)
+        .pointer(
+            &Target::Desktop,
+            &click(10.4, 20.6),
+            DeliveryMode::Background,
+        )
         .unwrap();
 
     assert_eq!(
@@ -69,7 +73,11 @@ fn a_background_click_is_sent_to_the_window_at_its_local_point_without_moving_fo
     let mut input = input();
 
     input
-        .pointer(&window(TERMINAL), &click(130.0, 70.0), DeliveryMode::Background)
+        .pointer(
+            &window(TERMINAL),
+            &click(130.0, 70.0),
+            DeliveryMode::Background,
+        )
         .unwrap();
 
     let at = Spot {
@@ -133,7 +141,11 @@ fn foreground_delivery_activates_the_target_then_restores_the_previous_window() 
     let before = input.active_window();
 
     input
-        .pointer(&window(TERMINAL), &click(130.0, 70.0), DeliveryMode::Foreground)
+        .pointer(
+            &window(TERMINAL),
+            &click(130.0, 70.0),
+            DeliveryMode::Foreground,
+        )
         .unwrap();
 
     let calls = input.server.calls();
@@ -156,9 +168,11 @@ fn foreground_delivery_to_a_filtering_toolkit_uses_xtest() {
 
 #[test]
 fn foreground_delivery_without_ewmh_sets_and_confirms_core_focus() {
-    let server = FakeInputServer::new(None)
-        .without_ewmh_activation()
-        .window(TERMINAL, (100, 50), b"xterm\0XTerm\0");
+    let server = FakeInputServer::new(None).without_ewmh_activation().window(
+        TERMINAL,
+        (100, 50),
+        b"xterm\0XTerm\0",
+    );
     let mut input = X11Input::with_server(server);
     input.server.focus.set(EDITOR);
 
@@ -185,7 +199,11 @@ fn foreground_delivery_does_not_restore_over_a_newer_user_focus() {
     input.server.focus_after_input.set(Some(BROWSER));
 
     input
-        .pointer(&window(TERMINAL), &click(130.0, 70.0), DeliveryMode::Foreground)
+        .pointer(
+            &window(TERMINAL),
+            &click(130.0, 70.0),
+            DeliveryMode::Foreground,
+        )
         .unwrap();
 
     assert_eq!(input.active_window(), Some(BROWSER));

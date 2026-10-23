@@ -20,6 +20,33 @@ pub struct PromptCacheSettings {
     pub keep_alive: Option<PromptCacheKeepAliveSettings>,
 }
 
+/// Offer "start fresh with a handoff" when a large session's cache has expired (senpi#3230).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HandoffHintSettings {
+    pub enabled: Option<bool>,
+    pub min_context_tokens: Option<u64>,
+    pub min_saving_usd: Option<f64>,
+}
+
+/// `HandoffHintSettings` with defaults applied.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResolvedHandoffHintSettings {
+    pub enabled: bool,
+    pub min_context_tokens: u64,
+    pub min_saving_usd: f64,
+}
+
+impl HandoffHintSettings {
+    pub fn resolve(&self) -> ResolvedHandoffHintSettings {
+        ResolvedHandoffHintSettings {
+            enabled: self.enabled.unwrap_or(true),
+            min_context_tokens: self.min_context_tokens.unwrap_or(200_000),
+            min_saving_usd: self.min_saving_usd.filter(|v| v.is_finite()).unwrap_or(1.0),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ImageSettings {
@@ -120,23 +147,58 @@ mod tests {
         .expect("settings");
         assert_eq!(settings.cache_aware_timeouts, Some(false));
         assert_eq!(settings.safety_buffer_seconds, Some(10));
-        assert_eq!(settings.keep_alive.as_ref().and_then(|k| k.max_requests_per_session), Some(5));
+        assert_eq!(
+            settings
+                .keep_alive
+                .as_ref()
+                .and_then(|k| k.max_requests_per_session),
+            Some(5)
+        );
     }
 
     #[test]
     fn mermaid_and_service_tier_use_lowercase_names() {
-        let markdown: MarkdownSettings = serde_json::from_str(r#"{"codeBlockIndent":"  ","mermaid":"final"}"#).expect("markdown");
+        let markdown: MarkdownSettings =
+            serde_json::from_str(r#"{"codeBlockIndent":"  ","mermaid":"final"}"#)
+                .expect("markdown");
         assert_eq!(markdown.mermaid, Some(MermaidRenderingMode::Final));
-        let responses: ResponsesSettings = serde_json::from_str(r#"{"serviceTier":"priority"}"#).expect("responses");
-        assert_eq!(responses.service_tier, Some(ServiceTierPreference::Priority));
+        let responses: ResponsesSettings =
+            serde_json::from_str(r#"{"serviceTier":"priority"}"#).expect("responses");
+        assert_eq!(
+            responses.service_tier,
+            Some(ServiceTierPreference::Priority)
+        );
+    }
+
+    #[test]
+    fn handoff_hint_defaults_match_senpi() {
+        let resolved = HandoffHintSettings::default().resolve();
+        assert!(resolved.enabled);
+        assert_eq!(resolved.min_context_tokens, 200_000);
+        assert!((resolved.min_saving_usd - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn image_and_lookat_settings_default_empty() {
-        assert_eq!(serde_json::from_str::<ImageSettings>("{}").expect("image"), ImageSettings::default());
-        assert_eq!(serde_json::from_str::<LookAtSettings>("{}").expect("lookat"), LookAtSettings::default());
-        assert_eq!(serde_json::from_str::<ProviderConcurrencySettings>("{}").expect("concurrency"), ProviderConcurrencySettings::default());
-        assert_eq!(serde_json::from_str::<ThinkingBudgetsSettings>("{}").expect("budgets"), ThinkingBudgetsSettings::default());
-        assert_eq!(serde_json::from_str::<AskUserSettings>("{}").expect("ask"), AskUserSettings::default());
+        assert_eq!(
+            serde_json::from_str::<ImageSettings>("{}").expect("image"),
+            ImageSettings::default()
+        );
+        assert_eq!(
+            serde_json::from_str::<LookAtSettings>("{}").expect("lookat"),
+            LookAtSettings::default()
+        );
+        assert_eq!(
+            serde_json::from_str::<ProviderConcurrencySettings>("{}").expect("concurrency"),
+            ProviderConcurrencySettings::default()
+        );
+        assert_eq!(
+            serde_json::from_str::<ThinkingBudgetsSettings>("{}").expect("budgets"),
+            ThinkingBudgetsSettings::default()
+        );
+        assert_eq!(
+            serde_json::from_str::<AskUserSettings>("{}").expect("ask"),
+            AskUserSettings::default()
+        );
     }
 }
