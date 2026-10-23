@@ -232,13 +232,36 @@ pub(crate) mod test_barrier {
 
     struct State {
         entries: Mutex<HashMap<usize, Entry>>,
+        /// Queue grants spawned on their own thread that have not finished launching yet.
+        grants: Mutex<u64>,
+        grants_cv: Condvar,
         cv: Condvar,
+    }
+
+    /// Decrements the in-flight grant count when the grant thread ends, even by panic.
+    pub(crate) struct GrantDone;
+
+    impl Drop for GrantDone {
+        fn drop(&mut self) {
+            *grants() -= 1;
+            state().grants_cv.notify_all();
+        }
+    }
+
+    fn grants() -> std::sync::MutexGuard<'static, u64> {
+        state().grants.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn grant_spawned() {
+        *grants() += 1;
     }
 
     fn state() -> &'static State {
         static STATE: OnceLock<State> = OnceLock::new();
         STATE.get_or_init(|| State {
             entries: Mutex::new(HashMap::new()),
+            grants: Mutex::new(0),
+            grants_cv: Condvar::new(),
             cv: Condvar::new(),
         })
     }
@@ -286,6 +309,17 @@ pub(crate) mod test_barrier {
             entry.consumed = (entry.consumed + 1).min(entry.issued);
         }
         state().cv.notify_all();
+    }
+
+    /// Blocks until every spawned queue grant has finished launching its child.
+    pub(crate) fn wait_until_grants_idle() {
+        let mut grants = grants();
+        while *grants > 0 {
+            grants = state()
+                .grants_cv
+                .wait(grants)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
     }
 
     pub(crate) fn has_outstanding(ptr: usize) -> bool {

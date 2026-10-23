@@ -55,6 +55,7 @@ fn drain(state: &ChaosState) {
             parent_state: crate::completion::ParentState::Idle,
         });
         state.harness.observe_reconcile();
+        crate::manager::outcome::test_barrier::wait_until_grants_idle();
         crate::manager::outcome::test_barrier::wait_until_all_consumed();
         let pending_retries = state.harness.retry_scheduler.pending_count();
         if pending_retries > 0 {
