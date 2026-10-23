@@ -287,6 +287,16 @@ pub fn register(
             })
         }),
     );
+    let veto_state = state.clone();
+    api.on(
+        EventKind::SessionBeforeReload,
+        Arc::new(move |_, _| {
+            let cells = veto_state.lock().expect("extension state").cells.clone();
+            let result = reload_veto(&cells.lock().expect("cell manager"))
+                .map_or(EventResult::None, EventResult::SessionBefore);
+            Box::pin(async move { Ok(result) })
+        }),
+    );
     for event in [
         EventKind::SessionShutdown,
         EventKind::SessionBeforeSwitch,
@@ -387,6 +397,24 @@ pub fn register(
         }),
     );
     Ok(())
+}
+
+/// A reload disposes the kernels together with every live cell, so it must wait for detached
+/// cells to settle instead of cancelling them and the completion wake they owe the session.
+fn reload_veto(cells: &EvalDetachedCellManager) -> Option<maho_ext_api::SessionBeforeEventResult> {
+    let live = cells.live_cells(None, None);
+    if live.is_empty() {
+        return None;
+    }
+    let ids = live.iter().map(|cell| cell.cell_id.as_str()).collect::<Vec<_>>().join(", ");
+    Some(maho_ext_api::SessionBeforeEventResult {
+        cancel: Some(true),
+        reason: Some(format!(
+            "{} eval cell(s) still running: {ids} - wait for them to finish or stop them (eval action \"stop\") before reloading.",
+            live.len()
+        )),
+        ..Default::default()
+    })
 }
 
 fn create_extension_cells(
@@ -826,6 +854,28 @@ mod host_line_tests {
         });
         assert!(line.contains(" cores"), "{line}");
         assert!(line.ends_with(" \u{00b7} bun 1.4.0"), "{line}");
+    }
+}
+
+#[cfg(test)]
+mod reload_veto_tests {
+    use super::*;
+    use tool::types::{EvalLanguage, EvalToolInput};
+
+    #[tokio::test]
+    async fn live_detached_cell_vetoes_reload_until_it_settles() {
+        let mut cells = EvalDetachedCellManager::new(Default::default());
+        assert!(reload_veto(&cells).is_none());
+        let input = EvalToolInput { language: EvalLanguage::Js, code: "1".into(), summary: "check".into(), action: None, timeout: None, on_timeout: None, reset: None, isolate: None };
+        let cell = cells.create("cell-1".into(), input).expect("create cell");
+        cells.bind_kernel(&cell, Arc::new(|| maho_ext_api::AgentToolResult::text("")), Arc::new(|| (None, vec![])));
+        assert!(cells.detach(&cell));
+        let veto = reload_veto(&cells).expect("a live detached cell must veto reload");
+        assert_eq!(veto.cancel, Some(true));
+        assert!(veto.reason.expect("veto reason").contains("cell-1"));
+        assert!(cells.cancel_without_interrupt(&cell));
+        assert!(reload_veto(&cells).is_none());
+        cells.flush_notifications().await.expect("notification flush");
     }
 }
 
