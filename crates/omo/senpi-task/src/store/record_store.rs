@@ -50,6 +50,15 @@ fn text_hash(text: &str) -> u64 {
 
 type ListCache = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, CachedRecord>>>;
 
+/// One parse cache per state directory for the whole process. Session replacement rebuilds the
+/// task engine, and a per-store cache made every `/new` re-parse every retained record; entries
+/// are validated against the file text on each read, so sharing never serves a stale record.
+fn shared_list_cache(state_dir: &Path) -> ListCache {
+    static CACHES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, ListCache>>> = std::sync::OnceLock::new();
+    CACHES.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(state_dir.to_path_buf()).or_default().clone()
+}
+
 /// File-backed task record store rooted at the resolved state directory.
 #[derive(Clone)]
 pub struct TaskRecordStore {
@@ -74,11 +83,12 @@ enum WriteMode {
 
 impl TaskRecordStore {
     pub fn new(config: &StateDirConfig) -> Self {
+        let state_dir = resolve_state_dir(config);
         Self {
-            state_dir: resolve_state_dir(config),
+            list_cache: shared_list_cache(&state_dir),
+            state_dir,
             mutation_listener: Default::default(),
             write_listener: Default::default(),
-            list_cache: Default::default(),
         }
     }
 

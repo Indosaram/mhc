@@ -92,9 +92,6 @@ impl MemoryMaintenance {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(context.identity.clone());
-        if should_sweep {
-            sweep_journals(&context, &self.options);
-        }
         let options = self.options.clone();
         let scheduled = self.scheduled.clone();
         let tasks = self.tasks.clone();
@@ -116,6 +113,21 @@ impl MemoryMaintenance {
         let handle = tokio::spawn(async move {
             if registration.await.is_err() {
                 return;
+            }
+            // The sweep inspects every retained transcript journal; it runs off the caller's
+            // (interactive) thread, and `settled` still observes it because it precedes the delay.
+            if should_sweep {
+                let (sweep_context, sweep_options) = (context.clone(), options.clone());
+                if let Err(error) = tokio::task::spawn_blocking(move || {
+                    sweep_journals(&sweep_context, &sweep_options)
+                })
+                .await
+                    && let Some(logger) = &options.logger
+                {
+                    logger.warn(&format!(
+                        "omo-senpi memory empty transcript sweep failed: {error}"
+                    ));
+                }
             }
             tokio::select! { _ = tokio::time::sleep(options.delay) => {}, _ = wake_rx.changed() => {} }
             if cancellation.load(Ordering::Acquire) {
