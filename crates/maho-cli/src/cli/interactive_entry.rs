@@ -281,19 +281,28 @@ pub async fn run(
     // senpi `init()` awaits `rebindCurrentSession()` with the editor already focused and its
     // event loop live, so keystrokes typed while extensions bind (the MCP startup race alone
     // can take 250ms) echo at once. Serve input and paint here until the binding settles.
+    // An input or terminal error here is deferred to the main loop's result, so the terminal is
+    // still restored on the way out (a hangup shuts down like the main loop does).
+    let mut binding_error: Option<String> = None;
     {
         let binding = mode.start_extension_binding();
         tokio::pin!(binding);
         let clock = std::time::Instant::now();
         loop {
             tokio::select! { biased; () = &mut binding => break, () = tokio::task::yield_now() => {} }
+            if binding_error.is_some() || mode.shutdown_requested {
+                binding.as_mut().await;
+                break;
+            }
             mode.drain_events();
             let now = u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX);
             let chunks = std::mem::take(&mut *input.borrow_mut());
             let had_input = !chunks.is_empty();
             for chunk in chunks {
-                if let Some(data) = route_terminal_input(&mut screen, &mut terminal, &mut mode, &component, &chunk, now) {
-                    mode.handle_filtered_runtime_input(&data, now).await?;
+                if let Some(data) = route_terminal_input(&mut screen, &mut terminal, &mut mode, &component, &chunk, now)
+                    && let Err(error) = mode.handle_filtered_runtime_input(&data, now).await
+                {
+                    binding_error = Some(error);
                 }
             }
             if fullscreen {
@@ -305,7 +314,15 @@ pub async fn run(
             }
             if had_input { screen.base_mut().request_render_from(false, "input", now); }
             if screen.base_mut().take_due_render(now) { screen.do_render(&mut terminal); }
-            terminal.pump(screen.base().min_render_interval_ms()).map_err(|error| error.to_string())?;
+            match terminal.pump(screen.base().min_render_interval_ms()) {
+                Ok(()) => {}
+                Err(error) if error.is_hangup() => {
+                    #[cfg(unix)]
+                    crate::utils::shell::kill_tracked_detached_children();
+                    mode.shutdown_requested = true;
+                }
+                Err(error) => binding_error = Some(error.to_string()),
+            }
         }
     }
     mode.finish_extension_binding().await;
@@ -335,6 +352,7 @@ pub async fn run(
     }
     let mut progress_active = false;
     let result = async {
+        if let Some(error) = binding_error { return Err(error); }
         // senpi main.ts:1355-1370 `PI_STARTUP_BENCHMARK`: once the TUI is initialized, give stdin a
         // brief chance to consume terminal query replies, then stop instead of running the loop.
         if startup_benchmark {
