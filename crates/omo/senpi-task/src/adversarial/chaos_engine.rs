@@ -240,7 +240,13 @@ impl crate::manager::types::RpcRespawnRunner for ChaosRpcRespawnRunner {
             processes: Arc::clone(&self.processes),
             cwd: spec.cwd.clone(),
         };
-        Ok(Arc::new(handle))
+        let handle = Arc::new(handle);
+        // Its outcome is ready the moment a watcher asks for it, so the settle is issued up front
+        // and the harness can wait for the watcher that applies it, like any other child.
+        let key = Arc::as_ptr(&handle) as usize;
+        crate::manager::outcome::test_barrier::register(key);
+        crate::manager::outcome::test_barrier::note_issue(key);
+        Ok(handle)
     }
 }
 
