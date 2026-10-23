@@ -87,14 +87,14 @@ fn scan_selected_entries(db: &Connection,session: &str,query: &EntryScan,ids: Op
                 "Custom entry {id} is missing custom_type"
             )))?);
         }
-        let mut decoded: Entry = serde_json::from_value(entry.clone())?;
+        // PERF-DIVERGENCE(senpi): upstream JSON.parse's once per row; we move `data`/`details` out of the parsed value and decode it by move, instead of deep-cloning the whole entry twice. The decoded Entry is identical.
+        let (data, details) = (entry.get_mut("data").map(Value::take), entry.get_mut("details").map(Value::take));
+        let mut decoded: Entry = serde_json::from_value(entry)?;
         match &mut decoded.kind {
-            maho_agent::harness::session::EntryKind::Custom { data, .. } => {
-                *data = entry.get("data").cloned()
-            }
-            maho_agent::harness::session::EntryKind::Compaction { details, .. }
-            | maho_agent::harness::session::EntryKind::BranchSummary { details, .. } => {
-                *details = entry.get("details").cloned()
+            maho_agent::harness::session::EntryKind::Custom { data: slot, .. } => *slot = data,
+            maho_agent::harness::session::EntryKind::Compaction { details: slot, .. }
+            | maho_agent::harness::session::EntryKind::BranchSummary { details: slot, .. } => {
+                *slot = details
             }
             maho_agent::harness::session::EntryKind::Message { .. } => {}
         }

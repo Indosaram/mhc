@@ -523,6 +523,7 @@ impl FormatterStep {
         let mut required_error: Option<String> = None;
 
         let raw_paths = extract_mutated_file_paths(event);
+        let mut marker_ctx: Option<(Vec<String>, String)> = None;
         for raw_path in raw_paths {
             // Lexical normalization matching upstream resolve(cwd, rawPath)
             let file_path = normalize_resolved_path(cwd, &raw_path);
@@ -541,19 +542,22 @@ impl FormatterStep {
 
             // Upstream: options.markers?.(cwd) ?? []
             // If options.markers is None, default to EMPTY vec (no invented list_dir_markers)
-            let marker_names = if let Some(m_fn) = &self.markers {
-                m_fn(cwd)
-            } else {
-                Vec::new()
-            };
+            // PERF-DIVERGENCE(omo formatter): upstream lists the cwd and reads pyproject.toml for every mutated path; we compute them lazily once per call, after the first path passes the exists/size gates. The formatter writes only its target file, so the results are identical.
+            let (marker_names, pyproject_text) = marker_ctx.get_or_insert_with(|| {
+                let marker_names = if let Some(m_fn) = &self.markers {
+                    m_fn(cwd)
+                } else {
+                    Vec::new()
+                };
+                let pyproject_text = if let Some(rm_fn) = &self.read_marker {
+                    rm_fn(cwd, "pyproject.toml")
+                } else {
+                    String::new()
+                };
+                (marker_names, pyproject_text)
+            });
 
-            let pyproject_text = if let Some(rm_fn) = &self.read_marker {
-                rm_fn(cwd, "pyproject.toml")
-            } else {
-                String::new()
-            };
-
-            let Some(marker) = detect_formatter(&marker_names, &file_path, &pyproject_text) else {
+            let Some(marker) = detect_formatter(marker_names, &file_path, pyproject_text) else {
                 continue;
             };
 

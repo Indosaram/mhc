@@ -53,16 +53,14 @@ fn residents_for(
     context: &LifecycleContext,
     parent_session_id: &str,
 ) -> Result<Vec<TaskRecord>, StoreError> {
+    // PERF-DIVERGENCE(senpi task-record-store.ts): upstream lists every record then filters; this port filters inside the store so only matching records are cloned. Same records returned.
     Ok(context
         .store
-        .list()?
-        .records
-        .into_iter()
-        .filter(|record| {
+        .list_matching(&mut |record| {
             record.parent_session_id == parent_session_id
                 && record.residency_state == ResidencyState::Resident
-        })
-        .collect())
+        })?
+        .records)
 }
 
 fn lru_evictable<'a>(
@@ -309,19 +307,17 @@ fn revival_candidates(
     parent_session_id: &str,
     exclude: &BTreeSet<String>,
 ) -> Result<Vec<TaskRecord>, StoreError> {
+    // PERF-DIVERGENCE(senpi task-record-store.ts): upstream lists every record then filters; this port filters inside the store so only matching records are cloned. Same records returned.
     Ok(context
         .store
-        .list()?
-        .records
-        .into_iter()
-        .filter(|record| {
+        .list_matching(&mut |record| {
             !exclude.contains(&record.task_id)
                 && record.parent_session_id == parent_session_id
                 && is_suspended_residency(record.residency_state)
                 && is_revivable_status(record.status)
                 && record.killed != Some(true)
-        })
-        .collect())
+        })?
+        .records)
 }
 
 /// Non-terminal first, then most recently updated, then task id.

@@ -939,6 +939,7 @@ impl TaskDagEngine {
                 .collect(),
             Err(_) => Vec::new(),
         };
+        let mut publish_ctx = None;
         for run in runs {
             if lock(&self.schedulers).contains_key(&run) {
                 continue;
@@ -951,8 +952,8 @@ impl TaskDagEngine {
             if log_len.is_some() && lock(&self.published_log_len).get(&run).copied() == log_len {
                 continue;
             }
-            let listeners = lock(&self.run_listeners).clone();
-            let on_event = self.durable_listener();
+            // PERF-DIVERGENCE(omo dag store wrapper): upstream rebuilds the listener list and durable listener for every run it visits; we build them lazily once per checkpoint, only when a run actually needs publishing. The listeners delivered to are the same.
+            let (listeners, on_event) = publish_ctx.get_or_insert_with(|| (lock(&self.run_listeners).clone(), self.durable_listener()));
             let mut delivered: BTreeMap<DagRunId, u64> = lock(&self.delivered)
                 .get(&run)
                 .map(|seq| (run.clone(), *seq))
@@ -962,8 +963,8 @@ impl TaskDagEngine {
                 &self.store,
                 &run,
                 &mut delivered,
-                &listeners,
-                &on_event,
+                listeners,
+                on_event,
             ) {
                 Ok(()) => {
                     if let Some(len) = log_len {

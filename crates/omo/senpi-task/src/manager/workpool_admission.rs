@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, PoisonError, atomic::{AtomicBool, Ordering}};
 
 use tokio::sync::watch;
 
-use crate::manager::manager::{AbortSignal, TaskManager};
+use crate::manager::manager::TaskManager;
 use crate::manager::types::ManagedStartSpec;
 use crate::state::TaskRecord;
 use crate::steering::{CancelOptions, SendOutcome};
@@ -231,18 +231,11 @@ impl WorkpoolAdmission for ManagerWorkpoolAdmission {
     }
     fn wait_for<'a>(&'a self, task_id: &'a str, cancel: &'a mut watch::Receiver<bool>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TaskRecord, WorkpoolAdmissionError>> + Send + 'a>> {
         Box::pin(async move {
-            let signal = AbortSignal::default();
-            let wait = tokio::task::spawn_blocking({ let manager = self.manager.clone(); let id = task_id.to_string(); let signal = signal.clone(); move || manager.wait_for(&id, Some(&signal), None) });
-            tokio::pin!(wait);
-            tokio::select! {
-                result = &mut wait => result.map_err(|error| WorkpoolAdmissionError(error.to_string()))?.map_err(|error| WorkpoolAdmissionError(error.to_string())),
-                changed = cancel.changed() => {
-                    let _ = changed;
-                    signal.abort();
-                    let _settled = wait.await.map_err(|error| WorkpoolAdmissionError(error.to_string()))?;
-                    Err(WorkpoolAdmissionError("waitFor aborted".into()))
-                }
-            }
+            // PERF-DIVERGENCE(senpi manager/workpool-admission.ts): upstream awaits waitFor on a promise; the port previously parked a blocking-pool thread per worker, and now awaits an async waiter so no thread is held for the task's lifetime. Settle/abort results and the "waitFor aborted" message are unchanged.
+            self.manager
+                .wait_for_async(task_id, cancel)
+                .await
+                .map_err(|error| WorkpoolAdmissionError(error.to_string()))
         })
     }
 }

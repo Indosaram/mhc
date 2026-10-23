@@ -94,6 +94,7 @@ pub fn build_eval_execution_event_payload(options: BuildEvalExecutionEventOption
 }
 
 pub fn to_eval_execution_rpc_payload(payload: &Value) -> Value {
+    // PERF-DIVERGENCE(senpi eval-execution-event): upstream measures JSON.stringify length; this port counts serialized bytes through a counting writer and deserializes aggregates from references, avoiding a throwaway String and per-aggregate clones. Byte length and branch taken are identical.
     let mut candidate = payload.clone();
     candidate.as_object_mut().expect("execution payload is an object").remove("error");
     candidate["detailLevel"] = json!("metadata");
@@ -103,10 +104,17 @@ pub fn to_eval_execution_rpc_payload(payload: &Value) -> Value {
         if let Some(duration) = call.get("durationMs") { summary["durationMs"] = duration.clone(); }
         summary
     }).collect::<Vec<_>>());
-    if candidate.to_string().len() <= MAX_RPC_EVENT_BYTES { return candidate; }
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> { self.0 += buf.len(); Ok(buf.len()) }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, &candidate).expect("execution payload serializes");
+    if counter.0 <= MAX_RPC_EVENT_BYTES { return candidate; }
     let mut total = EvalToolAggregate::default();
     for aggregate in payload["toolAggregates"].as_object().expect("execution aggregates are an object").values().chain(payload.get("toolAggregateOverflow")) {
-        total.add(&serde_json::from_value(aggregate.clone()).expect("execution aggregate has native shape"));
+        total.add(&<EvalToolAggregate as serde::Deserialize>::deserialize(aggregate).expect("execution aggregate has native shape"));
     }
     candidate["rpcTruncated"] = json!(true);
     candidate["toolCalls"] = json!([]);

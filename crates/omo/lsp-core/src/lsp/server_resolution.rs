@@ -1,6 +1,6 @@
 //! Port of TS `server-resolution.ts`.
 
-use crate::lsp::config_loader::get_disabled_server_ids;
+use crate::lsp::config_loader::get_merged_servers_and_disabled_ids;
 use crate::lsp::config_loader::get_merged_servers;
 use crate::lsp::server_definitions::builtin_server;
 use crate::lsp::server_definitions::install_hint;
@@ -70,8 +70,8 @@ pub struct ServerStatus {
 
 /// TS `getAllServers`.
 pub fn get_all_servers() -> Result<Vec<ServerStatus>, LspRequestContextUnavailableError> {
-    let servers = get_merged_servers()?;
-    let disabled = get_disabled_server_ids()?;
+    // PERF-DIVERGENCE(omo lsp config-loader): upstream reads the LSP config files twice per call (merged servers, then disabled ids); this port loads them once. Output is identical.
+    let (servers, disabled) = get_merged_servers_and_disabled_ids()?;
     let working_directory = context_cwd()?;
     let options = ResolveServerBinaryOptions::default();
     let mut result: Vec<ServerStatus> = Vec::new();

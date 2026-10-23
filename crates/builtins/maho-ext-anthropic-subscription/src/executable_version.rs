@@ -1,10 +1,17 @@
 use std::{collections::BTreeMap,path::{Path,PathBuf},sync::Mutex};
 fn parsed(text:Option<&str>)->Option<[f64;3]> {
-    let capture=regex::Regex::new(r"([0-9]+)\.([0-9]+)\.([0-9]+)").expect("version pattern").captures(text?)?;
+    // PERF-DIVERGENCE(omo anthropic-subscription executable-version.ts): upstream uses a regex literal compiled once by the JS engine; this port compiled per call, so we hoist it into a LazyLock. Matches are identical.
+    static VERSION:std::sync::LazyLock<regex::Regex>=std::sync::LazyLock::new(||regex::Regex::new(r"([0-9]+)\.([0-9]+)\.([0-9]+)").expect("version pattern"));
+    let capture=VERSION.captures(text?)?;
     Some([capture[1].parse().ok()?,capture[2].parse().ok()?,capture[3].parse().ok()?])
 }
 pub fn is_newer(candidate:Option<&str>,baseline:Option<&str>)->bool {
     match (parsed(candidate),parsed(baseline)) {(Some(left),Some(right))=>left>right,_=>false}
+}
+// PERF-DIVERGENCE(omo anthropic-subscription executable-version.ts): upstream uses a regex literal compiled once; we hoist the per-probe compile into a LazyLock. Matches are identical.
+fn plain_version()->&'static regex::Regex {
+    static PLAIN:std::sync::LazyLock<regex::Regex>=std::sync::LazyLock::new(||regex::Regex::new(r"[0-9]+\.[0-9]+\.[0-9]+").expect("version pattern"));
+    &PLAIN
 }
 #[derive(Default)]
 pub struct VersionProbe {cache:Mutex<BTreeMap<PathBuf,Option<String>>>}
@@ -13,7 +20,7 @@ impl VersionProbe {
         if let Some(cached)=self.cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(executable).cloned() {return cached;}
         let mut command=tokio::process::Command::new(executable);command.arg("--version").stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true);
         let version=match tokio::time::timeout(std::time::Duration::from_secs(5),command.output()).await {
-            Ok(Ok(output)) if output.status.success()=> {let text=String::from_utf8_lossy(&output.stdout);regex::Regex::new(r"[0-9]+\.[0-9]+\.[0-9]+").expect("version pattern").find(&text).map(|v|v.as_str().to_owned())},_=>None,
+            Ok(Ok(output)) if output.status.success()=> {let text=String::from_utf8_lossy(&output.stdout);plain_version().find(&text).map(|v|v.as_str().to_owned())},_=>None,
         };
         self.cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(executable.into(),version.clone());version
     }

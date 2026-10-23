@@ -6,7 +6,7 @@
 //! `Check` is the error walk's boolean: an error is only ever recorded on a failing path.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, RwLock};
 
 use fancy_regex::Regex;
 use serde_json::{Map, Value};
@@ -160,18 +160,25 @@ fn type_names(schema: &Map<String, Value>) -> Option<Vec<&str>> {
 
 /// Compiled schema `pattern`/`patternProperties` sources, keyed by source; bounded by the distinct
 /// schema patterns in use (model-supplied `format: "regex"` values are never cached).
-static PATTERN_CACHE: LazyLock<Mutex<HashMap<String, Option<Arc<Regex>>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static PATTERN_CACHE: LazyLock<RwLock<HashMap<String, Option<Arc<Regex>>>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
 
 fn regex_test(pattern: &str, text: &str) -> bool {
-    let compiled = {
-        let mut cache = PATTERN_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        match cache.get(pattern) {
-            Some(entry) => entry.clone(),
-            None => {
-                let entry = js_regex(pattern, false).map(Arc::new);
-                cache.insert(pattern.to_owned(), entry.clone());
-                entry
-            }
+    // PERF-DIVERGENCE(ajv): ajv compiles each pattern once per schema; this port shares a process-wide pattern cache and takes only a read lock on the hit path so parallel tool-call validations do not contend. Match results are identical.
+    let cached = PATTERN_CACHE
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(pattern)
+        .cloned();
+    let compiled = match cached {
+        Some(entry) => entry,
+        None => {
+            let entry = js_regex(pattern, false).map(Arc::new);
+            PATTERN_CACHE
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(pattern.to_owned())
+                .or_insert(entry)
+                .clone()
         }
     };
     compiled.is_some_and(|re| re.is_match(text).unwrap_or(false))

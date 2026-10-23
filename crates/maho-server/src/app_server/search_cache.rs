@@ -1,5 +1,5 @@
 use serde_json::{Value,json};
-use std::{collections::VecDeque,path::Path,sync::Arc};
+use std::{path::Path,sync::Arc};
 
 #[derive(Clone,Debug)]
 pub struct SearchSessionRecord {pub thread: Value,pub recency_at: String,pub searchable_text: String,
@@ -13,7 +13,8 @@ impl SearchSessionRecord {
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct SearchCacheStats {pub hits: usize,pub misses: usize,pub entries: usize}
 pub struct ThreadSearchCache {
-    entries: VecDeque<(String,std::time::SystemTime,Arc<SearchSessionRecord>)>,max_entries: usize,max_text_bytes: usize,text_bytes: usize,hits: usize,misses: usize,
+    // PERF-DIVERGENCE(senpi): upstream keeps a Map-based LRU with O(1) lookup; we use an insertion-ordered IndexMap (oldest first) instead of a VecDeque scanned linearly per file. Same hits, misses and eviction order.
+    entries: indexmap::IndexMap<String,(std::time::SystemTime,Arc<SearchSessionRecord>)>,max_entries: usize,max_text_bytes: usize,text_bytes: usize,hits: usize,misses: usize,
 }
 /// Total `searchable_text` budget, the same as maho-core's session summary cache, so a normal
 /// session set stays resident instead of thrashing on every `thread/search` walk.
@@ -21,7 +22,7 @@ pub const SEARCH_CACHE_MAX_TEXT_BYTES: usize = maho_core::session_summary_cache:
 impl Default for ThreadSearchCache {fn default() -> Self {Self::with_budget(usize::MAX,SEARCH_CACHE_MAX_TEXT_BYTES)}}
 impl ThreadSearchCache {
     pub fn new(max_entries: usize) -> Self {Self::with_budget(max_entries,usize::MAX)}
-    pub fn with_budget(max_entries: usize,max_text_bytes: usize) -> Self {Self {entries:VecDeque::new(),max_entries:max_entries.max(1),max_text_bytes,text_bytes:0,hits:0,misses:0}}
+    pub fn with_budget(max_entries: usize,max_text_bytes: usize) -> Self {Self {entries:indexmap::IndexMap::new(),max_entries:max_entries.max(1),max_text_bytes,text_bytes:0,hits:0,misses:0}}
     pub fn stats(&self) -> SearchCacheStats {SearchCacheStats {hits:self.hits,misses:self.misses,entries:self.entries.len()}}
     pub async fn load(&mut self,directory: &Path) -> std::io::Result<Vec<Arc<SearchSessionRecord>>> {
         let mut names = match tokio::fs::read_dir(directory).await {Ok(names)=>names,Err(error) if error.kind() == std::io::ErrorKind::NotFound=>return Ok(Vec::new()),Err(error)=>return Err(error)};
@@ -34,9 +35,9 @@ impl ThreadSearchCache {
         let key = path.display().to_string();
         let modified = match tokio::fs::metadata(path).await {Ok(metadata)=>metadata.modified()?,Err(error) if error.kind() == std::io::ErrorKind::NotFound=>{self.remove(&key);return Ok(None)},Err(error)=>return Err(error)};
         let mtime = chrono::DateTime::<chrono::Utc>::from(modified).timestamp_millis();
-        if let Some(index) = self.entries.iter().position(|(name,time,_)|name == &key && *time == modified) {
+        if self.entries.get(&key).is_some_and(|(time,_)|*time == modified) {
             self.hits += 1;
-            if let Some(entry) = self.entries.remove(index) {let record = Arc::clone(&entry.2);self.entries.push_back(entry);return Ok(Some(record));}
+            if let Some((name,entry)) = self.entries.shift_remove_entry(&key) {let record = Arc::clone(&entry.1);self.entries.insert(name,entry);return Ok(Some(record));}
         }
         self.misses += 1;
         // The read and the per-line JSON parse are synchronous; keep them off the async worker.
@@ -49,14 +50,13 @@ impl ThreadSearchCache {
         let record = match parsed {Ok(record)=>record.map(Arc::new),Err(error) if error.kind() == std::io::ErrorKind::NotFound=>{self.remove(&key);return Ok(None)},Err(error)=>return Err(error)};
         self.remove(&key);
         if let Some(record) = &record {
-            self.text_bytes += record.bytes();self.entries.push_back((key,modified,Arc::clone(record)));
-            while self.entries.len() > self.max_entries || (self.text_bytes > self.max_text_bytes && self.entries.len() > 1) {if let Some((_,_,evicted)) = self.entries.pop_front() {self.text_bytes -= evicted.bytes();}}
+            self.text_bytes += record.bytes();self.entries.insert(key,(modified,Arc::clone(record)));
+            while self.entries.len() > self.max_entries || (self.text_bytes > self.max_text_bytes && self.entries.len() > 1) {if let Some((_,(_,evicted))) = self.entries.shift_remove_index(0) {self.text_bytes -= evicted.bytes();}}
         }
         Ok(record)
     }
     fn remove(&mut self,key: &str) {
-        let text_bytes = &mut self.text_bytes;
-        self.entries.retain(|(name,_,record)|{let keep = name != key;if !keep {*text_bytes -= record.bytes();}keep});
+        if let Some((_,record)) = self.entries.shift_remove(key) {self.text_bytes -= record.bytes();}
     }
 }
 fn timestamp(value: &Value,fallback: i64) -> i64 {value.as_i64().or_else(||value.as_str().and_then(super::js_semantics::date_parse_ms)).unwrap_or(fallback)}

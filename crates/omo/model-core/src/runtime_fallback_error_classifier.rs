@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use regex::Regex;
+use regex::{Regex, RegexSet};
 use serde_json::Value;
 
 pub use crate::runtime_fallback_auto_retry_signal::RuntimeFallbackAutoRetrySignal;
@@ -117,8 +117,10 @@ pub fn is_terminal_quota_error(error: Option<&Value>) -> bool {
         || is_terminal_quota_message(&get_runtime_fallback_error_message(error))
 }
 
-static QUOTA_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    [
+// PERF-DIVERGENCE(omo runtime-fallback): upstream scans each quota pattern separately per message; this port compiles the same patterns into one RegexSet for a single-pass any-match. The boolean result is identical.
+#[expect(clippy::expect_used, reason = "static regex literals are valid")]
+static QUOTA_PATTERNS: LazyLock<RegexSet> = LazyLock::new(|| {
+    RegexSet::new([
         r"(?i)quota.?exceeded",
         r"(?i)exceeded.*quota",
         r"(?i)quota\b.*\breset",
@@ -145,10 +147,8 @@ static QUOTA_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"额度.*不足",
         r"余额.*不足",
         r"已耗尽",
-    ]
-    .iter()
-    .map(|pattern| regex(pattern))
-    .collect()
+    ])
+    .expect("valid regex set")
 });
 
 #[must_use]
@@ -200,9 +200,7 @@ pub fn classify_runtime_fallback_error(error: Option<&Value>) -> Option<RuntimeF
         || name_contains("resourceexhausted")
         || name_contains("insufficientcredits")
         || name_contains("usagelimit")
-        || QUOTA_PATTERNS
-            .iter()
-            .any(|pattern| pattern.is_match(&message))
+        || QUOTA_PATTERNS.is_match(&message)
         || is_localized_quota_exhaustion_message(&message)
     {
         return Some(RuntimeFallbackErrorType::QuotaExceeded);

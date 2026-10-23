@@ -98,6 +98,16 @@ pub enum SendOutcome {
 pub trait SendManager: Send + Sync {
     fn send_to_task(&self, input: &ControlSendInput) -> Result<SendOutcome, String>;
     fn list(&self, scope: &ControlListScope) -> Vec<ControlTaskRecord>;
+    /// Resolves `to` as a task id first, then as a task name, across all sessions.
+    // PERF-DIVERGENCE(senpi tools/control/send-results.ts): upstream lists and maps every record to resolve one target; this hook lets a manager resolve an id with a single load, defaulting to the same list scan. Output is identical.
+    fn find_task(&self, to: &str) -> Option<ControlTaskRecord> {
+        let listed = self.list(&ControlListScope::All);
+        listed
+            .iter()
+            .find(|record| record.task_id == to)
+            .or_else(|| listed.iter().find(|record| record.name.as_deref() == Some(to)))
+            .cloned()
+    }
 }
 
 /// Outcome of the manager `cancel_task` call.
@@ -220,6 +230,27 @@ impl SendManager for TaskManager {
                 root_session_id: listed.record.root_session_id,
             })
             .collect()
+    }
+
+    // PERF-DIVERGENCE(senpi tools/control/send-results.ts): upstream lists every record to find the send target; we try a single id load first and fall back to the full id-then-name scan on a miss. Same id-first precedence and result.
+    fn find_task(&self, to: &str) -> Option<ControlTaskRecord> {
+        if crate::state::parse_task_id(to).is_ok()
+            && let Some(record) = TaskManager::get(self, to)
+            && record.task_id == to
+        {
+            return Some(ControlTaskRecord {
+                task_id: record.task_id,
+                name: record.name,
+                parent_session_id: record.parent_session_id,
+                root_session_id: record.root_session_id,
+            });
+        }
+        let listed = SendManager::list(self, &ControlListScope::All);
+        listed
+            .iter()
+            .find(|record| record.task_id == to)
+            .or_else(|| listed.iter().find(|record| record.name.as_deref() == Some(to)))
+            .cloned()
     }
 }
 

@@ -87,11 +87,12 @@ pub async fn process_matches_pid_file(file: &DaemonPidFile) -> Result<bool, std:
 }
 pub async fn wait_for_gone(file: &DaemonPidFile, timeout_ms: u64) -> Result<bool, std::io::Error> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    // PERF-DIVERGENCE(senpi daemon): upstream runs the `ps` identity probe on every poll; we first check cheap liveness (kill 0) and only probe identity while the pid is still alive, since a dead pid never matches the pid file. Same result.
     while tokio::time::Instant::now() <= deadline {
-        if !process_matches_pid_file(file).await? { return Ok(true); }
+        if !process_is_live(file.pid).await? || !process_matches_pid_file(file).await? { return Ok(true); }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    Ok(!process_matches_pid_file(file).await?)
+    Ok(!process_is_live(file.pid).await? || !process_matches_pid_file(file).await?)
 }
 pub async fn wait_for_start_time(pid: u64, timeout_ms: u64) -> Result<Option<String>, std::io::Error> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);

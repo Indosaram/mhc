@@ -71,6 +71,8 @@ fn truncate(content: &str, options: TruncationOptions, tail: bool) -> Truncation
 pub fn truncate_head(content: &str, options: TruncationOptions) -> TruncationResult { truncate(content, options, false) }
 pub fn truncate_tail(content: &str, options: TruncationOptions) -> TruncationResult { truncate(content, options, true) }
 pub fn truncate_line(line: &str, max_chars: usize) -> (String, bool) {
+    // PERF-DIVERGENCE(senpi truncate.ts): upstream reads JS string length (already UTF-16); this port skips the UTF-16 Vec when the byte length already fits, since UTF-16 units never exceed UTF-8 bytes. Output is identical.
+    if line.len() <= max_chars { return (line.into(), false); }
     let units: Vec<_> = line.encode_utf16().collect();
     if units.len() <= max_chars { (line.into(), false) }
     else { (format!("{}... [truncated]", String::from_utf16_lossy(&units[..max_chars])), true) }

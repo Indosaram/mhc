@@ -168,16 +168,14 @@ fn suspended_candidates(
     context: &LifecycleContext,
     parent_session_id: &str,
 ) -> Result<Vec<TaskRecord>, StoreError> {
+    // PERF-DIVERGENCE(senpi task-record-store.ts): upstream lists every record then filters; this port filters inside the store so only matching records are cloned. Same records returned.
     Ok(context
         .store
-        .list()?
-        .records
-        .into_iter()
-        .filter(|record| {
+        .list_matching(&mut |record| {
             record.parent_session_id == parent_session_id
                 && is_suspended_residency(record.residency_state)
                 && is_revivable_status(record.status)
                 && record.killed != Some(true)
-        })
-        .collect())
+        })?
+        .records)
 }

@@ -51,7 +51,7 @@ pub struct TerminateProcessTreesOptions {
 
 pub async fn is_process_alive(pid: u32) -> bool {
     if pid == 0 { return false; }
-    // Same answer as `kill -0` (EPERM and ESRCH both read as not alive) without spawning a process.
+    // PERF-DIVERGENCE(senpi process-tree): upstream polls via process.kill(pid, 0); this port uses a rustix kill(pid,0) syscall instead of spawning `kill -0`. Same answer as `kill -0` (EPERM and ESRCH both read as not alive) without spawning a process.
     #[cfg(unix)]
     { i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw).is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok()) }
     #[cfg(not(unix))]

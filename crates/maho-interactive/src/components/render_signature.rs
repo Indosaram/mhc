@@ -27,6 +27,10 @@ pub fn serialize_bounded_render_summary(summary: &Value) -> String {
 }
 
 fn summarize_string(text: &str) -> Value {
+    // PERF-DIVERGENCE(senpi render-signature.ts): upstream measures UTF-16 length directly; this port skips the UTF-16 Vec for strings of <= 160 bytes (which have <= 160 units). Output is identical.
+    if text.len() <= SIGNATURE_STRING_MAX_LENGTH {
+        return Value::String(text.to_owned());
+    }
     let units: Vec<u16> = text.encode_utf16().collect();
     if units.len() <= SIGNATURE_STRING_MAX_LENGTH {
         return Value::String(text.to_owned());

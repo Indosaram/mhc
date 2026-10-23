@@ -364,9 +364,13 @@ pub fn transcript_messages(entries: &[Value]) -> Vec<Value> {
     }).collect()
 }
 
+// PERF-DIVERGENCE(omo anthropic-subscription sdk_boundary.ts): upstream uses regex literals compiled once; this port compiled them per session lookup, so we hoist them into LazyLocks. Matches are identical.
+static SESSION_UUID:std::sync::LazyLock<regex::Regex>=std::sync::LazyLock::new(||regex::Regex::new(r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").expect("session UUID"));
+static PROJECT_KEY:std::sync::LazyLock<regex::Regex>=std::sync::LazyLock::new(||regex::Regex::new(r"^[A-Za-z0-9_-]{1,64}$").expect("project key"));
+static RESERVED_PROJECT_KEY:std::sync::LazyLock<regex::Regex>=std::sync::LazyLock::new(||regex::Regex::new(r"(?i)^(con|prn|aux|nul|com[0-9]|lpt[0-9])$").expect("reserved project key"));
 pub async fn get_session_messages(session: &str, cwd: &Path, environment: &BTreeMap<String,String>) -> anyhow::Result<Vec<Value>> {
     use unicode_normalization::UnicodeNormalization;
-    if !regex::Regex::new(r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").expect("session UUID").is_match(session) {return Ok(Vec::new());}
+    if !SESSION_UUID.is_match(session) {return Ok(Vec::new());}
     let home=environment.get(if cfg!(windows) {"USERPROFILE"}else {"HOME"}).map(std::path::PathBuf::from).or_else(dirs::home_dir);
     let config=environment.get("CLAUDE_CONFIG_DIR").cloned().or_else(||home.map(|home|home.join(".claude").to_string_lossy().into_owned())).ok_or_else(||anyhow::anyhow!("Claude transcript HOME is unavailable"))?;
     let root=std::path::PathBuf::from(config.nfc().collect::<String>()).join("projects");
@@ -380,7 +384,7 @@ pub async fn get_session_messages(session: &str, cwd: &Path, environment: &BTree
                 let path=std::path::PathBuf::from(path);if !worktrees.contains(&path) {worktrees.push(path);}
             }
     }
-    let override_key=environment.get("CLAUDE_CODE_PROJECT_DIR_NAME").filter(|key|environment.contains_key("CLAUDE_CONFIG_DIR") && regex::Regex::new(r"^[A-Za-z0-9_-]{1,64}$").expect("project key").is_match(key) && !regex::Regex::new(r"(?i)^(con|prn|aux|nul|com[0-9]|lpt[0-9])$").expect("reserved project key").is_match(key));
+    let override_key=environment.get("CLAUDE_CODE_PROJECT_DIR_NAME").filter(|key|environment.contains_key("CLAUDE_CONFIG_DIR") && PROJECT_KEY.is_match(key) && !RESERVED_PROJECT_KEY.is_match(key));
     for worktree in worktrees {
         let worktree=std::fs::canonicalize(&worktree).unwrap_or(worktree);
         let path=worktree.to_string_lossy();

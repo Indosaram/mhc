@@ -26,7 +26,7 @@ use crate::dag::node_send::{DagNodeSendResult, send_to_dag_node};
 use crate::dag::owner::{DagOwnerKind, DagTaskOwner, OwnedStartResult};
 use crate::dag::results::{
     DagNodeResultArtifact, DagNodeResultPersistInput, DagNodeResultPersistOutcome,
-    DagNodeResultReadInput, persist_dag_node_result, read_dag_node_run_stats,
+    parse_stats_sidecar, persist_dag_node_result,
 };
 use crate::dag::store::DagFileStore;
 use crate::dag::types::{
@@ -687,13 +687,17 @@ fn replay_dag_node_result(
 ) -> Option<ReplayedResult> {
     let output_path = store.paths.result(run_id, node_id);
     let output = fs::read_to_string(&output_path).ok()?;
-    let run_stats = read_dag_node_run_stats(DagNodeResultReadInput {
-        store,
-        run_id,
-        node_id,
-    });
     let stats_path = stats_sidecar_path(&output_path);
-    let stats = read_optional_artifact(store, &stats_path);
+    // PERF-DIVERGENCE(senpi dag-results.ts): upstream reads the stats sidecar once for run_stats and again for its artifact hash; this port reads the file once and derives both from the same bytes. Unreadable file still yields None for both.
+    let (run_stats, stats) = match fs::read(&stats_path) {
+        Ok(bytes) => (
+            parse_stats_sidecar(&String::from_utf8_lossy(&bytes)),
+            std::str::from_utf8(&bytes)
+                .ok()
+                .map(|_| artifact_ref_from(&store.state_dir, &stats_path, &bytes)),
+        ),
+        Err(_) => (None, None),
+    };
     Some(ReplayedResult {
         artifact: DagNodeResultArtifact {
             stats,
@@ -710,18 +714,6 @@ fn stats_sidecar_path(output_path: &Path) -> std::path::PathBuf {
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default();
     output_path.with_file_name(format!("{stem}.stats.json"))
-}
-
-fn read_optional_artifact(
-    store: &DagFileStore,
-    path: &Path,
-) -> Option<crate::dag::results::DagResultArtifactRef> {
-    let contents = fs::read_to_string(path).ok()?;
-    Some(artifact_ref_from(
-        &store.state_dir,
-        path,
-        contents.as_bytes(),
-    ))
 }
 
 fn artifact_ref(

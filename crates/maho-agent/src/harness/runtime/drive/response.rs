@@ -256,10 +256,8 @@ fn provider_error(source: &str, message: &AssistantMessage) -> OperationError {
         message: message.error_message.clone().unwrap_or_else(|| {
             format!(
                 "{source} request ended with {}",
-                serde_json::to_value(message.stop_reason)
-                    .unwrap_or_default()
-                    .as_str()
-                    .unwrap_or_default()
+                // PERF-DIVERGENCE(omo): upstream stringifies the stop reason via a serde Value; we use StopReason::as_str to avoid the allocation. Same camelCase string.
+                message.stop_reason.as_str()
             )
         }),
         details: None,

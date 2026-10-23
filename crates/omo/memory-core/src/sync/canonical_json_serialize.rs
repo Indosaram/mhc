@@ -4,29 +4,42 @@ use super::canonical_json_types::{CanonicalJsonError, CanonicalJsonValue, Canoni
 use std::cmp::Ordering;
 
 pub fn escape_canonical_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    push_escaped_canonical_string(&mut out, value);
+    out
+}
+
+// PERF-DIVERGENCE(senpi canonical-json): upstream builds a fresh escaped string per key/value and then copies it into the output; this port escapes straight into the output buffer, copying unescaped runs as slices. Output bytes are identical.
+fn push_escaped_canonical_string(out: &mut String, value: &str) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::from("\"");
-    for character in value.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{08}' => out.push_str("\\b"),
-            '\t' => out.push_str("\\t"),
-            '\n' => out.push_str("\\n"),
-            '\u{0c}' => out.push_str("\\f"),
-            '\r' => out.push_str("\\r"),
-            c if c < '\u{20}' => {
-                let mut units = [0; 2];
-                let code = usize::from(c.encode_utf16(&mut units)[0]);
+    out.push('"');
+    let mut run_start = 0;
+    for (index, character) in value.char_indices() {
+        let escape: Option<&str> = match character {
+            '"' => Some("\\\""),
+            '\\' => Some("\\\\"),
+            '\u{08}' => Some("\\b"),
+            '\t' => Some("\\t"),
+            '\n' => Some("\\n"),
+            '\u{0c}' => Some("\\f"),
+            '\r' => Some("\\r"),
+            c if c < '\u{20}' => None,
+            _ => continue,
+        };
+        out.push_str(&value[run_start..index]);
+        run_start = index + character.len_utf8();
+        match escape {
+            Some(text) => out.push_str(text),
+            None => {
+                let code = usize::from(u8::try_from(character).unwrap_or(0));
                 out.push_str("\\u00");
                 out.push(char::from(HEX[code / 16]));
                 out.push(char::from(HEX[code % 16]));
             }
-            c => out.push(c),
         }
     }
+    out.push_str(&value[run_start..]);
     out.push('"');
-    out
 }
 
 pub fn compare_utf16(left: &str, right: &str) -> Ordering {
@@ -65,7 +78,7 @@ fn serialize_value(
             })?;
             out.push_str(&canonical_number(number));
         }
-        Value::String(value) => out.push_str(&escape_canonical_string(value)),
+        Value::String(value) => push_escaped_canonical_string(out, value),
         Value::Array(values) => {
             out.push('[');
             for (index, value) in values.iter().enumerate() {
@@ -78,15 +91,16 @@ fn serialize_value(
         }
         Value::Object(values) => {
             out.push('{');
-            let mut keys: Vec<_> = values.keys().collect();
-            keys.sort_by(|left, right| compare_utf16(left, right));
-            for (index, key) in keys.into_iter().enumerate() {
+            // PERF-DIVERGENCE(senpi canonical-json): upstream sorts keys and then looks each value up again by key; this port sorts (key, value) pairs so no second map lookup happens. Output is identical.
+            let mut entries: Vec<_> = values.iter().collect();
+            entries.sort_by(|left, right| compare_utf16(left.0, right.0));
+            for (index, (key, child)) in entries.into_iter().enumerate() {
                 if index > 0 {
                     out.push(',');
                 }
-                out.push_str(&escape_canonical_string(key));
+                push_escaped_canonical_string(out, key);
                 out.push(':');
-                serialize_value(&values[key], out, depth + 1)?;
+                serialize_value(child, out, depth + 1)?;
             }
             out.push('}');
         }

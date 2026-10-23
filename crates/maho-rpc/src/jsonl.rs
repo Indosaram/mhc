@@ -47,9 +47,10 @@ impl JsonlLineReader {
         let mut records = Vec::new();
         loop {
             match std::str::from_utf8(&self.undecoded) {
-                Ok(text) => {
-                    let text = text.to_owned();
-                    self.undecoded.clear();
+                Ok(_) => {
+                    // PERF-DIVERGENCE(senpi jsonl-line-reader): upstream decodes each chunk with StringDecoder; we move the already-validated bytes into a String instead of copying them with `to_owned`. Same text.
+                    let bytes = std::mem::take(&mut self.undecoded);
+                    let text = String::from_utf8(bytes).unwrap_or_default();
                     self.consume(&text, &mut records);
                     break;
                 }
@@ -92,18 +93,28 @@ impl JsonlLineReader {
     }
 
     fn consume(&mut self, text: &str, records: &mut Vec<LineRecord>) {
-        for ch in text.chars() {
-            if ch == '\n' {
-                if self.discarding { self.discarding = false; }
-                else { self.emit(records); }
-            } else if !self.discarding {
-                self.characters = self.characters.saturating_add(ch.len_utf16());
-                if self.characters > self.max_line_length {
+        // PERF-DIVERGENCE(senpi jsonl-line-reader): upstream scans each chunk with indexOf('\n'); we split on LF and append whole segments instead of pushing char by char. The oversize cut point (UTF-16 units counted per line, discard until the next LF) is unchanged.
+        for segment in text.split_inclusive('\n') {
+            let (body, newline) = match segment.strip_suffix('\n') {
+                Some(body) => (body, true),
+                None => (segment, false),
+            };
+            if !self.discarding && !body.is_empty() {
+                let units = if body.is_ascii() { body.len() } else { body.encode_utf16().count() };
+                let total = self.characters.saturating_add(units);
+                if total > self.max_line_length {
                     self.buffer.clear();
                     self.characters = 0;
                     self.discarding = true;
                     records.push(LineRecord::Oversized);
-                } else { self.buffer.push(ch); }
+                } else {
+                    self.buffer.push_str(body);
+                    self.characters = total;
+                }
+            }
+            if newline {
+                if self.discarding { self.discarding = false; }
+                else { self.emit(records); }
             }
         }
     }

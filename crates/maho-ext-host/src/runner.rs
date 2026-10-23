@@ -1413,33 +1413,40 @@ impl ExtensionRunner {
         out
     }
     pub fn get_all_registered_tools(&self) -> Vec<RegisteredTool> {
+        // PERF-DIVERGENCE(senpi runner.ts): upstream merges tools with linear name scans per tool; this port indexes the first position per name in a HashMap and moves tools instead of cloning them. Precedence and output order are identical.
         let mut tools: Vec<RegisteredTool> = Vec::new();
+        let mut tool_index: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for ext in self.extensions.iter() {
             let mut merged = ext.tools.clone();
             if let Some(live) = self.runtime.live_tools(&ext.identity.path) {
+                let mut merged_index: std::collections::HashMap<String, usize> =
+                    std::collections::HashMap::new();
+                for (index, tool) in merged.iter().enumerate() {
+                    merged_index
+                        .entry(tool.definition.name.clone())
+                        .or_insert(index);
+                }
                 for tool in live {
-                    if let Some(existing) = merged
-                        .iter_mut()
-                        .find(|t| t.definition.name == tool.definition.name)
-                    {
-                        *existing = tool;
+                    if let Some(&index) = merged_index.get(&tool.definition.name) {
+                        merged[index] = tool;
                     } else {
+                        merged_index.insert(tool.definition.name.clone(), merged.len());
                         merged.push(tool);
                     }
                 }
             }
             for tool in merged {
-                if let Some(existing) = tools
-                    .iter_mut()
-                    .find(|t| t.definition.name == tool.definition.name)
-                {
+                if let Some(&index) = tool_index.get(&tool.definition.name) {
+                    let existing = &mut tools[index];
                     if existing.source_info.source == "builtin"
                         && tool.source_info.source != "builtin"
                     {
-                        *existing = tool.clone();
+                        *existing = tool;
                     }
                 } else {
-                    tools.push(tool.clone());
+                    tool_index.insert(tool.definition.name.clone(), tools.len());
+                    tools.push(tool);
                 }
             }
         }
@@ -1453,12 +1460,18 @@ impl ExtensionRunner {
     }
     pub fn get_tool_definition(&self, name: &str) -> Option<ToolDefinition> {
         self.extensions.iter().find_map(|extension| {
-            self.runtime
-                .live_tools(&extension.identity.path)
-                .unwrap_or_else(|| extension.tools.clone())
-                .into_iter()
-                .find(|tool| tool.definition.name == name)
-                .map(|tool| tool.definition)
+            // PERF-DIVERGENCE(senpi runner.ts): upstream scans each extension's tool list in place; this port searches the static list by reference and clones only the match instead of cloning the whole Vec. Result is identical.
+            match self.runtime.live_tools(&extension.identity.path) {
+                Some(live) => live
+                    .into_iter()
+                    .find(|tool| tool.definition.name == name)
+                    .map(|tool| tool.definition),
+                None => extension
+                    .tools
+                    .iter()
+                    .find(|tool| tool.definition.name == name)
+                    .map(|tool| tool.definition.clone()),
+            }
         })
     }
     pub fn get_tool_definition_owned(&self, name: &str) -> Option<ToolDefinition> {

@@ -72,14 +72,21 @@ pub fn rank_model_search_items<'a, T>(
         let provider = model.provider.to_lowercase();
         let fields = [id, model.name.unwrap_or_default().to_lowercase(), provider.clone(),
             format!("{provider}/{}", model.id.to_lowercase())];
-        let score = [score_plan(&compound, &fields), score_plan(&legacy, &fields)]
-            .into_iter().flatten().min_by(|a, b| compare_keys(a, b));
+        // PERF-DIVERGENCE(senpi model-search-rank.ts): upstream scores both token plans per item; this port scores once when the compound and legacy token lists are identical (min of equal keys is that key). Output is identical.
+        let score = if compound == legacy {
+            score_plan(&compound, &fields)
+        } else {
+            [score_plan(&compound, &fields), score_plan(&legacy, &fields)]
+                .into_iter().flatten().min_by(|a, b| compare_keys(a, b))
+        };
         let Some(score) = score else { continue; };
-        let mut key = vec![f64::from(normalized != fields[3]),
-            f64::from(favorites_first && !is_favorite(item))];
-        key.extend(score);
-        key.push(fields[0].encode_utf16().count() as f64);
-        key.push(index as f64);
+        // PERF-DIVERGENCE(senpi model-search-rank.ts): upstream builds a growable array key per item; this port uses a fixed [f64; 11] to avoid a heap allocation per item per keystroke. Ordering is identical.
+        let mut key = [0.0_f64; 11];
+        key[0] = f64::from(normalized != fields[3]);
+        key[1] = f64::from(favorites_first && !is_favorite(item));
+        key[2..9].copy_from_slice(&score);
+        key[9] = fields[0].encode_utf16().count() as f64;
+        key[10] = index as f64;
         ranked.push((item, key));
     }
     ranked.sort_by(|(_, a), (_, b)| compare_keys(a, b));

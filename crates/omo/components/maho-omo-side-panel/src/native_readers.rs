@@ -129,6 +129,10 @@ impl PanelReaders for NativeReaders {
             }
             let mut state = PanelState::default();
             for record in listed.records {
+                // PERF-DIVERGENCE(omo side-panel native readers): the earlier port serialized and re-deserialized every task record of every session before filtering by parent; we compare the typed parent_session_id first and skip other sessions' records. Kept records and output are identical.
+                if record.parent_session_id != session_id {
+                    continue;
+                }
                 let value = serde_json::to_value(record).map_err(|error| error.to_string())?;
                 let record: crate::data::task_records::PanelTaskRecord =
                     serde_json::from_value(value).map_err(|error| error.to_string())?;

@@ -4092,8 +4092,9 @@ impl TuiBase {
             if i > first_changed {
                 buffer += "\r\n";
             }
-            let line = new_lines[i].clone();
-            let is_image = is_image_line(&line);
+            // PERF-DIVERGENCE(senpi tui.ts): upstream reads the immutable JS string per row; we borrow the row instead of cloning it (the over-wide branch assigns only after the borrow ends). Output bytes are identical.
+            let line = &new_lines[i];
+            let is_image = is_image_line(line);
             let image_reserved_rows = if is_image {
                 Self::get_kitty_image_reserved_rows(&new_lines, i, render_end)
             } else {
@@ -4105,19 +4106,19 @@ impl TuiBase {
                     buffer += &format!("\r\n\x1b[2K{SEGMENT_RESET}");
                 }
                 buffer += &format!("\x1b[{}A", image_reserved_rows - 1);
-                buffer += &line;
+                buffer += line;
                 buffer += &format!("\x1b[{}B", image_reserved_rows - 1);
                 i += image_reserved_rows;
                 continue;
             }
 
             buffer += &format!("\x1b[2K{SEGMENT_RESET}");
-            let line_width = visible_width(&line);
+            let line_width = visible_width(line);
             if !is_image && line_width > width {
                 self.log_over_wide_render(&new_lines, width, i, line_width);
                 let truncated_line = format!(
                     "{}{}",
-                    slice_by_column(&line, 0, width, true),
+                    slice_by_column(line, 0, width, true),
                     SEGMENT_RESET
                 );
                 new_lines[i] = truncated_line.clone();
@@ -4125,7 +4126,7 @@ impl TuiBase {
                 i += 1;
                 continue;
             }
-            buffer += &line;
+            buffer += line;
             i += 1;
         }
 

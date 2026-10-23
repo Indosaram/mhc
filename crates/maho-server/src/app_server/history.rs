@@ -19,5 +19,6 @@ pub fn user_input_from_message(message: &Value) -> Vec<Value> {
     }
 }
 pub fn runtime_history_turns(turn_log: &mut TurnLog, thread_id: &str) -> Vec<Value> {
-    turn_log.read_turns(thread_id).iter().map(|turn| json!({"id":turn.turn_id,"items":turn.items,"status":match turn.status { super::turn_log::TurnStatus::Running => "inProgress", super::turn_log::TurnStatus::Completed => "completed", super::turn_log::TurnStatus::Failed => "failed", super::turn_log::TurnStatus::Interrupted => "interrupted" },"error":turn.error.as_ref().map(|message| json!({"message":message,"codexErrorInfo":null,"additionalDetails":null}))})).collect()
+    // PERF-DIVERGENCE(senpi): upstream reads the turn array without copying; we iterate the borrowed turns instead of `read_turns`' deep clone of every turn and item. Same JSON.
+    turn_log.turns(thread_id).iter().map(|turn| json!({"id":turn.turn_id,"items":turn.items,"status":match turn.status { super::turn_log::TurnStatus::Running => "inProgress", super::turn_log::TurnStatus::Completed => "completed", super::turn_log::TurnStatus::Failed => "failed", super::turn_log::TurnStatus::Interrupted => "interrupted" },"error":turn.error.as_ref().map(|message| json!({"message":message,"codexErrorInfo":null,"additionalDetails":null}))})).collect()
 }

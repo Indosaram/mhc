@@ -290,18 +290,23 @@ pub type LazyToolActivator = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 pub type AgentSessionEventListener = Arc<dyn Fn(&AgentSessionEvent) + Send + Sync>;
 
+/// Copy-on-write listener list: `emit` snapshots it with one `Arc` clone.
+type SharedEventListeners = Arc<Mutex<Arc<Vec<(u64, AgentSessionEventListener)>>>>;
+
 /// Unsubscribes its listener when dropped, matching the function `subscribe` returns in senpi.
 pub struct AgentSessionSubscription {
-    listeners: Arc<Mutex<Vec<(u64, AgentSessionEventListener)>>>,
+    listeners: SharedEventListeners,
     id: u64,
 }
 
 impl Drop for AgentSessionSubscription {
     fn drop(&mut self) {
-        self.listeners
+        // PERF-DIVERGENCE(senpi agent-session.ts): copy-on-write listener list; an in-flight emit keeps its own snapshot.
+        let mut guard = self
+            .listeners
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|(id, _)| *id != self.id);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::make_mut(&mut guard).retain(|(id, _)| *id != self.id);
     }
 }
 
@@ -819,7 +824,7 @@ pub struct AgentSessionInner {
     /// runtime's tool generation) is rebuilt only when the bound runner or its tools change.
     extension_runner_epoch: AtomicU64,
     event_bus: EventBus,
-    event_listeners: Arc<Mutex<Vec<(u64, AgentSessionEventListener)>>>,
+    event_listeners: SharedEventListeners,
     next_listener_id: Arc<AtomicU64>,
     human_input_listeners: Arc<Mutex<Vec<(u64, HumanInputListener)>>>,
     session_logger: SessionLogger,
@@ -3504,7 +3509,7 @@ impl AgentSession {
                 extension_runner: tokio::sync::Mutex::new(None),
                 extension_runner_epoch: AtomicU64::new(0),
                 event_bus: EventBus::new(),
-                event_listeners: Arc::new(Mutex::new(Vec::new())),
+                event_listeners: Arc::new(Mutex::new(Arc::new(Vec::new()))),
                 next_listener_id: Arc::new(AtomicU64::new(0)),
                 human_input_listeners: Arc::new(Mutex::new(Vec::new())),
                 session_logger: SessionLogger::create(
@@ -6536,9 +6541,6 @@ impl AgentSession {
         &self,
         assistant: &maho_ai::types::AssistantMessage,
     ) -> bool {
-        let Ok(value) = serde_json::to_value(assistant) else {
-            return false;
-        };
         // An agent message_end still awaiting persistence is necessarily a post-boundary message.
         if self
             .state()
@@ -6551,6 +6553,10 @@ impl AgentSession {
         self.with_session_manager(|manager| {
             let Some(compaction_id) = manager.latest_current_branch_entry_id("compaction", None)
             else {
+                return false;
+            };
+            // PERF-DIVERGENCE(senpi agent-session.ts): upstream uses an identity map; we serialize the assistant only after the cheap pending/compaction checks pass instead of on every call. Same result, including false on serialization failure.
+            let Ok(value) = serde_json::to_value(assistant) else {
                 return false;
             };
             let compaction_order = manager.entry_order(&compaction_id);
@@ -7923,7 +7929,7 @@ impl AgentSession {
     }
 
     fn reduce_for_switch_target(&self, model: &Model, live: u64) -> Result<u64, String> {
-        let entries = self.with_session_manager(|manager| manager.current_branch());
+        let mut entries = self.with_session_manager(|manager| manager.current_branch());
         let measured = self
             .with_session_manager(|manager| manager.current_context())
             .messages
@@ -7971,19 +7977,26 @@ impl AgentSession {
             .first_kept_entry_index;
             if last_cut != Some(cut) {
                 last_cut = Some(cut);
-                if let Some(id) = entries.get(cut).and_then(|entry| entry["id"].as_str()) {
-                    let mut preview = entries.clone();
-                    preview.push(serde_json::json!({"type":"compaction","id":"__senpi_resume_slice_preview__",
-                        "parentId":entries.last().map(|entry| &entry["id"]),"timestamp":"1970-01-01T00:00:00.000Z",
+                if let Some(id) = entries
+                    .get(cut)
+                    .and_then(|entry| entry["id"].as_str())
+                    .map(str::to_owned)
+                {
+                    let id = id.as_str();
+                    // PERF-DIVERGENCE(senpi agent-session.ts): upstream builds a synthetic preview entry per cut; the port deep-cloned the whole entry list for each cut, so we push the preview onto the local list and pop it after. The estimate is identical.
+                    let parent_id = entries.last().map(|entry| entry["id"].clone());
+                    entries.push(serde_json::json!({"type":"compaction","id":"__senpi_resume_slice_preview__",
+                        "parentId":parent_id,"timestamp":"1970-01-01T00:00:00.000Z",
                         "summary":summary,"firstKeptEntryId":id,"tokensBefore":measured,"fromHook":false}));
                     let after: u64 = crate::session_manager::build_session_context(
-                        &preview,
+                        &entries,
                         Some("__senpi_resume_slice_preview__"),
                     )
                     .messages
                     .iter()
                     .map(crate::compaction::compaction::estimate_tokens)
                     .sum();
+                    entries.pop();
                     if after.saturating_add(overhead) <= model.context_window {
                         self.with_session_manager_mut(|manager| manager.append_compaction(&summary, id, measured as i64,
                             Some(serde_json::json!({"schema":"senpi.compaction.resume-slice.v1","origin":"resume-admission"})), None, None));
@@ -11132,7 +11145,15 @@ impl AgentSession {
     }
 
     pub fn state_snapshot(&self) -> AgentState {
-        self.runtime_messages();
+        // PERF-DIVERGENCE(senpi agent-session.ts): upstream reads the live array; the port used to deep-clone the whole transcript via runtime_messages() and discard it, so we only re-hydrate resident tokens when pending. The returned state is identical.
+        if self
+            .runtime_messages_tokenized
+            .swap(false, Ordering::SeqCst)
+        {
+            let messages =
+                self.materialize_resident_messages(self.agent.state().messages().to_vec());
+            self.agent.set_messages(messages);
+        }
         self.agent.state()
     }
 
@@ -13069,7 +13090,13 @@ impl AgentSession {
                     let mut runner = session.extension_runner.lock().await.clone();
                     let transformed = match runner.as_mut() {
                         Some(runner) => {
-                            let entry_ids = session.session_context_entry_ids(&messages);
+                            // PERF-DIVERGENCE(senpi agent-session.ts): upstream looks up entry ids per message in O(1) via a WeakMap; we skip the O(history) context rebuild when no Context handler consumes the ids (emit_context_owned returns early without handlers).
+                            let entry_ids = if runner.has_handlers(maho_ext_api::EventKind::Context)
+                            {
+                                session.session_context_entry_ids(&messages)
+                            } else {
+                                Vec::new()
+                            };
                             match runner.emit_context_owned(messages, &entry_ids, None).await {
                                 Ok(messages) => messages,
                                 Err(failure) => {
@@ -14769,12 +14796,9 @@ impl AgentSession {
             **message = crate::retry_fallback::usage_limit::describe_usage_limit_message(message);
         }
         self.log_session_event(&event);
-        let listeners = self
-            .event_listeners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        for (_, listener) in listeners {
+        // PERF-DIVERGENCE(senpi agent-session.ts): upstream iterates its listener array; the port cloned the whole listener Vec per event, so we snapshot one copy-on-write Arc instead. Snapshot-at-emit semantics are unchanged.
+        let listeners = Arc::clone(&lock(&self.event_listeners));
+        for (_, listener) in listeners.iter() {
             listener(&event);
         }
     }
@@ -15079,10 +15103,10 @@ impl AgentSession {
     /// Subscribe to session events. The returned handle unsubscribes when dropped.
     pub fn subscribe(&self, listener: AgentSessionEventListener) -> AgentSessionSubscription {
         let id = self.next_listener_id.fetch_add(1, Ordering::SeqCst);
-        self.event_listeners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((id, listener.clone()));
+        // PERF-DIVERGENCE(senpi agent-session.ts): copy-on-write listener list so emit can snapshot with one Arc clone; subscription order is unchanged.
+        let mut guard = lock(&self.event_listeners);
+        Arc::make_mut(&mut guard).push((id, listener.clone()));
+        drop(guard);
         let (resume_req, resume_slice) = {
             let state = self.state();
             (
@@ -15158,10 +15182,8 @@ impl AgentSession {
                 );
             }
         }
-        self.event_listeners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+        // PERF-DIVERGENCE(senpi agent-session.ts): listener list is a copy-on-write Arc (see emit); clearing swaps in an empty one.
+        *lock(&self.event_listeners) = Arc::new(Vec::new());
         let _ = maho_ai::session_resources::cleanup_session_resources(Some(&self.session_id()));
         self.with_session_manager_mut(|manager| manager.dispose());
     }

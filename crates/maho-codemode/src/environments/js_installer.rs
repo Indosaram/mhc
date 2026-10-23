@@ -190,9 +190,12 @@ pub async fn requested_package_name(spec: &str) -> Option<String> {
             .as_str()
             .map(str::to_owned);
     }
-    let pattern =
-        regex::Regex::new(r"(?i)^((?:@[a-z0-9][\w.-]*/)?[a-z0-9][\w.-]*)(?:@[^/]*)?$").ok()?;
-    pattern
+    // PERF-DIVERGENCE(senpi js-installer): upstream builds the package-name regex on each call; this port compiles it once in a LazyLock to avoid per-spec recompilation. Matching is identical.
+    static PACKAGE_NAME: std::sync::LazyLock<Option<regex::Regex>> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)^((?:@[a-z0-9][\w.-]*/)?[a-z0-9][\w.-]*)(?:@[^/]*)?$").ok()
+    });
+    PACKAGE_NAME
+        .as_ref()?
         .captures(spec)?
         .get(1)
         .map(|name| name.as_str().into())

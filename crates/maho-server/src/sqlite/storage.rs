@@ -111,11 +111,14 @@ impl Storage for SqliteStorage {
             let transaction = db
                 .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                 .map_err(error)?;
-            let first_seq = session_row::read_session(&transaction, &self.session_id)
-                .map_err(error)?
-                .next_seq;
+            // PERF-DIVERGENCE(senpi): upstream reads the sessions row twice (next_seq, then stats); we read it once and derive both. Same values inside the same transaction.
+            let row = session_row::read_session(&transaction, &self.session_id).map_err(error)?;
+            let first_seq = row.next_seq;
             let prepared = prepare_storage_commit(writes, first_seq, (self.now)());
-            let mut stats = self.stats(&transaction)?;
+            let mut stats = SessionStats {
+                message_count: usize::try_from(row.message_count).map_err(error)?,
+                usage: serde_json::from_str(&row.usage_payload).map_err(error)?,
+            };
             for write in &prepared.writes {
                 match write {
                     CommittedWrite::Entry(write) => {
@@ -193,16 +196,18 @@ impl Storage for SqliteStorage {
                 }
             }
             let next_seq = first_seq + i64::try_from(prepared.writes.len()).map_err(error)?;
+            // PERF-DIVERGENCE(senpi): upstream re-parses this UPDATE per commit; we use the prepared-statement cache. Same SQL, same row.
             transaction
-                .execute(
+                .prepare_cached(
                     "UPDATE sessions SET next_seq=?1,message_count=?2,usage_payload=?3 WHERE id=?4",
-                    params![
-                        next_seq,
-                        i64::try_from(stats.message_count).map_err(error)?,
-                        serde_json::to_string(&stats.usage).map_err(error)?,
-                        self.session_id
-                    ],
                 )
+                .map_err(error)?
+                .execute(params![
+                    next_seq,
+                    i64::try_from(stats.message_count).map_err(error)?,
+                    serde_json::to_string(&stats.usage).map_err(error)?,
+                    self.session_id
+                ])
                 .map_err(error)?;
             transaction.commit().map_err(error)?;
             Ok(CommitResult {

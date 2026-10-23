@@ -2541,14 +2541,15 @@ impl Editor {
     fn jump_to_char(&mut self, character: char, direction: JumpMode) {
         self.last_action = None;
         let is_forward = direction == JumpMode::Forward;
-        let lines = self.state.lines.clone();
+        // PERF-DIVERGENCE(senpi editor.ts): upstream reads the live lines array by reference; we borrow the lines instead of deep-cloning the whole buffer per jump. Search results are identical.
+        let lines_len = self.state.lines.len();
 
         let mut line_idx = self.state.cursor_line as i64;
-        let end = if is_forward { lines.len() as i64 } else { -1 };
+        let end = if is_forward { lines_len as i64 } else { -1 };
         let step = if is_forward { 1 } else { -1 };
 
         while line_idx != end {
-            let line = lines.get(line_idx as usize).cloned().unwrap_or_default();
+            let line = self.state.lines.get(line_idx as usize).map_or("", String::as_str);
             let is_current_line = line_idx as usize == self.state.cursor_line;
 
             let search_from = if is_current_line {

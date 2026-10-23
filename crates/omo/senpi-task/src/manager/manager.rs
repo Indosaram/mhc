@@ -104,9 +104,10 @@ struct State {
     launching: HashSet<String>,
     child_subscribers: HashMap<String, Vec<ChildSubscriber>>,
     released: HashMap<String, i64>,
-    waiters: HashMap<String, Vec<(u64, Sender<WaitWake>)>>,
+    waiters: HashMap<String, Vec<(u64, WaitWaker)>>,
     background: HashSet<String>,
-    run_stats: HashMap<String, Tracker>,
+    // PERF-DIVERGENCE(senpi manager/manager.ts): upstream looks the tracker up in manager state per child event; we share the tracker through an Arc so the event closure locks only the tracker, not the manager-wide state mutex. Stats are identical.
+    run_stats: HashMap<String, Arc<Mutex<Tracker>>>,
     next_subscriber_id: u64,
     processed_outcomes: u64,
 }
@@ -128,11 +129,42 @@ enum WaitWake {
     Aborted,
 }
 
+/// Where a settle/abort wake is delivered: a blocking `wait_for` thread or an async waiter.
+// PERF-DIVERGENCE(senpi manager/manager.ts): upstream parks one thread per waited task; the async variant lets workpool workers await a settle on the runtime without holding a blocking-pool thread. Wake ordering is unchanged.
+#[derive(Clone)]
+enum WaitWaker {
+    Blocking(Sender<WaitWake>),
+    Async(tokio::sync::mpsc::UnboundedSender<WaitWake>),
+}
+
+impl WaitWaker {
+    /// Returns true when the receiver is gone.
+    fn send(&self, wake: WaitWake) -> bool {
+        match self {
+            Self::Blocking(sender) => sender.send(wake).is_err(),
+            Self::Async(sender) => sender.send(wake).is_err(),
+        }
+    }
+}
+
+/// Removes an async waiter registration when the awaiting future finishes or is dropped.
+struct AsyncWaiterGuard {
+    inner: Arc<Inner>,
+    task_id: String,
+    waiter_id: u64,
+}
+
+impl Drop for AsyncWaiterGuard {
+    fn drop(&mut self) {
+        self.inner.remove_waiter(&self.task_id, self.waiter_id);
+    }
+}
+
 #[derive(Default)]
 struct AbortState {
     aborted: bool,
     next_waker_id: u64,
-    wakers: Vec<(u64, Sender<WaitWake>)>,
+    wakers: Vec<(u64, WaitWaker)>,
 }
 
 /// A cooperative abort for [`TaskManager::wait_for`] (TS `AbortSignal`).
@@ -147,7 +179,7 @@ impl AbortSignal {
             std::mem::take(&mut state.wakers)
         };
         for (_, waker) in wakers {
-            let _receiver_gone = waker.send(WaitWake::Aborted).is_err();
+            let _receiver_gone = waker.send(WaitWake::Aborted);
         }
     }
 
@@ -156,12 +188,12 @@ impl AbortSignal {
     }
 
     /// Registers a waker pinged by [`Self::abort`]; an already-aborted signal pings at once.
-    fn register(&self, waker: Sender<WaitWake>) -> u64 {
+    fn register(&self, waker: WaitWaker) -> u64 {
         let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         state.next_waker_id += 1;
         let id = state.next_waker_id;
         if state.aborted {
-            let _receiver_gone = waker.send(WaitWake::Aborted).is_err();
+            let _receiver_gone = waker.send(WaitWake::Aborted);
         } else {
             state.wakers.push((id, waker));
         }
@@ -837,6 +869,15 @@ impl TaskManager {
         self.inner.try_load(task_id)
     }
 
+    // PERF-DIVERGENCE(senpi manager/manager.ts): upstream resolves a task name by listing every record (with queue positions); we scan with the store's early-exit find_record and skip queue positions. Same first match in list order.
+    pub fn find_in_session_by_name(&self, session_id: &str, name: &str) -> Option<TaskRecord> {
+        self.inner
+            .store
+            .find_record(|record| in_session(record, session_id) && record.name.as_deref() == Some(name))
+            .ok()
+            .flatten()
+    }
+
     pub fn list(&self, scope: &ListScope) -> Vec<ListedTask> {
         let records = match self.inner.store.list() {
             Ok(listed) => listed.records,
@@ -886,7 +927,7 @@ impl TaskManager {
                 .waiters
                 .entry(id.clone())
                 .or_default()
-                .push((waiter_id, sender.clone()));
+                .push((waiter_id, WaitWaker::Blocking(sender.clone())));
             (waiter_id, sender, receiver)
         };
         if let Some(current) = self.inner.try_load(&id)
@@ -895,7 +936,7 @@ impl TaskManager {
             self.inner.remove_waiter(&id, waiter_id);
             return Ok(current);
         }
-        let _abort_waker = signal.map(|signal| AbortWakerGuard(signal, signal.register(sender)));
+        let _abort_waker = signal.map(|signal| AbortWakerGuard(signal, signal.register(WaitWaker::Blocking(sender))));
         let deadline = timeout.map(|timeout| std::time::Instant::now() + timeout);
         let woke = match deadline {
             None => receiver.recv().map_err(|_| RecvTimeoutError::Disconnected),
@@ -915,6 +956,45 @@ impl TaskManager {
             }
         }
         Err(error)
+    }
+
+    /// Async twin of [`Self::wait_for`] with no timeout: registers before loading (no lost wake)
+    /// and resolves when the task settles or `cancel` fires, without holding a thread.
+    pub async fn wait_for_async(
+        &self,
+        task_id: &str,
+        cancel: &mut tokio::sync::watch::Receiver<bool>,
+    ) -> Result<TaskRecord, WaitError> {
+        let id = parse_task_id(task_id)?.to_string();
+        let (mut receiver, _guard) = {
+            let mut state = lock(&self.inner.state);
+            let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+            state.next_subscriber_id += 1;
+            let waiter_id = state.next_subscriber_id;
+            state
+                .waiters
+                .entry(id.clone())
+                .or_default()
+                .push((waiter_id, WaitWaker::Async(sender)));
+            let guard = AsyncWaiterGuard {
+                inner: Arc::clone(&self.inner),
+                task_id: id.clone(),
+                waiter_id,
+            };
+            (receiver, guard)
+        };
+        if let Some(current) = self.inner.try_load(&id)
+            && is_terminal_record(&current)
+        {
+            return Ok(current);
+        }
+        tokio::select! {
+            woke = receiver.recv() => match woke {
+                Some(WaitWake::Settled(record)) => Ok(*record),
+                Some(WaitWake::Aborted) | None => Err(WaitError::Aborted),
+            },
+            _changed = cancel.changed() => Err(WaitError::Aborted),
+        }
     }
 
     pub fn waiter_key_count(&self) -> usize {
@@ -1200,10 +1280,9 @@ impl Inner {
 
     fn run_stats_snapshot(&self, task_id: &str) -> Option<TaskRunStats> {
         let now = u64::try_from(self.now_ms()).unwrap_or_default();
-        lock(&self.state)
-            .run_stats
-            .get(task_id)
-            .map(|tracker| tracker.snapshot(now))
+        let tracker = lock(&self.state).run_stats.get(task_id).map(Arc::clone)?;
+        let snapshot = lock(&tracker).snapshot(now);
+        Some(snapshot)
     }
 
     fn drop_pending(&self, task_id: &str) {
@@ -1771,12 +1850,10 @@ impl Inner {
         let clock: Box<dyn Fn() -> u64 + Send> =
             Box::new(move || u64::try_from(now()).unwrap_or_default());
         let started_at = u64::try_from(self.now_ms()).unwrap_or_default();
-        lock(&self.state).run_stats.insert(
-            task_id.to_string(),
-            create_run_stats_tracker(started_at, clock),
-        );
-        let weak = self.this.clone();
-        let stats_task = task_id.to_string();
+        let tracker = Arc::new(Mutex::new(create_run_stats_tracker(started_at, clock)));
+        lock(&self.state)
+            .run_stats
+            .insert(task_id.to_string(), Arc::clone(&tracker));
         let stats = handle.subscribe(Arc::new(move |event| {
             // `RunStatsTracker::accept` ignores every other event type (e.g. streaming deltas).
             if !matches!(
@@ -1785,11 +1862,7 @@ impl Inner {
             ) {
                 return;
             }
-            if let Some(inner) = weak.upgrade()
-                && let Some(tracker) = lock(&inner.state).run_stats.get_mut(&stats_task)
-            {
-                tracker.accept(event);
-            }
+            lock(&tracker).accept(event);
         }));
         Box::new(move || {
             transcript();
@@ -1993,10 +2066,17 @@ impl Inner {
         let clock: Box<dyn Fn() -> u64 + Send> =
             Box::new(move || u64::try_from(now()).unwrap_or_default());
         let started_at = u64::try_from(self.now_ms()).unwrap_or_default();
-        lock(&self.state).run_stats.insert(
-            task_id.to_string(),
-            create_run_stats_tracker(started_at, clock),
-        );
+        // PERF-DIVERGENCE(senpi manager/manager.ts): the live event closure holds the tracker Arc, so a revive resets the shared tracker in place instead of replacing the map entry.
+        let fresh_tracker = create_run_stats_tracker(started_at, clock);
+        let existing = lock(&self.state).run_stats.get(task_id).map(Arc::clone);
+        match existing {
+            Some(tracker) => *lock(&tracker) = fresh_tracker,
+            None => {
+                lock(&self.state)
+                    .run_stats
+                    .insert(task_id.to_string(), Arc::new(Mutex::new(fresh_tracker)));
+            }
+        }
         track_outcome(self.arc(), task_id.to_string(), handle, model, epoch);
     }
 
@@ -2059,7 +2139,7 @@ impl Inner {
             .remove(task_id)
             .unwrap_or_default();
         for (_, waiter) in waiters {
-            let _receiver_gone = waiter.send(WaitWake::Settled(Box::new(record.clone()))).is_err();
+            let _receiver_gone = waiter.send(WaitWake::Settled(Box::new(record.clone())));
         }
     }
 

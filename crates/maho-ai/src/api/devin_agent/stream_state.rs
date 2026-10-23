@@ -179,19 +179,21 @@ fn append_tool_call(
         return;
     }
     // A chunk either repeats everything so far plus new bytes, or carries only the new bytes.
-    let accumulated = if call.arguments_json.starts_with(&entry.arguments_json) {
-        call.arguments_json.clone()
+    // PERF-DIVERGENCE(senpi devin-agent): upstream builds a fresh accumulated string per chunk; this port appends in place and borrows the delta. Delta and accumulated values are identical.
+    let delta = if call.arguments_json.starts_with(&entry.arguments_json) {
+        let start = entry.arguments_json.len();
+        entry.arguments_json.push_str(&call.arguments_json[start..]);
+        &call.arguments_json[start..]
     } else {
-        format!("{}{}", entry.arguments_json, call.arguments_json)
+        entry.arguments_json.push_str(&call.arguments_json);
+        call.arguments_json.as_str()
     };
-    let delta = accumulated[entry.arguments_json.len()..].to_owned();
-    entry.arguments_json = accumulated;
     let arguments = parse_streaming_json(Some(&entry.arguments_json));
     block.arguments = arguments.as_object().cloned().unwrap_or_default();
     if !delta.is_empty() {
         events.push(crate::types::AssistantMessageEvent::ToolcallDelta {
             content_index,
-            delta,
+            delta: delta.to_owned(),
             partial: output.clone(),
         });
     }

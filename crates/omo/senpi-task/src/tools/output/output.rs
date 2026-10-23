@@ -132,6 +132,13 @@ pub fn run_task_output(
         return output_for_record(deps, &record, params);
     }
 
+    // PERF-DIVERGENCE(senpi tools/output/output.ts): upstream lists every record to resolve a name; we early-exit on the name match and build the known-task list only for not_found. Same id-then-name precedence and text.
+    if let Some(session_id) = caller_session_id
+        && let Some(record) = deps.manager.find_in_session_by_name(session_id, id_or_name)
+    {
+        return output_for_record(deps, &record, params);
+    }
+
     let candidates = scoped_candidates(deps.manager.as_ref(), caller_session_id);
     let Some(record) = resolve_target(&candidates, id_or_name) else {
         return Ok(not_found(&candidates, id_or_name));
@@ -230,28 +237,33 @@ fn resolve_target<'a>(candidates: &'a [TaskRecord], id_or_name: &str) -> Option<
 }
 
 fn status_text(snapshot: &TaskSnapshot) -> String {
-    let mut parts = vec![format!(
+    // PERF-DIVERGENCE(senpi tools/output/output.ts): upstream builds a parts array of cloned strings and joins it; we append each line into one String. Text is identical (lines joined by "\n").
+    use std::fmt::Write as _;
+    let mut text = format!(
         "{} [{}] {}",
         snapshot.task_id,
         snapshot.status.as_str(),
         task_output_model_text(snapshot)
-    )];
+    );
     if let Some(suspended) = &snapshot.suspended {
-        parts.push(suspended.explanation.clone());
+        text.push('\n');
+        text.push_str(&suspended.explanation);
     }
     if let Some(pid) = snapshot.pid {
-        parts.push(format!("pid {pid}"));
+        let _ = write!(text, "\npid {pid}");
     }
     if let Some(lost) = &snapshot.lost {
-        parts.push(lost.explanation.clone());
+        text.push('\n');
+        text.push_str(&lost.explanation);
     }
     if let Some(error) = &snapshot.error_message {
-        parts.push(format!("error: {error}"));
+        let _ = write!(text, "\nerror: {error}");
     }
     if let Some(final_response) = &snapshot.final_response {
-        parts.push(final_response.clone());
+        text.push('\n');
+        text.push_str(final_response);
     }
-    parts.join("\n")
+    text
 }
 
 fn not_found(candidates: &[TaskRecord], id_or_name: &str) -> TaskOutputToolResult {

@@ -71,7 +71,8 @@ impl KernelMemoryBridge {
             return process.settled(message);
         }
         if let Some(memory) = message.get("memory") {
-            match serde_json::from_value::<KernelMemoryReport>(memory.clone()) {
+            // PERF-DIVERGENCE(senpi kernel-memory-bridge): upstream mutates the report object in place; this port deserializes from a borrowed Value instead of cloning it first. Result is identical.
+            match <KernelMemoryReport as serde::Deserialize>::deserialize(memory) {
                 Ok(report) => match serde_json::to_value(self.policy.annotate(report)) {
                     Ok(report) => message["memory"] = report,
                     Err(error) => maho_ext_api::diagnostic(&format!(
