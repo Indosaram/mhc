@@ -52,8 +52,10 @@ pub fn register_mcp_lifecycle_with_tool_search(api:&mut ExtensionApi,registry:Ar
         // `onWireStatusChanged`); later changes publish via the reconnect/command paths.
         let publish_service=service_handle.clone();
         tokio::spawn(async move {
+            // PERF-DIVERGENCE(senpi mcp index.ts): upstream awaits attach settle without any lock; this port wrapped the wait in the service Mutex guard, blocking other lockers up to 5s. Now the guard is dropped before awaiting. Output is identical.
+            let deferred=publish_service.lock().await.deferred_attach();
+            deferred.wait(std::time::Duration::from_millis(crate::startup_race::MCP_ATTACH_SETTLE_TIMEOUT_MS)).await;
             let service=publish_service.lock().await;
-            service.wait_for_deferred_attach(std::time::Duration::from_millis(crate::startup_race::MCP_ATTACH_SETTLE_TIMEOUT_MS)).await;
             let snapshot=service.wire_status_snapshot().await;
             publish_wire_status(&events,&snapshot);
         });
@@ -63,8 +65,11 @@ pub fn register_mcp_lifecycle_with_tool_search(api:&mut ExtensionApi,registry:Ar
     // Upstream `before_agent_start` only awaits the in-flight attach
     // (`whenAttachSettled`) and injects instructions; it does NOT re-register.
     let before=service.clone();api.on(EventKind::BeforeAgentStart,Arc::new(move |event,_|{let service=before.clone();Box::pin(async move {
-        let ExtensionEvent::BeforeAgentStart(event)=event else{return Ok(EventResult::None);};let service=service.lock().await;
-        service.wait_for_deferred_attach(std::time::Duration::from_millis(crate::startup_race::MCP_ATTACH_SETTLE_TIMEOUT_MS)).await;
+        let ExtensionEvent::BeforeAgentStart(event)=event else{return Ok(EventResult::None);};
+        // PERF-DIVERGENCE(senpi mcp index.ts): upstream awaits `whenAttachSettled` lock-free; this port held the service Mutex across the wait. Now the guard is dropped before awaiting. Output is identical.
+        let deferred=service.lock().await.deferred_attach();
+        deferred.wait(std::time::Duration::from_millis(crate::startup_race::MCP_ATTACH_SETTLE_TIMEOUT_MS)).await;
+        let service=service.lock().await;
         let block=crate::instructions::refresh_mcp_instructions_for_session(&service).await;
         Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult {message:None,system_prompt:crate::instructions::inject_mcp_instructions(&block,&event.system_prompt)}))
     })}));

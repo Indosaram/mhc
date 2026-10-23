@@ -511,6 +511,11 @@ impl SettingsStorage for FileSettingsStorage {
             next = update(under_lock.as_deref());
         }
         if let Some(next) = next {
+            // PERF-DIVERGENCE(settings-manager.ts): upstream rewrites unconditionally; this port skips the
+            // write when content is byte-identical to disk, avoiding a self-induced hot reload. Output is identical.
+            if under_lock.as_deref() == Some(next.as_str()) {
+                return Ok(());
+            }
             if guard.broker_write(&next)? {
                 record_self_write(&path, &next);
                 return Ok(());

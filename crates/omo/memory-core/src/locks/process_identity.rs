@@ -4,15 +4,14 @@
 //! `libproc` `proc_pidinfo` call and the Windows `powershell.exe` probe with `kernel32`
 //! `GetProcessTimes`, because a fork per lock check filled the process table on a long-lived shared
 //! host. Both replacements are FFI (`bun:ffi` `dlopen` upstream); Rust has no safe binding for
-//! either in this workspace and this crate forbids `unsafe_code`, so those two platforms keep their
-//! pre-existing behavior and the fork-free port is a recorded platform blocker, not a silent
-//! degradation. Linux's `/proc` read is already in process and needs no FFI.
+//! either in this workspace. This crate denies `unsafe_code` and opts in narrowly: unix liveness
+//! uses `libc::kill(pid, 0)` and macOS start identity uses `proc_pidinfo`, each in a small
+//! `#[allow(unsafe_code)]` helper. Windows keeps its pre-existing behavior (recorded platform
+//! blocker). Linux's `/proc` read is already in process and needs no FFI.
 
-#[cfg(all(unix, not(target_os = "linux")))]
-use std::path::Path;
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "freebsd", windows))]
 use std::process::{Command, Output, Stdio};
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "freebsd", windows))]
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -26,7 +25,7 @@ pub enum ProcessLiveness {
     Unknown,
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "freebsd", windows))]
 fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Option<Output> {
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
@@ -64,8 +63,64 @@ fn read_linux_start_identity(pid: u32) -> Option<String> {
     Some(format!("linux-proc-start-ticks:{start_ticks}"))
 }
 
+/// macOS start identity via `proc_pidinfo(PROC_PIDTBSDINFO)`, formatted as the C-locale `ps -o lstart=`
+/// text (`%a %b %e %H:%M:%S %Y`, local time, whitespace collapsed) so it stays byte-compatible with
+/// `ps-lstart:` identities persisted by older builds.
+// PERF-DIVERGENCE(locks/process-start-time.ts): upstream calls libproc proc_pidinfo via bun:ffi; the
+// earlier port forked /bin/ps per probe; this port calls proc_pidinfo in-process. Output is identical.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn read_macos_libproc_start_identity(pid: u32) -> Option<String> {
+    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    // SAFETY: `info` is a zeroed plain-data struct and the buffer size passed matches its size.
+    let start_sec = unsafe {
+        let mut info: libc::proc_bsdinfo = std::mem::zeroed();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let written = libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast::<libc::c_void>(),
+            size,
+        );
+        if written != size {
+            return None;
+        }
+        info.pbi_start_tvsec
+    };
+    let secs = start_sec as libc::time_t;
+    // SAFETY: `tm` is zeroed plain data; `localtime_r` only writes through the valid pointers given.
+    let tm = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&secs, &mut tm).is_null() {
+            return None;
+        }
+        tm
+    };
+    let day = DAYS.get(usize::try_from(tm.tm_wday).ok()?)?;
+    let month = MONTHS.get(usize::try_from(tm.tm_mon).ok()?)?;
+    // `ps` pads the day with a space (`%e`); the collapsed form is a plain number.
+    Some(format!(
+        "ps-lstart:{day} {month} {} {:02}:{:02}:{:02} {}",
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec,
+        i64::from(tm.tm_year) + 1900
+    ))
+}
+
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 fn read_bsd_start_identity(pid: u32) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(identity) = read_macos_libproc_start_identity(pid) {
+            return Some(identity);
+        }
+    }
     let mut cmd = Command::new("/bin/ps");
     cmd.args(["-o", "lstart=", "-p", &pid.to_string()]);
     let output = run_command_with_timeout(cmd, Duration::from_secs(2))?;
@@ -173,30 +228,26 @@ pub fn get_pid_liveness(pid: u32) -> ProcessLiveness {
             ProcessLiveness::Dead
         }
     }
+    // PERF-DIVERGENCE(locks/process-start-time.ts): upstream probes liveness with `process.kill(pid, 0)`;
+    // the earlier port forked `/bin/kill -0`; this port calls kill(2) in-process. Output is identical.
     #[cfg(all(unix, not(target_os = "linux")))]
     {
-        let prog = if Path::new("/bin/kill").exists() {
-            "/bin/kill"
-        } else {
-            "kill"
-        };
-        let mut cmd = Command::new(prog);
-        cmd.args(["-0", &pid.to_string()]);
-        let output = match run_command_with_timeout(cmd, Duration::from_secs(2)) {
-            Some(out) => out,
-            None => return ProcessLiveness::Unknown,
-        };
-        if output.status.success() {
-            return ProcessLiveness::Alive;
+        #[allow(unsafe_code)]
+        fn kill_probe(pid: u32) -> ProcessLiveness {
+            let Ok(raw) = libc::pid_t::try_from(pid) else {
+                return ProcessLiveness::Unknown;
+            };
+            // SAFETY: signal 0 performs only an existence/permission check; no signal is delivered.
+            if unsafe { libc::kill(raw, 0) } == 0 {
+                return ProcessLiveness::Alive;
+            }
+            match std::io::Error::last_os_error().raw_os_error() {
+                Some(libc::ESRCH) => ProcessLiveness::Dead,
+                Some(libc::EPERM) => ProcessLiveness::Alive,
+                _ => ProcessLiveness::Unknown,
+            }
         }
-        let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
-        if stderr.contains("no such process") || stderr.contains("esrch") {
-            ProcessLiveness::Dead
-        } else if stderr.contains("operation not permitted") || stderr.contains("eperm") {
-            ProcessLiveness::Alive
-        } else {
-            ProcessLiveness::Unknown
-        }
+        kill_probe(pid)
     }
     #[cfg(windows)]
     {
