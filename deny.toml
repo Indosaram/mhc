@@ -1,0 +1,71 @@
+# cargo-deny configuration for mhc
+# See https://embarkstudios.github.io/cargo-deny/ for configuration documentation.
+
+[graph]
+targets = []
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+[advisories]
+# In cargo-deny 0.18+, vulnerabilities unconditionally trigger errors (denied).
+# Unmaintained advisories only fail if present in direct workspace dependencies, warning on others.
+unmaintained = "workspace"
+yanked = "warn"
+ignore = [
+    # Any ignored advisory must include a comment naming the advisory id and reason:
+    # { id = "RUSTSEC-YYYY-XXXX", reason = "explanation of why this advisory is ignored" },
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+    "CC0-1.0",
+    "BSL-1.0",
+    "OpenSSL",
+    "CDLA-Permissive-2.0",
+    "0BSD",
+    "LicenseRef-SUL-1.0",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[licenses.private]
+# Ignore workspace crates that have publish = false (licensed under LicenseRef-SUL-1.0 / MIT)
+ignore = true
+
+# [[licenses.clarify]]
+# Clarifications can be added here if a dependency contains non-standard license files:
+# crate = "example"
+# expression = "MIT"
+# license-files = [{ path = "LICENSE", hash = 0x12345678 }]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Git dependencies enumerated from Cargo.lock with: grep -n 'source = "git+' Cargo.lock
+# Currently none present in Cargo.lock.
+allow-git = []
