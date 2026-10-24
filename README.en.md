@@ -92,6 +92,6 @@ For security vulnerability reporting and policy, see [SECURITY.md](SECURITY.md).
 Each part keeps the license of the project it ports:
 
 - `crates/maho-*`, `crates/builtins`, `crates/extensions`, `crates/vendor` port [senpi](https://github.com/code-yeongyu/senpi) under **MIT** ([LICENSES/MIT.txt](LICENSES/MIT.txt)).
-- `crates/omo/**` ports [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) under the **Sustainable Use License 1.0** ([LICENSES/SUL-1.0.md](LICENSES/SUL-1.0.md)): free for non-commercial use, modification and redistribution; no commercial use or paid distribution.
+- `crates/omo/**` except `crates/omo/senpi-desktop-*` (MIT, ports senpi) ports [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) under the **Sustainable Use License 1.0** ([LICENSES/SUL-1.0.md](LICENSES/SUL-1.0.md)): use, copy, modify and prepare derivative works for your own internal business purposes or for non-commercial or personal use; distribute only free of charge for non-commercial purposes; notices must be preserved.
 
 mhc is a modified derivative of both projects (a Rust reimplementation of their TypeScript sources), as the Sustainable Use License requires us to state.

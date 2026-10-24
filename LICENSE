@@ -12,13 +12,34 @@ Full text: `LICENSES/MIT.txt`
 
 ## Sustainable Use License 1.0 (SUL-1.0)
 
-Applies to `crates/omo/**`, which ports
+Applies to `crates/omo/**` except `crates/omo/senpi-desktop-*` (MIT, ports senpi), which ports
 [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent).
 Full text: `LICENSES/SUL-1.0.md`
 
-The SUL-1.0 portions may be used, modified, distributed and made available free of charge
-for non-commercial and personal purposes only; commercial use, paid distribution and
-relicensing are not permitted. All copyright, license and other notices must be preserved.
+The SUL-1.0 portions may be used, copied, modified, and used to prepare derivative works
+for your own internal business purposes or for non-commercial or personal use. They may be
+distributed or provided to others only free of charge for non-commercial purposes. All
+licensing, copyright, or other notices of the licensor must be preserved.
+
+## Distributed binaries
+
+The shipped `mhc` executable links SUL-1.0 code, so its distribution is governed by
+SUL-1.0 as well as MIT. Distribution of the combined binary is permitted only free of
+charge for non-commercial purposes, and all notices must be preserved.
+
+## Third-party components
+
+Portions of this software incorporate or derive from third-party works:
+
+- `crates/builtins/maho-ext-webfetch/LICENSE-READABILITY.txt` (Apache-2.0)
+- `crates/builtins/maho-ext-webfetch/LICENSE-TURNDOWN.txt` (MIT)
+- `crates/builtins/maho-ext-webfetch/LICENSE-HTMLPARSER2.txt` (MIT)
+- `crates/extensions/maho-ext-omo-zcode-oauth/LICENSE` (MIT)
+- `crates/extensions/maho-ext-pi-webfetch/THIRD_PARTY_NOTICES.md` (MIT)
+- `crates/extensions/maho-ext-pi-rules/THIRD_PARTY_NOTICES.md` (MIT)
+- `assets/omo-latest/skills/frontend/LICENSE-Apache-2.0.txt` (Apache-2.0)
+- `assets/omo-latest/skills/ast-grep/LICENSE` (MIT)
+- Rust crate dependencies: `THIRD_PARTY_LICENSES.md`
 
 ## Modification notice
 
