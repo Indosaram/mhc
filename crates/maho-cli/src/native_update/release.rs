@@ -23,7 +23,9 @@ pub fn target() -> Result<&'static str, String> {
 pub fn target_from_str(s: &str) -> Result<&'static str, String> {
     match s.trim() {
         "linux-x86_64" => Ok("linux-x86_64"),
+        "linux-aarch64" => Ok("linux-aarch64"),
         "macos-aarch64" => Ok("macos-aarch64"),
+        "macos-x86_64" => Ok("macos-x86_64"),
         "windows-x86_64" => Ok("windows-x86_64"),
         other => Err(format!("unsupported target: {other}")),
     }
@@ -32,8 +34,12 @@ pub fn target_from_str(s: &str) -> Result<&'static str, String> {
 fn target_from_platform() -> Result<&'static str, String> {
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         Ok("linux-x86_64")
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        Ok("linux-aarch64")
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         Ok("macos-aarch64")
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        Ok("macos-x86_64")
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         Ok("windows-x86_64")
     } else {
@@ -48,7 +54,9 @@ fn target_from_platform() -> Result<&'static str, String> {
 pub fn asset_name_for_target(target: &str) -> Result<String, String> {
     match target {
         "linux-x86_64" => Ok("mhc-linux-x86_64.tar.gz".to_owned()),
+        "linux-aarch64" => Ok("mhc-linux-aarch64.tar.gz".to_owned()),
         "macos-aarch64" => Ok("mhc-macos-aarch64.tar.gz".to_owned()),
+        "macos-x86_64" => Ok("mhc-macos-x86_64.tar.gz".to_owned()),
         "windows-x86_64" => Ok("mhc-windows-x86_64.zip".to_owned()),
         other => Err(format!("unsupported target for asset lookup: {other}")),
     }
