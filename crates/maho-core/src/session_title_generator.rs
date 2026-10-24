@@ -130,6 +130,21 @@ pub async fn complete_title(
     context: &Context,
     options: SimpleStreamOptions,
 ) -> Result<AssistantMessage, String> {
+    // Consent gate (SD-4): this path calls the provider directly, bypassing `ModelRuntime`.
+    let anthropic_oauth = options
+        .stream
+        .request
+        .api_key
+        .as_deref()
+        .is_some_and(crate::provider_consent::is_oauth_token);
+    if crate::provider_consent::needs_consent(&model.provider, anthropic_oauth)
+        && !crate::provider_consent::consent_recorded_in_agent_dir(
+            &crate::config::get_agent_dir(),
+            &model.provider,
+        )
+    {
+        return Err(crate::provider_consent::consent_required_message(&model.provider));
+    }
     complete_simple(model, context, Some(options))
         .await
         .map_err(|error| error.to_string())

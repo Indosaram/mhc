@@ -11058,7 +11058,13 @@ impl AgentSession {
                 env: auth.env,
             });
         }
-        let Ok(Some(result)) = self.model_runtime().get_auth(&model.provider).await else {
+        let auth = self.model_runtime().get_auth(&model.provider).await;
+        if let Err(error) = &auth
+            && error.code == maho_ai::models::ModelsErrorCode::ConsentRequired
+        {
+            return Err(error.message.clone());
+        }
+        let Ok(Some(result)) = auth else {
             return Ok(SummarizationRequestAuth {
                 model: model.clone(),
                 api_key: None,
