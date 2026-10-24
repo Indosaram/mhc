@@ -8,7 +8,7 @@ without copying anything. Only the environment-variable prefix stays mhc's own (
 
 | Path | Contents |
 | --- | --- |
-| `~/.omo/agent/` | The agent directory. Override with `MAHO_CODING_AGENT_DIR` (also accepted: `SENPI_CODING_AGENT_DIR`, `PI_CODING_AGENT_DIR`). |
+| `~/.omo/agent/` | The agent directory. Override with `MAHO_CODING_AGENT_DIR` (also accepted: `SENPI_CODING_AGENT_DIR`, `PI_CODING_AGENT_DIR`, `OMO_CODING_AGENT_DIR`). |
 | `~/.omo/agent/settings.json` (or `settings.jsonc`) | Global settings: default provider/model/thinking level, theme, packages, retry, terminal, permissions, ... `/settings` edits it. |
 | `~/.omo/agent/models.json` | Custom providers and models (`providers.<id>.baseUrl`, `api`, `apiKey`, `models[]`); providers listed in `disabledProviders` are hidden. `mhc --list-models` shows the merged catalog. |
 | `~/.omo/agent/auth.json` | Stored API keys and OAuth credentials (`/login`, `/logout`). |
@@ -28,9 +28,17 @@ whether every category resolves to an available model.
 If you keep a separate agent directory (for example `MAHO_CODING_AGENT_DIR=~/.maho/agent`),
 `mhc import-omo` copies settings, models, keybindings, auth and sessions over from `~/.omo/agent`.
 
+## Session retention
+
+Sessions are kept forever by default. Set `sessionRetentionDays` in `settings.json` to a whole number
+from 1 to 36500 to delete idle `*.jsonl` sessions older than that many days from the default
+sessions directory at startup (a custom `--session-dir` is never pruned). Other values (0, negative,
+fractional) are rejected with a warning and nothing is pruned. Running sessions are protected by a
+`<session>.jsonl.lock` sidecar file and are skipped.
+
 ## Environment variables
 
-Prefixed variables are looked up as `MAHO_<NAME>`, then `SENPI_<NAME>`, then `PI_<NAME>`; the first
+Prefixed variables are looked up as `MAHO_<NAME>`, then `SENPI_<NAME>`, then `PI_<NAME>`, then `OMO_<NAME>`; the first
 one that is set wins. The table uses the canonical spelling shown by `mhc --help`.
 
 | Variable | Effect |

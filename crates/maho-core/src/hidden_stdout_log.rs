@@ -31,6 +31,11 @@ fn set_private_mode(path: &str) {
 #[cfg(not(unix))]
 fn set_private_mode(_path: &str) {}
 
+/// Records a debug-level note in the brand debug log.
+pub fn append_debug_note(text: &str) {
+    append_debug_log_entry("debug", text);
+}
+
 pub fn append_hidden_tui_stdout(text: &str) {
     if text.is_empty() {
         return;
