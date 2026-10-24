@@ -933,6 +933,10 @@ pub struct AgentSessionInner {
     /// renderers (`grep`, `find`) that `/export` uses when no extension registered the tool.
     html_built_in_tool_renderers:
         Mutex<Option<crate::export_html::tool_renderer::ToolRendererLookup>>,
+    /// The runtime the session was created on. Extension actions may be invoked from a foreign
+    /// thread or a short-lived runtime (a completion notifier's drain); work they start must run on
+    /// the session's runtime, or it dies with the caller's runtime after the action returned Ok.
+    runtime_handle: Option<tokio::runtime::Handle>,
 }
 
 pub type HtmlThemeResolver = Arc<
@@ -2476,9 +2480,10 @@ impl SessionExtensionActions {
         let deferred_options = options.clone();
         let deferred_generation = session.monitor_generation.load(Ordering::SeqCst);
         let deferred_abort_generation = session.user_abort_generation.load(Ordering::SeqCst);
+        let spawner = session.clone();
         if lock(&session.settled_delivery).defer_trigger_turn(move |claim| {
             let guard = deferred_session.work_barrier.begin();
-            tokio::spawn(async move {
+            spawner.spawn_session_task(async move {
                 if deferred_session.state().disposed || deferred_session.monitor_generation.load(Ordering::SeqCst) != deferred_generation
                     || deferred_session.user_abort_generation.load(Ordering::SeqCst) != deferred_abort_generation {
                     claim.resolve(crate::agent_settled_delivery::DeferredTurnDisposition::FinishedWithoutStart);
@@ -2511,7 +2516,7 @@ impl SessionExtensionActions {
             }
         };
         let guard = session.work_barrier.begin();
-        tokio::spawn(async move {
+        session.clone().spawn_session_task(async move {
             let mut readiness = readiness;
             if session.state().disposed
                 || session.monitor_generation.load(Ordering::SeqCst) != deferred_generation
@@ -3679,6 +3684,7 @@ impl AgentSession {
                 nested_host_calls: Mutex::new(BTreeMap::new()),
                 html_theme_resolver: Mutex::new(None),
                 html_built_in_tool_renderers: Mutex::new(None),
+                runtime_handle: tokio::runtime::Handle::try_current().ok(),
             }),
         };
         // The hold's callbacks reach the session through this cell; a session that never gets here has no hold users.
@@ -15046,9 +15052,10 @@ impl AgentSession {
         let deferred_generation = self.monitor_generation.load(Ordering::SeqCst);
         let deferred_abort_generation = self.user_abort_generation.load(Ordering::SeqCst);
         let deferred = if options.trigger_turn {
+            let spawner = self.clone();
             lock(&self.settled_delivery).defer_trigger_turn(move |claim| {
                 let guard = deferred_session.work_barrier.begin();
-                tokio::spawn(async move {
+                spawner.spawn_session_task(async move {
                     if deferred_session.state().disposed || deferred_session.monitor_generation.load(Ordering::SeqCst) != deferred_generation
                         || deferred_session.user_abort_generation.load(Ordering::SeqCst) != deferred_abort_generation {
                         claim.resolve(crate::agent_settled_delivery::DeferredTurnDisposition::FinishedWithoutStart);
@@ -15105,7 +15112,7 @@ impl AgentSession {
             let runtime_generation = self.monitor_generation.load(Ordering::SeqCst);
             let session = self.clone();
             let deliver_as = options.deliver_as;
-            tokio::spawn(async move {
+            self.spawn_session_task(async move {
                 if session.state().disposed
                     || session.monitor_generation.load(Ordering::SeqCst) != runtime_generation
                 {
@@ -15127,6 +15134,18 @@ impl AgentSession {
                 .map_err(maho_ext_api::ExtensionFailure::new)?;
         }
         Ok(())
+    }
+
+    /// Spawns on the session's own runtime (see `runtime_handle`), falling back to the ambient one.
+    fn spawn_session_task(&self, future: impl std::future::Future<Output = ()> + Send + 'static) {
+        match &self.runtime_handle {
+            Some(runtime) => {
+                runtime.spawn(future);
+            }
+            None => {
+                tokio::spawn(future);
+            }
+        }
     }
 
     /// senpi `sendCustomMessage` with `triggerTurn` while idle: enforce compaction before the
@@ -25255,6 +25274,67 @@ mod tests {
                 .is_empty()
         );
         assert!(!session.agent.has_queued_messages());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn idle_custom_trigger_from_a_short_lived_runtime_still_runs_the_turn() {
+        let session = retry_session(
+            vec![maho_ai::providers::faux::faux_assistant_message(
+                "woken",
+                Default::default(),
+            )],
+            0,
+        );
+        let (finished, received) = tokio::sync::oneshot::channel();
+        let finished = Arc::new(Mutex::new(Some(finished)));
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if matches!(event, AgentSessionEvent::AgentIdle)
+                && let Some(finished) = lock(&finished).take()
+            {
+                finished.send(()).expect("observer");
+            }
+        }));
+        // A completion notifier drains on a foreign thread through a throwaway runtime that is
+        // dropped as soon as the synchronous send returns Ok.
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("throwaway runtime");
+            runtime.block_on(async {
+                maho_ext_api::ExtensionActions::send_message(
+                    &actions,
+                    maho_ext_api::CustomMessage {
+                        custom_type: "wake".to_owned(),
+                        content: vec![maho_tools::definition::ToolContent::text("task done")],
+                        display: false,
+                        details: None,
+                    },
+                    maho_ext_api::SendMessageOptions {
+                        trigger_turn: true,
+                        deliver_as: Some(maho_ext_api::DeliverAs::Steer),
+                    },
+                )
+                .expect("accepted wake");
+            });
+        })
+        .join()
+        .expect("sender thread");
+        tokio::time::timeout(std::time::Duration::from_secs(5), received)
+            .await
+            .expect("accepted wake must run its turn after the sender runtime is gone")
+            .expect("settled");
+        let entries = session.with_session_manager(|manager| manager.entries());
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry["customType"] == "wake")
+                .count(),
+            1
+        );
+        assert!(entries.iter().any(|entry| entry["message"]["role"] == "assistant"));
+        session.dispose().await;
     }
 
     #[tokio::test]
