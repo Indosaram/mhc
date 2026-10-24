@@ -10,7 +10,7 @@ const HYPERPLAN_REQUIRED_CATEGORIES: [&str; 4] = [
     "ultrabrain",
     "artistry",
 ];
-const UNKNOWN_SUBAGENT_MESSAGE: &str = "Unknown subagent_type '<name>'. Available ELIGIBLE agents: sisyphus, atlas, sisyphus-junior, hephaestus (if D-36 applied). Use delegate-task for read-only agents like oracle, librarian, explore, metis, momus, multimodal-looker.";
+const UNKNOWN_SUBAGENT_MESSAGE: &str = "Unknown subagent_type '<name>'. Available ELIGIBLE agents: sisyphus, atlas, sisyphus-junior, hephaestus (hephaestus only when its teammate permission is allowed). Use delegate-task for read-only agents like oracle, librarian, explore, metis, momus, multimodal-looker.";
 
 /// `validateSpec`.
 pub fn validate_spec(spec: &TeamSpec) -> Result<()> {
