@@ -528,6 +528,17 @@ pub fn factory_with_workpool_events(
             env_passthrough: parent()
                 .map(|session| session.with_settings_manager(|manager| manager.get_bash_env_scrub_passthrough()))
                 .unwrap_or_else(|| Some(Vec::new())),
+            // Child sessions follow the parent's `bashSandbox` (default off).
+            sandbox: Some(
+                parent()
+                    .map(|session| session.with_settings_manager(|manager| manager.get_bash_sandbox()))
+                    .unwrap_or_default(),
+            ),
+            sandbox_agent_dir: Some(std::path::PathBuf::from(
+                parent()
+                    .map(|session| session.with_settings_manager(|manager| manager.agent_dir()))
+                    .unwrap_or_else(maho_core::config::get_agent_dir),
+            )),
             ..Default::default()
         };
         let child_builtins = maho_tools::index::create_all_tool_definitions(

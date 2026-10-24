@@ -85,6 +85,12 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           cache-key: test-${{ matrix.shard }}
+      - name: install bubblewrap (bash sandbox tests)
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: allow unprivileged user namespaces for bwrap
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: bwrap smoke
+        run: bwrap --ro-bind / / true
       - name: install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
@@ -97,6 +103,8 @@ jobs:
           cargo build --locked -p maho-senpi-desktop-engine
       - name: run tests (shard ${{ matrix.shard }}/6)
         timeout-minutes: 20
+        env:
+          MHC_REQUIRE_SANDBOX_TEST: "1"
         run: cargo nextest run --locked --no-fail-fast $CRATES
       - name: disk usage
         if: always()
