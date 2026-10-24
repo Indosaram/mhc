@@ -1,5 +1,5 @@
 use maho_core::settings_manager::{SettingsManager,InMemorySettingsStorage,SettingsStorage,SettingsScope};
-use maho_ext_permission_system::{settings::load_permission_settings,evaluate::evaluate,types::{Action,Rule,PermissionPresetName}};
+use maho_ext_permission_system::{settings::{load_permission_settings,resolve_permission_config,effective_approval_summary,ApprovalSummary},evaluate::evaluate,types::{Action,Rule,PermissionPresetName}};
 use serde_json::json;
 fn manager(global:serde_json::Value,project:serde_json::Value)->SettingsManager{
     let storage=InMemorySettingsStorage::default();
@@ -34,4 +34,14 @@ fn child_propagation_preset_is_only_the_explicit_non_default_one(){
     assert_eq!(effective(&manager(json!({"permissionPreset":"full-access"}),json!({"permissionPreset":"ask"})),None),Some(PermissionPresetName::Ask));
     assert_eq!(effective(&manager(json!({"permissionPreset":"full-access"}),json!({})),Some(PermissionPresetName::Workspace)),Some(PermissionPresetName::Workspace));
     assert_eq!(effective(&manager(json!({"permissionPreset":"full-access"}),json!({})),Some(PermissionPresetName::Guarded)),None);
+}
+
+fn summary(global:serde_json::Value,cli:&[Rule],preset:Option<PermissionPresetName>)->ApprovalSummary{effective_approval_summary(&resolve_permission_config(&manager(global,json!({})),cli,"/home/user",preset).expect("resolved"))}
+#[test]
+fn approval_summary_maps_presets_and_rules(){
+    assert_eq!(summary(json!({}),&[],None),ApprovalSummary::OnRequest);
+    assert_eq!(summary(json!({"permissionPreset":"full-access"}),&[],None),ApprovalSummary::Never);
+    assert_eq!(summary(json!({"permissionPreset":"read-only"}),&[],None),ApprovalSummary::Untrusted);
+    assert_eq!(summary(json!({"permissionPreset":"full-access"}),&[],Some(PermissionPresetName::Ask)),ApprovalSummary::Untrusted);
+    assert_eq!(summary(json!({}),&[],Some(PermissionPresetName::FullAccess)),ApprovalSummary::Never);
 }

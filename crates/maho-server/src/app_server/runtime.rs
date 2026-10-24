@@ -126,6 +126,10 @@ fn node_platform() -> &'static str {
 }
 impl AppServerRuntime {
     pub async fn new(agent_dir: String, cwd: String, version: String, session_dir: Option<String>, factory: Option<SessionFactory>) -> Self {
+        Self::new_with_flags(agent_dir, cwd, version, session_dir, factory, Default::default()).await
+    }
+    /// `flags` are the server's CLI extension flags (`--permission-preset`, `--permission`) that `config/read` resolves.
+    pub async fn new_with_flags(agent_dir: String, cwd: String, version: String, session_dir: Option<String>, factory: Option<SessionFactory>, flags: std::collections::BTreeMap<String, maho_ext_api::FlagValue>) -> Self {
         let (thread_notification_sender, mut thread_notifications) = tokio::sync::mpsc::unbounded_channel::<(String, Value)>();
         let bridge_notification_sender = thread_notification_sender.clone();
         let shutdown_request = Arc::new(AppServerShutdownRequest::default());
@@ -166,7 +170,7 @@ impl AppServerRuntime {
         let turn_log = Arc::new(Mutex::new(TurnLog::default()));
         let mut core = ServerCore::new(agent_dir.clone(), version.clone(), node_os_type().into(), node_os_release(), node_arch().into(), node_platform().into());
         super::account::register_account_methods(&mut core.registry, agent_dir.clone());
-        super::config::register_config_methods(&mut core.registry, agent_dir.clone(), cwd.clone());
+        super::config::register_config_methods_with_flags(&mut core.registry, agent_dir.clone(), cwd.clone(), flags);
         super::models::register_remote_status_method(&mut core.registry,agent_dir.clone());
         let model_directory = agent_dir.clone();
         super::models::register_model_list_method(&mut core.registry,Arc::new(move || {
@@ -285,7 +289,9 @@ impl AppServerRuntime {
                     if method == "thread/read" { return Ok(json!({"thread":wire})); }
                     let model = entry.session.model();
                     let tier = entry.session.service_tier().map(|tier| match tier { maho_ext_api::ServiceTier::Auto => "auto", maho_ext_api::ServiceTier::Flex => "flex", maho_ext_api::ServiceTier::Priority => "priority", maho_ext_api::ServiceTier::Ultrafast => "ultrafast" });
-                    let mut response = json!({"thread":wire,"model":model.id,"modelProvider":model.provider,"serviceTier":tier,"cwd":entry.cwd,"runtimeWorkspaceRoots":[entry.cwd],"instructionSources":[],"approvalPolicy":if method == "thread/start" {super::start_options::requested_approval_policy(params)} else {json!("never")},"approvalsReviewer":"user","sandbox":{"type":"dangerFullAccess"},"activePermissionProfile":null,"reasoningEffort":entry.session.thinking_level(),"multiAgentMode":"explicitRequestOnly"});
+                    // SAFETY-DIVERGENCE(SD-3): previous port hardcoded `never`/`dangerFullAccess`.
+                    let safety = super::config::session_effective_safety(&entry.session,&entry.cwd,&ui_agent_dir);
+                    let mut response = json!({"thread":wire,"model":model.id,"modelProvider":model.provider,"serviceTier":tier,"cwd":entry.cwd,"runtimeWorkspaceRoots":[entry.cwd],"instructionSources":[],"approvalPolicy":if method == "thread/start" && !params["approvalPolicy"].is_null() {super::start_options::requested_approval_policy(params)} else {json!(safety.approval_policy)},"approvalsReviewer":"user","sandbox":safety.sandbox_policy(&entry.cwd),"activePermissionProfile":null,"reasoningEffort":entry.session.thinking_level(),"multiAgentMode":"explicitRequestOnly"});
                     if method == "thread/resume" { response["initialTurnsPage"] = Value::Null; }
                     let queued = std::mem::take(&mut entry.queued_terminal_notifications);
                     let client_id = context.connection.id.clone();
@@ -347,7 +353,9 @@ impl AppServerRuntime {
                     wire["forkedFromId"] = json!(source);
                     let model = entry.session.model();
                     let tier = entry.session.service_tier().map(|tier| match tier { maho_ext_api::ServiceTier::Auto => "auto", maho_ext_api::ServiceTier::Flex => "flex", maho_ext_api::ServiceTier::Priority => "priority", maho_ext_api::ServiceTier::Ultrafast => "ultrafast" });
-                    let response = json!({"thread":wire,"model":model.id,"modelProvider":model.provider,"serviceTier":tier,"cwd":entry.cwd,"runtimeWorkspaceRoots":[entry.cwd],"instructionSources":[],"approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"dangerFullAccess"},"activePermissionProfile":null,"reasoningEffort":entry.session.thinking_level(),"multiAgentMode":"explicitRequestOnly"});
+                    // SAFETY-DIVERGENCE(SD-3): previous port hardcoded `never`/`dangerFullAccess`.
+                    let safety = super::config::session_effective_safety(&entry.session,&entry.cwd,&ui_agent_dir);
+                    let response = json!({"thread":wire,"model":model.id,"modelProvider":model.provider,"serviceTier":tier,"cwd":entry.cwd,"runtimeWorkspaceRoots":[entry.cwd],"instructionSources":[],"approvalPolicy":safety.approval_policy,"approvalsReviewer":"user","sandbox":safety.sandbox_policy(&entry.cwd),"activePermissionProfile":null,"reasoningEffort":entry.session.thinking_level(),"multiAgentMode":"explicitRequestOnly"});
                     let queued = std::mem::take(&mut entry.queued_terminal_notifications);
                     let client_id = context.connection.id.clone();
                     let thread_id = entry.id.clone();
