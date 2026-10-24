@@ -1046,6 +1046,37 @@ async function selfTest() {
 		const realRepo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 		const missingSources = LICENSE_FILES.filter((license) => license.source !== "THIRD_PARTY_LICENSES.md" && !existsSync(join(realRepo, license.source))).map((license) => license.source);
 		check(`every non-generated LICENSE_FILES source exists in the real repo${missingSources.length ? ` (missing: ${missingSources.join(", ")})` : ""}`, missingSources.length === 0);
+		{
+			// Synthetic ELF64 little-endian aarch64 (e_machine 0xb7) image with a .gnu.version_r needing GLIBC_2.17 and GLIBC_2.34.
+			const strtab = Buffer.from("\0libc.so.6\0GLIBC_2.17\0GLIBC_2.34\0", "latin1");
+			const verneed = Buffer.alloc(48);
+			verneed.writeUInt16LE(1, 0);
+			verneed.writeUInt16LE(2, 2);
+			verneed.writeUInt32LE(1, 4);
+			verneed.writeUInt32LE(16, 8);
+			verneed.writeUInt32LE(0, 12);
+			verneed.writeUInt32LE(11, 16 + 8);
+			verneed.writeUInt32LE(16, 16 + 12);
+			verneed.writeUInt32LE(22, 32 + 8);
+			const strOffset = 64;
+			const verneedOffset = strOffset + strtab.length;
+			const shoff = verneedOffset + verneed.length;
+			const image = Buffer.alloc(shoff + 3 * 64);
+			image.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1], 0);
+			image.writeUInt16LE(0xb7, 0x12);
+			image.writeBigUInt64LE(BigInt(shoff), 0x28);
+			image.writeUInt16LE(64, 0x3a);
+			image.writeUInt16LE(3, 0x3c);
+			strtab.copy(image, strOffset);
+			verneed.copy(image, verneedOffset);
+			const verneedHeader = shoff + 64;
+			image.writeUInt32LE(0x6ffffffe, verneedHeader + 4);
+			image.writeBigUInt64LE(BigInt(verneedOffset), verneedHeader + 0x18);
+			image.writeUInt32LE(2, verneedHeader + 0x28);
+			image.writeUInt32LE(1, verneedHeader + 0x2c);
+			image.writeBigUInt64LE(BigInt(strOffset), shoff + 2 * 64 + 0x18);
+			check("glibc checker reads the highest requirement from an aarch64 ELF64 fixture", highestGlibcRequirement(image) === "2.34");
+		}
 		const repo = join(root, "repo");
 		const omo = join(root, "omo");
 		const binDir = join(root, "bin");
