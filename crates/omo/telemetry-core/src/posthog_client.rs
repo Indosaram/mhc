@@ -166,7 +166,8 @@ pub fn create_telemetry_client(input: &CreateTelemetryClientInput<'_>) -> Teleme
         flush_at: 1,
         flush_interval: 0,
         host: get_telemetry_host(input.env, &product.default_host),
-        disable_geoip: product.disable_geoip.unwrap_or(false),
+        // SAFETY-DIVERGENCE(oh-my-openagent packages/telemetry-core/src/posthog-client.ts): disable_geoip defaults to false; mhc defaults to true (GeoIP always disabled).
+        disable_geoip: product.disable_geoip.unwrap_or(true),
     };
     if let Some(overrides) = &product.transport_options {
         options.apply(overrides);

@@ -12,7 +12,7 @@ fn is_truthy_env_flag(value: Option<&str>) -> bool {
 }
 
 /// Resolves install telemetry: an explicit value (or the brand TELEMETRY env var) wins, else the
-/// enableInstallTelemetry setting, which defaults to true.
+/// enableInstallTelemetry setting, which defaults to false.
 pub fn is_install_telemetry_enabled(settings_manager: &SettingsManager, telemetry_env: Option<&str>) -> bool {
     let value = match telemetry_env {
         Some(value) => Some(value.to_owned()),
@@ -20,7 +20,8 @@ pub fn is_install_telemetry_enabled(settings_manager: &SettingsManager, telemetr
     };
     match value {
         Some(value) => is_truthy_env_flag(Some(&value)),
-        None => settings_manager.get_bool("enableInstallTelemetry").unwrap_or(true),
+        // SAFETY-DIVERGENCE(senpi packages/coding-agent/src/core/telemetry.ts): enableInstallTelemetry defaults to true; mhc defaults to false (opt-in).
+        None => settings_manager.get_bool("enableInstallTelemetry").unwrap_or(false),
     }
 }
 
@@ -53,10 +54,27 @@ mod tests {
     }
 
     #[test]
-    fn the_setting_defaults_to_enabled_when_no_env_is_set() {
+    fn the_setting_defaults_to_disabled_when_no_env_is_set() {
         let settings = settings();
         // The brand TELEMETRY env var may be set in the ambient environment; only assert the
         // setting path when it is absent.
+        if env_value("TELEMETRY", &current_env()).is_none() {
+            assert!(!is_install_telemetry_enabled(&settings, None));
+        }
+    }
+
+    #[test]
+    fn the_setting_respects_explicit_opt_in() {
+        let mut settings = settings();
+        settings
+            .set(
+                crate::settings_manager::SettingsScope::Global,
+                &crate::settings_manager::Settings::from_iter([(
+                    "enableInstallTelemetry".to_owned(),
+                    serde_json::Value::Bool(true),
+                )]),
+            )
+            .expect("enable install telemetry");
         if env_value("TELEMETRY", &current_env()).is_none() {
             assert!(is_install_telemetry_enabled(&settings, None));
         }
