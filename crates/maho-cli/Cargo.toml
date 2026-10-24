@@ -119,6 +119,7 @@ libproc = "=0.14.11"
 
 [dev-dependencies]
 maho-ext-host = { path = "../maho-ext-host" }
+maho-test-support = { path = "../maho-test-support", features = ["sdk"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
