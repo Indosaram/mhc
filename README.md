@@ -81,7 +81,7 @@ cargo build --release -p maho-cli
 
 ## 项目状态与贡献
 
-mhc 仍在积极开发中，与上游的一致性尚未全部完成。上游版本固定在 [PINS.md](PINS.md)，覆盖情况见 [docs/parity.md](docs/parity.md)。提交改动前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，问题请提交到 [issues](https://github.com/Indosaram/mhc/issues)。
+mhc 仍在积极开发中，与上游的一致性尚未全部完成。上游版本固定在 [PINS.md](PINS.md)，覆盖情况见 [docs/parity.md](docs/parity.md)，安全与隐私差异见 [docs/divergences.md](docs/divergences.md)。提交改动前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，问题请提交到 [issues](https://github.com/Indosaram/mhc/issues)。
 
 ## 许可证
 

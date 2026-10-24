@@ -37,3 +37,9 @@ isolated temporary `HOME`, as the reference side for event and pty comparisons.
   `tools/omo-sites.json`.
 - `tools/run-session2-residual-gate.mjs` runs a declared gate command set and
   `tools/verify-session2-residual.mjs` re-verifies its evidence.
+
+## Further reading
+
+- [docs/divergences.md](divergences.md) — Intentional safety and privacy divergences from upstream
+- [docs/perf-divergences.md](perf-divergences.md) — Intentional performance divergences from upstream
+
