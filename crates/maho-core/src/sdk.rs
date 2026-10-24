@@ -183,6 +183,8 @@ pub fn built_in_tools_options(
             shell_path: settings.get_shell_path(),
             shell_env: Some(shell_env.clone()),
             env_passthrough: settings.get_bash_env_scrub_passthrough(),
+            sandbox: Some(settings.get_bash_sandbox()),
+            sandbox_agent_dir: Some(std::path::PathBuf::from(settings.agent_dir())),
             operations: Some(Arc::new(DispatcherBashOperations {
                 session: bash_session,
                 shell_path: settings.get_shell_path(),
