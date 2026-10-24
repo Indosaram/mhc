@@ -42,6 +42,7 @@ async fn external_worker_and_inline_worker_initialize_and_close() {
             session_env: Some(&session_env),
             worker_entry: None,
             memory: None,
+            env_passthrough: None,
         };
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -120,6 +121,7 @@ async fn worker_slot_falls_back_and_fences_retired_generation() {
                 session_env: None,
                 worker_entry: Some(std::path::Path::new("/missing/worker.js")),
                 memory: None,
+                env_passthrough: None,
             },
             &controller.signal(),
         ),

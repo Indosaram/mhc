@@ -1096,6 +1096,21 @@ impl SettingsManager {
         string_list(self.settings.get("disabledBuiltinExtensions")).unwrap_or_default()
     }
 
+    /// `bashEnvPassthrough`: variable names kept in model-run command environments despite scrubbing.
+    pub fn get_bash_env_passthrough(&self) -> Vec<String> {
+        string_list(self.settings.get("bashEnvPassthrough")).unwrap_or_default()
+    }
+
+    /// `bashEnvScrub` (default true): scrub secret-looking variables from model-run commands.
+    pub fn get_bash_env_scrub(&self) -> bool {
+        self.get_bool("bashEnvScrub").unwrap_or(true)
+    }
+
+    /// The `BashToolOptions.env_passthrough` value: `Some(passthrough)` when scrubbing is enabled.
+    pub fn get_bash_env_scrub_passthrough(&self) -> Option<Vec<String>> {
+        self.get_bash_env_scrub().then(|| self.get_bash_env_passthrough())
+    }
+
     /// senpi `getEnabledBuiltinExtensions`: optional allowlist of builtin extension ids (default: all).
     pub fn get_enabled_builtin_extensions(&self) -> Option<Vec<String>> {
         string_list(self.settings.get("enabledBuiltinExtensions"))

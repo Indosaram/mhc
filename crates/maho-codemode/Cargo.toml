@@ -11,6 +11,7 @@ maho-ext-api = { path = "../maho-ext-api" }
 maho-ext-host = { path = "../maho-ext-host" }
 maho-interactive = { path = "../maho-interactive" }
 maho-ai = { path = "../maho-ai" }
+maho-process-env = { path = "../maho-process-env" }
 maho-tools = { path = "../maho-tools" }
 maho-tui = { path = "../maho-tui" }
 tokio = { version = "=1.52.3", features = ["full", "test-util"] }

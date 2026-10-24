@@ -65,10 +65,26 @@ impl CodemodeSessionManager {
     pub async fn start(
         options: CreateCodemodeSessionManagerOptions,
     ) -> Result<Self, std::io::Error> {
-        let environment = crate::kernels::session_env::apply_session_environment(
+        let mut options = options;
+        // SAFETY-DIVERGENCE(senpi tools/bash.ts): the overlay is also sent to the kernel as `sessionEnv`.
+        if let (Some(passthrough), Some(overlay)) = (
+            options.settings.env_passthrough.as_deref(),
+            options.session_env.as_mut(),
+        ) {
+            let mut scrubbed: std::collections::BTreeMap<_, _> = overlay.drain().collect();
+            maho_process_env::env_scrub::scrub_secrets(&mut scrubbed, passthrough);
+            overlay.extend(scrubbed);
+        }
+        let mut environment = crate::kernels::session_env::apply_session_environment(
             &std::env::vars().collect(),
             options.session_env.as_ref(),
         );
+        // SAFETY-DIVERGENCE(senpi tools/bash.ts): scrub the final eval kernel env after the overlay merge.
+        if let Some(passthrough) = options.settings.env_passthrough.as_deref() {
+            let mut scrubbed: std::collections::BTreeMap<_, _> = environment.drain().collect();
+            maho_process_env::env_scrub::scrub_secrets(&mut scrubbed, passthrough);
+            environment.extend(scrubbed);
+        }
         let environments = Arc::new(crate::environments::js_environments::JsEnvironments::new(
             crate::environments::js_environments::JsEnvironmentsOptions {
                 artifacts_dir: options
@@ -282,6 +298,7 @@ impl CodemodeSessionManager {
                     names,
                     shutdown: self.javascript_shutdown.clone(),
                     memory,
+                    env_passthrough: settings.env_passthrough.clone(),
                 },
             )
             .await
