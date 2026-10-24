@@ -1613,6 +1613,25 @@ fn set_extension_mode_reflects_mode_and_ui_presence_in_created_context() {
     }
 }
 
+#[test]
+fn clone_taken_before_binding_observes_later_mode_and_ui() {
+    let mut runner = runner(vec![]);
+    let tool_runner = runner.clone();
+    assert_eq!(
+        tool_runner.create_context().expect("context").mode,
+        ExtensionMode::Print
+    );
+    let ui: Arc<dyn ExtensionUi> = Arc::new(TestUi);
+    runner.bind_ui(Arc::clone(&ui)).expect("active runtime");
+    runner
+        .set_extension_mode(ExtensionMode::Tui, true)
+        .expect("active runtime");
+    let context = tool_runner.create_context().expect("context");
+    assert_eq!(context.mode, ExtensionMode::Tui);
+    assert!(context.has_ui);
+    assert!(Arc::ptr_eq(&context.ui, &ui));
+}
+
 #[tokio::test]
 async fn retained_api_event_registration_updates_an_existing_runner() {
     let mut runner = runner(vec![]);
