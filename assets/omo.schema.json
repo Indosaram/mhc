@@ -1508,7 +1508,7 @@
           "properties": {
             "enabled": {
               "type": "boolean",
-              "default": true
+              "default": false
             },
             "max_entries": {
               "type": "integer",
@@ -1526,7 +1526,7 @@
           "required": [],
           "additionalProperties": false,
           "default": {
-            "enabled": true,
+            "enabled": false,
             "max_entries": 40,
             "max_entry_chars": 200
           }

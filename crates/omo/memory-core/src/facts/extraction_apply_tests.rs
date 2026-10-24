@@ -215,10 +215,7 @@ fn given_project_and_person_records_without_people_policy_when_applied_then_one_
         body.contains("- [2026-08-10] The project uses Bun."),
         "{body}"
     );
-    assert!(
-        body.contains("- [2026-08-10] Mina prefers concise reviews."),
-        "{body}"
-    );
+    assert!(!body.contains("Mina prefers concise reviews."), "{body}");
     let log = repo
         .log(Some(&GitLogOptions {
             range: Some("HEAD~1..HEAD".to_string()),
@@ -676,19 +673,22 @@ fn given_two_facts_about_same_new_person_in_one_batch_when_applied_then_one_card
 // --- extraction-routing-gate.test.ts
 
 #[test]
-fn given_people_routing_disabled_when_person_fact_arrives_then_it_falls_back_to_monthly_notes() {
+fn given_people_routing_disabled_when_person_fact_arrives_then_third_party_fact_is_dropped() {
     let (_tmp, dir, repo) = fixture();
 
     apply_facts_batch(
         &repo,
         batch(
             "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
-            vec![person_record(
-                "Mina",
-                &["Min"],
-                "Mina prefers concise reviews.",
-                "2026-08-10",
-            )],
+            vec![
+                project("The project uses Bun."),
+                person_record(
+                    "Mina",
+                    &["Min"],
+                    "Mina prefers concise reviews.",
+                    "2026-08-10",
+                ),
+            ],
         ),
         &author(),
         ApplyFactsBatchOptions {
@@ -701,8 +701,148 @@ fn given_people_routing_disabled_when_person_fact_arrives_then_it_falls_back_to_
     )
     .expect("apply");
 
-    assert!(monthly_notes_body(&dir).contains("- [2026-08-10] Mina prefers concise reviews."));
+    let body = monthly_notes_body(&dir);
+    assert!(body.contains("- [2026-08-10] The project uses Bun."));
+    assert!(!body.contains("Mina prefers concise reviews."));
     assert!(!dir.join("people/mina").exists());
+}
+
+#[test]
+fn given_default_options_when_third_party_person_fact_arrives_then_it_is_written_nowhere() {
+    let (_tmp, dir, repo) = fixture();
+
+    let result = apply_facts_batch(
+        &repo,
+        batch(
+            "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1",
+            vec![person_record(
+                "Alice",
+                &[],
+                "Alice prefers tabs.",
+                "2026-08-10",
+            )],
+        ),
+        &author(),
+        ApplyFactsBatchOptions::default(),
+    )
+    .expect("apply");
+
+    assert_eq!(result.outcome(), "no_facts");
+    assert!(!dir.join("people").exists());
+    assert!(!dir.join("notes/facts/2026-08.md").exists());
+}
+
+#[test]
+fn given_default_options_when_primary_human_fact_arrives_then_it_still_goes_to_notes() {
+    let (_tmp, dir, repo) = fixture();
+    let human = render_memory_file(
+        &frontmatter("Person - Human", Some("person"), Some(&["Lo"])),
+        "",
+    )
+    .expect("render");
+    write_and_commit(&repo, "system/human.md", &human, "test: alias the human");
+
+    apply_facts_batch(
+        &repo,
+        batch(
+            "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee2",
+            vec![
+                person_record("Lo", &[], "Lo prefers dark themes.", "2026-08-10"),
+                person_record("Alice", &[], "Alice prefers tabs.", "2026-08-10"),
+            ],
+        ),
+        &author(),
+        ApplyFactsBatchOptions::default(),
+    )
+    .expect("apply");
+
+    let body = monthly_notes_body(&dir);
+    assert!(body.contains("- [2026-08-10] Lo prefers dark themes."), "{body}");
+    assert!(!body.contains("Alice prefers tabs."), "{body}");
+    assert!(!dir.join("people").exists());
+}
+
+#[test]
+fn given_seeded_human_card_when_routing_disabled_then_self_reference_kept_and_third_party_dropped() {
+    let (_tmp, dir, repo) = fixture();
+
+    apply_facts_batch(
+        &repo,
+        batch(
+            "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee4",
+            vec![
+                person_record("Human", &[], "Human prefers tabs.", "2026-08-10"),
+                person_record("you", &[], "You use Linux.", "2026-08-10"),
+                person_record("The User", &[], "The user works nights.", "2026-08-10"),
+                person_record("Alice", &[], "Alice prefers spaces.", "2026-08-10"),
+            ],
+        ),
+        &author(),
+        ApplyFactsBatchOptions::default(),
+    )
+    .expect("apply");
+
+    let body = monthly_notes_body(&dir);
+    assert!(body.contains("Human prefers tabs."), "{body}");
+    assert!(body.contains("You use Linux."), "{body}");
+    assert!(body.contains("The user works nights."), "{body}");
+    assert!(!body.contains("Alice prefers spaces."), "{body}");
+    assert!(!dir.join("people").exists());
+}
+
+#[test]
+fn given_no_human_card_when_routing_disabled_then_only_self_references_are_kept() {
+    let (_tmp, dir, repo) = fixture();
+    std::fs::remove_file(dir.join("system/human.md")).expect("remove human card");
+
+    apply_facts_batch(
+        &repo,
+        batch(
+            "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5",
+            vec![
+                person_record("me", &[], "I prefer dark themes.", "2026-08-10"),
+                person_record("Human", &[], "Human uses vim.", "2026-08-10"),
+                person_record("Alice", &[], "Alice prefers spaces.", "2026-08-10"),
+            ],
+        ),
+        &author(),
+        ApplyFactsBatchOptions::default(),
+    )
+    .expect("apply");
+
+    let body = monthly_notes_body(&dir);
+    assert!(body.contains("I prefer dark themes."), "{body}");
+    assert!(body.contains("Human uses vim."), "{body}");
+    assert!(!body.contains("Alice prefers spaces."), "{body}");
+    assert!(!dir.join("people").exists());
+}
+
+#[test]
+fn given_people_enabled_when_third_party_person_fact_arrives_then_people_alice_is_written() {
+    let (_tmp, dir, repo) = fixture();
+
+    let result = apply_facts_batch(
+        &repo,
+        batch(
+            "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee3",
+            vec![person_record(
+                "Alice",
+                &[],
+                "Alice prefers tabs.",
+                "2026-08-10",
+            )],
+        ),
+        &author(),
+        with_people(),
+    )
+    .expect("apply");
+
+    assert!(
+        result
+            .affected_paths()
+            .contains(&"people/alice/observations.md".to_string())
+    );
+    assert_eq!(contents(&explicit_entries(&dir, "alice")), vec!["Alice prefers tabs."]);
 }
 
 #[test]
