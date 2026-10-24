@@ -96,7 +96,15 @@ async fn managed_native_failure_rotates_only_before_visible_delta() {
         store.modify("anthropic-subscription",Box::new(move |_|Box::pin(async move {Ok(Some(Credential::OAuth(credential)))})),None).await.expect("seed");
         let settings=Arc::new(||maho_ext_anthropic_subscription::settings::load(&serde_json::json!({}),&serde_json::Value::Null,&Default::default()));
         let oauth=Arc::new(AnthropicSubscriptionOAuth {store:store.clone(),flow:Arc::new(Flow),settings,ambient:maho_ext_anthropic_subscription::availability::AmbientAuthStatusReader::new(Arc::new(||Box::pin(async {Ok(false)})),Arc::new(||1),30000)});
-        let extension=AnthropicSubscriptionExtension::native(oauth,executable,None,directory.path().into(),directory.path().join("agent"),Default::default());
+        let agent_dir = directory.path().join("agent");
+        let mut settings_manager = maho_core::settings_manager::SettingsManager::create(
+            &agent_dir.to_string_lossy(),
+            &agent_dir.to_string_lossy(),
+            &agent_dir.to_string_lossy(),
+            false,
+        );
+        maho_core::provider_consent::record_rotation_consent(&mut settings_manager, "anthropic-subscription").expect("record rotation consent");
+        let extension=AnthropicSubscriptionExtension::native(oauth,executable,None,directory.path().into(),agent_dir,Default::default());
         let model=maho_ai::models_generated::MODELS["anthropic"].values().next().expect("model").clone();
         let stream=(extension.stream)(&model,&Context {messages:vec![Message::User(UserMessage {content:UserContent::Text("hello".into()),timestamp:1})],..Default::default()},None);
         let output=tokio::time::timeout(std::time::Duration::from_secs(10),stream.result()).await.expect("bounded turn").expect("output");
@@ -106,4 +114,87 @@ async fn managed_native_failure_rotates_only_before_visible_delta() {
         let stored=store.read("anthropic-subscription",None).await.expect("read").expect("stored").into_oauth().expect("oauth");
         assert_eq!(stored.extra["accounts"][0]["blockReason"],"rate_limit");
     }
+}
+
+#[tokio::test]
+async fn rotation_consent_gates_anthropic_subscription_stream() {
+    use maho_ext_anthropic_subscription::accounts::{AccountSlot, AccountSource, add_account, empty_credential};
+    let directory = tempfile::tempdir().expect("directory");
+    let executable = directory.path().join("claude");
+    let attempts = directory.path().join("attempts");
+    let script = format!(
+        "#!/usr/bin/python3\nimport json,sys,os\nf=json.loads(sys.stdin.readline())\nprint(json.dumps({{'type':'control_response','response':{{'subtype':'success','request_id':f['request_id'],'response':{{}}}}}}),flush=True)\nf=json.loads(sys.stdin.readline())\nslot=os.environ['CLAUDE_CODE_OAUTH_TOKEN']\nwith open({},'a') as log: log.write(slot+'\\n')\nif slot=='fixture-a':\n print(json.dumps({{'type':'result','subtype':'error_during_execution','errors':['rate_limit'],'is_error':True}}),flush=True)\nelse:\n print(json.dumps({{'type':'result','subtype':'success','result':'rotated','usage':{{}},'stop_reason':'end_turn'}}),flush=True)\nfor line in sys.stdin: pass\n",
+        serde_json::to_string(attempts.to_str().expect("path")).expect("literal")
+    );
+    std::fs::write(&executable, script).expect("script");
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).expect("permissions");
+
+    let agent_dir = directory.path().join("agent");
+    let mut settings_manager = maho_core::settings_manager::SettingsManager::create(
+        &agent_dir.to_string_lossy(),
+        &agent_dir.to_string_lossy(),
+        &agent_dir.to_string_lossy(),
+        false,
+    );
+
+    let make_run = |store: Arc<dyn CredentialStore>| {
+        let executable = executable.clone();
+        let agent_dir = agent_dir.clone();
+        let directory = directory.path().to_path_buf();
+        async move {
+            let settings = Arc::new(|| maho_ext_anthropic_subscription::settings::load(&serde_json::json!({}), &serde_json::Value::Null, &Default::default()));
+            let oauth = Arc::new(AnthropicSubscriptionOAuth {
+                store,
+                flow: Arc::new(Flow),
+                settings,
+                ambient: maho_ext_anthropic_subscription::availability::AmbientAuthStatusReader::new(Arc::new(|| Box::pin(async { Ok(false) })), Arc::new(|| 1), 30000),
+            });
+            let extension = AnthropicSubscriptionExtension::native(oauth, executable, None, directory, agent_dir, Default::default());
+            let model = maho_ai::models_generated::MODELS["anthropic"].values().next().expect("model").clone();
+            let stream = (extension.stream)(&model, &Context { messages: vec![Message::User(UserMessage { content: UserContent::Text("hello".into()), timestamp: 1 })], ..Default::default() }, None);
+            tokio::time::timeout(std::time::Duration::from_secs(10), stream.result()).await.expect("bounded turn").expect("output")
+        }
+    };
+
+    let seed_store = || async {
+        let store = Arc::new(maho_ai::auth::credential_store::InMemoryCredentialStore::new());
+        let mut credential = empty_credential();
+        for name in ["a", "b"] {
+            credential = add_account(&credential, AccountSlot {
+                name: name.into(),
+                display_name: None,
+                refresh: "fixture".into(),
+                access: format!("fixture-{name}"),
+                expires: 9_000_000_000_000_000.0,
+                source: AccountSource::Login,
+                blocked_until: None,
+                block_reason: None,
+            }).expect("slot");
+        }
+        credential.extra.insert("pinned".into(), serde_json::json!("a"));
+        store.modify("anthropic-subscription", Box::new(move |_| Box::pin(async move { Ok(Some(Credential::OAuth(credential))) })), None).await.expect("seed");
+        store
+    };
+
+    // 1. Two accounts and no consent -> exact attempt sequence [a1] and error text contains notice
+    let _ = std::fs::remove_file(&attempts);
+    let output1 = make_run(seed_store().await).await;
+    assert_eq!(std::fs::read_to_string(&attempts).expect("attempts"), "fixture-a\n");
+    assert_eq!(output1.stop_reason, StopReason::Error);
+    assert!(output1.error_message.as_deref().unwrap_or_default().contains("Automatic rotation across 2 accounts is off. Enable it with `mhc auth consent anthropic-subscription --rotation`."));
+
+    // 2. With consent -> exact attempt sequence [a1, a2]
+    let _ = std::fs::remove_file(&attempts);
+    maho_core::provider_consent::record_rotation_consent(&mut settings_manager, "anthropic-subscription").expect("record");
+    let output2 = make_run(seed_store().await).await;
+    assert_eq!(std::fs::read_to_string(&attempts).expect("attempts"), "fixture-a\nfixture-b\n");
+    assert_eq!(output2.stop_reason, StopReason::Stop);
+
+    // 3. After --revoke -> exact attempt sequence [a1] and error text contains notice
+    let _ = std::fs::remove_file(&attempts);
+    maho_core::provider_consent::revoke_rotation_consent(&mut settings_manager, "anthropic-subscription").expect("revoke");
+    let output3 = make_run(seed_store().await).await;
+    assert_eq!(std::fs::read_to_string(&attempts).expect("attempts"), "fixture-a\n");
+    assert_eq!(output3.stop_reason, StopReason::Error);
+    assert!(output3.error_message.as_deref().unwrap_or_default().contains("Automatic rotation across 2 accounts is off. Enable it with `mhc auth consent anthropic-subscription --rotation`."));
 }
