@@ -1,7 +1,7 @@
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, PoisonError};
-use serde_json::Value;
 
 use crate::faux::FauxScript;
 
@@ -46,7 +46,10 @@ impl FauxSession {
     }
 
     /// Register a native extension for each in-process run, before session startup.
-    pub fn with_native_extension(mut self, factory: maho_ext_host::loader::NativeExtensionFactory) -> Self {
+    pub fn with_native_extension(
+        mut self,
+        factory: maho_ext_host::loader::NativeExtensionFactory,
+    ) -> Self {
         self.native_extensions.push(std::sync::Arc::new(factory));
         self
     }
@@ -58,19 +61,28 @@ impl FauxSession {
     }
 
     /// Register these faux models instead of the provider defaults; `faux-1` stays the primary.
-    pub fn with_faux_models(mut self, models: Vec<maho_ai::providers::faux::FauxModelDefinition>) -> Self {
+    pub fn with_faux_models(
+        mut self,
+        models: Vec<maho_ai::providers::faux::FauxModelDefinition>,
+    ) -> Self {
         self.faux_models = models;
         self
     }
 
     /// Serve every provider call from this model-aware factory instead of the scripted queue.
-    pub fn with_native_response_factory(mut self, factory: maho_ai::providers::faux::FauxResponseFactory) -> Self {
+    pub fn with_native_response_factory(
+        mut self,
+        factory: maho_ai::providers::faux::FauxResponseFactory,
+    ) -> Self {
         self.native_response_factory = Some(factory);
         self
     }
 
     /// Supply typed faux responses, including tool calls, instead of the text script responses.
-    pub fn with_native_responses(mut self, responses: Vec<maho_ai::types::AssistantMessage>) -> Self {
+    pub fn with_native_responses(
+        mut self,
+        responses: Vec<maho_ai::types::AssistantMessage>,
+    ) -> Self {
         self.native_responses = Some(responses);
         self
     }
@@ -84,70 +96,128 @@ impl FauxSession {
     /// The handle owns a live `AgentSession` over the faux provider with the registered native
     /// extensions bound, so a test can drive prompts, tool execution and provider payloads offline
     /// (fixed clock/seed, temp HOME; no network, provider or auth call).
-    pub async fn run_native_handle(&self) -> Result<NativeSession, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn run_native_handle(
+        &self,
+    ) -> Result<NativeSession, Box<dyn std::error::Error + Send + Sync>> {
         self.boot_native().await
     }
 
     pub async fn run_native(&self) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-        use std::sync::Mutex;
         use maho_core::agent_session::PromptOptions;
+        use std::sync::Mutex;
 
-        let NativeSession { session, runner: _runner, provider: _provider, script: _script, calls: _calls, gate: _gate, inflight: _inflight, temp: _temp } =
-            self.boot_native().await?;
+        let NativeSession {
+            session,
+            runner: _runner,
+            provider: _provider,
+            script: _script,
+            calls: _calls,
+            gate: _gate,
+            inflight: _inflight,
+            temp: _temp,
+        } = self.boot_native().await?;
         let events = Arc::new(Mutex::new(Vec::new()));
         let captured = events.clone();
         let _subscription = session.subscribe(Arc::new(move |event| {
             let value = match event {
                 maho_ext_api::AgentSessionEvent::Agent(event) => serde_json::to_value(event).ok(),
-                maho_ext_api::AgentSessionEvent::AgentEnd { messages, .. } => serde_json::to_value(maho_agent::types::AgentEvent::AgentEnd { messages: messages.clone() }).ok(),
+                maho_ext_api::AgentSessionEvent::AgentEnd { messages, .. } => {
+                    serde_json::to_value(maho_agent::types::AgentEvent::AgentEnd {
+                        messages: messages.clone(),
+                    })
+                    .ok()
+                }
                 _ => None,
             };
             if let Some(value) = value {
-                captured.lock().unwrap_or_else(PoisonError::into_inner).push(value);
+                captured
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(value);
             }
         }));
-        session.prompt(&self.script.prompt, PromptOptions::default()).await?;
+        session
+            .prompt(&self.script.prompt, PromptOptions::default())
+            .await?;
         // Flat projection (senpi's message shape): the agent's messages are serialized as the
         // flat user/assistant/custom objects, not the `Llm`/`Custom` enum wrapper that
         // `serde_json::to_value(Vec<AgentMessage>)` produces.
-        let messages = serde_json::Value::Array(session.messages().iter()
-            .map(maho_core::agent_session::session_message_to_value)
-            .collect::<Result<Vec<_>, _>>()?);
+        let messages = serde_json::Value::Array(
+            session
+                .messages()
+                .iter()
+                .map(maho_core::agent_session::session_message_to_value)
+                .collect::<Result<Vec<_>, _>>()?,
+        );
         let entries = session.with_session_manager(|manager| manager.entries());
-        let events = events.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let events = events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         // Canonical teardown, mirroring AgentSessionRuntime::dispose: a bare AgentSession::dispose
         // does not emit session_shutdown, so an extension that suspends on it (e.g. the loop
         // extension) would be left in its pre-shutdown phase.
-        session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;
+        session
+            .emit_session_shutdown(maho_ext_api::SessionReason::Quit)
+            .await;
         session.dispose().await;
-        Ok(serde_json::json!({ "scenario": self.scenario, "events": events, "entries": entries, "messages": messages }))
+        Ok(
+            serde_json::json!({ "scenario": self.scenario, "events": events, "entries": entries, "messages": messages }),
+        )
     }
 
-    fn scripted_messages(&self) -> Result<Vec<maho_ai::types::AssistantMessage>, Box<dyn std::error::Error + Send + Sync>> {
+    fn scripted_messages(
+        &self,
+    ) -> Result<Vec<maho_ai::types::AssistantMessage>, Box<dyn std::error::Error + Send + Sync>>
+    {
         use maho_ai::providers::faux::{FauxAssistantMessageOptions, faux_assistant_message};
 
         if let Some(responses) = &self.native_responses {
             return Ok(responses.clone());
         }
-        self.script.responses.iter().map(|response| {
-            let stop_reason = serde_json::from_value::<maho_ai::types::StopReason>(Value::String(response.stop_reason.clone()))?;
-            Ok(faux_assistant_message(response.content.clone(), FauxAssistantMessageOptions {
-                stop_reason: Some(stop_reason), timestamp: Some(0), ..Default::default()
-            }))
-        }).collect::<Result<Vec<_>, serde_json::Error>>().map_err(Into::into)
+        self.script
+            .responses
+            .iter()
+            .map(|response| {
+                let stop_reason = serde_json::from_value::<maho_ai::types::StopReason>(
+                    Value::String(response.stop_reason.clone()),
+                )?;
+                Ok(faux_assistant_message(
+                    response.content.clone(),
+                    FauxAssistantMessageOptions {
+                        stop_reason: Some(stop_reason),
+                        timestamp: Some(0),
+                        ..Default::default()
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>, serde_json::Error>>()
+            .map_err(Into::into)
     }
 
     fn load_native_extensions(&self, cwd: &Path) -> maho_ext_host::loader::LoadExtensionsResult {
-        maho_ext_host::loader::load_extensions(self.native_extensions.iter().map(|factory| {
-            maho_ext_host::loader::NativeExtensionFactory {
-                path: factory.path.clone(), source_info: factory.source_info.clone(),
-                extension: Box::new(SharedExtension(Arc::clone(factory))),
-            }
-        }).collect(), cwd, maho_ext_api::ExtensionSessionProfile::default())
+        maho_ext_host::loader::load_extensions(
+            self.native_extensions
+                .iter()
+                .map(|factory| maho_ext_host::loader::NativeExtensionFactory {
+                    path: factory.path.clone(),
+                    source_info: factory.source_info.clone(),
+                    extension: Box::new(SharedExtension(Arc::clone(factory))),
+                })
+                .collect(),
+            cwd,
+            maho_ext_api::ExtensionSessionProfile::default(),
+        )
     }
 
-    fn new_agent_session(&self, provider: &maho_ai::providers::faux::FauxProviderHandle, model: maho_ai::types::Model,
-        cwd: &str, temp: &Path) -> Result<maho_core::agent_session::AgentSession, Box<dyn std::error::Error + Send + Sync>> {
+    fn new_agent_session(
+        &self,
+        provider: &maho_ai::providers::faux::FauxProviderHandle,
+        model: maho_ai::types::Model,
+        cwd: &str,
+        temp: &Path,
+    ) -> Result<maho_core::agent_session::AgentSession, Box<dyn std::error::Error + Send + Sync>>
+    {
         use maho_core::agent_session::{AgentSession, AgentSessionConfig};
 
         let streams = maho_ai::providers::faux::faux_streams(provider.core.clone());
@@ -157,35 +227,68 @@ impl FauxSession {
             // One factory step per provider call, so a model-aware factory can answer each
             // primary/fallback request independently.
             if let Some(factory) = &factory {
-                core.append_responses(vec![maho_ai::providers::faux::FauxResponseStep::Factory(factory.clone())]);
+                core.append_responses(vec![maho_ai::providers::faux::FauxResponseStep::Factory(
+                    factory.clone(),
+                )]);
             }
             streams.stream_simple(model, context, options.map(|options| options.simple))
         });
-        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
-            models_path: Some(temp.join("models.json")),
-            auth_path: Some(temp.join("auth.json")),
-            credentials: Some(Arc::new(maho_core::auth_storage::AuthStorage::in_memory([
-                ("faux".to_owned(), serde_json::json!({"type": "api_key", "key": "faux-test"})),
-            ].into_iter().collect()))),
-            providers: Some(vec![provider.provider.clone()]),
-            ..Default::default()
-        })?;
+        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+            maho_core::model_runtime::CreateModelRuntimeOptions {
+                models_path: Some(temp.join("models.json")),
+                auth_path: Some(temp.join("auth.json")),
+                credentials: Some(Arc::new(maho_core::auth_storage::AuthStorage::in_memory(
+                    [(
+                        "faux".to_owned(),
+                        serde_json::json!({"type": "api_key", "key": "faux-test"}),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ))),
+                providers: Some(vec![provider.provider.clone()]),
+                ..Default::default()
+            },
+        )?;
         Ok(AgentSession::new(AgentSessionConfig {
             agent: maho_agent::Agent::new(maho_agent::AgentOptions {
-                initial_state: Some(maho_agent::agent::PartialAgentState { model: Some(model), ..Default::default() }),
-                stream_fn: Some(stream_fn), ..Default::default()
+                initial_state: Some(maho_agent::agent::PartialAgentState {
+                    model: Some(model),
+                    ..Default::default()
+                }),
+                stream_fn: Some(stream_fn),
+                ..Default::default()
             }),
             session_manager: maho_core::session_manager::SessionManager::in_memory(cwd, None, None),
-            settings_manager: maho_core::settings_manager::SettingsManager::from_storage(Box::new(match &self.settings {
-                Some(settings) => maho_core::settings_manager::InMemorySettingsStorage::with_global_content(serde_json::to_string(settings)?),
-                None => maho_core::settings_manager::InMemorySettingsStorage::default(),
-            }), false),
-            cwd: cwd.to_owned(), agent_dir: Some(cwd.to_owned()), fallback_now: Some(Arc::new(|| 0.0)), retry_random: Some(Arc::new(|| 0.5)),
-            scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: Default::default(), custom_tools: Vec::new(),
-            model_runtime: Some(runtime), model_registry: None, uses_default_stream_function: Some(false),
-            initial_active_tool_names: None, default_tool_names: None, eval_only_tool_names: None,
-            allowed_tool_names: None, excluded_tool_names: None, base_tools_override: None,
-            session_start_event: None, auto_title_sessions: Some(false),
+            settings_manager: maho_core::settings_manager::SettingsManager::from_storage(
+                Box::new(match &self.settings {
+                    Some(settings) => {
+                        maho_core::settings_manager::InMemorySettingsStorage::with_global_content(
+                            serde_json::to_string(settings)?,
+                        )
+                    }
+                    None => maho_core::settings_manager::InMemorySettingsStorage::default(),
+                }),
+                false,
+            ),
+            cwd: cwd.to_owned(),
+            agent_dir: Some(cwd.to_owned()),
+            fallback_now: Some(Arc::new(|| 0.0)),
+            retry_random: Some(Arc::new(|| 0.5)),
+            scoped_models: Vec::new(),
+            favorite_models: Vec::new(),
+            flag_values: Default::default(),
+            custom_tools: Vec::new(),
+            model_runtime: Some(runtime),
+            model_registry: None,
+            uses_default_stream_function: Some(false),
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: Some(false),
         })?)
     }
 
@@ -198,31 +301,58 @@ impl FauxSession {
         let temp = tempfile::tempdir()?;
         let cwd = temp.path().to_string_lossy().into_owned();
         let provider = faux_provider(RegisterFauxProviderOptions {
-            api: Some("faux".to_owned()), tokens_per_second: Some(0.0),
+            api: Some("faux".to_owned()),
+            tokens_per_second: Some(0.0),
             models: (!self.faux_models.is_empty()).then(|| self.faux_models.clone()),
             ..Default::default()
         })?;
-        let model = provider.get_model(Some("faux-1")).ok_or("Missing faux-1 model")?;
+        let model = provider
+            .get_model(Some("faux-1"))
+            .ok_or("Missing faux-1 model")?;
         let script = self.scripted_messages()?;
         let calls = Arc::new(Mutex::new(Vec::new()));
         if self.native_response_factory.is_none() {
-            provider.set_responses(script.iter().map(|message| recording_step(message.clone(), calls.clone(), None)).collect());
+            provider.set_responses(
+                script
+                    .iter()
+                    .map(|message| recording_step(message.clone(), calls.clone(), None))
+                    .collect(),
+            );
         }
         let session = self.new_agent_session(&provider, model, &cwd, temp.path())?;
         let extensions = self.load_native_extensions(temp.path());
         let runner = if extensions.extensions.is_empty() {
-            maho_ext_host::ExtensionRunner::new(Vec::new(), Default::default(), Default::default(), context::create(&session))
+            maho_ext_host::ExtensionRunner::new(
+                Vec::new(),
+                Default::default(),
+                Default::default(),
+                context::create(&session),
+            )
         } else {
             bind_native_extensions(&session, extensions).await
         };
-        Ok(NativeSession { session, runner, provider, script, calls, gate: Arc::new(Mutex::new(None)), inflight: Arc::new(Inflight::default()), temp })
+        Ok(NativeSession {
+            session,
+            runner,
+            provider,
+            script,
+            calls,
+            gate: Arc::new(Mutex::new(None)),
+            inflight: Arc::new(Inflight::default()),
+            temp,
+        })
     }
 }
 
-async fn bind_native_extensions(session: &maho_core::agent_session::AgentSession,
-    extensions: maho_ext_host::loader::LoadExtensionsResult) -> maho_ext_host::ExtensionRunner {
+async fn bind_native_extensions(
+    session: &maho_core::agent_session::AgentSession,
+    extensions: maho_ext_host::loader::LoadExtensionsResult,
+) -> maho_ext_host::ExtensionRunner {
     let runner = maho_ext_host::ExtensionRunner::new(
-        extensions.extensions, extensions.runtime, extensions.events, context::create(session),
+        extensions.extensions,
+        extensions.runtime,
+        extensions.events,
+        context::create(session),
     );
     let registered = runner.get_all_registered_tools();
     let runtime = runner.runtime.clone();
@@ -232,15 +362,26 @@ async fn bind_native_extensions(session: &maho_core::agent_session::AgentSession
     for registered in registered {
         names.push(registered.definition.name.clone());
         let tool_session = session.weak_accessor();
-        let tool = maho_ext_host::wrapper::wrap_registered_tool(registered.clone(), runtime.clone(),
-            Arc::new(move || tool_session().map(|session| context::create(&session))
-                .ok_or_else(|| maho_ext_api::ExtensionFailure::new("Session disposed"))));
+        let tool = maho_ext_host::wrapper::wrap_registered_tool(
+            registered.clone(),
+            runtime.clone(),
+            Arc::new(move || {
+                tool_session()
+                    .map(|session| context::create(&session))
+                    .ok_or_else(|| maho_ext_api::ExtensionFailure::new("Session disposed"))
+            }),
+            Arc::new(maho_ext_host::wrapper::InProcessRunDispatch),
+            maho_ext_api::ToolPlacementInfo::from_definition(&registered.definition),
+        );
         session.register_tool_definition(registered.definition, registered.source_info, tool);
     }
     session.set_active_tools_by_name(names);
-    session.bind_extensions(maho_core::agent_session::ExtensionBindings {
-        mode: Some(maho_ext_api::ExtensionMode::Print), ..Default::default()
-    }).await;
+    session
+        .bind_extensions(maho_core::agent_session::ExtensionBindings {
+            mode: Some(maho_ext_api::ExtensionMode::Print),
+            ..Default::default()
+        })
+        .await;
     handle
 }
 
@@ -270,14 +411,23 @@ impl ResponseGate {
     fn new() -> Self {
         let (entered, entered_keep) = tokio::sync::watch::channel(false);
         let (released, released_keep) = tokio::sync::watch::channel(false);
-        Self { inner: Arc::new(ResponseGateInner { entered, released, _entered_keep: entered_keep, _released_keep: released_keep }) }
+        Self {
+            inner: Arc::new(ResponseGateInner {
+                entered,
+                released,
+                _entered_keep: entered_keep,
+                _released_keep: released_keep,
+            }),
+        }
     }
 
     /// Resolves once the provider has entered the held response.
     pub async fn entered(&self) {
         let mut receiver = self.inner.entered.subscribe();
         while !*receiver.borrow_and_update() {
-            if receiver.changed().await.is_err() { break; }
+            if receiver.changed().await.is_err() {
+                break;
+            }
         }
     }
 
@@ -306,9 +456,19 @@ impl NativeSession {
     }
 
     /// Runs the registered extension tool `name` exactly as the session would.
-    pub async fn execute_tool(&self, name: &str, params: Value) -> Result<maho_agent::types::AgentToolResult, String> {
-        self.session.execute_tool(name, params, maho_core::agent_session::ExecuteToolOptions::default())
-            .await.map_err(|error| error.message)
+    pub async fn execute_tool(
+        &self,
+        name: &str,
+        params: Value,
+    ) -> Result<maho_agent::types::AgentToolResult, String> {
+        self.session
+            .execute_tool(
+                name,
+                params,
+                maho_core::agent_session::ExecuteToolOptions::default(),
+            )
+            .await
+            .map_err(|error| error.message)
     }
 
     /// Switches the active model, as `session.setModel` does.
@@ -320,36 +480,68 @@ impl NativeSession {
     /// later `set_model` passes the `checkAuth` admission (agent-session.ts:5148).
     pub fn configure_provider_key(&self, provider: &str, key: &str) -> Result<(), String> {
         let mut runtime = self.session.model_runtime().clone();
-        runtime.register_provider(provider, maho_core::provider_composer::ProviderConfigInput {
-            config: maho_core::model_config_schema::ModelsJsonProvider { api_key: Some(key.to_owned()), ..Default::default() },
-            ..Default::default()
-        })
+        runtime.register_provider(
+            provider,
+            maho_core::provider_composer::ProviderConfigInput {
+                config: maho_core::model_config_schema::ModelsJsonProvider {
+                    api_key: Some(key.to_owned()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
     }
 
     /// Emits `before_provider_request` with the given payload and effective model and returns the
     /// resulting payload (the injector's output).
-    pub async fn emit_before_provider_request(&self, payload: Value, model: Option<maho_ai::types::Model>) -> Result<Value, String> {
+    pub async fn emit_before_provider_request(
+        &self,
+        payload: Value,
+        model: Option<maho_ai::types::Model>,
+    ) -> Result<Value, String> {
         let mut runner = self.runner.clone();
-        runner.emit_before_provider_request_with_metadata(payload, model, None, None).await.map_err(|error| error.message)
+        runner
+            .emit_before_provider_request_with_metadata(payload, model, None, None)
+            .await
+            .map_err(|error| error.message)
     }
 
     /// Emits `before_agent_start` and returns the resulting system prompt.
-    pub async fn emit_before_agent_start(&self, prompt: &str, system_prompt: &str) -> Result<Option<String>, String> {
+    pub async fn emit_before_agent_start(
+        &self,
+        prompt: &str,
+        system_prompt: &str,
+    ) -> Result<Option<String>, String> {
         let mut runner = self.runner.clone();
-        let combined = runner.emit_before_agent_start(maho_ext_api::BeforeAgentStartEvent {
-            prompt: prompt.to_owned(), images: None, system_prompt: system_prompt.to_owned(),
-            trigger: "prompt".into(), preview: false,
-            system_prompt_options: Default::default(),
-        }).await.map_err(|error| error.message)?;
+        let combined = runner
+            .emit_before_agent_start(maho_ext_api::BeforeAgentStartEvent {
+                prompt: prompt.to_owned(),
+                images: None,
+                system_prompt: system_prompt.to_owned(),
+                trigger: "prompt".into(),
+                preview: false,
+                system_prompt_options: Default::default(),
+            })
+            .await
+            .map_err(|error| error.message)?;
         Ok(combined.and_then(|combined| combined.system_prompt))
     }
 
     /// Emits `resources_discover` and returns the contributed skill paths.
     pub async fn discover_skills(&self) -> Result<Vec<String>, String> {
         let mut runner = self.runner.clone();
-        let resources = runner.emit_resources_discover(self.session.cwd().into(), maho_ext_api::SessionReason::Startup)
-            .await.map_err(|error| error.message)?;
-        Ok(resources.skill_paths.into_iter().map(|entry| entry.path).collect())
+        let resources = runner
+            .emit_resources_discover(
+                self.session.cwd().into(),
+                maho_ext_api::SessionReason::Startup,
+            )
+            .await
+            .map_err(|error| error.message)?;
+        Ok(resources
+            .skill_paths
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect())
     }
 
     /// Drives `session.prompt` for the concurrency cases and dispatches a leading slash command
@@ -362,7 +554,10 @@ impl NativeSession {
         let guard = InflightGuard::new(self.inflight.clone());
         tokio::spawn(async move {
             let _guard = guard;
-            session.prompt(&text, maho_core::agent_session::PromptOptions::default()).await.map(|_| ())
+            session
+                .prompt(&text, maho_core::agent_session::PromptOptions::default())
+                .await
+                .map(|_| ())
         })
     }
 
@@ -374,10 +569,22 @@ impl NativeSession {
     /// settled — so the contract holds for both.
     pub fn hold_next_response(&self) -> ResponseGate {
         let gate = ResponseGate::new();
-        let consumed = self.script.len().saturating_sub(self.provider.get_pending_response_count());
-        let steps = self.script.iter().enumerate()
+        let consumed = self
+            .script
+            .len()
+            .saturating_sub(self.provider.get_pending_response_count());
+        let steps = self
+            .script
+            .iter()
+            .enumerate()
             .filter(|(index, _)| *index >= consumed)
-            .map(|(index, message)| recording_step(message.clone(), self.calls.clone(), (index == consumed).then(|| gate.clone())))
+            .map(|(index, message)| {
+                recording_step(
+                    message.clone(),
+                    self.calls.clone(),
+                    (index == consumed).then(|| gate.clone()),
+                )
+            })
             .collect();
         self.provider.set_responses(steps);
         *self.gate.lock().unwrap_or_else(PoisonError::into_inner) = Some(gate.clone());
@@ -390,26 +597,40 @@ impl NativeSession {
     /// Consumes the handle, so the temp cwd drops only after the session and its tasks are torn
     /// down.
     pub async fn close(self) {
-        if let Some(gate) = self.gate.lock().unwrap_or_else(PoisonError::into_inner).take() {
+        if let Some(gate) = self
+            .gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
             gate.release();
         }
         self.session.abort().await;
         self.inflight.drain().await;
-        self.session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;
+        self.session
+            .emit_session_shutdown(maho_ext_api::SessionReason::Quit)
+            .await;
         self.session.dispose().await;
     }
 
     /// Every provider call the session made, in order (context + options).
     pub fn provider_calls(&self) -> Vec<ProviderCall> {
-        self.calls.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// The LLM messages the session recorded, in order (`AgentMessage::Llm` unwrapped).
     pub fn messages(&self) -> Vec<maho_ai::types::Message> {
-        self.session.messages().into_iter().filter_map(|message| match message {
-            maho_agent::types::AgentMessage::Llm(message) => Some(message),
-            maho_agent::types::AgentMessage::Custom(_) => None,
-        }).collect()
+        self.session
+            .messages()
+            .into_iter()
+            .filter_map(|message| match message {
+                maho_agent::types::AgentMessage::Llm(message) => Some(message),
+                maho_agent::types::AgentMessage::Custom(_) => None,
+            })
+            .collect()
     }
 }
 
@@ -425,7 +646,9 @@ impl Inflight {
             let notified = self.settled.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if self.pending.load(std::sync::atomic::Ordering::SeqCst) == 0 { return; }
+            if self.pending.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                return;
+            }
             notified.await;
         }
     }
@@ -435,41 +658,58 @@ struct InflightGuard(Arc<Inflight>);
 
 impl InflightGuard {
     fn new(inflight: Arc<Inflight>) -> Self {
-        inflight.pending.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        inflight
+            .pending
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Self(inflight)
     }
 }
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        self.0.pending.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0
+            .pending
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         self.0.settled.notify_waiters();
     }
 }
 
-fn recording_step(message: maho_ai::types::AssistantMessage, calls: Arc<Mutex<Vec<ProviderCall>>>,
-    gate: Option<ResponseGate>) -> maho_ai::providers::faux::FauxResponseStep {
-    maho_ai::providers::faux::FauxResponseStep::Factory(Arc::new(move |context, options, _state, _model| {
-        let calls = calls.clone();
-        let message = message.clone();
-        let gate = gate.clone();
-        let context = context.clone();
-        let options = options.cloned();
-        Box::pin(async move {
-            calls.lock().unwrap_or_else(PoisonError::into_inner).push(ProviderCall { context, options });
-            if let Some(gate) = gate {
-                let _ = gate.inner.entered.send(true);
-                let mut released = gate.inner.released.subscribe();
-                while !*released.borrow_and_update() {
-                    if released.changed().await.is_err() { break; }
+fn recording_step(
+    message: maho_ai::types::AssistantMessage,
+    calls: Arc<Mutex<Vec<ProviderCall>>>,
+    gate: Option<ResponseGate>,
+) -> maho_ai::providers::faux::FauxResponseStep {
+    maho_ai::providers::faux::FauxResponseStep::Factory(Arc::new(
+        move |context, options, _state, _model| {
+            let calls = calls.clone();
+            let message = message.clone();
+            let gate = gate.clone();
+            let context = context.clone();
+            let options = options.cloned();
+            Box::pin(async move {
+                calls
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(ProviderCall { context, options });
+                if let Some(gate) = gate {
+                    let _ = gate.inner.entered.send(true);
+                    let mut released = gate.inner.released.subscribe();
+                    while !*released.borrow_and_update() {
+                        if released.changed().await.is_err() {
+                            break;
+                        }
+                    }
                 }
-            }
-            message
-        })
-    }))
+                message
+            })
+        },
+    ))
 }
 
-pub fn run_faux_scenario(scenario: &str, omo: bool) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+pub fn run_faux_scenario(
+    scenario: &str,
+    omo: bool,
+) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

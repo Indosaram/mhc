@@ -49,48 +49,16 @@ pub fn credential_kind(credential: &Value) -> Option<CredentialKind> {
     }
 }
 
-/// A slot's kind from its own material (senpi pool `slotKind`): OAuth tokens make an OAuth login, a
-/// key alone makes an API key; a slot with neither is not classified.
-pub fn slot_kind(slot: &Value) -> Option<CredentialKind> {
-    if slot.get("access").is_some_and(|v| !v.is_null())
-        || slot.get("refresh").is_some_and(|v| !v.is_null())
-    {
-        return Some(CredentialKind::Oauth);
-    }
-    slot.get("key")
-        .is_some_and(|v| !v.is_null())
-        .then_some(CredentialKind::ApiKey)
+/// The typed pool view of a stored credential, for the shared pi-ai pool kind helpers.
+fn pooled_credential(credential: &Value) -> Option<maho_ai::auth::pool::slots::PooledCredential> {
+    serde_json::from_value(credential.clone()).ok()
 }
 
-/// Kinds held by a credential's slots that its top-level type cannot use (senpi `unusedSlotKinds`).
-pub fn unused_slot_kinds(credential: &Value) -> Vec<CredentialKind> {
-    if !credential.get("accounts").is_some_and(Value::is_array) {
-        return Vec::new();
+fn from_pool_kind(kind: maho_ai::auth::pool::kinds::CredentialKind) -> CredentialKind {
+    match kind {
+        maho_ai::auth::pool::kinds::CredentialKind::OAuth => CredentialKind::Oauth,
+        maho_ai::auth::pool::kinds::CredentialKind::ApiKey => CredentialKind::ApiKey,
     }
-    let own = credential_kind(credential);
-    let mut kinds = Vec::new();
-    for slot in crate::credential_accounts::stored_slots(credential) {
-        if let Some(kind) = slot_kind(&slot)
-            && Some(kind) != own
-            && !kinds.contains(&kind)
-        {
-            kinds.push(kind);
-        }
-    }
-    kinds
-}
-
-/// The slots a credential can actually use: a slot of the other kind never projects (senpi `slotsOfOwnKind`).
-pub fn slots_of_own_kind(credential: &Value) -> Vec<Value> {
-    let other = match credential_kind(credential) {
-        Some(CredentialKind::Oauth) => Some(CredentialKind::ApiKey),
-        Some(CredentialKind::ApiKey) => Some(CredentialKind::Oauth),
-        None => None,
-    };
-    crate::credential_accounts::stored_slots(credential)
-        .into_iter()
-        .filter(|slot| other.is_none() || slot_kind(slot) != other)
-        .collect()
 }
 
 fn kind_label(kind: CredentialKind) -> &'static str {
@@ -116,11 +84,15 @@ pub fn unused_login_notices(data: &AuthStorageData) -> Vec<AuthNotice> {
         let Some(in_use_kind) = credential_kind(credential) else {
             continue;
         };
-        for kind in unused_slot_kinds(credential) {
-            let names: Vec<String> = crate::credential_accounts::stored_slots(credential)
+        let Some(pooled) = pooled_credential(credential) else {
+            continue;
+        };
+        for pool_kind in maho_ai::auth::pool::kinds::unused_slot_kinds(Some(&pooled)) {
+            let kind = from_pool_kind(pool_kind);
+            let names: Vec<String> = maho_ai::auth::pool::slots::list_slots(Some(&pooled))
                 .iter()
-                .filter(|slot| slot_kind(slot) == Some(kind))
-                .filter_map(|slot| slot.get("name").and_then(Value::as_str).map(str::to_owned))
+                .filter(|slot| maho_ai::auth::pool::kinds::slot_kind(slot) == Some(pool_kind))
+                .map(|slot| slot.name.clone())
                 .collect();
             let in_use = kind_label(in_use_kind);
             notices.push(AuthNotice {

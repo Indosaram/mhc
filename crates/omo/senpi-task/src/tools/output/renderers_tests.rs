@@ -2,10 +2,14 @@
 
 use pretty_assertions::assert_eq;
 
-use crate::state::{ResidencyState, ResolvedModelRecord, ResolvedModelSource, TaskRunStats, TaskStatus};
+use crate::state::{
+    ResidencyState, ResolvedModelRecord, ResolvedModelSource, TaskRunStats, TaskStatus,
+};
 use crate::tools::control::tool_result::tool_result;
 use crate::tools::output::output::TaskOutputInput;
-use crate::tools::output::renderers::{ToolRenderResultOptions, render_task_output_call, render_task_output_result};
+use crate::tools::output::renderers::{
+    ToolRenderResultOptions, render_task_output_call, render_task_output_result,
+};
 use crate::tools::output::types::{
     SuspendedDetails, TaskOutputDetails, TaskSnapshot, TranscriptMode, TranscriptSource,
 };
@@ -54,7 +58,11 @@ const RESULT_OPTIONS: ToolRenderResultOptions = ToolRenderResultOptions {
 };
 
 fn first_line(component: &dyn LinesComponent, width: usize) -> String {
-    component.render(width).into_iter().next().unwrap_or_default()
+    component
+        .render(width)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
 }
 
 fn expect_no_terminal_controls(value: &str) {
@@ -92,6 +100,7 @@ fn snapshot() -> TaskSnapshot {
         error_message: None,
         run_stats: None,
         lost: None,
+        stop: None,
     }
 }
 
@@ -99,8 +108,13 @@ fn running() -> TaskStatus {
     TaskStatus::parse("running").expect("running status")
 }
 
-fn render_result_line(detail: TaskOutputDetails, theme: &dyn RendererTheme, width: usize) -> String {
-    let component = render_task_output_result(&tool_result("ignored", detail), &RESULT_OPTIONS, theme);
+fn render_result_line(
+    detail: TaskOutputDetails,
+    theme: &dyn RendererTheme,
+    width: usize,
+) -> String {
+    let component =
+        render_task_output_result(&tool_result("ignored", detail), &RESULT_OPTIONS, theme);
     first_line(&component, width)
 }
 
@@ -111,10 +125,14 @@ fn status_line(snapshot: TaskSnapshot) -> String {
 // ---- task_output renderers ----
 
 #[test]
-fn given_task_output_arguments_when_rendering_calls_then_rows_show_target_mode_peek_and_only_relevant_tail_lines() {
+fn given_task_output_arguments_when_rendering_calls_then_rows_show_target_mode_peek_and_only_relevant_tail_lines()
+ {
     // given / when
-    let tail_args = call_input(serde_json::json!({ "name": "long-running-explorer", "mode": "tail", "tail_lines": 20 }));
-    let status_args = call_input(serde_json::json!({ "task_id": "st_1", "mode": "status", "tail_lines": 20 }));
+    let tail_args = call_input(
+        serde_json::json!({ "name": "long-running-explorer", "mode": "tail", "tail_lines": 20 }),
+    );
+    let status_args =
+        call_input(serde_json::json!({ "task_id": "st_1", "mode": "status", "tail_lines": 20 }));
     let tail_line = first_line(&render_task_output_call(&tail_args, &TestTheme), 96);
     let status_line = first_line(&render_task_output_call(&status_args, &TestTheme), 96);
 
@@ -147,7 +165,8 @@ fn given_a_long_multiline_korean_and_english_target_when_rendering_with_ansi_at_
 }
 
 #[test]
-fn given_a_width_smaller_than_the_fixed_call_tokens_when_rendering_task_output_then_the_complete_ansi_row_is_clamped() {
+fn given_a_width_smaller_than_the_fixed_call_tokens_when_rendering_task_output_then_the_complete_ansi_row_is_clamped()
+ {
     // given / when
     let args = call_input(serde_json::json!({ "name": "abcdef", "mode": "status" }));
     let line = first_line(&render_task_output_call(&args, &AnsiTheme), 20);
@@ -158,7 +177,8 @@ fn given_a_width_smaller_than_the_fixed_call_tokens_when_rendering_task_output_t
 }
 
 #[test]
-fn given_every_result_detail_kind_when_rendering_compact_rows_then_rows_are_exhaustive_and_transcripts_are_not_echoed() {
+fn given_every_result_detail_kind_when_rendering_compact_rows_then_rows_are_exhaustive_and_transcripts_are_not_echoed()
+ {
     // given
     let details = vec![
         TaskOutputDetails::Status {
@@ -204,7 +224,8 @@ fn given_every_result_detail_kind_when_rendering_compact_rows_then_rows_are_exha
 }
 
 #[test]
-fn given_a_task_summary_snapshot_when_the_status_row_renders_then_the_summary_leads_over_the_description() {
+fn given_a_task_summary_snapshot_when_the_status_row_renders_then_the_summary_leads_over_the_description()
+ {
     // given / when
     let line = status_line(TaskSnapshot {
         name: Some("task-1".to_string()),
@@ -221,7 +242,8 @@ fn given_a_task_summary_snapshot_when_the_status_row_renders_then_the_summary_le
 }
 
 #[test]
-fn given_a_described_task_when_the_status_row_renders_then_the_human_label_leads_and_the_id_trails() {
+fn given_a_described_task_when_the_status_row_renders_then_the_human_label_leads_and_the_id_trails()
+{
     // given / when
     let line = status_line(TaskSnapshot {
         name: Some("task-1".to_string()),
@@ -259,7 +281,8 @@ fn given_long_multiline_korean_and_english_known_tasks_when_rendering_not_found_
 }
 
 #[test]
-fn given_resolved_model_details_when_the_status_row_renders_then_the_canonical_target_token_is_used() {
+fn given_resolved_model_details_when_the_status_row_renders_then_the_canonical_target_token_is_used()
+ {
     // given / when
     let with_resolved = status_line(TaskSnapshot {
         category: Some("quick".to_string()),
@@ -277,13 +300,17 @@ fn given_resolved_model_details_when_the_status_row_renders_then_the_canonical_t
     });
 
     // then blank effort falls back to the variant, and an unresolved model keeps a model token
-    assert!(with_resolved.contains("category:quick(openai/gpt-5.6-sol:xhigh)"), "{with_resolved}");
+    assert!(
+        with_resolved.contains("category:quick(openai/gpt-5.6-sol:xhigh)"),
+        "{with_resolved}"
+    );
     assert!(!with_resolved.contains("reasoning"));
     assert!(raw.contains("model:anthropic/claude-sonnet-4-5"), "{raw}");
 }
 
 #[test]
-fn given_injected_controls_in_task_output_model_metadata_when_the_status_row_renders_then_it_is_plain_and_sanitized() {
+fn given_injected_controls_in_task_output_model_metadata_when_the_status_row_renders_then_it_is_plain_and_sanitized()
+ {
     // given
     let snap = TaskSnapshot {
         category: Some("quick".to_string()),
@@ -301,7 +328,10 @@ fn given_injected_controls_in_task_output_model_metadata_when_the_status_row_ren
     let line = status_line(snap);
 
     // then
-    assert!(line.contains("category:quick(openai/gpt-5.6-sol:xhigh)"), "{line}");
+    assert!(
+        line.contains("category:quick(openai/gpt-5.6-sol:xhigh)"),
+        "{line}"
+    );
     expect_no_terminal_controls(&line);
 }
 
@@ -327,7 +357,8 @@ fn given_injected_controls_in_a_task_output_result_when_rendered_then_dynamic_co
 // ---- task_output run stats rendering ----
 
 #[test]
-fn given_a_terminal_snapshot_with_run_stats_when_the_status_row_renders_then_runtime_and_tps_are_shown() {
+fn given_a_terminal_snapshot_with_run_stats_when_the_status_row_renders_then_runtime_and_tps_are_shown()
+ {
     // given
     let snap = TaskSnapshot {
         run_stats: Some(TaskRunStats {
@@ -356,7 +387,8 @@ fn given_a_terminal_snapshot_with_run_stats_when_the_status_row_renders_then_run
 }
 
 #[test]
-fn given_run_stats_with_cost_and_cache_hits_when_the_status_row_renders_then_the_cost_token_sits_immediately_before_tps() {
+fn given_run_stats_with_cost_and_cache_hits_when_the_status_row_renders_then_the_cost_token_sits_immediately_before_tps()
+ {
     // given
     let snap = TaskSnapshot {
         run_stats: Some(TaskRunStats {
@@ -383,7 +415,8 @@ fn given_run_stats_with_cost_and_cache_hits_when_the_status_row_renders_then_the
 }
 
 #[test]
-fn given_run_stats_with_cost_but_no_cache_facts_when_the_status_row_renders_then_only_the_cost_is_shown_before_tps() {
+fn given_run_stats_with_cost_but_no_cache_facts_when_the_status_row_renders_then_only_the_cost_is_shown_before_tps()
+ {
     // given
     let snap = TaskSnapshot {
         run_stats: Some(TaskRunStats {
@@ -463,7 +496,8 @@ fn given_an_rpc_detached_snapshot_when_the_status_row_renders_then_it_shows_susp
 }
 
 #[test]
-fn given_a_resident_snapshot_when_the_status_row_renders_then_the_status_label_is_unchanged_regression_pin() {
+fn given_a_resident_snapshot_when_the_status_row_renders_then_the_status_label_is_unchanged_regression_pin()
+ {
     // given
     let snap = TaskSnapshot {
         status: running(),

@@ -4,6 +4,7 @@ mod admission_lease;
 mod batch_admission;
 mod batch_admission_race;
 mod destroy;
+mod pending_cancel;
 mod reconcile;
 mod reconcile_multi_session;
 mod reconcile_reattach;

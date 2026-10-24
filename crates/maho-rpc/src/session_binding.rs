@@ -123,6 +123,20 @@ pub fn session_event_record(
             optional!(record, "finalError", final_error);
             record
         }
+        E::SessionToolChild {
+            state,
+            generation,
+            pid,
+        } => json!({"type":"session_tool_child","state":state,"generation":generation,"pid":pid}),
+        E::OffloadModuleStuck {
+            module_path,
+            export,
+            deadline_ms,
+            files,
+            notice,
+        } => {
+            json!({"type":"offload_module_stuck","modulePath":module_path,"export":export,"deadlineMs":deadline_ms,"files":files,"notice":notice})
+        }
         E::ContinuationError { error_message } => {
             json!({"type":"continuation_error","errorMessage":error_message})
         }

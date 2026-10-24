@@ -28,7 +28,7 @@ const RESULT_OPTIONS: ToolRenderResultOptions = ToolRenderResultOptions {
 
 #[test]
 fn given_a_completed_task_with_run_stats_when_the_status_row_renders_then_duration_tool_count_and_tps_stay_adjacent()
-{
+ {
     // given
     let residency_state = ResidencyState::Resident;
     let run_stats: TaskRunStats = serde_json::from_value(json!({
@@ -64,16 +64,23 @@ fn given_a_completed_task_with_run_stats_when_the_status_row_renders_then_durati
             error_message: None,
             run_stats: Some(run_stats),
             lost: None,
+            stop: None,
         },
     };
 
     // when
     let theme = TestTheme;
-    let lines = render_task_output_result(&tool_result("ignored", details), &RESULT_OPTIONS, &theme).render(200);
+    let lines =
+        render_task_output_result(&tool_result("ignored", details), &RESULT_OPTIONS, &theme)
+            .render(200);
     let line = lines.first().cloned().unwrap_or_default();
 
     // then
-    assert_eq!(line.contains("task_output st_done completed"), true, "line: {line}");
+    assert_eq!(
+        line.contains("task_output st_done completed"),
+        true,
+        "line: {line}"
+    );
     assert_eq!(
         line.contains("· ran 2m 14s · 5 tools · 118 tok/s"),
         true,

@@ -39,7 +39,8 @@
     "ulw-loop",
     "ulw-plan",
     "ulw-research",
-    "visual-qa"
+    "visual-qa",
+    "visualize"
   ],
   "retired": [
     "start-work"
@@ -634,7 +635,7 @@
     "frontend": [
       {
         "path": "ATTRIBUTION.md",
-        "bytes": 13403,
+        "bytes": 14411,
         "sha256": null,
         "source": "packages/shared-skills/skills/frontend/ATTRIBUTION.md"
       },
@@ -646,26 +647,26 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 21159,
+        "bytes": 23704,
         "sha256": null,
         "source": "packages/shared-skills/skills/frontend/SKILL.md"
       },
       {
         "path": "references/design/README.md",
-        "bytes": 27682,
+        "bytes": 28376,
         "sha256": null,
         "source": "packages/shared-skills/skills/frontend/references/design/README.md"
       },
       {
         "path": "references/design/_INDEX.md",
-        "bytes": 17171,
+        "bytes": 17535,
         "sha256": null,
         "source": "packages/shared-skills/skills/frontend/references/design/_INDEX.md"
       },
       {
         "path": "references/design/ambience-skill.md",
-        "bytes": 18314,
-        "sha256": "28255c9b9f4b5a7c5e25c7a03fa914d10ac5abd235d4c0db7d8e9082f92515f9",
+        "bytes": 18383,
+        "sha256": null,
         "source": "packages/shared-skills/skills/frontend/references/design/ambience-skill.md"
       },
       {
@@ -681,14 +682,20 @@
         "source": "packages/shared-skills/skills/frontend/references/design/clone-from-url.md"
       },
       {
+        "path": "references/design/component-catalogs.md",
+        "bytes": 8807,
+        "sha256": "01ee071f308c87c489635fa86cc70fd4e634f6b0bf11f7ee3945671f3b5540bd",
+        "source": "packages/shared-skills/skills/frontend/references/design/component-catalogs.md"
+      },
+      {
         "path": "references/design/design-system-architecture.md",
-        "bytes": 14720,
+        "bytes": 14806,
         "sha256": null,
         "source": "packages/shared-skills/skills/frontend/references/design/design-system-architecture.md"
       },
       {
         "path": "references/design/interaction-skill.md",
-        "bytes": 16388,
+        "bytes": 16457,
         "sha256": null,
         "source": "packages/shared-skills/skills/frontend/references/design/interaction-skill.md"
       },
@@ -778,7 +785,7 @@
       },
       {
         "path": "references/perfection/README.md",
-        "bytes": 11790,
+        "bytes": 12450,
         "sha256": null,
         "source": "packages/shared-skills/skills/frontend/references/perfection/README.md"
       },
@@ -787,6 +794,222 @@
         "bytes": 7898,
         "sha256": null,
         "source": "packages/shared-skills/skills/frontend/references/perfection/react-perf-tooling.md"
+      },
+      {
+        "path": "scripts/perfection/accent-stripes/color.ts",
+        "bytes": 5775,
+        "sha256": "6042c8e77b4f9c7a8d5c80294b53443ab8dca5bacc07e7c12786a6fdc3e8639d",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/accent-stripes/color.ts"
+      },
+      {
+        "path": "scripts/perfection/accent-stripes/css-parse.ts",
+        "bytes": 3606,
+        "sha256": "def76909700fcbce97a5d0614369b7a7dfbe8ca7165205ca5c9c1e8634db2d19",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/accent-stripes/css-parse.ts"
+      },
+      {
+        "path": "scripts/perfection/accent-stripes/declarations.ts",
+        "bytes": 7448,
+        "sha256": "e43495f4afb332628a076aa2e6411b32a301afd1353f507cea0d0bae78272598",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/accent-stripes/declarations.ts"
+      },
+      {
+        "path": "scripts/perfection/accent-stripes/findings.ts",
+        "bytes": 1317,
+        "sha256": "c81647b7e8871e2fe27636375ec770c6f6ca280fe370933e7abfda58f9a2c17c",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/accent-stripes/findings.ts"
+      },
+      {
+        "path": "scripts/perfection/accent-stripes/gradient.ts",
+        "bytes": 2807,
+        "sha256": "966cd400a20f32432be70f08b5dea926a3e4445e1991de6548166d84f7476448",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/accent-stripes/gradient.ts"
+      },
+      {
+        "path": "scripts/perfection/accent-stripes/lint.ts",
+        "bytes": 5200,
+        "sha256": "a0e23ec115c767379b61aa354b4f5d5fb845249f2d49a0eb49934622c7d5ce81",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/accent-stripes/lint.ts"
+      },
+      {
+        "path": "scripts/perfection/accent-stripes/markup.ts",
+        "bytes": 6077,
+        "sha256": "41613c3da4d289baeabf45689c6af6d4dbcdf1a16e94908adc2f17fc998b8e2c",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/accent-stripes/markup.ts"
+      },
+      {
+        "path": "scripts/perfection/accent-stripes/selector.ts",
+        "bytes": 1820,
+        "sha256": "2afbd285e4f67b0ed0bdf3a7458b8375defdfd6ea4405af017fcc555bebdc6c4",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/accent-stripes/selector.ts"
+      },
+      {
+        "path": "scripts/perfection/accent-stripes/tailwind.ts",
+        "bytes": 5829,
+        "sha256": "d207bdf8f4862b0236efa09deef4579f5471d001d6e4e861326821a281927892",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/accent-stripes/tailwind.ts"
+      },
+      {
+        "path": "scripts/perfection/check-accent-stripes.ts",
+        "bytes": 2163,
+        "sha256": "ea8164a2f73ae4fa74a25c8a222c841f7d2754f0984302a88cdce2df83dc1b28",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/check-accent-stripes.ts"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/negative/exempt-states.css",
+        "bytes": 313,
+        "sha256": "d5b053002a2d412079cb3cff2c76d12ef968e3aee67522f4eec1b228792b1779",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/negative/exempt-states.css"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/negative/full-surface-gradients.css",
+        "bytes": 790,
+        "sha256": "d16243111121f4c663f4b71e1bfd486ec7a2b3f8add8ea542f826990be77ab0a",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/negative/full-surface-gradients.css"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/negative/inline-ok.tsx",
+        "bytes": 355,
+        "sha256": "b08ec6abc5dec0459f5a171adb09d2956fe3c11bed5ab56ccf5f6e865ed85d37",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/negative/inline-ok.tsx"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/negative/neutral-and-flat.css",
+        "bytes": 403,
+        "sha256": "491e60756881d1b98b7e451bf9bacf47d074ced83c5d1c7aa53ac75f44dadd36",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/negative/neutral-and-flat.css"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/negative/pseudo-overlays.css",
+        "bytes": 290,
+        "sha256": "02e41650f93b938baabc1d3ab14ecc3005317fb66697b52425b102827208bc1c",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/negative/pseudo-overlays.css"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/negative/tailwind-ok.tsx",
+        "bytes": 879,
+        "sha256": "20fc61ab6b7a421758ac47d9f3586a9115a2760d49c85639730cff7151b8466b",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/negative/tailwind-ok.tsx"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/negative/uniform-and-rings.css",
+        "bytes": 213,
+        "sha256": "2b9ea798d12d8d1a78ec3a0f0957423bf7e7a473f730b6b492d1959444b2992d",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/negative/uniform-and-rings.css"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/negative/wide-blocks-and-hairlines.css",
+        "bytes": 259,
+        "sha256": "dddbdcf97588d5c9f984237c5b9fccfd2eda944dadec1073f49d454fe1bbfb46",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/negative/wide-blocks-and-hairlines.css"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/accent-outlines.css",
+        "bytes": 250,
+        "sha256": "8faac452e310daf98d4252ab8f9437caee587e767954dfe84191142f252e6141",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/accent-outlines.css"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/accent-outlines.tsx",
+        "bytes": 342,
+        "sha256": "00568470574857acc568bbbc97c1bb4afbd3fa6507cbd4f3a18ef698984c6c6b",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/accent-outlines.tsx"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/apply.css",
+        "bytes": 70,
+        "sha256": "2d2f42bd9b2956fc2dd7ff2e5a9b9c88df8f317621dd0e408d69a04e0c94babe",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/apply.css"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/border-top-card.css",
+        "bytes": 91,
+        "sha256": "1a85e46a02d05537ce699bada64635b9da289dd74403fd719579b8075528784a",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/border-top-card.css"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/cva-variant.ts",
+        "bytes": 78,
+        "sha256": "15e4046f736e1ca729d00bcb6b971a8b4d552268b4af0de0dfaad3187b3a2b73",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/cva-variant.ts"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/flat-stripe-side.tsx",
+        "bytes": 639,
+        "sha256": "53ef050ca7e29488110df6e60b5de91ba505b0eafd565676ac00d00ebf277147",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/flat-stripe-side.tsx"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/gradient-edges.css",
+        "bytes": 572,
+        "sha256": "6faf1290abc12fc2f993ea85ed2ff8567fe9c04d490d75acf79c2f5e5d391090",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/gradient-edges.css"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/inline-styles.tsx",
+        "bytes": 215,
+        "sha256": "b616f6e765e2b244a62130937c0cfded2e3c382e9566ae603f1607d70bb09a0d",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/inline-styles.tsx"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/inset-shadow.css",
+        "bytes": 112,
+        "sha256": "9d068ead7cab6bf58a71ad7650d9a1dc35a9d6aa3fda49bdf378b36c088446fa",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/inset-shadow.css"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/non-visible-focus-and-nested.tsx",
+        "bytes": 280,
+        "sha256": "88762fcac2fc0482f8aee3a811f6f7a9fe3b820d067279f0b1ed802d126b897b",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/non-visible-focus-and-nested.tsx"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/pseudo-bar.css",
+        "bytes": 189,
+        "sha256": "62cff00fb019bc0d72facb7c670078fe1784579db37f03e1409a5490385c9d9f",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/pseudo-bar.css"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/report-callouts.html",
+        "bytes": 435,
+        "sha256": "2a49c6540d0ffff773dfc154ccbc72ce6dd28a1196c1106a0c35b5c625d6e83f",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/report-callouts.html"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/split-rule-and-token.scss",
+        "bytes": 270,
+        "sha256": "443627d6196cbc15c8dfa6983478959a031f287a502d9f78d20518fdcd03e439",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/split-rule-and-token.scss"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/square-surfaces.css",
+        "bytes": 344,
+        "sha256": "63f4e970482fe4caf8f91eb6c2fcd98635f0d7fb2a35437423c559588cd88986",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/square-surfaces.css"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/styled-components.tsx",
+        "bytes": 337,
+        "sha256": "473a4ecedbfff7b6f89b22e36d1f48bb5c547333482f8ee8ab0ce6bfb4d79542",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/styled-components.tsx"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/tailwind-cards.tsx",
+        "bytes": 302,
+        "sha256": "b676bdd4fec7ba289a19100dd3a5675853931cab52236d5046e16ee771b9fc48",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/tailwind-cards.tsx"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/tailwind-inset-and-style.vue",
+        "bytes": 233,
+        "sha256": "f9016c6ec827bfb2a69bb62da99543451edefe68570e0bd71aed55e1475c2460",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/tailwind-inset-and-style.vue"
+      },
+      {
+        "path": "scripts/perfection/fixtures/accent-stripes/positive/tailwind-pseudo.html",
+        "bytes": 157,
+        "sha256": "9c6a6baca6cfa60307b7d74df70c3c4bf1576141b326bb6aa2fd4549e7fc000c",
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/tailwind-pseudo.html"
       },
       {
         "path": "scripts/perfection/lighthouse-audit.py",
@@ -1906,13 +2129,13 @@
         "path": "ATTRIBUTION.md",
         "bytes": 3149,
         "sha256": null,
-        "source": "packages/omo-senpi/skills/ulw-research/ATTRIBUTION.md"
+        "source": "packages/shared-skills/skills/ulw-research/ATTRIBUTION.md"
       },
       {
         "path": "SKILL.md",
-        "bytes": 56205,
+        "bytes": 59187,
         "sha256": null,
-        "source": "packages/omo-senpi/skills/ulw-research/SKILL.md"
+        "source": "packages/shared-skills/skills/ulw-research/SKILL.md"
       },
       {
         "path": "references/deliverable-phase.md",
@@ -1924,13 +2147,19 @@
         "path": "references/latex-report.md",
         "bytes": 11863,
         "sha256": null,
-        "source": "packages/omo-senpi/skills/ulw-research/references/latex-report.md"
+        "source": "packages/shared-skills/skills/ulw-research/references/latex-report.md"
       },
       {
         "path": "references/report-gates.md",
         "bytes": 7658,
         "sha256": null,
         "source": "packages/shared-skills/skills/ulw-research/references/report-gates.md"
+      },
+      {
+        "path": "references/report-visualization.md",
+        "bytes": 15093,
+        "sha256": "f4305c64f122c4a776564755f3c2ca1d91ef5d13f8484cdd3fdd9d249d168ffd",
+        "source": "packages/shared-skills/skills/ulw-research/references/report-visualization.md"
       },
       {
         "path": "scripts/cli-support.mjs",
@@ -2126,6 +2355,14 @@
         "sha256": null,
         "source": "packages/shared-skills/skills/visual-qa/scripts/visual-qa.mjs"
       }
+    ],
+    "visualize": [
+      {
+        "path": "SKILL.md",
+        "bytes": 4215,
+        "sha256": "84705523704a32200b51d0d61bd44c750d846e4126bbf96e650bcab519f818cf",
+        "source": "packages/omo-senpi/skills/visualize/SKILL.md"
+      }
     ]
   },
   "targetNames": [
@@ -2153,7 +2390,8 @@
     "ulw-loop",
     "ulw-plan",
     "ulw-research",
-    "visual-qa"
+    "visual-qa",
+    "visualize"
   ],
   "targets": {
     "mc:H1": {
@@ -2634,7 +2872,7 @@
         },
         {
           "path": "frontend/ATTRIBUTION.md",
-          "bytes": 13403,
+          "bytes": 14411,
           "sha256": null
         },
         {
@@ -2644,23 +2882,23 @@
         },
         {
           "path": "frontend/SKILL.md",
-          "bytes": 21159,
+          "bytes": 23704,
           "sha256": null
         },
         {
           "path": "frontend/references/design/README.md",
-          "bytes": 27682,
+          "bytes": 28376,
           "sha256": null
         },
         {
           "path": "frontend/references/design/_INDEX.md",
-          "bytes": 17171,
+          "bytes": 17535,
           "sha256": null
         },
         {
           "path": "frontend/references/design/ambience-skill.md",
-          "bytes": 18314,
-          "sha256": "28255c9b9f4b5a7c5e25c7a03fa914d10ac5abd235d4c0db7d8e9082f92515f9"
+          "bytes": 18383,
+          "sha256": null
         },
         {
           "path": "frontend/references/design/aside.md",
@@ -2673,13 +2911,18 @@
           "sha256": null
         },
         {
+          "path": "frontend/references/design/component-catalogs.md",
+          "bytes": 8807,
+          "sha256": "01ee071f308c87c489635fa86cc70fd4e634f6b0bf11f7ee3945671f3b5540bd"
+        },
+        {
           "path": "frontend/references/design/design-system-architecture.md",
-          "bytes": 14720,
+          "bytes": 14806,
           "sha256": null
         },
         {
           "path": "frontend/references/design/interaction-skill.md",
-          "bytes": 16388,
+          "bytes": 16457,
           "sha256": null
         },
         {
@@ -2754,13 +2997,193 @@
         },
         {
           "path": "frontend/references/perfection/README.md",
-          "bytes": 11790,
+          "bytes": 12450,
           "sha256": null
         },
         {
           "path": "frontend/references/perfection/react-perf-tooling.md",
           "bytes": 7898,
           "sha256": null
+        },
+        {
+          "path": "frontend/scripts/perfection/accent-stripes/color.ts",
+          "bytes": 5775,
+          "sha256": "6042c8e77b4f9c7a8d5c80294b53443ab8dca5bacc07e7c12786a6fdc3e8639d"
+        },
+        {
+          "path": "frontend/scripts/perfection/accent-stripes/css-parse.ts",
+          "bytes": 3606,
+          "sha256": "def76909700fcbce97a5d0614369b7a7dfbe8ca7165205ca5c9c1e8634db2d19"
+        },
+        {
+          "path": "frontend/scripts/perfection/accent-stripes/declarations.ts",
+          "bytes": 7448,
+          "sha256": "e43495f4afb332628a076aa2e6411b32a301afd1353f507cea0d0bae78272598"
+        },
+        {
+          "path": "frontend/scripts/perfection/accent-stripes/findings.ts",
+          "bytes": 1317,
+          "sha256": "c81647b7e8871e2fe27636375ec770c6f6ca280fe370933e7abfda58f9a2c17c"
+        },
+        {
+          "path": "frontend/scripts/perfection/accent-stripes/gradient.ts",
+          "bytes": 2807,
+          "sha256": "966cd400a20f32432be70f08b5dea926a3e4445e1991de6548166d84f7476448"
+        },
+        {
+          "path": "frontend/scripts/perfection/accent-stripes/lint.ts",
+          "bytes": 5200,
+          "sha256": "a0e23ec115c767379b61aa354b4f5d5fb845249f2d49a0eb49934622c7d5ce81"
+        },
+        {
+          "path": "frontend/scripts/perfection/accent-stripes/markup.ts",
+          "bytes": 6077,
+          "sha256": "41613c3da4d289baeabf45689c6af6d4dbcdf1a16e94908adc2f17fc998b8e2c"
+        },
+        {
+          "path": "frontend/scripts/perfection/accent-stripes/selector.ts",
+          "bytes": 1820,
+          "sha256": "2afbd285e4f67b0ed0bdf3a7458b8375defdfd6ea4405af017fcc555bebdc6c4"
+        },
+        {
+          "path": "frontend/scripts/perfection/accent-stripes/tailwind.ts",
+          "bytes": 5829,
+          "sha256": "d207bdf8f4862b0236efa09deef4579f5471d001d6e4e861326821a281927892"
+        },
+        {
+          "path": "frontend/scripts/perfection/check-accent-stripes.ts",
+          "bytes": 2163,
+          "sha256": "ea8164a2f73ae4fa74a25c8a222c841f7d2754f0984302a88cdce2df83dc1b28"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/negative/exempt-states.css",
+          "bytes": 313,
+          "sha256": "d5b053002a2d412079cb3cff2c76d12ef968e3aee67522f4eec1b228792b1779"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/negative/full-surface-gradients.css",
+          "bytes": 790,
+          "sha256": "d16243111121f4c663f4b71e1bfd486ec7a2b3f8add8ea542f826990be77ab0a"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/negative/inline-ok.tsx",
+          "bytes": 355,
+          "sha256": "b08ec6abc5dec0459f5a171adb09d2956fe3c11bed5ab56ccf5f6e865ed85d37"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/negative/neutral-and-flat.css",
+          "bytes": 403,
+          "sha256": "491e60756881d1b98b7e451bf9bacf47d074ced83c5d1c7aa53ac75f44dadd36"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/negative/pseudo-overlays.css",
+          "bytes": 290,
+          "sha256": "02e41650f93b938baabc1d3ab14ecc3005317fb66697b52425b102827208bc1c"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/negative/tailwind-ok.tsx",
+          "bytes": 879,
+          "sha256": "20fc61ab6b7a421758ac47d9f3586a9115a2760d49c85639730cff7151b8466b"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/negative/uniform-and-rings.css",
+          "bytes": 213,
+          "sha256": "2b9ea798d12d8d1a78ec3a0f0957423bf7e7a473f730b6b492d1959444b2992d"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/negative/wide-blocks-and-hairlines.css",
+          "bytes": 259,
+          "sha256": "dddbdcf97588d5c9f984237c5b9fccfd2eda944dadec1073f49d454fe1bbfb46"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/accent-outlines.css",
+          "bytes": 250,
+          "sha256": "8faac452e310daf98d4252ab8f9437caee587e767954dfe84191142f252e6141"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/accent-outlines.tsx",
+          "bytes": 342,
+          "sha256": "00568470574857acc568bbbc97c1bb4afbd3fa6507cbd4f3a18ef698984c6c6b"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/apply.css",
+          "bytes": 70,
+          "sha256": "2d2f42bd9b2956fc2dd7ff2e5a9b9c88df8f317621dd0e408d69a04e0c94babe"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/border-top-card.css",
+          "bytes": 91,
+          "sha256": "1a85e46a02d05537ce699bada64635b9da289dd74403fd719579b8075528784a"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/cva-variant.ts",
+          "bytes": 78,
+          "sha256": "15e4046f736e1ca729d00bcb6b971a8b4d552268b4af0de0dfaad3187b3a2b73"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/flat-stripe-side.tsx",
+          "bytes": 639,
+          "sha256": "53ef050ca7e29488110df6e60b5de91ba505b0eafd565676ac00d00ebf277147"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/gradient-edges.css",
+          "bytes": 572,
+          "sha256": "6faf1290abc12fc2f993ea85ed2ff8567fe9c04d490d75acf79c2f5e5d391090"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/inline-styles.tsx",
+          "bytes": 215,
+          "sha256": "b616f6e765e2b244a62130937c0cfded2e3c382e9566ae603f1607d70bb09a0d"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/inset-shadow.css",
+          "bytes": 112,
+          "sha256": "9d068ead7cab6bf58a71ad7650d9a1dc35a9d6aa3fda49bdf378b36c088446fa"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/non-visible-focus-and-nested.tsx",
+          "bytes": 280,
+          "sha256": "88762fcac2fc0482f8aee3a811f6f7a9fe3b820d067279f0b1ed802d126b897b"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/pseudo-bar.css",
+          "bytes": 189,
+          "sha256": "62cff00fb019bc0d72facb7c670078fe1784579db37f03e1409a5490385c9d9f"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/report-callouts.html",
+          "bytes": 435,
+          "sha256": "2a49c6540d0ffff773dfc154ccbc72ce6dd28a1196c1106a0c35b5c625d6e83f"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/split-rule-and-token.scss",
+          "bytes": 270,
+          "sha256": "443627d6196cbc15c8dfa6983478959a031f287a502d9f78d20518fdcd03e439"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/square-surfaces.css",
+          "bytes": 344,
+          "sha256": "63f4e970482fe4caf8f91eb6c2fcd98635f0d7fb2a35437423c559588cd88986"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/styled-components.tsx",
+          "bytes": 337,
+          "sha256": "473a4ecedbfff7b6f89b22e36d1f48bb5c547333482f8ee8ab0ce6bfb4d79542"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/tailwind-cards.tsx",
+          "bytes": 302,
+          "sha256": "b676bdd4fec7ba289a19100dd3a5675853931cab52236d5046e16ee771b9fc48"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/tailwind-inset-and-style.vue",
+          "bytes": 233,
+          "sha256": "f9016c6ec827bfb2a69bb62da99543451edefe68570e0bd71aed55e1475c2460"
+        },
+        {
+          "path": "frontend/scripts/perfection/fixtures/accent-stripes/positive/tailwind-pseudo.html",
+          "bytes": 157,
+          "sha256": "9c6a6baca6cfa60307b7d74df70c3c4bf1576141b326bb6aa2fd4549e7fc000c"
         },
         {
           "path": "frontend/scripts/perfection/lighthouse-audit.py",
@@ -3669,7 +4092,7 @@
         },
         {
           "path": "ulw-research/SKILL.md",
-          "bytes": 56205,
+          "bytes": 59187,
           "sha256": null
         },
         {
@@ -3686,6 +4109,11 @@
           "path": "ulw-research/references/report-gates.md",
           "bytes": 7658,
           "sha256": null
+        },
+        {
+          "path": "ulw-research/references/report-visualization.md",
+          "bytes": 15093,
+          "sha256": "f4305c64f122c4a776564755f3c2ca1d91ef5d13f8484cdd3fdd9d249d168ffd"
         },
         {
           "path": "ulw-research/scripts/cli-support.mjs",
@@ -3846,6 +4274,11 @@
           "path": "visual-qa/scripts/visual-qa.mjs",
           "bytes": 16502,
           "sha256": null
+        },
+        {
+          "path": "visualize/SKILL.md",
+          "bytes": 4215,
+          "sha256": "84705523704a32200b51d0d61bd44c750d846e4126bbf96e650bcab519f818cf"
         }
       ]
     },
@@ -4973,9 +5406,9 @@
     "invocation": "bun tools/package-native.mjs --binary <mhc> --output <install> --skill-source latest --git-bash-binary <omo-git-bash> --omowright-runtime <materialized runtime dir>; the installed tree is then exercised through the native app-server: `mhc app-server --listen stdio://` with MAHO_CODING_AGENT_DIR=<install> and JSON-RPC `skills/list` (crates/maho-server/src/app_server/skills.rs). The OMO packaged root itself (OMO_SENPI_SKILLS_ROOT -> builtin_skills_root()) is consumed by the onboarding/init-deep-advisor/mass-ulw skill pointers and by the telemetry skill_loaded event (crates/omo/components/maho-omo-telemetry/src/omo_native_tools.rs::builtin_skill_name); it has no CLI/RPC list surface of its own."
   },
   "contentBinding": {
-    "files": 335,
-    "declaredSha256": 8,
-    "unbound": 327,
+    "files": 373,
+    "declaredSha256": 45,
+    "unbound": 328,
     "mechanism": "The overlay declares each selected skill's complete file set; staging refuses a set that differs (a missing or extra file is `latest overlay is incomplete`). Every staged file is hashed into the package manifest at stage time, and every non-null declared sha256 is checked against the overlay bytes before staging. The declared bindings for the remaining files are completed at the global final gate (the authoring window forbids hash computation)."
   }
 }

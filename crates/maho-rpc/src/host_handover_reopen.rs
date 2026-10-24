@@ -2,8 +2,8 @@
 //!
 //! A successor host reopens exactly the set its predecessor held resident and parked, restoring each with
 //! the same durable id. An entry leaves the record only after a successful reopen (crash-safe, at most once).
-//! The parked-session record itself (`host-handover-parked.ts`) is not ported in this crate yet, so the loop
-//! is written against [`HandoverParkedStore`]; a store backed by `<daemonDir>/handover-parked/*.json` plugs in.
+//! The loop is written against [`HandoverParkedStore`]; the file-backed store over
+//! `<daemonDir>/handover-parked/*.json` is `host_handover_parked::FileHandoverParkedStore`.
 use serde_json::Value;
 use std::{collections::HashMap, future::Future, pin::Pin, time::Duration};
 /// The watch budget must outlast a heavily loaded drain.
@@ -20,15 +20,7 @@ pub const TERMINAL_TASK_STATUSES: [&str; 6] = [
     "lost",
     "interrupted",
 ];
-/// The slice of a parked entry the reopen loop reads; the opener receives the whole entry.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct HandoverParkedEntry {
-    pub session_path: String,
-    pub session_context: Option<Value>,
-    pub context_overlay: Option<Value>,
-    /// The host instance that wrote the park; its own watch skips it.
-    pub parked_by: Option<String>,
-}
+pub use crate::host_handover_parked::HandoverParkedEntry;
 /// A refusal from the opener; `session_path_in_use` means the predecessor still holds the path's claim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReopenError {

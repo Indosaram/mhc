@@ -122,9 +122,13 @@ fn ensure_request(
         host_launch_profile(&host_child_argv(&spec.host_args), &cwd.to_string_lossy()).ok();
     let client = HostDecisionClient {
         protocol_version: HOST_PROTOCOL_VERSION,
+        // senpi `ensureClient`: an explicit `--tool-runtime` in the host args is a requirement.
         required_capabilities: REQUIRED_HOST_CAPABILITIES
             .iter()
             .map(|value| (*value).into())
+            .chain(maho_rpc::host_ensure_client::requested_tool_runtime(
+                &spec.host_args,
+            ))
             .collect(),
         identity: build,
         launch_profile: launch_profile.clone(),

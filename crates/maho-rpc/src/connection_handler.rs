@@ -621,11 +621,16 @@ pub fn build_rpc_session_state_with_dialogs(
     }
     state
 }
+/// The leading capabilities of the classic `get_protocol_info` list that precede the negotiated ones.
+const CLASSIC_BASE_CAPABILITIES: usize = 3;
 pub async fn handle_session_command(
     session: &AgentSession,
     command: &RpcCommand,
 ) -> Option<RpcResponse> {
-    Box::pin(handle_session_command_with_sink(session, command, None, None, None, None)).await
+    Box::pin(handle_session_command_with_sink(
+        session, command, None, None, None, None,
+    ))
+    .await
 }
 /// senpi connection-handler.ts: a `MissingSessionCwdError` is answered with
 /// `errorCode: "missing_session_cwd"` and the issue as `errorData`, so the client can offer to
@@ -1059,6 +1064,8 @@ async fn handle_session_command_with_sink(
         },
         RpcCommandBody::OpenSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"open_session".into(),session_id:None,result:RpcResponseResult::Error{error:crate::rpc_types::RPC_ERROR_MULTI_SESSION_DISABLED.into(),error_code:None,error_data:None}}),
         RpcCommandBody::CloseSession=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"close_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: close_session".into(),error_code:None,error_data:None}}),
+        RpcCommandBody::ReleaseSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"release_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: release_session".into(),error_code:None,error_data:None}}),
+        RpcCommandBody::SetSessionContext{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"set_session_context".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: set_session_context".into(),error_code:None,error_data:None}}),
         RpcCommandBody::ListSessions{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"list_sessions".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: list_sessions".into(),error_code:None,error_data:None}}),
     };
     Some(RpcResponse {
@@ -1583,6 +1590,36 @@ pub struct RpcConnectionHandler {
     local_replacements: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// senpi `options.connectionRoles`: this connection's declared roles (a classic handler serves one connection).
     connection_roles: crate::session_binding::SharedConnectionRoles,
+    /// senpi `options.toolRuntime`: a single-session `--mode rpc` process advertises its `--tool-runtime` as
+    /// `tool_runtime:<value>`.
+    tool_runtime: Option<crate::host_capabilities::ToolRuntimeKind>,
+}
+/// senpi connection-handler.ts `get_protocol_info` capability tail: the classic binding's own tool-runtime answer
+/// (when it has one) goes ahead of the negotiated client capabilities, and a client flag can never advertise a tool
+/// runtime, so a negotiated `tool_runtime:*` / `placement:*` / `offload_api` entry is dropped.
+pub fn classic_protocol_capabilities(
+    capabilities: &[String],
+    tool_runtime: Option<crate::host_capabilities::ToolRuntimeKind>,
+    base_len: usize,
+) -> Vec<String> {
+    let split = base_len.min(capabilities.len());
+    let (base, negotiated) = capabilities.split_at(split);
+    let mut out: Vec<String> = base.to_vec();
+    if let Some(kind) = tool_runtime {
+        for capability in crate::host_capabilities::tool_runtime_capabilities(kind) {
+            if !out.contains(&capability) {
+                out.push(capability);
+            }
+        }
+    }
+    for capability in negotiated {
+        if !crate::host_capabilities::is_host_owned_tool_runtime_capability(capability)
+            && !out.contains(capability)
+        {
+            out.push(capability.clone());
+        }
+    }
+    out
 }
 /// senpi `buildRpcCommandsForSession`: the three command groups classified by their real source.
 pub fn build_rpc_commands_for_session(
@@ -1782,7 +1819,16 @@ impl RpcConnectionHandler {
             local_replacements,
             last_abort_source: Default::default(),
             connection_roles: Default::default(),
+            tool_runtime: None,
         }
+    }
+    /// senpi `options.toolRuntime`: advertise this process's `--tool-runtime` in `get_protocol_info`.
+    pub fn with_tool_runtime(
+        mut self,
+        tool_runtime: Option<crate::host_capabilities::ToolRuntimeKind>,
+    ) -> Self {
+        self.tool_runtime = tool_runtime;
+        self
     }
     pub fn ui(&self) -> &std::sync::Arc<RpcExtensionUi> {
         &self.ui
@@ -1890,6 +1936,23 @@ impl RpcConnectionHandler {
         {
             // senpi `pendingDialogs`: the live dialog frames belong to this connection's request store.
             record["data"]["pendingDialogs"] = self.ui.pending_dialogs().into();
+            return crate::jsonl::serialize_json_line(&record).map(Some);
+        }
+        if kind == Some("get_protocol_info")
+            && let Ok(Some(line)) = &result
+            && let Ok(mut record) = serde_json::from_str::<serde_json::Value>(line)
+            && record["success"] == true
+            && let Some(capabilities) = record["data"]["capabilities"].as_array()
+        {
+            let capabilities = capabilities
+                .iter()
+                .filter_map(|capability| capability.as_str().map(str::to_owned))
+                .collect::<Vec<_>>();
+            record["data"]["capabilities"] = serde_json::json!(classic_protocol_capabilities(
+                &capabilities,
+                self.tool_runtime,
+                CLASSIC_BASE_CAPABILITIES,
+            ));
             return crate::jsonl::serialize_json_line(&record).map(Some);
         }
         result
@@ -2951,5 +3014,56 @@ mod connection_events_tests {
         );
         rendered.release().await;
         plain.release().await;
+    }
+}
+#[cfg(test)]
+mod tool_runtime_capability_tests {
+    use super::*;
+    use crate::host_capabilities::ToolRuntimeKind;
+
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_classic_host_answers_with_its_own_runtime_and_drops_a_negotiated_one() {
+        let capabilities = strings(&[
+            "multi_session",
+            "a",
+            "b",
+            "tool_runtime:child",
+            "placement:offload",
+            "offload_api",
+            "custom:keep",
+        ]);
+        let advertised =
+            classic_protocol_capabilities(&capabilities, Some(ToolRuntimeKind::InProcess), 3);
+        assert_eq!(
+            advertised,
+            strings(&[
+                "multi_session",
+                "a",
+                "b",
+                "tool_runtime:in-process",
+                "offload_api",
+                "custom:keep"
+            ])
+        );
+    }
+
+    #[test]
+    fn without_a_tool_runtime_a_classic_host_advertises_none_and_still_drops_negotiated_ones() {
+        let capabilities = strings(&[
+            "multi_session",
+            "a",
+            "b",
+            "tool_runtime:child",
+            "custom:keep",
+        ]);
+        let advertised = classic_protocol_capabilities(&capabilities, None, 3);
+        assert_eq!(
+            advertised,
+            strings(&["multi_session", "a", "b", "custom:keep"])
+        );
     }
 }

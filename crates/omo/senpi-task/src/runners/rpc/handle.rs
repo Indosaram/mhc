@@ -397,6 +397,26 @@ impl ManagedChildHandle for RpcChildHandle {
         self.dispose_handle();
         Ok(())
     }
+
+    /// The child is a local stdio process: no transport recovery exists to wait on, so it is never recovering.
+    fn transport_recovering(&self) -> bool {
+        false
+    }
+
+    fn supports_stop_when_reachable(&self) -> bool {
+        true
+    }
+
+    /// Marks the child stopping, then ends it: with no recovery to wait on the host is reachable now.
+    fn stop_when_reachable(&self) -> Result<(), HostError> {
+        self.mark_stopping();
+        self.terminate()
+    }
+
+    /// From here the run counts as aborted (upstream `markAborted`), so its turn settles cancelled.
+    fn mark_stopping(&self) {
+        self.shared.lock().aborted_by_user = true;
+    }
 }
 
 fn host_error(error: RpcClientError) -> HostError {

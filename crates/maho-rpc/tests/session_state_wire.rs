@@ -192,6 +192,7 @@ async fn registered_session_dispatch_get_state_correlates_and_preserves_runtime_
                 session_kind: None,
                 session_context: None,
                 attended: None,
+                ..Default::default()
             },
             false,
             0.0,

@@ -2,10 +2,11 @@ use serde_json::{Map, Value};
 
 use crate::shared::{DagOwnerKind, DagTaskOwner};
 use crate::state::{
-    BackgroundMode, DeliverAs, EffectiveModelRecord, HostSessionIdentity, IsolationRecord, PendingSteeringEntry, RESIDENCY_STATES,
-    RESOLVED_MODEL_SOURCES, ResidencyState, ResolvedModelRecord, ResolvedModelSource, RunnerKind,
-    SpawnSpecV1, SuspensionReason, TaskAwaitingInput, TASK_STATUSES, TaskIsolationSpec, TaskNotification, TaskRecord, TaskRunStats,
-    TaskSpawnSpec, TaskStatus, parse_task_id,
+    BackgroundMode, CancelRequest, DeliverAs, EffectiveModelRecord, HostSessionIdentity,
+    IsolationRecord, PendingSteeringEntry, RESIDENCY_STATES, RESOLVED_MODEL_SOURCES,
+    ResidencyState, ResolvedModelRecord, ResolvedModelSource, RunnerKind, SpawnSpecV1,
+    SuspensionReason, TASK_STATUSES, TaskAwaitingInput, TaskIsolationSpec, TaskNotification,
+    TaskRecord, TaskRunStats, TaskSpawnSpec, TaskStatus, parse_task_id,
 };
 
 type Object = Map<String, Value>;
@@ -47,9 +48,28 @@ pub fn parse_task_record(
     let isolation = read_optional_isolation(record)?;
     let runner_kind = read_optional_runner_kind(record)?;
     let host_session = read_optional_host_session(record)?;
-    let effective_model = record.get("effective_model").map(|value| serde_json::from_value::<EffectiveModelRecord>(value.clone()).map_err(|error| format!("effective_model is invalid: {error}"))).transpose()?;
-    let suspension_reason = record.get("suspension_reason").map(|value| serde_json::from_value::<SuspensionReason>(value.clone()).map_err(|error| format!("suspension_reason is invalid: {error}"))).transpose()?;
-    let awaiting_input = record.get("awaiting_input").map(|value| serde_json::from_value::<TaskAwaitingInput>(value.clone()).map_err(|error| format!("awaiting_input is invalid: {error}"))).transpose()?;
+    let cancel_requested = read_optional_cancel_request(record)?;
+    let effective_model = record
+        .get("effective_model")
+        .map(|value| {
+            serde_json::from_value::<EffectiveModelRecord>(value.clone())
+                .map_err(|error| format!("effective_model is invalid: {error}"))
+        })
+        .transpose()?;
+    let suspension_reason = record
+        .get("suspension_reason")
+        .map(|value| {
+            serde_json::from_value::<SuspensionReason>(value.clone())
+                .map_err(|error| format!("suspension_reason is invalid: {error}"))
+        })
+        .transpose()?;
+    let awaiting_input = record
+        .get("awaiting_input")
+        .map(|value| {
+            serde_json::from_value::<TaskAwaitingInput>(value.clone())
+                .map_err(|error| format!("awaiting_input is invalid: {error}"))
+        })
+        .transpose()?;
 
     let task_id =
         parse_task_id(&read_string(record, "task_id")?).map_err(|error| error.to_string())?;
@@ -75,7 +95,13 @@ pub fn parse_task_record(
         team_role: read_optional_string(record, "team_role")?,
         task_seq: read_optional_count(record, "task_seq")?,
         config_generation: read_optional_count(record, "config_generation")?,
-        background_mode: record.get("background_mode").map(|value| serde_json::from_value::<BackgroundMode>(value.clone()).map_err(|error| format!("background_mode is invalid: {error}"))).transpose()?,
+        background_mode: record
+            .get("background_mode")
+            .map(|value| {
+                serde_json::from_value::<BackgroundMode>(value.clone())
+                    .map_err(|error| format!("background_mode is invalid: {error}"))
+            })
+            .transpose()?,
         effective_model,
         suspension_reason,
         awaiting_input,
@@ -105,6 +131,7 @@ pub fn parse_task_record(
         isolation,
         runner_kind,
         host_session,
+        cancel_requested,
     })
 }
 
@@ -151,6 +178,19 @@ fn read_optional_runner_kind(record: &Object) -> ParseResult<Option<RunnerKind>>
         .map_err(|error| format!("runner_kind is invalid: {error}"))
 }
 
+fn read_optional_cancel_request(record: &Object) -> ParseResult<Option<CancelRequest>> {
+    let Some(value) = record.get("cancel_requested") else {
+        return Ok(None);
+    };
+    let object = value
+        .as_object()
+        .ok_or("cancel_requested is not an object")?;
+    Ok(Some(CancelRequest {
+        requested_at: read_string(object, "requested_at")?,
+        reason: read_optional_string(object, "reason")?,
+    }))
+}
+
 fn read_optional_host_session(record: &Object) -> ParseResult<Option<HostSessionIdentity>> {
     let Some(value) = record.get("host_session") else {
         return Ok(None);
@@ -182,9 +222,27 @@ fn read_optional_run_stats(record: &Object) -> ParseResult<Option<TaskRunStats>>
         cost_usd: read_optional_number(stats, "cost_usd")?,
         cache_hit_rate_last: read_optional_number(stats, "cache_hit_rate_last")?,
         cache_hit_rate_run: cache_hit_rate_run.or(legacy_cache_hit_rate),
-        duration_status: stats.get("duration_status").map(|value| serde_json::from_value(value.clone()).map_err(|error| format!("duration_status is invalid: {error}"))).transpose()?,
-        token_status: stats.get("token_status").map(|value| serde_json::from_value(value.clone()).map_err(|error| format!("token_status is invalid: {error}"))).transpose()?,
-        cost_status: stats.get("cost_status").map(|value| serde_json::from_value(value.clone()).map_err(|error| format!("cost_status is invalid: {error}"))).transpose()?,
+        duration_status: stats
+            .get("duration_status")
+            .map(|value| {
+                serde_json::from_value(value.clone())
+                    .map_err(|error| format!("duration_status is invalid: {error}"))
+            })
+            .transpose()?,
+        token_status: stats
+            .get("token_status")
+            .map(|value| {
+                serde_json::from_value(value.clone())
+                    .map_err(|error| format!("token_status is invalid: {error}"))
+            })
+            .transpose()?,
+        cost_status: stats
+            .get("cost_status")
+            .map(|value| {
+                serde_json::from_value(value.clone())
+                    .map_err(|error| format!("cost_status is invalid: {error}"))
+            })
+            .transpose()?,
     }))
 }
 
@@ -252,7 +310,14 @@ fn read_optional_pending_steering(
             id: id.to_string(),
             message: message.to_string(),
             deliver_as,
-            workpool: entry.get("workpool").map(|value| serde_json::from_value(value.clone()).map_err(|error| format!("pending_steering[{index}] has invalid workpool metadata: {error}"))).transpose()?,
+            workpool: entry
+                .get("workpool")
+                .map(|value| {
+                    serde_json::from_value(value.clone()).map_err(|error| {
+                        format!("pending_steering[{index}] has invalid workpool metadata: {error}")
+                    })
+                })
+                .transpose()?,
         });
     }
     Ok(Some(parsed))

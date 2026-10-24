@@ -127,34 +127,26 @@ async fn policy_slots(sources: &RotationSources<'_>) -> Vec<EnvCredentialSlot> {
     slots
 }
 
-/// A slot's kind from its own material: OAuth tokens make an OAuth login, a key alone an API key.
-fn slot_kind(slot: &crate::credential_pool::slots::CredentialSlot) -> Option<&'static str> {
-    if slot.access.is_some() || slot.refresh.is_some() {
-        Some("oauth")
-    } else if slot.key.is_some() {
-        Some("api_key")
-    } else {
-        None
-    }
-}
-
 /// The slots a credential can actually use: a slot of the other kind never projects (senpi#3486).
-///
-/// deviation: mirrors pi-ai auth/pool/kinds.ts `slotsOfOwnKind`; kept private here because maho-ai
-/// has no `kinds` module and it is outside this lane's write scope.
 fn slots_of_own_kind(
     credential: &PooledCredential,
 ) -> Vec<crate::credential_pool::slots::CredentialSlot> {
-    let other = if credential.credential_type == "oauth" {
-        "api_key"
-    } else {
-        "oauth"
+    // A type other than "oauth" is projected as an API key, as the pool's compat type always did.
+    let pooled = maho_ai::auth::pool::slots::PooledCredential {
+        credential_type: if credential.credential_type == "oauth" {
+            maho_ai::auth::pool::slots::PooledCredentialType::OAuth
+        } else {
+            maho_ai::auth::pool::slots::PooledCredentialType::ApiKey
+        },
+        key: credential.key.clone(),
+        access: credential.access.clone(),
+        refresh: credential.refresh.clone(),
+        expires: credential.expires.map(|expires| expires as f64),
+        accounts: credential.accounts.clone(),
+        pinned: credential.pinned.clone(),
+        ..Default::default()
     };
-    credential
-        .list_slots()
-        .into_iter()
-        .filter(|slot| slot_kind(slot) != Some(other))
-        .collect()
+    maho_ai::auth::pool::kinds::slots_of_own_kind(&pooled)
 }
 
 /// Lists the provider's rotation slots with sidecar health overlaid. Stored credentials own the

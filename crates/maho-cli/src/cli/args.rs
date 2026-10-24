@@ -70,6 +70,8 @@ pub struct Args {
     pub auto_title_sessions: bool,
     pub listen: Option<String>,
     pub session_runtime: Option<SessionRuntime>,
+    /// Explicit tool runtime; `resolve_tool_runtime` owns the default and the env fallback.
+    pub tool_runtime: Option<super::tool_runtime::ToolRuntimeKind>,
     pub read_stdin: bool,
     pub messages: Vec<String>,
     pub file_args: Vec<String>,
@@ -194,6 +196,15 @@ pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, Strin
                     Some("in-process") => result.session_runtime = Some(SessionRuntime::InProcess),
                     Some("worker") => result.session_runtime = Some(SessionRuntime::Worker),
                     _ => result.diagnostic(true, "--session-runtime must be in-process or worker"),
+                }
+            }
+            "--tool-runtime" => {
+                if next.is_some_and(|v| !v.starts_with("--")) {
+                    i += 1;
+                }
+                match next.and_then(super::tool_runtime::ToolRuntimeKind::parse) {
+                    Some(kind) => result.tool_runtime = Some(kind),
+                    None => result.diagnostic(true, "--tool-runtime must be in-process or child"),
                 }
             }
             "--listen" if result.mode == Some(Mode::Rpc) => {

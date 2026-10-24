@@ -57,5 +57,6 @@ pub mod startup_ui;
 pub mod stdout_guard;
 pub mod task_runners;
 pub mod task_session;
+pub mod tool_runtime;
 pub mod tool_search;
 pub mod user_extensions;

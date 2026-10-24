@@ -60,6 +60,12 @@ pub struct CreateAgentSessionFromServicesOptions {
     /// CLI extension flags, applied against the flags the loaded extensions registered.
     pub extension_flag_values: Option<BTreeMap<String, FlagValue>>,
     pub resource_inputs: crate::resource_loader::ResourceLoaderInputs,
+    /// senpi `toolRuntime`: where heavy tool work runs; `None` is `in-process`.
+    pub tool_runtime: Option<crate::tool_dispatch::tool_dispatcher::ToolRuntimeKind>,
+    /// senpi `promptSurface`: absent means `SENPI_PROMPT_SURFACE`.
+    pub prompt_surface: Option<maho_ext_api::PromptSurface>,
+    /// senpi `browserEngine`: absent means none was chosen.
+    pub browser_engine: Option<String>,
 }
 
 pub struct MountedAgentSessionServices {
@@ -73,14 +79,21 @@ pub struct MountedAgentSessionServices {
 
 impl From<AgentSessionServices> for MountedAgentSessionServices {
     fn from(services: AgentSessionServices) -> Self {
-        Self { cwd: services.cwd, agent_dir: services.agent_dir, auth_storage: services.auth_storage,
-            model_registry: services.model_registry, settings_manager: Arc::new(std::sync::Mutex::new(services.settings_manager)),
-            diagnostics: services.diagnostics }
+        Self {
+            cwd: services.cwd,
+            agent_dir: services.agent_dir,
+            auth_storage: services.auth_storage,
+            model_registry: services.model_registry,
+            settings_manager: Arc::new(std::sync::Mutex::new(services.settings_manager)),
+            diagnostics: services.diagnostics,
+        }
     }
 }
 
 impl MountedAgentSessionServices {
-    pub fn model_runtime(&self) -> &ModelRuntime { &self.model_registry.model_runtime }
+    pub fn model_runtime(&self) -> &ModelRuntime {
+        &self.model_registry.model_runtime
+    }
 }
 
 pub struct CreateAgentSessionFromServicesResult {
@@ -89,36 +102,82 @@ pub struct CreateAgentSessionFromServicesResult {
     pub model_fallback_message: Option<String>,
 }
 
-pub async fn create_agent_session_from_services(services: AgentSessionServices, options: CreateAgentSessionFromServicesOptions)
-    -> Result<CreateAgentSessionFromServicesResult, String> {
-    let AgentSessionServices { cwd, agent_dir, auth_storage, model_registry, settings_manager, mut diagnostics } = services;
+pub async fn create_agent_session_from_services(
+    services: AgentSessionServices,
+    options: CreateAgentSessionFromServicesOptions,
+) -> Result<CreateAgentSessionFromServicesResult, String> {
+    let AgentSessionServices {
+        cwd,
+        agent_dir,
+        auth_storage,
+        model_registry,
+        settings_manager,
+        mut diagnostics,
+    } = services;
     let mut options = options;
     // senpi applies extension flag values once the resource loader has loaded the extensions; the
     // native host loads them here so the session constructor sees the applied `runtime.flagValues`.
     if options.extension_flag_values.is_some() {
         let loaded = match options.loaded_extensions.take() {
             Some(loaded) => loaded,
-            None => maho_ext_host::loader::load_extensions_async(options.extension_factories.clone(),
-                std::path::Path::new(&cwd), options.session_profile.clone()).await,
+            None => {
+                maho_ext_host::loader::load_extensions_async(
+                    options.extension_factories.clone(),
+                    std::path::Path::new(&cwd),
+                    options.session_profile.clone(),
+                )
+                .await
+            }
         };
-        diagnostics.extend(apply_extension_flag_values(Some(&loaded), options.extension_flag_values.as_ref()));
+        diagnostics.extend(apply_extension_flag_values(
+            Some(&loaded),
+            options.extension_flag_values.as_ref(),
+        ));
         options.loaded_extensions = Some(loaded);
     }
     let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
-        cwd: Some(cwd.clone()), agent_dir: Some(agent_dir.clone()), auth_storage: Some(auth_storage.clone()),
-        model_registry: Some(model_registry.clone()), settings_manager: Some(settings_manager),
-        session_manager: options.session_manager, session_start_event: options.session_start_event,
-        model: options.model, thinking_level: options.thinking_level, thinking_selection: options.thinking_selection,
-        scoped_models: options.scoped_models, favorite_models: options.favorite_models, tools: options.tools,
-        exclude_tools: options.exclude_tools, no_tools: options.no_tools, custom_tools: options.custom_tools,
-        auto_title_sessions: options.auto_title_sessions, extension_factories: options.extension_factories,
-        loaded_extensions: options.loaded_extensions, defer_extension_start: options.defer_extension_start,
-        session_profile: options.session_profile, resource_inputs: options.resource_inputs, ..Default::default()
-    }).await?;
+        cwd: Some(cwd.clone()),
+        agent_dir: Some(agent_dir.clone()),
+        auth_storage: Some(auth_storage.clone()),
+        model_registry: Some(model_registry.clone()),
+        settings_manager: Some(settings_manager),
+        session_manager: options.session_manager,
+        session_start_event: options.session_start_event,
+        model: options.model,
+        thinking_level: options.thinking_level,
+        thinking_selection: options.thinking_selection,
+        scoped_models: options.scoped_models,
+        favorite_models: options.favorite_models,
+        tools: options.tools,
+        exclude_tools: options.exclude_tools,
+        no_tools: options.no_tools,
+        custom_tools: options.custom_tools,
+        auto_title_sessions: options.auto_title_sessions,
+        extension_factories: options.extension_factories,
+        loaded_extensions: options.loaded_extensions,
+        defer_extension_start: options.defer_extension_start,
+        session_profile: options.session_profile,
+        resource_inputs: options.resource_inputs,
+        // senpi `...(options.toolRuntime !== undefined ? { toolRuntime: options.toolRuntime } : {})`.
+        tool_runtime: options.tool_runtime,
+        prompt_surface: options.prompt_surface,
+        browser_engine: options.browser_engine,
+        ..Default::default()
+    })
+    .await?;
     let settings_manager = created.session.shared_settings_manager();
-    Ok(CreateAgentSessionFromServicesResult { services: MountedAgentSessionServices {
-        cwd, agent_dir, auth_storage, model_registry, settings_manager, diagnostics },
-        session: created.session, model_fallback_message: created.model_fallback_message })
+    Ok(CreateAgentSessionFromServicesResult {
+        services: MountedAgentSessionServices {
+            cwd,
+            agent_dir,
+            auth_storage,
+            model_registry,
+            settings_manager,
+            diagnostics,
+        },
+        session: created.session,
+        model_fallback_message: created.model_fallback_message,
+    })
 }
 
 /// Coherent cwd-bound runtime services for one effective session cwd.
@@ -150,9 +209,14 @@ pub fn apply_extension_flag_values(
         return Vec::new();
     };
     let mut registered_flags = BTreeMap::new();
-    for extension in extensions.map(|loaded| loaded.extensions.as_slice()).unwrap_or_default() {
+    for extension in extensions
+        .map(|loaded| loaded.extensions.as_slice())
+        .unwrap_or_default()
+    {
         for flag in &extension.flags {
-            registered_flags.entry(flag.name.clone()).or_insert_with(|| flag.kind.clone());
+            registered_flags
+                .entry(flag.name.clone())
+                .or_insert_with(|| flag.kind.clone());
         }
     }
     let mut diagnostics = Vec::new();
@@ -163,17 +227,27 @@ pub fn apply_extension_flag_values(
             continue;
         };
         match (kind, value) {
-            (maho_ext_api::FlagType::Boolean { .. }, _) => loaded.runtime.set_flag(name, FlagValue::Boolean(true)),
-            (maho_ext_api::FlagType::String { .. }, FlagValue::String(value)) => loaded.runtime.set_flag(name, FlagValue::String(value.clone())),
-            (maho_ext_api::FlagType::String { .. }, FlagValue::Boolean(_)) => diagnostics.push(AgentSessionRuntimeDiagnostic {
-                kind: AgentSessionRuntimeDiagnosticType::Error,
-                message: format!("Extension flag \"--{name}\" requires a value"),
-            }),
+            (maho_ext_api::FlagType::Boolean { .. }, _) => {
+                loaded.runtime.set_flag(name, FlagValue::Boolean(true))
+            }
+            (maho_ext_api::FlagType::String { .. }, FlagValue::String(value)) => loaded
+                .runtime
+                .set_flag(name, FlagValue::String(value.clone())),
+            (maho_ext_api::FlagType::String { .. }, FlagValue::Boolean(_)) => {
+                diagnostics.push(AgentSessionRuntimeDiagnostic {
+                    kind: AgentSessionRuntimeDiagnosticType::Error,
+                    message: format!("Extension flag \"--{name}\" requires a value"),
+                })
+            }
         }
     }
     if !unknown.is_empty() {
         let suffix = if unknown.len() == 1 { "" } else { "s" };
-        let names = unknown.iter().map(|name| format!("--{name}")).collect::<Vec<_>>().join(", ");
+        let names = unknown
+            .iter()
+            .map(|name| format!("--{name}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         diagnostics.push(AgentSessionRuntimeDiagnostic {
             kind: AgentSessionRuntimeDiagnosticType::Error,
             message: format!("Unknown option{suffix}: {names}"),
@@ -183,8 +257,13 @@ pub fn apply_extension_flag_values(
 }
 
 /// Create cwd-bound runtime services (no AgentSession).
-pub async fn create_agent_session_services(mut options: CreateAgentSessionServicesOptions) -> Result<AgentSessionServices, maho_ai::models::ModelsError> {
-    let agent_dir = options.agent_dir.clone().unwrap_or_else(crate::config::get_agent_dir);
+pub async fn create_agent_session_services(
+    mut options: CreateAgentSessionServicesOptions,
+) -> Result<AgentSessionServices, maho_ai::models::ModelsError> {
+    let agent_dir = options
+        .agent_dir
+        .clone()
+        .unwrap_or_else(crate::config::get_agent_dir);
     let auth_path = std::path::Path::new(&agent_dir).join("auth.json");
     let auth_storage = Arc::new(AuthStorage::create(&auth_path.to_string_lossy()));
     let owns_model_runtime = options.model_runtime.is_none();
@@ -199,14 +278,18 @@ pub async fn create_agent_session_services(mut options: CreateAgentSessionServic
         })?,
     };
     let auth_storage = model_runtime.credentials.clone();
-    let settings_manager = options
-        .settings_manager
-        .take()
-        .unwrap_or_else(|| SettingsManager::create(&options.cwd, &agent_dir, &crate::config::home_dir(), true));
+    let settings_manager = options.settings_manager.take().unwrap_or_else(|| {
+        SettingsManager::create(&options.cwd, &agent_dir, &crate::config::home_dir(), true)
+    });
     // A runtime built for these services refreshes everything it composed (offline); a runtime
     // shared across a host's sessions was already refreshed by earlier opens (senpi#1844).
     if owns_model_runtime {
-        model_runtime.refresh(maho_ai::models::ModelsRefreshOptions { allow_network: Some(false), ..Default::default() }).await;
+        model_runtime
+            .refresh(maho_ai::models::ModelsRefreshOptions {
+                allow_network: Some(false),
+                ..Default::default()
+            })
+            .await;
     }
     model_runtime.set_settings_manager(&settings_manager);
     let model_registry = ModelRegistry::new(model_runtime);
@@ -232,23 +315,53 @@ mod tests {
         let loaded = loaded_with_flag("name", maho_ext_api::FlagType::String { default: None });
         let flags = BTreeMap::from([("name".to_owned(), FlagValue::Boolean(true))]);
         let diagnostics = apply_extension_flag_values(Some(&loaded), Some(&flags));
-        assert!(diagnostics.iter().any(|diagnostic| diagnostic.message.contains("requires a value")));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("requires a value"))
+        );
     }
 
-    fn loaded_with_flag(name: &str, kind: maho_ext_api::FlagType) -> maho_ext_host::loader::LoadExtensionsResult {
-        let mut extension = maho_ext_api::LoadedExtension::new("<test:flags>", std::path::PathBuf::from("/tmp"), Default::default());
-        extension.flags.push(maho_ext_api::ExtensionFlag { name: name.to_owned(), description: None, kind, extension_path: "<test:flags>".to_owned() });
+    fn loaded_with_flag(
+        name: &str,
+        kind: maho_ext_api::FlagType,
+    ) -> maho_ext_host::loader::LoadExtensionsResult {
+        let mut extension = maho_ext_api::LoadedExtension::new(
+            "<test:flags>",
+            std::path::PathBuf::from("/tmp"),
+            Default::default(),
+        );
+        extension.flags.push(maho_ext_api::ExtensionFlag {
+            name: name.to_owned(),
+            description: None,
+            kind,
+            extension_path: "<test:flags>".to_owned(),
+        });
         maho_ext_host::loader::LoadExtensionsResult {
-            extensions: vec![extension], errors: Vec::new(), runtime: Default::default(), events: Default::default(),
+            extensions: vec![extension],
+            errors: Vec::new(),
+            runtime: Default::default(),
+            events: Default::default(),
         }
     }
 
     #[test]
     fn registered_flags_are_written_to_the_extension_runtime() {
-        let loaded = loaded_with_flag("no-ask-user", maho_ext_api::FlagType::Boolean { default: Some(false) });
-        let flags = BTreeMap::from([("no-ask-user".to_owned(), FlagValue::String("yes".to_owned()))]);
+        let loaded = loaded_with_flag(
+            "no-ask-user",
+            maho_ext_api::FlagType::Boolean {
+                default: Some(false),
+            },
+        );
+        let flags = BTreeMap::from([(
+            "no-ask-user".to_owned(),
+            FlagValue::String("yes".to_owned()),
+        )]);
         assert!(apply_extension_flag_values(Some(&loaded), Some(&flags)).is_empty());
-        assert_eq!(loaded.runtime.get_flag("no-ask-user"), Some(FlagValue::Boolean(true)));
+        assert_eq!(
+            loaded.runtime.get_flag("no-ask-user"),
+            Some(FlagValue::Boolean(true))
+        );
     }
 
     #[test]
@@ -278,7 +391,9 @@ mod tests {
             cwd: dir.path().to_string_lossy().into_owned(),
             agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
             ..Default::default()
-        }).await.expect("session services");
+        })
+        .await
+        .expect("session services");
         assert_eq!(services.cwd, dir.path().to_string_lossy());
         assert!(services.agent_dir.ends_with("agent"));
         assert!(services.diagnostics.is_empty());
@@ -289,36 +404,77 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let credentials = Arc::new(AuthStorage::in_memory(Default::default()));
         let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
-            credentials: Some(credentials.clone()), providers: Some(Vec::new()), ..Default::default()
-        }).expect("model runtime");
+            credentials: Some(credentials.clone()),
+            providers: Some(Vec::new()),
+            ..Default::default()
+        })
+        .expect("model runtime");
         let services = create_agent_session_services(CreateAgentSessionServicesOptions {
             cwd: dir.path().to_string_lossy().into_owned(),
             agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
-            model_runtime: Some(runtime), ..Default::default()
-        }).await.expect("session services");
+            model_runtime: Some(runtime),
+            ..Default::default()
+        })
+        .await
+        .expect("session services");
         assert!(Arc::ptr_eq(&services.auth_storage, &credentials));
-        assert!(Arc::ptr_eq(&services.auth_storage, &services.model_runtime().credentials));
-        services.auth_storage.set("fixture", Some(serde_json::json!({"type":"api_key","key":"fixture-key"})))
+        assert!(Arc::ptr_eq(
+            &services.auth_storage,
+            &services.model_runtime().credentials
+        ));
+        services
+            .auth_storage
+            .set(
+                "fixture",
+                Some(serde_json::json!({"type":"api_key","key":"fixture-key"})),
+            )
             .expect("write through service");
-        assert_eq!(credentials.get("fixture"), services.model_runtime().credentials.get("fixture"));
+        assert_eq!(
+            credentials.get("fixture"),
+            services.model_runtime().credentials.get("fixture")
+        );
     }
 
     #[tokio::test]
     async fn create_agent_session_from_services_shares_the_settings_manager() {
         let dir = tempfile::tempdir().expect("tempdir");
         let cwd = dir.path().to_string_lossy().into_owned();
-        let mut settings = SettingsManager::from_storage(Box::new(crate::settings_manager::InMemorySettingsStorage::default()), false);
-        settings.set(crate::settings_manager::SettingsScope::Global,
-            &serde_json::from_value(serde_json::json!({"defaultThinkingLevel":"high"})).expect("settings"))
+        let mut settings = SettingsManager::from_storage(
+            Box::new(crate::settings_manager::InMemorySettingsStorage::default()),
+            false,
+        );
+        settings
+            .set(
+                crate::settings_manager::SettingsScope::Global,
+                &serde_json::from_value(serde_json::json!({"defaultThinkingLevel":"high"}))
+                    .expect("settings"),
+            )
             .expect("save");
         let services = create_agent_session_services(CreateAgentSessionServicesOptions {
-            cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
-            settings_manager: Some(settings), ..Default::default()
-        }).await.expect("session services");
-        let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("faux provider");
-        let created = create_agent_session_from_services(services, CreateAgentSessionFromServicesOptions {
-            model: provider.get_model(Some("faux-1")), tools: Some(Vec::new()), ..Default::default()
-        }).await.expect("session");
-        assert_eq!(created.session.with_settings_manager(|manager| manager.get_string("defaultThinkingLevel")), Some("high".to_owned()));
+            cwd: cwd.clone(),
+            agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            settings_manager: Some(settings),
+            ..Default::default()
+        })
+        .await
+        .expect("session services");
+        let provider =
+            maho_ai::providers::faux::faux_provider(Default::default()).expect("faux provider");
+        let created = create_agent_session_from_services(
+            services,
+            CreateAgentSessionFromServicesOptions {
+                model: provider.get_model(Some("faux-1")),
+                tools: Some(Vec::new()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("session");
+        assert_eq!(
+            created
+                .session
+                .with_settings_manager(|manager| manager.get_string("defaultThinkingLevel")),
+            Some("high".to_owned())
+        );
     }
 }

@@ -8384,9 +8384,17 @@ impl InteractiveMode {
                 &self.theme,
                 self.keybindings(),
                 Box::new(move |mut on_progress| {
-                    let mut forward = |loaded: usize, total: usize, rows: Option<Vec<maho_core::session_discovery::SessionInfo>>| {
+                    let mut forward = |loaded: usize,
+                                       total: usize,
+                                       rows: Option<
+                        Vec<maho_core::session_discovery::SessionInfo>,
+                    >| {
                         if let Some(progress) = on_progress.as_deref_mut() {
-                            progress(loaded, total, rows.map(|rows| rows.into_iter().map(convert).collect()));
+                            progress(
+                                loaded,
+                                total,
+                                rows.map(|rows| rows.into_iter().map(convert).collect()),
+                            );
                         }
                     };
                     maho_core::session_manager::SessionManager::list(
@@ -8399,9 +8407,17 @@ impl InteractiveMode {
                     .collect()
                 }),
                 Box::new(move |mut on_progress| {
-                    let mut forward = |loaded: usize, total: usize, rows: Option<Vec<maho_core::session_discovery::SessionInfo>>| {
+                    let mut forward = |loaded: usize,
+                                       total: usize,
+                                       rows: Option<
+                        Vec<maho_core::session_discovery::SessionInfo>,
+                    >| {
                         if let Some(progress) = on_progress.as_deref_mut() {
-                            progress(loaded, total, rows.map(|rows| rows.into_iter().map(convert).collect()));
+                            progress(
+                                loaded,
+                                total,
+                                rows.map(|rows| rows.into_iter().map(convert).collect()),
+                            );
                         }
                     };
                     maho_core::session_manager::SessionManager::list_all(
@@ -11252,6 +11268,8 @@ impl InteractiveMode {
             AgentSessionEvent::ContinuationError { error_message } => self.show_status(error_message.clone()),
             // senpi `model_change_pending` / `resume_compaction_required` / `resume_context_reduced`: `showWarning`.
             AgentSessionEvent::ModelChangePending { notice, .. } | AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_warning(notice),
+            // senpi `offload_module_stuck`: `showWarning` naming the module, the files whose locks it holds, and the `--tool-runtime child` alternative.
+            AgentSessionEvent::OffloadModuleStuck { notice, .. } => self.show_warning(&maho_tui::terminal_text::sanitize_terminal_label(notice)),
             // senpi `system_prompt_change`.
             AgentSessionEvent::SystemPromptChange { system_prompt_name, .. } => self.show_status(system_prompt_name.as_ref().filter(|name| !name.is_empty()).map_or_else(|| "System prompt changed".to_owned(), |name| format!("System prompt: {name}"))),
             // senpi `settings_source_selected` -> `showSettingsSourceSelected`.

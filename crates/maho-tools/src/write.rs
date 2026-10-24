@@ -84,6 +84,7 @@ pub struct WriteToolInput {
     pub content: String,
 }
 pub fn create_write_tool_definition(cwd: PathBuf, options: WriteToolOptions) -> ToolDefinition {
+    let server_pinned = options.operations.is_some() || options.filesystem_policy.is_some();
     let local = options.operations.is_none();
     let ops = options
         .operations
@@ -144,5 +145,8 @@ pub fn create_write_tool_definition(cwd: PathBuf, options: WriteToolOptions) -> 
             strict: maho_ai::types::JsonSchemaStrictness::Prefer,
         },
     ));
+    if server_pinned {
+        tool.server_pinned = Some(true);
+    }
     tool
 }

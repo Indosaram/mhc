@@ -56,10 +56,12 @@ pub fn suspend_session(state: &ChaosState) {
         return;
     }
     if let Some(engine) = state.harness.engines.first() {
-        let _ = engine.lifecycle.suspend_on_session_shutdown(&crate::lifecycle::SuspendInput {
-            parent_session_id: CHAOS_SESSION.to_string(),
-            reason: "quit".to_string(),
-        });
+        let _ = engine
+            .lifecycle
+            .suspend_on_session_shutdown(&crate::lifecycle::SuspendInput {
+                parent_session_id: CHAOS_SESSION.to_string(),
+                reason: "quit".to_string(),
+            });
         state.harness.observe_reconcile();
     }
 }
@@ -67,7 +69,9 @@ pub fn suspend_session(state: &ChaosState) {
 pub fn resume_session(state: &ChaosState, parent_session_id: &str) {
     lock(&state.harness.lifecycle_observations.action_counts).resume_session += 1;
     if let Some(engine) = state.harness.engines.get(1) {
-        let _ = engine.lifecycle.reconcile_on_session_start(Some(parent_session_id));
+        let _ = engine
+            .lifecycle
+            .reconcile_on_session_start(Some(parent_session_id));
         state.harness.observe_reconcile();
     }
     state.harness.observe_live_handles();
@@ -98,7 +102,9 @@ pub fn crash_mid_suspend(state: &ChaosState) {
     };
     engine.manager.forget(&id);
     let _ = handle.abort();
-    let _ = engine.lifecycle.reconcile_on_session_start(Some(CHAOS_SESSION));
+    let _ = engine
+        .lifecycle
+        .reconcile_on_session_start(Some(CHAOS_SESSION));
     state.harness.observe_reconcile();
     state.harness.observe_live_handles();
 }
@@ -106,7 +112,9 @@ pub fn crash_mid_suspend(state: &ChaosState) {
 pub fn sibling_reconcile_race(state: &ChaosState) {
     lock(&state.harness.lifecycle_observations.action_counts).sibling_reconcile_race += 1;
     for engine in state.harness.engines.iter().take(2) {
-        let _ = engine.lifecycle.reconcile_on_session_start(Some(CHAOS_SESSION));
+        let _ = engine
+            .lifecycle
+            .reconcile_on_session_start(Some(CHAOS_SESSION));
         state.harness.observe_reconcile();
     }
     state.harness.observe_live_handles();
@@ -117,9 +125,14 @@ fn synthetic_id(state: &ChaosState, offset: usize) -> String {
     format!("st_0000{suffix:04x}")
 }
 
-pub fn observe_reclamation_postcondition(state: &ChaosState, task_id: &str, owner: Option<&ChaosEngine>) {
+pub fn observe_reclamation_postcondition(
+    state: &ChaosState,
+    task_id: &str,
+    owner: Option<&ChaosEngine>,
+) {
     let record = state.harness.store.load(task_id).ok().flatten();
-    let attached = owner.is_some_and(|engine| engine.manager.get_resident_handle(task_id).is_some());
+    let attached =
+        owner.is_some_and(|engine| engine.manager.get_resident_handle(task_id).is_some());
     if record
         .as_ref()
         .is_some_and(|record| record.residency_state == crate::state::ResidencyState::Resident)
@@ -180,7 +193,12 @@ pub fn mass_revive_at_cap(state: &ChaosState) {
             failure_reason: None,
             name: Some(task_id.clone()),
             spawn_spec: Some(crate::state::TaskSpawnSpec::V1(crate::state::SpawnSpecV1 {
-                cwd: state.harness.store.state_dir().to_string_lossy().into_owned(),
+                cwd: state
+                    .harness
+                    .store
+                    .state_dir()
+                    .to_string_lossy()
+                    .into_owned(),
                 prompt: format!("mass {index}"),
                 instructions: None,
                 member_scoped_tool_names: None,
@@ -208,19 +226,27 @@ pub fn mass_revive_at_cap(state: &ChaosState) {
             isolation: None,
             runner_kind: None,
             host_session: None,
+            cancel_requested: None,
         };
         if terminal {
             record.final_response = Some("already done".to_string());
         }
         let _ = state.harness.store.save(&record);
-        super::observing_store::observe_store_write(&state.harness.store, &state.harness.observations, None, Some(&record));
+        super::observing_store::observe_store_write(
+            &state.harness.store,
+            &state.harness.observations,
+            None,
+            Some(&record),
+        );
         if terminal && index != count - 1 {
             state.harness.write_session(&task_id);
         }
         lock(&state.task_ids).push(task_id);
     }
     for engine in state.harness.engines.iter().take(2) {
-        let _ = engine.lifecycle.reconcile_on_session_start(Some(CHAOS_SESSION));
+        let _ = engine
+            .lifecycle
+            .reconcile_on_session_start(Some(CHAOS_SESSION));
         state.harness.observe_reconcile();
     }
     state.harness.observe_live_handles();
@@ -239,11 +265,12 @@ pub fn mass_revive_at_cap(state: &ChaosState) {
     let Some(resident) = resident else {
         return;
     };
-    let owner = state
-        .harness
-        .engines
-        .iter()
-        .find(|engine| engine.manager.get_resident_handle(&resident.task_id).is_some());
+    let owner = state.harness.engines.iter().find(|engine| {
+        engine
+            .manager
+            .get_resident_handle(&resident.task_id)
+            .is_some()
+    });
     if let Some(owner) = owner {
         owner.manager.forget(&resident.task_id);
     }
@@ -255,8 +282,13 @@ pub fn mass_revive_at_cap(state: &ChaosState) {
         .flatten()
         .map(|record| record.notification.run_epoch);
     if let Some(owner) = owner {
-        let outcomes = owner.lifecycle.reconcile_on_session_start(Some(CHAOS_SESSION));
-        eprintln!("[chaos reclaim] task={} before={before:?} outcomes={outcomes:?}", resident.task_id);
+        let outcomes = owner
+            .lifecycle
+            .reconcile_on_session_start(Some(CHAOS_SESSION));
+        eprintln!(
+            "[chaos reclaim] task={} before={before:?} outcomes={outcomes:?}",
+            resident.task_id
+        );
         state.harness.observe_reconcile();
     }
     let after = state.harness.store.load(&resident.task_id).ok().flatten();
@@ -280,11 +312,12 @@ pub fn mass_revive_at_cap(state: &ChaosState) {
     let Some(killed) = killed else {
         return;
     };
-    let killed_owner = state
-        .harness
-        .engines
-        .iter()
-        .find(|engine| engine.manager.get_resident_handle(&killed.task_id).is_some());
+    let killed_owner = state.harness.engines.iter().find(|engine| {
+        engine
+            .manager
+            .get_resident_handle(&killed.task_id)
+            .is_some()
+    });
     if let Some(killed_owner) = killed_owner {
         killed_owner.manager.forget(&killed.task_id);
     }
@@ -294,7 +327,9 @@ pub fn mass_revive_at_cap(state: &ChaosState) {
         next
     });
     if let Some(killed_owner) = killed_owner {
-        let _ = killed_owner.lifecycle.reconcile_on_session_start(Some(CHAOS_SESSION));
+        let _ = killed_owner
+            .lifecycle
+            .reconcile_on_session_start(Some(CHAOS_SESSION));
         state.harness.observe_reconcile();
     }
     if state
@@ -306,7 +341,8 @@ pub fn mass_revive_at_cap(state: &ChaosState) {
         .map(|record| record.residency_state)
         != Some(crate::state::ResidencyState::Disposed)
     {
-        let mut observations = super::observing_store::lock_observations(&state.harness.observations);
+        let mut observations =
+            super::observing_store::lock_observations(&state.harness.observations);
         observations
             .lifecycle_breaches
             .push(format!("killed orphan {} was not disposed", killed.task_id));
