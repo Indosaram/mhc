@@ -428,6 +428,20 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
             "runtime creation",
         ),
     );
+    // Opt-in retention: only the default sessions root is pruned, never a custom --session-dir.
+    if session_dir.is_none()
+        && let Some(warning) = maho_core::session_manager::prune_sessions_at_startup(
+            settings.get_number("sessionRetentionDays"),
+            manager.session_file(),
+        )
+    {
+        runtime_diagnostics
+            .push(maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(warning));
+    }
+    if let Some(warning) = manager.retention_lock_error() {
+        runtime_diagnostics
+            .push(maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(warning));
+    }
     // senpi main.ts:1254: re-apply the global `httpProxy` from the session settings (post-migration).
     // `apply` only writes keys that changed, and the bootstrap pass already set an unchanged proxy.
     {
