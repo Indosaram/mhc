@@ -5,6 +5,7 @@
 //! * `MHC_RELEASE_CHANNEL` is `release` | `candidate`; it defaults to `release` when `MHC_BUILD_VERSION` is set
 //!   and to `dev` otherwise. Release builds must embed a key that is not the test fixture; candidate builds must
 //!   embed the test fixture; a versioned build without any key fails.
+//!
 //! There is no runtime override of the trust root.
 
 use std::path::{Path, PathBuf};

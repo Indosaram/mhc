@@ -241,8 +241,8 @@ mod tests {
                 ..Default::default()
             },
         )
-        .unwrap();
-        let html = std::fs::read_to_string(&result.path).unwrap();
+        .expect("test");
+        let html = std::fs::read_to_string(&result.path).expect("test");
 
         let tabs = tabs(&html);
         assert_eq!(tabs, ["core", "external", "history", "reflection", "people"]);
@@ -269,8 +269,8 @@ mod tests {
                 ..Default::default()
             },
         )
-        .unwrap();
-        let html = std::fs::read_to_string(&result.path).unwrap();
+        .expect("test");
+        let html = std::fs::read_to_string(&result.path).expect("test");
 
         let tabs = tabs(&html);
         assert_eq!(tabs, ["core", "external", "history", "reflection"]);

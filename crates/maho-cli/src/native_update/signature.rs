@@ -39,8 +39,7 @@ pub fn build_info() -> String {
 }
 
 fn requires_signature(version: &str) -> bool {
-    super::release::compare_versions(version, FIRST_SIGNED_VERSION)
-        .map_or(true, |order| order != std::cmp::Ordering::Less)
+    super::release::compare_versions(version, FIRST_SIGNED_VERSION) != Ok(std::cmp::Ordering::Less)
 }
 
 /// Decides whether `archive` may be installed. `pubkey` is the base64 minisign public key (the trust root).

@@ -33,6 +33,13 @@ impl Extension for Permission {
             );
         }
         maho_ext_permission_system::PermissionSystem.register(api);
+        let read_def = maho_ext_api::ToolDefinition::new(
+            "read",
+            "Read file",
+            serde_json::json!({"type": "object"}),
+            Arc::new(|_| Box::pin(async { Ok(maho_ext_api::ToolResult::text("inside\noutside\n")) })),
+        );
+        api.try_register_tool(read_def).expect("register read tool");
     }
 }
 

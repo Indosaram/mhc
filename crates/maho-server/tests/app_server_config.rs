@@ -3,13 +3,13 @@ use serde_json::json;
 
 #[tokio::test]
 async fn config_read_maps_settings_and_project_origins_with_nullable_layers() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().expect("test");
     let agent = root.path().join("agent");
     let project = root.path().join("project");
-    std::fs::create_dir_all(&agent).unwrap();
-    std::fs::create_dir_all(project.join(".omo")).unwrap();
-    std::fs::write(agent.join("settings.json"), r#"{"defaultModel":"global","defaultProvider":"faux"}"#).unwrap();
-    std::fs::write(project.join(".omo/settings.json"), r#"{"defaultModel":"local","defaultThinkingLevel":"high"}"#).unwrap();
+    std::fs::create_dir_all(&agent).expect("test");
+    std::fs::create_dir_all(project.join(".omo")).expect("test");
+    std::fs::write(agent.join("settings.json"), r#"{"defaultModel":"global","defaultProvider":"faux"}"#).expect("test");
+    std::fs::write(project.join(".omo/settings.json"), r#"{"defaultModel":"local","defaultThinkingLevel":"high"}"#).expect("test");
     let mut registry = MethodRegistry::default();
     register_config_methods(&mut registry, agent.to_string_lossy().into_owned(), project.to_string_lossy().into_owned());
     let connection = RegistryConnection { initialized:true, ..Default::default() };
@@ -19,7 +19,7 @@ async fn config_read_maps_settings_and_project_origins_with_nullable_layers() {
     assert_eq!(response["result"]["config"]["approval_policy"], "on-request");
     assert_eq!(response["result"]["config"]["sandbox_mode"], "danger-full-access");
     assert_eq!(response["result"]["origins"]["model"]["name"]["type"], "project");
-    assert_eq!(response["result"]["layers"].as_array().unwrap().len(), 2);
+    assert_eq!(response["result"]["layers"].as_array().expect("test").len(), 2);
     let response = registry.dispatch(connection.clone(), json!({"id":2,"method":"config/read"})).await;
     assert!(response["result"]["layers"].is_null());
     let response = registry.dispatch(connection.clone(), json!({"id":3,"method":"config/read","params":{"includeLayers":null}})).await;
@@ -29,16 +29,16 @@ async fn config_read_maps_settings_and_project_origins_with_nullable_layers() {
 }
 
 async fn safety(settings: &str, flags: &[(&str, &str)]) -> (String, String) {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().expect("test");
     let agent = root.path().join("agent");
-    std::fs::create_dir_all(&agent).unwrap();
-    std::fs::write(agent.join("settings.json"), settings).unwrap();
+    std::fs::create_dir_all(&agent).expect("test");
+    std::fs::write(agent.join("settings.json"), settings).expect("test");
     let flags = flags.iter().map(|(name, value)| ((*name).to_owned(), maho_ext_api::FlagValue::String((*value).to_owned()))).collect();
     let mut registry = MethodRegistry::default();
     register_config_methods_with_flags(&mut registry, agent.to_string_lossy().into_owned(), root.path().to_string_lossy().into_owned(), flags);
     let response = registry.dispatch(RegistryConnection { initialized:true, ..Default::default() }, json!({"id":1,"method":"config/read"})).await;
     let config = &response["result"]["config"];
-    (config["approval_policy"].as_str().unwrap().to_owned(), config["sandbox_mode"].as_str().unwrap().to_owned())
+    (config["approval_policy"].as_str().expect("test").to_owned(), config["sandbox_mode"].as_str().expect("test").to_owned())
 }
 
 // SAFETY-DIVERGENCE(SD-3): config/read reports the resolved permission config and OS isolation, not constants.

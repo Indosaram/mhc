@@ -662,7 +662,7 @@ async fn offline_cache_read_requires_no_release_server() {
 }
 
 mod signature_cases {
-    use super::super::signature::{FIRST_SIGNED_VERSION, SignatureError, verify_archive};
+    use crate::native_update::signature::{FIRST_SIGNED_VERSION, SignatureError, verify_archive};
 
     const TEST_PUB: &str = include_str!("../../tests/fixtures/release-test-key/test.pub");
     const TEST_KEY: &str = include_str!("../../tests/fixtures/release-test-key/test.key");

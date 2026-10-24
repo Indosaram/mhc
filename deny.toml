@@ -15,8 +15,47 @@ feature-depth = 1
 unmaintained = "workspace"
 yanked = "warn"
 ignore = [
-    # Any ignored advisory must include a comment naming the advisory id and reason:
-    # { id = "RUSTSEC-YYYY-XXXX", reason = "explanation of why this advisory is ignored" },
+    # RUSTSEC-2023-0126 (im 15.1.0 via loro 1.16.2): upstream archived, no fixed version available; transitive dependency of loro.
+    { id = "RUSTSEC-2023-0126", reason = "upstream archived, no fixed version available; transitive dependency of loro" },
+
+    # RUSTSEC-2026-0255 (sized-chunks 0.6.5 via im 15.1.0 -> loro 1.16.2): upstream archived, no fixed version available; transitive dependency of loro.
+    { id = "RUSTSEC-2026-0255", reason = "upstream archived, no fixed version available; transitive dependency of loro" },
+
+    # RUSTSEC-2026-0097 (rand 0.7.3 via imageproc -> photon-rs 0.3.3): requires custom logger invoking rand::rng() during ThreadRng reseed; mhc does not install such a logger.
+    { id = "RUSTSEC-2026-0097", reason = "requires custom logger invoking rand::rng() during ThreadRng reseed; mhc does not install such a logger" },
+
+    # RUSTSEC-2026-0346 (rustls =0.23.45 pinned): mhc does not debug-format TLS client session secrets, does not use ECH, and connects only to HTTPS model/package endpoints; tracked for next workspace pin bump.
+    { id = "RUSTSEC-2026-0346", reason = "mhc does not debug-format TLS client session secrets, does not use ECH, and connects only to HTTPS model/package endpoints; tracked for next workspace pin bump" },
+
+    # RUSTSEC-2026-0347 (rustls =0.23.45 pinned): mhc does not debug-format TLS client session secrets, does not use ECH, and connects only to HTTPS model/package endpoints; tracked for next workspace pin bump.
+    { id = "RUSTSEC-2026-0347", reason = "mhc does not debug-format TLS client session secrets, does not use ECH, and connects only to HTTPS model/package endpoints; tracked for next workspace pin bump" },
+
+    # RUSTSEC-2026-0348 (rustls =0.23.45 pinned): mhc does not debug-format TLS client session secrets, does not use ECH, and connects only to HTTPS model/package endpoints; tracked for next workspace pin bump.
+    { id = "RUSTSEC-2026-0348", reason = "mhc does not debug-format TLS client session secrets, does not use ECH, and connects only to HTTPS model/package endpoints; tracked for next workspace pin bump" },
+
+    # RUSTSEC-2026-0349 (rustls =0.23.45 pinned): mhc does not debug-format TLS client session secrets, does not use ECH, and connects only to HTTPS model/package endpoints; tracked for next workspace pin bump.
+    { id = "RUSTSEC-2026-0349", reason = "mhc does not debug-format TLS client session secrets, does not use ECH, and connects only to HTTPS model/package endpoints; tracked for next workspace pin bump" },
+
+    # RUSTSEC-2026-0382 (rustls-webpki): emSign intermediate distrust update; tracked for next workspace pin bump.
+    { id = "RUSTSEC-2026-0382", reason = "emSign intermediate distrust update; tracked for next workspace pin bump" },
+
+    # RUSTSEC-2026-0383 (webpki-root-certs): emSign intermediate distrust update; tracked for next workspace pin bump.
+    { id = "RUSTSEC-2026-0383", reason = "emSign intermediate distrust update; tracked for next workspace pin bump" },
+
+    # RUSTSEC-2026-0381 (webpki-roots =1.0.5 pinned): emSign intermediate distrust update; tracked for next workspace pin bump.
+    { id = "RUSTSEC-2026-0381", reason = "emSign intermediate distrust update; tracked for next workspace pin bump" },
+
+    # RUSTSEC-2026-0386 (tokio =1.52.3 pinned): AsyncFd::new I/O safety with borrowed fds; mhc does not construct AsyncFd over borrowed raw fds.
+    { id = "RUSTSEC-2026-0386", reason = "AsyncFd::new I/O safety with borrowed fds; mhc does not construct AsyncFd over borrowed raw fds" },
+
+    # RUSTSEC-2026-0367 (zip =2.4.2 pinned): advisories affect ZipArchive::extract / ZipStreamReader::extract; mhc never calls extract() and instead validates every zip entry path and rejects symlinks/escapes in custom extractors (archive.rs, binary_downloader.rs, downloader.rs).
+    { id = "RUSTSEC-2026-0367", reason = "advisories affect ZipArchive::extract / ZipStreamReader::extract; mhc never calls extract() and instead validates every zip entry path and rejects symlinks/escapes in custom extractors (archive.rs, binary_downloader.rs, downloader.rs)" },
+
+    # RUSTSEC-2026-0368 (zip =2.4.2 pinned): advisories affect ZipArchive::extract / ZipStreamReader::extract; mhc never calls extract() and instead validates every zip entry path and rejects symlinks/escapes in custom extractors (archive.rs, binary_downloader.rs, downloader.rs).
+    { id = "RUSTSEC-2026-0368", reason = "advisories affect ZipArchive::extract / ZipStreamReader::extract; mhc never calls extract() and instead validates every zip entry path and rejects symlinks/escapes in custom extractors (archive.rs, binary_downloader.rs, downloader.rs)" },
+
+    # RUSTSEC-2026-0369 (zip =2.4.2 pinned): advisories affect ZipArchive::extract / ZipStreamReader::extract; mhc never calls extract() and instead validates every zip entry path and rejects symlinks/escapes in custom extractors (archive.rs, binary_downloader.rs, downloader.rs).
+    { id = "RUSTSEC-2026-0369", reason = "advisories affect ZipArchive::extract / ZipStreamReader::extract; mhc never calls extract() and instead validates every zip entry path and rejects symlinks/escapes in custom extractors (archive.rs, binary_downloader.rs, downloader.rs)" },
 ]
 
 [licenses]

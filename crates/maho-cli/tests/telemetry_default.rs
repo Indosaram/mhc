@@ -124,7 +124,7 @@ impl PosthogRecorder {
                             if let Some(end) = req_bytes.windows(4).position(|w| w == b"\r\n\r\n") {
                                 let body = &req_bytes[end + 4..];
                                 if let Ok(val) = serde_json::from_slice::<serde_json::Value>(body) {
-                                    requests.lock().unwrap().push(val);
+                                    requests.lock().expect("test").push(val);
                                 }
                             }
                             let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\nConnection: close\r\n\r\n{\"status\":\"ok\"}";
@@ -243,7 +243,7 @@ async fn telemetry_defaults_to_disabled_recording_zero_requests() {
     assert!(output.status.success(), "stderr: {stderr}\nstdout: {stdout}");
 
     // The process has exited, so every request it would have sent is already recorded.
-    let recorded = recorder.requests.lock().unwrap().clone();
+    let recorded = recorder.requests.lock().expect("test").clone();
     assert_eq!(
         recorded.len(),
         0,
@@ -268,7 +268,7 @@ async fn telemetry_enabled_records_requests_with_geoip_disabled() {
     assert!(output.status.success(), "stderr: {stderr}\nstdout: {stdout}");
 
     // Telemetry flushes on shutdown and the process has exited, so assert immediately.
-    let recorded = recorder.requests.lock().unwrap().clone();
+    let recorded = recorder.requests.lock().expect("test").clone();
     assert!(
         !recorded.is_empty(),
         "expected at least 1 telemetry request when enabled, got 0"
