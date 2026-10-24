@@ -7,8 +7,14 @@ export function detectTargetTuple() {
 	if (process.platform === "linux" && process.arch === "x64") {
 		return "linux-x86_64";
 	}
+	if (process.platform === "linux" && process.arch === "arm64") {
+		return "linux-aarch64";
+	}
 	if (process.platform === "darwin" && process.arch === "arm64") {
 		return "macos-aarch64";
+	}
+	if (process.platform === "darwin" && process.arch === "x64") {
+		return "macos-x86_64";
 	}
 	if (process.platform === "win32" && process.arch === "x64") {
 		return "windows-x86_64";
@@ -86,6 +92,12 @@ export function createUpdateFixtureServer(options = {}) {
 						browser_download_url: `${baseUrl}/assets/${assetName}.sha256`,
 					},
 				];
+				if (currentPackagePath && existsSync(`${currentPackagePath}.minisig`)) {
+					assets.push({
+						name: `${assetName}.minisig`,
+						browser_download_url: `${baseUrl}/assets/${assetName}.minisig`,
+					});
+				}
 
 				const releasePayload = {
 					tag_name: tag,
@@ -105,6 +117,14 @@ export function createUpdateFixtureServer(options = {}) {
 				const requestedFile = url.pathname.slice("/assets/".length);
 				const expectedExt = getTargetExt(currentTarget);
 				const expectedAssetName = `mhc-${currentTarget}.${expectedExt}`;
+
+				if (requestedFile.endsWith(".minisig")) {
+					const sigPath = currentPackagePath ? `${currentPackagePath}.minisig` : null;
+					if (requestedFile !== `${expectedAssetName}.minisig` || !sigPath || !existsSync(sigPath)) {
+						return new Response("Asset Not Found", { status: 404 });
+					}
+					return new Response(Bun.file(sigPath), { status: 200, headers: { "content-type": "text/plain" } });
+				}
 
 				if (requestedFile.endsWith(".sha256")) {
 					const archiveName = requestedFile.slice(0, -".sha256".length);

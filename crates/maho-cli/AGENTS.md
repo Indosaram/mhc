@@ -6,7 +6,7 @@ Primary user-facing command-line interface entry points, argument parsing, and m
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| CLI command routing | `src/cli/` | Subcommand dispatch (agent, run, serve, config) |
+| CLI command routing | `src/cli/` | Subcommand dispatch (ulw-loop, auth, import-omo, senpi-install, models discover, install/remove/uninstall/update/list, schedule, doctor, host, app-server, config, mini) |
 | Configuration loading | `src/config.rs` | Local and global `.omo` config discovery |
 | Config discovery hierarchy | `src/nearest_parent_config.rs` | Walking upward to find closest repo configurations |
 | Migrations | `src/migrations_state.rs` | Migration state tracking and status inspection |
@@ -16,7 +16,7 @@ Primary user-facing command-line interface entry points, argument parsing, and m
 
 ## CONVENTIONS
 - CLI commands must exit with clean semantic exit codes.
-- Use clap derives and adhere to unified flag conventions across subcommands.
+- Arguments are parsed by hand in `src/cli/args.rs` and `src/package_manager_cli.rs`; there is no clap dependency.
 - Maintain backwards compatibility for legacy invocation flags and options.
 - Workspace lints enforced: zero unwrap in application setup.
 

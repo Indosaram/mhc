@@ -1303,7 +1303,7 @@ pub const AGENT_ELIGIBILITY_REGISTRY: [(&str, AgentEligibility); 11] = [
         AgentEligibility {
             verdict: EligibilityVerdict::Conditional,
             rejection_message: Some(
-                "Agent 'hephaestus' lacks teammate permission. Either apply D-36 (add teammate: \"allow\" in tool-config-handler.ts) or use subagent_type: \"sisyphus\" instead.",
+                "Agent 'hephaestus' lacks teammate permission. Either allow its teammate permission (agents.hephaestus.permission.teammate = \"allow\" in omo.jsonc) or use subagent_type: \"sisyphus\" instead.",
             ),
         },
     ),

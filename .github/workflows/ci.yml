@@ -53,6 +53,24 @@ jobs:
         if: always()
         run: df -h / && du -sh target 2>/dev/null || true
 
+  deny:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  license-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - name: license audit
+        run: bun tools/license-audit.mjs
+
   # One job building every test binary filled the runner disk (`No space left on device`), so
   # each shard builds and runs only its own crates; scripts/ci-shard.py covers every member once.
   test:
@@ -67,6 +85,12 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           cache-key: test-${{ matrix.shard }}
+      - name: install bubblewrap (bash sandbox tests)
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: allow unprivileged user namespaces for bwrap
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: bwrap smoke
+        run: bwrap --ro-bind / / true
       - name: install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
@@ -79,6 +103,8 @@ jobs:
           cargo build --locked -p maho-senpi-desktop-engine
       - name: run tests (shard ${{ matrix.shard }}/6)
         timeout-minutes: 20
+        env:
+          MHC_REQUIRE_SANDBOX_TEST: "1"
         run: cargo nextest run --locked --no-fail-fast $CRATES
       - name: disk usage
         if: always()
@@ -94,12 +120,32 @@ jobs:
           cache-key: macos
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings
+
+  macos-test:
+    runs-on: macos-15
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: macos-test-${{ matrix.shard }}
       - name: install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      - name: native update integration tests
-        run: "cargo nextest run --locked -p maho-cli -E 'test(/^native_update/)'"
+      - name: select crates
+        run: echo "CRATES=$(python3 scripts/ci-shard.py 2 ${{ matrix.shard }})" >> "$GITHUB_ENV"
+      - name: build tests (shard ${{ matrix.shard }}/2)
+        run: |
+          cargo nextest run --locked --no-run $CRATES
+          cargo build --locked -p maho-senpi-desktop-engine
+      - name: run tests (shard ${{ matrix.shard }}/2)
+        timeout-minutes: 40
+        run: cargo nextest run --locked --no-fail-fast $CRATES
 
   windows:
     runs-on: windows-2025
@@ -147,3 +193,15 @@ jobs:
       - name: run tests (shard ${{ matrix.shard }}/3)
         timeout-minutes: 40
         run: cargo nextest run --locked --no-fail-fast $CRATES
+
+  pins:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - name: clone senpi
+        run: git clone --filter=blob:none https://github.com/code-yeongyu/senpi.git /tmp/senpi
+      - name: check pins
+        run: bun tools/check-pins.mjs --ancestry /tmp/senpi
+

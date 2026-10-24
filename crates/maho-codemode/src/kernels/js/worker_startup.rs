@@ -1,5 +1,5 @@
 use super::{
-    inline_worker::create_inline_worker,
+    inline_worker::create_inline_worker_scrubbed,
     worker_host::{JavaScriptKernelMode, WorkerHost},
 };
 use crate::{
@@ -42,6 +42,7 @@ pub struct WorkerStartupOptions<'a> {
     pub session_env: Option<&'a crate::kernels::session_env::SessionEnvironment>,
     pub worker_entry: Option<&'a Path>,
     pub memory: Option<&'a KernelMemoryThresholds>,
+    pub env_passthrough: Option<&'a [String]>,
 }
 
 pub async fn start_worker_with_inline_fallback(
@@ -69,11 +70,12 @@ pub async fn start_worker_with_inline_fallback(
         }
     }
     let primary = explicit_or_resolved_worker_entry(options).and_then(|entry| {
-        WorkerHost::spawn(
+        WorkerHost::spawn_scrubbed(
             &entry,
             options.cwd,
             options.parallel_pool_width,
             JavaScriptKernelMode::Worker,
+            options.env_passthrough,
         )
     });
     if let Ok(mut worker) = primary {
@@ -92,7 +94,11 @@ pub async fn start_worker_with_inline_fallback(
             "JavaScript worker startup was cancelled".into(),
         ));
     }
-    let mut worker = create_inline_worker(options.cwd, options.parallel_pool_width)?;
+    let mut worker = create_inline_worker_scrubbed(
+        options.cwd,
+        options.parallel_pool_width,
+        options.env_passthrough,
+    )?;
     if let Err(error) = worker.initialize(options, signal).await {
         worker.terminate().await?;
         return Err(error);

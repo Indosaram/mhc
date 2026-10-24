@@ -706,6 +706,92 @@ struct SessionOwnership {
     persisted: bool,
     hold: Option<crate::schedule::runner_lease::SessionHold>,
     hold_error: Option<String>,
+    /// Exclusive lock on the session's sidecar lock file; `prune_sessions` skips locked sessions.
+    retention_lock: Option<Arc<RetentionLock>>,
+    retention_lock_error: Option<String>,
+}
+
+/// Exclusive lock on `<session>.jsonl.lock`. The session file itself is never locked: Windows
+/// byte-range locks are mandatory and would make other handles' writes to it fail.
+#[derive(Debug)]
+struct RetentionLock {
+    // Held only for its lock; closing it on drop releases the lock.
+    _file: std::fs::File,
+    path: PathBuf,
+}
+
+impl RetentionLock {
+    /// Unlinks the sidecar. Only called while this lock is verified to be on the path's current
+    /// inode; it is never done on session exit, so a stable inode is what contenders lock.
+    /// Not done on non-Unix platforms, where inode identity cannot be verified on stable Rust.
+    fn unlink_sidecar(&self) {
+        #[cfg(unix)]
+        if let Err(error) = std::fs::remove_file(&self.path) {
+            crate::hidden_stdout_log::append_debug_note(&format!(
+                "session retention: cannot remove {}: {error}",
+                self.path.display()
+            ));
+        }
+    }
+}
+
+fn retention_lock_path(session_file: &Path) -> PathBuf {
+    let mut name = session_file.as_os_str().to_owned();
+    name.push(".lock");
+    PathBuf::from(name)
+}
+
+/// Takes the exclusive lock, then checks the locked handle is still the file at `path`. A lock
+/// on an inode that was unlinked (or replaced) after the open protects nothing. `Ok(false)` means
+/// the identity no longer matches. On non-Unix platforms sidecars are never unlinked, so the
+/// identity cannot change and the check is a no-op.
+fn lock_verified(file: &std::fs::File, path: &Path) -> std::io::Result<bool> {
+    #[cfg(not(unix))]
+    let _ = path;
+    file.try_lock().map_err(|error| match error {
+        std::fs::TryLockError::WouldBlock => std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "session lock is held by another process",
+        ),
+        std::fs::TryLockError::Error(error) => error,
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let locked = file.metadata()?;
+        Ok(match std::fs::metadata(path) {
+            Ok(current) => locked.dev() == current.dev() && locked.ino() == current.ino(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error),
+        })
+    }
+    #[cfg(not(unix))]
+    Ok(true)
+}
+
+/// Opens (creating if needed) the sidecar lock file and takes a verified exclusive lock on it,
+/// retrying once when the sidecar was replaced between open and lock. A second mismatch is
+/// reported as `WouldBlock` so callers skip the session.
+fn open_retention_lock(session_file: &Path) -> std::io::Result<RetentionLock> {
+    let path = retention_lock_path(session_file);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    for _ in 0..2 {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        if lock_verified(&file, &path)? {
+            return Ok(RetentionLock { _file: file, path });
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::WouldBlock,
+        "session lock file keeps being replaced",
+    ))
 }
 
 #[derive(Debug)]
@@ -871,6 +957,29 @@ impl SessionManager {
             .ownership
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The sidecar needs no existing session file, so a new session is covered from the start.
+        // An unchanged session keeps its lock: taking a second one would conflict with it.
+        let wanted = self
+            .session_file
+            .as_deref()
+            .filter(|_| self.persist)
+            .map(|file| retention_lock_path(Path::new(file)));
+        if wanted.as_ref() != ownership.retention_lock.as_ref().map(|lock| &lock.path) {
+            ownership.retention_lock = None;
+            ownership.retention_lock_error = None;
+            if let Some(file) = self.session_file.as_deref().filter(|_| self.persist) {
+                match open_retention_lock(Path::new(file)) {
+                    Ok(lock) => ownership.retention_lock = Some(Arc::new(lock)),
+                    Err(error) => {
+                        let message = format!(
+                            "Session retention lock unavailable for {file}: {error}; other processes may prune this session"
+                        );
+                        crate::hidden_stdout_log::append_debug_note(&message);
+                        ownership.retention_lock_error = Some(message);
+                    }
+                }
+            }
+        }
         ownership.session_file = self.session_file.clone();
         match hold {
             Ok(hold) => {
@@ -882,6 +991,15 @@ impl SessionManager {
                 ownership.hold_error = Some(error.to_string());
             }
         }
+    }
+
+    /// Why this session could not be protected from other processes' retention pruning, if so.
+    pub fn retention_lock_error(&self) -> Option<String> {
+        self.ownership
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retention_lock_error
+            .clone()
     }
 
     fn check_session_hold(&self) -> Result<(), String> {
@@ -1467,7 +1585,11 @@ impl SessionManager {
             content.push_str(&serialize_entry(&self.resident_store.materialize_cow(entry)));
             content.push('\n');
         }
-        let _ = std::fs::write(&session_file, content);
+        if let Err(error) = std::fs::write(&session_file, content) {
+            crate::hidden_stdout_log::append_debug_note(&format!(
+                "cannot rewrite session {session_file}: {error}"
+            ));
+        }
     }
 
     fn persist_entry(&mut self, order: usize) -> std::io::Result<()> {
@@ -2665,6 +2787,146 @@ fn append_line(session_file: &str, entry: &Value) -> std::io::Result<()> {
     let mut line = serialize_entry(entry);
     line.push('\n');
     file.write_all(line.as_bytes())
+}
+
+/// Validates the `sessionRetentionDays` setting: unset means keep forever; negative, fractional,
+/// non-finite or out-of-range numbers are rejected.
+pub fn parse_retention_days(value: Option<f64>) -> Result<Option<u64>, String> {
+    match value {
+        None => Ok(None),
+        Some(days) if days.is_finite() && days >= 1.0 && days.fract() == 0.0 && days <= 36_500.0 => {
+            Ok(Some(days as u64))
+        }
+        Some(days) => Err(format!(
+            "Invalid sessionRetentionDays {days}: expected a whole number of days between 1 and 36500; sessions are not pruned"
+        )),
+    }
+}
+
+/// Deletes `*.jsonl` session files under `root` (the root itself and its direct project
+/// directories) last modified more than `days` days before `now`. Symlinks are never followed,
+/// `keep` is never deleted, and a session whose sidecar lock (`<file>.lock`) another process
+/// holds is skipped.
+// SAFETY-DIVERGENCE(packages/coding-agent/src/core/session-manager.ts): upstream never deletes session transcripts; mhc opt-in prunes idle *.jsonl older than `sessionRetentionDays` under the default sessions root, skipping symlinks, the open session and any session whose sidecar lock another process holds (no lock is ever taken on the session file itself, so Windows mandatory locks cannot break writes).
+pub fn prune_sessions(
+    root: &Path,
+    days: u64,
+    keep: &Path,
+    now: std::time::SystemTime,
+) -> std::io::Result<usize> {
+    let Some(cutoff) = now.checked_sub(std::time::Duration::from_secs(days.saturating_mul(86_400)))
+    else {
+        return Ok(0);
+    };
+    let keep = std::fs::canonicalize(keep).unwrap_or_else(|_| keep.to_path_buf());
+    let mut removed = 0;
+    let mut dirs = vec![root.to_path_buf()];
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            dirs.push(entry.path());
+        }
+    }
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+            if meta.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".jsonl.lock"))
+            {
+                collect_orphan_sidecar(&path);
+                continue;
+            }
+            if !meta.is_file() || path.extension().is_none_or(|ext| ext != "jsonl") {
+                continue;
+            }
+            if !meta.modified().is_ok_and(|modified| modified < cutoff) {
+                continue;
+            }
+            if std::fs::canonicalize(&path).is_ok_and(|resolved| resolved == keep) {
+                continue;
+            }
+            // Held across the delete so a session starting now cannot slip in between.
+            let lock = match open_retention_lock(&path) {
+                Ok(lock) => lock,
+                Err(error) => {
+                    if error.kind() != std::io::ErrorKind::WouldBlock {
+                        crate::hidden_stdout_log::append_debug_note(&format!(
+                            "session retention: cannot lock {}: {error}",
+                            path.display()
+                        ));
+                    }
+                    continue;
+                }
+            };
+            // A session may have written between the scan and the lock; re-check under the lock.
+            if !is_idle_since(&path, cutoff) {
+                continue;
+            }
+            // Session first, then its sidecar, then the lock is released.
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    removed += 1;
+                    lock.unlink_sidecar();
+                }
+                Err(error) => crate::hidden_stdout_log::append_debug_note(&format!(
+                    "session retention: cannot remove {}: {error}",
+                    path.display()
+                )),
+            }
+            drop(lock);
+        }
+    }
+    Ok(removed)
+}
+
+/// Whether `path` is a regular file (not a symlink) last modified before `cutoff`.
+fn is_idle_since(path: &Path, cutoff: std::time::SystemTime) -> bool {
+    std::fs::symlink_metadata(path)
+        .is_ok_and(|meta| meta.is_file() && meta.modified().is_ok_and(|modified| modified < cutoff))
+}
+
+/// Removes a `*.jsonl.lock` sidecar whose session file is gone (for example after a crash), but
+/// only while holding a verified lock on it, so a live session's sidecar is never touched.
+fn collect_orphan_sidecar(sidecar: &Path) {
+    let Some(session) = sidecar.to_str().and_then(|path| path.strip_suffix(".lock")) else {
+        return;
+    };
+    let session = Path::new(session);
+    if std::fs::symlink_metadata(session).is_ok() {
+        return;
+    }
+    let Ok(lock) = open_retention_lock(session) else { return };
+    if std::fs::symlink_metadata(session).is_err() {
+        lock.unlink_sidecar();
+    }
+}
+
+/// Startup retention: prunes the default sessions root when `sessionRetentionDays` is a valid
+/// whole number of 1..=36500 days. Returns a warning for an invalid value or a failed prune.
+pub fn prune_sessions_at_startup(setting: Option<f64>, keep: Option<&str>) -> Option<String> {
+    let days = match parse_retention_days(setting) {
+        Ok(Some(days)) => days,
+        Ok(None) => return None,
+        Err(message) => return Some(message),
+    };
+    let root = Path::new(&get_agent_dir()).join("sessions");
+    let keep = keep.unwrap_or_default();
+    match prune_sessions(&root, days, Path::new(keep), std::time::SystemTime::now()) {
+        Ok(count) => crate::hidden_stdout_log::append_debug_note(&format!(
+            "session retention pruned {count} session file(s) older than {days} day(s)"
+        )),
+        Err(error) => {
+            let message = format!("Session retention failed for {}: {error}", root.display());
+            crate::hidden_stdout_log::append_debug_note(&message);
+            return Some(message);
+        }
+    }
+    None
 }
 
 pub fn sessions_dir() -> String {
@@ -3882,5 +4144,180 @@ mod tests {
         assert_eq!(manager.reduce_history(&COUNT_MESSAGES), 2);
         manager.new_session(None);
         assert_eq!(manager.reduce_history(&COUNT_MESSAGES), 0);
+    }
+}
+
+#[cfg(test)]
+mod prune_sessions_tests {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+
+    fn aged(path: &Path, days: u64) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).expect("open");
+        file.set_modified(SystemTime::now() - Duration::from_secs(days * 86_400))
+            .expect("mtime");
+    }
+
+    fn fixture() -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().expect("root");
+        let project = root.path().join("--proj--");
+        std::fs::create_dir(&project).expect("project");
+        (root, project)
+    }
+
+    #[test]
+    fn prune_sessions_removes_old_and_keeps_recent_and_current() {
+        let (root, project) = fixture();
+        let (old, recent, current) = (project.join("old.jsonl"), project.join("recent.jsonl"), project.join("cur.jsonl"));
+        for path in [&old, &recent, &current] {
+            std::fs::write(path, "{}\n").expect("write");
+        }
+        aged(&old, 40);
+        aged(&current, 40);
+        aged(&recent, 1);
+        let removed = prune_sessions(root.path(), 30, &current, SystemTime::now()).expect("prune");
+        assert_eq!(removed, 1);
+        assert!(!old.exists() && recent.exists() && current.exists());
+    }
+
+    #[test]
+    fn new_session_sidecar_is_locked_from_creation_and_survives_first_persist() {
+        let dir = tempfile::tempdir().expect("session dir");
+        let dir = dir.path().to_string_lossy();
+        let mut manager = SessionManager::create(&dir, Some(&dir), None);
+        let file = manager.session_file().expect("session file").to_owned();
+        assert!(!Path::new(&file).exists());
+        assert!(manager.retention_lock_error().is_none());
+        manager.append_message(json!({ "role": "user", "content": "a" }));
+        manager.append_message(json!({ "role": "assistant", "content": [] }));
+        assert!(Path::new(&file).exists());
+        // A separate handle on the sidecar cannot take the lock while the manager lives.
+        let probe = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(retention_lock_path(Path::new(&file)))
+            .expect("sidecar");
+        assert!(probe.try_lock().is_err());
+        // The session file itself is never locked, so writers on any platform are unaffected.
+        let session = std::fs::OpenOptions::new().read(true).write(true).open(&file).expect("open");
+        assert!(session.try_lock().is_ok());
+        drop(session);
+        drop(manager);
+        assert!(probe.try_lock().is_ok());
+    }
+
+    #[test]
+    fn prune_sessions_keeps_locked_and_non_jsonl_files() {
+        let (root, project) = fixture();
+        let (locked, text) = (project.join("locked.jsonl"), project.join("notes.txt"));
+        std::fs::write(&locked, "{}\n").expect("write");
+        std::fs::write(&text, "x").expect("write");
+        aged(&locked, 40);
+        aged(&text, 40);
+        let holder = open_retention_lock(&locked).expect("sidecar lock");
+        #[cfg(unix)]
+        let sidecar = retention_lock_path(&locked);
+        let removed = prune_sessions(root.path(), 30, Path::new("/nonexistent"), SystemTime::now()).expect("prune");
+        assert_eq!(removed, 0);
+        assert!(locked.exists() && text.exists());
+        drop(holder);
+        let removed = prune_sessions(root.path(), 30, Path::new("/nonexistent"), SystemTime::now()).expect("prune");
+        assert_eq!(removed, 1);
+        assert!(!locked.exists() && text.exists());
+        #[cfg(unix)]
+        assert!(!sidecar.exists(), "sidecar removed with its session");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prune_sessions_collects_only_orphan_sidecars() {
+        let (root, project) = fixture();
+        let (live, orphan_session) = (project.join("live.jsonl"), project.join("gone.jsonl"));
+        std::fs::write(&live, "{}\n").expect("write");
+        let live_lock = retention_lock_path(&live);
+        std::fs::write(&live_lock, "").expect("sidecar");
+        std::fs::write(retention_lock_path(&orphan_session), "").expect("orphan");
+        let held = open_retention_lock(&project.join("held.jsonl")).expect("held");
+        prune_sessions(root.path(), 30, Path::new("/nonexistent"), SystemTime::now()).expect("prune");
+        assert!(live_lock.exists(), "sidecar of an existing session is kept");
+        assert!(!retention_lock_path(&orphan_session).exists());
+        assert!(held.path.exists(), "locked sidecar is kept");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_on_unlinked_sidecar_is_never_trusted() {
+        let (_root, project) = fixture();
+        let session = project.join("s.jsonl");
+        let path = retention_lock_path(&session);
+        let orphan = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .expect("sidecar");
+        std::fs::remove_file(&path).expect("unlink");
+        let replacement = open_retention_lock(&session).expect("new sidecar");
+        // The orphan inode locks fine but is reported as not the path's inode.
+        assert!(!lock_verified(&orphan, &path).expect("lock orphan"));
+        // Locking the replacement through a second handle is contended, not trusted.
+        let again = std::fs::OpenOptions::new().read(true).write(true).open(&path).expect("open");
+        assert!(lock_verified(&again, &path).is_err());
+        drop(replacement);
+        // A path that vanished entirely is also a mismatch.
+        std::fs::remove_file(&path).expect("unlink");
+        assert!(!lock_verified(&again, &path).expect("lock"));
+    }
+
+    #[test]
+    fn deletion_check_under_lock_skips_freshly_written_files() {
+        let (_root, project) = fixture();
+        let file = project.join("s.jsonl");
+        std::fs::write(&file, "{}\n").expect("write");
+        let cutoff = SystemTime::now() - Duration::from_secs(30 * 86_400);
+        aged(&file, 40);
+        assert!(is_idle_since(&file, cutoff));
+        // The session wrote after the initial scan: the mtime is fresh again.
+        aged(&file, 1);
+        assert!(!is_idle_since(&file, cutoff));
+        assert!(!is_idle_since(&project.join("missing.jsonl"), cutoff));
+    }
+
+    #[test]
+    fn dropping_a_session_leaves_its_sidecar() {
+        let dir = tempfile::tempdir().expect("session dir");
+        let dir = dir.path().to_string_lossy();
+        let manager = SessionManager::create(&dir, Some(&dir), None);
+        let sidecar = retention_lock_path(Path::new(manager.session_file().expect("file")));
+        assert!(sidecar.exists());
+        drop(manager);
+        assert!(sidecar.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prune_sessions_does_not_follow_symlinks() {
+        let (root, project) = fixture();
+        let outside = tempfile::tempdir().expect("outside");
+        let target = outside.path().join("victim.jsonl");
+        std::fs::write(&target, "{}\n").expect("write");
+        aged(&target, 40);
+        std::os::unix::fs::symlink(&target, project.join("link.jsonl")).expect("file link");
+        std::os::unix::fs::symlink(outside.path(), root.path().join("dirlink")).expect("dir link");
+        let removed = prune_sessions(root.path(), 30, Path::new("/nonexistent"), SystemTime::now()).expect("prune");
+        assert_eq!(removed, 0);
+        assert!(target.exists());
+    }
+
+    #[test]
+    fn prune_sessions_invalid_retention_value_is_a_no_op() {
+        assert_eq!(parse_retention_days(None), Ok(None));
+        assert_eq!(parse_retention_days(Some(30.0)), Ok(Some(30)));
+        for bad in [-1.0, 0.0, 1.5, f64::NAN, f64::INFINITY] {
+            assert!(parse_retention_days(Some(bad)).is_err(), "{bad}");
+        }
     }
 }

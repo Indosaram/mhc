@@ -19,6 +19,14 @@ Commands:
   mhc host <ensure|status|stop|handoff> [--launch-spec <file>]
                                  Get, inspect or end the shared RPC daemon (one JSON line per call)
   mhc auth <command>            Print credentials or check provider readiness
+  mhc doctor                    Run diagnostics on configuration, trust, and resources
+  mhc import-omo [--from <dir>] [--force]
+                                 Import config, auth, and sessions from OmO agent directory
+  mhc ulw-loop <command>        Manage ulw-loop goals, criteria, and evidence
+  mhc schedule <command>        Schedule and manage background task executions
+  mhc models discover           Discover available models from providers
+  mhc senpi-install             Install or uninstall the Senpi companion plugin
+  mhc mini                      Experimental minimal TUI client
   mhc <command> --help          Show help for install/remove/uninstall/update/list/config/auth
 
 Options:

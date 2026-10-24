@@ -213,3 +213,16 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
+
+[profile.release]
+# Thin LTO enables cross-crate optimization with low link-time overhead.
+lto = "thin"
+# Strip debuginfo to shrink binary size; symbols stay so backtraces keep function names.
+strip = "debuginfo"
+# Keeps panic file:line information while omitting full debuginfo tables.
+debug = "line-tables-only"
+# 16 codegen-units is Cargo's default for release builds; stated explicitly
+# to document the build-time trade-off: fewer units allow slightly better optimization
+# at the cost of slower compilation and increased link memory.
+codegen-units = 16
+

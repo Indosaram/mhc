@@ -314,7 +314,8 @@ impl Default for SettingsConfig {
             mermaid_rendering_mode: MermaidRenderingMode::Streaming,
             show_cache_miss_notices: true,
             collapse_changelog: false,
-            enable_install_telemetry: true,
+            // SAFETY-DIVERGENCE(senpi packages/coding-agent/src/modes/interactive/components/settings-selector.ts): enableInstallTelemetry shows on by default; mhc shows off (opt-in, matches core default).
+            enable_install_telemetry: false,
             double_escape_action: "tree".to_owned(),
             tree_filter_mode: "default".to_owned(),
             show_hardware_cursor: false,

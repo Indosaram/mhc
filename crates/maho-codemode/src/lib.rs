@@ -47,6 +47,8 @@ pub struct CodemodeExtensionOptions {
     pub home_dir: PathBuf,
     pub environment: config::settings::Environment,
     pub js_runtime: tool::types::EvalRuntimeInfo,
+    /// `Some(passthrough)` scrubs secret-looking variables from the eval kernel environment.
+    pub env_passthrough: Option<Vec<String>>,
 }
 
 struct ExtensionState {
@@ -174,6 +176,7 @@ pub fn register(
                 )
                 .await
                 .map_err(|error| ExtensionFailure::new(error.to_string()))?;
+                prepared.settings.env_passthrough = options.env_passthrough.clone();
                 prepared.settings.foreground_window_seconds =
                     config::settings::resolve_foreground_window_seconds(
                         &prepared.settings,
