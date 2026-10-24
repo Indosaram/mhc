@@ -52,7 +52,8 @@ fn default_dream() -> Value {
 }
 
 fn default_people() -> Value {
-    json!({ "enabled": true, "max_entries": 40, "max_entry_chars": 200 })
+    // SAFETY-DIVERGENCE(packages/omo-config-core/src/schema/memory.ts): upstream defaults memory.people.enabled to true; mhc defaults to false.
+    json!({ "enabled": false, "max_entries": 40, "max_entry_chars": 200 })
 }
 
 fn default_agreements() -> Value {
@@ -246,7 +247,8 @@ pub fn omo_memory_people_layer_schema() -> Node {
 
 pub fn omo_memory_people_schema() -> Node {
     strict_object(vec![
-        defaulted("enabled", boolean(), default_true),
+        // SAFETY-DIVERGENCE(packages/omo-config-core/src/schema/memory.ts): upstream defaults memory.people.enabled to true; mhc defaults to false.
+        defaulted("enabled", boolean(), || json!(false)),
         defaulted("max_entries", integer_between(1, 100), || json!(40)),
         defaulted("max_entry_chars", integer_between(50, 500), || json!(200)),
     ])

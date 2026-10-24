@@ -60,6 +60,7 @@ pub(super) struct WorkerOptions {
     connection: BridgeConnectionConfig,
     pub(super) names: KernelToolNames,
     memory: crate::bridge::protocol::KernelMemoryThresholds,
+    env_passthrough: Option<Vec<String>>,
     #[cfg(test)]
     worker_entry: Option<PathBuf>,
 }
@@ -90,6 +91,7 @@ impl WorkerOptions {
                 }
             },
             memory: Some(&self.memory),
+            env_passthrough: self.env_passthrough.as_deref(),
         }
     }
 }
@@ -103,6 +105,8 @@ pub struct JavaScriptKernelStart {
     pub names: KernelToolNames,
     pub shutdown: maho_ai::utils::abort::AbortController,
     pub memory: crate::bridge::protocol::KernelMemoryThresholds,
+    /// `Some` scrubs secret-looking variables from the kernel child env, keeping these names.
+    pub env_passthrough: Option<Vec<String>>,
 }
 
 pub struct JavaScriptKernel {
@@ -203,6 +207,7 @@ impl JavaScriptKernel {
                     notice_bytes: 1_610_612_736,
                     ceiling_bytes: 2_147_483_648,
                 },
+                env_passthrough: None,
             },
         )
         .await
@@ -220,6 +225,7 @@ impl JavaScriptKernel {
             names,
             shutdown,
             memory,
+            env_passthrough,
         } = start;
         let owner_signal = shutdown.signal();
         let startup_owner = owner_signal.clone();
@@ -239,6 +245,7 @@ impl JavaScriptKernel {
             connection,
             names,
             memory,
+            env_passthrough,
             #[cfg(test)]
             worker_entry: None,
         };

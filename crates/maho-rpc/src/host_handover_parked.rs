@@ -76,7 +76,8 @@ pub struct HandoverParkedEntry {
     pub parked_by: Option<String>,
 }
 
-const PERMISSION_PRESET_NAMES: [&str; 6] = [
+const PERMISSION_PRESET_NAMES: [&str; 7] = [
+    "guarded",
     "full-access",
     "workspace",
     "accept-edits",
@@ -387,6 +388,20 @@ mod tests {
         record_handover_parked_session(dir.path(), &parked)
             .await
             .unwrap();
+        assert_eq!(
+            read_handover_parked_sessions(dir.path()).await,
+            vec![parked]
+        );
+    }
+
+    #[tokio::test]
+    async fn round_trips_the_guarded_permission_preset() {
+        let dir = tempfile::tempdir().expect("test");
+        let mut parked = entry("/guarded.jsonl");
+        parked.permission_preset = Some("guarded".into());
+        record_handover_parked_session(dir.path(), &parked)
+            .await
+            .expect("test");
         assert_eq!(
             read_handover_parked_sessions(dir.path()).await,
             vec![parked]

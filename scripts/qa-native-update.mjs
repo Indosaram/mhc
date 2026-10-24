@@ -18,6 +18,7 @@ let upgradeOnly = false;
 let rollbackProbe = null;
 let intermediatePackagePath = null;
 let intermediateVersion = null;
+let installerDir = null;
 
 for (let i = 0; i < args.length; i++) {
 	if (args[i] === "--old-package" && i + 1 < args.length) {
@@ -40,6 +41,8 @@ for (let i = 0; i < args.length; i++) {
 		intermediatePackagePath = resolve(args[++i]);
 	} else if (args[i] === "--intermediate-version" && i + 1 < args.length) {
 		intermediateVersion = args[++i];
+	} else if (args[i] === "--installer-dir" && i + 1 < args.length) {
+		installerDir = resolve(args[++i]);
 	} else if (args[i] === "--rollback-probe" && i + 1 < args.length) {
 		rollbackProbe = resolve(args[++i]);
 	} else {
@@ -48,7 +51,7 @@ for (let i = 0; i < args.length; i++) {
 }
 
 if (!oldPackagePath || !newPackagePath || !evidenceDir || !oldVersion || !newVersion) {
-	console.error("Usage: bun scripts/qa-native-update.mjs --old-package <A> --new-package <B> --old-version <A> --new-version <B> --evidence-dir <dir> [--rollback-probe <exe>] [--upgrade-only [--intermediate-package <P> --intermediate-version <v>]]");
+	console.error("Usage: bun scripts/qa-native-update.mjs --old-package <A> --new-package <B> --old-version <A> --new-version <B> --evidence-dir <dir> [--rollback-probe <exe>] [--installer-dir <dir>] [--upgrade-only [--intermediate-package <P> --intermediate-version <v>]]");
 	console.error("--upgrade-only: --old-package is a published flat-layout release; only its migration through install.sh/install.ps1 into the new --new-package is exercised (its own `mhc update` is never run).");
 	process.exit(2);
 }
@@ -78,8 +81,10 @@ const exeSuffix = isWindows ? ".exe" : "";
 const binaryName = `mhc${exeSuffix}`;
 const launcherName = `mhc-launcher${exeSuffix}`;
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
-const installShPath = resolve(scriptsDir, "..", "install.sh");
-const installPs1Path = resolve(scriptsDir, "..", "install.ps1");
+// --installer-dir: isolated installer copies (tools/qa/install-verify.mjs --emit-test-installers) carrying the
+// candidate test key; without it the repository installers (production key) are used.
+const installShPath = installerDir ? resolve(installerDir, "install.sh") : resolve(scriptsDir, "..", "install.sh");
+const installPs1Path = installerDir ? resolve(installerDir, "install.ps1") : resolve(scriptsDir, "..", "install.ps1");
 
 function computeSha256(filePath) {
 	if (!filePath || !existsSync(filePath)) return null;

@@ -211,12 +211,13 @@ pub async fn run_app_server_command(
                     .filter(|dir| !dir.is_empty())
                     .map(|dir| maho_core::paths::normalize_path(&dir, &Default::default()))
             });
-            let runtime = AppServerRuntime::new(
+            let runtime = AppServerRuntime::new_with_flags(
                 config.agent_dir.clone(),
                 config.cwd.clone(),
                 version.to_owned(),
                 session_dir,
                 Some(session_factory(config.clone())),
+                config.extension_flag_values.clone().unwrap_or_default(),
             )
             .await;
             // The installed OMO packaged skills root reaches the shipped consumer through the

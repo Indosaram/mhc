@@ -37,6 +37,8 @@ fn current_version_returns_non_empty_identity() {
 fn target_mapping_covers_known_platforms_and_rejects_unknown() {
     assert_eq!(target_from_str("linux-x86_64"), Ok("linux-x86_64"));
     assert_eq!(target_from_str("macos-aarch64"), Ok("macos-aarch64"));
+    assert_eq!(target_from_str("linux-aarch64"), Ok("linux-aarch64"));
+    assert_eq!(target_from_str("macos-x86_64"), Ok("macos-x86_64"));
     assert_eq!(target_from_str("windows-x86_64"), Ok("windows-x86_64"));
     assert!(target_from_str("linux-armv7").is_err());
     assert!(target_from_str("unknown-x86_64").is_err());
@@ -52,6 +54,14 @@ fn asset_names_map_to_expected_package_archives() {
     assert_eq!(
         asset_name_for_target("macos-aarch64"),
         Ok("mhc-macos-aarch64.tar.gz".to_string())
+    );
+    assert_eq!(
+        asset_name_for_target("linux-aarch64"),
+        Ok("mhc-linux-aarch64.tar.gz".to_string())
+    );
+    assert_eq!(
+        asset_name_for_target("macos-x86_64"),
+        Ok("mhc-macos-x86_64.tar.gz".to_string())
     );
     assert_eq!(
         asset_name_for_target("windows-x86_64"),
@@ -490,6 +500,7 @@ async fn available_cached_returns_release_when_cached_version_is_newer() {
             tag: "v9999.12.31".to_string(),
             asset_url: "https://github.com/Indosaram/mhc/releases/download/v9999.12.31/mhc-linux-x86_64.tar.gz".to_string(),
             checksum_url: "https://github.com/Indosaram/mhc/releases/download/v9999.12.31/mhc-linux-x86_64.tar.gz.sha256".to_string(),
+            signature_url: None,
             asset_name: "mhc-linux-x86_64.tar.gz".to_string(),
         }),
         failure_reason: None,
@@ -528,6 +539,7 @@ async fn available_cached_returns_none_when_cached_version_is_older_or_equal() {
             tag: "v0.0.0".to_string(),
             asset_url: "https://github.com/Indosaram/mhc/releases/download/v0.0.0/mhc-linux-x86_64.tar.gz".to_string(),
             checksum_url: "https://github.com/Indosaram/mhc/releases/download/v0.0.0/mhc-linux-x86_64.tar.gz.sha256".to_string(),
+            signature_url: None,
             asset_name: "mhc-linux-x86_64.tar.gz".to_string(),
         }),
         failure_reason: None,
@@ -640,10 +652,102 @@ async fn offline_cache_read_requires_no_release_server() {
             asset_name: "mhc-linux-x86_64.tar.gz".into(),
             asset_url: "http://127.0.0.1:1/package".into(),
             checksum_url: "http://127.0.0.1:1/checksum".into(),
+            signature_url: None,
         }),
         failure_reason: None,
     };
     write_cache_atomic(&path, &record).expect("cache publication");
     let cached = available_cached_with(&path, Some(&record.endpoint), Some(&record.target), Some(true)).await;
     assert_eq!(cached.map(|release| release.version), Some("9999.12.31".into()));
+}
+
+mod signature_cases {
+    use crate::native_update::signature::{FIRST_SIGNED_VERSION, SignatureError, verify_archive};
+
+    const TEST_PUB: &str = include_str!("../../tests/fixtures/release-test-key/test.pub");
+    const TEST_KEY: &str = include_str!("../../tests/fixtures/release-test-key/test.key");
+    const SIGNED: &str = FIRST_SIGNED_VERSION;
+    const OLD: &str = "2026.10.19.1";
+
+    fn pubkey() -> String {
+        TEST_PUB.lines().nth(1).expect("fixture public key line").trim().to_owned()
+    }
+
+    fn sign(bytes: &[u8]) -> String {
+        let secret = minisign::SecretKeyBox::from_string(TEST_KEY)
+            .and_then(|boxed| boxed.into_secret_key(Some(String::new())))
+            .expect("fixture secret key");
+        minisign::sign(None, &secret, std::io::Cursor::new(bytes), Some("mhc test"), None)
+            .expect("sign")
+            .into_string()
+    }
+
+    fn archive(bytes: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mhc.tar.gz");
+        std::fs::write(&path, bytes).expect("write archive");
+        (dir, path)
+    }
+
+    #[test]
+    fn valid_signature_is_accepted() {
+        let (_dir, path) = archive(b"archive bytes");
+        let key = pubkey();
+        assert_eq!(verify_archive(Some(&key), &path, Some(&sign(b"archive bytes")), SIGNED, false), Ok(()));
+    }
+
+    #[test]
+    fn tampered_archive_is_rejected() {
+        let signature = sign(b"archive bytes");
+        let (_dir, path) = archive(b"archive bytez");
+        let key = pubkey();
+        let result = verify_archive(Some(&key), &path, Some(&signature), SIGNED, true);
+        assert!(matches!(result, Err(SignatureError::Invalid(_))), "{result:?}");
+    }
+
+    #[test]
+    fn signature_from_a_different_key_is_rejected() {
+        let pair = minisign::KeyPair::generate_unencrypted_keypair().expect("key pair");
+        let other = minisign::sign(None, &pair.sk, std::io::Cursor::new(b"archive bytes"), None, None)
+            .expect("sign")
+            .into_string();
+        let (_dir, path) = archive(b"archive bytes");
+        let key = pubkey();
+        let result = verify_archive(Some(&key), &path, Some(&other), SIGNED, true);
+        assert!(matches!(result, Err(SignatureError::Invalid(_))), "{result:?}");
+    }
+
+    #[test]
+    fn missing_signature_is_rejected_from_the_first_signed_version_on() {
+        let (_dir, path) = archive(b"archive bytes");
+        let key = pubkey();
+        for version in [SIGNED, "9999.1.1"] {
+            for allow in [false, true] {
+                assert_eq!(
+                    verify_archive(Some(&key), &path, None, version, allow),
+                    Err(SignatureError::MissingSignature)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn missing_signature_before_the_first_signed_version_needs_allow_unsigned() {
+        let (_dir, path) = archive(b"archive bytes");
+        let key = pubkey();
+        assert_eq!(verify_archive(Some(&key), &path, None, OLD, false), Err(SignatureError::UnsignedNotAllowed));
+        assert_eq!(verify_archive(Some(&key), &path, None, OLD, true), Ok(()));
+    }
+
+    #[test]
+    fn a_build_without_a_key_refuses_every_update() {
+        let (_dir, path) = archive(b"archive bytes");
+        for allow in [false, true] {
+            assert_eq!(
+                verify_archive(None, &path, Some(&sign(b"archive bytes")), SIGNED, allow),
+                Err(SignatureError::NoTrustRoot)
+            );
+            assert_eq!(verify_archive(None, &path, None, OLD, allow), Err(SignatureError::NoTrustRoot));
+        }
+    }
 }

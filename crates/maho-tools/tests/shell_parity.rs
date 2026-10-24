@@ -132,3 +132,44 @@ fn spawn_context_starts_from_the_injected_shell_env() {
     assert_eq!(context.env.get("PATH").map(String::as_str), Some("/agent/bin:/usr/bin"));
     assert!(!context.env.contains_key("PI_SESSION_ID"));
 }
+
+fn secret_shell_env() -> ShellEnvProvider {
+    Arc::new(|| [("PATH", "/usr/bin"), ("HOME", "/home/u"), ("SSH_AUTH_SOCK", "/tmp/agent"), ("FOO", "y"), ("GITHUB_TOKEN", "x"), ("MY_API_KEY", "k")]
+        .into_iter().map(|(k, v)| (k.to_owned(), v.to_owned())).collect())
+}
+
+struct EnvCapture(Arc<Mutex<Option<std::collections::BTreeMap<String, String>>>>);
+impl BashOperations for EnvCapture {
+    fn exec<'a>(&'a self, _: &'a str, _: &'a Path, options: BashExecOptions) -> ToolFuture<'a, BashExit> {
+        Box::pin(async move {
+            *self.0.lock().expect("test") = Some(options.env);
+            Ok(BashExit { exit_code: Some(0) })
+        })
+    }
+}
+
+async fn spawned_env(options: BashToolOptions) -> std::collections::BTreeMap<String, String> {
+    let captured = Arc::new(Mutex::new(None));
+    let tool = create_bash_tool_definition(".".into(), BashToolOptions { operations: Some(Arc::new(EnvCapture(Arc::clone(&captured)))), shell_env: Some(secret_shell_env()), ..options });
+    (tool.execute)(ToolCall { id: "env", params: json!({"command":"true"}), signal: AbortSignal::default(), on_update: None, context: None }).await.expect("test");
+    captured.lock().expect("test").take().expect("test")
+}
+
+#[tokio::test]
+async fn spawn_context_scrubs_secrets_when_passthrough_is_set() {
+    let env = spawned_env(BashToolOptions { env_passthrough: Some(vec![]), ..Default::default() }).await;
+    assert!(!env.contains_key("GITHUB_TOKEN") && !env.contains_key("MY_API_KEY"));
+    for key in ["PATH", "HOME", "SSH_AUTH_SOCK", "FOO"] { assert!(env.contains_key(key), "{key} must survive"); }
+    let kept = spawned_env(BashToolOptions { env_passthrough: Some(vec!["GITHUB_TOKEN".into()]), ..Default::default() }).await;
+    assert_eq!(kept.get("GITHUB_TOKEN").map(String::as_str), Some("x"));
+    assert!(!kept.contains_key("MY_API_KEY"));
+    let unscrubbed = spawned_env(BashToolOptions::default()).await;
+    assert!(unscrubbed.contains_key("GITHUB_TOKEN"));
+}
+
+#[tokio::test]
+async fn spawn_hook_cannot_reintroduce_scrubbed_secrets() {
+    let hook: BashSpawnHook = Arc::new(|mut context| { context.env.insert("GITHUB_TOKEN".into(), "from-hook".into()); Ok(context) });
+    let env = spawned_env(BashToolOptions { env_passthrough: Some(vec![]), spawn_hook: Some(hook), ..Default::default() }).await;
+    assert!(!env.contains_key("GITHUB_TOKEN"));
+}

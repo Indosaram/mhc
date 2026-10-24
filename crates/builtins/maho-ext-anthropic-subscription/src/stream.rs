@@ -91,8 +91,18 @@ pub fn stream_anthropic_subscription(
                 Some(pool) => {
                     let session = options.as_ref().and_then(|options| options.stream.request.affinity_session_id.as_deref().or(options.stream.session_id.as_deref()));
                     let cli_pin = crate::account_command::session_pin(session);
+                    let rotation_consented = maho_core::provider_consent::rotation_consented_in_agent_dir(
+                        &deps.agent_dir.to_string_lossy(),
+                        crate::auth_lane::PROVIDER_ID,
+                    );
                     let mut slot = if let Some(name) = retry_account.take() {
                         pool.accounts.iter().find(|slot| slot.name == name).cloned().ok_or_else(|| anyhow::anyhow!("retry account disappeared"))?
+                    } else if pool.accounts.len() > 1 && !rotation_consented {
+                        let pin = cli_pin.as_deref().or(pool.pinned_account.as_deref());
+                        pin.and_then(|name| pool.accounts.iter().find(|s| s.name == name))
+                            .or_else(|| pool.accounts.first())
+                            .cloned()
+                            .ok_or_else(|| anyhow::anyhow!("no accounts available"))?
                     } else {
                         crate::affinity::select_account(&pool.accounts, &crate::affinity::AffinityOptions { session_id: session, pinned_account: cli_pin.as_deref().or(pool.pinned_account.as_deref()), pin_source: if cli_pin.is_some() { Some(crate::affinity::PinSource::Cli) } else { pool.pin_source }, ..Default::default() }, (deps.now)() as f64)?
                     };
@@ -291,6 +301,23 @@ pub fn stream_anthropic_subscription(
             }
             let previous_name = slot.name.clone();
             attempt += 1;
+            // SAFETY-DIVERGENCE(packages/claude-sdk-oauth/src/stream.ts): upstream rotates across accounts on rate limits without consent; mhc gates automatic rotation behind providerRiskConsent.<provider>:rotation.
+            let rotation_consented = maho_core::provider_consent::rotation_consented_in_agent_dir(
+                &deps.agent_dir.to_string_lossy(),
+                crate::auth_lane::PROVIDER_ID,
+            );
+            if pool.accounts.len() > 1 && !rotation_consented {
+                if classification.kind == crate::errors::SdkErrorKind::RateLimit {
+                    let original_message = error.to_string();
+                    let notice = maho_core::provider_consent::append_rotation_notice(
+                        &original_message,
+                        crate::auth_lane::PROVIDER_ID,
+                        pool.accounts.len(),
+                    );
+                    break Err(anyhow::anyhow!("{notice}"));
+                }
+                break Err(error);
+            }
             if attempt as usize >= pool.accounts.len() {
                 break Err(error);
             }

@@ -48,6 +48,7 @@ impl StartingActor {
                 notice_bytes: 1_610_612_736,
                 ceiling_bytes: 2_147_483_648,
             },
+            env_passthrough: None,
             worker_entry: Some(
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/startup-worker.js"),
             ),

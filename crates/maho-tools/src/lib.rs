@@ -4,10 +4,12 @@
 pub mod ansi;
 pub mod bounded_realpath;
 pub mod bash;
+pub mod bash_sandbox;
 pub mod bash_executor;
 pub mod definition;
 pub mod edit;
 pub mod edit_diff;
+pub mod env_scrub;
 pub mod file_mutation_queue;
 pub mod filesystem_policy;
 pub mod find;

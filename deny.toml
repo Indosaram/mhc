@@ -1,0 +1,110 @@
+# cargo-deny configuration for mhc
+# See https://embarkstudios.github.io/cargo-deny/ for configuration documentation.
+
+[graph]
+targets = []
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+[advisories]
+# In cargo-deny 0.18+, vulnerabilities unconditionally trigger errors (denied).
+# Unmaintained advisories only fail if present in direct workspace dependencies, warning on others.
+unmaintained = "workspace"
+yanked = "warn"
+ignore = [
+    # RUSTSEC-2023-0126 (im 15.1.0 via loro 1.16.2): upstream archived, no fixed version available; transitive dependency of loro.
+    { id = "RUSTSEC-2023-0126", reason = "upstream archived, no fixed version available; transitive dependency of loro" },
+
+    # RUSTSEC-2026-0255 (sized-chunks 0.6.5 via im 15.1.0 -> loro 1.16.2): upstream archived, no fixed version available; transitive dependency of loro.
+    { id = "RUSTSEC-2026-0255", reason = "upstream archived, no fixed version available; transitive dependency of loro" },
+
+    # RUSTSEC-2026-0097 (rand 0.7.3 via imageproc -> photon-rs 0.3.3): requires custom logger invoking rand::rng() during ThreadRng reseed; mhc does not install such a logger.
+    { id = "RUSTSEC-2026-0097", reason = "requires custom logger invoking rand::rng() during ThreadRng reseed; mhc does not install such a logger" },
+
+    # RUSTSEC-2026-0346 (rustls =0.23.45 pinned): mhc does not debug-format TLS client session secrets, does not use ECH, and connects only to HTTPS model/package endpoints; tracked for next workspace pin bump.
+    { id = "RUSTSEC-2026-0346", reason = "mhc does not debug-format TLS client session secrets, does not use ECH, and connects only to HTTPS model/package endpoints; tracked for next workspace pin bump" },
+
+    # RUSTSEC-2026-0347 (rustls =0.23.45 pinned): mhc does not debug-format TLS client session secrets, does not use ECH, and connects only to HTTPS model/package endpoints; tracked for next workspace pin bump.
+    { id = "RUSTSEC-2026-0347", reason = "mhc does not debug-format TLS client session secrets, does not use ECH, and connects only to HTTPS model/package endpoints; tracked for next workspace pin bump" },
+
+    # RUSTSEC-2026-0348 (rustls =0.23.45 pinned): mhc does not debug-format TLS client session secrets, does not use ECH, and connects only to HTTPS model/package endpoints; tracked for next workspace pin bump.
+    { id = "RUSTSEC-2026-0348", reason = "mhc does not debug-format TLS client session secrets, does not use ECH, and connects only to HTTPS model/package endpoints; tracked for next workspace pin bump" },
+
+    # RUSTSEC-2026-0349 (rustls =0.23.45 pinned): mhc does not debug-format TLS client session secrets, does not use ECH, and connects only to HTTPS model/package endpoints; tracked for next workspace pin bump.
+    { id = "RUSTSEC-2026-0349", reason = "mhc does not debug-format TLS client session secrets, does not use ECH, and connects only to HTTPS model/package endpoints; tracked for next workspace pin bump" },
+
+    # RUSTSEC-2026-0382 (rustls-webpki): emSign intermediate distrust update; tracked for next workspace pin bump.
+    { id = "RUSTSEC-2026-0382", reason = "emSign intermediate distrust update; tracked for next workspace pin bump" },
+
+    # RUSTSEC-2026-0383 (webpki-root-certs): emSign intermediate distrust update; tracked for next workspace pin bump.
+    { id = "RUSTSEC-2026-0383", reason = "emSign intermediate distrust update; tracked for next workspace pin bump" },
+
+    # RUSTSEC-2026-0381 (webpki-roots =1.0.5 pinned): emSign intermediate distrust update; tracked for next workspace pin bump.
+    { id = "RUSTSEC-2026-0381", reason = "emSign intermediate distrust update; tracked for next workspace pin bump" },
+
+    # RUSTSEC-2026-0386 (tokio =1.52.3 pinned): AsyncFd::new I/O safety with borrowed fds; mhc does not construct AsyncFd over borrowed raw fds.
+    { id = "RUSTSEC-2026-0386", reason = "AsyncFd::new I/O safety with borrowed fds; mhc does not construct AsyncFd over borrowed raw fds" },
+
+    # RUSTSEC-2026-0367 (zip =2.4.2 pinned): advisories affect ZipArchive::extract / ZipStreamReader::extract; mhc never calls extract() and instead validates every zip entry path and rejects symlinks/escapes in custom extractors (archive.rs, binary_downloader.rs, downloader.rs).
+    { id = "RUSTSEC-2026-0367", reason = "advisories affect ZipArchive::extract / ZipStreamReader::extract; mhc never calls extract() and instead validates every zip entry path and rejects symlinks/escapes in custom extractors (archive.rs, binary_downloader.rs, downloader.rs)" },
+
+    # RUSTSEC-2026-0368 (zip =2.4.2 pinned): advisories affect ZipArchive::extract / ZipStreamReader::extract; mhc never calls extract() and instead validates every zip entry path and rejects symlinks/escapes in custom extractors (archive.rs, binary_downloader.rs, downloader.rs).
+    { id = "RUSTSEC-2026-0368", reason = "advisories affect ZipArchive::extract / ZipStreamReader::extract; mhc never calls extract() and instead validates every zip entry path and rejects symlinks/escapes in custom extractors (archive.rs, binary_downloader.rs, downloader.rs)" },
+
+    # RUSTSEC-2026-0369 (zip =2.4.2 pinned): advisories affect ZipArchive::extract / ZipStreamReader::extract; mhc never calls extract() and instead validates every zip entry path and rejects symlinks/escapes in custom extractors (archive.rs, binary_downloader.rs, downloader.rs).
+    { id = "RUSTSEC-2026-0369", reason = "advisories affect ZipArchive::extract / ZipStreamReader::extract; mhc never calls extract() and instead validates every zip entry path and rejects symlinks/escapes in custom extractors (archive.rs, binary_downloader.rs, downloader.rs)" },
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+    "CC0-1.0",
+    "BSL-1.0",
+    "OpenSSL",
+    "CDLA-Permissive-2.0",
+    "0BSD",
+    "LicenseRef-SUL-1.0",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[licenses.private]
+# Ignore workspace crates that have publish = false (licensed under LicenseRef-SUL-1.0 / MIT)
+ignore = true
+
+# [[licenses.clarify]]
+# Clarifications can be added here if a dependency contains non-standard license files:
+# crate = "example"
+# expression = "MIT"
+# license-files = [{ path = "LICENSE", hash = 0x12345678 }]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Git dependencies enumerated from Cargo.lock with: grep -n 'source = "git+' Cargo.lock
+# Currently none present in Cargo.lock.
+allow-git = []

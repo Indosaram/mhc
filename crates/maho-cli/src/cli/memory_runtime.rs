@@ -1634,7 +1634,7 @@ mod tests {
         let defaults = runtime(serde_json::json!({ "memory": {} }))
             .palace_people_options()
             .expect("resolved people options");
-        assert!(defaults.enabled);
+        assert!(!defaults.enabled);
         assert_eq!(defaults.limits.max_entries, 40);
         assert_eq!(defaults.limits.max_entry_chars, 200);
 
@@ -1646,6 +1646,15 @@ mod tests {
         assert!(!configured.enabled);
         assert_eq!(configured.limits.max_entries, 5);
         assert_eq!(configured.limits.max_entry_chars, 50);
+
+        let enabled = runtime(serde_json::json!({
+            "memory": { "people": { "enabled": true } }
+        }))
+        .palace_people_options()
+        .expect("resolved people options");
+        assert!(enabled.enabled);
+        assert_eq!(enabled.limits.max_entries, 40);
+        assert_eq!(enabled.limits.max_entry_chars, 200);
     }
 
     struct TestSession(&'static str);

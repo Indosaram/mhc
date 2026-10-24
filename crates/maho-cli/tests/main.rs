@@ -115,6 +115,8 @@ pub mod omo_mount;
 pub mod package_commands;
 #[path = "paths.rs"]
 pub mod paths;
+#[path = "permission_default.rs"]
+pub mod permission_default;
 #[path = "print_entry.rs"]
 pub mod print_entry;
 #[path = "project_trust.rs"]
@@ -145,6 +147,8 @@ pub mod supervisor_route;
 pub mod syntax_highlight;
 #[path = "task_runners.rs"]
 pub mod task_runners;
+#[path = "telemetry_default.rs"]
+pub mod telemetry_default;
 #[path = "tool_result_images.rs"]
 pub mod tool_result_images;
 #[path = "tool_search.rs"]

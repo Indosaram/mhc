@@ -24,6 +24,13 @@ impl ModelRuntimeHandle {
         self.inner.lock().await.get_available(None).await
     }
 
+    /// Consent gate for the worker's direct `Models` streams (SD-4): the harness bypasses
+    /// `ModelRuntime`, so every run entry point checks this first.
+    pub async fn consent_failure(&self, provider: &str) -> Option<String> {
+        let runtime = self.inner.lock().await;
+        maho_core::provider_consent::consent_failure(&runtime.credentials, provider, None)
+    }
+
     pub async fn models(&self) -> Models {
         self.inner.lock().await.models().clone()
     }

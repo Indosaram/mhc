@@ -1,5 +1,5 @@
 use maho_core::settings_manager::{SettingsManager,InMemorySettingsStorage,SettingsStorage,SettingsScope};
-use maho_ext_permission_system::{settings::load_permission_settings,evaluate::evaluate,types::{Action,Rule,PermissionPresetName}};
+use maho_ext_permission_system::{settings::{load_permission_settings,resolve_permission_config,effective_approval_summary,ApprovalSummary},evaluate::evaluate,types::{Action,Rule,PermissionPresetName}};
 use serde_json::json;
 fn manager(global:serde_json::Value,project:serde_json::Value)->SettingsManager{
     let storage=InMemorySettingsStorage::default();
@@ -8,7 +8,11 @@ fn manager(global:serde_json::Value,project:serde_json::Value)->SettingsManager{
     SettingsManager::from_storage(Box::new(storage),true)
 }
 #[test]
-fn default_full_access(){let root=tempfile::tempdir().expect("dir");let (rules,approved)=load_permission_settings(&manager(json!({}),json!({})),&[],(root.path(),"/home/user"),None).expect("settings");assert_eq!(evaluate("bash","rm -rf node_modules",&[&rules]).action,Action::Allow);assert!(approved.is_empty());}
+fn default_guarded(){let root=tempfile::tempdir().expect("dir");let (rules,approved)=load_permission_settings(&manager(json!({}),json!({})),&[],(root.path(),"/home/user"),None).expect("settings");assert_eq!(evaluate("bash","rm -rf node_modules",&[&rules]).action,Action::Allow);assert_eq!(evaluate("external_directory","/etc/*",&[&rules]).action,Action::Ask);assert!(approved.is_empty());}
+#[test]
+fn explicit_full_access_restores_star_allow(){let root=tempfile::tempdir().expect("dir");let (rules,_)=load_permission_settings(&manager(json!({"permissionPreset":"full-access"}),json!({})),&[],(root.path(),"/home/user"),None).expect("settings");assert_eq!(evaluate("external_directory","/etc/*",&[&rules]).action,Action::Allow);assert_eq!(evaluate("credential_file","/x/auth.json",&[&rules]).action,Action::Allow);}
+#[test]
+fn guarded_name_is_accepted_in_settings(){let root=tempfile::tempdir().expect("dir");let (rules,_)=load_permission_settings(&manager(json!({"permissionPreset":"guarded"}),json!({})),&[],(root.path(),"/home/user"),None).expect("settings");assert_eq!(evaluate("external_directory","/etc/*",&[&rules]).action,Action::Ask);}
 #[test]
 fn explicit_ask(){let root=tempfile::tempdir().expect("dir");let (rules,_)=load_permission_settings(&manager(json!({"permissionPreset":"ask"}),json!({})),&[],(root.path(),"/home/user"),None).expect("settings");assert_eq!(evaluate("bash","ls",&[&rules]).action,Action::Ask);}
 #[test]
@@ -21,3 +25,23 @@ fn scope_precedence(){let root=tempfile::tempdir().expect("dir");let cli=vec![Ru
 fn invalid_global(){let root=tempfile::tempdir().expect("dir");assert!(load_permission_settings(&manager(json!({"permissionPreset":"dangerous"}),json!({})),&[],(root.path(),"/home/user"),None).is_err());}
 #[test]
 fn invalid_project(){let root=tempfile::tempdir().expect("dir");assert!(load_permission_settings(&manager(json!({}),json!({"permissionPreset":"dangerous"})),&[],(root.path(),"/home/user"),None).is_err());}
+#[test]
+fn child_propagation_preset_is_only_the_explicit_non_default_one(){
+    use maho_ext_permission_system::settings::explicit_non_default_preset as effective;
+    assert_eq!(effective(&manager(json!({}),json!({})),None),None);
+    assert_eq!(effective(&manager(json!({"permissionPreset":"guarded"}),json!({})),None),None);
+    assert_eq!(effective(&manager(json!({"permissionPreset":"full-access"}),json!({})),None),Some(PermissionPresetName::FullAccess));
+    assert_eq!(effective(&manager(json!({"permissionPreset":"full-access"}),json!({"permissionPreset":"ask"})),None),Some(PermissionPresetName::Ask));
+    assert_eq!(effective(&manager(json!({"permissionPreset":"full-access"}),json!({})),Some(PermissionPresetName::Workspace)),Some(PermissionPresetName::Workspace));
+    assert_eq!(effective(&manager(json!({"permissionPreset":"full-access"}),json!({})),Some(PermissionPresetName::Guarded)),None);
+}
+
+fn summary(global:serde_json::Value,cli:&[Rule],preset:Option<PermissionPresetName>)->ApprovalSummary{effective_approval_summary(&resolve_permission_config(&manager(global,json!({})),cli,"/home/user",preset).expect("resolved"))}
+#[test]
+fn approval_summary_maps_presets_and_rules(){
+    assert_eq!(summary(json!({}),&[],None),ApprovalSummary::OnRequest);
+    assert_eq!(summary(json!({"permissionPreset":"full-access"}),&[],None),ApprovalSummary::Never);
+    assert_eq!(summary(json!({"permissionPreset":"read-only"}),&[],None),ApprovalSummary::Untrusted);
+    assert_eq!(summary(json!({"permissionPreset":"full-access"}),&[],Some(PermissionPresetName::Ask)),ApprovalSummary::Untrusted);
+    assert_eq!(summary(json!({}),&[],Some(PermissionPresetName::FullAccess)),ApprovalSummary::Never);
+}

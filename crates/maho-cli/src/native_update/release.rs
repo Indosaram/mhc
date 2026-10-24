@@ -9,6 +9,9 @@ pub struct Release {
     pub tag: String,
     pub asset_url: String,
     pub checksum_url: String,
+    /// `<asset>.minisig`; `None` when the release publishes no signature.
+    #[serde(default)]
+    pub signature_url: Option<String>,
     pub asset_name: String,
 }
 
@@ -23,7 +26,9 @@ pub fn target() -> Result<&'static str, String> {
 pub fn target_from_str(s: &str) -> Result<&'static str, String> {
     match s.trim() {
         "linux-x86_64" => Ok("linux-x86_64"),
+        "linux-aarch64" => Ok("linux-aarch64"),
         "macos-aarch64" => Ok("macos-aarch64"),
+        "macos-x86_64" => Ok("macos-x86_64"),
         "windows-x86_64" => Ok("windows-x86_64"),
         other => Err(format!("unsupported target: {other}")),
     }
@@ -32,8 +37,12 @@ pub fn target_from_str(s: &str) -> Result<&'static str, String> {
 fn target_from_platform() -> Result<&'static str, String> {
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         Ok("linux-x86_64")
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        Ok("linux-aarch64")
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         Ok("macos-aarch64")
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        Ok("macos-x86_64")
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         Ok("windows-x86_64")
     } else {
@@ -48,7 +57,9 @@ fn target_from_platform() -> Result<&'static str, String> {
 pub fn asset_name_for_target(target: &str) -> Result<String, String> {
     match target {
         "linux-x86_64" => Ok("mhc-linux-x86_64.tar.gz".to_owned()),
+        "linux-aarch64" => Ok("mhc-linux-aarch64.tar.gz".to_owned()),
         "macos-aarch64" => Ok("mhc-macos-aarch64.tar.gz".to_owned()),
+        "macos-x86_64" => Ok("mhc-macos-x86_64.tar.gz".to_owned()),
         "windows-x86_64" => Ok("mhc-windows-x86_64.zip".to_owned()),
         other => Err(format!("unsupported target for asset lookup: {other}")),
     }
@@ -313,6 +324,7 @@ pub async fn latest_from_endpoint(
 
     let expected_asset_name = asset_name_for_target(current_target)?;
     let expected_checksum_name = format!("{expected_asset_name}.sha256");
+    let expected_signature_name = format!("{expected_asset_name}.minisig");
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
@@ -371,12 +383,16 @@ pub async fn latest_from_endpoint(
 
     let mut found_asset: Option<&GitHubAsset> = None;
     let mut found_checksum: Option<&GitHubAsset> = None;
+    let mut found_signature: Option<&GitHubAsset> = None;
     for asset in &gh_release.assets {
         if asset.name == expected_asset_name {
             found_asset = Some(asset);
         }
         if asset.name == expected_checksum_name {
             found_checksum = Some(asset);
+        }
+        if asset.name == expected_signature_name {
+            found_signature = Some(asset);
         }
     }
 
@@ -405,12 +421,27 @@ pub async fn latest_from_endpoint(
 
     validate_release_asset_url(asset_url, is_custom, is_loopback)?;
     validate_release_asset_url(checksum_url, is_custom, is_loopback)?;
+    let signature_url = match found_signature {
+        Some(signature) => {
+            let url = signature
+                .browser_download_url
+                .as_deref()
+                .or(signature.url.as_deref())
+                .ok_or_else(|| {
+                    format!("signature asset '{expected_signature_name}' is missing download URL")
+                })?;
+            validate_release_asset_url(url, is_custom, is_loopback)?;
+            Some(url.to_string())
+        }
+        None => None,
+    };
 
     Ok(Release {
         version: clean_version,
         tag: tag.to_string(),
         asset_url: asset_url.to_string(),
         checksum_url: checksum_url.to_string(),
+        signature_url,
         asset_name: expected_asset_name,
     })
 }

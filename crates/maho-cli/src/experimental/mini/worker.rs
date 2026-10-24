@@ -313,11 +313,18 @@ async fn lane_for(harness: &WorkerHarness, context: &Context) -> Result<Arc<Lane
     harness.lane("main", None, context).await.map_err(|error| error.message)
 }
 
-async fn spawn_recoveries(harness: &WorkerHarness, context: &Context) -> Result<Vec<tokio::task::JoinHandle<()>>, String> {
+async fn spawn_recoveries(harness: &WorkerHarness, runtime: &ModelRuntimeHandle, context: &Context) -> Result<Vec<tokio::task::JoinHandle<()>>, String> {
     let mut recoveries = Vec::new();
     for operation in harness.open_operations().map_err(|error| error.message)? {
         let lane = harness.lane(&operation.lane, None, context).await.map_err(|error| error.message)?;
         let label = format!("{}/{}", operation.lane, operation.operation_id);
+        // Consent gate (SD-4): resuming an open operation streams through `Models` directly.
+        if let Some(model) = lane.get_model().ok().flatten()
+            && let Some(message) = runtime.consent_failure(&model.provider).await
+        {
+            maho_core::output_guard::maho_write_stderr(&format!("Skipped resuming {label}: {message}\n"));
+            continue;
+        }
         let context = context.clone();
         recoveries.push(tokio::spawn(async move {
             match lane.resume(&context).await {
@@ -422,7 +429,7 @@ pub async fn run_session_worker(options: SessionWorkerOptions) -> Result<(), Str
     peer.provide(&MODELS, models_handlers(models_service.clone()));
     peer.provide(&WORKER, worker_handlers(session_id));
 
-    let recoveries = spawn_recoveries(&harness, &context).await?;
+    let recoveries = spawn_recoveries(&harness, &runtime, &context).await?;
 
     let (closed, closure) = tokio::sync::oneshot::channel();
     let closed = Mutex::new(Some(closed));

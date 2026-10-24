@@ -33,7 +33,8 @@ pub fn format_result_text(response:&QuestionResponse,questions:&[Question])->Str
         }
         QuestionStatus::TimedOut=>{
             let minutes=(response.auto_resolved_after_ms.unwrap_or(crate::schema::DEFAULT_ASK_USER_TIMEOUT_MS) as f64/60_000.0).round();
-            let mut lines=vec![format!("The user did not answer within {minutes} minutes. (사용자가 답변을 안하고 timeout 으로 종료됨)")];let selected=answered_lines(response,questions);
+            // SAFETY-DIVERGENCE(packages/coding-agent/src/core/extensions/builtin/ask-user/format.ts): upstream appends Korean timeout explanation; mhc uses English-only timeout message.
+            let mut lines=vec![format!("The user did not answer within {minutes} minutes.")];let selected=answered_lines(response,questions);
             if !selected.is_empty(){lines.push(format!("Before going idle the user had selected: {}",selected.join("; ")));}lines.push("Continue the work to completion on your best judgment; do not ask this question again this turn.".into());lines.join("\n")
         }
         QuestionStatus::Cancelled=>"The user dismissed the question.".into(),
@@ -43,7 +44,8 @@ pub fn format_result_text(response:&QuestionResponse,questions:&[Question])->Str
 }
 pub fn format_required_no_answer(response:&QuestionResponse,questions:&[Question])->String{
     let reason=match response.status{
-        QuestionStatus::TimedOut=>{let minutes=(response.auto_resolved_after_ms.unwrap_or(crate::schema::DEFAULT_ASK_USER_TIMEOUT_MS) as f64/60_000.0).round();format!("The user did not answer within {minutes} minutes. (사용자가 답변을 안하고 timeout 으로 종료됨)")},
+        // SAFETY-DIVERGENCE(packages/coding-agent/src/core/extensions/builtin/ask-user/format.ts): upstream appends Korean timeout explanation; mhc uses English-only timeout message.
+        QuestionStatus::TimedOut=>{let minutes=(response.auto_resolved_after_ms.unwrap_or(crate::schema::DEFAULT_ASK_USER_TIMEOUT_MS) as f64/60_000.0).round();format!("The user did not answer within {minutes} minutes.")},
         QuestionStatus::Cancelled=>"The user dismissed the question.".into(),
         QuestionStatus::OrphanedAfterRestart=>"The pending question could not be resumed after a restart.".into(),
         _=>"This session has no user attached (subagent or headless).".into(),
