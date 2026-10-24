@@ -14,6 +14,19 @@ pub struct WorkerHost {
     process: SubprocessProcess,
 }
 
+/// SAFETY-DIVERGENCE(senpi tools/bash.ts): drop secret-looking variables from the env the eval kernel
+/// child receives, only when `env_passthrough` is `Some`.
+pub fn scrub_host_env(
+    env: &mut std::collections::HashMap<String, String>,
+    env_passthrough: Option<&[String]>,
+) {
+    if let Some(passthrough) = env_passthrough {
+        let mut scrubbed: std::collections::BTreeMap<_, _> = env.drain().collect();
+        maho_process_env::env_scrub::scrub_secrets(&mut scrubbed, passthrough);
+        env.extend(scrubbed);
+    }
+}
+
 pub fn error_from_bridge(error: &Value) -> ProcessError {
     ProcessError::WorkerFailure {
         message: error["message"]
@@ -86,6 +99,16 @@ impl WorkerHost {
         parallel_pool_width: u64,
         mode: JavaScriptKernelMode,
     ) -> Result<Self, ProcessError> {
+        Self::spawn_scrubbed(entry, cwd, parallel_pool_width, mode, None)
+    }
+    /// Like [`Self::spawn`], dropping secret-looking host variables when `env_passthrough` is `Some`.
+    pub fn spawn_scrubbed(
+        entry: &Path,
+        cwd: &Path,
+        parallel_pool_width: u64,
+        mode: JavaScriptKernelMode,
+        env_passthrough: Option<&[String]>,
+    ) -> Result<Self, ProcessError> {
         let relay = format!(
             "import {{ Worker }} from 'node:worker_threads'; import {{ createInterface }} from 'node:readline'; const worker = new Worker({}, {{ workerData: {{ cwd: {}, parallelPoolWidth: {} }} }}); worker.on('message', message => process.stdout.write(JSON.stringify(message)+'\\n')); worker.on('error', error => {{ process.stdout.write(JSON.stringify({{type:'init-failed',error:{{message:error.message,name:error.name,stack:error.stack}}}})+'\\n'); process.exitCode=1; }}); worker.on('exit', code => process.stdout.write('', () => process.exit(code))); const input=createInterface({{input:process.stdin}}); input.on('line', line => worker.postMessage(JSON.parse(line))); input.on('close', () => worker.terminate());",
             serde_json::to_string(&entry.to_string_lossy())?,
@@ -93,7 +116,10 @@ impl WorkerHost {
             parallel_pool_width,
         );
         // A senpi worker thread inherits the host `process.env`, extension writes included.
-        let env = maho_ext_api::process_env::vars().into_iter().collect();
+        let mut env = maho_ext_api::process_env::vars()
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        scrub_host_env(&mut env, env_passthrough);
         let process = SubprocessProcess::spawn("bun", &["-e".into(), relay], cwd, &env)?;
         Ok(Self { mode, process })
     }

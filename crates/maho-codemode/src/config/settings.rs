@@ -101,6 +101,10 @@ pub struct CodemodeSettings {
     pub output_sink: CodemodeOutputSink,
     pub status_events: bool,
     pub environments: crate::environments::js_environments::EnvironmentSettings,
+    /// Host-supplied (never read from codemode.json): `Some(passthrough)` scrubs secret-looking
+    /// variables from the eval kernel environment; `None` leaves it untouched.
+    #[serde(skip)]
+    pub env_passthrough: Option<Vec<String>>,
 }
 
 impl Default for CodemodeSettings {
@@ -121,6 +125,7 @@ impl Default for CodemodeSettings {
             output_sink: CodemodeOutputSink::default(),
             status_events: true,
             environments: Default::default(),
+            env_passthrough: None,
         }
     }
 }

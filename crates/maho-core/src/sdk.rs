@@ -182,6 +182,7 @@ pub fn built_in_tools_options(
             command_prefix: settings.get_string("shellCommandPrefix"),
             shell_path: settings.get_shell_path(),
             shell_env: Some(shell_env.clone()),
+            env_passthrough: settings.get_bash_env_scrub_passthrough(),
             operations: Some(Arc::new(DispatcherBashOperations {
                 session: bash_session,
                 shell_path: settings.get_shell_path(),
@@ -190,6 +191,7 @@ pub fn built_in_tools_options(
         },
         powershell: maho_tools::bash::BashToolOptions {
             shell_env: Some(shell_env),
+            env_passthrough: settings.get_bash_env_scrub_passthrough(),
             ..Default::default()
         },
         write: maho_tools::write::WriteToolOptions {
