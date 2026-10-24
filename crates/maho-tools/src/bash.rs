@@ -258,6 +258,9 @@ pub struct BashToolOptions {
     pub expose_session_environment: Option<bool>,
     pub spawn_hook: Option<BashSpawnHook>,
     pub shell_env: Option<ShellEnvProvider>,
+    /// SAFETY-DIVERGENCE(senpi tools/bash.ts): `Some(passthrough)` scrubs secret-looking variables from
+    /// the final spawn environment, keeping the listed names; `None` leaves the environment untouched.
+    pub env_passthrough: Option<Vec<String>>,
 }
 #[derive(Deserialize)]
 pub struct BashToolInput {
@@ -419,7 +422,7 @@ pub fn create_shell_tool_definition(
                 Some(prefix) => format!("{prefix}\n{}", input.command),
                 None => input.command,
             };
-            let context = resolve_spawn_context(
+            let mut context = resolve_spawn_context(
                 command,
                 call.context
                     .map_or(cwd.as_path(), ToolContext::cwd)
@@ -429,6 +432,10 @@ pub fn create_shell_tool_definition(
                 call.context,
                 options.shell_env.as_ref(),
             )?;
+            // SAFETY-DIVERGENCE(senpi tools/bash.ts): scrub the FINAL environment, after the spawn hook.
+            if let Some(passthrough) = options.env_passthrough.as_deref() {
+                crate::env_scrub::scrub_secrets(&mut context.env, passthrough);
+            }
             let output = Arc::new(Mutex::new(OutputAccumulator::new(
                 OutputAccumulatorOptions {
                     temp_file_prefix: config.temp_file_prefix,

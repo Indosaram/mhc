@@ -123,6 +123,7 @@ async fn process_start_failure_never_downgrades_to_inline() {
                 foreign_language_names: &[],
                 session_env: None,
                 worker_entry: Some(Path::new("/missing/process-entry.js")),
+                env_passthrough: None,
                 memory: None,
             },
             &abort.signal(),
@@ -171,6 +172,7 @@ async fn direct_process_preserves_state_and_replaces_crashed_child() {
                     notice_bytes: u64::MAX,
                     ceiling_bytes: u64::MAX,
                 },
+                env_passthrough: None,
             },
         ),
     )

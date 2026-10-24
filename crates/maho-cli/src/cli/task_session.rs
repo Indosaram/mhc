@@ -524,6 +524,10 @@ pub fn factory_with_workpool_events(
         let manager = super::task_runners::native_child_session_manager(&options)?;
         let shell_options = maho_tools::bash::BashToolOptions {
             shell_env: Some(Arc::new(maho_core::utils::shell::get_shell_env)),
+            // Child sessions follow the parent's `bashEnvScrub`/`bashEnvPassthrough`; scrub by default.
+            env_passthrough: parent()
+                .map(|session| session.with_settings_manager(|manager| manager.get_bash_env_scrub_passthrough()))
+                .unwrap_or_else(|| Some(Vec::new())),
             ..Default::default()
         };
         let child_builtins = maho_tools::index::create_all_tool_definitions(

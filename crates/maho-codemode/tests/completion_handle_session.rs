@@ -334,6 +334,7 @@ async fn real_eval_completion_handle_survives_cells_but_not_session_switch() {
                 path: None,
                 isolation: None,
             },
+            env_passthrough: None,
         },
     )
     .unwrap();

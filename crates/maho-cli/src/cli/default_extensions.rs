@@ -540,7 +540,7 @@ pub fn factories_with_mcp_registry(
             factory("webfetch", maho_ext_webfetch::index::WebfetchExtension),
             factory("rules", maho_ext_rules::Rules),
             factory("goal", maho_ext_goal::GoalExtension::default()),
-            factory("codemode", Codemode),
+            factory("codemode", Codemode { env_passthrough: settings.get_bash_env_scrub_passthrough() }),
             // RESERVED (assembly, sequential): the builtin-mcps owner's native MCP declaration is
             // added here once its source receipt lands; this is the MCP declaration seam the plan
             // marks integrator-owned. Do not integrate from a summary.
@@ -944,7 +944,9 @@ impl ExtensionActions for TaskActions {
         self.actions()?.get_all_tools()
     }
 }
-struct Codemode;
+struct Codemode {
+    env_passthrough: Option<Vec<String>>,
+}
 struct Images;
 impl maho_codemode::tool::image_resize::EvalImageSdk for Images {
     fn resize_image<'a>(
@@ -1011,6 +1013,7 @@ impl Extension for Codemode {
                 js_runtime: maho_codemode::extension::runtime_info::probe_js_runtime_info(
                     &std::env::vars().collect(),
                 ),
+                env_passthrough: self.env_passthrough.clone(),
             },
         ) {
             std::panic::panic_any(error);
