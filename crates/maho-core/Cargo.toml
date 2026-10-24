@@ -40,14 +40,22 @@ photon-rs = { version = "=0.3.3", default-features = false }
 [target.'cfg(unix)'.dependencies]
 nix = { version = "=0.28.0", features = ["signal", "process", "user", "feature"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 flate2 = { workspace = true }
 maho-ext-recommended-models = { path = "../builtins/maho-ext-recommended-models" }
 maho-ext-permission-system = { path = "../builtins/maho-ext-permission-system" }
 
-[lints]
-workspace = true
+# Mirrors the workspace lints with unsafe_code = "deny": auth_storage.rs calls Win32 security APIs
+# (owner-only DACL on auth.json), each behind a local allow with SAFETY comments.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
 
 [[test]]
 name = "integration"
