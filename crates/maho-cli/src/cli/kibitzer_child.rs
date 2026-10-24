@@ -66,6 +66,17 @@ enum KibitzerRuntimeFactory {
     Lazy(std::sync::OnceLock<maho_core::sdk::HostRuntimeFactory>),
 }
 
+/// Resolves the parent session's memory recall runtime dir (`identityPaths.recall`); `None` when the
+/// session has no bound memory identity.
+pub type SessionRecallDir = Arc<dyn Fn(&str) -> Option<std::path::PathBuf> + Send + Sync>;
+
+/// senpi `sidecar-sweep.ts` `sidecarSessionDir`: `<recall>/sidecars/<base64url(parentSessionId)>`.
+/// Keeping child transcripts here (not the project session dir) keeps them out of `/resume`.
+pub fn kibitzer_session_dir(recall: &std::path::Path, session_id: &str) -> std::path::PathBuf {
+    use base64::Engine;
+    recall.join("sidecars").join(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(session_id))
+}
+
 /// The CLI's concrete `KibitzerChildSpawner`.
 pub struct CliKibitzerChildSpawner {
     executor: tokio::runtime::Handle,
@@ -80,6 +91,7 @@ pub struct CliKibitzerChildSpawner {
     /// capture). `None` -> the resolver returns `RegistrySnapshotUnavailable`.
     registry_for: SessionModelRegistry,
     resources: KibitzerChildResourcesFactory,
+    recall_dir_for: SessionRecallDir,
     children: ChildRegistry,
     inflight: Mutex<BTreeSet<String>>,
 }
@@ -91,10 +103,10 @@ impl CliKibitzerChildSpawner {
         paths: (String, String),
         config: super::memory_runtime::LiveMemoryConfig,
         category: Option<String>,
-        registry_for: SessionModelRegistry,
+        per_session: (SessionModelRegistry, SessionRecallDir),
         resources: KibitzerChildResourcesFactory,
     ) -> Arc<Self> {
-        Self::with_factory(executor, KibitzerRuntimeFactory::Ready(factory), paths, config, category, registry_for, resources)
+        Self::with_factory(executor, KibitzerRuntimeFactory::Ready(factory), paths, config, category, per_session, resources)
     }
 
     fn with_factory(
@@ -103,11 +115,12 @@ impl CliKibitzerChildSpawner {
         paths: (String, String),
         config: super::memory_runtime::LiveMemoryConfig,
         category: Option<String>,
-        registry_for: SessionModelRegistry,
+        per_session: (SessionModelRegistry, SessionRecallDir),
         resources: KibitzerChildResourcesFactory,
     ) -> Arc<Self> {
         let (cwd, agent_dir) = paths;
-        Arc::new(Self { executor, factory, cwd, agent_dir, config, category, registry_for, resources, children: Arc::new(Mutex::new(BTreeMap::new())), inflight: Mutex::new(BTreeSet::new()) })
+        let (registry_for, recall_dir_for) = per_session;
+        Arc::new(Self { executor, factory, cwd, agent_dir, config, category, registry_for, resources, recall_dir_for, children: Arc::new(Mutex::new(BTreeMap::new())), inflight: Mutex::new(BTreeSet::new()) })
     }
 
     /// Production construction from the CLI's own install ports: ONE catalog/auth runtime per
@@ -121,11 +134,11 @@ impl CliKibitzerChildSpawner {
         agent_dir: String,
         config: super::memory_runtime::LiveMemoryConfig,
         category: Option<String>,
-        registry_for: SessionModelRegistry,
+        per_session: (SessionModelRegistry, SessionRecallDir),
         resources: KibitzerChildResourcesFactory,
     ) -> Result<Arc<Self>, maho_ai::models::ModelsError> {
         let factory = KibitzerRuntimeFactory::Lazy(std::sync::OnceLock::new());
-        Ok(Self::with_factory(executor, factory, (cwd, agent_dir), config, category, registry_for, resources))
+        Ok(Self::with_factory(executor, factory, (cwd, agent_dir), config, category, per_session, resources))
     }
 
     fn runtime_factory(&self) -> Result<&maho_core::sdk::HostRuntimeFactory, KibitzerSidecarStartError> {
@@ -166,6 +179,14 @@ impl CliKibitzerChildSpawner {
     async fn build_child(&self, input: &KibitzerChildSpawnInput) -> Result<Arc<CliKibitzerChild>, KibitzerSidecarStartError> {
         // Per-child resources: the factory binds THIS session's identity/budget.
         let resources = (self.resources)(input);
+        // senpi sidecar.ts: the child transcript lives under the parent's recall dir, never the
+        // project session dir that `/resume` lists.
+        let recall_dir = (self.recall_dir_for)(&input.session_id).ok_or_else(|| {
+            KibitzerSidecarStartError::new(
+                KibitzerSidecarStartCode::SessionCreateFailed,
+                format!("no memory identity is bound to session {}", input.session_id),
+            )
+        })?;
         // Resolve the category model + chain from the SESSION's registry snapshot (captured on the hook
         // pipeline). A missing snapshot is a typed transient refusal, never a factory/model fallback.
         let registry = (self.registry_for)(&input.session_id)
@@ -224,6 +245,11 @@ impl CliKibitzerChildSpawner {
             custom_tools: resources.tools.clone(),
             system_prompt: Some(resources.persona.clone()),
             settings_manager,
+            session_manager: Some(maho_core::session_manager::SessionManager::create(
+                &self.cwd,
+                Some(&kibitzer_session_dir(&recall_dir, &input.session_id).to_string_lossy()),
+                None,
+            )),
             minimal_resources: true,
             ..Default::default()
         };
@@ -662,6 +688,20 @@ impl KibitzerChild for CliKibitzerChild {
             }
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod session_dir_tests {
+    use super::kibitzer_session_dir;
+    use std::path::Path;
+
+    /// senpi `sidecarSessionDir`: `<recall>/sidecars/<base64url(parentSessionId)>`, byte-identical to
+    /// what OmO wrote for this parent id on disk.
+    #[test]
+    fn the_child_session_dir_is_the_recall_sidecar_dir() {
+        let dir = kibitzer_session_dir(Path::new("/m/agents/a/runtime/recall"), "01a115eb-6aef-77ea-9713-8102c6edd17f");
+        assert_eq!(dir, Path::new("/m/agents/a/runtime/recall/sidecars/MDFhMTE1ZWItNmFlZi03N2VhLTk3MTMtODEwMmM2ZWRkMTdm"));
     }
 }
 

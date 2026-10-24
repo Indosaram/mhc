@@ -62,11 +62,12 @@ impl WorkerSlot {
             return Ok(());
         }
         let primary = explicit_or_resolved_worker_entry(&options).and_then(|entry| {
-            WorkerHost::spawn(
+            WorkerHost::spawn_scrubbed(
                 &entry,
                 options.cwd,
                 options.parallel_pool_width,
                 JavaScriptKernelMode::Worker,
+                options.env_passthrough,
             )
         });
         if let Ok(worker) = primary {
@@ -90,9 +91,10 @@ impl WorkerSlot {
                 return initialized;
             }
         }
-        self.worker = Some(super::inline_worker::create_inline_worker(
+        self.worker = Some(super::inline_worker::create_inline_worker_scrubbed(
             options.cwd,
             options.parallel_pool_width,
+            options.env_passthrough,
         )?);
         self.mode = JavaScriptKernelMode::Inline;
         if let Err(error) = self

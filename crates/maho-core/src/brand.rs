@@ -170,7 +170,8 @@ pub fn scrub_brand_from_environment(env: &mut HashMap<String, String>) {
 
 /// Environment prefixes read after the brand's own prefix, so a machine configured before the
 /// rebrand keeps working unchanged.
-pub const LEGACY_ENV_PREFIXES: [&str; 3] = ["MAHO", "SENPI", "PI"];
+// SAFETY-DIVERGENCE(packages/coding-agent/src/config.ts): upstream documents OMO_* variables but omits OMO from its legacy env prefixes; mhc reads OMO_* last.
+pub const LEGACY_ENV_PREFIXES: [&str; 4] = ["MAHO", "SENPI", "PI", "OMO"];
 
 static CACHED_PROFILE: Mutex<Option<Option<BrandProfile>>> = Mutex::new(None);
 
@@ -298,11 +299,11 @@ mod tests {
         let profile = parse_brand_profile(Some(r#"{"name":"omo","envPrefix":"senpi"}"#)).expect("profile");
         assert_eq!(
             brand_env_names("CODING_AGENT_DIR", Some(&profile)),
-            vec!["SENPI_CODING_AGENT_DIR", "MAHO_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR"]
+            vec!["SENPI_CODING_AGENT_DIR", "MAHO_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR", "OMO_CODING_AGENT_DIR"]
         );
         assert_eq!(
             brand_env_names("X", None),
-            vec!["MAHO_X", "SENPI_X", "PI_X"]
+            vec!["MAHO_X", "SENPI_X", "PI_X", "OMO_X"]
         );
     }
 

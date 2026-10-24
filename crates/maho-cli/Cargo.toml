@@ -104,6 +104,7 @@ percent-encoding.workspace = true
 base64 = "=0.22.1"
 reqwest = { workspace = true, features = ["rustls-tls"] }
 semver = "=1.0.27"
+minisign-verify = "=0.2.5"
 icu_collator = "=2.3.1"
 photon-rs = { version = "=0.3.3", default-features = false }
 tempfile.workspace = true
@@ -118,7 +119,9 @@ winsafe = { version = "=0.0.29", default-features = false, features = ["psapi"] 
 libproc = "=0.14.11"
 
 [dev-dependencies]
+minisign = "=0.7.9"
 maho-ext-host = { path = "../maho-ext-host" }
+maho-test-support = { path = "../maho-test-support", features = ["sdk"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 

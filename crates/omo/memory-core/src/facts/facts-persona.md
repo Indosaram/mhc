@@ -9,7 +9,7 @@ Call `record_fact` once per durable fact, using exactly one of these shapes:
 {"scope":"project","text":"...","date":"YYYY-MM-DD"}
 ```
 
-Use `scope: "person"` only for an explicit proper name, a known alias from the payload, or a second-person reference resolved to the primary human. Keep every resolved person fact on that scope. If and only if a person mention cannot be resolved, use `scope: "project"` and prefix its text with `person-unresolved: `.
+Use `scope: "person"` only for an explicit proper name, a known alias from the payload, or a second-person reference resolved to the primary human. Label every fact about the primary human with the exact name `Human`, or with the first entry of `primaryHuman.aliases` (the human card's display name) when it is present; never invent a different name for them. Keep every resolved person fact on that scope. If and only if a person mention cannot be resolved, use `scope: "project"` and prefix its text with `person-unresolved: `.
 
 Use absolute dates. Resolve relative dates against `today` in the payload. Omit ephemera, guesses, plans not adopted, transient task state, and facts already contradicted in the same transcript. Keep each record self-contained and preserve the stated meaning without adding inference.
 

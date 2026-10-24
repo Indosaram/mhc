@@ -1048,8 +1048,16 @@ fn telemetry_resolution_lets_the_active_profile_disable_telemetry() {
 }
 
 #[test]
-fn telemetry_resolution_defaults_to_enabled_when_no_layer_sets_it() {
+fn telemetry_resolution_defaults_to_disabled_when_no_layer_sets_it() {
     let (_root, home, cwd) = telemetry_fixture(r#"{}"#);
+    let result = load_senpi(&home, &cwd, None);
+    assert_eq!(result.diagnostics, vec![]);
+    assert!(!is_omo_telemetry_enabled(&Value::Object(result.config)));
+}
+
+#[test]
+fn telemetry_resolution_reads_an_enabled_base_setting() {
+    let (_root, home, cwd) = telemetry_fixture(r#"{"telemetry":{"enabled":true}}"#);
     let result = load_senpi(&home, &cwd, None);
     assert_eq!(result.diagnostics, vec![]);
     assert!(is_omo_telemetry_enabled(&Value::Object(result.config)));
@@ -1087,7 +1095,7 @@ fn telemetry_resolution_rejects_a_malformed_enabled_value() {
                 .contains(&"telemetry.enabled".to_string()),
             "{content}"
         );
-        assert!(is_omo_telemetry_enabled(&Value::Object(result.config)));
+        assert!(!is_omo_telemetry_enabled(&Value::Object(result.config)));
     }
 }
 

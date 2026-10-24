@@ -182,6 +182,9 @@ pub fn built_in_tools_options(
             command_prefix: settings.get_string("shellCommandPrefix"),
             shell_path: settings.get_shell_path(),
             shell_env: Some(shell_env.clone()),
+            env_passthrough: settings.get_bash_env_scrub_passthrough(),
+            sandbox: Some(settings.get_bash_sandbox()),
+            sandbox_agent_dir: Some(std::path::PathBuf::from(settings.agent_dir())),
             operations: Some(Arc::new(DispatcherBashOperations {
                 session: bash_session,
                 shell_path: settings.get_shell_path(),
@@ -190,6 +193,7 @@ pub fn built_in_tools_options(
         },
         powershell: maho_tools::bash::BashToolOptions {
             shell_env: Some(shell_env),
+            env_passthrough: settings.get_bash_env_scrub_passthrough(),
             ..Default::default()
         },
         write: maho_tools::write::WriteToolOptions {
@@ -775,6 +779,18 @@ fn api_key_from_auth(
         .map(|auth| auth.and_then(|auth| auth.auth.api_key))
         .map_err(|error| match error.code {
             ModelsErrorCode::OAuth => StreamError::oauth_refresh_unavailable(error.message),
+            // Keep the exact consent text and `provider_consent_required` code (never rewritten
+            // to `oauth_refresh_unavailable`).
+            ModelsErrorCode::ConsentRequired => StreamError::provider_failure(
+                error.message,
+                maho_ai::types::ProviderDiagnostic {
+                    category: maho_ai::types::ProviderDiagnosticCategory::Unknown,
+                    http_status: None,
+                    code: Some(error.code.as_str().to_owned()),
+                    evidence: maho_ai::types::ProviderDiagnosticEvidence::StructuredCode,
+                    resets_at: None,
+                },
+            ),
             ModelsErrorCode::ModelSource
             | ModelsErrorCode::ModelValidation
             | ModelsErrorCode::Provider
@@ -824,6 +840,20 @@ mod tests {
             // Then absence remains a successful result.
             assert_eq!(result, Ok(None));
         }
+    }
+
+    #[test]
+    fn consent_failure_keeps_message_and_code_through_api_key_lookup() {
+        use maho_ai::models::{ModelsError, ModelsErrorCode};
+        use maho_ai::utils::event_stream::StreamErrorKind;
+
+        let error = api_key_from_auth(Err(ModelsError::new(ModelsErrorCode::ConsentRequired, "consent text")))
+            .expect_err("consent error");
+        assert_eq!(error.message, "consent text");
+        let StreamErrorKind::ProviderFailure(diagnostic) = error.kind else {
+            panic!("consent error must not become oauth_refresh_unavailable");
+        };
+        assert_eq!(diagnostic.code.as_deref(), Some("provider_consent_required"));
     }
 
     #[test]

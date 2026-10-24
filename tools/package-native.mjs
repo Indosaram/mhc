@@ -156,10 +156,24 @@ const PIN_KEYS = ["senpi", "omo"];
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 
 // License texts retained with the staged runtime: MIT covers the senpi-derived port, SUL-1.0 the
-// omo-derived components, skills and the native ast-grep MCP server.
-const LICENSE_FILES = [
+// omo-derived components, skills and the native ast-grep MCP server. Additional third-party and
+// runtime dependency licenses are retained with collision-free names.
+export const LICENSE_FILES = [
 	{ name: "MIT.txt", source: "LICENSES/MIT.txt" },
 	{ name: "SUL-1.0.md", source: "LICENSES/SUL-1.0.md" },
+	{ name: "LICENSE", source: "LICENSE" },
+	{ name: "THIRD_PARTY_LICENSES.md", source: "THIRD_PARTY_LICENSES.md" },
+	{ name: "maho-ext-webfetch-LICENSE-READABILITY.txt", source: "crates/builtins/maho-ext-webfetch/LICENSE-READABILITY.txt" },
+	{ name: "maho-ext-webfetch-LICENSE-TURNDOWN.txt", source: "crates/builtins/maho-ext-webfetch/LICENSE-TURNDOWN.txt" },
+	{ name: "maho-ext-webfetch-LICENSE-HTMLPARSER2.txt", source: "crates/builtins/maho-ext-webfetch/LICENSE-HTMLPARSER2.txt" },
+	{ name: "maho-ext-omo-zcode-oauth-LICENSE", source: "crates/extensions/maho-ext-omo-zcode-oauth/LICENSE" },
+	{ name: "maho-ext-pi-webfetch-THIRD_PARTY_NOTICES.md", source: "crates/extensions/maho-ext-pi-webfetch/THIRD_PARTY_NOTICES.md" },
+	{ name: "maho-ext-pi-rules-THIRD_PARTY_NOTICES.md", source: "crates/extensions/maho-ext-pi-rules/THIRD_PARTY_NOTICES.md" },
+	{ name: "frontend-LICENSE-Apache-2.0.txt", source: "assets/omo-latest/skills/frontend/LICENSE-Apache-2.0.txt" },
+	{ name: "ast-grep-LICENSE", source: "assets/omo-latest/skills/ast-grep/LICENSE" },
+	{ name: "node-omowright-LICENSE", source: "LICENSES/node/omowright-LICENSE" },
+	{ name: "node-ws-LICENSE", source: "LICENSES/node/ws-LICENSE" },
+	{ name: "node-zod-LICENSE", source: "LICENSES/node/zod-LICENSE" },
 ];
 
 // Pinned oh-my-openagent skill roots, in override order: the senpi-native skills win over the
@@ -735,6 +749,7 @@ export async function stage(options) {
 	const licenses = [];
 	for (const license of LICENSE_FILES) {
 		const relPath = `${LICENSES_DIR}/${license.name}`;
+		await mkdir(dirname(join(output, relPath)), { recursive: true });
 		await copyFile(licenseSources.get(license.name), join(output, relPath));
 		licenses.push(await fileEntry(output, relPath, license.source));
 	}
@@ -1028,6 +1043,40 @@ async function selfTest() {
 	};
 	try {
 		check("glibc version comparison is numeric, not lexical", compareGlibcVersions("2.9", "2.28") < 0 && compareGlibcVersions("2.43", "2.28") > 0 && compareGlibcVersions("2.28", "2.28.0") === 0);
+		const realRepo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+		const missingSources = LICENSE_FILES.filter((license) => license.source !== "THIRD_PARTY_LICENSES.md" && !existsSync(join(realRepo, license.source))).map((license) => license.source);
+		check(`every non-generated LICENSE_FILES source exists in the real repo${missingSources.length ? ` (missing: ${missingSources.join(", ")})` : ""}`, missingSources.length === 0);
+		{
+			// Synthetic ELF64 little-endian aarch64 (e_machine 0xb7) image with a .gnu.version_r needing GLIBC_2.17 and GLIBC_2.34.
+			const strtab = Buffer.from("\0libc.so.6\0GLIBC_2.17\0GLIBC_2.34\0", "latin1");
+			const verneed = Buffer.alloc(48);
+			verneed.writeUInt16LE(1, 0);
+			verneed.writeUInt16LE(2, 2);
+			verneed.writeUInt32LE(1, 4);
+			verneed.writeUInt32LE(16, 8);
+			verneed.writeUInt32LE(0, 12);
+			verneed.writeUInt32LE(11, 16 + 8);
+			verneed.writeUInt32LE(16, 16 + 12);
+			verneed.writeUInt32LE(22, 32 + 8);
+			const strOffset = 64;
+			const verneedOffset = strOffset + strtab.length;
+			const shoff = verneedOffset + verneed.length;
+			const image = Buffer.alloc(shoff + 3 * 64);
+			image.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1], 0);
+			image.writeUInt16LE(0xb7, 0x12);
+			image.writeBigUInt64LE(BigInt(shoff), 0x28);
+			image.writeUInt16LE(64, 0x3a);
+			image.writeUInt16LE(3, 0x3c);
+			strtab.copy(image, strOffset);
+			verneed.copy(image, verneedOffset);
+			const verneedHeader = shoff + 64;
+			image.writeUInt32LE(0x6ffffffe, verneedHeader + 4);
+			image.writeBigUInt64LE(BigInt(verneedOffset), verneedHeader + 0x18);
+			image.writeUInt32LE(2, verneedHeader + 0x28);
+			image.writeUInt32LE(1, verneedHeader + 0x2c);
+			image.writeBigUInt64LE(BigInt(strOffset), shoff + 2 * 64 + 0x18);
+			check("glibc checker reads the highest requirement from an aarch64 ELF64 fixture", highestGlibcRequirement(image) === "2.34");
+		}
 		const repo = join(root, "repo");
 		const omo = join(root, "omo");
 		const binDir = join(root, "bin");
@@ -1040,8 +1089,10 @@ async function selfTest() {
 		await mkdir(join(repo, "LICENSES"), { recursive: true });
 		await writeFile(join(repo, "Cargo.toml"), `[workspace]\n\n[workspace.package]\nversion = "9.9.9"\n`);
 		await writeFile(join(repo, "crates/omo/components/maho-omo-telemetry/src/product_identity.rs"), `pub const BUILTIN_SKILL_NAMES: &[&str] = &[${names.map((name) => `"${name}"`).join(", ")}];\n`);
-		await writeFile(join(repo, "LICENSES/MIT.txt"), "MIT fixture\n");
-		await writeFile(join(repo, "LICENSES/SUL-1.0.md"), "SUL fixture\n");
+		for (const license of LICENSE_FILES) {
+			await mkdir(dirname(join(repo, license.source)), { recursive: true });
+			await writeFile(join(repo, license.source), `fixture for ${license.name}\n`);
+		}
 
 		await mkdir(join(repo, "assets"), { recursive: true });
 		await writeFile(join(repo, "assets/omo.schema.json"), schemaFixture);
@@ -1094,7 +1145,7 @@ async function selfTest() {
 		check("native skill overrides the shared pool", (await readFile(join(out, "skills/alpha/SKILL.md"), "utf8")).includes("native"));
 		check("shared-only skill staged", (await readFile(join(out, "skills/beta/SKILL.md"), "utf8")).includes("shared"));
 		check("skill debris excluded", !existsSync(join(out, "skills/alpha/.gitignore")) && !existsSync(join(out, "skills/alpha/junk.test.ts")));
-		check("licenses retained", existsSync(join(out, "licenses/MIT.txt")) && existsSync(join(out, "licenses/SUL-1.0.md")));
+		check("licenses retained", LICENSE_FILES.every((license) => existsSync(join(out, LICENSES_DIR, license.name))));
 		check("versions recorded", result.manifest.versions.omoSenpi === "5.0.0-beta.9");
 		check("versions.mhc is the payload build version, not Cargo.toml", result.manifest.versions.mhc === "2026.1.2-fixture" && result.manifest.versions.mhc !== "9.9.9");
 		check("launcher staged as a tracked executable beside the payload", existsSync(join(out, LAUNCHER_NAME)) && result.manifest.layout.launcher === LAUNCHER_NAME && result.manifest.executables.some((entry) => entry.path === LAUNCHER_NAME) && ((await stat(join(out, LAUNCHER_NAME))).mode & 0o111) !== 0);

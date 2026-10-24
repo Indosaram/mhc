@@ -15,9 +15,9 @@ pub async fn resolve_credential_for_print(args: &Args, runtime: &ModelRuntime, k
         let is_oauth = info.is_some_and(|entry| entry.credential_type == maho_ai::auth::types::CredentialType::OAuth);
         if kind == AuthCommandKind::ApiKey && is_oauth || kind == AuthCommandKind::BearerToken && !is_oauth { continue; }
         let auth = if kind == AuthCommandKind::BearerToken {
-            if let Some(model) = model { runtime.get_auth_for_model(model, &maho_ai::models::AuthResolutionOverrides { min_oauth_validity_ms: Some(min_expiry_ms.unwrap_or(DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS)), ..Default::default() }).await }
-            else { runtime.get_auth_with_overrides(provider, &maho_ai::models::AuthResolutionOverrides { min_oauth_validity_ms: Some(min_expiry_ms.unwrap_or(DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS)), ..Default::default() }).await }
-        } else if let Some(model) = model { runtime.get_auth_for_model(model, &Default::default()).await } else { runtime.get_auth(provider).await };
+            if let Some(model) = model { runtime.get_auth_for_model_unchecked(model, &maho_ai::models::AuthResolutionOverrides { min_oauth_validity_ms: Some(min_expiry_ms.unwrap_or(DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS)), ..Default::default() }).await }
+            else { runtime.get_auth_with_overrides_unchecked(provider, &maho_ai::models::AuthResolutionOverrides { min_oauth_validity_ms: Some(min_expiry_ms.unwrap_or(DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS)), ..Default::default() }).await }
+        } else if let Some(model) = model { runtime.get_auth_for_model_unchecked(model, &Default::default()).await } else { runtime.get_auth_unchecked(provider).await };
         if let Some(auth) = auth.map_err(|_| "Failed to resolve credential".to_owned())?
             && let Some(value) = super::auth_command::get_auth_credential(Some(&auth))
         {

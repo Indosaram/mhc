@@ -3714,6 +3714,137 @@ pub struct SendMessageOptions {
     pub trigger_turn: bool,
     pub deliver_as: Option<DeliverAs>,
 }
+
+type MessageDeliveryCallback = Box<dyn FnOnce(Result<(), String>) + Send + 'static>;
+
+#[derive(Default)]
+struct MessageDeliveryState {
+    outcome: Option<Result<(), String>>,
+    callback: Option<MessageDeliveryCallback>,
+}
+
+/// Settles once when a `send_message` call is durably recorded in the session transcript or fails
+/// (admission rejection, abort, queue clear, reload, or disposal). A dropped receipt resolves as
+/// failed so a lost task or runtime can never leave a producer waiting forever.
+#[derive(Clone, Default)]
+pub struct MessageDeliveryReceipt {
+    inner: Arc<Mutex<MessageDeliveryState>>,
+}
+
+impl MessageDeliveryReceipt {
+    pub fn pending() -> Self {
+        Self::default()
+    }
+
+    pub fn delivered() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(MessageDeliveryState {
+                outcome: Some(Ok(())),
+                callback: None,
+            })),
+        }
+    }
+
+    pub fn failed(reason: impl Into<String>) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(MessageDeliveryState {
+                outcome: Some(Err(reason.into())),
+                callback: None,
+            })),
+        }
+    }
+
+    pub fn resolve_delivered(&self) {
+        self.settle(Ok(()));
+    }
+
+    pub fn resolve_failed(&self, reason: impl Into<String>) {
+        self.settle(Err(reason.into()));
+    }
+
+    pub fn outcome(&self) -> Option<Result<(), String>> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .outcome
+            .clone()
+    }
+
+    pub fn on_settled(&self, callback: impl FnOnce(Result<(), String>) + Send + 'static) {
+        let mut callback = Some(callback);
+        let settled = {
+            let mut state = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match state.outcome.clone() {
+                Some(outcome) => Some(outcome),
+                None => {
+                    let previous = state.callback.take();
+                    let next = callback.take();
+                    state.callback = Some(Box::new(move |outcome: Result<(), String>| {
+                        if let Some(previous) = previous {
+                            previous(outcome.clone());
+                        }
+                        if let Some(next) = next {
+                            next(outcome);
+                        }
+                    }));
+                    None
+                }
+            }
+        };
+        if let Some(outcome) = settled
+            && let Some(callback) = callback
+        {
+            callback(outcome);
+        }
+    }
+
+    fn settle(&self, outcome: Result<(), String>) {
+        let callback = {
+            let mut state = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.outcome.is_some() {
+                return;
+            }
+            state.outcome = Some(outcome.clone());
+            state.callback.take()
+        };
+        if let Some(callback) = callback {
+            callback(outcome);
+        }
+    }
+}
+
+/// Drops with `"custom message delivery dropped before settlement"` unless `disarm` was called.
+pub struct MessageDeliveryGuard {
+    receipt: Option<MessageDeliveryReceipt>,
+    reason: &'static str,
+}
+
+impl MessageDeliveryGuard {
+    pub fn new(receipt: MessageDeliveryReceipt, reason: &'static str) -> Self {
+        Self {
+            receipt: Some(receipt),
+            reason,
+        }
+    }
+
+    pub fn disarm(&mut self) {
+        self.receipt = None;
+    }
+}
+
+impl Drop for MessageDeliveryGuard {
+    fn drop(&mut self) {
+        if let Some(receipt) = self.receipt.take() {
+            receipt.resolve_failed(self.reason);
+        }
+    }
+}
 #[derive(Clone, Debug, Default)]
 pub struct SendUserMessageOptions {
     pub deliver_as: Option<StreamingBehavior>,
@@ -3770,6 +3901,15 @@ pub trait ExtensionActions: Send + Sync {
         _listener: SubscriptionLimitsListener,
     ) -> Option<UiUnsubscribe> {
         None
+    }
+    /// `send_message` with a delivery receipt that settles only once the message is appended or dropped.
+    fn send_message_with_receipt(
+        &self,
+        message: CustomMessage,
+        options: SendMessageOptions,
+    ) -> Result<MessageDeliveryReceipt, ExtensionFailure> {
+        self.send_message(message, options)?;
+        Ok(MessageDeliveryReceipt::delivered())
     }
 }
 
@@ -6041,6 +6181,15 @@ impl ExtensionApi {
         options: SendMessageOptions,
     ) -> Result<(), ExtensionFailure> {
         self.runtime.actions()?.send_message(message, options)
+    }
+    pub fn send_message_with_receipt(
+        &self,
+        message: CustomMessage,
+        options: SendMessageOptions,
+    ) -> Result<MessageDeliveryReceipt, ExtensionFailure> {
+        self.runtime
+            .actions()?
+            .send_message_with_receipt(message, options)
     }
     pub fn send_user_message(
         &self,

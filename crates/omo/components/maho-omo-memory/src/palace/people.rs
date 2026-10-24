@@ -58,7 +58,8 @@ pub struct PalacePeopleOptions {
 impl Default for PalacePeopleOptions {
     fn default() -> Self {
         Self {
-            enabled: true,
+            // SAFETY-DIVERGENCE(packages/omo-config-core/src/schema/memory.ts): upstream falls back to people.enabled=true; mhc falls back to false.
+            enabled: false,
             limits: PeopleLimits {
                 max_entries: 40,
                 max_entry_chars: 200,

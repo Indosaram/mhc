@@ -181,8 +181,12 @@ pub fn create_memory_recall_wiring(ports: CliRecallWiringPorts) -> Result<Arc<Me
     // The retained NATIVE blocking executor: the machine-wide wake lease acquire runs on it, off the
     // reactor, and a dropped waiting future never cancels the worker (`CliBlockingExecutor`).
     let blocking_executor: Arc<dyn KibitzerBlockingExecutor> = CliBlockingExecutor::new(executor.clone());
-    let spawner: Arc<dyn KibitzerChildSpawner> =
-        CliKibitzerChildSpawner::from_agent_dir(executor, cwd, agent_dir, config, category, registry_for, resources)?;
+    let spawner: Arc<dyn KibitzerChildSpawner> = {
+        let resolve_context = resolve_context.clone();
+        let recall_dir_for: super::kibitzer_child::SessionRecallDir =
+            Arc::new(move |session_id: &str| resolve_context(session_id).map(|identity| identity.identity_paths.recall));
+        CliKibitzerChildSpawner::from_agent_dir(executor, cwd, agent_dir, config, category, (registry_for, recall_dir_for), resources)?
+    };
 
     let append_entry: RecallEntryAppender = {
         let actions = Arc::clone(&actions);

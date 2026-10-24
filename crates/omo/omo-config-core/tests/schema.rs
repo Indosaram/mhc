@@ -84,6 +84,13 @@ fn telemetry_harness_support_names_native_for_the_enabled_setting() {
 }
 
 #[test]
+fn telemetry_settings_schema_defaults_enabled_to_false() {
+    let node = omo_config_core::omo_telemetry_settings_schema();
+    let value = parsed(&node, json!({}));
+    assert_eq!(value["enabled"], json!(false));
+}
+
+#[test]
 fn category_keeps_warn_unavailable_absent_when_not_declared() {
     let node = omo_config_core::omo_category_config_schema();
     let value = parsed(&node, json!({}));
@@ -678,7 +685,7 @@ fn full_memory_defaults() -> Value {
             "auto_select_max": 5,
             "auto_select_max_chars": 150000,
         },
-        "people": { "enabled": true, "max_entries": 40, "max_entry_chars": 200 },
+        "people": { "enabled": false, "max_entries": 40, "max_entry_chars": 200 },
         "agreements": { "enabled": true, "needs_human_threshold": 3, "max_items": 64 },
         "soul": { "edit_notice": true },
         "write_notice": { "enabled": true },
@@ -928,7 +935,7 @@ fn memory_config_wiring_materializes_defaults_once() {
     );
     assert_eq!(
         memory["people"],
-        json!({ "enabled": true, "max_entries": 40, "max_entry_chars": 200 })
+        json!({ "enabled": false, "max_entries": 40, "max_entry_chars": 200 })
     );
     assert_eq!(memory["soul"], json!({ "edit_notice": true }));
 }
@@ -1128,7 +1135,7 @@ fn memory_v2_blocks_default_people() {
     let value = parsed(&omo_config_core::omo_memory_settings_schema(), json!({}));
     assert_eq!(
         value["people"],
-        json!({ "enabled": true, "max_entries": 40, "max_entry_chars": 200 })
+        json!({ "enabled": false, "max_entries": 40, "max_entry_chars": 200 })
     );
 }
 

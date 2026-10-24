@@ -22,7 +22,7 @@ use team_core::team_registry::{
     get_worktree_dir, load_all_team_specs, load_team_spec, normalize_team_spec_input,
     resolve_base_dir, validate_dual_support, validate_member_eligibility, validate_spec,
 };
-use team_core::types::{Member, SpecSource, TeamSpec};
+use team_core::types::{Member, SpecSource, TeamSpec, agent_eligibility};
 use tempfile::TempDir;
 
 type LogCalls = Arc<Mutex<Vec<(String, Option<Value>)>>>;
@@ -824,6 +824,28 @@ fn validator_rejects_prometheus_subagent_members_with_exact_message() {
 fn validator_accepts_hephaestus_subagent_members() {
     validate_member_eligibility(&Member::subagent("craftsman", "hephaestus"))
         .expect("hephaestus eligible");
+}
+
+#[test]
+fn validator_rejects_unknown_subagent_with_exact_message() {
+    let error = validate_member_eligibility(&Member::subagent("craftsman", "unknown-worker"))
+        .expect_err("unknown subagent rejected");
+    assert_eq!(
+        error.to_string(),
+        "Unknown subagent_type 'unknown-worker'. Available ELIGIBLE agents: sisyphus, atlas, sisyphus-junior, hephaestus (hephaestus only when its teammate permission is allowed). Use delegate-task for read-only agents like oracle, librarian, explore, metis, momus, multimodal-looker."
+    );
+    assert_eq!(error.name(), "TeamSpecValidationError");
+}
+
+#[test]
+fn hephaestus_rejection_message_omits_internal_ids() {
+    let eligibility = agent_eligibility("hephaestus").expect("hephaestus in registry");
+    assert_eq!(
+        eligibility.rejection_message,
+        Some(
+            "Agent 'hephaestus' lacks teammate permission. Either allow its teammate permission (agents.hephaestus.permission.teammate = \"allow\" in omo.jsonc) or use subagent_type: \"sisyphus\" instead."
+        )
+    );
 }
 
 #[test]

@@ -637,7 +637,7 @@ async fn completed_in_process_child_parks_idle_memory_and_rehydrates_on_follow_u
     let large_first = "r".repeat(64 * 1024);
     let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
     provider.set_responses(vec![
-        maho_ai::providers::faux::faux_assistant_message(&large_first, Default::default()).into(),
+        maho_ai::providers::faux::faux_assistant_message(large_first.as_str(), Default::default()).into(),
         maho_ai::providers::faux::faux_assistant_message("revived second turn", Default::default()).into(),
     ]);
     let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(

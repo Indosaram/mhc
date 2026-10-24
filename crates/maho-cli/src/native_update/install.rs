@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::pointer::{self, Pointer};
-use super::{archive, download, layout::Layout, lease, manifest, release::Release, retention};
+use super::{archive, download, layout::Layout, lease, manifest, release::Release, retention, signature};
 
 pub use super::lease::SessionLease;
 
@@ -68,9 +68,23 @@ fn exe(root: &Path, name: &str) -> PathBuf {
 }
 
 /// Downloads, verifies and extracts the release into `workspace`, then validates the staged package.
-pub async fn stage(release: &Release, workspace: &Path) -> Result<PathBuf, String> {
+pub async fn stage(release: &Release, workspace: &Path, allow_unsigned: bool) -> Result<PathBuf, String> {
+    stage_with_key(release, workspace, allow_unsigned, signature::RELEASE_PUBKEY).await
+}
+
+async fn stage_with_key(
+    release: &Release,
+    workspace: &Path,
+    allow_unsigned: bool,
+    pubkey: Option<&str>,
+) -> Result<PathBuf, String> {
+    if pubkey.is_none() {
+        return Err(signature::SignatureError::NoTrustRoot.to_string());
+    }
     let archive_path = workspace.join(&release.asset_name);
-    download::verified_archive(release, &archive_path).await?;
+    let signature_text = download::verified_archive(release, &archive_path).await?;
+    signature::verify_archive(pubkey, &archive_path, signature_text.as_deref(), &release.version, allow_unsigned)
+        .map_err(|error| error.to_string())?;
     let extraction = workspace.join("extracted");
     let zipped = release.asset_name.ends_with(".zip");
     let candidate = tokio::task::spawn_blocking(move || {
@@ -122,7 +136,7 @@ where
     }
 }
 
-pub async fn install(release: &Release) -> Result<Installed, String> {
+pub async fn install(release: &Release, allow_unsigned: bool) -> Result<Installed, String> {
     let layout = Layout::current()?;
     let root = layout.root;
     let _update = lease::UpdateLease::acquire(&root).map_err(|error| error.to_string())?;
@@ -130,7 +144,7 @@ pub async fn install(release: &Release) -> Result<Installed, String> {
     let old = pointer::read(&root)?;
     let staging = tempfile::Builder::new().prefix(".staging-").tempdir_in(&root)
         .map_err(|error| format!("cannot create staging directory: {error}"))?;
-    let candidate = stage(release, staging.path()).await?;
+    let candidate = stage(release, staging.path(), allow_unsigned).await?;
     place_package(&root, &version, &candidate)?;
     let launcher = exe(&root, "mhc");
     switch(&root, &old, &version, || async {

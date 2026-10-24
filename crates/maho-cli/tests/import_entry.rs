@@ -61,3 +61,18 @@ fn repeat_real_import_never_clobbers_destination_bytes() {
     assert_eq!(std::fs::read(target.join("settings.json")).expect("updated settings"), b"{\"fixture\":2}");
     assert_eq!(std::fs::read(target.join("sessions/project/a.jsonl")).expect("session"), b"session fixture\n");
 }
+
+#[test]
+fn import_omo_without_from_reports_nothing_to_import() {
+    let home = tempfile::tempdir().expect("isolated home");
+    fs::create_dir_all(home.path().join(".omo/agent")).expect("agent dir");
+    let run = |args: &[&str]| Command::new(env!("CARGO_BIN_EXE_mhc"))
+        .env_clear().env("HOME", home.path()).current_dir(home.path())
+        .arg("import-omo").args(args).output().expect("real mhc");
+    let output = run(&[]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("already reads ~/.omo/agent directly; nothing to import"));
+    let missing = run(&["--from", "/nonexistent"]);
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("omo agent directory does not exist"));
+}

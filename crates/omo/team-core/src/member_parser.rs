@@ -106,7 +106,7 @@ fn translate_member_error(input: &serde_json::Map<String, Value>) -> MemberParse
         if !known {
             return validation(
                 format!(
-                    "Unknown subagent_type '{}'. Available ELIGIBLE agents: sisyphus, atlas, sisyphus-junior, hephaestus (if D-36 applied). Use delegate-task for read-only agents like oracle, librarian, explore, metis, momus, multimodal-looker.",
+                    "Unknown subagent_type '{}'. Available ELIGIBLE agents: sisyphus, atlas, sisyphus-junior, hephaestus (hephaestus only when its teammate permission is allowed). Use delegate-task for read-only agents like oracle, librarian, explore, metis, momus, multimodal-looker.",
                     js_string(raw)
                 ),
                 name,
@@ -141,4 +141,25 @@ pub(crate) fn parse_member_base(input: &Value) -> Result<Member, MemberParseErro
         candidate.insert("kind".to_owned(), Value::String(kind.to_owned()));
     }
     Member::safe_parse(&Value::Object(candidate)).map_err(|_| translate_member_error(raw))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_member_base_rejects_unknown_subagent_with_exact_message() {
+        let raw = json!({ "name": "worker", "kind": "subagent_type", "subagent_type": "" });
+        let error = parse_member_base(&raw).expect_err("empty subagent rejected");
+        let MemberParseError::Validation { message, member_name, issue } = error else {
+            panic!("expected validation error");
+        };
+        assert_eq!(
+            message,
+            "Unknown subagent_type ''. Available ELIGIBLE agents: sisyphus, atlas, sisyphus-junior, hephaestus (hephaestus only when its teammate permission is allowed). Use delegate-task for read-only agents like oracle, librarian, explore, metis, momus, multimodal-looker."
+        );
+        assert_eq!(member_name.as_deref(), Some("worker"));
+        assert_eq!(issue.as_deref(), Some("unknown-subagent"));
+    }
 }
