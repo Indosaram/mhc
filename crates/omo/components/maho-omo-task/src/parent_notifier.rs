@@ -22,8 +22,11 @@ impl ParentNotifier for TaskParentNotifier {
             return Ok(())
         }
         let details = serde_json::to_value(&message.details).map_err(|error| HostError { message: error.to_string() })?;
-        self.actions.send_message(CustomMessage { custom_type: message.custom_type.into(), content: vec![ToolContent::text(&message.content)], display: message.display, details: Some(details) }, SendMessageOptions { trigger_turn: true, deliver_as: Some(DeliverAs::Steer) }).map_err(|error| HostError { message: error.to_string() })?;
-        callbacks.delivered();
+        let receipt = self.actions.send_message_with_receipt(CustomMessage { custom_type: message.custom_type.into(), content: vec![ToolContent::text(&message.content)], display: message.display, details: Some(details) }, SendMessageOptions { trigger_turn: true, deliver_as: Some(DeliverAs::Steer) }).map_err(|error| HostError { message: error.to_string() })?;
+        receipt.on_settled(move |outcome| match outcome {
+            Ok(()) => callbacks.delivered(),
+            Err(message) => callbacks.failed(HostError { message }),
+        });
         Ok(())
     }
 }

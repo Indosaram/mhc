@@ -604,6 +604,18 @@ impl Agent {
             || lock(&self.inner.follow_up_queue).has_items()
     }
 
+    /// Returns true when `message` is still waiting in either pending queue.
+    pub fn contains_queued_message(&self, message: &AgentMessage) -> bool {
+        lock(&self.inner.steering_queue)
+            .messages
+            .iter()
+            .any(|candidate| candidate == message)
+            || lock(&self.inner.follow_up_queue)
+                .messages
+                .iter()
+                .any(|candidate| candidate == message)
+    }
+
     /// Active abort signal for the current run, if any.
     pub fn signal(&self) -> Option<AbortSignal> {
         lock(&self.inner.active_run)

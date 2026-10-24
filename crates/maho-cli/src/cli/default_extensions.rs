@@ -926,6 +926,13 @@ impl ExtensionActions for TaskActions {
     ) -> Result<(), ExtensionFailure> {
         self.actions()?.send_message(message, options)
     }
+    fn send_message_with_receipt(
+        &self,
+        message: maho_ext_api::CustomMessage,
+        options: maho_ext_api::SendMessageOptions,
+    ) -> Result<maho_ext_api::MessageDeliveryReceipt, ExtensionFailure> {
+        self.actions()?.send_message_with_receipt(message, options)
+    }
     fn send_user_message(
         &self,
         content: maho_ext_api::UserMessageContent,
@@ -1029,6 +1036,13 @@ impl ExtensionActions for RuntimeActions {
         options: maho_ext_api::SendMessageOptions,
     ) -> Result<(), ExtensionFailure> {
         self.actions()?.send_message(message, options)
+    }
+    fn send_message_with_receipt(
+        &self,
+        message: maho_ext_api::CustomMessage,
+        options: maho_ext_api::SendMessageOptions,
+    ) -> Result<maho_ext_api::MessageDeliveryReceipt, ExtensionFailure> {
+        self.actions()?.send_message_with_receipt(message, options)
     }
     fn send_user_message(
         &self,
