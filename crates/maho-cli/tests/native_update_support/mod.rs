@@ -157,7 +157,47 @@ impl Drop for ReleaseServer {
     }
 }
 
+/// How the served release publishes its minisign signature.
+pub enum Signing {
+    /// Signed with the fixture test key (the key the test `mhc` binary embeds).
+    Valid,
+    /// Signed with the fixture test key, but over these bytes instead of the served archive.
+    ValidFor(Vec<u8>),
+    /// No `.minisig` asset.
+    Missing,
+    /// Signed with a freshly generated key the binary does not trust.
+    OtherKey,
+}
+
+pub const TEST_PUBKEY_FILE: &str = "tests/fixtures/release-test-key/test.pub";
+
+fn sign_with_test_key(archive: &[u8]) -> String {
+    let key = include_str!("../fixtures/release-test-key/test.key");
+    let secret = minisign::SecretKeyBox::from_string(key)
+        .and_then(|boxed| boxed.into_secret_key(Some(String::new())))
+        .expect("fixture test key");
+    minisign::sign(None, &secret, std::io::Cursor::new(archive), Some("mhc test"), None)
+        .expect("sign with fixture key")
+        .into_string()
+}
+
+fn sign_with_other_key(archive: &[u8]) -> String {
+    let pair = minisign::KeyPair::generate_unencrypted_keypair().expect("generate key pair");
+    minisign::sign(None, &pair.sk, std::io::Cursor::new(archive), Some("mhc other"), None)
+        .expect("sign with other key")
+        .into_string()
+}
+
 pub async fn serve_release(version: &str, archive: &Path, checksum_line: String) -> ReleaseServer {
+    serve_release_signed(version, archive, checksum_line, Signing::Valid).await
+}
+
+pub async fn serve_release_signed(
+    version: &str,
+    archive: &Path,
+    checksum_line: String,
+    signing: Signing,
+) -> ReleaseServer {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind release server");
     let port = listener.local_addr().expect("release server address").port();
     let asset_name = archive
@@ -166,18 +206,32 @@ pub async fn serve_release(version: &str, archive: &Path, checksum_line: String)
         .expect("archive file name")
         .to_owned();
     let checksum_name = format!("{asset_name}.sha256");
+    let signature_name = format!("{asset_name}.minisig");
+    let signature_path = format!("/assets/{signature_name}");
+    let archive_bytes = tokio::fs::read(archive).await.expect("read release archive");
+    let signature = match signing {
+        Signing::Valid => Some(sign_with_test_key(&archive_bytes)),
+        Signing::ValidFor(bytes) => Some(sign_with_test_key(&bytes)),
+        Signing::OtherKey => Some(sign_with_other_key(&archive_bytes)),
+        Signing::Missing => None,
+    };
     let asset_path = format!("/assets/{asset_name}");
     let checksum_path = format!("/assets/{checksum_name}");
     let asset_url = format!("http://127.0.0.1:{port}{asset_path}");
     let checksum_url = format!("http://127.0.0.1:{port}{checksum_path}");
+    let mut assets = vec![
+        json!({"name": asset_name, "browser_download_url": asset_url}),
+        json!({"name": checksum_name, "browser_download_url": checksum_url}),
+    ];
+    if signature.is_some() {
+        let signature_url = format!("http://127.0.0.1:{port}{signature_path}");
+        assets.push(json!({"name": signature_name, "browser_download_url": signature_url}));
+    }
     let metadata = serde_json::to_vec(&json!({
         "tag_name": format!("v{version}"),
         "draft": false,
         "prerelease": false,
-        "assets": [
-            {"name": asset_name, "browser_download_url": asset_url},
-            {"name": checksum_name, "browser_download_url": checksum_url},
-        ],
+        "assets": assets,
     }))
     .expect("release metadata");
     let requests = Arc::new(AtomicUsize::new(0));
@@ -186,8 +240,10 @@ pub async fn serve_release(version: &str, archive: &Path, checksum_line: String)
         asset_path,
         checksum_path,
         metadata,
-        archive: tokio::fs::read(archive).await.expect("read release archive"),
+        archive: archive_bytes,
         checksum: checksum_line.into_bytes(),
+        signature_path,
+        signature: signature.unwrap_or_default().into_bytes(),
         requests: Arc::clone(&requests),
     };
     let url = format!("http://127.0.0.1:{port}/repos/Indosaram/mhc/releases/latest");
@@ -552,6 +608,8 @@ struct ServedRelease {
     latest_path: String,
     asset_path: String,
     checksum_path: String,
+    signature_path: String,
+    signature: Vec<u8>,
     metadata: Vec<u8>,
     archive: Vec<u8>,
     checksum: Vec<u8>,
@@ -571,6 +629,8 @@ async fn serve_one(socket: &mut TcpStream, served: &ServedRelease) -> std::io::R
         ("200 OK", served.archive.as_slice())
     } else if path == served.checksum_path {
         ("200 OK", served.checksum.as_slice())
+    } else if path == served.signature_path {
+        ("200 OK", served.signature.as_slice())
     } else {
         ("404 Not Found", b"not found".as_slice())
     };
