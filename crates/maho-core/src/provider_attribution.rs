@@ -42,6 +42,7 @@ fn is_cloudflare_model(model: &Model) -> bool {
 }
 
 fn default_attribution_headers(model: &Model, settings_manager: &SettingsManager) -> Option<BTreeMap<String, String>> {
+    // SAFETY-DIVERGENCE(senpi packages/coding-agent/src/core/provider-attribution.ts): third-party attribution headers default on via install telemetry; mhc defaults off (opt-in). Functional session affinity headers (x-opencode-session/client) are kept.
     if !is_install_telemetry_enabled(settings_manager, None) {
         return None;
     }
@@ -120,8 +121,23 @@ mod tests {
     }
 
     #[test]
-    fn an_openrouter_model_gets_attribution_headers() {
-        let headers = merge_provider_attribution_headers(&model("openrouter", "https://x"), &settings(), None, &[]).expect("headers");
+    fn an_openrouter_model_has_no_attribution_headers_by_default() {
+        assert!(merge_provider_attribution_headers(&model("openrouter", "https://x"), &settings(), None, &[]).is_none());
+    }
+
+    #[test]
+    fn an_openrouter_model_gets_attribution_headers_when_install_telemetry_is_enabled() {
+        let mut settings = settings();
+        settings
+            .set(
+                crate::settings_manager::SettingsScope::Global,
+                &crate::settings_manager::Settings::from_iter([(
+                    "enableInstallTelemetry".to_owned(),
+                    serde_json::Value::Bool(true),
+                )]),
+            )
+            .expect("enable telemetry");
+        let headers = merge_provider_attribution_headers(&model("openrouter", "https://x"), &settings, None, &[]).expect("headers");
         assert_eq!(headers.get("X-OpenRouter-Title").map(String::as_str), Some("maho"));
     }
 
@@ -138,9 +154,21 @@ mod tests {
 
     #[test]
     fn caller_headers_are_merged_last() {
+        let mut settings = settings();
+        settings
+            .set(
+                crate::settings_manager::SettingsScope::Global,
+                &crate::settings_manager::Settings::from_iter([(
+                    "enableInstallTelemetry".to_owned(),
+                    serde_json::Value::Bool(true),
+                )]),
+            )
+            .expect("enable telemetry");
         let mut extra = BTreeMap::new();
         extra.insert("X-Extra".to_owned(), "1".to_owned());
-        let headers = merge_provider_attribution_headers(&model("openrouter", "https://x"), &settings(), None, &[Some(extra)]).expect("headers");
+        extra.insert("X-OpenRouter-Title".to_owned(), "custom".to_owned());
+        let headers = merge_provider_attribution_headers(&model("openrouter", "https://x"), &settings, None, &[Some(extra)]).expect("headers");
         assert_eq!(headers.get("X-Extra").map(String::as_str), Some("1"));
+        assert_eq!(headers.get("X-OpenRouter-Title").map(String::as_str), Some("custom"));
     }
 }

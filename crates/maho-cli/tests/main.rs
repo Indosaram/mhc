@@ -145,6 +145,8 @@ pub mod supervisor_route;
 pub mod syntax_highlight;
 #[path = "task_runners.rs"]
 pub mod task_runners;
+#[path = "telemetry_default.rs"]
+pub mod telemetry_default;
 #[path = "tool_result_images.rs"]
 pub mod tool_result_images;
 #[path = "tool_search.rs"]

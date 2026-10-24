@@ -84,6 +84,13 @@ fn telemetry_harness_support_names_native_for_the_enabled_setting() {
 }
 
 #[test]
+fn telemetry_settings_schema_defaults_enabled_to_false() {
+    let node = omo_config_core::omo_telemetry_settings_schema();
+    let value = parsed(&node, json!({}));
+    assert_eq!(value["enabled"], json!(false));
+}
+
+#[test]
 fn category_keeps_warn_unavailable_absent_when_not_declared() {
     let node = omo_config_core::omo_category_config_schema();
     let value = parsed(&node, json!({}));
