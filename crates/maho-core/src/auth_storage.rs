@@ -258,21 +258,31 @@ fn repair_managed_sentinel_slots(provider_id: &str, credential: &Value) -> Optio
 }
 
 /// A write stages a fresh 0o600 file and renames it over the store, so the credential file is never
-/// briefly world-readable and never half-written.
+/// briefly world-readable and never half-written. On Windows the staging file is created with a
+/// protected owner-only DACL, so there is no exposure window either.
+// SAFETY-DIVERGENCE(senpi packages/coding-agent/src/core/auth-storage.ts): upstream chmods 0o600 and
+// has no Windows ACL handling; mhc creates auth.json with a protected owner-only DACL on Windows.
 pub fn write_auth_file(path: &str, content: &str) -> Result<(), String> {
     let temporary = format!("{path}.{}.tmp", std::process::id());
-    if let Err(error) = std::fs::write(&temporary, content) {
+    #[cfg(windows)]
+    let staged = owner_acl::create_owner_only_file(&temporary, content.as_bytes());
+    #[cfg(not(windows))]
+    let staged = std::fs::write(&temporary, content).map_err(|error| error.to_string());
+    if let Err(error) = staged {
         let _ = std::fs::remove_file(&temporary);
-        return Err(error.to_string());
+        return Err(error);
     }
-    set_mode(&temporary, AUTH_FILE_MODE);
+    if let Err(error) = set_mode(&temporary, AUTH_FILE_MODE) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
+    }
     #[cfg(unix)]
     if Path::new(path).exists()
         && let Ok(metadata) = std::fs::metadata(path)
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = metadata.permissions().mode() & 0o777;
-        set_mode(&temporary, mode);
+        let _ = set_mode(&temporary, mode);
     }
     if let Err(error) = std::fs::rename(&temporary, path) {
         let _ = std::fs::remove_file(&temporary);
@@ -281,14 +291,260 @@ pub fn write_auth_file(path: &str, content: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn set_mode(path: &str, mode: u32) {
+/// Unix applies `mode` best-effort. Windows ignores the mode bits and always makes a file
+/// owner-only (protected DACL, current user SID, full control); directories are left alone.
+fn set_mode(path: &str, mode: u32) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+        Ok(())
     }
-    #[cfg(not(unix))]
-    let _ = (path, mode);
+    #[cfg(windows)]
+    {
+        let _ = mode;
+        if Path::new(path).is_dir() {
+            return Ok(());
+        }
+        owner_acl::restrict_to_owner(path)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (path, mode);
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod owner_acl {
+    //! Owner-only DACL for auth.json on Windows: one allow ACE for the current user SID, with
+    //! inheritance blocked (protected DACL), mirroring Unix 0600.
+    // SAFETY (module-wide): every `unsafe` block is one Win32 call (or a read of its out-parameters)
+    // whose pointers come from live local buffers that outlive the call.
+
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+    use std::ptr::{null, null_mut};
+
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Security::Authorization::{SE_FILE_OBJECT, SetNamedSecurityInfoW};
+    use windows_sys::Win32::Security::{
+        ACL, AddAccessAllowedAce, DACL_SECURITY_INFORMATION, GetLengthSid, GetTokenInformation,
+        InitializeAcl, InitializeSecurityDescriptor, PROTECTED_DACL_SECURITY_INFORMATION,
+        SECURITY_ATTRIBUTES, SetSecurityDescriptorControl, SetSecurityDescriptorDacl, TOKEN_QUERY,
+        TOKEN_USER, TokenUser,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        CREATE_NEW, CreateFileW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    const ACL_REVISION: u32 = 2;
+    const SECURITY_DESCRIPTOR_REVISION: u32 = 1;
+    const SE_DACL_PROTECTED: u16 = 0x1000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+
+    /// The current user's SID, kept inside the TOKEN_USER buffer that owns it.
+    pub(super) struct UserSid {
+        buffer: Vec<u64>,
+    }
+
+    impl UserSid {
+        pub(super) fn current() -> Result<Self, String> {
+            let mut token: HANDLE = null_mut();
+            // SAFETY: GetCurrentProcess is a pseudo-handle; `token` is a valid out-pointer.
+            if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+                return Err(last_error("OpenProcessToken"));
+            }
+            let result = Self::from_token(token);
+            // SAFETY: `token` was opened above and is closed exactly once.
+            unsafe { CloseHandle(token) };
+            result
+        }
+
+        fn from_token(token: HANDLE) -> Result<Self, String> {
+            let mut length = 0u32;
+            // SAFETY: a null buffer with length 0 asks only for the required size.
+            unsafe { GetTokenInformation(token, TokenUser, null_mut(), 0, &mut length) };
+            if length == 0 {
+                return Err(last_error("GetTokenInformation(size)"));
+            }
+            let mut buffer = vec![0u64; (length as usize).div_ceil(8)];
+            // SAFETY: `buffer` holds at least `length` bytes and is 8-byte aligned.
+            let ok = unsafe {
+                GetTokenInformation(
+                    token,
+                    TokenUser,
+                    buffer.as_mut_ptr().cast::<c_void>(),
+                    length,
+                    &mut length,
+                )
+            };
+            if ok == 0 {
+                return Err(last_error("GetTokenInformation"));
+            }
+            Ok(Self { buffer })
+        }
+
+        pub(super) fn sid(&self) -> *mut c_void {
+            // SAFETY: the buffer was filled with a TOKEN_USER by GetTokenInformation.
+            unsafe { (*self.buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid }
+        }
+    }
+
+    /// An ACL with one full-control allow ACE for the user, plus a protected descriptor holding it.
+    struct OwnerDescriptor {
+        _sid: UserSid,
+        acl: Vec<u32>,
+        descriptor: Vec<u64>,
+    }
+
+    impl OwnerDescriptor {
+        fn new() -> Result<Self, String> {
+            let sid = UserSid::current()?;
+            let mut acl = vec![0u32; 64];
+            let mut descriptor = vec![0u64; 8];
+            let acl_ptr = acl.as_mut_ptr().cast::<ACL>();
+            let descriptor_ptr = descriptor.as_mut_ptr().cast::<c_void>();
+            // SAFETY: `acl` (256 bytes) fits one ACE for any SID (max 68 bytes); `descriptor`
+            // (64 bytes) exceeds SECURITY_DESCRIPTOR_MIN_LENGTH; `sid` is valid for the whole block.
+            let ok = unsafe {
+                GetLengthSid(sid.sid()) as usize <= 68
+                    && InitializeAcl(acl_ptr, 256, ACL_REVISION) != 0
+                    && AddAccessAllowedAce(acl_ptr, ACL_REVISION, FILE_ALL_ACCESS, sid.sid()) != 0
+                    && InitializeSecurityDescriptor(descriptor_ptr, SECURITY_DESCRIPTOR_REVISION)
+                        != 0
+                    && SetSecurityDescriptorDacl(descriptor_ptr, 1, acl_ptr, 0) != 0
+                    && SetSecurityDescriptorControl(
+                        descriptor_ptr,
+                        SE_DACL_PROTECTED,
+                        SE_DACL_PROTECTED,
+                    ) != 0
+            };
+            if !ok {
+                return Err(last_error("building the owner-only security descriptor"));
+            }
+            Ok(Self { _sid: sid, acl, descriptor })
+        }
+    }
+
+    fn last_error(call: &str) -> String {
+        // SAFETY: GetLastError has no preconditions.
+        format!("{call} failed with Win32 error {}", unsafe { GetLastError() })
+    }
+
+    fn wide(path: &str) -> Vec<u16> {
+        std::ffi::OsStr::new(path).encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    /// Creates `path` (must not exist) with the owner-only descriptor applied at creation, then
+    /// writes `content`; no byte lands in a file with a wider ACL.
+    pub(super) fn create_owner_only_file(path: &str, content: &[u8]) -> Result<(), String> {
+        use std::io::Write;
+        let _ = std::fs::remove_file(path);
+        let owner = OwnerDescriptor::new()?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: owner.descriptor.as_ptr().cast_mut().cast::<c_void>(),
+            bInheritHandle: 0,
+        };
+        let name = wide(path);
+        // SAFETY: `name` is NUL-terminated; `attributes` and its descriptor outlive the call.
+        let handle = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                GENERIC_WRITE,
+                0,
+                &attributes,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(last_error("CreateFileW"));
+        }
+        // SAFETY: `handle` is a freshly created, valid, exclusively owned file handle.
+        let mut file = unsafe { std::fs::File::from_raw_handle(handle) };
+        file.write_all(content).map_err(|error| error.to_string())
+    }
+
+    /// Replaces the DACL of `path` with the protected owner-only one.
+    pub(super) fn restrict_to_owner(path: &str) -> Result<(), String> {
+        let owner = OwnerDescriptor::new()?;
+        let name = wide(path);
+        // SAFETY: `name` is NUL-terminated; the ACL buffer is a valid initialized ACL.
+        let status = unsafe {
+            SetNamedSecurityInfoW(
+                name.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                owner.acl.as_ptr().cast::<ACL>(),
+                null(),
+            )
+        };
+        if status != 0 {
+            return Err(format!("SetNamedSecurityInfoW failed with Win32 error {status}"));
+        }
+        Ok(())
+    }
+
+    /// Test helper: `(ace_count, first_ace_is_current_user)` of the file's DACL.
+    #[cfg(test)]
+    pub(super) fn dacl_summary(path: &str) -> (u32, bool) {
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::GetNamedSecurityInfoW;
+        use windows_sys::Win32::Security::{
+            ACCESS_ALLOWED_ACE, ACL_SIZE_INFORMATION, AclSizeInformation, EqualSid, GetAce,
+            GetAclInformation,
+        };
+        let user = UserSid::current().expect("current user sid");
+        let name = wide(path);
+        let mut acl: *mut ACL = null_mut();
+        let mut descriptor: *mut c_void = null_mut();
+        // SAFETY: out-pointers are valid locals; `descriptor` is freed below after the last use of `acl`.
+        let status = unsafe {
+            GetNamedSecurityInfoW(
+                name.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                &mut acl,
+                null_mut(),
+                &mut descriptor,
+            )
+        };
+        assert_eq!(status, 0, "GetNamedSecurityInfoW");
+        let mut info = ACL_SIZE_INFORMATION { AceCount: 0, AclBytesInUse: 0, AclBytesFree: 0 };
+        // SAFETY: `acl` is a valid ACL returned above; `info` is the matching out-structure.
+        let ok = unsafe {
+            GetAclInformation(
+                acl,
+                (&mut info as *mut ACL_SIZE_INFORMATION).cast::<c_void>(),
+                std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+                AclSizeInformation,
+            )
+        };
+        assert_ne!(ok, 0, "GetAclInformation");
+        let mut first_is_user = false;
+        if info.AceCount > 0 {
+            let mut ace: *mut c_void = null_mut();
+            // SAFETY: index 0 < AceCount; `ace` points into `acl`, and SidStart begins the ACE's SID.
+            unsafe {
+                assert_ne!(GetAce(acl, 0, &mut ace), 0, "GetAce");
+                let sid = std::ptr::addr_of_mut!((*ace.cast::<ACCESS_ALLOWED_ACE>()).SidStart);
+                first_is_user = EqualSid(sid.cast::<c_void>(), user.sid()) != 0;
+            }
+        }
+        // SAFETY: `descriptor` was allocated by GetNamedSecurityInfoW and is freed once.
+        unsafe { LocalFree(descriptor) };
+        (info.AceCount, first_is_user)
+    }
 }
 
 pub struct FileAuthStorageBackend {
@@ -311,7 +567,7 @@ impl FileAuthStorageBackend {
             && !parent.exists()
         {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-            set_mode(&parent.to_string_lossy(), 0o700);
+            set_mode(&parent.to_string_lossy(), 0o700)?;
         }
         Ok(())
     }
@@ -319,6 +575,10 @@ impl FileAuthStorageBackend {
     fn ensure_file_exists(&self) -> Result<(), String> {
         if !Path::new(&self.auth_path).exists() {
             write_auth_file(&self.auth_path, "{}")?;
+        } else {
+            // An auth.json that predates owner-only handling (or was loosened) is tightened on open.
+            #[cfg(windows)]
+            set_mode(&self.auth_path, AUTH_FILE_MODE)?;
         }
         Ok(())
     }
@@ -1393,7 +1653,7 @@ pub fn backup_auth_file(auth_path: Option<&str>, content: Option<&str>) -> Optio
         attempt += 1;
     }
     std::fs::write(&backup_path, content).ok()?;
-    set_mode(&backup_path, AUTH_FILE_MODE);
+    set_mode(&backup_path, AUTH_FILE_MODE).ok()?;
     Some(backup_path)
 }
 
@@ -1624,7 +1884,7 @@ mod tests {
                 & 0o777,
             0o600
         );
-        set_mode(&path, 0o640);
+        set_mode(&path, 0o640).expect("mode");
         write_auth_file(&path, "{\"a\":1}").expect("write");
         assert_eq!(
             std::fs::metadata(&path)
@@ -2208,5 +2468,33 @@ mod tests {
         assert!(serialized.starts_with("{\n  \"z-provider\""));
         assert!(serialized.ends_with('\n'));
         assert_eq!(parse_auth_json(&serialized).expect("data"), data);
+    }
+    #[test]
+    #[cfg(windows)]
+    fn auth_file_acl_is_exactly_one_ace_for_the_current_user() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
+        write_auth_file(&path, "{}").expect("write");
+        assert_eq!(owner_acl::dacl_summary(&path), (1, true));
+        write_auth_file(&path, "{\"a\":1}").expect("rewrite");
+        assert_eq!(owner_acl::dacl_summary(&path), (1, true));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn auth_file_acl_tightens_a_permissive_existing_file_on_open() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
+        std::fs::write(&path, "{}").expect("seed");
+        let grant = std::process::Command::new("icacls")
+            .args([path.as_str(), "/grant", "*S-1-5-32-545:R"])
+            .output()
+            .expect("icacls");
+        assert!(grant.status.success(), "icacls grant Users read");
+        assert!(owner_acl::dacl_summary(&path).0 > 1, "file starts permissive");
+        FileAuthStorageBackend::new(&path)
+            .with_lock(|_| Ok(((), None)))
+            .expect("open");
+        assert_eq!(owner_acl::dacl_summary(&path), (1, true));
     }
 }
