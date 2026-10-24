@@ -167,3 +167,15 @@ jobs:
       - name: run tests (shard ${{ matrix.shard }}/3)
         timeout-minutes: 40
         run: cargo nextest run --locked --no-fail-fast $CRATES
+
+  pins:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - name: clone senpi
+        run: git clone --filter=blob:none https://github.com/code-yeongyu/senpi.git /tmp/senpi
+      - name: check pins
+        run: bun tools/check-pins.mjs --ancestry /tmp/senpi
+

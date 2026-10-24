@@ -8,6 +8,12 @@ These revisions are the behavior of record. Ports, parity ledgers and golden fix
 | oh-my-openagent | 7d818abaf9 | 7d818abaf97831537271b4af9629a5264649de37 | code-yeongyu/oh-my-openagent |
 | omo-components (COMP) | 93b78ac | 93b78ac1cc8d488d124da7ed1d19f678e93fb0fd | (private checkout) |
 
+## Pin roles
+
+- `PINS.md` senpi row: latest upstream commit whose behavior has been ported (parity baseline).
+- `tools/golden/pin.mjs` `SENPI_PIN`: commit the golden fixtures were generated from.
+- `.github/workflows/ci.yml` `SENPI_PIN`: must equal pin.mjs (fixtures checkout).
+
 ## User extensions
 
 Git extensions live under `~/.omo/agent/git/github.com/<owner>/<name>`.
