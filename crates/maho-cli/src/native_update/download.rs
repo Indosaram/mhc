@@ -142,10 +142,12 @@ pub fn parse_checksum(text: &str, filename: &str) -> Result<String, String> {
     Ok(digest.to_ascii_lowercase())
 }
 
+/// Downloads the archive to `destination` after checking its SHA256. Returns the release's minisign signature
+/// text when it publishes one; the caller verifies it against the trust root.
 pub async fn verified_archive(
     release: &super::release::Release,
     destination: &Path,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     verified_archive_with_stall(release, destination, STALL_TIMEOUT).await
 }
 
@@ -153,8 +155,12 @@ async fn verified_archive_with_stall(
     release: &super::release::Release,
     destination: &Path,
     stall: Duration,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let client = client()?;
+    let signature = match &release.signature_url {
+        Some(url) => Some(fetch_signature(&client, url, stall).await?),
+        None => None,
+    };
     let mut checksum_response = within_stall(
         stall,
         "download checksum",
@@ -218,7 +224,26 @@ async fn verified_archive_with_stall(
     if format!("{:x}", digest.finalize()) != expected {
         return Err("downloaded package SHA256 does not match release checksum".into());
     }
-    Ok(())
+    Ok(signature)
+}
+
+async fn fetch_signature(
+    client: &reqwest::Client,
+    url: &str,
+    stall: Duration,
+) -> Result<String, String> {
+    let mut response = within_stall(stall, "download signature", client.get(url).send())
+        .await?
+        .error_for_status()
+        .map_err(|error| format!("download signature: {error}"))?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = within_stall(stall, "download signature", response.chunk()).await? {
+        if bytes.len() + chunk.len() > 4096 {
+            return Err("signature response exceeds size limit".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    String::from_utf8(bytes).map_err(|error| format!("signature is not UTF-8: {error}"))
 }
 
 #[cfg(test)]
@@ -270,6 +295,7 @@ mod tests {
             asset_name: "mhc.zip".into(),
             asset_url: format!("http://{address}/mhc.zip"),
             checksum_url: format!("http://{address}/mhc.zip.sha256"),
+            signature_url: None,
         };
         let server = tokio::spawn(async move {
             let package = b"actual package bytes";
@@ -350,6 +376,7 @@ mod tests {
             asset_name: "mhc.zip".into(),
             asset_url: format!("http://{address}/mhc.zip"),
             checksum_url: format!("http://{address}/mhc.zip.sha256"),
+            signature_url: None,
         };
         let (release_tx, released) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn(async move {

@@ -171,3 +171,78 @@ async fn rollback_after_installed_validation_failure() {
     assert_eq!(pointer(&fx), (real_version(), previous));
     assert_eq!(printed_version(&fx).await, real_version());
 }
+
+fn flip_one_byte(path: &Path) {
+    let mut bytes = std::fs::read(path).expect("read archive");
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0xff;
+    std::fs::write(path, bytes).expect("write tampered archive");
+}
+
+#[tokio::test]
+async fn tampered_archive_fails_signature_and_installs_nothing() {
+    let fx = fixture();
+    install_real(&fx);
+    let package = probe_package(&fx, false);
+    let (archive_path, _) = archive_of(&fx, &package);
+    // The checksum matches the tampered bytes, so only the signature can catch the change.
+    let signed = std::fs::read(&archive_path).expect("read archive");
+    flip_one_byte(&archive_path);
+    let digest = format!("{:x}", Sha256::digest(std::fs::read(&archive_path).expect("read tampered")));
+    let before_pointer = pointer(&fx);
+    let before_versions = versions(&fx);
+    let server = serve_release_signed(NEW_VERSION, &archive_path, checksum_line(&digest), Signing::ValidFor(signed)).await;
+    let output = run(update_to(&fx, &server.url)).await;
+    assert_status(&output, false);
+    assert!(output_text(&output).contains("signature verification failed"), "{}", output_text(&output));
+    assert_eq!(pointer(&fx), before_pointer);
+    assert_eq!(versions(&fx), before_versions);
+    assert!(staging_entries(&fx).is_empty());
+}
+
+#[tokio::test]
+async fn signature_from_a_different_key_is_refused() {
+    let fx = fixture();
+    install_real(&fx);
+    let package = probe_package(&fx, false);
+    let (archive_path, digest) = archive_of(&fx, &package);
+    let before_pointer = pointer(&fx);
+    let server = serve_release_signed(NEW_VERSION, &archive_path, checksum_line(&digest), Signing::OtherKey).await;
+    let output = run(update_to(&fx, &server.url)).await;
+    assert_status(&output, false);
+    assert!(output_text(&output).contains("signature verification failed"), "{}", output_text(&output));
+    assert_eq!(pointer(&fx), before_pointer);
+}
+
+#[tokio::test]
+async fn missing_signature_is_refused_for_signed_era_versions() {
+    let fx = fixture();
+    install_real(&fx);
+    let package = probe_package(&fx, false);
+    let (archive_path, digest) = archive_of(&fx, &package);
+    let before_pointer = pointer(&fx);
+    let server = serve_release_signed(NEW_VERSION, &archive_path, checksum_line(&digest), Signing::Missing).await;
+    for allow in [false, true] {
+        let mut command = update_to(&fx, &server.url);
+        if allow {
+            command.arg("--allow-unsigned");
+        }
+        let output = run(command).await;
+        assert_status(&output, false);
+        assert!(output_text(&output).contains("no signature"), "{}", output_text(&output));
+        assert_eq!(pointer(&fx), before_pointer);
+    }
+}
+
+#[tokio::test]
+async fn verbose_version_reports_channel_and_embedded_key() {
+    let fx = fixture();
+    install_real(&fx);
+    let mut command = mhc(&fx, &launcher(&fx));
+    command.args(["--version", "--verbose"]);
+    let output = run(command).await;
+    assert_status(&output, true);
+    let text = output_text(&output);
+    assert!(text.contains("channel: "), "{text}");
+    assert!(text.contains("release-key: "), "{text}");
+}
