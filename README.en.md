@@ -81,7 +81,11 @@ To build the full self-contained directory the release ships (skills and helper 
 
 ## Status and contributing
 
-mhc is under active development and parity with upstream is not complete yet. Upstream revisions are pinned in [PINS.md](PINS.md); see [docs/parity.md](docs/parity.md) for coverage and [docs/divergences.md](docs/divergences.md) for intentional safety/privacy divergences. Read [CONTRIBUTING.md](CONTRIBUTING.md) before sending changes, and report problems in [issues](https://github.com/Indosaram/mhc/issues).
+mhc is under active development and parity with upstream is not complete yet. Upstream revisions are pinned in [PINS.md](PINS.md); see [docs/parity.md](docs/parity.md) for coverage and [docs/divergences.md](docs/divergences.md) for intentional safety/privacy divergences. Read [CONTRIBUTING.md](CONTRIBUTING.md) before sending changes, report security vulnerabilities via [SECURITY.md](SECURITY.md), and report problems in [issues](https://github.com/Indosaram/mhc/issues).
+
+## Security
+
+For security vulnerability reporting and policy, see [SECURITY.md](SECURITY.md).
 
 ## License
 
