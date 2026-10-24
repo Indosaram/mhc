@@ -56,8 +56,13 @@ fn root_metadata_output(argv: &[String], grok: bool) -> Result<Option<String>, S
         .iter()
         .any(|arg| matches!(arg.as_str(), "--version" | "-v"))
     {
+        let verbose = if argv.iter().any(|arg| arg == "--verbose") {
+            maho_cli::native_update::signature::build_info()
+        } else {
+            String::new()
+        };
         return Ok(Some(format!(
-            "{}\n",
+            "{}\n{verbose}",
             maho_core::config::display_version(
                 option_env!("MHC_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
             )
@@ -579,6 +584,9 @@ fn run() -> Result<(), String> {
                 option_env!("MHC_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
             )
         );
+        if parsed.verbose {
+            print!("{}", maho_cli::native_update::signature::build_info());
+        }
         return Ok(());
     }
     for diagnostic in &parsed.diagnostics {
