@@ -53,6 +53,24 @@ jobs:
         if: always()
         run: df -h / && du -sh target 2>/dev/null || true
 
+  deny:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  license-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - name: license audit
+        run: bun tools/license-audit.mjs
+
   # One job building every test binary filled the runner disk (`No space left on device`), so
   # each shard builds and runs only its own crates; scripts/ci-shard.py covers every member once.
   test:
