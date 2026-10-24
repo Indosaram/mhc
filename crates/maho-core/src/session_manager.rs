@@ -927,12 +927,9 @@ impl SessionManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .hold = None;
         self.release_blobs_dir_unless_shared();
-        self.resident_store.clear_in_memory();
+        // Entries stay readable after disposal (callers audit them for late applies); only the
+        // derived materialized view is dropped.
         self.invalidate_entries_cache();
-        self.file_entries.clear();
-        self.file_entries.shrink_to_fit();
-        self.by_id.clear();
-        self.labels_by_id.clear();
     }
 
     pub fn drop_materialized_cache(&self) {
