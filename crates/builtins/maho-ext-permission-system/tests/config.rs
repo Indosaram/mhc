@@ -4,13 +4,26 @@ fn rule(permission:&str,pattern:&str,action:Action)->Rule{Rule{permission:permis
 #[test]
 fn edit_tools(){assert_eq!(EDIT_TOOLS,["edit","write","apply_patch","multiedit"]);}
 #[test]
-fn preset_full(){assert_eq!(DEFAULT_PERMISSION_PRESET,PermissionPresetName::FullAccess);assert_eq!(rules_for_preset(DEFAULT_PERMISSION_PRESET),vec![rule("*","*",Action::Allow)]);}
+fn preset_default_is_guarded(){
+    assert_eq!(DEFAULT_PERMISSION_PRESET,PermissionPresetName::Guarded);
+    let context=PresetContext{agent_dir:"/home/u/.mhc/agent".into(),temp_dir:"/tmp".into()};
+    assert_eq!(rules_for_preset_in(DEFAULT_PERMISSION_PRESET,&context),vec![
+        rule("*","*",Action::Allow),rule("external_directory","*",Action::Ask),
+        rule("external_directory","/home/u/.mhc/agent/sessions/*",Action::Allow),
+        rule("external_directory","/home/u/.mhc/agent/cache/*",Action::Allow),
+        rule("external_directory","/home/u/.mhc/agent/tmp/*",Action::Allow),
+        rule("external_directory","/home/u/.mhc/memory/*",Action::Allow),
+        rule("credential_file","*",Action::Ask),
+    ]);
+}
+#[test]
+fn preset_full_access_keeps_star_allow(){assert_eq!(rules_for_preset(PermissionPresetName::FullAccess),vec![rule("*","*",Action::Allow)]);}
 #[test]
 fn preset_ask(){assert_eq!(rules_for_preset(PermissionPresetName::Ask),vec![rule("*","*",Action::Ask)]);}
 #[test]
-fn preset_auto_and_accept_edits(){assert_eq!(rules_for_preset(PermissionPresetName::Auto),vec![rule("*","*",Action::Ask)]);assert_eq!(rules_for_preset(PermissionPresetName::AcceptEdits),vec![rule("*","*",Action::Ask),rule("read","*",Action::Allow),rule("list","*",Action::Allow),rule("grep","*",Action::Allow),rule("edit","*",Action::Allow),rule("bash","*",Action::Ask),rule("external_directory","*",Action::Ask)]);}
+fn preset_auto_and_accept_edits(){assert_eq!(rules_for_preset(PermissionPresetName::Auto),vec![rule("*","*",Action::Ask),rule("credential_file","*",Action::Ask)]);assert_eq!(rules_for_preset(PermissionPresetName::AcceptEdits),vec![rule("*","*",Action::Ask),rule("read","*",Action::Allow),rule("list","*",Action::Allow),rule("grep","*",Action::Allow),rule("edit","*",Action::Allow),rule("bash","*",Action::Ask),rule("external_directory","*",Action::Ask),rule("credential_file","*",Action::Ask)]);}
 #[test]
-fn preset_workspace(){assert_eq!(rules_for_preset(PermissionPresetName::Workspace),vec![rule("*","*",Action::Ask),rule("read","*",Action::Allow),rule("list","*",Action::Allow),rule("grep","*",Action::Allow),rule("edit","*",Action::Allow),rule("bash","*",Action::Allow),rule("external_directory","*",Action::Ask)]);}
+fn preset_workspace(){assert_eq!(rules_for_preset(PermissionPresetName::Workspace),vec![rule("*","*",Action::Ask),rule("read","*",Action::Allow),rule("list","*",Action::Allow),rule("grep","*",Action::Allow),rule("edit","*",Action::Allow),rule("bash","*",Action::Allow),rule("external_directory","*",Action::Ask),rule("credential_file","*",Action::Ask)]);}
 #[test]
 fn preset_read_only(){let rules=rules_for_preset(PermissionPresetName::ReadOnly);assert_eq!(rules[4],rule("edit","*",Action::Ask));assert_eq!(rules[5],rule("bash","*",Action::Ask));assert_eq!(rules[6],rule("external_directory","*",Action::Ask));}
 #[test]

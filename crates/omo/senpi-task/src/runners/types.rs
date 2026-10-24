@@ -102,4 +102,6 @@ pub struct RpcRunnerSpec {
     pub variant: Option<String>,
     pub extensions: Option<Vec<String>>,
     pub member_env: Option<BTreeMap<String, String>>,
+    /// Parent's explicit non-default permission preset; `None` keeps the child on its default.
+    pub permission_preset: Option<String>,
 }

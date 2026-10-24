@@ -115,6 +115,8 @@ pub mod omo_mount;
 pub mod package_commands;
 #[path = "paths.rs"]
 pub mod paths;
+#[path = "permission_default.rs"]
+pub mod permission_default;
 #[path = "print_entry.rs"]
 pub mod print_entry;
 #[path = "project_trust.rs"]

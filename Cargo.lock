@@ -3640,6 +3640,7 @@ dependencies = [
  "maho-rpc",
  "maho-senpi-task",
  "maho-server",
+ "maho-test-support",
  "maho-tool-child",
  "maho-tools",
  "maho-tui",

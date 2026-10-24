@@ -16,7 +16,7 @@ fn scope_rules(settings:&Map<String,Value>,scope:&str,home:&str)->Result<Ruleset
     let mut rules=Vec::new();
     if let Some(value)=settings.get("permissionPreset") {
         let Some(name)=value.as_str() else {return Err(SettingsError::InvalidPreset(format!("Invalid {scope} permissionPreset {value}. Expected a string.")))};
-        let preset=parse_permission_preset_name(name).ok_or_else(||SettingsError::InvalidPreset(format!("Invalid {scope} permissionPreset \"{name}\". Expected one of: full-access, workspace, accept-edits, auto, read-only, ask.")))?;
+        let preset=parse_permission_preset_name(name).ok_or_else(||SettingsError::InvalidPreset(format!("Invalid {scope} permissionPreset \"{name}\". Expected one of: guarded, full-access, workspace, accept-edits, auto, read-only, ask.")))?;
         rules.extend(rules_for_preset(preset));
     }
     if let Some(config)=settings.get("permission").and_then(Value::as_object) {
@@ -32,4 +32,11 @@ pub fn load_permission_settings(manager:&SettingsManager,cli:&[crate::types::Rul
     if let Some(preset)=preset {rules.extend(rules_for_preset(preset));}
     rules.extend_from_slice(cli);
     Ok((rules,load_approved(project.0)?))
+}
+
+/// The preset a session runs under when it is not the default: `--permission-preset`, else project, else global `permissionPreset`.
+/// `None` means the default (guarded) applies, so children must not be handed a preset.
+pub fn explicit_non_default_preset(manager:&SettingsManager,cli:Option<PermissionPresetName>)->Option<PermissionPresetName> {
+    let from=|settings:&Map<String,Value>|settings.get("permissionPreset").and_then(Value::as_str).and_then(parse_permission_preset_name);
+    cli.or_else(||from(manager.get_project())).or_else(||from(manager.get_global())).filter(|preset|*preset!=PermissionPresetName::Guarded)
 }

@@ -525,3 +525,15 @@ fn given_senpi_hides_rpc_entry_from_node_exports_when_building_a_fallback_spawn_
         "expected the physical dist entry, got {entry}"
     );
 }
+
+#[test]
+fn child_args_pass_permission_preset_only_when_explicit() {
+    // A default parent hands its children no preset (`permission_preset: None`), so they use the default guarded preset.
+    let default_args = build_child_args(&base_spec());
+    assert!(!default_args.iter().any(|arg| arg == "--permission-preset"));
+
+    let explicit = RpcRunnerSpec { permission_preset: Some("full-access".to_string()), ..base_spec() };
+    let args = build_child_args(&explicit);
+    let at = args.iter().position(|arg| arg == "--permission-preset").expect("flag present");
+    assert_eq!(args[at + 1], "full-access");
+}
