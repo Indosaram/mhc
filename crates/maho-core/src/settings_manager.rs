@@ -411,6 +411,10 @@ pub trait SettingsStorage: Send + Sync {
     }
     /// Point a cwd-bound storage at another project directory; storage without a cwd ignores it.
     fn rebind_cwd(&mut self, _cwd: &str) {}
+    /// The agent dir this storage was created for, when it has one.
+    fn agent_dir(&self) -> Option<String> {
+        None
+    }
 }
 
 pub struct FileSettingsStorage {
@@ -444,6 +448,10 @@ impl FileSettingsStorage {
 }
 
 impl SettingsStorage for FileSettingsStorage {
+    fn agent_dir(&self) -> Option<String> {
+        Some(self.agent_dir.clone())
+    }
+
     fn rebind_cwd(&mut self, cwd: &str) {
         *self = Self::new(cwd, &self.agent_dir, &self.home_dir);
     }
@@ -1109,6 +1117,19 @@ impl SettingsManager {
     /// The `BashToolOptions.env_passthrough` value: `Some(passthrough)` when scrubbing is enabled.
     pub fn get_bash_env_scrub_passthrough(&self) -> Option<Vec<String>> {
         self.get_bash_env_scrub().then(|| self.get_bash_env_passthrough())
+    }
+
+    /// The agent dir this manager was created for (the process default for storages without one).
+    pub fn agent_dir(&self) -> String {
+        self.storage.agent_dir().unwrap_or_else(crate::config::get_agent_dir)
+    }
+
+    /// `bashSandbox` (`off` default | `auto` | `required`): opt-in OS write confinement for bash.
+    pub fn get_bash_sandbox(&self) -> maho_tools::bash_sandbox::BashSandboxMode {
+        self.get_string("bashSandbox")
+            .map_or(maho_tools::bash_sandbox::BashSandboxMode::Off, |value| {
+                maho_tools::bash_sandbox::BashSandboxMode::parse(&value)
+            })
     }
 
     /// senpi `getEnabledBuiltinExtensions`: optional allowlist of builtin extension ids (default: all).

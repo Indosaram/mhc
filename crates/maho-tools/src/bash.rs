@@ -261,6 +261,10 @@ pub struct BashToolOptions {
     /// SAFETY-DIVERGENCE(senpi tools/bash.ts): `Some(passthrough)` scrubs secret-looking variables from
     /// the final spawn environment, keeping the listed names; `None` leaves the environment untouched.
     pub env_passthrough: Option<Vec<String>>,
+    /// Opt-in OS write-confinement (`bashSandbox`); `None` is the same as `Off`.
+    pub sandbox: Option<crate::bash_sandbox::BashSandboxMode>,
+    /// Agent dir that holds the sandbox's writable `sessions`/`cache` and private `tmp/bash-<session>` dirs.
+    pub sandbox_agent_dir: Option<PathBuf>,
 }
 #[derive(Deserialize)]
 pub struct BashToolInput {
@@ -410,11 +414,13 @@ pub fn create_shell_tool_definition(
         .clone()
         .unwrap_or_else(|| create_local_bash_operations(options.shell_path.as_deref()));
     let captured_config = config.clone();
+    let sandbox_warned = Arc::new(AtomicBool::new(false));
     let execute: ToolExecutor = Arc::new(move |call| {
         let cwd = cwd.clone();
         let options = options.clone();
         let ops = Arc::clone(&ops);
         let config = captured_config.clone();
+        let sandbox_warned = Arc::clone(&sandbox_warned);
         Box::pin(async move {
             let started_at = Instant::now();
             let input: BashToolInput = serde_json::from_value(call.params)?;
@@ -435,6 +441,33 @@ pub fn create_shell_tool_definition(
             // SAFETY-DIVERGENCE(senpi tools/bash.ts): scrub the FINAL environment, after the spawn hook.
             if let Some(passthrough) = options.env_passthrough.as_deref() {
                 crate::env_scrub::scrub_secrets(&mut context.env, passthrough);
+            }
+            // SAFETY-DIVERGENCE(senpi tools/bash.ts): bash runs unconfined; opt-in bwrap/sandbox-exec
+            // write confinement via `bashSandbox` (default off), applied after the hook and scrub.
+            if let Some(mode) = options
+                .sandbox
+                .filter(|mode| *mode != crate::bash_sandbox::BashSandboxMode::Off)
+            {
+                let agent_dir = options.sandbox_agent_dir.clone().ok_or_else(|| {
+                    ToolError::Message("bashSandbox is enabled but no agent directory is configured".into())
+                })?;
+                let session_id = call
+                    .context
+                    .map_or("default", |context| context.session_manager().session_id());
+                let (private_tmp, writable) = crate::bash_sandbox::prepare_dirs(&agent_dir, session_id)?;
+                let (wrapped, notice) = crate::bash_sandbox::wrap_with_notice(
+                    context,
+                    mode,
+                    &private_tmp,
+                    &writable,
+                    &crate::bash_sandbox::find_in_path,
+                )?;
+                context = wrapped;
+                if let Some(notice) = notice
+                    && !sandbox_warned.swap(true, Ordering::AcqRel)
+                {
+                    eprintln!("{notice}");
+                }
             }
             let output = Arc::new(Mutex::new(OutputAccumulator::new(
                 OutputAccumulatorOptions {

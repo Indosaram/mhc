@@ -13,6 +13,8 @@ mod policy;
 mod read_blocking;
 #[path = "read_images.rs"]
 mod read_images;
+#[path = "sandbox.rs"]
+mod sandbox;
 #[path = "shell_parity.rs"]
 mod shell_parity;
 #[path = "tools.rs"]
