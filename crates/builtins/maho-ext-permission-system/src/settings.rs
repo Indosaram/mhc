@@ -1,4 +1,4 @@
-use crate::{cli::parse_permission_preset_name, config::{DEFAULT_PERMISSION_PRESET, from_config, rules_for_preset}, storage::load_approved, types::{PermissionPresetName, PermissionValue, Ruleset}};
+use crate::{evaluate::evaluate, cli::parse_permission_preset_name, config::{DEFAULT_PERMISSION_PRESET, from_config, rules_for_preset}, storage::load_approved, types::{Action, PermissionPresetName, PermissionValue, Ruleset}};
 use maho_core::settings_manager::SettingsManager;
 use serde_json::{Map,Value};
 use std::path::Path;
@@ -25,13 +25,37 @@ fn scope_rules(settings:&Map<String,Value>,scope:&str,home:&str)->Result<Ruleset
     }
     Ok(rules)
 }
-pub fn load_permission_settings(manager:&SettingsManager,cli:&[crate::types::Rule],project:(&Path,&str),preset:Option<PermissionPresetName>)->Result<(Ruleset,Ruleset),SettingsError> {
+/// The session's effective permission configuration: the merged rules (default preset, global, project,
+/// CLI preset, CLI rules, in that order) and the preset that is in force (CLI, else project, else global, else default).
+#[derive(Clone,Debug)]
+pub struct ResolvedPermissionConfig { pub rules:Ruleset, pub preset:PermissionPresetName }
+/// How an app-server client should read the session's approval behavior (Codex `AskForApproval` names).
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum ApprovalSummary { Never, OnRequest, Untrusted }
+impl ApprovalSummary {
+    pub fn as_str(self)->&'static str { match self { Self::Never=>"never", Self::OnRequest=>"on-request", Self::Untrusted=>"untrusted" } }
+}
+pub fn resolve_permission_config(manager:&SettingsManager,cli:&[crate::types::Rule],home:&str,preset:Option<PermissionPresetName>)->Result<ResolvedPermissionConfig,SettingsError> {
     let mut rules=rules_for_preset(DEFAULT_PERMISSION_PRESET);
-    rules.extend(scope_rules(manager.get_global(),"global",project.1)?);
-    rules.extend(scope_rules(manager.get_project(),"project",project.1)?);
+    rules.extend(scope_rules(manager.get_global(),"global",home)?);
+    rules.extend(scope_rules(manager.get_project(),"project",home)?);
     if let Some(preset)=preset {rules.extend(rules_for_preset(preset));}
     rules.extend_from_slice(cli);
-    Ok((rules,load_approved(project.0)?))
+    let from=|settings:&Map<String,Value>|settings.get("permissionPreset").and_then(Value::as_str).and_then(parse_permission_preset_name);
+    let effective=preset.or_else(||from(manager.get_project())).or_else(||from(manager.get_global())).unwrap_or(DEFAULT_PERMISSION_PRESET);
+    Ok(ResolvedPermissionConfig{rules,preset:effective})
+}
+/// `untrusted` for the read-only and ask presets. Otherwise the rules are evaluated last-match-wins (as the runtime
+/// does, so the always-prepended guarded base is overridden by later presets) for representative permissions:
+/// any `ask` -> `on-request`, none -> `never`.
+pub fn effective_approval_summary(config:&ResolvedPermissionConfig)->ApprovalSummary {
+    if matches!(config.preset,PermissionPresetName::ReadOnly|PermissionPresetName::Ask) {return ApprovalSummary::Untrusted;}
+    let asks=["bash","edit","read","external_directory","credential_file"].iter().any(|permission|evaluate(permission,"/probe/path",&[&config.rules]).action==Action::Ask);
+    if asks {ApprovalSummary::OnRequest} else {ApprovalSummary::Never}
+}
+pub fn load_permission_settings(manager:&SettingsManager,cli:&[crate::types::Rule],project:(&Path,&str),preset:Option<PermissionPresetName>)->Result<(Ruleset,Ruleset),SettingsError> {
+    let resolved=resolve_permission_config(manager,cli,project.1,preset)?;
+    Ok((resolved.rules,load_approved(project.0)?))
 }
 
 /// The preset a session runs under when it is not the default: `--permission-preset`, else project, else global `permissionPreset`.
