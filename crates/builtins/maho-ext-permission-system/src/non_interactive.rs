@@ -10,5 +10,8 @@ pub fn handle_no_ui(request: &Request, rulesets: (&[Rule], &[Rule]), emitter: &P
             Action::Ask => {},
         }
     }
+    if request.permission=="external_directory" {
+        return Ok(Some(ReplyInput {request_id:request.id.clone(),reply:Reply::Reject,always:None,message:Some(format!("Permission required to access {} outside the working directory. Allow it with --permission external_directory=allow, set permissionPreset to \"full-access\", or add a permission rule.",request.patterns.join(", ")))}));
+    }
     Ok(Some(ReplyInput {request_id:request.id.clone(),reply:Reply::Reject,always:None,message:Some(format!("Permission required for {} ({}). Use --permission {}=allow to override.",request.permission,request.patterns.join(", "),request.permission))}))
 }

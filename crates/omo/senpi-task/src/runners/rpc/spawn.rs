@@ -230,6 +230,9 @@ pub fn build_child_args(spec: &RpcRunnerSpec) -> Vec<String> {
     if let Some(level) = as_senpi_thinking_level(reasoning) {
         args.extend(["--thinking".to_string(), level.as_str().to_string()]);
     }
+    if let Some(preset) = spec.permission_preset.as_deref().filter(|preset| !preset.is_empty()) {
+        args.extend(["--permission-preset".to_string(), preset.to_string()]);
+    }
     args
 }
 

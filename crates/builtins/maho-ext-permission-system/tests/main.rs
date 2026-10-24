@@ -13,6 +13,8 @@ mod events;
 mod external;
 #[path = "external_paths.rs"]
 mod external_paths;
+#[path = "guarded.rs"]
+mod guarded;
 #[path = "integration_source.rs"]
 mod integration_source;
 #[path = "native_persistence.rs"]
