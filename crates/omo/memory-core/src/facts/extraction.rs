@@ -290,6 +290,11 @@ pub fn apply_facts_batch(
         }
         Err(err) => return Err(FactsExtractionError::Plan(err)),
     };
+    if recovery.paths.is_empty() {
+        return Ok(ApplyFactsBatchResult::NoFacts {
+            affected_paths: Vec::new(),
+        });
+    }
     if let Some(mut publish) = options.publish_recovery {
         publish(&recovery)?;
     }
