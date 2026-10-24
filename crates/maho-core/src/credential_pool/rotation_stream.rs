@@ -608,6 +608,14 @@ impl crate::credential_pool::failover::FailoverHost for RotationHost {
         now_ms()
     }
 
+    fn provider_id(&self) -> Option<&str> {
+        Some(&self.sources.provider_id)
+    }
+
+    fn rotation_consented(&self) -> bool {
+        crate::provider_consent::rotation_consented(&self.sources.provider_id)
+    }
+
     fn emit(&mut self, event: Self::Event) {
         self.target.push(event);
     }

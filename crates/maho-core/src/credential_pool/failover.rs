@@ -127,6 +127,13 @@ pub trait FailoverHost {
             .map(|duration| duration.as_millis() as u64)
             .unwrap_or(0)
     }
+    fn provider_id(&self) -> Option<&str> {
+        None
+    }
+    fn rotation_consented(&self) -> bool {
+        self.provider_id()
+            .map_or(true, crate::provider_consent::rotation_consented)
+    }
     /// Delivers one event to the caller.
     fn emit(&mut self, event: Self::Event);
 }
@@ -171,13 +178,32 @@ pub async fn run_credential_failover<H: FailoverHost>(
             return Ok(());
         }
         let now = host.now();
+        let rotation_consented = host.rotation_consented();
+        let pinned_or_first = if slots.len() > 1 && !rotation_consented {
+            slots
+                .iter()
+                .find(|slot| slot.pinned)
+                .or_else(|| slots.first())
+                .map(|slot| slot.name.clone())
+        } else {
+            None
+        };
         let available: Vec<RunSlot> = slots
             .iter()
-            .filter(|slot| !attempted.contains(&slot.name) && is_available(slot, now))
+            .filter(|slot| {
+                !attempted.contains(&slot.name)
+                    && is_available(slot, now)
+                    && pinned_or_first.as_ref().map_or(true, |p| &slot.name == p)
+            })
             .cloned()
             .collect();
         let candidates: Vec<RunSlot> = if available.is_empty() {
-            cooling_probe(&slots, &attempted)
+            let probe = cooling_probe(&slots, &attempted);
+            if let Some(ref p) = pinned_or_first {
+                probe.into_iter().filter(|slot| &slot.name == p).collect()
+            } else {
+                probe
+            }
         } else {
             available
         };
@@ -306,6 +332,50 @@ pub async fn run_credential_failover<H: FailoverHost>(
             return Ok(());
         }
         attempted.push(slot.name.clone());
+
+        // SAFETY-DIVERGENCE(packages/coding-agent/src/core/credential-pool/failover.ts): upstream rotates across credential slots on rate limits without consent; mhc gates automatic rotation behind providerRiskConsent.<provider>:rotation.
+        let is_rate_limit = matches!(block, CredentialBlock::RateLimit { .. });
+        if slots.len() > 1 && !rotation_consented {
+            let error = CredentialFailoverError {
+                action,
+                detail: if is_rate_limit {
+                    let provider = host.provider_id().unwrap_or("unknown");
+                    let mut detail_value = failure.clone();
+                    if let Some(msg) = detail_value.get("message").and_then(Value::as_str) {
+                        let appended = crate::provider_consent::append_rotation_notice(
+                            msg,
+                            provider,
+                            slots.len(),
+                        );
+                        if let Some(obj) = detail_value.as_object_mut() {
+                            obj.insert("message".to_string(), Value::String(appended));
+                        }
+                    } else if let Some(s) = detail_value.as_str() {
+                        detail_value = Value::String(crate::provider_consent::append_rotation_notice(
+                            s,
+                            provider,
+                            slots.len(),
+                        ));
+                    } else {
+                        detail_value = Value::String(crate::provider_consent::append_rotation_notice(
+                            &detail_value.to_string(),
+                            provider,
+                            slots.len(),
+                        ));
+                    }
+                    detail_value.to_string()
+                } else {
+                    failure.to_string()
+                },
+                retry_at: None,
+            };
+            if let Some(terminal) = terminal_event {
+                host.emit(terminal);
+                return Ok(());
+            }
+            return Err(error);
+        }
+
         let error = CredentialFailoverError {
             action,
             detail: failure.to_string(),
@@ -347,6 +417,9 @@ mod tests {
         settlements: usize,
         attempt_settlement_counts: Vec<usize>,
         now: u64,
+        provider_id: Option<String>,
+        attempted_slots: Vec<String>,
+        consented: Option<bool>,
     }
 
     impl FailoverHost for FakeHost {
@@ -361,7 +434,8 @@ mod tests {
             candidates.first().cloned()
         }
 
-        async fn run_attempt(&mut self, _slot: &RunSlot) -> Result<Self::Attempt, Value> {
+        async fn run_attempt(&mut self, slot: &RunSlot) -> Result<Self::Attempt, Value> {
+            self.attempted_slots.push(slot.name.clone());
             self.attempt_settlement_counts.push(self.settlements);
             let scripted = self
                 .attempts
@@ -418,6 +492,19 @@ mod tests {
 
         fn now(&self) -> u64 {
             self.now
+        }
+
+        fn provider_id(&self) -> Option<&str> {
+            self.provider_id.as_deref()
+        }
+
+        fn rotation_consented(&self) -> bool {
+            if let Some(c) = self.consented {
+                return c;
+            }
+            self.provider_id
+                .as_deref()
+                .map_or(true, crate::provider_consent::rotation_consented)
         }
 
         fn emit(&mut self, event: Self::Event) {
@@ -553,6 +640,61 @@ mod tests {
         let error = run_credential_failover(&mut host).await.expect_err("error");
         assert_eq!(error.retry_at, Some(500));
         assert_eq!(error.detail, "No credential slots available");
+    }
+
+    #[tokio::test]
+    async fn rotation_consent_gates_generic_failover_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().to_string_lossy().into_owned();
+        let mut settings = crate::settings_manager::SettingsManager::create(&agent_dir, &agent_dir, &agent_dir, false);
+        let provider = "chatgpt-subscription";
+
+        // (1) Two accounts and no consent -> exact attempt sequence [a1] and error text with notice
+        let mut host_no_consent = FakeHost {
+            provider_id: Some(provider.to_owned()),
+            consented: Some(false),
+            slots: vec![slot("a1"), slot("a2")],
+            attempts: vec![
+                vec![failed(json!({ "status": 429, "message": "rate limit reached" }))],
+                vec![ok(vec!["delta"])],
+            ],
+            ..FakeHost::default()
+        };
+        let error = run_credential_failover(&mut host_no_consent).await.expect_err("failover gated");
+        assert_eq!(host_no_consent.attempted_slots, vec!["a1"]);
+        assert!(error.detail.contains("Automatic rotation across 2 accounts is off. Enable it with `mhc auth consent chatgpt-subscription --rotation`."));
+
+        // (2) With consent -> exact attempt sequence [a1, a2]
+        crate::provider_consent::record_rotation_consent(&mut settings, provider).expect("consent");
+        let mut host_with_consent = FakeHost {
+            provider_id: Some(provider.to_owned()),
+            consented: Some(true),
+            slots: vec![slot("a1"), slot("a2")],
+            attempts: vec![
+                vec![failed(json!({ "status": 429, "message": "rate limit reached" }))],
+                vec![ok(vec!["delta"])],
+            ],
+            ..FakeHost::default()
+        };
+        run_credential_failover(&mut host_with_consent).await.expect("failover succeeded");
+        assert_eq!(host_with_consent.attempted_slots, vec!["a1", "a2"]);
+        assert_eq!(host_with_consent.successes, vec!["a2"]);
+
+        // (3) After --revoke -> exact attempt sequence [a1] and error text with notice
+        crate::provider_consent::revoke_rotation_consent(&mut settings, provider).expect("revoke");
+        let mut host_after_revoke = FakeHost {
+            provider_id: Some(provider.to_owned()),
+            consented: Some(false),
+            slots: vec![slot("a1"), slot("a2")],
+            attempts: vec![
+                vec![failed(json!({ "status": 429, "message": "rate limit reached" }))],
+                vec![ok(vec!["delta"])],
+            ],
+            ..FakeHost::default()
+        };
+        let error_revoked = run_credential_failover(&mut host_after_revoke).await.expect_err("failover gated after revoke");
+        assert_eq!(host_after_revoke.attempted_slots, vec!["a1"]);
+        assert!(error_revoked.detail.contains("Automatic rotation across 2 accounts is off. Enable it with `mhc auth consent chatgpt-subscription --rotation`."));
     }
 
     #[tokio::test]
