@@ -92,6 +92,6 @@ mhc 仍在积极开发中，与上游的一致性尚未全部完成。上游版�
 各部分沿用其所移植项目的许可证：
 
 - `crates/maho-*`、`crates/builtins`、`crates/extensions`、`crates/vendor` 移植自 [senpi](https://github.com/code-yeongyu/senpi)，采用 **MIT**（[LICENSES/MIT.txt](LICENSES/MIT.txt)）。
-- `crates/omo/**` 移植自 [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent)，采用 **Sustainable Use License 1.0**（[LICENSES/SUL-1.0.md](LICENSES/SUL-1.0.md)）：允许免费的非商业使用、修改和再分发；禁止商业使用和付费分发。
+- `crates/omo/**`（`crates/omo/senpi-desktop-*` 除外，后者为 MIT，移植自 senpi）移植自 [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent)，采用 **Sustainable Use License 1.0**（[LICENSES/SUL-1.0.md](LICENSES/SUL-1.0.md)）：允许用于自身内部业务目的或非商业/个人用途的使用、复制、修改及制作衍生作品；仅限免费用于非商业目的的分发；必须保留许可声明与版权声明。
 
 本软件是上述两个项目的修改衍生作品（其 TypeScript 源码的 Rust 重新实现），此声明为 Sustainable Use License 所要求。
