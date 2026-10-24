@@ -433,23 +433,41 @@ pub fn live_parent_tools(
         + Send
         + Sync,
 > {
+    // Every in-process child keeps its tool list for as long as it stays resident (it can be
+    // reopened), so a per-child deep copy of every parent tool description grows memory with each
+    // completed child. Children share one `Arc` per unchanged parent tool instead.
+    type ToolCache = std::collections::HashMap<
+        String,
+        (String, senpi_task::runners::in_process::shared_tool_filter::ChildToolRef),
+    >;
+    let cache: Arc<std::sync::Mutex<ToolCache>> = Arc::default();
     Arc::new(move || match parent() {
-        Some(session) => session
-            .get_all_tools()
-            .into_iter()
-            .filter_map(|tool| {
-                session.get_registered_tool(&tool.name)?;
-                Some(
-                    Arc::new(NativeParentTool {
-                        name: tool.name,
-                        description: tool.description,
+        Some(session) => {
+            let mut cache = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let tools: Vec<_> = session
+                .get_all_tools()
+                .into_iter()
+                .filter_map(|tool| {
+                    session.get_registered_tool(&tool.name)?;
+                    if let Some((description, shared)) = cache.get(&tool.name)
+                        && *description == tool.description
+                    {
+                        return Some(Arc::clone(shared));
+                    }
+                    let shared = Arc::new(NativeParentTool {
+                        name: tool.name.clone(),
+                        description: tool.description.clone(),
                         parent: parent.clone(),
                         executor: executor.clone(),
                     })
-                        as senpi_task::runners::in_process::shared_tool_filter::ChildToolRef,
-                )
-            })
-            .collect(),
+                        as senpi_task::runners::in_process::shared_tool_filter::ChildToolRef;
+                    cache.insert(tool.name, (tool.description, Arc::clone(&shared)));
+                    Some(shared)
+                })
+                .collect();
+            cache.retain(|name, _| tools.iter().any(|tool| tool.name() == name));
+            tools
+        }
         None => Vec::new(),
     })
 }

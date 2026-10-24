@@ -116,6 +116,7 @@ pub trait ChildSession: Send + Sync {
     fn abort(&self) -> Result<(), HostError>;
     fn subscribe(&self, listener: ChildSessionListener) -> Unsubscribe;
     fn get_last_assistant_text(&self) -> Option<String>;
+    fn park_idle_memory(&self) {}
     fn dispose(&self);
 }
 
@@ -282,13 +283,25 @@ impl InProcessChildHandle {
         session: Arc<dyn ChildSession>,
         completion: ChildCompletionPolicy,
     ) -> Arc<Self> {
-        Self::tracked(task_id, session, completion)
+        let handle = Self::tracked(task_id, session, completion);
+        handle.session.park_idle_memory();
+        handle
     }
 
     fn begin_turn(&self, text: &str) {
         // The host snapshots its transcript to answer this, so read it before taking the lock the
         // session event observer also needs; no turn is active here, so no event can race it.
-        let baseline = self.session.get_last_assistant_text();
+        let baseline = self
+            .session
+            .get_last_assistant_text()
+            .or_else(|| match &self.tracked.lock().outcome {
+                Some(RunnerOutcome::Completed { final_response })
+                    if !final_response.is_empty() =>
+                {
+                    Some(final_response.clone())
+                }
+                _ => None,
+            });
         let turn = {
             let mut state = self.tracked.lock();
             state.aborted = false;
@@ -306,18 +319,31 @@ impl InProcessChildHandle {
         let text = text.to_string();
         thread::spawn(move || {
             let prompted = session.prompt(&text);
+            let outcome = {
+                let mut state = tracked.lock();
+                if state.turn != turn {
+                    return;
+                }
+                let outcome = match prompted {
+                    _ if state.aborted => RunnerOutcome::Cancelled,
+                    Err(error) => {
+                        RunnerOutcome::error(RunnerFailureKind::ChildPromptFailed, error.message)
+                    }
+                    Ok(()) => turn_outcome(session.as_ref(), &state.observation, completion),
+                };
+                state.observation = TurnObservation::default();
+                outcome
+            };
+            session.park_idle_memory();
             let mut state = tracked.lock();
             if state.turn != turn {
                 return;
             }
-            let outcome = match prompted {
-                _ if state.aborted => RunnerOutcome::Cancelled,
-                Err(error) => {
-                    RunnerOutcome::error(RunnerFailureKind::ChildPromptFailed, error.message)
-                }
-                Ok(()) => turn_outcome(session.as_ref(), &state.observation, completion),
-            };
-            state.outcome = Some(outcome);
+            state.outcome = Some(if state.aborted {
+                RunnerOutcome::Cancelled
+            } else {
+                outcome
+            });
             tracked.settled.notify_all();
         });
     }
@@ -416,7 +442,16 @@ impl ManagedChildHandle for InProcessChildHandle {
     }
 
     fn last_assistant_text(&self) -> Option<String> {
-        self.session.get_last_assistant_text()
+        self.session
+            .get_last_assistant_text()
+            .or_else(|| match &self.tracked.lock().outcome {
+                Some(RunnerOutcome::Completed { final_response })
+                    if !final_response.is_empty() =>
+                {
+                    Some(final_response.clone())
+                }
+                _ => None,
+            })
     }
 
     fn dispose(&self) -> Result<(), HostError> {

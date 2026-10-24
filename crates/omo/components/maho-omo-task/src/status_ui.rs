@@ -121,7 +121,13 @@ impl TaskStatusUi {
             .unwrap_or_else(PoisonError::into_inner)
             .session_id()
             .map(str::to_owned);
-        let records = session.map_or_else(Vec::new, |session| self.manager.list(&session));
+        let mut records = session.map_or_else(Vec::new, |session| self.manager.list(&session));
+        for record in &mut records {
+            record.final_response = None;
+            record.error_message = None;
+            record.description = None;
+            record.spawn_spec = None;
+        }
         let active: Vec<_> = records
             .iter()
             .filter(|record| {
@@ -221,6 +227,10 @@ impl TaskStatusUi {
             self.schedule_live_refresh();
         } else {
             self.clear_live_refresh();
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.subscriptions.is_empty() {
+                state.records = Vec::new();
+            }
         }
     }
     pub fn schedule_sync(self: &Arc<Self>) {

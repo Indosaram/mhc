@@ -332,21 +332,131 @@ pub fn mount_team_runtime(
     Ok(())
 }
 
+type ReopenChildSession = Arc<
+    dyn Fn() -> Result<Arc<maho_core::agent_session::AgentSession>, HostError> + Send + Sync,
+>;
+
+struct NativeChildState {
+    session: Option<Arc<maho_core::agent_session::AgentSession>>,
+    subscription: Option<maho_core::agent_session::AgentSessionSubscription>,
+    last_assistant_text: Option<String>,
+    workpool_identity:
+        Option<senpi_task::runners::in_process::child_options::WorkpoolChildIdentity>,
+    disposed: bool,
+}
+
 pub struct NativeChild {
-    pub session: Arc<maho_core::agent_session::AgentSession>,
+    session_id: String,
+    cwd: String,
+    state: std::sync::Mutex<NativeChildState>,
+    listeners: Arc<std::sync::Mutex<std::collections::BTreeMap<u64, ChildSessionListener>>>,
+    next_listener_id: std::sync::atomic::AtomicU64,
+    reopen: Option<ReopenChildSession>,
     pub executor: tokio::runtime::Handle,
     workpool_events: Option<super::task_runners::WorkpoolEvents>,
 }
+
+fn attach_child_forwarding(
+    session: &maho_core::agent_session::AgentSession,
+    listeners: &Arc<std::sync::Mutex<std::collections::BTreeMap<u64, ChildSessionListener>>>,
+) -> maho_core::agent_session::AgentSessionSubscription {
+    let listeners = Arc::clone(listeners);
+    session.subscribe(Arc::new(move |event| {
+        let record = maho_rpc::session_binding::session_event_record(event)
+            .unwrap_or(serde_json::Value::Null);
+        let active: Vec<ChildSessionListener> = listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        for listener in active {
+            listener(&record);
+        }
+    }))
+}
+
 impl NativeChild {
     pub fn new(
         session: Arc<maho_core::agent_session::AgentSession>,
         executor: tokio::runtime::Handle,
     ) -> Self {
+        Self::with_reopen(session, executor, None, None)
+    }
+
+    fn with_reopen(
+        session: Arc<maho_core::agent_session::AgentSession>,
+        executor: tokio::runtime::Handle,
+        workpool_events: Option<super::task_runners::WorkpoolEvents>,
+        reopen: Option<ReopenChildSession>,
+    ) -> Self {
+        let listeners = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+        let subscription = attach_child_forwarding(&session, &listeners);
+        let session_id = session.session_id();
+        let cwd = session.cwd();
+        let last_assistant_text = session.get_last_assistant_text();
         Self {
-            session,
+            session_id,
+            cwd,
+            state: std::sync::Mutex::new(NativeChildState {
+                session: Some(session),
+                subscription: Some(subscription),
+                last_assistant_text,
+                workpool_identity: None,
+                disposed: false,
+            }),
+            listeners,
+            next_listener_id: std::sync::atomic::AtomicU64::new(0),
+            reopen,
             executor,
-            workpool_events: None,
+            workpool_events,
         }
+    }
+
+    fn ensure_session(&self) -> Result<Arc<maho_core::agent_session::AgentSession>, HostError> {
+        {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.disposed {
+                return Err(HostError {
+                    message: "child session is disposed".to_owned(),
+                });
+            }
+            if let Some(session) = &state.session {
+                return Ok(Arc::clone(session));
+            }
+        }
+        let reopen = self.reopen.as_ref().ok_or_else(|| HostError {
+            message: "child session cannot be reopened".to_owned(),
+        })?;
+        let session = reopen()?;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.disposed {
+            return Err(HostError {
+                message: "child session is disposed".to_owned(),
+            });
+        }
+        if let Some(existing) = &state.session {
+            return Ok(Arc::clone(existing));
+        }
+        if let Some(identity) = &state.workpool_identity {
+            session
+                .replace_custom_tool(super::task_runners::workpool_yield_tool_with_events(
+                    identity,
+                    &self.cwd,
+                    self.workpool_events.clone(),
+                ))
+                .map_err(|message| HostError { message })?;
+        }
+        let subscription = attach_child_forwarding(&session, &self.listeners);
+        state.subscription = Some(subscription);
+        state.session = Some(Arc::clone(&session));
+        Ok(session)
     }
 }
 
@@ -373,31 +483,51 @@ impl ChildSession for NativeChild {
             state_dir: identity.state_dir,
             run_epoch: identity.run_epoch,
         };
+        let session = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.workpool_identity = Some(identity.clone());
+            state.session.clone()
+        };
+        let Some(session) = session else {
+            return Some(Ok(()));
+        };
         Some(
-            self.session
+            session
                 .replace_custom_tool(super::task_runners::workpool_yield_tool_with_events(
                     &identity,
-                    &self.session.cwd(),
+                    &self.cwd,
                     self.workpool_events.clone(),
                 ))
                 .map_err(|message| HostError { message }),
         )
     }
     fn session_id(&self) -> String {
-        self.session.session_id()
+        self.session_id.clone()
     }
     fn prompt(&self, text: &str) -> Result<(), HostError> {
-        self.executor
+        let session = self.ensure_session()?;
+        let result = self
+            .executor
             .block_on(async {
-                self.session.prompt(text, Default::default()).await?;
-                self.session.wait_for_idle().await;
+                session.prompt(text, Default::default()).await?;
+                session.wait_for_idle().await;
                 Ok::<(), String>(())
             })
-            .map_err(|message| HostError { message })
+            .map_err(|message| HostError { message });
+        if let Some(last) = session.get_last_assistant_text() {
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .last_assistant_text = Some(last);
+        }
+        result
     }
     fn steer(&self, text: &str) -> Result<(), HostError> {
+        let session = self.ensure_session()?;
         if tokio::runtime::Handle::try_current().is_ok() {
-            let session = self.session.clone();
             let text = text.to_owned();
             std::thread::spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
@@ -416,13 +546,13 @@ impl ChildSession for NativeChild {
             })?
         } else {
             self.executor
-                .block_on(self.session.steer(text, None, Default::default()))
+                .block_on(session.steer(text, None, Default::default()))
                 .map_err(|message| HostError { message })
         }
     }
     fn follow_up(&self, text: &str) -> Result<(), HostError> {
+        let session = self.ensure_session()?;
         if tokio::runtime::Handle::try_current().is_ok() {
-            let session = self.session.clone();
             let text = text.to_owned();
             std::thread::spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
@@ -441,38 +571,116 @@ impl ChildSession for NativeChild {
             })?
         } else {
             self.executor
-                .block_on(self.session.follow_up(text, None, Default::default()))
+                .block_on(session.follow_up(text, None, Default::default()))
                 .map_err(|message| HostError { message })
         }
     }
     fn abort(&self) -> Result<(), HostError> {
-        let session = self.session.clone();
-        self.executor.spawn(async move {
-            session.abort().await;
-        });
+        let session = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .session
+            .clone();
+        if let Some(session) = session {
+            self.executor.spawn(async move {
+                session.abort().await;
+            });
+        }
         Ok(())
     }
     fn get_last_assistant_text(&self) -> Option<String> {
-        self.session.get_last_assistant_text()
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(session) = &state.session {
+            let session = Arc::clone(session);
+            let cached = state.last_assistant_text.clone();
+            drop(state);
+            return session.get_last_assistant_text().or(cached);
+        }
+        state.last_assistant_text.clone()
+    }
+    fn park_idle_memory(&self) {
+        if self.reopen.is_none() {
+            let session = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .session
+                .clone();
+            if let Some(session) = session {
+                session.park_idle_child_memory();
+            }
+            return;
+        }
+        let (session, subscription) = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.disposed {
+                return;
+            }
+            state.last_assistant_text = None;
+            (state.session.take(), state.subscription.take())
+        };
+        drop(subscription);
+        let Some(session) = session else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            self.executor.spawn(async move {
+                session.dispose().await;
+                drop(session);
+                maho_tool_child::allocator::reclaim_unused_heap();
+            });
+        } else {
+            self.executor.block_on(async move {
+                session.dispose().await;
+            });
+            maho_tool_child::allocator::reclaim_unused_heap();
+        }
     }
     fn subscribe(
         &self,
         listener: ChildSessionListener,
     ) -> senpi_task::manager::child_handle::Unsubscribe {
-        let subscription = self.session.subscribe(Arc::new(move |event| {
-            listener(
-                &maho_rpc::session_binding::session_event_record(event)
-                    .unwrap_or(serde_json::Value::Null),
-            );
-        }));
-        let session = self.session.clone();
+        let id = self
+            .next_listener_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        self.listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, listener);
+        let listeners = Arc::clone(&self.listeners);
         Box::new(move || {
-            drop(subscription);
-            drop(session);
+            listeners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&id);
         })
     }
     fn dispose(&self) {
-        let session = self.session.clone();
+        let (session, subscription) = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.disposed = true;
+            (state.session.take(), state.subscription.take())
+        };
+        drop(subscription);
+        self.listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        let Some(session) = session else {
+            maho_tool_child::allocator::reclaim_unused_heap();
+            return;
+        };
         if tokio::runtime::Handle::try_current().is_ok() {
             self.executor.spawn(async move {
                 session
@@ -498,94 +706,142 @@ pub fn factory(
     factory_with_workpool_events(executor, parent, None)
 }
 
+fn create_native_child_session(
+    options: &senpi_task::runners::in_process::child_options::ChildSessionOptions,
+    executor: &tokio::runtime::Handle,
+    parent: &Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>,
+    workpool_events: &Option<super::task_runners::WorkpoolEvents>,
+) -> Result<Arc<maho_core::agent_session::AgentSession>, HostError> {
+    let model = options
+        .model
+        .as_ref()
+        .and_then(|model| model.downcast_ref::<maho_ai::model::Model>())
+        .cloned();
+    let registry = options
+        .model_registry
+        .as_ref()
+        .and_then(|registry| {
+            registry.downcast_ref::<super::task_runners::NativeChildModelRegistry>()
+        })
+        .map(|registry| registry.0.clone());
+    let models = options
+        .model_runtime
+        .as_ref()
+        .and_then(|runtime| runtime.downcast_ref::<maho_core::model_runtime::ModelRuntime>())
+        .cloned();
+    let mut child_builtins = None;
+    let custom = options
+        .custom_tools
+        .iter()
+        .map(|tool| {
+            let name = tool.name().to_owned();
+            let builtins = child_builtins.get_or_insert_with(|| {
+                let shell_options = maho_tools::bash::BashToolOptions {
+                    shell_env: Some(Arc::new(maho_core::utils::shell::get_shell_env)),
+                    ..Default::default()
+                };
+                maho_tools::index::create_all_tool_definitions(
+                    std::path::Path::new(&options.cwd),
+                    maho_tools::index::ToolsOptions {
+                        bash: shell_options.clone(),
+                        powershell: shell_options,
+                        ..Default::default()
+                    },
+                )
+            });
+            if let Some(definition) = builtins.get(&name) {
+                return Ok(definition.clone());
+            }
+            let parent_definition = parent().and_then(|parent| parent.get_tool_definition(&name));
+            let tool = tool.clone();
+            let description = tool.description().to_owned();
+            let Some(parameters) = tool
+                .parameters()
+                .or_else(|| parent_definition.map(|tool| tool.parameters))
+            else {
+                return Err(HostError {
+                    message: format!("Shared parent tool {name} has no native schema"),
+                });
+            };
+            Ok(maho_ext_api::ToolDefinition::new(
+                &name,
+                &description,
+                parameters,
+                Arc::new(move |call| {
+                    let tool = tool.clone();
+                    let id = call.id.to_owned();
+                    let params = call.params;
+                    let signal = call.signal;
+                    Box::pin(async move {
+                        let controller = maho_ai::utils::abort::AbortController::new();
+                        if signal.is_aborted() {
+                            controller.abort(None);
+                        }
+                        let bridge_controller = controller.clone();
+                        let cancellation = async move {
+                            signal.cancelled().await;
+                            bridge_controller.abort(None);
+                            std::future::pending::<()>().await;
+                        };
+                        let result = tokio::select! {
+                            biased;
+                            _ = cancellation => unreachable!("cancellation bridge remains pending"),
+                            result = tool.execute_async(&id, &params, Some(controller.signal())) => result,
+                        }
+                        .map_err(|error| maho_tools::ToolError::Message(error.message))?;
+                        serde_json::from_value(result)
+                            .map_err(|error| maho_tools::ToolError::Message(error.to_string()))
+                    })
+                }),
+            ))
+        })
+        .collect::<Result<Vec<_>, HostError>>()?;
+    let mut sdk_options = super::task_runners::native_child_sdk_options(options, custom)?;
+    if let Some(identity) = &options.workpool_identity {
+        sdk_options
+            .custom_tools
+            .retain(|tool| tool.name != "workpool");
+        sdk_options
+            .custom_tools
+            .push(super::task_runners::workpool_yield_tool_with_events(
+                identity,
+                &options.cwd,
+                workpool_events.clone(),
+            ));
+    }
+    sdk_options.model = model;
+    sdk_options.model_runtime = models;
+    sdk_options.model_registry = registry;
+    let create_session = maho_core::sdk::create_agent_session(sdk_options);
+    let session = block_on_sync(executor.clone(), create_session)?;
+    Ok(Arc::new(session.session))
+}
+
 pub fn factory_with_workpool_events(
     executor: tokio::runtime::Handle,
     parent: Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>,
     workpool_events: Option<super::task_runners::WorkpoolEvents>,
 ) -> senpi_task::runners::in_process::runner::CreateChildSession {
     Arc::new(move |options| {
-        let model = options
-            .model
-            .as_ref()
-            .and_then(|model| model.downcast_ref::<maho_ai::model::Model>())
-            .cloned();
-        let registry = options
-            .model_registry
-            .as_ref()
-            .and_then(|registry| {
-                registry.downcast_ref::<super::task_runners::NativeChildModelRegistry>()
-            })
-            .map(|registry| registry.0.clone());
-        let models = options
-            .model_runtime
-            .as_ref()
-            .and_then(|runtime| runtime.downcast_ref::<maho_core::model_runtime::ModelRuntime>())
-            .cloned();
-        let manager = super::task_runners::native_child_session_manager(&options)?;
-        let shell_options = maho_tools::bash::BashToolOptions {
-            shell_env: Some(Arc::new(maho_core::utils::shell::get_shell_env)),
-            ..Default::default()
-        };
-        let child_builtins = maho_tools::index::create_all_tool_definitions(
-            std::path::Path::new(&options.cwd),
-            maho_tools::index::ToolsOptions {
-                bash: shell_options.clone(),
-                powershell: shell_options,
-                ..Default::default()
-            },
-        );
-        let custom = options.custom_tools.iter().map(|tool| {
-            let name = tool.name().to_owned();
-            if let Some(definition) = child_builtins.get(&name) { return Ok(definition.clone()); }
-            let parent_definition = parent().and_then(|parent| parent.get_tool_definition(&name));
-            let tool = tool.clone();
-            let description = tool.description().to_owned();
-            let Some(parameters) = tool.parameters().or_else(|| parent_definition.map(|tool| tool.parameters)) else {
-                return Err(HostError { message: format!("Shared parent tool {name} has no native schema") });
-            };
-            Ok(maho_ext_api::ToolDefinition::new(&name, &description, parameters,
-                Arc::new(move |call| { let tool = tool.clone(); let id = call.id.to_owned(); let params = call.params; let signal = call.signal; Box::pin(async move {
-                    let controller = maho_ai::utils::abort::AbortController::new();
-                    if signal.is_aborted() { controller.abort(None); }
-                    let bridge_controller = controller.clone();
-                    let cancellation = async move {
-                        signal.cancelled().await;
-                        bridge_controller.abort(None);
-                        std::future::pending::<()>().await;
-                    };
-                    let result = tokio::select! {
-                        biased;
-                        _ = cancellation => unreachable!("cancellation bridge remains pending"),
-                        result = tool.execute_async(&id, &params, Some(controller.signal())) => result,
-                    }
-                        .map_err(|error| maho_tools::ToolError::Message(error.message))?;
-                    serde_json::from_value(result).map_err(|error| maho_tools::ToolError::Message(error.to_string()))
-                }) })))
-        }).collect::<Result<Vec<_>, HostError>>()?;
-        let mut sdk_options = super::task_runners::native_child_sdk_options(&options, custom)?;
-        if let Some(identity) = &options.workpool_identity {
-            sdk_options
-                .custom_tools
-                .retain(|tool| tool.name != "workpool");
-            sdk_options
-                .custom_tools
-                .push(super::task_runners::workpool_yield_tool_with_events(
-                    identity,
-                    &options.cwd,
-                    workpool_events.clone(),
-                ));
-        }
-        sdk_options.model = model;
-        sdk_options.model_runtime = models;
-        sdk_options.model_registry = registry;
-        sdk_options.session_manager = Some(manager);
-        let create_session = maho_core::sdk::create_agent_session(sdk_options);
-        let session = block_on_sync(executor.clone(), create_session)?;
-        Ok(Arc::new(NativeChild {
-            session: Arc::new(session.session),
-            executor: executor.clone(),
-            workpool_events: workpool_events.clone(),
-        }) as Arc<dyn ChildSession>)
+        let session = create_native_child_session(&options, &executor, &parent, &workpool_events)?;
+        let options = Arc::new(options);
+        let reopen_executor = executor.clone();
+        let reopen_parent = parent.clone();
+        let reopen_workpool = workpool_events.clone();
+        let reopen: ReopenChildSession = Arc::new(move || {
+            create_native_child_session(
+                &options,
+                &reopen_executor,
+                &reopen_parent,
+                &reopen_workpool,
+            )
+        });
+        Ok(Arc::new(NativeChild::with_reopen(
+            session,
+            executor.clone(),
+            workpool_events.clone(),
+            Some(reopen),
+        )) as Arc<dyn ChildSession>)
     })
 }
 

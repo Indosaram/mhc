@@ -3829,6 +3829,9 @@ impl AgentSession {
                             }
                         }
                     }
+                    // The run's last reader has applied them; holding every rewritten pair until
+                    // the next run pins each full original message while the session idles.
+                    state.message_replacements = Vec::new();
                 }
                 AgentEvent::MessageStart { message } => {
                     if message.as_assistant().is_some() {
@@ -5028,8 +5031,8 @@ impl AgentSession {
         if let Some(admitted) = &options.prompt_admitted {
             admitted(PromptDisposition::Started);
         }
-        self.runtime_messages();
         self.agent_run_active.store(true, Ordering::SeqCst);
+        self.hydrate_runtime_messages_for_run();
         // senpi `_promptAgent`: abort on a provider-side model substitution only when the setting
         // allows it and a configured fallback chain can take over.
         self.agent
@@ -8754,6 +8757,8 @@ impl AgentSession {
             self.apply_thinking_level(level, false, selection);
         }
         self.agent.set_messages(messages);
+        self.with_session_manager(|manager| manager.drop_materialized_cache());
+        self.release_idle_runtime_messages();
         self.state().message_revision += 1;
         Ok(())
     }
@@ -11313,6 +11318,18 @@ impl AgentSession {
 
     pub fn state_snapshot(&self) -> AgentState {
         // PERF-DIVERGENCE(senpi agent-session.ts): upstream reads the live array; the port used to deep-clone the whole transcript via runtime_messages() and discard it, so we only re-hydrate resident tokens when pending. The returned state is identical.
+        if self.agent_run_active.load(Ordering::SeqCst) {
+            self.hydrate_runtime_messages_for_run();
+            return self.agent.state();
+        }
+        let mut snapshot = self.agent.state();
+        if self.runtime_messages_tokenized.load(Ordering::SeqCst) {
+            snapshot.set_messages(self.materialize_resident_messages(snapshot.messages().to_vec()));
+        }
+        snapshot
+    }
+
+    fn hydrate_runtime_messages_for_run(&self) {
         if self
             .runtime_messages_tokenized
             .swap(false, Ordering::SeqCst)
@@ -11321,13 +11338,18 @@ impl AgentSession {
                 self.materialize_resident_messages(self.agent.state().messages().to_vec());
             self.agent.set_messages(messages);
         }
-        self.agent.state()
     }
 
     /// senpi `_runtimeMessages()`: the agent transcript with resident tokens hydrated. The idle
     /// release tokenizes the runtime messages in place; every reader that can run between two
     /// turns goes through here so a sentinel never reaches a consumer.
     fn runtime_messages(&self) -> Vec<AgentMessage> {
+        if !self.agent_run_active.load(Ordering::SeqCst) {
+            if self.runtime_messages_tokenized.load(Ordering::SeqCst) {
+                return self.materialize_resident_messages(self.agent.state().messages().to_vec());
+            }
+            return self.agent.state().messages().to_vec();
+        }
         if self
             .runtime_messages_tokenized
             .swap(false, Ordering::SeqCst)
@@ -11341,6 +11363,19 @@ impl AgentSession {
     }
 
     fn materialize_resident_messages(&self, messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
+        if messages.is_empty() {
+            let values = self.with_session_manager(|manager| {
+                let context = manager.current_context();
+                manager.drop_materialized_cache();
+                context.messages
+            });
+            if !values.is_empty() {
+                return values
+                    .into_iter()
+                    .filter_map(|value| session_message_from_value(value).ok())
+                    .collect();
+            }
+        }
         let store = self.with_session_manager(|manager| manager.resident_store().clone());
         messages
             .into_iter()
@@ -11360,8 +11395,12 @@ impl AgentSession {
     /// re-materialization. senpi also drops the session manager's memoized materialized views here;
     /// the native `SessionManager` keeps none (every view re-materializes from the store).
     fn release_idle_runtime_messages(&self) {
+        self.state().abort_provenance = Default::default();
+        let _ = self.with_session_manager_mut(|manager| manager.park_idle_memory());
         let store = self.with_session_manager(|manager| manager.resident_store().clone());
+        store.spill_resident();
         if store.stats().evicted_count == 0 {
+            maho_tool_child::allocator::reclaim_unused_heap();
             return;
         }
         let messages = self
@@ -11373,13 +11412,27 @@ impl AgentSession {
                 let Ok(mut value) = session_message_to_value(message) else {
                     return message.clone();
                 };
-                store.externalize_in_place(&mut value);
+                store.externalize_in_place_with_min(&mut value, 1024);
                 session_message_from_value(value).unwrap_or_else(|_| message.clone())
             })
             .collect();
+        store.spill_resident();
         self.agent.set_messages(messages);
         self.runtime_messages_tokenized
             .store(true, Ordering::SeqCst);
+        maho_tool_child::allocator::reclaim_unused_heap();
+    }
+
+    pub fn park_idle_child_memory(&self) {
+        let parked = self.with_session_manager_mut(|manager| manager.park_idle_memory());
+        if parked {
+            self.agent.set_messages(Vec::new());
+            self.runtime_messages_tokenized
+                .store(true, Ordering::SeqCst);
+        } else {
+            self.release_idle_runtime_messages();
+        }
+        maho_tool_child::allocator::reclaim_unused_heap();
     }
 
     pub fn model(&self) -> Model {
@@ -13751,8 +13804,8 @@ impl AgentSession {
                 self.state().message_revision += 1;
             }
         }
-        self.runtime_messages();
         self.agent_run_active.store(true, Ordering::SeqCst);
+        self.hydrate_runtime_messages_for_run();
         self.agent
             .set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
         self.agent
@@ -13998,6 +14051,28 @@ impl AgentSession {
                                 });
                             }
                         };
+                    if previous.is_none() {
+                        let messages = if compacted_before_callback {
+                            session.messages()
+                        } else {
+                            turn.context.messages
+                        };
+                        let state = session.agent.state();
+                        return Some(maho_agent::types::AgentLoopTurnUpdate {
+                            context: Some(maho_agent::types::AgentContext {
+                                declared_tools: None,
+                                system_prompt: state.system_prompt.clone(),
+                                messages,
+                                tools: Some(state.tools().to_vec()),
+                            }),
+                            messages: None,
+                            model: Some(state.model.clone()),
+                            thinking_level: Some(state.thinking_level),
+                            thinking_selection: Some(state.thinking_selection.clone()),
+                            abort_server_side_fallback: None,
+                            failure: None,
+                        });
+                    }
                     let messages = if compacted_before_callback {
                         session.messages()
                     } else {
@@ -15278,8 +15353,8 @@ impl AgentSession {
         if crate::input_origin::custom_turn_origin(&message.custom_type) == InputOrigin::Engine {
             self.record_engine_turn_start(&message.custom_type);
         }
-        self.runtime_messages();
         self.agent_run_active.store(true, Ordering::SeqCst);
+        self.hydrate_runtime_messages_for_run();
         self.agent
             .set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
         // Boxed: the agent run and its retry/compaction recovery futures are large enough that
@@ -15745,7 +15820,25 @@ impl AgentSession {
         // PERF-DIVERGENCE(senpi agent-session.ts): listener list is a copy-on-write Arc (see emit); clearing swaps in an empty one.
         *lock(&self.event_listeners) = Arc::new(Vec::new());
         let _ = maho_ai::session_resources::cleanup_session_resources(Some(&self.session_id()));
+        self.agent.set_messages(Vec::new());
+        self.agent.set_tools(Vec::new());
+        self.agent.set_declared_tools(None);
+        self.agent.set_system_prompt(String::new());
+        {
+            let mut state = self.state();
+            state.tool_registry.clear();
+            state.base_tool_definitions.clear();
+            state.tool_definitions.clear();
+            state.base_tools_override = None;
+            state.custom_tools.clear();
+            state.tool_prompt_snippets.clear();
+            state.tool_prompt_guidelines.clear();
+            state.base_system_prompt = String::new();
+            state.resolved_system_prompt = None;
+            state.abort_provenance = Default::default();
+        }
         self.with_session_manager_mut(|manager| manager.dispose());
+        maho_tool_child::allocator::reclaim_unused_heap();
     }
 
     /// Reserve a global order for input temporarily owned outside the native queues.
@@ -16264,8 +16357,29 @@ impl AgentSession {
 
     /// Text content of the last assistant message, for `/copy`.
     pub fn get_last_assistant_text(&self) -> Option<String> {
-        let messages = self.messages();
-        let last = messages.iter().rev().find_map(|message| {
+        let state = self.agent.state();
+        if state.messages().is_empty() && self.runtime_messages_tokenized.load(Ordering::SeqCst) {
+            drop(state);
+            let messages = self.messages();
+            let last = messages.iter().rev().find_map(|message| {
+                let assistant = message.as_assistant()?;
+                if assistant.stop_reason == maho_ai::types::StopReason::Aborted
+                    && assistant.content.is_empty()
+                {
+                    return None;
+                }
+                Some(assistant)
+            })?;
+            let mut text = String::new();
+            for content in &last.content {
+                if let maho_ai::types::ContentBlock::Text(block) = content {
+                    text.push_str(&block.text);
+                }
+            }
+            let trimmed = text.trim();
+            return (!trimmed.is_empty()).then(|| trimmed.to_owned());
+        }
+        let last = state.messages().iter().rev().find_map(|message| {
             let assistant = message.as_assistant()?;
             if assistant.stop_reason == maho_ai::types::StopReason::Aborted
                 && assistant.content.is_empty()
@@ -16274,10 +16388,21 @@ impl AgentSession {
             }
             Some(assistant)
         })?;
+        let mut store = None;
         let mut text = String::new();
         for content in &last.content {
             if let maho_ai::types::ContentBlock::Text(block) = content {
-                text.push_str(&block.text);
+                if block
+                    .text
+                    .starts_with(crate::session_resident_store::RESIDENT_STRING_PREFIX)
+                {
+                    let store = store.get_or_insert_with(|| {
+                        self.with_session_manager(|manager| manager.resident_store().clone())
+                    });
+                    text.push_str(&store.materialize_string(&block.text, None));
+                } else {
+                    text.push_str(&block.text);
+                }
             }
         }
         let trimmed = text.trim();
@@ -19295,6 +19420,19 @@ mod tests {
         );
 
         assert_eq!(user_message_text(&session.messages()[0]), large);
+        assert!(
+            raw_first_user_text(&session)
+                .starts_with(crate::session_resident_store::RESIDENT_STRING_PREFIX),
+            "an idle read must hydrate a view without re-inflating the parked runtime transcript"
+        );
+        let _ = session.get_context_usage();
+        assert!(
+            raw_first_user_text(&session)
+                .starts_with(crate::session_resident_store::RESIDENT_STRING_PREFIX)
+        );
+
+        session.agent_run_active.store(true, Ordering::SeqCst);
+        session.hydrate_runtime_messages_for_run();
         assert_eq!(raw_first_user_text(&session), large);
     }
 
@@ -19307,6 +19445,49 @@ mod tests {
             .set_messages(vec![make_user_message(&large, None)]);
         session.release_idle_runtime_messages();
         assert_eq!(raw_first_user_text(&session), large);
+    }
+
+    #[test]
+    fn park_idle_child_memory_spills_resident_store_and_rehydrates_on_read() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().to_str().expect("utf8 dir").to_owned();
+        let mut manager = SessionManager::create("/workspace", Some(&dir), None);
+        let large_user = "u".repeat(48 * 1024);
+        let large_reply = "a".repeat(24 * 1024);
+        manager.append_message(serde_json::json!({
+            "role": "user",
+            "content": [{ "type": "text", "text": large_user }],
+            "timestamp": 1
+        }));
+        manager.append_message(serde_json::json!({
+            "role": "assistant",
+            "content": [{ "type": "text", "text": large_reply }],
+            "api": "faux",
+            "provider": "faux",
+            "model": "faux-1",
+            "usage": maho_ai::types::Usage::default(),
+            "stopReason": "stop",
+            "timestamp": 2
+        }));
+        let session = test_session_with_manager(manager);
+        session.rebuild_session_context().expect("rebuild context");
+        assert!(
+            session.with_session_manager(|m| m.resident_store_stats().blob_bytes) >= 48 * 1024
+        );
+
+        session.park_idle_child_memory();
+
+        let stats = session.with_session_manager(|m| m.resident_store_stats());
+        assert_eq!(stats.blob_bytes, 0);
+        assert!(stats.evicted_count >= 2);
+        assert!(session.agent.state().messages().is_empty());
+        assert_eq!(
+            session.get_last_assistant_text().as_deref(),
+            Some(large_reply.as_str())
+        );
+        let rehydrated = session.messages();
+        assert_eq!(rehydrated.len(), 2);
+        assert_eq!(user_message_text(&rehydrated[0]), large_user);
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //! mirrored from maho-rpc so this crate stays below maho-core in the dependency graph.
 //! `terminal-jobs.ts` lives in maho-ext-terminal and `role.ts` in maho-cli (they need crates above this one).
 pub mod admission;
+pub mod allocator;
 pub mod barrier_clock;
 pub mod channel;
 pub mod child_containment;

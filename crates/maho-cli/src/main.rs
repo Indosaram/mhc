@@ -1,6 +1,10 @@
 #[path = "cli/schedule_command.rs"]
 mod schedule_command;
 
+#[global_allocator]
+static GLOBAL_ALLOCATOR: maho_tool_child::allocator::MahoAllocator =
+    maho_tool_child::allocator::ALLOCATOR;
+
 fn main() {
     // senpi `internal-role.ts`: a process the engine started as a tool child becomes one before anything else runs.
     maho_cli::internal_role::run_internal_role();

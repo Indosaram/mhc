@@ -1,10 +1,29 @@
-use std::{collections::{BTreeMap, BTreeSet}, sync::{Arc, Mutex, PoisonError}};
+use std::{collections::{BTreeMap, BTreeSet, hash_map::DefaultHasher}, hash::Hasher, io::{self, Write}, sync::{Arc, Mutex, PoisonError}};
 use maho_ext_api::{ExtensionApi, ExtensionFailure};
 use serde_json::{Value, json};
-use senpi_task::{manager::{TaskManager, Unsubscribe, types::ListScope}, state::{TaskStatus, ResidencyState}, progress::{create_child_progress, ChildProgressTarget}, tools::{control::{cancel::run_task_cancel, send::run_task_send}, output::{output::run_task_output, types::TaskOutputDeps}}};
+use senpi_task::{manager::{TaskManager, Unsubscribe, types::ListScope}, state::{TaskRecord, TaskStatus, ResidencyState}, progress::{create_child_progress, ChildProgressTarget}, tools::{control::{cancel::run_task_cancel, send::run_task_send}, output::{output::run_task_output, types::TaskOutputDeps}}};
 use crate::task_rpc_codec::{task_snapshot, live_progress_snapshot, parse_task_send, parse_task_cancel, parse_task_output, invalid_arguments, bounded_task_output};
 pub type TaskRpcEmit = Arc<dyn Fn(&str, Value) + Send + Sync>;
-#[derive(Default)] struct State { session: Option<String>, fingerprint: Option<String>, disposed: bool, subscriptions: BTreeMap<String, Unsubscribe>, progress: BTreeMap<String, Value> }
+struct HasherWriter(DefaultHasher);
+impl Write for HasherWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> { self.0.write(buf); Ok(buf.len()) }
+    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+}
+fn json_fingerprint(value: &Value) -> u64 {
+    let mut writer = HasherWriter(DefaultHasher::new());
+    let _ = serde_json::to_writer(&mut writer, value);
+    writer.0.finish()
+}
+#[derive(Default)] struct State {
+    session: Option<String>,
+    fingerprint: Option<u64>,
+    disposed: bool,
+    subscriptions: BTreeMap<String, Unsubscribe>,
+    progress: BTreeMap<String, Value>,
+    cached_records: Vec<TaskRecord>,
+    cached_truncated: usize,
+    terminal_snapshots: BTreeMap<String, (String, TaskStatus, ResidencyState, Value)>,
+}
 pub struct TaskRpcBridge { manager: Arc<TaskManager>, session_id: Arc<dyn Fn() -> Option<String> + Send + Sync>, state_dir: String, emit: TaskRpcEmit, state: Mutex<State> }
 pub fn wire_task_rpc_bridge(api: &mut ExtensionApi, manager: Arc<TaskManager>, session_id: Arc<dyn Fn() -> Option<String> + Send + Sync>, state_dir: String, emit: TaskRpcEmit) -> Result<Arc<TaskRpcBridge>, ExtensionFailure> {
     let bridge = Arc::new(TaskRpcBridge { manager, session_id, state_dir, emit, state: Mutex::new(State::default()) });
@@ -40,8 +59,15 @@ impl TaskRpcBridge {
         let all: Vec<_> = self.manager.list(&ListScope::ParentSession(session)).into_iter().map(|entry| entry.record).collect(); let truncated = all.len().saturating_sub(256);
         let records = if truncated == 0 { all } else { let live: Vec<_> = all.iter().filter(|record| matches!(record.status,TaskStatus::Pending|TaskStatus::Running)).cloned().collect(); let live: Vec<_> = live.into_iter().rev().take(256).collect::<Vec<_>>().into_iter().rev().collect(); let slots = 256-live.len(); let terminal: Vec<_> = all.into_iter().filter(|record| !matches!(record.status,TaskStatus::Pending|TaskStatus::Running)).collect(); live.into_iter().chain(terminal.into_iter().rev().take(slots).collect::<Vec<_>>().into_iter().rev()).collect() };
         let wanted: BTreeSet<String> = records.iter().filter(|record| matches!(record.status,TaskStatus::Pending|TaskStatus::Running) && record.residency_state == ResidencyState::Resident).map(|record| record.task_id.clone()).collect();
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); let stale: Vec<_> = state.subscriptions.keys().filter(|id| !wanted.contains(*id)).cloned().collect();
-        let mut removed = Vec::new(); for id in stale { if let Some(unsubscribe) = state.subscriptions.remove(&id) { removed.push(unsubscribe); } state.progress.remove(&id); } drop(state); for unsubscribe in removed { unsubscribe(); }
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let stale: Vec<_> = state.subscriptions.keys().filter(|id| !wanted.contains(*id)).cloned().collect();
+        let mut removed = Vec::new();
+        for id in stale { if let Some(unsubscribe) = state.subscriptions.remove(&id) { removed.push(unsubscribe); } state.progress.remove(&id); }
+        state.cached_records = records.clone();
+        state.cached_truncated = truncated;
+        state.terminal_snapshots.retain(|id, _| records.iter().any(|record| &record.task_id == id));
+        drop(state);
+        for unsubscribe in removed { unsubscribe(); }
         for record in &records {
             if !wanted.contains(&record.task_id) || self.state.lock().unwrap_or_else(PoisonError::into_inner).subscriptions.contains_key(&record.task_id) { continue; }
             let started = chrono::DateTime::parse_from_rfc3339(&record.created_at).ok().and_then(|time| u64::try_from(time.timestamp_millis()).ok()).unwrap_or(0);
@@ -51,14 +77,71 @@ impl TaskRpcBridge {
             self.state.lock().unwrap_or_else(PoisonError::into_inner).subscriptions.insert(record.task_id.clone(),unsubscribe);
         }
         self.emit_records(&records,truncated);
+        if wanted.is_empty() {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.cached_records = Vec::new();
+            state.terminal_snapshots.clear();
+        }
     }
-    fn emit_snapshot(self: &Arc<Self>) { self.sync(); }
-    fn emit_records(&self, records: &[senpi_task::state::TaskRecord], truncated: usize) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); let Some(session) = &state.session else { return; }; if state.disposed { return; }
-        let mut tasks = Vec::new();
-        for record in records { let stats = if matches!(record.status,TaskStatus::Pending|TaskStatus::Running) { self.manager.run_stats_snapshot(&record.task_id) } else { None }; match task_snapshot(record,stats.as_ref(),state.progress.get(&record.task_id)) { Ok(snapshot) => tasks.push(snapshot), Err(error) => { maho_ext_api::diagnostic(&format!("task RPC snapshot serialization failed: {error}")); return; } } }
-        let mut payload = json!({"parent_session_id":session,"tasks":tasks}); if truncated > 0 { payload["truncated_tasks"] = json!(truncated); } let fingerprint = payload.to_string(); if state.fingerprint.as_ref() == Some(&fingerprint) { return; } state.fingerprint = Some(fingerprint); drop(state); (self.emit)("omo.task.updated",payload);
+    fn emit_snapshot(self: &Arc<Self>) {
+        let (records, truncated) = {
+            let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.disposed || state.session.is_none() { return; }
+            (state.cached_records.clone(), state.cached_truncated)
+        };
+        if records.is_empty() {
+            self.sync();
+            return;
+        }
+        self.emit_records(&records, truncated);
     }
-    pub fn detach(&self) { let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); let subscriptions = std::mem::take(&mut state.subscriptions); state.progress.clear(); state.session = None; state.fingerprint = None; drop(state); for unsubscribe in subscriptions.into_values() { unsubscribe(); } }
+    fn emit_records(&self, records: &[TaskRecord], truncated: usize) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); let Some(session) = state.session.clone() else { return; }; if state.disposed { return; }
+        let mut tasks = Vec::with_capacity(records.len());
+        for record in records {
+            let is_live = matches!(record.status, TaskStatus::Pending | TaskStatus::Running);
+            if !is_live
+                && let Some((updated_at, status, residency, cached)) = state.terminal_snapshots.get(&record.task_id)
+                && updated_at == &record.updated_at
+                && *status == record.status
+                && *residency == record.residency_state
+            {
+                tasks.push(cached.clone());
+                continue;
+            }
+            let stats = if is_live { self.manager.run_stats_snapshot(&record.task_id) } else { None };
+            match task_snapshot(record, stats.as_ref(), state.progress.get(&record.task_id)) {
+                Ok(snapshot) => {
+                    if !is_live {
+                        state.terminal_snapshots.insert(
+                            record.task_id.clone(),
+                            (record.updated_at.clone(), record.status, record.residency_state, snapshot.clone()),
+                        );
+                    }
+                    tasks.push(snapshot);
+                }
+                Err(error) => { maho_ext_api::diagnostic(&format!("task RPC snapshot serialization failed: {error}")); return; }
+            }
+        }
+        {
+            let State {
+                cached_records,
+                terminal_snapshots,
+                ..
+            } = &mut *state;
+            for record in cached_records {
+                if !matches!(record.status, TaskStatus::Pending | TaskStatus::Running)
+                    && terminal_snapshots.contains_key(&record.task_id)
+                {
+                    record.final_response = None;
+                    record.error_message = None;
+                    record.description = None;
+                    record.spawn_spec = None;
+                }
+            }
+        }
+        let mut payload = json!({"parent_session_id":session,"tasks":tasks}); if truncated > 0 { payload["truncated_tasks"] = json!(truncated); } let fingerprint = json_fingerprint(&payload); if state.fingerprint == Some(fingerprint) { return; } state.fingerprint = Some(fingerprint); drop(state); (self.emit)("omo.task.updated",payload);
+    }
+    pub fn detach(&self) { let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); let subscriptions = std::mem::take(&mut state.subscriptions); state.progress.clear(); state.cached_records.clear(); state.cached_truncated = 0; state.terminal_snapshots.clear(); state.session = None; state.fingerprint = None; drop(state); for unsubscribe in subscriptions.into_values() { unsubscribe(); } }
     pub fn dispose(&self) { self.state.lock().unwrap_or_else(PoisonError::into_inner).disposed = true; self.detach(); }
 }

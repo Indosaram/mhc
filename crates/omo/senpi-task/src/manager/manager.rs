@@ -1192,17 +1192,16 @@ impl TaskManager {
     }
 
     pub fn list(&self, scope: &ListScope) -> Vec<ListedTask> {
-        let records = match self.inner.store.list() {
+        let records = match self.inner.store.list_matching(|record| match scope {
+            ListScope::All => true,
+            ListScope::ParentSession(session_id) => in_session(record, session_id),
+        }) {
             Ok(listed) => listed.records,
             Err(_) => return Vec::new(),
         };
         let concurrency = lock(&self.inner.concurrency);
         records
             .into_iter()
-            .filter(|record| match scope {
-                ListScope::All => true,
-                ListScope::ParentSession(session_id) => in_session(record, session_id),
-            })
             .map(|record| {
                 let queue_position = if record.status == TaskStatus::Pending {
                     concurrency.queue_position(&record.model, &record.task_id)
@@ -2550,6 +2549,14 @@ impl Inner {
             return;
         };
         if is_terminal_record(&record) {
+            {
+                let mut state = lock(&self.state);
+                if let Some(live) = state.live.get_mut(task_id) {
+                    live.managed_spec = None;
+                    live.runner = None;
+                }
+                state.run_stats.remove(task_id);
+            }
             self.residency.notify(Some(&record.parent_session_id));
         }
         let waiters = lock(&self.state)
