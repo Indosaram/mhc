@@ -335,6 +335,11 @@ fn run() -> Result<(), String> {
         } else {
             1
         };
+        if command.kind == AuthCommandKind::Consent {
+            use std::io::IsTerminal;
+            let code = maho_cli::cli::auth_command::run_auth_consent(&command, &maho_core::config::get_agent_dir(), std::io::stdin().is_terminal(), &mut std::io::stdin().lock(), &mut std::io::stdout(), &mut std::io::stderr());
+            std::process::exit(code);
+        }
         let parsed = match maho_cli::cli::args::parse_args(&command.args, grok) {
             Ok(parsed) => parsed,
             Err(message) => {

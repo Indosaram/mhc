@@ -505,6 +505,7 @@ fn is_internal_only_command(text: &str) -> bool {
             | "/tree-edit-apply"
             | "/tree-navigate"
             | "/login-auth-type"
+            | "/login-consent-cancel"
     ) || [
         "/import-confirm",
         "/import-cwd",
@@ -519,6 +520,7 @@ fn is_internal_only_command(text: &str) -> bool {
         "/model-search",
         "/logout-provider",
         "/login-provider",
+        "/login-consent",
         "/login-select-provider",
     ]
     .into_iter()
@@ -8249,6 +8251,26 @@ impl InteractiveMode {
             self.show_login_provider_selector(Some(auth_type), None);
             return Ok(true);
         }
+        if text == "/login-consent-cancel" {
+            self.show_status(crate::login_outcome::LOGIN_CANCELLED_NOTICE.into());
+            return Ok(true);
+        }
+        if let Some(args) = text.strip_prefix("/login-consent ") {
+            // Continue on the "Account risk" selector: record consent, then resume the login.
+            let Some((provider_id, method)) = args.trim().split_once(' ') else {
+                return Ok(true);
+            };
+            if let Err(error) = self.session.with_settings_manager_mut(|settings| {
+                maho_core::provider_consent::record_consent(settings, provider_id)
+            }) {
+                self.show_error(&format!("Could not record consent: {error}"));
+                return Ok(true);
+            }
+            self.submissions
+                .borrow_mut()
+                .push_back(internal_command(format!("/login-provider {provider_id} {method}")));
+            return Ok(true);
+        }
         if text == "/login-auth-type" {
             self.show_login_auth_type_selector(None);
             return Ok(true);
@@ -10335,11 +10357,81 @@ impl InteractiveMode {
 
     /// senpi `startProviderLogin` -> `showLoginDialog` / `showApiKeyLoginDialog`: mount the dialog
     /// and run `modelRuntime.login` on the runtime, answering its prompts through the UI channel.
+    /// Providers that impersonate a first-party client need a recorded risk consent before login.
+    fn provider_login_needs_consent(
+        &self,
+        provider: &crate::components::oauth_selector::AuthSelectorProvider,
+    ) -> bool {
+        use crate::components::oauth_selector::AuthSelectorAuthType;
+        maho_core::provider_consent::needs_consent(
+            &provider.id,
+            provider.auth_type == AuthSelectorAuthType::OAuth,
+        ) && !self.session.with_settings_manager(|settings| {
+            maho_core::provider_consent::consent_recorded(settings, &provider.id)
+        })
+    }
+
+    /// Mounts the "Account risk" selector; Continue queues `/login-consent`, Cancel the neutral notice.
+    fn prompt_for_provider_risk_consent(
+        &mut self,
+        provider: &crate::components::oauth_selector::AuthSelectorProvider,
+    ) {
+        use crate::components::oauth_selector::AuthSelectorAuthType;
+        const CONTINUE: &str = "I understand the risk - continue";
+        let description = maho_core::provider_consent::impersonation_description(&provider.id)
+            .unwrap_or("a first-party client");
+        let title = format!(
+            "Account risk\n{} uses {description}. This may violate the provider's terms and can get the account suspended.",
+            provider.id
+        );
+        let method = match provider.auth_type {
+            AuthSelectorAuthType::OAuth => "oauth",
+            AuthSelectorAuthType::ApiKey => "api_key",
+        };
+        let command = format!("/login-consent {} {method}", provider.id);
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        self.local_dialog_reply = Some(receiver);
+        *self.ui_reply.borrow_mut() = Some(reply);
+        let selected = self.ui_reply.clone();
+        let cancelled = selected.clone();
+        let submissions = self.submissions.clone();
+        let cancel_submissions = self.submissions.clone();
+        self.ui_dialog = Some(Box::new(
+            crate::components::extension_selector::ExtensionSelectorComponent::new(
+                &self.theme,
+                self.keybindings(),
+                &title,
+                vec![CONTINUE.into(), "Cancel".into()],
+                Box::new(move |choice| {
+                    submissions.borrow_mut().push_back(internal_command(
+                        if choice == CONTINUE {
+                            command.clone()
+                        } else {
+                            "/login-consent-cancel".to_owned()
+                        },
+                    ));
+                    selected.borrow_mut().take();
+                }),
+                Box::new(move || {
+                    cancel_submissions
+                        .borrow_mut()
+                        .push_back(internal_command("/login-consent-cancel"));
+                    cancelled.borrow_mut().take();
+                }),
+                Default::default(),
+            ),
+        ));
+    }
+
     fn start_provider_login(
         &mut self,
         provider: &crate::components::oauth_selector::AuthSelectorProvider,
     ) {
         use crate::components::oauth_selector::AuthSelectorAuthType;
+        if self.provider_login_needs_consent(provider) {
+            self.prompt_for_provider_risk_consent(provider);
+            return;
+        }
         if provider.auth_type == AuthSelectorAuthType::ApiKey && !provider.method_has_login {
             self.show_ambient_auth_dialog(provider);
             return;
