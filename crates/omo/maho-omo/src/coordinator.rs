@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use indexmap::IndexMap;
 use maho_ext_api::{
     CustomMessage, DeliverAs, IdleInjection, IdleInjectionCoordinator as IdleInjectionCoordinatorTrait,
-    IdleInjectionSource, JsonValue, ToolContent,
+    IdleInjectionSource, JsonValue, MessageDeliveryReceipt, ToolContent,
 };
 
 use crate::scheduler::{DeferredScheduler, DeferredTask, TurnBarrier};
@@ -83,6 +83,7 @@ pub enum Delivery {
     Delivered,
     Failed(String),
     Pending(DeliveryFuture),
+    Receipt(MessageDeliveryReceipt),
 }
 
 pub type IdleInjectionDelivery = Arc<dyn Fn(&IdleInjectionMessage, DeliverAs) -> Delivery + Send + Sync>;
@@ -194,6 +195,12 @@ impl IdleInjectionQueue {
             }
             Ok(Delivery::Failed(reason)) => fail_all(&ordered, &reason),
             Ok(Delivery::Delivered) => flush_all(&ordered),
+            Ok(Delivery::Receipt(receipt)) => {
+                receipt.on_settled(move |outcome| match outcome {
+                    Ok(()) => flush_all(&ordered),
+                    Err(reason) => fail_all(&ordered, &reason),
+                });
+            }
             Ok(Delivery::Pending(future)) => match tokio::runtime::Handle::try_current() {
                 Ok(handle) => {
                     handle.spawn(async move {

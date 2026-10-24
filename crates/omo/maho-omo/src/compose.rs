@@ -261,11 +261,11 @@ fn delivery_from(api: &ExtensionApi) -> IdleInjectionDelivery {
             EventBus::default(),
             runtime.clone(),
         );
-        match api.send_message(
+        match api.send_message_with_receipt(
             message.to_custom_message(),
             SendMessageOptions { trigger_turn: true, deliver_as: Some(deliver_as) },
         ) {
-            Ok(()) => Delivery::Delivered,
+            Ok(receipt) => Delivery::Receipt(receipt),
             Err(error) => Delivery::Failed(error.to_string()),
         }
     })

@@ -21,8 +21,25 @@ impl LeadInjectionSink for LeadMessageSink {
             coordinator.enqueue(injection,"senpi-task:team-message",false);
             match (self.parent_state)() { ParentState::Streaming=>coordinator.schedule_flush(),ParentState::Idle=>coordinator.flush_soon(),ParentState::Compacting|ParentState::SessionSwitching|ParentState::SessionShutdown=>{} }
         } else {
-            let sent=self.actions.send_message(maho_ext_api::CustomMessage { custom_type:"senpi-task:team-message".into(),content:vec![maho_ext_api::ToolContent::text(&injection.content)],display:false,details:None },maho_ext_api::SendMessageOptions { trigger_turn:true,deliver_as:Some(maho_ext_api::DeliverAs::Steer) });
-            match sent { Ok(())=>{ if let Some(flushed)=injection.on_flushed.take() { flushed(); } },Err(error)=>{ if let Some(failed)=injection.on_delivery_failed.take() { failed(&error.to_string()); } (self.on_error)(error); } }
+            let sent = self.actions.send_message_with_receipt(maho_ext_api::CustomMessage { custom_type:"senpi-task:team-message".into(),content:vec![maho_ext_api::ToolContent::text(&injection.content)],display:false,details:None },maho_ext_api::SendMessageOptions { trigger_turn:true,deliver_as:Some(maho_ext_api::DeliverAs::Steer) });
+            match sent {
+                Ok(receipt) => {
+                    let flushed = injection.on_flushed.take();
+                    let failed = injection.on_delivery_failed.take();
+                    let on_error = Arc::clone(&self.on_error);
+                    receipt.on_settled(move |outcome| match outcome {
+                        Ok(()) => { if let Some(flushed) = flushed { flushed(); } }
+                        Err(error) => {
+                            if let Some(failed) = failed { failed(&error); }
+                            on_error(maho_ext_api::ExtensionFailure::new(error));
+                        }
+                    });
+                }
+                Err(error) => {
+                    if let Some(failed) = injection.on_delivery_failed.take() { failed(&error.to_string()); }
+                    (self.on_error)(error);
+                }
+            }
         }
     }
 }

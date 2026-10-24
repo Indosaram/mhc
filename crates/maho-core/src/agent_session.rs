@@ -937,6 +937,13 @@ pub struct AgentSessionInner {
     /// thread or a short-lived runtime (a completion notifier's drain); work they start must run on
     /// the session's runtime, or it dies with the caller's runtime after the action returned Ok.
     runtime_handle: Option<tokio::runtime::Handle>,
+    /// Receipts for custom messages that rode a queue instead of appending immediately.
+    queued_custom_receipts: Mutex<
+        Vec<(
+            maho_agent::harness::messages::CustomMessage,
+            maho_ext_api::MessageDeliveryReceipt,
+        )>,
+    >,
 }
 
 pub type HtmlThemeResolver = Arc<
@@ -2615,12 +2622,25 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
         message: maho_ext_api::CustomMessage,
         options: maho_ext_api::SendMessageOptions,
     ) -> Result<(), maho_ext_api::ExtensionFailure> {
+        let _ = self.send_message_with_receipt(message, options)?;
+        Ok(())
+    }
+    fn send_message_with_receipt(
+        &self,
+        message: maho_ext_api::CustomMessage,
+        options: maho_ext_api::SendMessageOptions,
+    ) -> Result<maho_ext_api::MessageDeliveryReceipt, maho_ext_api::ExtensionFailure> {
         let custom: maho_agent::harness::messages::CustomMessage = serde_json::from_value(serde_json::json!({
             "role":"custom","customType":message.custom_type,"content":message.content,"display":message.display,
             "details":message.details,"timestamp":maho_ai::utils::diagnostics::now_ms(),
         })).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-        self.session()?
-            .send_custom_message_content_inner(custom, options)
+        let receipt = maho_ext_api::MessageDeliveryReceipt::pending();
+        self.session()?.send_custom_message_content_with_receipt(
+            custom,
+            options,
+            Some(receipt.clone()),
+        )?;
+        Ok(receipt)
     }
     fn send_user_message(
         &self,
@@ -3685,6 +3705,7 @@ impl AgentSession {
                 html_theme_resolver: Mutex::new(None),
                 html_built_in_tool_renderers: Mutex::new(None),
                 runtime_handle: tokio::runtime::Handle::try_current().ok(),
+                queued_custom_receipts: Mutex::new(Vec::new()),
             }),
         };
         // The hold's callbacks reach the session through this cell; a session that never gets here has no hold users.
@@ -4030,10 +4051,13 @@ impl AgentSession {
                             )
                         });
                         self.state().message_revision += 1;
+                        self.settle_queued_custom_receipt(custom, Ok(()));
                     }
-                    Err(error) => self.emit(AgentSessionEvent::ContinuationError {
-                        error_message: error.to_string(),
-                    }),
+                    Err(error) => {
+                        let error_message = error.to_string();
+                        self.settle_queued_custom_receipt(custom, Err(error_message.clone()));
+                        self.emit(AgentSessionEvent::ContinuationError { error_message });
+                    }
                 }
                 return;
             }
@@ -13225,6 +13249,7 @@ impl AgentSession {
         }
         self.monitor_generation.fetch_add(1, Ordering::SeqCst);
         lock(&self.settled_delivery).cancel();
+        self.audit_queued_custom_receipts("session invalidated before custom message delivery");
         if let Some(runner) = self.extension_runner.lock().await.as_ref() {
             runner.invalidate("This extension ctx is stale after session replacement or reload.");
         }
@@ -13917,6 +13942,9 @@ impl AgentSession {
                 && !session.agent_run_active.load(Ordering::SeqCst)
                 && !session.work_barrier.has_active_work()
             {
+                session.audit_queued_custom_receipts(
+                    "custom message left pending queue without being appended",
+                );
                 session.release_idle_runtime_messages();
                 session.emit(AgentSessionEvent::AgentIdle);
             }
@@ -15031,6 +15059,15 @@ impl AgentSession {
         message: maho_agent::harness::messages::CustomMessage,
         options: maho_ext_api::SendMessageOptions,
     ) -> Result<(), maho_ext_api::ExtensionFailure> {
+        self.send_custom_message_content_with_receipt(message, options, None)
+    }
+
+    fn send_custom_message_content_with_receipt(
+        &self,
+        message: maho_agent::harness::messages::CustomMessage,
+        options: maho_ext_api::SendMessageOptions,
+        receipt: Option<maho_ext_api::MessageDeliveryReceipt>,
+    ) -> Result<(), maho_ext_api::ExtensionFailure> {
         // senpi `sendCustomMessage`: an engine wake that would start a turn while its source is held is
         // kept in notice custody, not delivered (`triggerTurn` is a bool here, so "undefined" reads as false).
         if options.trigger_turn
@@ -15043,70 +15080,153 @@ impl AgentSession {
                 let noted = serde_json::to_value(&message)
                     .map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                 hold.note(&source, Some(noted));
+                if let Some(receipt) = receipt {
+                    receipt.resolve_delivered();
+                }
                 return Ok(());
             }
         }
-        let deferred_session = self.clone();
-        let deferred_message = message.clone();
-        let deferred_options = options.clone();
-        let deferred_generation = self.monitor_generation.load(Ordering::SeqCst);
-        let deferred_abort_generation = self.user_abort_generation.load(Ordering::SeqCst);
-        let deferred = if options.trigger_turn {
-            let spawner = self.clone();
-            lock(&self.settled_delivery).defer_trigger_turn(move |claim| {
-                let guard = deferred_session.work_barrier.begin();
-                spawner.spawn_session_task(async move {
-                    if deferred_session.state().disposed || deferred_session.monitor_generation.load(Ordering::SeqCst) != deferred_generation
-                        || deferred_session.user_abort_generation.load(Ordering::SeqCst) != deferred_abort_generation {
-                        claim.resolve(crate::agent_settled_delivery::DeferredTurnDisposition::FinishedWithoutStart);
-                        return;
-                    }
-                    claim.resolve(crate::agent_settled_delivery::DeferredTurnDisposition::Delegated);
-                    if let Err(error) = deferred_session.send_custom_message_content_inner(deferred_message, deferred_options) {
-                        deferred_session.emit(AgentSessionEvent::ContinuationError { error_message: error.message });
-                    }
-                    drop(guard);
+        {
+            let mut settled_delivery = lock(&self.settled_delivery);
+            if settled_delivery.active() {
+                let deferred_session = self.clone();
+                let deferred_message = message.clone();
+                let deferred_options = options.clone();
+                let deferred_generation = self.monitor_generation.load(Ordering::SeqCst);
+                let deferred_abort_generation = self.user_abort_generation.load(Ordering::SeqCst);
+                let deferred_guard = receipt.clone().map(|receipt| {
+                    maho_ext_api::MessageDeliveryGuard::new(
+                        receipt,
+                        "deferred custom message dropped before settlement",
+                    )
                 });
-            })
-        } else {
-            lock(&self.settled_delivery).defer(Box::new(move || {
-                if deferred_session.state().disposed
-                    || deferred_session.monitor_generation.load(Ordering::SeqCst)
-                        != deferred_generation
-                    || deferred_session
-                        .user_abort_generation
-                        .load(Ordering::SeqCst)
-                        != deferred_abort_generation
-                {
-                    return;
-                }
-                if let Err(error) = deferred_session
-                    .send_custom_message_content_inner(deferred_message, deferred_options)
-                {
-                    deferred_session.emit(AgentSessionEvent::ContinuationError {
-                        error_message: error.message,
+                let deferred_receipt = receipt.clone();
+                if options.trigger_turn {
+                    let spawner = self.clone();
+                    settled_delivery.defer_trigger_turn(move |claim| {
+                        let guard = deferred_session.work_barrier.begin();
+                        let mut delivery_guard = deferred_guard;
+                        spawner.spawn_session_task(async move {
+                            if deferred_session.state().disposed
+                                || deferred_session.monitor_generation.load(Ordering::SeqCst)
+                                    != deferred_generation
+                                || deferred_session
+                                    .user_abort_generation
+                                    .load(Ordering::SeqCst)
+                                    != deferred_abort_generation
+                            {
+                                claim.resolve(
+                                    crate::agent_settled_delivery::DeferredTurnDisposition::FinishedWithoutStart,
+                                );
+                                if let Some(receipt) = &deferred_receipt {
+                                    receipt.resolve_failed(
+                                        "deferred custom message cancelled before settlement",
+                                    );
+                                }
+                                if let Some(guard) = &mut delivery_guard {
+                                    guard.disarm();
+                                }
+                                return;
+                            }
+                            claim.resolve(
+                                crate::agent_settled_delivery::DeferredTurnDisposition::Delegated,
+                            );
+                            if let Some(guard) = &mut delivery_guard {
+                                guard.disarm();
+                            }
+                            if let Err(error) = deferred_session
+                                .send_custom_message_content_with_receipt(
+                                    deferred_message,
+                                    deferred_options,
+                                    deferred_receipt.clone(),
+                                )
+                            {
+                                if let Some(receipt) = &deferred_receipt {
+                                    receipt.resolve_failed(error.message.clone());
+                                }
+                                deferred_session.emit(AgentSessionEvent::ContinuationError {
+                                    error_message: error.message,
+                                });
+                            }
+                            drop(guard);
+                        });
                     });
+                } else {
+                    let mut delivery_guard = deferred_guard;
+                    settled_delivery.defer(Box::new(move || {
+                        if deferred_session.state().disposed
+                            || deferred_session.monitor_generation.load(Ordering::SeqCst)
+                                != deferred_generation
+                            || deferred_session
+                                .user_abort_generation
+                                .load(Ordering::SeqCst)
+                                != deferred_abort_generation
+                        {
+                            if let Some(receipt) = &deferred_receipt {
+                                receipt.resolve_failed(
+                                    "deferred custom message cancelled before settlement",
+                                );
+                            }
+                            if let Some(guard) = &mut delivery_guard {
+                                guard.disarm();
+                            }
+                            return;
+                        }
+                        if let Some(guard) = &mut delivery_guard {
+                            guard.disarm();
+                        }
+                        if let Err(error) = deferred_session
+                            .send_custom_message_content_with_receipt(
+                                deferred_message,
+                                deferred_options,
+                                deferred_receipt.clone(),
+                            )
+                        {
+                            if let Some(receipt) = &deferred_receipt {
+                                receipt.resolve_failed(error.message.clone());
+                            }
+                            deferred_session.emit(AgentSessionEvent::ContinuationError {
+                                error_message: error.message,
+                            });
+                        }
+                    }));
                 }
-            }))
-        };
-        if deferred {
-            return Ok(());
+                return Ok(());
+            }
         }
         let agent_message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(
             message.clone(),
         ));
         if options.deliver_as == Some(maho_ext_api::DeliverAs::NextTurn) {
+            if let Some(receipt) = receipt {
+                self.track_queued_custom_receipt(message, receipt);
+            }
             self.state().pending_next_turn_messages.push(agent_message);
             return Ok(());
         }
         if (self.is_streaming() || self.is_compacting()) && options.trigger_turn {
+            if let Some(receipt) = receipt {
+                self.track_queued_custom_receipt(message, receipt);
+            }
             match options.deliver_as {
                 Some(maho_ext_api::DeliverAs::FollowUp) => self.agent.follow_up(agent_message),
                 _ => self.agent.steer(agent_message),
             }
         } else if self.is_streaming() {
+            if let Some(receipt) = receipt {
+                self.track_queued_custom_receipt(message.clone(), receipt);
+            }
             self.state().pending_custom_messages.push(message);
         } else if options.trigger_turn {
+            if let Some(receipt) = receipt.clone() {
+                self.track_queued_custom_receipt(message.clone(), receipt);
+            }
+            let mut delivery_guard = receipt.clone().map(|receipt| {
+                maho_ext_api::MessageDeliveryGuard::new(
+                    receipt,
+                    "custom message turn dropped before settlement",
+                )
+            });
             let guard = self.work_barrier.begin();
             let generation = self.user_abort_generation.load(Ordering::SeqCst);
             let runtime_generation = self.monitor_generation.load(Ordering::SeqCst);
@@ -15116,24 +15236,122 @@ impl AgentSession {
                 if session.state().disposed
                     || session.monitor_generation.load(Ordering::SeqCst) != runtime_generation
                 {
+                    session.settle_queued_custom_receipt(
+                        &message,
+                        Err("session disposed before custom message turn started".to_owned()),
+                    );
+                    if let Some(guard) = &mut delivery_guard {
+                        guard.disarm();
+                    }
                     drop(guard);
                     return;
                 }
-                if let Err(error) = session
-                    .trigger_custom_message_turn(message, deliver_as, generation)
-                    .await
-                {
-                    session.emit(AgentSessionEvent::ContinuationError {
-                        error_message: error,
-                    });
+                let result = session
+                    .trigger_custom_message_turn(message.clone(), deliver_as, generation)
+                    .await;
+                if let Some(guard) = &mut delivery_guard {
+                    guard.disarm();
+                }
+                match result {
+                    Ok(()) => {
+                        if let Some(receipt) = &receipt
+                            && receipt.outcome().is_none()
+                            && !session.agent.contains_queued_message(&agent_message)
+                        {
+                            session.settle_queued_custom_receipt(
+                                &message,
+                                Err("custom message turn ended without appending message".to_owned()),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        if !session.agent.contains_queued_message(&agent_message) {
+                            session.settle_queued_custom_receipt(&message, Err(error.clone()));
+                        }
+                        session.emit(AgentSessionEvent::ContinuationError {
+                            error_message: error,
+                        });
+                    }
                 }
                 drop(guard);
             });
         } else {
-            self.append_extension_custom_message(message)
-                .map_err(maho_ext_api::ExtensionFailure::new)?;
+            if let Err(error) = self.append_extension_custom_message(message) {
+                if let Some(receipt) = receipt {
+                    receipt.resolve_failed(error.clone());
+                }
+                return Err(maho_ext_api::ExtensionFailure::new(error));
+            }
+            if let Some(receipt) = receipt {
+                receipt.resolve_delivered();
+            }
         }
         Ok(())
+    }
+
+    fn track_queued_custom_receipt(
+        &self,
+        message: maho_agent::harness::messages::CustomMessage,
+        receipt: maho_ext_api::MessageDeliveryReceipt,
+    ) {
+        lock(&self.queued_custom_receipts).push((message, receipt));
+    }
+
+    fn settle_queued_custom_receipt(
+        &self,
+        message: &maho_agent::harness::messages::CustomMessage,
+        outcome: Result<(), String>,
+    ) {
+        let receipt = {
+            let mut receipts = lock(&self.queued_custom_receipts);
+            receipts
+                .iter()
+                .position(|(queued, _)| queued == message)
+                .map(|index| receipts.remove(index).1)
+        };
+        if let Some(receipt) = receipt {
+            match outcome {
+                Ok(()) => receipt.resolve_delivered(),
+                Err(reason) => receipt.resolve_failed(reason),
+            }
+        }
+    }
+
+    fn fail_all_queued_custom_receipts(&self, reason: &str) {
+        let receipts: Vec<_> = std::mem::take(&mut *lock(&self.queued_custom_receipts));
+        for (_, receipt) in receipts {
+            receipt.resolve_failed(reason.to_owned());
+        }
+    }
+
+    fn audit_queued_custom_receipts(&self, reason: &str) {
+        let mut failed = Vec::new();
+        {
+            let state = self.state();
+            let mut receipts = lock(&self.queued_custom_receipts);
+            let mut index = 0;
+            while index < receipts.len() {
+                if receipts[index].1.outcome().is_some() {
+                    receipts.remove(index);
+                    continue;
+                }
+                let custom = &receipts[index].0;
+                let agent_message = AgentMessage::Custom(
+                    maho_agent::types::CustomAgentMessage::Custom(custom.clone()),
+                );
+                let still_queued = self.agent.contains_queued_message(&agent_message)
+                    || state.pending_custom_messages.contains(custom)
+                    || state.pending_next_turn_messages.contains(&agent_message);
+                if still_queued {
+                    index += 1;
+                } else {
+                    failed.push(receipts.remove(index).1);
+                }
+            }
+        }
+        for receipt in failed {
+            receipt.resolve_failed(reason.to_owned());
+        }
     }
 
     /// Spawns on the session's own runtime (see `runtime_handle`), falling back to the ambient one.
@@ -15698,6 +15916,7 @@ impl AgentSession {
         self.state().disposed = true;
         lock(&self.engine_turn_hold).invalidate();
         lock(&self.settled_delivery).cancel();
+        self.fail_all_queued_custom_receipts("session disposed before custom message delivery");
         if let Some(controller) = self.state().session_title_abort_controller.take() {
             controller.abort(None);
         }
@@ -15802,6 +16021,7 @@ impl AgentSession {
         let mut ordered = ordered;
         ordered.sort_by_key(|input| input.enqueue_order);
         self.agent.clear_all_queues();
+        self.audit_queued_custom_receipts("queued custom message cleared before delivery");
         self.emit_queue_update();
         ClearedQueue {
             steering,
@@ -15832,7 +16052,11 @@ impl AgentSession {
         &self,
         message: maho_agent::harness::messages::CustomMessage,
     ) -> Result<(), String> {
-        let content = serde_json::to_value(&message.content).map_err(|error| error.to_string())?;
+        let content = serde_json::to_value(&message.content).map_err(|error| {
+            let error_message = error.to_string();
+            self.settle_queued_custom_receipt(&message, Err(error_message.clone()));
+            error_message
+        })?;
         let entry = self.with_session_manager_mut(|manager| {
             manager.append_custom_message(
                 &message.custom_type,
@@ -15844,6 +16068,7 @@ impl AgentSession {
         if let Some(id) = entry.get("id").and_then(Value::as_str) {
             self.emit_entry_appended(id);
         }
+        self.settle_queued_custom_receipt(&message, Ok(()));
         let message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(message));
         let mut messages = self.messages();
         messages.push(message.clone());
@@ -25334,6 +25559,158 @@ mod tests {
             1
         );
         assert!(entries.iter().any(|entry| entry["message"]["role"] == "assistant"));
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn custom_trigger_delivery_receipt_settles_only_after_transcript_append_or_loss() {
+        let session = retry_session(
+            vec![maho_ai::providers::faux::faux_assistant_message(
+                "woken",
+                Default::default(),
+            )],
+            0,
+        );
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+
+        // 1. An idle wake canceled before admission must resolve its receipt as Failed (never Delivered).
+        let admission = session.prompt_admission.lock().await;
+        let aborted_receipt = maho_ext_api::ExtensionActions::send_message_with_receipt(
+            &actions,
+            maho_ext_api::CustomMessage {
+                custom_type: "omo-senpi:wake".to_owned(),
+                content: vec![maho_tools::definition::ToolContent::text("aborted wake")],
+                display: false,
+                details: None,
+            },
+            maho_ext_api::SendMessageOptions {
+                trigger_turn: true,
+                deliver_as: Some(maho_ext_api::DeliverAs::Steer),
+            },
+        )
+        .expect("wake accepted");
+        assert!(
+            aborted_receipt.outcome().is_none(),
+            "acceptance is not delivery: receipt must stay pending before append"
+        );
+        let (abort_tx, abort_rx) = tokio::sync::oneshot::channel();
+        aborted_receipt.on_settled(move |outcome| {
+            let _ = abort_tx.send(outcome);
+        });
+        session.abort().await;
+        drop(admission);
+        let abort_outcome = tokio::time::timeout(std::time::Duration::from_secs(5), abort_rx)
+            .await
+            .expect("aborted wake receipt must settle")
+            .expect("abort outcome");
+        assert!(abort_outcome.is_err());
+
+        // 2. A wake deferred into an open settled window that is then canceled must resolve Failed.
+        lock(&session.settled_delivery).begin(session.user_abort_generation.load(Ordering::SeqCst));
+        let deferred_receipt = maho_ext_api::ExtensionActions::send_message_with_receipt(
+            &actions,
+            maho_ext_api::CustomMessage {
+                custom_type: "omo-senpi:wake".to_owned(),
+                content: vec![maho_tools::definition::ToolContent::text("dropped settled wake")],
+                display: false,
+                details: None,
+            },
+            maho_ext_api::SendMessageOptions {
+                trigger_turn: true,
+                deliver_as: Some(maho_ext_api::DeliverAs::Steer),
+            },
+        )
+        .expect("deferred wake accepted");
+        assert!(deferred_receipt.outcome().is_none());
+        lock(&session.settled_delivery).cancel();
+        assert!(matches!(deferred_receipt.outcome(), Some(Err(_))));
+
+        // 3. A wake steered into a queue that is cleared before a run consumes it must resolve Failed.
+        let mut extension = maho_ext_api::LoadedExtension::new(
+            "<inline:abort-during-admission>",
+            session.cwd().into(),
+            Default::default(),
+        );
+        let abort_once = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let abort_flag = Arc::clone(&abort_once);
+        let abort_session = session.clone();
+        extension.handlers.insert(
+            maho_ext_api::EventKind::BeforeAgentStart,
+            vec![Arc::new(move |_, _| {
+                if abort_flag.swap(false, Ordering::SeqCst) {
+                    abort_session
+                        .user_abort_generation
+                        .fetch_add(1, Ordering::SeqCst);
+                }
+                Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+            })],
+        );
+        session
+            .set_extension_runner(maho_ext_host::ExtensionRunner::new(
+                vec![extension],
+                Default::default(),
+                Default::default(),
+                test_extension_context(&session),
+            ))
+            .await;
+        let queued_receipt = maho_ext_api::ExtensionActions::send_message_with_receipt(
+            &actions,
+            maho_ext_api::CustomMessage {
+                custom_type: "omo-senpi:wake".to_owned(),
+                content: vec![maho_tools::definition::ToolContent::text("steered for later")],
+                display: false,
+                details: None,
+            },
+            maho_ext_api::SendMessageOptions {
+                trigger_turn: true,
+                deliver_as: Some(maho_ext_api::DeliverAs::Steer),
+            },
+        )
+        .expect("wake accepted");
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.wait_for_idle())
+            .await
+            .expect("rejected admission turn settles");
+        assert!(session.agent.has_queued_messages());
+        assert!(
+            queued_receipt.outcome().is_none(),
+            "wake sitting in steering queue is not yet in transcript"
+        );
+        session.clear_queue(false);
+        assert!(matches!(queued_receipt.outcome(), Some(Err(_))));
+
+        // 4. A normal idle wake resolves Delivered only once the entry is in the session transcript.
+        let (delivered_tx, delivered_rx) = tokio::sync::oneshot::channel();
+        let delivered_receipt = maho_ext_api::ExtensionActions::send_message_with_receipt(
+            &actions,
+            maho_ext_api::CustomMessage {
+                custom_type: "omo-senpi:wake".to_owned(),
+                content: vec![maho_tools::definition::ToolContent::text("delivered wake")],
+                display: false,
+                details: None,
+            },
+            maho_ext_api::SendMessageOptions {
+                trigger_turn: true,
+                deliver_as: Some(maho_ext_api::DeliverAs::Steer),
+            },
+        )
+        .expect("wake accepted");
+        delivered_receipt.on_settled(move |outcome| {
+            let _ = delivered_tx.send(outcome);
+        });
+        let delivered_outcome =
+            tokio::time::timeout(std::time::Duration::from_secs(5), delivered_rx)
+                .await
+                .expect("delivered wake receipt settles")
+                .expect("delivered outcome");
+        assert_eq!(delivered_outcome, Ok(()));
+        let entries = session.with_session_manager(|manager| manager.entries());
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry["customType"] == "omo-senpi:wake")
+                .count(),
+            1
+        );
         session.dispose().await;
     }
 

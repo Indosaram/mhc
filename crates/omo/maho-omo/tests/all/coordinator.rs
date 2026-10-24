@@ -339,3 +339,47 @@ fn retire_hands_a_still_passive_queue_back_and_refuses_later_enqueues() {
     assert!(!coordinator.enqueue(injection("st_2", IdleInjectionSource::TaskCompletion, "late")));
     assert_eq!(coordinator.pending_count(), 0);
 }
+
+#[test]
+fn receipt_delivery_waits_for_append_or_drop_before_settling_callbacks() {
+    let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let pending = Arc::new(Mutex::new(Vec::<maho_ext_api::MessageDeliveryReceipt>::new()));
+    let captured = Arc::clone(&pending);
+    let (flush, soon) = inline_pair();
+    let coordinator = maho_omo::IdleInjectionQueue::new(
+        Arc::new(move |_, _| {
+            let receipt = maho_ext_api::MessageDeliveryReceipt::pending();
+            captured.lock().unwrap_or_else(PoisonError::into_inner).push(receipt.clone());
+            Delivery::Receipt(receipt)
+        }),
+        flush,
+        soon,
+    );
+
+    let ok_events = Arc::clone(&events);
+    let fail_events = Arc::clone(&events);
+    let mut first = injection("st_1", IdleInjectionSource::TaskCompletion, "first");
+    first.on_flushed = Some(Arc::new(move || ok_events.lock().unwrap_or_else(PoisonError::into_inner).push("flushed:1".to_owned())));
+    first.on_delivery_failed = Some(Arc::new(move |reason| fail_events.lock().unwrap_or_else(PoisonError::into_inner).push(format!("failed:1:{reason}"))));
+    coordinator.enqueue(first);
+    assert_eq!(coordinator.flush_on_idle(), 1);
+    assert!(events.lock().unwrap_or_else(PoisonError::into_inner).is_empty());
+
+    pending.lock().unwrap_or_else(PoisonError::into_inner).pop().expect("first receipt").resolve_delivered();
+    assert_eq!(*events.lock().unwrap_or_else(PoisonError::into_inner), vec!["flushed:1".to_owned()]);
+
+    let ok_events = Arc::clone(&events);
+    let fail_events = Arc::clone(&events);
+    let mut second = injection("st_2", IdleInjectionSource::TaskCompletion, "second");
+    second.on_flushed = Some(Arc::new(move || ok_events.lock().unwrap_or_else(PoisonError::into_inner).push("flushed:2".to_owned())));
+    second.on_delivery_failed = Some(Arc::new(move |reason| fail_events.lock().unwrap_or_else(PoisonError::into_inner).push(format!("failed:2:{reason}"))));
+    coordinator.enqueue(second);
+    assert_eq!(coordinator.flush_on_idle(), 1);
+    let dropped = pending.lock().unwrap_or_else(PoisonError::into_inner).pop().expect("second receipt");
+    drop(maho_ext_api::MessageDeliveryGuard::new(dropped, "turn dropped"));
+    assert_eq!(
+        *events.lock().unwrap_or_else(PoisonError::into_inner),
+        vec!["flushed:1".to_owned(), "failed:2:turn dropped".to_owned()]
+    );
+}
+
