@@ -56,6 +56,7 @@ async fn completion_ignoring_abort_is_dropped_before_session_shutdown_returns() 
                 path: None,
                 isolation: None,
             },
+            env_passthrough: None,
         },
     )
     .unwrap();
@@ -144,6 +145,7 @@ async fn native_factory_registers_baseline_eval_before_runtime_actions_are_bound
                 path: None,
                 isolation: None,
             },
+            env_passthrough: None,
         },
     )
     .unwrap();
@@ -228,6 +230,7 @@ async fn registered_callable_enforces_configured_detached_capacity() {
                 path: None,
                 isolation: None,
             },
+            env_passthrough: None,
         },
     )
     .unwrap();
@@ -315,6 +318,7 @@ async fn registered_callable_schema_uses_resolved_language_settings() {
                 path: None,
                 isolation: None,
             },
+            env_passthrough: None,
         },
     )
     .unwrap();
@@ -411,6 +415,7 @@ async fn concurrent_completion_keeps_each_invocations_context() {
                 path: None,
                 isolation: None,
             },
+            env_passthrough: None,
         },
     )
     .unwrap();
@@ -675,6 +680,7 @@ async fn completion_context_refreshes_for_same_model_id_without_reinstalling_eva
                 path: None,
                 isolation: None,
             },
+            env_passthrough: None,
         },
     )
     .unwrap();
@@ -874,6 +880,7 @@ async fn native_session_registration_runs_real_worker_and_shutdown_rejects_stale
                 path: None,
                 isolation: None,
             },
+            env_passthrough: None,
         },
     )
     .unwrap();
