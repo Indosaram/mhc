@@ -2968,6 +2968,7 @@ async fn consent_selector_mounts_before_login_dialog_and_cancel_skips_login() {
 
 #[tokio::test]
 async fn consent_continue_records_consent_then_queues_the_login() {
+    use maho_tui::tui::Component;
     let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(
         None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "github-copilot", "faux-1", false);
     assert!(!session.with_settings_manager(|s| maho_core::provider_consent::consent_recorded(s, "github-copilot")));

@@ -121,7 +121,7 @@ async fn thread_responses_report_effective_approval_and_sandbox() {
         let resumed = harness.call(json!({"id":3,"method":"thread/resume","params":{"threadId":forked_id}})).await;
         assert_eq!(resumed["result"]["approvalPolicy"], approval);
         assert_eq!(resumed["result"]["sandbox"], expected_sandbox);
-        let started = harness.call(json!({"id":4,"method":"thread/start","params":{}})).await;
+        let started = harness.call(json!({"id":4,"method":"thread/start","params":{"cwd":cwd}})).await;
         assert_eq!(started["result"]["approvalPolicy"], approval);
         assert_eq!(started["result"]["sandbox"], expected_sandbox);
         let requested = harness.call(json!({"id":5,"method":"thread/start","params":{"approvalPolicy":"untrusted"}})).await;

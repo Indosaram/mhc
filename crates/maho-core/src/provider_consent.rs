@@ -103,7 +103,7 @@ fn rotation_key(provider: &str) -> String {
 fn rotation_consent_in(settings: &Settings, provider: &str) -> bool {
     settings
         .get(CONSENT_SETTINGS_KEY)
-        .and_then(|consent| consent.get(&rotation_key(provider)))
+        .and_then(|consent| consent.get(rotation_key(provider)))
         .and_then(Value::as_str)
         .is_some_and(|stamp| !stamp.trim().is_empty())
 }

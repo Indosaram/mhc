@@ -759,11 +759,11 @@ fn lock_verified(file: &std::fs::File, path: &Path) -> std::io::Result<bool> {
     {
         use std::os::unix::fs::MetadataExt;
         let locked = file.metadata()?;
-        return Ok(match std::fs::metadata(path) {
+        Ok(match std::fs::metadata(path) {
             Ok(current) => locked.dev() == current.dev() && locked.ino() == current.ino(),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(error) => return Err(error),
-        });
+        })
     }
     #[cfg(not(unix))]
     Ok(true)
@@ -963,7 +963,7 @@ impl SessionManager {
             .session_file
             .as_deref()
             .filter(|_| self.persist)
-            .map(retention_lock_path);
+            .map(|file| retention_lock_path(Path::new(file)));
         if wanted.as_ref() != ownership.retention_lock.as_ref().map(|lock| &lock.path) {
             ownership.retention_lock = None;
             ownership.retention_lock_error = None;

@@ -142,7 +142,7 @@ struct EnvCapture(Arc<Mutex<Option<std::collections::BTreeMap<String, String>>>>
 impl BashOperations for EnvCapture {
     fn exec<'a>(&'a self, _: &'a str, _: &'a Path, options: BashExecOptions) -> ToolFuture<'a, BashExit> {
         Box::pin(async move {
-            *self.0.lock().unwrap() = Some(options.env);
+            *self.0.lock().expect("test") = Some(options.env);
             Ok(BashExit { exit_code: Some(0) })
         })
     }
@@ -151,9 +151,8 @@ impl BashOperations for EnvCapture {
 async fn spawned_env(options: BashToolOptions) -> std::collections::BTreeMap<String, String> {
     let captured = Arc::new(Mutex::new(None));
     let tool = create_bash_tool_definition(".".into(), BashToolOptions { operations: Some(Arc::new(EnvCapture(Arc::clone(&captured)))), shell_env: Some(secret_shell_env()), ..options });
-    (tool.execute)(ToolCall { id: "env", params: json!({"command":"true"}), signal: AbortSignal::default(), on_update: None, context: None }).await.unwrap();
-    let env = captured.lock().unwrap().take().unwrap();
-    env
+    (tool.execute)(ToolCall { id: "env", params: json!({"command":"true"}), signal: AbortSignal::default(), on_update: None, context: None }).await.expect("test");
+    captured.lock().expect("test").take().expect("test")
 }
 
 #[tokio::test]

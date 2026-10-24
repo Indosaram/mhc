@@ -132,7 +132,7 @@ pub trait FailoverHost {
     }
     fn rotation_consented(&self) -> bool {
         self.provider_id()
-            .map_or(true, crate::provider_consent::rotation_consented)
+            .is_none_or(crate::provider_consent::rotation_consented)
     }
     /// Delivers one event to the caller.
     fn emit(&mut self, event: Self::Event);
@@ -193,7 +193,7 @@ pub async fn run_credential_failover<H: FailoverHost>(
             .filter(|slot| {
                 !attempted.contains(&slot.name)
                     && is_available(slot, now)
-                    && pinned_or_first.as_ref().map_or(true, |p| &slot.name == p)
+                    && pinned_or_first.as_ref().is_none_or(|p| &slot.name == p)
             })
             .cloned()
             .collect();
@@ -504,7 +504,7 @@ mod tests {
             }
             self.provider_id
                 .as_deref()
-                .map_or(true, crate::provider_consent::rotation_consented)
+                .is_none_or(crate::provider_consent::rotation_consented)
         }
 
         fn emit(&mut self, event: Self::Event) {
@@ -644,7 +644,7 @@ mod tests {
 
     #[tokio::test]
     async fn rotation_consent_gates_generic_failover_loop() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let agent_dir = dir.path().to_string_lossy().into_owned();
         let mut settings = crate::settings_manager::SettingsManager::create(&agent_dir, &agent_dir, &agent_dir, false);
         let provider = "chatgpt-subscription";

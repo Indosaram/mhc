@@ -43,16 +43,16 @@ fn env(project_name: &str) -> Env {
     // Not under /tmp: bwrap masks /tmp with a tmpfs, which would make `outside` simply vanish
     // instead of being read-only confined via `--ro-bind / /`.
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/test-tmp");
-    std::fs::create_dir_all(&base).unwrap();
-    let root = tempfile::tempdir_in(&base).unwrap();
-    let home = tempfile::tempdir_in(&base).unwrap();
+    std::fs::create_dir_all(&base).expect("test");
+    let root = tempfile::tempdir_in(&base).expect("test");
+    let home = tempfile::tempdir_in(&base).expect("test");
     let project = std::fs::canonicalize(root.path())
-        .unwrap()
+        .expect("test")
         .join(project_name);
-    let outside = std::fs::canonicalize(root.path()).unwrap().join("outside");
-    std::fs::create_dir_all(&project).unwrap();
-    std::fs::create_dir_all(&outside).unwrap();
-    let agent_dir = std::fs::canonicalize(home.path()).unwrap().join("agent");
+    let outside = std::fs::canonicalize(root.path()).expect("test").join("outside");
+    std::fs::create_dir_all(&project).expect("test");
+    std::fs::create_dir_all(&outside).expect("test");
+    let agent_dir = std::fs::canonicalize(home.path()).expect("test").join("agent");
     Env {
         _root: root,
         _home: home,
@@ -98,9 +98,9 @@ fn output(result: &ToolResult) -> String {
         .join("\n")
 }
 fn exit_code(result: &ToolResult) -> i64 {
-    result.structured_content.as_ref().unwrap()["exit_code"]
+    result.structured_content.as_ref().expect("test")["exit_code"]
         .as_i64()
-        .unwrap()
+        .expect("test")
 }
 
 #[tokio::test]
@@ -111,18 +111,18 @@ async fn sandbox_blocks_outside_writes_but_allows_inside() {
     let e = env("proj");
     let command = format!("echo x > {}/probe", e.outside.display());
     let off = tool(&e.project, BashSandboxMode::Off, &e.agent_dir);
-    let result = run(&off, &command, AbortSignal::default()).await.unwrap();
+    let result = run(&off, &command, AbortSignal::default()).await.expect("test");
     assert_eq!(exit_code(&result), 0);
     assert!(
         e.outside.join("probe").exists(),
         "unwrapped command must write outside"
     );
-    std::fs::remove_file(e.outside.join("probe")).unwrap();
+    std::fs::remove_file(e.outside.join("probe")).expect("test");
 
     let required = tool(&e.project, BashSandboxMode::Required, &e.agent_dir);
     let result = run(&required, &command, AbortSignal::default())
         .await
-        .unwrap();
+        .expect("test");
     assert_ne!(exit_code(&result), 0, "{}", output(&result));
     assert!(!e.outside.join("probe").exists());
     let visible = run(
@@ -131,7 +131,7 @@ async fn sandbox_blocks_outside_writes_but_allows_inside() {
         AbortSignal::default(),
     )
     .await
-    .unwrap();
+    .expect("test");
     assert_eq!(
         exit_code(&visible),
         0,
@@ -144,7 +144,7 @@ async fn sandbox_blocks_outside_writes_but_allows_inside() {
         AbortSignal::default(),
     )
     .await
-    .unwrap();
+    .expect("test");
     assert_eq!(exit_code(&result), 0, "{}", output(&result));
     assert!(e.project.join("inside/probe").exists());
 }
@@ -162,9 +162,9 @@ async fn sandbox_exports_private_tmpdir() {
         AbortSignal::default(),
     )
     .await
-    .unwrap();
+    .expect("test");
     assert_eq!(exit_code(&result), 0, "{}", output(&result));
-    let private_tmp = PathBuf::from(output(&result).lines().next().unwrap());
+    let private_tmp = PathBuf::from(output(&result).lines().next().expect("test"));
     assert!(private_tmp.starts_with(e.agent_dir.join("tmp")));
     assert!(private_tmp.join("probe").exists());
 }
@@ -184,7 +184,7 @@ async fn sandbox_tmp_is_private_tmpfs_on_linux() {
         AbortSignal::default(),
     )
     .await
-    .unwrap();
+    .expect("test");
     assert_eq!(exit_code(&result), 0, "{}", output(&result));
     assert!(
         !Path::new("/tmp").join(&name).exists(),
@@ -205,7 +205,7 @@ async fn sandbox_handles_spaces_and_quotes_in_paths() {
         AbortSignal::default(),
     )
     .await
-    .unwrap();
+    .expect("test");
     assert_eq!(exit_code(&result), 0, "{}", output(&result));
     assert!(e.project.join("ok.txt").exists());
 }
@@ -217,11 +217,11 @@ async fn sandbox_follows_symlinked_cwd() {
     }
     let e = env("proj");
     let link = e.outside.join("link");
-    std::os::unix::fs::symlink(&e.project, &link).unwrap();
+    std::os::unix::fs::symlink(&e.project, &link).expect("test");
     let required = tool(&link, BashSandboxMode::Required, &e.agent_dir);
     let result = run(&required, "echo x > viaLink.txt", AbortSignal::default())
         .await
-        .unwrap();
+        .expect("test");
     assert_eq!(exit_code(&result), 0, "{}", output(&result));
     assert!(e.project.join("viaLink.txt").exists());
     let result = run(
@@ -230,7 +230,7 @@ async fn sandbox_follows_symlinked_cwd() {
         AbortSignal::default(),
     )
     .await
-    .unwrap();
+    .expect("test");
     assert_ne!(exit_code(&result), 0);
 }
 
@@ -243,7 +243,7 @@ async fn sandbox_propagates_exit_code() {
     let required = tool(&e.project, BashSandboxMode::Required, &e.agent_dir);
     let result = run(&required, "exit 7", AbortSignal::default())
         .await
-        .unwrap();
+        .expect("test");
     assert_eq!(exit_code(&result), 7);
 }
 
@@ -265,9 +265,8 @@ async fn sandbox_cancel_propagates() {
     });
     let error = run(&required, "touch started; sleep 60", signal)
         .await
-        .err()
-        .unwrap();
-    watcher.await.unwrap();
+        .expect_err("test");
+    watcher.await.expect("test");
     assert!(error.to_string().contains("Command aborted"), "{error}");
 }
 
@@ -287,11 +286,11 @@ async fn sandbox_adversarial_command_stays_confined() {
         AbortSignal::default(),
     )
     .await
-    .unwrap();
+    .expect("test");
     assert_eq!(exit_code(&visible), 0, "{}", output(&visible));
     let _ = run(&required, &command, AbortSignal::default())
         .await
-        .unwrap();
+        .expect("test");
     for name in ["x", "y", "z"] {
         assert!(!e.outside.join(name).exists(), "{name} escaped the sandbox");
     }
@@ -306,7 +305,7 @@ async fn sandbox_blocks_system_path_writes() {
     let required = tool(&e.project, BashSandboxMode::Required, &e.agent_dir);
     let result = run(&required, "echo x > /etc/mhc-probe", AbortSignal::default())
         .await
-        .unwrap();
+        .expect("test");
     assert_ne!(exit_code(&result), 0, "{}", output(&result));
     assert!(!Path::new("/etc/mhc-probe").exists());
 }
@@ -339,7 +338,7 @@ async fn sandbox_composes_with_env_scrub() {
         AbortSignal::default(),
     )
     .await
-    .unwrap();
+    .expect("test");
     assert_eq!(exit_code(&result), 0, "{}", output(&result));
     let text = output(&result);
     assert!(text.starts_with("unset|"), "{text}");

@@ -87,8 +87,15 @@ async function buildArchive(version) {
 	const pkg = join(stage, `mhc-${target}`);
 	mkdirSync(pkg, { recursive: true });
 	if (isWindows) {
-		copyFileSync(process.execPath, join(pkg, "mhc.exe"));
-		copyFileSync(process.execPath, join(pkg, "mhc-launcher.exe"));
+		const rs = join(tmp, `fake-${version}.rs`);
+		const exe = join(tmp, `fake-${version}.exe`);
+		if (!existsSync(exe)) {
+			writeFileSync(rs, `fn main() { println!("${version}"); }\n`);
+			const cr = await run(["rustc", "--crate-name", "fake_payload", "-C", "opt-level=0", rs, "-o", exe]);
+			if (cr.code !== 0) throw new Error(`rustc failed: ${cr.stderr}`);
+		}
+		copyFileSync(exe, join(pkg, "mhc.exe"));
+		copyFileSync(exe, join(pkg, "mhc-launcher.exe"));
 	} else {
 		for (const name of ["mhc", "mhc-launcher"]) {
 			writeFileSync(join(pkg, name), `#!/bin/sh\necho "mhc ${version}" | sed 's/^mhc //'\n`);
@@ -166,8 +173,19 @@ async function scenario(name, { version, archive = "valid", sig = "trusted", hos
 	delete env.MHC_VERIFY_ATTESTATION;
 	if (allowUnsigned) env.MHC_ALLOW_UNSIGNED = "1";
 	let cmd;
-	if (isWindows) cmd = ["pwsh", "-NoProfile", "-File", join(scriptDir, "install.ps1")];
-	else {
+	if (isWindows) {
+		cmd = ["pwsh", "-NoProfile", "-File", join(scriptDir, "install.ps1")];
+		if (noMinisign) {
+			for (const key of ["PATH", "Path"]) {
+				if (env[key]) {
+					env[key] = env[key]
+						.split(";")
+						.filter(p => !existsSync(join(p, "minisign.exe")))
+						.join(";");
+				}
+			}
+		}
+	} else {
 		cmd = ["sh", join(scriptDir, "install.sh")];
 		if (noMinisign) env.PATH = noMinisignBin;
 	}

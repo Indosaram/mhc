@@ -48,7 +48,7 @@ pub fn validate_auth_command_args(args: &Args, kind: AuthCommandKind) -> Result<
     let provider = args.provider.as_deref().map(str::trim).filter(|v| !v.is_empty()); let model = args.model.as_deref().map(str::trim).filter(|v| !v.is_empty());
     if let Some(option) = args.unknown_flags.keys().next() { return Err(format!("Unknown option --{option} for \"{}\".", get_auth_command_name(kind))); }
     if args.api_key.is_some() || !args.messages.is_empty() || !args.file_args.is_empty() { return Err("Auth commands only accept --provider and --model".to_owned()); }
-    if provider.is_none() && model.is_none() { return Err(match kind { AuthCommandKind::Check => "Auth checks require --provider <provider> or --model <model>", AuthCommandKind::ApiKey | AuthCommandKind::BearerToken => "Credential printing requires --provider <provider> or --model <model>" }.to_owned()); } Ok((provider, model))
+    if provider.is_none() && model.is_none() { return Err(match kind { AuthCommandKind::Check => "Auth checks require --provider <provider> or --model <model>", AuthCommandKind::ApiKey | AuthCommandKind::BearerToken => "Credential printing requires --provider <provider> or --model <model>", AuthCommandKind::Consent => "Auth consent requires a provider argument" }.to_owned()); } Ok((provider, model))
 }
 
 /// `mhc auth consent <provider> [--rotation] [--revoke] [--yes]`: records (or revokes) `providerRiskConsent.<provider>`
@@ -125,7 +125,7 @@ mod consent_tests {
     fn run(command: &AuthCommand, dir: &str, tty: bool, input: &str) -> (i32, String, String) {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = run_auth_consent(command, dir, tty, &mut input.as_bytes(), &mut out, &mut err);
-        (code, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())
+        (code, String::from_utf8(out).expect("test"), String::from_utf8(err).expect("test"))
     }
     #[test]
     fn consent_and_revoke_parse() {
@@ -136,7 +136,7 @@ mod consent_tests {
     }
     #[test]
     fn consent_writes_only_on_yes_and_revoke_removes() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("test");
         let path = dir.path().to_string_lossy().into_owned();
         let settings = dir.path().join("settings.json");
         let command = parse(&["auth", "consent", "github-copilot"]);
@@ -147,13 +147,13 @@ mod consent_tests {
         let (code, out, _) = run(&command, &path, true, "yes\n");
         assert_eq!(code, 0);
         assert!(out.contains("VS Code GitHub Copilot Chat"));
-        assert!(std::fs::read_to_string(&settings).unwrap().contains("providerRiskConsent"));
+        assert!(std::fs::read_to_string(&settings).expect("test").contains("providerRiskConsent"));
         assert_eq!(run(&parse(&["auth", "consent", "github-copilot", "--revoke"]), &path, false, "").0, 0);
-        assert!(!std::fs::read_to_string(&settings).unwrap().contains("github-copilot\":"));
+        assert!(!std::fs::read_to_string(&settings).expect("test").contains("github-copilot\":"));
     }
     #[test]
     fn consent_unknown_provider_exits_2_listing_known_ids() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("test");
         let (code, _, err) = run(&parse(&["auth", "consent", "openai", "--yes"]), &dir.path().to_string_lossy(), false, "");
         assert_eq!(code, 2);
         assert!(err.contains("github-copilot") && err.contains("kimi-coding"));
@@ -164,18 +164,18 @@ mod consent_tests {
         assert!(command.kind == AuthCommandKind::Consent && command.rotation && command.yes);
         assert_eq!(command.args, vec!["anthropic-subscription".to_owned()]);
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("test");
         let path = dir.path().to_string_lossy().into_owned();
         let settings = dir.path().join("settings.json");
         let (code, out, _) = run(&command, &path, false, "");
         assert_eq!(code, 0);
         assert!(out.contains("Recorded providerRiskConsent.anthropic-subscription:rotation."));
-        assert!(std::fs::read_to_string(&settings).unwrap().contains("anthropic-subscription:rotation"));
+        assert!(std::fs::read_to_string(&settings).expect("test").contains("anthropic-subscription:rotation"));
 
         let revoke_command = parse(&["auth", "consent", "anthropic-subscription", "--rotation", "--revoke"]);
         let (code_rev, out_rev, _) = run(&revoke_command, &path, false, "");
         assert_eq!(code_rev, 0);
         assert!(out_rev.contains("Revoked rotation consent for anthropic-subscription."));
-        assert!(!std::fs::read_to_string(&settings).unwrap().contains("anthropic-subscription:rotation"));
+        assert!(!std::fs::read_to_string(&settings).expect("test").contains("anthropic-subscription:rotation"));
     }
 }

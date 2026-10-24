@@ -139,7 +139,7 @@ export function auditCrates(repoRoot) {
 			const { name, license } = parseCargoPackage(content);
 			if (!name) continue;
 
-			const relCrate = relative(cratesDir, dirname(cargoPath));
+			const relCrate = relative(cratesDir, dirname(cargoPath)).replaceAll("\\", "/");
 			const isDesktop = relCrate.startsWith("omo/senpi-desktop-") || name.startsWith("senpi-desktop-");
 
 			if (isDesktop) {

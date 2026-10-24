@@ -299,7 +299,7 @@ mod tests {
             &[],
             &|_| None,
         )
-        .unwrap();
+        .expect("test");
         assert_eq!(out.command, "ls");
         assert!(notice.is_none());
     }
@@ -315,9 +315,9 @@ mod tests {
                 &[],
                 &|_| None,
             )
-            .unwrap();
+            .expect("test");
             assert_eq!(out.command, "ls");
-            assert!(notice.unwrap().starts_with("bash sandbox unavailable: "));
+            assert!(notice.expect("test").starts_with("bash sandbox unavailable: "));
         }
     }
 
@@ -336,8 +336,7 @@ mod tests {
                 &[],
                 &|_| None,
             )
-            .err()
-            .unwrap();
+            .err().expect("test");
             assert_eq!(
                 error.to_string(),
                 format!("bashSandbox is \"required\" but {tool} is not available on this system")
@@ -355,7 +354,7 @@ mod tests {
             &[],
             &found,
         )
-        .unwrap();
+        .expect("test");
         assert!(out.command.starts_with("'/usr/bin/bwrap' --ro-bind / / "));
         assert_eq!(out.env.get("TMPDIR").map(String::as_str), Some("/t/p"));
         let (out, _) = wrap_for(
@@ -366,7 +365,7 @@ mod tests {
             &[],
             &found,
         )
-        .unwrap();
+        .expect("test");
         assert!(
             out.command
                 .starts_with("'/usr/bin/sandbox-exec' -p '(version 1)")
@@ -375,9 +374,9 @@ mod tests {
 
     #[test]
     fn sandbox_custom_agent_dir_holds_private_tmp() {
-        let home = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().expect("test");
         let agent = home.path().join("custom agent");
-        let (tmp, writable) = prepare_dirs(&agent, "sess/1").unwrap();
+        let (tmp, writable) = prepare_dirs(&agent, "sess/1").expect("test");
         assert_eq!(tmp, agent.join("tmp").join("bash-sess_1"));
         assert!(tmp.is_dir());
         assert_eq!(writable, vec![agent.join("sessions"), agent.join("cache")]);

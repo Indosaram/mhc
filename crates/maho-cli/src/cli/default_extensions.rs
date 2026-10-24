@@ -540,7 +540,7 @@ pub fn factories_with_mcp_registry(
             factory("webfetch", maho_ext_webfetch::index::WebfetchExtension),
             factory("rules", maho_ext_rules::Rules),
             factory("goal", maho_ext_goal::GoalExtension::default()),
-            factory("codemode", Codemode { env_passthrough: settings.get_bash_env_scrub_passthrough() }),
+            factory("codemode", Codemode { parent: parent.clone() }),
             // RESERVED (assembly, sequential): the builtin-mcps owner's native MCP declaration is
             // added here once its source receipt lands; this is the MCP declaration seam the plan
             // marks integrator-owned. Do not integrate from a summary.
@@ -966,7 +966,7 @@ impl ExtensionActions for TaskActions {
     }
 }
 struct Codemode {
-    env_passthrough: Option<Vec<String>>,
+    parent: TaskParent,
 }
 struct Images;
 impl maho_codemode::tool::image_resize::EvalImageSdk for Images {
@@ -1022,6 +1022,7 @@ impl maho_codemode::tool::image_resize::EvalImageSdk for Images {
 }
 impl Extension for Codemode {
     fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
+        let env_passthrough = self.parent.get().and_then(|p| p()).map(|s| s.with_settings_manager(|m| m.get_bash_env_scrub_passthrough())).unwrap_or_else(|| maho_core::settings_manager::SettingsManager::create(&api.registered.registration_cwd.to_string_lossy(), &maho_core::config::get_agent_dir(), &maho_core::config::home_dir(), true).get_bash_env_scrub_passthrough());
         if let Err(error) = maho_codemode::register(
             api,
             maho_codemode::CodemodeExtensionOptions {
@@ -1034,7 +1035,7 @@ impl Extension for Codemode {
                 js_runtime: maho_codemode::extension::runtime_info::probe_js_runtime_info(
                     &std::env::vars().collect(),
                 ),
-                env_passthrough: self.env_passthrough.clone(),
+                env_passthrough,
             },
         ) {
             std::panic::panic_any(error);
