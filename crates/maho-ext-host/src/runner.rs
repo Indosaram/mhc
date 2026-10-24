@@ -698,12 +698,21 @@ pub struct ExtensionRunner {
     /// One stable `ctx.session_manager` adapter per runner (session/generation); see
     /// `create_context_for_extension`. Cleared whenever the bound context/actions change.
     context_session_manager: Arc<std::sync::Mutex<Option<Arc<dyn SessionManager>>>>,
+    /// The host-bound UI and mode, shared by every clone of this runner. Upstream `createContext`
+    /// reads `runner.uiContext` / `runner.mode` through live getters, so a clone taken before the
+    /// host binds (e.g. the tool context factory) must still observe the later binding.
+    live_bindings: Arc<std::sync::Mutex<LiveBindings>>,
     factory_context: ExtensionContext,
     /// The session-bound error listener (pinned `_extensionErrorUnsubscriber` swap in `_applyExtensionBindings`).
     session_error_listener: Option<ErrorListener>,
     handle_ledgers: crate::extension_handle_ledger::RunnerHandleLedgers,
     session_start_turns: Arc<crate::session_start_turn_gate::SessionStartTurnGate>,
     reported_child_module_replacements: Arc<std::sync::Mutex<BTreeSet<String>>>,
+}
+#[derive(Default)]
+struct LiveBindings {
+    ui: Option<Arc<dyn ExtensionUi>>,
+    mode: Option<(ExtensionMode, bool)>,
 }
 pub type RuntimeFactory =
     Arc<dyn Fn(ExtensionContext) -> ExtensionFuture<'static, ExtensionRunner> + Send + Sync>;
@@ -758,6 +767,7 @@ impl ExtensionRunner {
             process_exit_requested_at: Arc::new(std::sync::Mutex::new(None)),
             runtime_factory: None,
             context_session_manager: Arc::new(std::sync::Mutex::new(None)),
+            live_bindings: Arc::default(),
             session_error_listener: None,
         }
     }
@@ -931,7 +941,11 @@ impl ExtensionRunner {
     }
     pub fn bind_ui(&mut self, ui: Arc<dyn ExtensionUi>) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
-        self.context.ui = ui;
+        self.context.ui = Arc::clone(&ui);
+        self.live_bindings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .ui = Some(ui);
         *self
             .context_session_manager
             .lock()
@@ -946,6 +960,10 @@ impl ExtensionRunner {
         self.runtime.assert_active()?;
         self.context.mode = mode;
         self.context.has_ui = has_ui;
+        self.live_bindings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .mode = Some((mode, has_ui));
         Ok(())
     }
     pub fn bind_session_actions(
@@ -1160,6 +1178,19 @@ impl ExtensionRunner {
     ) -> Result<ExtensionContext, ExtensionFailure> {
         self.runtime.assert_active()?;
         let mut context = self.context.clone();
+        {
+            let live = self
+                .live_bindings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(ui) = &live.ui {
+                context.ui = Arc::clone(ui);
+            }
+            if let Some((mode, has_ui)) = live.mode {
+                context.mode = mode;
+                context.has_ui = has_ui;
+            }
+        }
         if let Some(actions) = &self.context_actions {
             // ONE stable adapter per runner (session/generation) so identity matches upstream's
             // single `runner.sessionManager`. A single locked `get_or_insert_with` keeps concurrent
