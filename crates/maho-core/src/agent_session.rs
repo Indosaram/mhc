@@ -23707,6 +23707,18 @@ mod tests {
     #[test]
     fn request_headers_merge_over_provider_attribution_headers() {
         let session = test_session();
+        // SAFETY-DIVERGENCE(senpi packages/coding-agent/src/core/telemetry.ts): attribution headers are opt-in; enable explicitly to cover the merge.
+        session.with_settings_manager_mut(|manager| {
+            manager
+                .set(
+                    crate::settings_manager::SettingsScope::Global,
+                    &crate::settings_manager::Settings::from_iter([(
+                        "enableInstallTelemetry".to_owned(),
+                        Value::Bool(true),
+                    )]),
+                )
+                .expect("enable install telemetry");
+        });
         let mut model = test_model();
         model.provider = "openrouter".to_owned();
         let request: ProviderHeaders = [
@@ -23721,6 +23733,19 @@ mod tests {
             Some(&Some("cli-agent".to_owned()))
         );
         assert_eq!(headers.get("HTTP-Referer"), Some(&None));
+        assert_eq!(headers.get("x-request"), Some(&Some("1".to_owned())));
+    }
+
+    #[test]
+    fn request_headers_carry_no_attribution_headers_by_default() {
+        let session = test_session();
+        let mut model = test_model();
+        model.provider = "openrouter".to_owned();
+        let request: ProviderHeaders = [("x-request".to_owned(), Some("1".to_owned()))]
+            .into_iter()
+            .collect();
+        let headers = session.merge_request_attribution_headers(&model, None, request);
+        assert!(!headers.contains_key("X-OpenRouter-Categories"));
         assert_eq!(headers.get("x-request"), Some(&Some("1".to_owned())));
     }
 

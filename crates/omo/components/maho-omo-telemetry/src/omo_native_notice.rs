@@ -51,7 +51,8 @@ pub fn register_omo_native_notice(
         if enabled(&ctx.cwd) && telemetry_core::is_telemetry_client_enabled(&telemetry_core::TelemetryClientEnabledInput::for_product(Some(&env),&product)) {
             match claim_notice(&state_dir) {
                 Ok(true)=>{
-                    let notification=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||ctx.ui.notify("omo-senpi sends anonymous usage telemetry (no prompts, no paths). Docs: https://github.com/code-yeongyu/oh-my-openagent/blob/dev/docs/reference/senpi-telemetry.md - opt out: DO_NOT_TRACK=1",maho_ext_api::NotificationType::Info)));
+                    // SAFETY-DIVERGENCE(oh-my-openagent packages/components/src/omo_native_notice.ts): upstream notice advertises opt-out DO_NOT_TRACK; mhc notice reflects opt-in usage and exact disable configuration.
+                    let notification=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||ctx.ui.notify("mhc usage telemetry is on (no prompts, no paths, no location). Turn off: telemetry.enabled=false in ~/.omo/omo.jsonc or DO_NOT_TRACK=1.",maho_ext_api::NotificationType::Info)));
                     if notification.is_err() {report_once(telemetry_core::TelemetryError::new("notification UI failed"));}
                 },
                 Ok(false)=>{},
