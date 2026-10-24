@@ -14,10 +14,19 @@
 #   MHC_INSTALL_DIR  install root (default: %LOCALAPPDATA%\mhc)
 #   MHC_PACKAGE_DIR  install an already extracted release package directory instead of downloading one
 #   MHC_NO_PATH_UPDATE=1  leave the user PATH untouched
+#   MHC_INSTALL_BASE_URL  download assets from this URL instead of the GitHub release (testing)
+#   MHC_ALLOW_UNSIGNED=1 (or -AllowUnsigned)  allow a release older than the first signed version without .minisig
+#   MHC_VERIFY_ATTESTATION=1  also run `gh attestation verify` when gh is installed
+param([switch]$AllowUnsigned)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $repo = 'Indosaram/mhc'
+# Trusted release signing key (same value as mhc-release.pub); never fetched from the release.
+$MhcReleasePubkey = 'RWR4GANxRiLz3QbBlgDTEW7J++qZ1fVmYPhYEN7cAnSsW4IJJ/smaLju'
+# Releases from this version on must carry a .minisig.
+$FirstSignedVersion = '2026.10.24.1'
+$allowUnsigned = $AllowUnsigned.IsPresent -or $env:MHC_ALLOW_UNSIGNED -eq '1'
 $version = if ($env:MHC_VERSION) { $env:MHC_VERSION } else { 'latest' }
 $installDir = if ($env:MHC_INSTALL_DIR) { $env:MHC_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'mhc' }
 $localPackage = $env:MHC_PACKAGE_DIR
@@ -27,7 +36,7 @@ $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
 if ($arch -ne 'X64') { throw "mhc install: no prebuilt mhc for Windows $arch; build from source: https://github.com/$repo#build-from-source" }
 $target = 'windows-x86_64'
 $asset = "mhc-$target.zip"
-$base = if ($version -eq 'latest') { "https://github.com/$repo/releases/latest/download" } else { "https://github.com/$repo/releases/download/$version" }
+$base = if ($env:MHC_INSTALL_BASE_URL) { $env:MHC_INSTALL_BASE_URL.TrimEnd('/') } elseif ($version -eq 'latest') { "https://github.com/$repo/releases/latest/download" } else { "https://github.com/$repo/releases/download/$version" }
 
 function Get-PayloadVersion([string]$exe) {
     # Windows PowerShell 5.1's `& $exe 2>$null` path drops stdout and hides native stderr, so a
@@ -120,6 +129,39 @@ function Get-PayloadVersion([string]$exe) {
     }
 }
 
+function Test-Signature([string]$archive, [string]$tag) {
+    $sigPath = "$archive.minisig"
+    $signed = $true
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri "$base/$asset.minisig" -OutFile $sigPath
+    } catch {
+        $signed = $false
+        Remove-Item -Force -ErrorAction SilentlyContinue $sigPath
+    }
+    if (-not $signed) {
+        $required = $true
+        $parsed = $null
+        $first = [version]$FirstSignedVersion
+        # An unresolvable tag is treated as current, i.e. signature required.
+        if ($tag -and [version]::TryParse(($tag -replace '^[vV]', ''), [ref]$parsed) -and $parsed -lt $first) { $required = $false }
+        if ($required) { throw "mhc install: release $(if ($tag) { $tag } else { 'latest' }) has no signature ($asset.minisig); refusing to install" }
+        if (-not $allowUnsigned) { throw "mhc install: release $tag is unsigned; set MHC_ALLOW_UNSIGNED=1 or pass -AllowUnsigned to install it anyway" }
+        Write-Host "Warning: $tag is unsigned; installing because unsigned installs were allowed (sha256 verified)."
+        return
+    }
+    if (Get-Command minisign -CommandType Application -ErrorAction SilentlyContinue) {
+        & minisign -Vm $archive -P $MhcReleasePubkey | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "mhc install: signature verification failed for $asset" }
+        Write-Host 'Signature verified.'
+    } else {
+        Write-Host 'minisign.exe not found; skipped signature check (sha256 verified). Install minisign for full verification.'
+    }
+    if ($env:MHC_VERIFY_ATTESTATION -eq '1' -and (Get-Command gh -CommandType Application -ErrorAction SilentlyContinue)) {
+        & gh attestation verify $archive --repo $repo
+        if ($LASTEXITCODE -ne 0) { throw "mhc install: attestation verification failed for $asset" }
+    }
+}
+
 function Test-VersionName([string]$name) {
     return ($name -match '^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$')
 }
@@ -163,11 +205,20 @@ try {
         Copy-Item -LiteralPath $localPackage -Destination $staged -Recurse
     } else {
         Write-Host "Downloading $asset ($version)..."
-        Invoke-WebRequest -UseBasicParsing -Uri "$base/$asset" -OutFile (Join-Path $work $asset)
+        $response = Invoke-WebRequest -UseBasicParsing -Uri "$base/$asset" -OutFile (Join-Path $work $asset) -PassThru
         Invoke-WebRequest -UseBasicParsing -Uri "$base/$asset.sha256" -OutFile (Join-Path $work "$asset.sha256")
         $expected = ((Get-Content (Join-Path $work "$asset.sha256") -Raw).Trim() -split '\s+')[0].ToLower()
         $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $work $asset)).Hash.ToLower()
         if ($expected -ne $actual) { throw "mhc install: checksum mismatch for $asset (expected $expected, got $actual)" }
+        $tag = $version
+        if ($version -eq 'latest') {
+            $tag = $null
+            $finalUri = $null
+            try { $finalUri = [string]$response.BaseResponse.RequestMessage.RequestUri } catch { }
+            if (-not $finalUri) { try { $finalUri = [string]$response.BaseResponse.ResponseUri } catch { } }
+            if ($finalUri -match '/releases/download/([^/]+)/[^/]+$') { $tag = $Matches[1] }
+        }
+        Test-Signature (Join-Path $work $asset) $tag
         Expand-Archive -Path (Join-Path $work $asset) -DestinationPath $work -Force
     }
     foreach ($name in @('mhc.exe', 'mhc-launcher.exe', 'manifest.json')) {

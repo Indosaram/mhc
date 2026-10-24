@@ -15,9 +15,16 @@
 #   MHC_INSTALL_DIR  install root (default: ~/.local/share/mhc)
 #   MHC_BIN_DIR      where the `mhc` symlink is created (default: ~/.local/bin)
 #   MHC_PACKAGE_DIR  install an already extracted release package directory instead of downloading one
+#   MHC_INSTALL_BASE_URL  download assets from this URL instead of the GitHub release (testing)
+#   MHC_ALLOW_UNSIGNED=1  allow a release older than the first signed version that has no .minisig
+#   MHC_VERIFY_ATTESTATION=1  also run `gh attestation verify` when gh is installed
 set -eu
 
 repo="Indosaram/mhc"
+# Trusted release signing key (same value as mhc-release.pub); never fetched from the release.
+MHC_RELEASE_PUBKEY='RWR4GANxRiLz3QbBlgDTEW7J++qZ1fVmYPhYEN7cAnSsW4IJJ/smaLju'
+# Releases from this version on must carry a .minisig.
+first_signed_version="2026.10.24.1"
 version="${MHC_VERSION:-latest}"
 install_dir="${MHC_INSTALL_DIR:-$HOME/.local/share/mhc}"
 bin_dir="${MHC_BIN_DIR:-$HOME/.local/bin}"
@@ -73,8 +80,57 @@ pointer_field() {
   sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$1" | head -n 1
 }
 
+# True when dotted numeric version $1 is >= $2; false when either is not purely numeric dotted.
+version_ge() {
+  case "$1$2" in *[!0-9.]* | "") return 1 ;; esac
+  a="$1"
+  b="$2"
+  while [ -n "$a$b" ]; do
+    ah="${a%%.*}"
+    bh="${b%%.*}"
+    [ -n "$ah" ] || ah=0
+    [ -n "$bh" ] || bh=0
+    [ "$ah" -gt "$bh" ] && return 0
+    [ "$ah" -lt "$bh" ] && return 1
+    case "$a" in *.*) a="${a#*.}" ;; *) a="" ;; esac
+    case "$b" in *.*) b="${b#*.}" ;; *) b="" ;; esac
+  done
+  return 0
+}
+# Verifies $work/$asset against the pinned key. The release-hosted key is never used.
+verify_signature() {
+  tag="$version"
+  if [ "$tag" = latest ]; then
+    tag=""
+    case "$final_url" in
+      */releases/download/*/"$asset") tag="${final_url%/*}"; tag="${tag##*/}" ;;
+    esac
+  fi
+  if ! curl -fsSL -o "$work/$asset.minisig" "$base/$asset.minisig" 2>/dev/null; then
+    rm -f "$work/$asset.minisig"
+    # An unresolvable tag is treated as current, i.e. signature required.
+    if [ -z "$tag" ] || version_ge "${tag#v}" "$first_signed_version"; then
+      die "release ${tag:-latest} has no signature ($asset.minisig); refusing to install"
+    fi
+    [ "${MHC_ALLOW_UNSIGNED:-}" = 1 ] || die "release $tag is unsigned; set MHC_ALLOW_UNSIGNED=1 to install it anyway"
+    say "Warning: $tag is unsigned; installing because MHC_ALLOW_UNSIGNED=1 (sha256 verified)."
+    return 0
+  fi
+  if command -v minisign >/dev/null; then
+    minisign -Vm "$work/$asset" -P "$MHC_RELEASE_PUBKEY" >/dev/null || die "signature verification failed for $asset"
+    say "Signature verified."
+  else
+    say "minisign not found; skipped signature check (sha256 verified). Install minisign for full verification."
+  fi
+  if [ "${MHC_VERIFY_ATTESTATION:-}" = 1 ] && command -v gh >/dev/null; then
+    gh attestation verify "$work/$asset" --repo "$repo" || die "attestation verification failed for $asset"
+  fi
+}
+
 asset="mhc-$target.tar.gz"
-if [ "$version" = latest ]; then
+if [ -n "${MHC_INSTALL_BASE_URL:-}" ]; then
+  base="${MHC_INSTALL_BASE_URL%/}"
+elif [ "$version" = latest ]; then
   base="https://github.com/$repo/releases/latest/download"
 else
   base="https://github.com/$repo/releases/download/$version"
@@ -98,11 +154,12 @@ if [ -n "$local_package" ]; then
   cp -R "$local_package" "$pkg"
 else
   say "Downloading $asset ($version)..."
-  curl -fSL --progress-bar -o "$work/$asset" "$base/$asset" || die "download failed: $base/$asset"
+  final_url=$(curl -fSL --progress-bar -o "$work/$asset" -w '%{url_effective}' "$base/$asset") || die "download failed: $base/$asset"
   curl -fsSL -o "$work/$asset.sha256" "$base/$asset.sha256" || die "download failed: $base/$asset.sha256"
   expected=$(cut -d' ' -f1 "$work/$asset.sha256")
   actual=$(sha256 "$work/$asset")
   [ "$expected" = "$actual" ] || die "checksum mismatch for $asset (expected $expected, got $actual)"
+  verify_signature
   tar -xzf "$work/$asset" -C "$work"
 fi
 [ -x "$pkg/mhc" ] || die "archive does not contain mhc-$target/mhc"
