@@ -175,6 +175,15 @@ impl ModelRegistry {
         model: &Model,
         slot_name: Option<&str>,
     ) -> ResolvedRequestAuth {
+        if let Some(error) =
+            crate::provider_consent::consent_failure(&self.auth_storage, &model.provider, slot_name)
+        {
+            return ResolvedRequestAuth::Failed {
+                error,
+                class: Some(crate::provider_consent::CONSENT_REQUIRED_CLASS.into()),
+                code: Some(crate::provider_consent::CONSENT_REQUIRED_CODE.into()),
+            };
+        }
         let mut compatibility = self.model_runtime.get_compatibility_request_config(model);
         let resolution = match self
             .get_provider_auth_for_slot(&model.provider, slot_name)
@@ -425,5 +434,76 @@ impl ModelRegistry {
         options: maho_ai::models::ModelsRefreshOptions,
     ) -> maho_ai::models::ModelsRefreshResult {
         self.model_runtime.refresh(options).await
+    }
+}
+
+#[cfg(test)]
+mod consent_tests {
+    use super::*;
+
+    fn registry(credential: serde_json::Value, consent: bool) -> (ModelRegistry, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("dir");
+        let auth_path = dir.path().join("auth.json");
+        let storage = AuthStorage::create(&auth_path.to_string_lossy());
+        storage.set("anthropic", Some(credential)).expect("credential");
+        if consent {
+            std::fs::write(
+                dir.path().join("settings.json"),
+                r#"{"providerRiskConsent":{"anthropic":"2026-01-01T00:00:00.000Z"}}"#,
+            )
+            .expect("settings");
+        }
+        let registry = ModelRegistry::create(Arc::new(storage), dir.path().join("models.json"))
+            .expect("registry");
+        (registry, dir)
+    }
+
+    fn anthropic_model(registry: &ModelRegistry) -> Model {
+        registry
+            .get_all()
+            .into_iter()
+            .find(|model| model.provider == "anthropic")
+            .expect("anthropic model")
+    }
+
+    #[tokio::test]
+    async fn oauth_anthropic_without_consent_fails_with_consent_code() {
+        let (registry, _dir) = registry(
+            serde_json::json!({"type":"oauth","access":"sk-ant-oat01-x","refresh":"r","expires":4102444800000_i64}),
+            false,
+        );
+        let auth = registry
+            .get_api_key_and_headers(&anthropic_model(&registry))
+            .await;
+        match auth {
+            ResolvedRequestAuth::Failed { error, class, code } => {
+                assert_eq!(code.as_deref(), Some("provider_consent_required"));
+                assert_eq!(class.as_deref(), Some("ConsentRequired"));
+                assert!(error.contains("mhc auth consent anthropic"));
+            }
+            other => panic!("expected consent failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn api_key_anthropic_never_needs_consent() {
+        let (registry, _dir) =
+            registry(serde_json::json!({"type":"api_key","key":"sk-ant-api03-x"}), false);
+        let auth = registry
+            .get_api_key_and_headers(&anthropic_model(&registry))
+            .await;
+        assert!(matches!(auth, ResolvedRequestAuth::Resolved { .. }), "{auth:?}");
+    }
+
+    #[tokio::test]
+    async fn oauth_anthropic_with_consent_resolves() {
+        let (registry, _dir) = registry(
+            serde_json::json!({"type":"oauth","access":"sk-ant-oat01-x","refresh":"r","expires":4102444800000_i64}),
+            true,
+        );
+        let auth = registry
+            .get_api_key_and_headers(&anthropic_model(&registry))
+            .await;
+        assert!(matches!(auth, ResolvedRequestAuth::Resolved { .. }), "{auth:?}");
     }
 }

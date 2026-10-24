@@ -1166,12 +1166,37 @@ impl ModelRuntime {
             },
         }
     }
+    /// Consent gate for credential resolution: runs before `Models::get_auth`, which refreshes
+    /// expired OAuth credentials over the network.
+    fn consent_error(&self, provider: &str, slot_name: Option<&str>) -> Option<ModelsError> {
+        crate::provider_consent::consent_failure(&self.credentials, provider, slot_name)
+            .map(|message| ModelsError::new(ModelsErrorCode::ConsentRequired, message))
+    }
     pub async fn get_auth(&self, id: &str) -> Result<Option<AuthResolution>, ModelsError> {
+        if let Some(error) = self.consent_error(id, None) {
+            return Err(error);
+        }
+        self.get_auth_unchecked(id).await
+    }
+    /// Un-gated `get_auth`, only for CLI auth diagnostics (`mhc auth check`/`print`) so users can
+    /// inspect credentials before consenting. Never use on a request path (SD-4).
+    pub async fn get_auth_unchecked(&self, id: &str) -> Result<Option<AuthResolution>, ModelsError> {
         self.models
             .get_auth(id, &AuthResolutionOverrides::default())
             .await
     }
     pub async fn get_auth_with_overrides(
+        &self,
+        id: &str,
+        overrides: &AuthResolutionOverrides,
+    ) -> Result<Option<AuthResolution>, ModelsError> {
+        if let Some(error) = self.consent_error(id, overrides.slot_name.as_deref()) {
+            return Err(error);
+        }
+        self.get_auth_with_overrides_unchecked(id, overrides).await
+    }
+    /// Un-gated `get_auth_with_overrides`, only for CLI auth diagnostics (SD-4).
+    pub async fn get_auth_with_overrides_unchecked(
         &self,
         id: &str,
         overrides: &AuthResolutionOverrides,
@@ -1493,6 +1518,17 @@ impl ModelRuntime {
     }
 
     pub async fn get_auth_for_model(
+        &self,
+        model: &Model,
+        overrides: &AuthResolutionOverrides,
+    ) -> Result<Option<AuthResolution>, ModelsError> {
+        if let Some(error) = self.consent_error(&model.provider, overrides.slot_name.as_deref()) {
+            return Err(error);
+        }
+        self.get_auth_for_model_unchecked(model, overrides).await
+    }
+    /// Un-gated `get_auth_for_model`, only for CLI auth diagnostics (SD-4).
+    pub async fn get_auth_for_model_unchecked(
         &self,
         model: &Model,
         overrides: &AuthResolutionOverrides,
@@ -1886,12 +1922,35 @@ impl ModelRuntime {
                 .map_err(|reason| reason.message)
         }
     }
+    /// Consent gate for every request path (`stream`, `stream_simple`, `complete`): returns a
+    /// terminal error stream before any rotation, refresh, header or network work starts.
+    fn consent_error_stream(&self, model: &Model) -> Option<AssistantMessageEventStream> {
+        let message = crate::provider_consent::consent_failure(&self.credentials, &model.provider, None)?;
+        let mut error = maho_ai::utils::lazy::setup_error_message(model, &message);
+        error.provider_diagnostic = Some(maho_ai::types::ProviderDiagnostic {
+            category: maho_ai::types::ProviderDiagnosticCategory::Unknown,
+            http_status: None,
+            code: Some(crate::provider_consent::CONSENT_REQUIRED_CODE.to_owned()),
+            evidence: maho_ai::types::ProviderDiagnosticEvidence::StructuredCode,
+            resets_at: None,
+        });
+        let stream = AssistantMessageEventStream::assistant();
+        stream.push(maho_ai::types::AssistantMessageEvent::Error {
+            reason: maho_ai::types::ErrorReason::Error,
+            error: error.clone(),
+        });
+        stream.end(Some(error));
+        Some(stream)
+    }
     pub fn stream(
         &self,
         model: &Model,
         context: &Context,
         options: Option<StreamOptions>,
     ) -> AssistantMessageEventStream {
+        if let Some(failed) = self.consent_error_stream(model) {
+            return failed;
+        }
         let mut options = options.unwrap_or_default();
         let (request_model, config, extension) = self.prepare_request(model, &mut options);
         let models = self.models.clone();
@@ -1961,6 +2020,9 @@ impl ModelRuntime {
         options: Option<SimpleStreamOptions>,
         transforms: ModelsRequestTransforms,
     ) -> AssistantMessageEventStream {
+        if let Some(failed) = self.consent_error_stream(model) {
+            return failed;
+        }
         let mut options = options.unwrap_or_default();
         let (request_model, config, extension) = self.prepare_request(model, &mut options.stream);
         let models = self.models.clone();
@@ -3096,6 +3158,116 @@ mod tests {
         let sidecar = std::fs::read_to_string(dir.path().join("credential-pool-state.json"))
             .expect("sidecar written");
         assert!(sidecar.contains("auth_error"));
+    }
+
+    /// Counts provider calls so a gated request can prove nothing was contacted.
+    struct CountingStreams(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl maho_ai::types::ProviderStreams for CountingStreams {
+        fn stream(&self, model: &Model, _: &Context, _: Option<StreamOptions>) -> AssistantMessageEventStream {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            maho_ai::utils::lazy::error_stream(model, "provider was contacted")
+        }
+        fn stream_simple(&self, model: &Model, context: &Context, options: Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
+            self.stream(model, context, options.map(|options| options.stream))
+        }
+    }
+
+    #[tokio::test]
+    async fn consentless_impersonating_provider_fails_on_every_runtime_path_without_a_call() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let model = Model {
+            id: "fixture".into(),
+            provider: "github-copilot".into(),
+            api: "openai-completions".into(),
+            base_url: "http://127.0.0.1:9/v1".into(),
+            ..maho_ai::providers::faux::faux_provider(Default::default())
+                .expect("faux provider")
+                .get_model(None)
+                .expect("model")
+        };
+        let provider = maho_ai::models::create_provider(maho_ai::models::CreateProviderOptions {
+            id: "github-copilot".into(),
+            name: None,
+            base_url: None,
+            headers: None,
+            auth: None,
+            models: vec![model.clone()],
+            fetch_models: None,
+            restore_models: None,
+            filter_models: None,
+            api: maho_ai::models::ProviderApi::Single(std::sync::Arc::new(CountingStreams(calls.clone()))),
+            images: IndexMap::new(),
+        }).expect("provider");
+        let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
+            providers: Some(vec![provider]),
+            auth_path: Some(dir.path().join("auth.json")),
+            agent_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        }).expect("model runtime");
+        runtime
+            .credentials
+            .set("github-copilot", Some(serde_json::json!({"type":"api_key","key":"k"})))
+            .expect("seed");
+        let context = Context::default();
+        let check = |message: maho_ai::types::AssistantMessage| {
+            assert_eq!(message.stop_reason, maho_ai::types::StopReason::Error);
+            assert!(message.error_message.expect("message").contains("`mhc auth consent github-copilot`"));
+            assert_eq!(
+                message.provider_diagnostic.and_then(|d| d.code).as_deref(),
+                Some("provider_consent_required")
+            );
+        };
+        check(runtime.complete(&model, &context, None).await.expect("stream result"));
+        let stream = runtime.stream_simple(&model, &context, None);
+        while let Ok(Some(_)) = stream.next().await {}
+        check(stream.result().await.expect("simple result"));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{"providerRiskConsent":{"github-copilot":"2026-01-01T00:00:00.000Z"}}"#,
+        ).expect("settings");
+        let _ = runtime.complete(&model, &context, None).await;
+        assert!(calls.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+    }
+
+    #[tokio::test]
+    async fn consentless_expired_oauth_credential_fails_get_auth_before_any_refresh() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
+            auth_path: Some(dir.path().join("auth.json")),
+            agent_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        }).expect("model runtime");
+        runtime
+            .credentials
+            .set(
+                "github-copilot",
+                Some(serde_json::json!({"type":"oauth","access":"tid=fake","refresh":"ghu_fake","expires":1})),
+            )
+            .expect("seed expired oauth");
+        // Resolving would refresh over the network; the gate must fail first with the consent code.
+        let error = runtime.get_auth("github-copilot").await.expect_err("consent required");
+        assert_eq!(error.code, ModelsErrorCode::ConsentRequired);
+        assert_eq!(error.code.as_str(), "provider_consent_required");
+        assert!(error.message.contains("`mhc auth consent github-copilot`"), "{}", error.message);
+        let overrides = AuthResolutionOverrides::default();
+        let error = runtime
+            .get_auth_with_overrides("github-copilot", &overrides)
+            .await
+            .expect_err("consent required");
+        assert_eq!(error.code, ModelsErrorCode::ConsentRequired);
+        let model = maho_ai::providers::faux::faux_provider(Default::default())
+            .expect("faux provider")
+            .get_model(None)
+            .expect("model");
+        let model = Model { provider: "github-copilot".into(), ..model };
+        let error = runtime
+            .get_auth_for_model(&model, &overrides)
+            .await
+            .expect_err("consent required");
+        assert_eq!(error.code, ModelsErrorCode::ConsentRequired);
     }
 
     struct AmbientOAuth;
