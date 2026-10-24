@@ -150,6 +150,12 @@ jobs:
               cargo build --release --locked "$@"
             fi
           }
+          # One candidate trust configuration: candidate packages embed the fixture test key and report
+          # channel candidate; tag/cache builds keep the production key (mhc-release.pub). No runtime override exists.
+          if [ "$CANDIDATE_PAIR" = "true" ] || [ -n "$CANDIDATE_VERSION" ]; then
+            export MHC_RELEASE_CHANNEL=candidate
+            export MHC_RELEASE_PUBKEY_FILE="$GITHUB_WORKSPACE/crates/maho-cli/tests/fixtures/release-test-key/test.pub"
+          fi
           if [ "$CANDIDATE_PAIR" = "true" ]; then
             if [ -z "$VER_A" ] || [ -z "$VER_B" ] || [ "$VER_A" = "$VER_B" ]; then
               echo "candidate_pair needs distinct candidate_version_a and candidate_version_b inputs" >&2
@@ -237,6 +243,24 @@ jobs:
               scripts/package-archive.sh dist "$name"
             fi
           fi
+
+      - name: sign candidate archives with the fixture test key
+        if: env.DO_PACKAGE == 'true' && (env.CANDIDATE_PAIR == 'true' || env.CANDIDATE_VERSION != '')
+        run: |
+          case "$RUNNER_OS" in
+            Linux) sudo apt-get install -y minisign ;;
+            macOS) brew install minisign ;;
+            Windows) choco install minisign -y ;;
+          esac
+          test_key=crates/maho-cli/tests/fixtures/release-test-key/test.key
+          signed=0
+          for archive in dist/*.tar.gz dist/*.zip dist/candidate-*/*.tar.gz dist/candidate-*/*.zip; do
+            [ -f "$archive" ] || continue
+            minisign -S -s "$test_key" -m "$archive" -t "mhc candidate $(basename "$archive")"
+            test -s "$archive.minisig"
+            signed=$((signed + 1))
+          done
+          test "$signed" -gt 0
 
       - uses: actions/upload-artifact@v7
         if: env.DO_PACKAGE == 'true'
