@@ -35,7 +35,9 @@ fn mutation_observer_is_shared_by_clones_and_runs_after_unlock() {
     let writer = store.clone();
     writer.save(&record).expect("save");
     assert!(writer.save(&record).is_err());
-    writer.mutate(&record.task_id, Clone::clone).expect("unchanged mutation");
+    writer
+        .mutate(&record.task_id, Clone::clone)
+        .expect("unchanged mutation");
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     store.set_mutation_listener(None);
     writer.replace(&record).expect("replace after unsubscribe");
@@ -209,15 +211,17 @@ fn expected_epoch_transition_is_atomic_and_leaves_moved_run_unchanged() {
     let mut revived = running.clone();
     revived.notification.run_epoch = 2;
     store.save(&revived).expect("save");
-    let result = store.transition_expected_epoch(
-        &record.task_id,
-        &TaskTransition::Cancel {
-            timestamp: "2026-07-06T01:00:00.000Z".into(),
-            error_message: None,
-            run_stats: None,
-        },
-        Some(1),
-    ).expect("fenced transition");
+    let result = store
+        .transition_expected_epoch(
+            &record.task_id,
+            &TaskTransition::Cancel {
+                timestamp: "2026-07-06T01:00:00.000Z".into(),
+                error_message: None,
+                run_stats: None,
+            },
+            Some(1),
+        )
+        .expect("fenced transition");
     assert!(result.is_none());
     assert_eq!(store.load(&record.task_id).expect("load"), Some(revived));
 }
@@ -1470,4 +1474,91 @@ fn security_runtime_extras_are_not_persisted() {
             .expect("read");
     assert!(!persisted.contains("prompt"));
     assert!(!persisted.contains("messages"));
+}
+
+#[test]
+fn record_parse_cancel_requested_round_trips_with_and_without_a_reason() {
+    let project = project();
+    write_persisted(
+        project.path(),
+        "st_02000100",
+        json!({ "status": "running", "cancel_requested": { "requested_at": "2026-07-06T00:01:00.000Z", "reason": "no longer needed" } }),
+    );
+    write_persisted(
+        project.path(),
+        "st_02000101",
+        json!({ "status": "running", "cancel_requested": { "requested_at": "2026-07-06T00:02:00.000Z" } }),
+    );
+    let result = list(project.path());
+    assert_eq!(result.diagnostics, Vec::new());
+    let by_id = |id: &str| {
+        result
+            .records
+            .iter()
+            .find(|record| record.task_id == id)
+            .cloned()
+    };
+    assert_eq!(
+        by_id("st_02000100").and_then(|record| record.cancel_requested),
+        Some(crate::state::CancelRequest {
+            requested_at: "2026-07-06T00:01:00.000Z".into(),
+            reason: Some("no longer needed".into()),
+        })
+    );
+    assert_eq!(
+        by_id("st_02000101").and_then(|record| record.cancel_requested),
+        Some(crate::state::CancelRequest {
+            requested_at: "2026-07-06T00:02:00.000Z".into(),
+            reason: None
+        })
+    );
+}
+
+#[test]
+fn record_parse_legacy_record_without_cancel_requested_has_no_pending_cancel() {
+    let project = project();
+    write_persisted(
+        project.path(),
+        "st_02000102",
+        json!({ "status": "running" }),
+    );
+    let result = list(project.path());
+    assert_eq!(result.diagnostics, Vec::new());
+    assert_eq!(result.records[0].cancel_requested, None);
+}
+
+#[test]
+fn record_parse_rejects_a_malformed_cancel_requested() {
+    for value in [json!("cancel"), json!({ "reason": "no longer needed" })] {
+        let project = project();
+        write_persisted(
+            project.path(),
+            "st_02000103",
+            json!({ "status": "running", "cancel_requested": value }),
+        );
+        let result = list(project.path());
+        assert!(
+            result
+                .records
+                .iter()
+                .all(|record| record.task_id != "st_02000103")
+        );
+        assert!(!result.diagnostics.is_empty());
+    }
+}
+
+#[test]
+fn cancel_requested_serializes_and_reloads_through_the_store() {
+    let project = project();
+    let store = store_for(project.path());
+    let record = crate::state::TaskRecord {
+        cancel_requested: Some(crate::state::CancelRequest {
+            requested_at: "2026-07-06T00:01:00.000Z".into(),
+            reason: Some("r".into()),
+        }),
+        ..base_record("st_02000104")
+    };
+    store.save(&record).expect("save");
+    let loaded = store.load("st_02000104").expect("load").expect("record");
+    assert_eq!(loaded.cancel_requested, record.cancel_requested);
 }

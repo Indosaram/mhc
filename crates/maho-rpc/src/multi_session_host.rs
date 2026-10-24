@@ -136,6 +136,9 @@ pub struct HostCore {
         >,
     >,
     options: HostCoreOptions,
+    /// Resolved `--tool-runtime` (senpi `MultiSessionHostOptions.toolRuntime`); absent means `in-process`.
+    /// Advertised as `tool_runtime:<value>`.
+    tool_runtime: crate::host_capabilities::ToolRuntimeKind,
     /// Set only where a SIGUSR1 drain handler is actually installed (senpi `runSocketHost`): the
     /// `generation_handoff` capability is the proof a handler exists and is advertised with it.
     handoff_enabled: std::sync::atomic::AtomicBool,
@@ -149,6 +152,55 @@ pub struct HostCore {
     workers: Option<std::sync::Arc<crate::worker_session_registry::WorkerSessionRegistry>>,
     /// Who each connection speaks for (senpi `SessionCommandRouter.connectionRoles`, senpi#3811).
     connection_roles: crate::session_binding::SharedConnectionRoles,
+    /// `<daemonDir>` the handoff-parked record lives under (senpi `handoverParkedDir`); set once a socket host
+    /// knows its endpoint.
+    handover_parked_dir: std::sync::OnceLock<std::path::PathBuf>,
+    /// Requests in flight per session routing handle, the release itself included (senpi `activeRequests`).
+    active_requests: std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
+    /// Woken whenever a request settles (senpi `requestSettledListeners`).
+    request_settled: tokio::sync::Notify,
+}
+/// A refused open: the wire message, and the registry code when one carried it (`session_path_in_use`).
+struct OpenRefusal {
+    message: String,
+    code: Option<String>,
+}
+impl OpenRefusal {
+    fn plain(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            code: None,
+        }
+    }
+    fn from_registry(error: &crate::session_registry::RpcSessionRegistryError) -> Self {
+        Self {
+            message: error.to_string(),
+            code: Some(error.code.clone()),
+        }
+    }
+}
+/// Counts one routed request against its session until dropped.
+struct RequestGuard<'a> {
+    core: &'a HostCore,
+    session_id: String,
+}
+impl Drop for RequestGuard<'_> {
+    fn drop(&mut self) {
+        {
+            let mut active = self
+                .core
+                .active_requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match active.get_mut(&self.session_id) {
+                Some(count) if *count > 1 => *count -= 1,
+                _ => {
+                    active.remove(&self.session_id);
+                }
+            }
+        }
+        self.core.request_settled.notify_waiters();
+    }
 }
 impl HostCore {
     pub fn new(
@@ -169,13 +221,122 @@ impl HostCore {
             pending_capabilities: Default::default(),
             bindings: tokio::sync::Mutex::new(std::collections::BTreeMap::new()),
             options,
+            tool_runtime: crate::host_capabilities::ToolRuntimeKind::InProcess,
             handoff_enabled: std::sync::atomic::AtomicBool::new(false),
             drain: std::sync::Mutex::new(crate::session_command_router::HandoffDrain::default()),
             handoff_closed: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             handoff_parks: std::sync::atomic::AtomicUsize::new(0),
             workers: None,
             connection_roles: Default::default(),
+            handover_parked_dir: std::sync::OnceLock::new(),
+            active_requests: Default::default(),
+            request_settled: tokio::sync::Notify::new(),
         }
+    }
+    /// Names the daemon directory the handoff-parked record lives under (senpi `handoverParkedDir`); the first
+    /// call wins.
+    pub fn set_handover_parked_dir(&self, dir: std::path::PathBuf) {
+        let _ = self.handover_parked_dir.set(dir);
+    }
+    /// Whether a handoff drain is running (senpi `router.draining`).
+    pub fn is_draining(&self) -> bool {
+        self.drain
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_draining()
+    }
+    fn begin_request(&self, session_id: Option<&str>) -> Option<RequestGuard<'_>> {
+        let session_id = session_id?.to_owned();
+        *self
+            .active_requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(session_id.clone())
+            .or_insert(0) += 1;
+        Some(RequestGuard {
+            core: self,
+            session_id,
+        })
+    }
+    fn active_request_count(&self, session_id: &str) -> usize {
+        self.active_requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
+    }
+    /// The successor's reopen of a handoff-parked session (senpi `reopenParked`): the same open as an
+    /// `open_session`, with no requesting connection and nothing to reply to.
+    pub async fn reopen_parked(
+        &self,
+        entry: crate::host_handover_parked::HandoverParkedEntry,
+    ) -> Result<(), crate::host_handover_reopen::ReopenError> {
+        let refused = |message: String, code: Option<String>| {
+            crate::host_handover_reopen::ReopenError { code, message }
+        };
+        let mut wire = crate::host_handover_parked_open::parked_open_command(&entry);
+        wire["attended"] = false.into();
+        let command = serde_json::from_value::<crate::rpc_types::RpcCommand>(wire)
+            .map_err(|error| refused(format!("open_failed: {error}"), None))?;
+        self.open_session_inner(None, &command.body, entry.context_overlay.as_ref())
+            .await
+            .map(|_| ())
+            .map_err(|refusal| refused(refusal.message, refusal.code))
+    }
+    /// The park record of a retained session, `None` for anything a successor must not reopen.
+    fn park_record(
+        &self,
+        retain: bool,
+        session_path: Option<&str>,
+        durable_session_id: Option<&str>,
+        profile: &crate::session_registry::RpcSessionLaunchProfile,
+        overlay: Option<&crate::session_context_patch::SessionContextOverlay>,
+    ) -> Option<crate::host_handover_parked::HandoverParkedEntry> {
+        self.handover_parked_dir.get()?;
+        let session_path = session_path.filter(|_| retain)?;
+        let overlay = overlay.cloned().map(serde_json::Value::Object);
+        let mut entry = crate::host_handover_parked_open::parked_entry_from_profile(
+            &crate::host_handover_parked_open::ParkedSession {
+                session_path,
+                durable_session_id,
+                context_overlay: overlay.as_ref(),
+            },
+            Some(profile),
+            &crate::host_handover_parked_open::ParkedLaunchExtras::default(),
+            &[],
+        );
+        entry.parked_by = Some(crate::protocol_identity::host_instance_id().to_owned());
+        Some(entry)
+    }
+    /// Writes one park record, awaited before the drain proceeds (senpi `recordHandoverParkedSession`).
+    async fn write_park_record(
+        &self,
+        entry: Option<crate::host_handover_parked::HandoverParkedEntry>,
+    ) {
+        let (Some(entry), Some(dir)) = (entry, self.handover_parked_dir.get()) else {
+            return;
+        };
+        if let Err(error) =
+            crate::host_handover_parked::record_handover_parked_session(dir, &entry).await
+        {
+            eprintln!(
+                "senpi rpc handover park record {} failed: {error}",
+                entry.session_path
+            );
+        }
+    }
+    /// Selects where heavy tool work runs (senpi `toolRuntime`); the host advertises it in `get_protocol_info`.
+    pub fn with_tool_runtime(
+        mut self,
+        tool_runtime: crate::host_capabilities::ToolRuntimeKind,
+    ) -> Self {
+        self.tool_runtime = tool_runtime;
+        self
+    }
+    /// The tool runtime this host advertises.
+    pub fn tool_runtime(&self) -> crate::host_capabilities::ToolRuntimeKind {
+        self.tool_runtime
     }
     /// Selects the worker runtime: every opened session runs in an isolated worker process.
     pub fn with_worker_registry(
@@ -239,7 +400,7 @@ impl HostCore {
         let mut capabilities = Vec::<String>::new();
         // senpi `hostToolRuntimeCapabilities`: the host's own placement first; a negotiated `tool_runtime:*` never overrides it.
         let tool_runtime = crate::host_capabilities::host_tool_runtime_capabilities(
-            crate::host_capabilities::ToolRuntimeKind::InProcess,
+            self.tool_runtime,
             &self.options.capabilities,
         );
         for capability in [
@@ -259,7 +420,9 @@ impl HostCore {
             DURABLE_SESSION_ID_CAPABILITY,
         ]
         .into_iter()
-        .chain(std::iter::once(crate::socket_peer_recovery::EVENT_RESYNC_CAPABILITY))
+        .chain(std::iter::once(
+            crate::socket_peer_recovery::EVENT_RESYNC_CAPABILITY,
+        ))
         .chain(tool_runtime.iter().map(String::as_str))
         {
             if !capabilities.iter().any(|existing| existing == capability) {
@@ -417,15 +580,73 @@ impl HostCore {
         };
         matches!(step, crate::session_command_router::DrainStep::Exit)
     }
+    /// The park teardown of `release_session` (senpi `tearDownReleased`): claimed in one synchronous step, every
+    /// attachment drained, the runtime disposed and the path reservation freed before this resolves, and sealed
+    /// `session_closed { reason: "released" }` naming the file. `false` when another close already owns the entry.
+    async fn tear_down_released(&self, session_id: &str, session_path: &str) -> bool {
+        if let Some(workers) = &self.workers {
+            if workers.force_close(session_id).is_none() {
+                return false;
+            }
+            if let Some(worker) = workers.worker(session_id) {
+                worker.cancel_pending_extension_ui_requests();
+            }
+            let _ = workers.close_marked(session_id).await;
+        } else {
+            {
+                let mut registry = self.registry.lock().await;
+                let Some(entry) = registry.get_mut(session_id) else {
+                    return false;
+                };
+                if entry.close.state != crate::session_registry::RpcSessionState::Open {
+                    return false;
+                }
+                entry.close.attachments = 0;
+                entry.close.state = crate::session_registry::RpcSessionState::Closing;
+            }
+            if let Some(binding) = self.bindings.lock().await.remove(session_id) {
+                binding.cancel_pending_extension_ui_requests();
+                binding.dispose().await;
+            }
+            let mut registry = self.registry.lock().await;
+            let _ = registry
+                .close_marked(session_id, self.options.close_grace_ms)
+                .await;
+        }
+        if let Ok(value) =
+            serde_json::to_value(crate::rpc_types::RpcSessionLifecycleEvent::SessionClosed {
+                session_id: session_id.into(),
+                reason: Some("released".into()),
+                session_path: Some(session_path.to_owned()),
+            })
+        {
+            self.route(session_id, None, value);
+        }
+        self.forget_session(session_id);
+        true
+    }
     /// Parks one settled session for a handoff (senpi `evictIdleSession(sessionId,"handoff_parked")`):
     /// the routing handle ends exactly as a close ends it, the terminal record names the reason (and
     /// the file a retained session reopens by) so a client is not told the session vanished, and
     /// every attachment is drained because a drain ends the shared session.
     async fn park_session(&self, session_id: &str) {
         if let Some(workers) = &self.workers {
+            let record = workers
+                .with_entry(session_id, |entry| {
+                    self.park_record(
+                        entry.close.retain_on_disconnect,
+                        entry.session_path.as_deref(),
+                        entry.durable_session_id.as_deref(),
+                        &entry.profile,
+                        entry.context_overlay.as_ref(),
+                    )
+                })
+                .flatten();
             let Some(retained) = workers.force_close(session_id) else {
                 return;
             };
+            self.write_park_record(record.filter(|_| retained.is_some()))
+                .await;
             let _ = workers.close_marked(session_id).await;
             if let Ok(value) =
                 serde_json::to_value(crate::rpc_types::RpcSessionLifecycleEvent::SessionClosed {
@@ -439,7 +660,7 @@ impl HostCore {
             self.forget_session(session_id);
             return;
         }
-        let retained = {
+        let (retained, record) = {
             let mut registry = self.registry.lock().await;
             let Some(entry) = registry.get_mut(session_id) else {
                 return;
@@ -452,10 +673,20 @@ impl HostCore {
             } else {
                 None
             };
+            let record = self.park_record(
+                entry.close.retain_on_disconnect,
+                entry.session_path.as_deref(),
+                entry.durable_session_id.as_deref(),
+                &entry.profile,
+                entry.context_overlay.as_ref(),
+            );
             entry.close.attachments = 0;
             entry.close.state = crate::session_registry::RpcSessionState::Closing;
-            retained
+            (retained, record)
         };
+        // Written once the claim is won and awaited before the drain proceeds, or the generation can hand over
+        // and exit before it lands and the park is lost (senpi `recordHandoverParkedSession`).
+        self.write_park_record(record).await;
         if let Some(binding) = self.bindings.lock().await.remove(session_id) {
             binding.cancel_pending_extension_ui_requests();
             binding.dispose().await;
@@ -545,6 +776,17 @@ impl HostCore {
         let Ok(value) = serde_json::to_value(response) else {
             return;
         };
+        self.respond_record(
+            connection,
+            response.session_id.as_deref().unwrap_or(""),
+            value,
+        );
+    }
+    /// Answers an already-built response record (`release_session` builds its own wire answer), tagged to its session.
+    fn respond_value(&self, connection: Option<&str>, session_id: &str, value: serde_json::Value) {
+        self.respond_record(connection, session_id, value);
+    }
+    fn respond_record(&self, connection: Option<&str>, session_id: &str, value: serde_json::Value) {
         if let Some(connection) = connection {
             match self
                 .fanout
@@ -560,9 +802,7 @@ impl HostCore {
                 }
             }
         }
-        let _ = self
-            .default_writer
-            .enqueue(response.session_id.as_deref().unwrap_or(""), value);
+        let _ = self.default_writer.enqueue(session_id, value);
     }
     fn error(
         &self,
@@ -666,6 +906,9 @@ impl HostCore {
             );
             return Ok(());
         }
+        // senpi router `handle`: every routed request counts against its session until it answers, so a
+        // release can tell other work from itself.
+        let _request = self.begin_request(command.session_id.as_deref());
         match &command.body {
             crate::rpc_types::RpcCommandBody::GetProtocolInfo => {
                 // senpi `process.argv.slice(2)`: every CLI argument after the executable.
@@ -795,133 +1038,85 @@ impl HostCore {
                     None,
                 );
             }
-            crate::rpc_types::RpcCommandBody::OpenSession {
-                session_path,
-                cwd,
-                provider,
-                model_id,
-                thinking_level,
-                permission_preset,
-                retain_on_disconnect,
-                kind,
-                context,
-                auto_title,
-                durable_session_id,
-                attended,
-            } => {
-                // senpi session-command-router `open`: only `attended:false` (observational open) is accepted.
-                if *attended == Some(true) {
+            crate::rpc_types::RpcCommandBody::OpenSession { .. } => {
+                // senpi router `handle`: a draining host parks every session itself and admits no open.
+                if self.is_draining() {
                     self.error(
                         connection,
                         command.id.clone(),
                         "open_session",
-                        format!(
-                            "{}: attended must be false or omitted",
-                            crate::rpc_types::RPC_ERROR_INVALID_LAUNCH_PROFILE
-                        ),
+                        crate::rpc_types::RPC_ERROR_HOST_DRAINING,
                         None,
                     );
                     return Ok(());
                 }
-                let profile = crate::session_registry::RpcSessionLaunchProfile {
-                    runtime: maho_core::agent_session_runtime::AgentSessionLaunchProfile {
-                        cwd: cwd.clone().unwrap_or_else(|| self.options.cwd.clone()),
-                        permission_preset: permission_preset.clone(),
-                        creation_model: provider.clone().zip(model_id.clone()),
-                        initial_thinking_level: thinking_level.clone(),
-                        auto_title: *auto_title,
-                    },
-                    session_path: session_path.clone(),
-                    durable_session_id: durable_session_id.clone(),
-                    session_kind: kind.map(|kind| match kind {
-                        crate::rpc_types::SessionKind::Worker => maho_ext_api::SessionKind::Worker,
-                        crate::rpc_types::SessionKind::Interactive => {
-                            maho_ext_api::SessionKind::Interactive
-                        }
-                    }),
-                    session_context: context.clone(),
-                    attended: (*attended == Some(false)).then_some(false),
-                };
-                if let Some(workers) = self.workers.clone() {
-                    self.open_worker_session(
-                        &workers,
-                        connection,
-                        command.id.clone(),
-                        profile,
-                        retain_on_disconnect.unwrap_or(false),
-                    )
-                    .await;
-                    return Ok(());
+                match self
+                    .open_session_inner(connection, &command.body, None)
+                    .await
+                {
+                    Ok(data) => {
+                        self.success(
+                            connection,
+                            command.id.clone(),
+                            "open_session",
+                            Some(data),
+                            None,
+                        );
+                    }
+                    Err(refusal) => {
+                        self.error(
+                            connection,
+                            command.id.clone(),
+                            "open_session",
+                            refusal.message,
+                            None,
+                        );
+                    }
                 }
-                let admitted = {
-                    let mut registry = self.registry.lock().await;
-                    registry.admit_open(
-                        profile.clone(),
-                        retain_on_disconnect.unwrap_or(false),
-                        crate::connection_handler::now_ms(),
-                    )
-                };
-                match admitted {
-                    Err(error) => self.error(
+            }
+            crate::rpc_types::RpcCommandBody::ReleaseSession {
+                reason,
+                move_id,
+                target,
+                interrupt,
+                force,
+            } => {
+                let Some(session_id) = command.session_id.clone() else {
+                    self.error(
                         connection,
                         command.id.clone(),
-                        "open_session",
-                        error.to_string(),
+                        "release_session",
+                        crate::rpc_types::RPC_ERROR_MISSING_SESSION_ID,
                         None,
-                    ),
-                    Ok(crate::session_registry::OpenAdmission::Attached(handle)) => {
-                        // senpi session-registry.ts: an attach that ends a retained session's parked
-                        // (zero-attachment) window tells its extensions `session_resumed`.
-                        let resumed = {
-                            let registry = self.registry.lock().await;
-                            registry
-                                .get(&handle)
-                                .filter(|entry| {
-                                    entry.close.retain_on_disconnect && entry.close.attachments == 1
-                                })
-                                .and_then(|entry| entry.runtime.clone())
-                        };
-                        if let Some(runtime) = resumed {
-                            runtime.emit_attachment_event(maho_core::agent_session_runtime::AttachmentEvent::SessionResumed).await;
-                        }
-                        // A second client joins the live session: register it with the fanout so it
-                        // receives the session's records and the in-flight snapshot (senpi `open`).
-                        self.attach_connection(connection, &handle).await;
-                        let state = self.session_state(&handle).await;
-                        self.success(connection,command.id.clone(),"open_session",Some(serde_json::json!({"sessionId":handle,"state":state,"attached":true})),None);
-                    }
-                    Ok(crate::session_registry::OpenAdmission::Create(handle)) => {
-                        let created = {
-                            let mut registry = self.registry.lock().await;
-                            registry
-                                .create_admitted_runtime(
-                                    &handle,
-                                    (self.options.create_runtime)(profile),
-                                )
-                                .await
-                        };
-                        match created {
-                            Err(error) => self.error(
-                                connection,
-                                command.id.clone(),
-                                "open_session",
-                                error.to_string(),
-                                None,
-                            ),
-                            Ok(()) => {
-                                let state = self.session_state(&handle).await;
-                                self.attach_connection(connection, &handle).await;
-                                self.success(
-                                    connection,
-                                    command.id.clone(),
-                                    "open_session",
-                                    Some(serde_json::json!({"sessionId":handle,"state":state})),
-                                    None,
-                                );
-                            }
-                        }
-                    }
-                }
+                    );
+                    return Ok(());
+                };
+                let release = crate::session_release::ReleaseSessionCommand {
+                    id: command.id.clone(),
+                    session_id: session_id.clone(),
+                    reason: reason.clone(),
+                    move_id: move_id.clone(),
+                    target: target.clone(),
+                    force: *force,
+                    interrupt: *interrupt,
+                };
+                let port = HostReleasePort { core: self };
+                let response = crate::session_release::release_session(&port, &release).await;
+                self.respond_value(connection, &session_id, response);
+            }
+            crate::rpc_types::RpcCommandBody::SetSessionContext { patch } => {
+                let Some(session_id) = command.session_id.clone() else {
+                    self.error(
+                        connection,
+                        command.id.clone(),
+                        "set_session_context",
+                        crate::rpc_types::RPC_ERROR_MISSING_SESSION_ID,
+                        None,
+                    );
+                    return Ok(());
+                };
+                self.set_session_context(connection, command.id.clone(), session_id, patch)
+                    .await;
             }
             crate::rpc_types::RpcCommandBody::CloseSession => {
                 let Some(session_id) = command.session_id.clone().or(self.only_session().await)
@@ -1258,14 +1453,297 @@ impl HostCore {
     }
     /// `open_session` on the worker runtime (senpi `WorkerSessionRegistry.openSession` + the router's
     /// `open`): a new handle spawns and binds its own worker; a known path attaches to the live one.
+    /// One open, shared by `open_session` and the successor's parked reopen (senpi `open`): validated, admitted,
+    /// attached, and answered as the data of the success response.
+    async fn open_session_inner(
+        &self,
+        connection: Option<&str>,
+        body: &crate::rpc_types::RpcCommandBody,
+        overlay: Option<&serde_json::Value>,
+    ) -> Result<serde_json::Value, OpenRefusal> {
+        let crate::rpc_types::RpcCommandBody::OpenSession {
+            session_path,
+            cwd,
+            provider,
+            model_id,
+            thinking_level,
+            permission_preset,
+            retain_on_disconnect,
+            kind,
+            context,
+            auto_title,
+            durable_session_id,
+            attended,
+            prompt_surface,
+            browser_engine,
+            retry_fallback,
+        } = body
+        else {
+            return Err(OpenRefusal::plain(
+                crate::rpc_types::RPC_ERROR_INVALID_LAUNCH_PROFILE,
+            ));
+        };
+        let invalid = |reason: String| {
+            OpenRefusal::plain(format!(
+                "{}: {reason}",
+                crate::rpc_types::RPC_ERROR_INVALID_LAUNCH_PROFILE
+            ))
+        };
+        // senpi session-command-router `open`: only `attended:false` (observational open) is accepted.
+        if *attended == Some(true) {
+            return Err(invalid("attended must be false or omitted".to_owned()));
+        }
+        if let Some(reason) =
+            crate::rpc_input_validation::prompt_surface_error(prompt_surface.as_ref())
+        {
+            return Err(invalid(reason.to_owned()));
+        }
+        if let Some(reason) =
+            crate::rpc_input_validation::browser_engine_error(browser_engine.as_ref())
+        {
+            return Err(invalid(reason.to_owned()));
+        }
+        if let Some(reason) =
+            crate::rpc_input_validation::retry_fallback_error(retry_fallback.as_ref())
+        {
+            return Err(invalid(reason));
+        }
+        let profile = crate::session_registry::RpcSessionLaunchProfile {
+            runtime: maho_core::agent_session_runtime::AgentSessionLaunchProfile {
+                cwd: cwd.clone().unwrap_or_else(|| self.options.cwd.clone()),
+                permission_preset: permission_preset.clone(),
+                creation_model: provider.clone().zip(model_id.clone()),
+                initial_thinking_level: thinking_level.clone(),
+                auto_title: *auto_title,
+            },
+            session_path: session_path.clone(),
+            durable_session_id: durable_session_id.clone(),
+            session_kind: kind.map(|kind| match kind {
+                crate::rpc_types::SessionKind::Worker => maho_ext_api::SessionKind::Worker,
+                crate::rpc_types::SessionKind::Interactive => {
+                    maho_ext_api::SessionKind::Interactive
+                }
+            }),
+            session_context: context.clone(),
+            attended: (*attended == Some(false)).then_some(false),
+            prompt_surface: prompt_surface
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            browser_engine: browser_engine
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            retry_fallback: retry_fallback.clone(),
+            holder_endpoint: Some(maho_core::session_holders::SessionHolderEndpoint {
+                host_instance: Some(crate::protocol_identity::host_instance_id().to_owned()),
+                host_socket: None,
+                host_daemon_dir: std::env::var(crate::host_daemon_paths::HOST_DAEMON_DIR_ENV)
+                    .ok()
+                    .filter(|dir| !dir.is_empty()),
+            }),
+        };
+        let retain = retain_on_disconnect.unwrap_or(false);
+        let opened = self
+            .open_admitted(connection, profile, retain, overlay)
+            .await;
+        // senpi `open`: a successful open of a path drops any park record for it, so a later successor does not
+        // reopen a session a client already took back.
+        if opened.is_ok()
+            && let (Some(path), Some(dir)) = (session_path, self.handover_parked_dir.get())
+        {
+            crate::host_handover_parked::clear_handover_parked_session(dir, path).await;
+        }
+        opened
+    }
+    async fn open_admitted(
+        &self,
+        connection: Option<&str>,
+        profile: crate::session_registry::RpcSessionLaunchProfile,
+        retain: bool,
+        overlay: Option<&serde_json::Value>,
+    ) -> Result<serde_json::Value, OpenRefusal> {
+        if let Some(workers) = self.workers.clone() {
+            return self
+                .open_worker_session(&workers, connection, profile, retain, overlay)
+                .await;
+        }
+        let admitted = {
+            let mut registry = self.registry.lock().await;
+            registry.admit_open(profile.clone(), retain, crate::connection_handler::now_ms())
+        };
+        match admitted {
+            Err(error) => Err(OpenRefusal::from_registry(&error)),
+            Ok(crate::session_registry::OpenAdmission::Attached(handle)) => {
+                // senpi session-registry.ts: an attach that ends a retained session's parked
+                // (zero-attachment) window tells its extensions `session_resumed`.
+                let resumed = {
+                    let registry = self.registry.lock().await;
+                    registry
+                        .get(&handle)
+                        .filter(|entry| {
+                            entry.close.retain_on_disconnect && entry.close.attachments == 1
+                        })
+                        .and_then(|entry| entry.runtime.clone())
+                };
+                if let Some(runtime) = resumed {
+                    runtime
+                        .emit_attachment_event(
+                            maho_core::agent_session_runtime::AttachmentEvent::SessionResumed,
+                        )
+                        .await;
+                }
+                // A second client joins the live session: register it with the fanout so it
+                // receives the session's records and the in-flight snapshot (senpi `open`).
+                self.attach_connection(connection, &handle).await;
+                let state = self.session_state(&handle).await;
+                Ok(serde_json::json!({"sessionId":handle,"state":state,"attached":true}))
+            }
+            Ok(crate::session_registry::OpenAdmission::Create(handle)) => {
+                let created = {
+                    let mut registry = self.registry.lock().await;
+                    registry
+                        .create_admitted_runtime(&handle, (self.options.create_runtime)(profile))
+                        .await
+                };
+                if let Err(error) = created {
+                    return Err(OpenRefusal::from_registry(&error));
+                }
+                if let Some(overlay) = overlay.and_then(serde_json::Value::as_object) {
+                    let overlay = overlay.clone();
+                    if let Some(entry) = self.registry.lock().await.get_mut(&handle) {
+                        entry.context_overlay = Some(overlay);
+                    }
+                }
+                let state = self.session_state(&handle).await;
+                self.attach_connection(connection, &handle).await;
+                Ok(serde_json::json!({"sessionId":handle,"state":state}))
+            }
+        }
+    }
+    /// `set_session_context` (senpi `setSessionContext` + `answerSetSessionContext`): any attached connection
+    /// may patch; a host with no per-connection identity (stdio) owns every session.
+    async fn set_session_context(
+        &self,
+        connection: Option<&str>,
+        id: Option<String>,
+        session_id: String,
+        patch: &serde_json::Value,
+    ) {
+        let refusal = |code: &str, reason: &str, action: &str| {
+            let mut record = serde_json::json!({
+                "type": "response",
+                "command": "set_session_context",
+                "success": false,
+                "error": format!("{code}: {reason}"),
+                "errorCode": code,
+                "errorData": {"reason": reason, "action": action},
+            });
+            if let Some(id) = &id {
+                record["id"] = id.clone().into();
+            }
+            self.respond_value(connection, &session_id, record);
+        };
+        if !self
+            .attachments
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .owns(connection, &session_id)
+        {
+            refusal(
+                crate::rpc_types::RPC_ERROR_SESSION_NOT_ATTACHED,
+                "this connection is not attached to that session",
+                "attach first with open_session { sessionPath }, then patch its context",
+            );
+            return;
+        }
+        let now = crate::connection_handler::now_ms();
+        let published = if let Some(workers) = &self.workers {
+            match workers.get_for_command(&session_id, "set_session_context", now) {
+                Err(error) => {
+                    self.error(
+                        connection,
+                        id,
+                        "set_session_context",
+                        error.to_string(),
+                        Some(session_id),
+                    );
+                    return;
+                }
+                Ok(_) => workers
+                    .with_entry(&session_id, |entry| {
+                        crate::session_context_patch::apply_context_patch(
+                            entry.context_overlay.as_ref(),
+                            patch,
+                        )
+                        .map(|overlay| {
+                            entry.context_overlay = Some(overlay);
+                            crate::session_context_patch::published_session_context(
+                                &entry.identity.context,
+                                entry.context_overlay.as_ref(),
+                            )
+                        })
+                    })
+                    .unwrap_or_else(|| {
+                        Err(crate::session_context_patch::ContextPatchRefusal {
+                            reason: crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION.to_owned(),
+                            action: String::new(),
+                        })
+                    }),
+            }
+        } else {
+            let mut registry = self.registry.lock().await;
+            let routed = registry
+                .get_for_command(&session_id, "set_session_context", now)
+                .map_err(|error| error.to_string());
+            match routed {
+                Err(message) => {
+                    drop(registry);
+                    self.error(
+                        connection,
+                        id,
+                        "set_session_context",
+                        message,
+                        Some(session_id),
+                    );
+                    return;
+                }
+                Ok(entry) => crate::session_context_patch::apply_context_patch(
+                    entry.context_overlay.as_ref(),
+                    patch,
+                )
+                .map(|overlay| {
+                    entry.context_overlay = Some(overlay);
+                    crate::session_context_patch::published_session_context(
+                        &entry.identity.context,
+                        entry.context_overlay.as_ref(),
+                    )
+                }),
+            }
+        };
+        match published {
+            Err(refused) => refusal(
+                crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT,
+                &refused.reason,
+                &refused.action,
+            ),
+            Ok(context) => self.success(
+                connection,
+                id,
+                "set_session_context",
+                Some(serde_json::json!({"context": context})),
+                Some(session_id),
+            ),
+        }
+    }
     async fn open_worker_session(
         &self,
         workers: &std::sync::Arc<crate::worker_session_registry::WorkerSessionRegistry>,
         connection: Option<&str>,
-        id: Option<String>,
         profile: crate::session_registry::RpcSessionLaunchProfile,
         retain: bool,
-    ) {
+        overlay: Option<&serde_json::Value>,
+    ) -> Result<serde_json::Value, OpenRefusal> {
         let opened = workers
             .open_session(
                 profile,
@@ -1275,22 +1753,18 @@ impl HostCore {
             )
             .await;
         let (handle, attached) = match opened {
-            Err(error) => {
-                self.error(connection, id, "open_session", error.to_string(), None);
-                return;
-            }
+            Err(error) => return Err(OpenRefusal::from_registry(&error)),
             Ok(crate::worker_session_registry::WorkerOpen::Created(handle)) => (handle, false),
             Ok(crate::worker_session_registry::WorkerOpen::Attached(handle)) => (handle, true),
         };
+        if !attached && let Some(overlay) = overlay.and_then(serde_json::Value::as_object) {
+            let overlay = overlay.clone();
+            workers.with_entry(&handle, |entry| entry.context_overlay = Some(overlay));
+        }
         let Some(worker) = workers.worker(&handle) else {
-            self.error(
-                connection,
-                id,
-                "open_session",
+            return Err(OpenRefusal::plain(
                 crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION,
-                None,
-            );
-            return;
+            ));
         };
         let kind = workers
             .with_entry(&handle, |entry| entry.identity.kind)
@@ -1347,14 +1821,7 @@ impl HostCore {
                 let _ = workers.close_marked(&handle).await;
             }
             self.forget_session(&handle);
-            self.error(
-                connection,
-                id,
-                "open_session",
-                format!("open_failed: {error}"),
-                None,
-            );
-            return;
+            return Err(OpenRefusal::plain(format!("open_failed: {error}")));
         }
         let state = worker
             .snapshot()
@@ -1363,7 +1830,7 @@ impl HostCore {
         if attached {
             data["attached"] = true.into();
         }
-        self.success(connection, id, "open_session", Some(data), None);
+        Ok(data)
     }
     /// `close_session` on the worker runtime: only the LAST attachment ends the worker, whose actual
     /// exit releases its reservations (senpi `WorkerSessionRegistry.beginClose` + `closeMarked`).
@@ -1673,16 +2140,29 @@ impl HostCore {
     /// reopens by - and anything else ends as `session_closed { reason: "idle_evicted" }`.
     async fn evict_idle_session(&self, session_id: &str) {
         if let Some(workers) = &self.workers {
+            let record = workers
+                .with_entry(session_id, |entry| {
+                    self.park_record(
+                        entry.close.retain_on_disconnect,
+                        entry.session_path.as_deref(),
+                        entry.durable_session_id.as_deref(),
+                        &entry.profile,
+                        entry.context_overlay.as_ref(),
+                    )
+                })
+                .flatten();
             let Some(parked) = workers.force_close(session_id) else {
                 return;
             };
+            self.write_park_record(record.filter(|_| parked.is_some()))
+                .await;
             if let Err(error) = workers.close_marked(session_id).await {
                 eprintln!("senpi rpc close for session {session_id} failed: {error}");
             }
             self.publish_eviction(session_id, parked);
             return;
         }
-        let parked = {
+        let (parked, record) = {
             let mut registry = self.registry.lock().await;
             let Some(entry) = registry.get_mut(session_id) else {
                 return;
@@ -1695,10 +2175,18 @@ impl HostCore {
             } else {
                 None
             };
+            let record = self.park_record(
+                entry.close.retain_on_disconnect,
+                entry.session_path.as_deref(),
+                entry.durable_session_id.as_deref(),
+                &entry.profile,
+                entry.context_overlay.as_ref(),
+            );
             entry.close.attachments = 0;
             entry.close.state = crate::session_registry::RpcSessionState::Closing;
-            parked
+            (parked, record)
         };
+        self.write_park_record(record).await;
         if let Some(binding) = self.bindings.lock().await.remove(session_id) {
             binding.cancel_pending_extension_ui_requests();
             binding.dispose().await;
@@ -1881,6 +2369,97 @@ impl HostCore {
             .detach(owner, session_id);
     }
 }
+/// The router's side of `release_session` (senpi `releaseSession(port, command)` wiring in `handle`).
+struct HostReleasePort<'a> {
+    core: &'a HostCore,
+}
+#[async_trait::async_trait]
+impl crate::session_release_interrupt::ReleaseSettlePort for HostReleasePort<'_> {
+    async fn other_requests_settled(&self, session_id: &str) {
+        loop {
+            let notified = self.core.request_settled.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.core.active_request_count(session_id) <= 1 {
+                return;
+            }
+            notified.await;
+        }
+    }
+    fn pending_prompts(
+        &self,
+        _session_id: &str,
+    ) -> Vec<crate::session_release_interrupt::BoxFuture<'static, ()>> {
+        // The binding does not track `prompt` calls apart from the session's own in-flight count, which
+        // `activity_snapshot` and `wait_for_idle` already cover.
+        Vec::new()
+    }
+}
+#[async_trait::async_trait]
+impl crate::session_release::SessionReleasePort for HostReleasePort<'_> {
+    fn draining(&self) -> bool {
+        self.core.is_draining()
+    }
+    fn host_instance(&self) -> Option<String> {
+        Some(crate::protocol_identity::host_instance_id().to_owned())
+    }
+    async fn lookup(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session_release::ReleaseEntry, crate::session_release::LookupFailure> {
+        let now = crate::connection_handler::now_ms();
+        let lookup_failure = |error: crate::session_registry::RpcSessionRegistryError| {
+            crate::session_release::LookupFailure(error.code)
+        };
+        let attachments = |count: i64| u64::try_from(count.max(0)).unwrap_or(0);
+        if let Some(workers) = &self.core.workers {
+            workers
+                .get_for_command(session_id, "release_session", now)
+                .map_err(lookup_failure)?;
+            return workers
+                .with_entry(session_id, |entry| crate::session_release::ReleaseEntry {
+                    open: entry.close.state == crate::session_registry::RpcSessionState::Open,
+                    session: None,
+                    session_path: entry.session_path.clone(),
+                    attachments: attachments(entry.close.attachments),
+                })
+                .ok_or_else(|| {
+                    crate::session_release::LookupFailure(
+                        crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION.to_owned(),
+                    )
+                });
+        }
+        let mut registry = self.core.registry.lock().await;
+        let entry = registry
+            .get_for_command(session_id, "release_session", now)
+            .map_err(lookup_failure)?;
+        let session = entry.runtime.as_ref().map(|runtime| {
+            std::sync::Arc::new(crate::session_release_adapter::AgentSessionRelease::new(
+                runtime.session().clone(),
+            ))
+                as std::sync::Arc<dyn crate::session_release_interrupt::ReleasableSession>
+        });
+        let session_path = entry.session_path.clone().or_else(|| {
+            entry
+                .runtime
+                .as_ref()
+                .and_then(|runtime| runtime.session().session_file())
+        });
+        Ok(crate::session_release::ReleaseEntry {
+            open: entry.close.state == crate::session_registry::RpcSessionState::Open,
+            session,
+            session_path,
+            attachments: attachments(entry.close.attachments),
+        })
+    }
+    fn other_requests(&self, session_id: &str) -> usize {
+        // The release is itself one of the session's in-flight requests.
+        self.core.active_request_count(session_id).saturating_sub(1)
+    }
+    async fn tear_down(&self, session_id: &str, session_path: &str) -> bool {
+        self.core.tear_down_released(session_id, session_path).await
+    }
+}
 tokio::task_local! {static CURRENT_CONNECTION:Option<String>;}
 /// Routes one session record (senpi `SessionEventWriter.enqueue`): responses, bash updates and
 /// blocking UI requests go to their requester only; content goes to the connections attached to
@@ -1972,6 +2551,28 @@ mod handoff_tests {
                 .filter(|capability| *capability == "multi_session")
                 .count(),
             1
+        );
+    }
+    #[tokio::test]
+    async fn protocol_info_names_the_hosts_tool_runtime_and_drops_a_negotiated_one() {
+        let core = std::sync::Arc::try_unwrap(idle_core())
+            .ok()
+            .map(|core| core.with_tool_runtime(crate::host_capabilities::ToolRuntimeKind::Child));
+        let Some(core) = core else {
+            panic!("the idle core is uniquely owned");
+        };
+        let owned = core
+            .advertised_capabilities()
+            .into_iter()
+            .filter(|capability| {
+                crate::host_capabilities::is_host_owned_tool_runtime_capability(capability)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            owned,
+            crate::host_capabilities::tool_runtime_capabilities(
+                crate::host_capabilities::ToolRuntimeKind::Child
+            )
         );
     }
     #[tokio::test]
@@ -2126,7 +2727,7 @@ pub async fn run_multi_session_host_with_signals(
     listen: Option<String>,
     signals: HostShutdownSignals,
 ) -> std::io::Result<()> {
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = signals;
         match listen.as_deref() {
@@ -2136,7 +2737,7 @@ pub async fn run_multi_session_host_with_signals(
             )),
         }
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         match listen.as_deref() {
             None | Some("stdio://") => run_stdio_host(core).await,
@@ -2226,9 +2827,9 @@ async fn run_stdio_host(core: std::sync::Arc<HostCore>) -> std::io::Result<()> {
     empty_exit.abort();
     result
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 type HostCommand = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn poll_host_commands(commands: &mut Vec<HostCommand>) -> Result<(), String> {
     let (index, result) = std::future::poll_fn(|cx| {
         for (index, command) in commands.iter_mut().enumerate() {
@@ -2242,14 +2843,144 @@ async fn poll_host_commands(commands: &mut Vec<HostCommand>) -> Result<(), Strin
     drop(commands.remove(index));
     result
 }
+/// The bound host endpoint: a Unix socket, or the first instance of a Windows named pipe.
 #[cfg(unix)]
+struct HostListener(tokio::net::UnixListener);
+#[cfg(unix)]
+type HostStream = tokio::net::UnixStream;
+#[cfg(unix)]
+impl HostListener {
+    fn bind(path: &str, _secret: Option<&[u8]>) -> std::io::Result<Self> {
+        use std::os::unix::fs::PermissionsExt;
+        let listener = tokio::net::UnixListener::bind(path)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        Ok(Self(listener))
+    }
+    async fn accept(&mut self) -> std::io::Result<HostStream> {
+        Ok(self.0.accept().await?.0)
+    }
+}
+#[cfg(windows)]
+struct HostListener {
+    address: String,
+    server: tokio::net::windows::named_pipe::NamedPipeServer,
+}
+#[cfg(windows)]
+type HostStream = tokio::net::windows::named_pipe::NamedPipeServer;
+#[cfg(windows)]
+impl HostListener {
+    /// Listens on the pipe the logical path resolves to (senpi `listen` + `resolveSocketTransportAddress`).
+    fn bind(path: &str, secret: Option<&[u8]>) -> std::io::Result<Self> {
+        let address =
+            crate::socket_transport::resolve_socket_transport_address(path, "win32", secret)
+                .map_err(std::io::Error::other)?;
+        let server = crate::host_lifecycle::win32_pipe::create_first_instance(&address)?;
+        Ok(Self { address, server })
+    }
+    async fn accept(&mut self) -> std::io::Result<HostStream> {
+        self.server.connect().await?;
+        let next = tokio::net::windows::named_pipe::ServerOptions::new()
+            .reject_remote_clients(true)
+            .create(&self.address)?;
+        Ok(std::mem::replace(&mut self.server, next))
+    }
+}
+/// The process signals that end a socket host: SIGTERM/SIGHUP on unix (exit codes 143/129), the console
+/// break/close/shutdown events on Windows, where senpi registers SIGTERM only (exit code 143).
+#[cfg(unix)]
+struct HostShutdownSignal {
+    terminate: tokio::signal::unix::Signal,
+    hangup: tokio::signal::unix::Signal,
+}
+#[cfg(unix)]
+impl HostShutdownSignal {
+    fn new() -> std::io::Result<Self> {
+        Ok(Self {
+            terminate: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?,
+            hangup: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?,
+        })
+    }
+    async fn recv(&mut self) -> i32 {
+        tokio::select! {
+            _=self.terminate.recv()=>143,
+            _=self.hangup.recv()=>129,
+        }
+    }
+}
+#[cfg(windows)]
+struct HostShutdownSignal {
+    brk: tokio::signal::windows::CtrlBreak,
+    close: tokio::signal::windows::CtrlClose,
+    shutdown: tokio::signal::windows::CtrlShutdown,
+}
+#[cfg(windows)]
+impl HostShutdownSignal {
+    fn new() -> std::io::Result<Self> {
+        Ok(Self {
+            brk: tokio::signal::windows::ctrl_break()?,
+            close: tokio::signal::windows::ctrl_close()?,
+            shutdown: tokio::signal::windows::ctrl_shutdown()?,
+        })
+    }
+    async fn recv(&mut self) -> i32 {
+        tokio::select! {
+            _=self.brk.recv()=>143,
+            _=self.close.recv()=>143,
+            _=self.shutdown.recv()=>143,
+        }
+    }
+}
+/// Whether a `--listen` path is a Windows named-pipe address (no directory to create, no secret file of its own).
+#[cfg(windows)]
+fn is_pipe_address(path: &str) -> bool {
+    path.to_lowercase().starts_with("\\\\.\\pipe\\")
+}
+/// senpi `resolveSocketPath` for the empty `unix://` form: the default `<agentDir>/rpc/rpc.sock`.
+#[cfg(windows)]
+fn resolve_listen_path(value: &str, agent_dir: &std::path::Path) -> String {
+    let path = crate::host_ensure::normalize_socket_path(value);
+    if path.is_empty() {
+        agent_dir
+            .join("rpc")
+            .join("rpc.sock")
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        path.to_owned()
+    }
+}
+#[cfg(any(unix, windows))]
 async fn run_socket_host(
     core: std::sync::Arc<HostCore>,
     listen: String,
     signals: HostShutdownSignals,
 ) -> std::io::Result<()> {
+    #[cfg(unix)]
     let path = crate::host_ensure::normalize_socket_path(&listen).to_owned();
-    if let Some(parent) = std::path::Path::new(&path).parent() {
+    #[cfg(windows)]
+    let path = resolve_listen_path(&listen, &core.options.agent_dir);
+    #[cfg(unix)]
+    let secret: Option<std::sync::Arc<Vec<u8>>> = None;
+    // On Windows the secret handshake is the only boundary: the supervisor hands the child its internal secret
+    // file; a bare host derives one beside its logical path (senpi `ensureSocketSecret`).
+    #[cfg(windows)]
+    let secret: Option<std::sync::Arc<Vec<u8>>> = {
+        let secret_file = match std::env::var(crate::socket_transport::SOCKET_SECRET_FILE_ENV) {
+            Ok(file) if !file.is_empty() => file,
+            _ => {
+                crate::socket_transport::socket_secret_path(&path).map_err(std::io::Error::other)?
+            }
+        };
+        Some(std::sync::Arc::new(
+            crate::socket_transport::ensure_socket_secret(std::path::Path::new(&secret_file))?
+                .to_vec(),
+        ))
+    };
+    #[cfg(windows)]
+    let pipe_address = is_pipe_address(&path);
+    #[cfg(unix)]
+    let pipe_address = false;
+    if !pipe_address && let Some(parent) = std::path::Path::new(&path).parent() {
         crate::host_daemon_paths::create_private_directory(parent)?;
     }
     let HostShutdownSignals {
@@ -2346,19 +3077,53 @@ async fn run_socket_host(
             let _ = reason_tx.send(Some(reason));
         },
     ));
-    let listener = tokio::net::UnixListener::bind(&path)?;
+    // senpi `runSocketHost`: the successor reopens what its predecessor parked, from the daemon directory of the
+    // endpoint clients dial (the supervisor's public socket when supervised).
+    let endpoint_socket = handoff_public_socket
+        .clone()
+        .unwrap_or_else(|| path.clone());
+    let daemon_dir = crate::host_daemon_paths::create_host_daemon_paths(
+        &endpoint_socket,
+        &core.options.agent_dir,
+    )
+    .dir;
+    core.set_handover_parked_dir(daemon_dir.clone());
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        let core = core.clone();
+        let host_socket = endpoint_socket.clone();
+        tokio::spawn(async move {
+            let store = crate::host_handover_parked::FileHandoverParkedStore::new(daemon_dir);
+            let opener_core = core.clone();
+            let opener = move |entry: crate::host_handover_parked::HandoverParkedEntry| {
+                let core = opener_core.clone();
+                Box::pin(async move { core.reopen_parked(entry).await })
+                    as crate::host_handover_reopen::BoxFuture<
+                        'static,
+                        Result<(), crate::host_handover_reopen::ReopenError>,
+                    >
+            };
+            let still_serving = || !core.is_draining();
+            let holder = crate::host_handover_reopen::ReopenHolder {
+                host_instance: crate::protocol_identity::host_instance_id().to_owned(),
+                host_socket: Some(host_socket),
+                should_reopen: Some(&still_serving),
+            };
+            crate::host_handover_reopen::reopen_handover_parked_sessions(
+                &store,
+                &opener,
+                Some(&holder),
+            )
+            .await;
+        });
     }
+    let mut listener = HostListener::bind(&path, secret.as_deref().map(Vec::as_slice))?;
     let bound = crate::socket_ownership::stat_socket_identity(std::path::Path::new(&path))?;
     let connections = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut next = 0u64;
     let mut draining = false;
     let mut empty_since: Option<tokio::time::Instant> = None;
     let mut reason_rx = reason_rx;
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+    let mut shutdown_signal = HostShutdownSignal::new()?;
     let mut signal_code = None;
     let mut drain_rx = drain_rx;
     let mut tick = std::time::Duration::from_millis(250);
@@ -2394,16 +3159,15 @@ async fn run_socket_host(
                     core.begin_drain().await;
                 }
             },
-            _=terminate.recv()=>{if let Some(cleanup)=SIGNAL_CLEANUP.get(){cleanup();}signal_code=Some(143);break;},
-            _=hangup.recv()=>{if let Some(cleanup)=SIGNAL_CLEANUP.get(){cleanup();}signal_code=Some(129);break;},
+            code=shutdown_signal.recv()=>{if let Some(cleanup)=SIGNAL_CLEANUP.get(){cleanup();}signal_code=Some(code);break;},
             accepted=listener.accept()=>{
-                let(socket,_)=accepted?;
+                let socket=accepted?;
                 if draining{drop(socket);continue;}
                 next+=1;let connection=format!("socket-{next}");
                 connections.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
                 empty_since=None;
-                let core=core.clone();let counter=connections.clone();
-                tokio::spawn(async move{serve_socket_connection(core,connection,socket).await;counter.fetch_sub(1,std::sync::atomic::Ordering::SeqCst);});
+                let core=core.clone();let counter=connections.clone();let secret=secret.clone();
+                tokio::spawn(async move{serve_socket_connection(core,connection,socket,secret).await;counter.fetch_sub(1,std::sync::atomic::Ordering::SeqCst);});
             }
             ()=tokio::time::sleep(tick)=>{
                 if draining&&core.drain_sweep().await{break;}
@@ -2441,7 +3205,7 @@ async fn run_socket_host(
 /// Whether the endpoint this host serves is held by another socket entry now (senpi
 /// `runSocketHost`'s `endpointSuperseded`): a supervised host answers for the PUBLIC path its
 /// supervisor bound, a bare host for the path it bound itself.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn endpoint_superseded(
     own_path: &str,
     own: &Option<crate::socket_ownership::SocketFileIdentity>,
@@ -2464,13 +3228,25 @@ fn endpoint_superseded(
     }
 }
 /// One accepted connection's lifetime: register its writer, pump its commands, release it.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn serve_socket_connection(
     core: std::sync::Arc<HostCore>,
     connection: String,
-    socket: tokio::net::UnixStream,
+    mut socket: HostStream,
+    secret: Option<std::sync::Arc<Vec<u8>>>,
 ) {
+    // A wrong or missing secret ends the connection before any JSONL byte is read or answered.
+    if let Some(secret) = secret
+        && crate::socket_transport::authenticate_socket(&mut socket, &secret)
+            .await
+            .is_err()
+    {
+        return;
+    }
+    #[cfg(unix)]
     let (read, write) = socket.into_split();
+    #[cfg(windows)]
+    let (read, write) = tokio::io::split(socket);
     let failed = connection.clone();
     let actor = crate::socket_event_fanout::SocketEventSinkActor::new(
         write,

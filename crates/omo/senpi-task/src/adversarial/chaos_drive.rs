@@ -10,7 +10,7 @@ use crate::state::{ResidencyState, TaskNotification, TaskRecord, TaskSpawnSpec, 
 
 use super::chaos_actions::{ChaosState, apply_random_action};
 use super::chaos_engine::ActionCounts;
-use super::chaos_harness::{ChaosHarness, ChaosHarnessOptions, CHAOS_SESSION, build_harness};
+use super::chaos_harness::{CHAOS_SESSION, ChaosHarness, ChaosHarnessOptions, build_harness};
 use super::chaos_invariants::{Violation, collect_invariant_violations};
 use super::chaos_lifecycle_actions::{
     crash_mid_suspend, mass_revive_at_cap, observe_reclamation_postcondition, resume_session,
@@ -43,17 +43,24 @@ fn drain(state: &ChaosState) {
         state.harness.waiters.advance();
         for engine in &state.harness.engines {
             let _ = engine.lifecycle.admit_resident(CHAOS_SESSION);
-            let _ = engine.lifecycle.reconcile_on_session_start(Some(CHAOS_SESSION));
+            let _ = engine
+                .lifecycle
+                .reconcile_on_session_start(Some(CHAOS_SESSION));
         }
         state.harness.observe_reconcile();
-        let _ = state.harness.notifier.flush_buffered(&crate::completion::FlushInput {
-            session_id: CHAOS_SESSION.to_string(),
-            replaced: false,
-        });
-        let _ = state.harness.notifier.reconcile_failed_notifications(crate::completion::ReconcileUnnotifiedNotificationsInput {
-            session_id: CHAOS_SESSION,
-            parent_state: crate::completion::ParentState::Idle,
-        });
+        let _ = state
+            .harness
+            .notifier
+            .flush_buffered(&crate::completion::FlushInput {
+                session_id: CHAOS_SESSION.to_string(),
+                replaced: false,
+            });
+        let _ = state.harness.notifier.reconcile_failed_notifications(
+            crate::completion::ReconcileUnnotifiedNotificationsInput {
+                session_id: CHAOS_SESSION,
+                parent_state: crate::completion::ParentState::Idle,
+            },
+        );
         state.harness.observe_reconcile();
         crate::manager::outcome::test_barrier::wait_until_all_consumed();
         crate::manager::outcome::test_barrier::wait_until_grants_idle();
@@ -66,8 +73,14 @@ fn drain(state: &ChaosState) {
         let Ok(listed) = state.harness.store.list() else {
             break;
         };
-        let all_terminal = listed.records.iter().all(|record| is_terminal_status(record.status));
-        let any_pending = listed.records.iter().any(|record| record.status == TaskStatus::Pending);
+        let all_terminal = listed
+            .records
+            .iter()
+            .all(|record| is_terminal_status(record.status));
+        let any_pending = listed
+            .records
+            .iter()
+            .any(|record| record.status == TaskStatus::Pending);
         let grew = handle_count(&state.harness) > before;
         let notifications_settled = state.harness.retry_scheduler.pending_count() == 0
             && state.harness.notifier.buffered_count(CHAOS_SESSION) == 0;
@@ -120,7 +133,11 @@ pub fn run_iteration(seed: u32) -> IterationReport {
     drain(&state);
     let violations = collect_invariant_violations(&state);
     let tasks = state.task_ids().len();
-    IterationReport { steps, tasks, violations }
+    IterationReport {
+        steps,
+        tasks,
+        violations,
+    }
 }
 
 /// `LifecycleProbeReport`: the action-count snapshot and violations one lifecycle probe run
@@ -136,17 +153,20 @@ fn start_probe_task(state: &ChaosState, mode: &'static str, prompt: &str) -> Str
     } else {
         crate::manager::execution_mode::ExecutionMode::InProcess
     };
-    let result = state.harness.manager.start(&crate::manager::types::ManagerStartSpec {
-        prompt: prompt.to_string(),
-        parent_session_id: CHAOS_SESSION.to_string(),
-        root_session_id: Some(CHAOS_SESSION.to_string()),
-        depth: 1,
-        category: Some("quick".to_string()),
-        model: Some(state.harness.model.clone()),
-        execution_mode: Some(execution_mode),
-        run_in_background: true,
-        ..crate::manager::types::ManagerStartSpec::default()
-    });
+    let result = state
+        .harness
+        .manager
+        .start(&crate::manager::types::ManagerStartSpec {
+            prompt: prompt.to_string(),
+            parent_session_id: CHAOS_SESSION.to_string(),
+            root_session_id: Some(CHAOS_SESSION.to_string()),
+            depth: 1,
+            category: Some("quick".to_string()),
+            model: Some(state.harness.model.clone()),
+            execution_mode: Some(execution_mode),
+            run_in_background: true,
+            ..crate::manager::types::ManagerStartSpec::default()
+        });
     let crate::manager::types::StartResult::Started(started) = result else {
         panic!("probe start failed");
     };
@@ -169,7 +189,12 @@ pub fn run_lifecycle_probe() -> LifecycleProbeReport {
     mass_revive_at_cap(&state);
     drain(&state);
     LifecycleProbeReport {
-        action_counts: *state.harness.lifecycle_observations.action_counts.lock().unwrap_or_else(|error| error.into_inner()),
+        action_counts: *state
+            .harness
+            .lifecycle_observations
+            .action_counts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()),
         violations: collect_invariant_violations(&state),
     }
 }
@@ -213,12 +238,18 @@ impl LifecycleMutation {
             LifecycleMutation::ReviveForbidden => "revive_forbidden",
             LifecycleMutation::OverAdmit => "over_admit",
             LifecycleMutation::CapacityGateReclamation => "capacity_gate_reclamation",
-            LifecycleMutation::RelaunchTerminalWithoutSession => "relaunch_terminal_without_session",
+            LifecycleMutation::RelaunchTerminalWithoutSession => {
+                "relaunch_terminal_without_session"
+            }
         }
     }
 }
 
-fn seed_mutation_record(state: &ChaosState, task_id: &str, overrides: impl FnOnce(&mut TaskRecord)) {
+fn seed_mutation_record(
+    state: &ChaosState,
+    task_id: &str,
+    overrides: impl FnOnce(&mut TaskRecord),
+) {
     let mut record = TaskRecord {
         task_id: task_id.to_string(),
         name: Some(task_id.to_string()),
@@ -252,7 +283,12 @@ fn seed_mutation_record(state: &ChaosState, task_id: &str, overrides: impl FnOnc
         failure_kind: None,
         failure_reason: None,
         spawn_spec: Some(TaskSpawnSpec::V1(crate::state::SpawnSpecV1 {
-            cwd: state.harness.store.state_dir().to_string_lossy().into_owned(),
+            cwd: state
+                .harness
+                .store
+                .state_dir()
+                .to_string_lossy()
+                .into_owned(),
             prompt: "mutation".to_string(),
             instructions: None,
             member_scoped_tool_names: None,
@@ -280,19 +316,35 @@ fn seed_mutation_record(state: &ChaosState, task_id: &str, overrides: impl FnOnc
         isolation: None,
         runner_kind: None,
         host_session: None,
+        cancel_requested: None,
         started_at: None,
     };
     overrides(&mut record);
     let _ = state.harness.store.save(&record);
-    super::observing_store::observe_store_write(&state.harness.store, &state.harness.observations, None, Some(&record));
+    super::observing_store::observe_store_write(
+        &state.harness.store,
+        &state.harness.observations,
+        None,
+        Some(&record),
+    );
     state.push_task_id(task_id.to_string());
 }
 
 fn managed_spec(state: &ChaosState, task_id: &str, prompt: &str) -> ManagedStartSpec {
     ManagedStartSpec {
         task_id: task_id.to_string(),
-        cwd: state.harness.store.state_dir().to_string_lossy().into_owned(),
-        state_dir: state.harness.store.state_dir().to_string_lossy().into_owned(),
+        cwd: state
+            .harness
+            .store
+            .state_dir()
+            .to_string_lossy()
+            .into_owned(),
+        state_dir: state
+            .harness
+            .store
+            .state_dir()
+            .to_string_lossy()
+            .into_owned(),
         workpool_state_dir: None,
         prompt: prompt.to_string(),
         depth: 1,
@@ -318,7 +370,13 @@ pub fn run_lifecycle_mutation_probe(mutation: LifecycleMutation) -> LifecyclePro
                 next
             });
             let _ = first;
-            let record = state.harness.store.load(&started).ok().flatten().expect("mutation record missing");
+            let record = state
+                .harness
+                .store
+                .load(&started)
+                .ok()
+                .flatten()
+                .expect("mutation record missing");
             let handle = second
                 .in_process_runner
                 .start(&managed_spec(&state, &started, "double claim"))
@@ -407,7 +465,10 @@ pub fn run_lifecycle_mutation_probe(mutation: LifecycleMutation) -> LifecyclePro
             // orphan itself consumes the only slot, admission rejects and the buggy reconcile
             // path returns without running reclaim_orphaned_resident.
             let admission = owner.lifecycle.admit_resident(CHAOS_SESSION);
-            if !matches!(admission, Ok(crate::lifecycle::AdmissionResult::Rejected(_))) {
+            if !matches!(
+                admission,
+                Ok(crate::lifecycle::AdmissionResult::Rejected(_))
+            ) {
                 panic!("capacity-gate mutation did not reach a full cap");
             }
             observe_reclamation_postcondition(&state, task_id, Some(owner));
@@ -423,7 +484,12 @@ pub fn run_lifecycle_mutation_probe(mutation: LifecycleMutation) -> LifecyclePro
         }
     }
     LifecycleProbeReport {
-        action_counts: *state.harness.lifecycle_observations.action_counts.lock().unwrap_or_else(|error| error.into_inner()),
+        action_counts: *state
+            .harness
+            .lifecycle_observations
+            .action_counts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()),
         violations: collect_invariant_violations(&state),
     }
 }

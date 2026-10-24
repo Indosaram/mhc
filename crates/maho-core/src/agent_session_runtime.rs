@@ -4,6 +4,7 @@
 use crate::agent_session::AgentSession;
 use crate::agent_session_services::{AgentSessionRuntimeDiagnostic, MountedAgentSessionServices};
 use crate::session_cwd::assert_session_cwd_exists;
+use crate::session_holders::{SessionHolderEndpoint, hold_active_session, was_flushed};
 
 pub struct ExtensionModelRuntimeActions(pub std::sync::Mutex<crate::model_runtime::ModelRuntime>);
 impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
@@ -234,6 +235,25 @@ pub struct AgentSessionLaunchProfile {
     pub auto_title: Option<bool>,
 }
 
+/// senpi `applyRetryFallbackProfile`: overlays `{ modelFallback, fallbackChains }` on the session's
+/// settings as an in-memory override that is never written to a settings file.
+pub fn apply_retry_fallback_profile(
+    settings: &mut crate::settings_manager::SettingsManager,
+    profile: &serde_json::Value,
+) {
+    let mut retry = serde_json::Map::new();
+    if let Some(model_fallback) = profile.get("modelFallback") {
+        retry.insert("modelFallback".to_owned(), model_fallback.clone());
+    }
+    if let Some(chains) = profile.get("fallbackChains") {
+        retry.insert("fallbackChains".to_owned(), chains.clone());
+    }
+    settings.apply_overrides(&serde_json::Map::from_iter([(
+        "retry".to_owned(),
+        serde_json::Value::Object(retry),
+    )]));
+}
+
 /// Result returned by runtime creation.
 pub struct CreateAgentSessionRuntimeResult {
     pub session: AgentSession,
@@ -261,6 +281,15 @@ pub struct AgentSessionRuntime {
     diagnostics: Vec<AgentSessionRuntimeDiagnostic>,
     model_fallback_message: Option<String>,
     launch_profile: Option<AgentSessionLaunchProfile>,
+    /// Host-owned public endpoint evidence the holder record names (senpi `launchProfile.holderEndpoint`; kept
+    /// beside the profile so existing profile literals stay valid). Never sourced from client session context.
+    holder_endpoint: Option<SessionHolderEndpoint>,
+    /// senpi `launchProfile.promptSurface`: forwarded to the live session and re-applied on replacement.
+    prompt_surface: Option<maho_ext_api::PromptSurface>,
+    /// senpi `launchProfile.browserEngine` (`connected` / `builtin` / `none`); same caveat as `prompt_surface`.
+    browser_engine: Option<String>,
+    /// The hold on the active session's file; released when the session is replaced or disposed.
+    session_hold: std::sync::Mutex<Option<crate::schedule::runner_lease::SessionHold>>,
 }
 
 impl AgentSessionRuntime {
@@ -281,7 +310,74 @@ impl AgentSessionRuntime {
             diagnostics,
             model_fallback_message,
             launch_profile,
+            holder_endpoint: None,
+            prompt_surface: None,
+            browser_engine: None,
+            session_hold: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Names the host endpoint on this runtime's holder record and takes the hold for the active session
+    /// (senpi: the constructor's `holdActiveSession(..., launchProfile?.holderEndpoint)`). Later replacements
+    /// hold their session under the same endpoint.
+    pub fn set_holder_endpoint(
+        &mut self,
+        endpoint: Option<SessionHolderEndpoint>,
+    ) -> Result<(), String> {
+        self.holder_endpoint = endpoint;
+        let hold = self.session.with_session_manager(|manager| {
+            hold_active_session(manager, was_flushed(manager), self.holder_endpoint.as_ref())
+        })?;
+        *self.lock_hold() = hold;
+        Ok(())
+    }
+
+    /// senpi `setPromptSurface` (the runtime half): later replacements keep it.
+    pub fn set_prompt_surface(&mut self, surface: maho_ext_api::PromptSurface) {
+        self.prompt_surface = Some(surface);
+        self.session.set_prompt_surface(surface);
+    }
+
+    pub fn prompt_surface(&self) -> Option<maho_ext_api::PromptSurface> {
+        self.prompt_surface
+    }
+
+    /// senpi `setBrowserEngine` (the runtime half): later replacements keep it.
+    pub fn set_browser_engine(&mut self, engine: String) {
+        self.session.set_browser_engine(engine.clone());
+        self.browser_engine = Some(engine);
+    }
+
+    pub fn browser_engine(&self) -> Option<&str> {
+        self.browser_engine.as_deref()
+    }
+
+    /// senpi `setRetryFallback`: overlays the fallback policy on this session's settings in memory.
+    pub fn set_retry_fallback(&self, profile: &serde_json::Value) {
+        self.session.with_settings_manager_mut(|settings| {
+            apply_retry_fallback_profile(settings, profile);
+        });
+    }
+
+    pub fn holder_endpoint(&self) -> Option<&SessionHolderEndpoint> {
+        self.holder_endpoint.as_ref()
+    }
+
+    /// senpi `releaseSessionHold`.
+    pub fn release_session_hold(&self) {
+        *self.lock_hold() = None;
+    }
+
+    pub fn has_session_hold(&self) -> bool {
+        self.lock_hold().is_some()
+    }
+
+    fn lock_hold(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Option<crate::schedule::runner_lease::SessionHold>> {
+        self.session_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn services(&self) -> &MountedAgentSessionServices {
@@ -621,6 +717,13 @@ impl AgentSessionRuntime {
         );
         let (system_prompt, append_system_prompt) = self.session.system_prompt_sources();
         let target_session_file = manager.session_file().map(str::to_owned);
+        // The new session's file is held before anything is torn down (senpi switch path): a file that was
+        // moved away after it was read refuses here, with the current session untouched.
+        let next_hold = hold_active_session(
+            &manager,
+            matches!(reason, maho_ext_api::SessionReason::Resume) && was_flushed(&manager),
+            self.holder_endpoint.as_ref(),
+        )?;
         let context = manager.current_context();
         let restored_model = context
             .model
@@ -694,6 +797,13 @@ impl AgentSessionRuntime {
         }
         self.session.dispose().await;
         let created = crate::sdk::create_agent_session(options).await?;
+        // senpi `apply`: the launch profile's surface and engine follow the session replacement.
+        if let Some(surface) = self.prompt_surface {
+            created.session.set_prompt_surface(surface);
+        }
+        if let Some(engine) = &self.browser_engine {
+            created.session.set_browser_engine(engine.clone());
+        }
         let replacement = match self
             .session
             .replacement_extension_runner(&created.session)
@@ -713,6 +823,7 @@ impl AgentSessionRuntime {
             created.session.bind_extensions(Default::default()).await;
         }
         self.session = created.session;
+        *self.lock_hold() = next_hold;
         self.services.cwd = cwd;
         self.services.settings_manager = self.session.shared_settings_manager();
         self.model_fallback_message = created.model_fallback_message;
@@ -736,6 +847,7 @@ impl AgentSessionRuntime {
             callback();
         }
         self.session.dispose().await;
+        self.release_session_hold();
     }
 }
 

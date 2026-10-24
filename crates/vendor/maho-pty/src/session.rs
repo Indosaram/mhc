@@ -100,6 +100,8 @@ pub struct PtySession {
     master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
     input: Arc<PtyInput>,
     child: Option<Box<dyn Child + Send + Sync>>,
+    /// Recorded at spawn: `child` is moved into the waiter by `wait_in_background`.
+    pid: Option<u32>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     reader_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     finished: Arc<AtomicBool>,
@@ -146,6 +148,7 @@ impl PtySession {
             .slave
             .spawn_command(command)
             .map_err(|error| PtyError::new(error.to_string()))?;
+        let pid = child.process_id();
         let killer = child.clone_killer();
         let timeout_killer = child.clone_killer();
         #[cfg(unix)]
@@ -216,6 +219,7 @@ impl PtySession {
             master: Arc::new(Mutex::new(Some(pair.master))),
             input,
             child: Some(child),
+            pid,
             killer,
             reader_thread: Arc::new(Mutex::new(Some(reader_thread))),
             finished,
@@ -228,7 +232,7 @@ impl PtySession {
     }
 
     pub fn pid(&self) -> Option<u32> {
-        self.child.as_ref().and_then(|child| child.process_id())
+        self.pid
     }
 
     pub fn write(&mut self, bytes: &[u8]) -> PtyResult<()> {

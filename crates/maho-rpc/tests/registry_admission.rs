@@ -15,6 +15,7 @@ fn profile(
         session_kind: worker.then_some(maho_ext_api::SessionKind::Worker),
         session_context: None,
         attended: None,
+        ..Default::default()
     }
 }
 #[tokio::test]

@@ -401,6 +401,7 @@ pub fn create_shell_tool_definition(
     options: BashToolOptions,
 ) -> ToolDefinition {
     let expose_environment = options.expose_session_environment.unwrap_or(true);
+    let server_pinned = options.operations.is_some() || options.spawn_hook.is_some();
     let ops = options
         .operations
         .clone()
@@ -614,6 +615,9 @@ pub fn create_shell_tool_definition(
     }
     tool.prompt_snippet = Some(config.prompt_snippet);
     tool.exposure = Some(ToolExposure::Eval);
+    if server_pinned {
+        tool.server_pinned = Some(true);
+    }
     tool
 }
 pub fn create_bash_tool_definition(cwd: PathBuf, options: BashToolOptions) -> ToolDefinition {

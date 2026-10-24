@@ -149,7 +149,44 @@ pub async fn stop_managed_host(
     }
     Err(std::io::Error::other("host remained alive after SIGKILL"))
 }
-#[cfg(not(unix))]
+/// Windows: Node's SIGTERM and SIGKILL both map to TerminateProcess, so one terminate is followed by the
+/// same bounded wait for the recorded generation to be gone.
+#[cfg(windows)]
+pub async fn stop_managed_host(
+    owner: &crate::host_daemon_registration::RegisteredHost,
+    timeout: std::time::Duration,
+) -> std::io::Result<()> {
+    let owned = owner.process_start_time.as_ref().is_some_and(|recorded| {
+        crate::host_reservations::read_process_start_time(owner.pid).as_ref() == Some(recorded)
+    });
+    if !owned {
+        return if crate::host_reservations::process_is_live(owner.pid) {
+            Err(std::io::Error::other("host process identity is unknown"))
+        } else {
+            Ok(())
+        };
+    }
+    crate::host_stop::terminate_generation(owner.pid)?;
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if !crate::host_reservations::process_is_live(owner.pid)
+            || owner.process_start_time.as_ref().is_some_and(|recorded| {
+                crate::host_reservations::read_process_start_time(owner.pid)
+                    .as_ref()
+                    .is_some_and(|current| current != recorded)
+            })
+        {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(std::io::Error::other(
+                "host remained alive after TerminateProcess",
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+#[cfg(not(any(unix, windows)))]
 pub async fn stop_managed_host(
     _: &crate::host_daemon_registration::RegisteredHost,
     _: std::time::Duration,

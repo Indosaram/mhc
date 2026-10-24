@@ -31,6 +31,66 @@ pub struct ToolChildModule {
     pub export: String,
 }
 
+/// The placement fields of an upstream `ToolDefinition` (`placement`, `serverPinned`, `childModule`, `childJob`), which the
+/// dispatcher reads per call. maho's `ToolDefinition` carries `placement` / `server_pinned` / `child_job`; `child_module`
+/// has no definition field, so the registrar supplies it.
+#[derive(Clone, Default)]
+pub struct ToolPlacementInfo {
+    pub name: String,
+    pub placement: ToolPlacement,
+    pub server_pinned: bool,
+    pub child_module: Option<ToolChildModule>,
+    pub child_job: Option<maho_tools::definition::ToolChildJob>,
+}
+
+impl ToolPlacementInfo {
+    /// Built from `definition.placement` / `server_pinned` / `child_job`.
+    pub fn from_definition(definition: &maho_tools::definition::ToolDefinition) -> Self {
+        Self {
+            name: definition.name.clone(),
+            placement: match definition.placement {
+                Some(maho_tools::definition::ToolPlacement::Child) => ToolPlacement::Child,
+                _ => ToolPlacement::Server,
+            },
+            server_pinned: definition.server_pinned == Some(true),
+            child_module: None,
+            child_job: definition.child_job.clone(),
+        }
+    }
+}
+
+/// One tool call handed to a dispatcher (senpi `ToolDispatchCall`): the definition's in-process body plus the placement
+/// fields the dispatcher routes on.
+pub struct ToolDispatchCall<'a> {
+    pub definition: &'a maho_tools::definition::ToolDefinition,
+    pub placement: ToolPlacementInfo,
+    pub tool_call_id: String,
+    pub params: serde_json::Value,
+    pub signal: Option<crate::AbortSignal>,
+    pub on_update: Option<maho_tools::definition::ToolUpdateCallback>,
+    pub ctx: Option<&'a dyn maho_tools::definition::ToolContext>,
+    /// The extension file that registered the tool; a relative `childModule.path` resolves against its directory.
+    pub source_path: Option<String>,
+}
+
+/// What `ToolRunDispatch::run_tool` resolves to.
+pub type ToolRunFuture<'a> = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<
+                    maho_tools::definition::ToolResult,
+                    Box<dyn std::error::Error + Send + Sync>,
+                >,
+            > + Send
+            + 'a,
+    >,
+>;
+
+/// The dispatcher as the extension host sees it (maho-core owns the implementation and sits above this crate).
+pub trait ToolRunDispatch: Send + Sync {
+    fn run_tool<'a>(&'a self, call: ToolDispatchCall<'a>) -> ToolRunFuture<'a>;
+}
+
 /// A file-backed child module an extension registers for `ctx.offload`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChildModuleRegistration {

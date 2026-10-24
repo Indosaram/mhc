@@ -5,8 +5,8 @@ mod types;
 
 pub use engine::SteeringEngine;
 pub use types::{
-    CancelAbort, CancelOptions, CancelOutcome, DestructionPort, InterruptOutcome, SendInput,
-    SendOutcome, SteeringError, SteeringPort,
+    CANCEL_PENDING_REASON, CancelAbort, CancelOptions, CancelOutcome, DestructionPort,
+    InterruptOutcome, SendInput, SendOutcome, SteeringError, SteeringPort,
 };
 
 #[cfg(test)]

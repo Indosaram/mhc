@@ -65,6 +65,8 @@ pub mod skills;
 pub mod source_info;
 pub mod system_prompt;
 pub mod text;
+pub mod tool_child_host_calls;
+pub mod tool_dispatch;
 pub mod trust_manager;
 pub mod utils;
 
@@ -127,6 +129,7 @@ pub mod session_entry_materializer;
 pub mod session_export;
 pub mod session_history_reduce;
 pub mod session_holder_records;
+pub mod session_holders;
 pub mod session_loaded_tail;
 pub mod session_log;
 pub mod session_move;

@@ -58,6 +58,12 @@ pub struct CreateAgentSessionOptions {
     pub extension_bindings: Option<crate::agent_session::ExtensionBindingsFactory>,
     /// senpi `bindExtensions({ uiContext })`: the UI a mode binds before `session_start` runs.
     pub extension_ui: Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,
+    /// senpi `toolRuntime`: where heavy tool work runs; `None` is `in-process`.
+    pub tool_runtime: Option<crate::tool_dispatch::tool_dispatcher::ToolRuntimeKind>,
+    /// senpi `promptSurface`: absent means `SENPI_PROMPT_SURFACE`.
+    pub prompt_surface: Option<maho_ext_api::PromptSurface>,
+    /// senpi `browserEngine`: absent means none was chosen.
+    pub browser_engine: Option<String>,
 }
 
 /// `noTools` suppression mode.
@@ -110,6 +116,33 @@ impl Drop for PendingSessionConstruction {
     }
 }
 
+/// senpi `this._toolDispatcher.bashOperations({ shellPath })`, resolved per call: the built-in tools are built
+/// before the session exists, so the session's dispatcher is reached through the accessor. A session that is gone
+/// runs the local operations, the in-process runtime's choice.
+struct DispatcherBashOperations {
+    session: std::sync::Arc<dyn Fn() -> Option<crate::agent_session::AgentSession> + Send + Sync>,
+    shell_path: Option<String>,
+}
+
+impl maho_tools::bash::BashOperations for DispatcherBashOperations {
+    fn exec<'a>(
+        &'a self,
+        command: &'a str,
+        cwd: &'a std::path::Path,
+        options: maho_tools::bash::BashExecOptions,
+    ) -> maho_tools::definition::ToolFuture<'a, maho_tools::bash::BashExit> {
+        Box::pin(async move {
+            let operations = match (self.session)() {
+                Some(session) => session
+                    .tool_dispatcher()
+                    .bash_operations(self.shell_path.as_deref()),
+                None => maho_tools::bash::create_local_bash_operations(self.shell_path.as_deref()),
+            };
+            operations.exec(command, cwd, options).await
+        })
+    }
+}
+
 /// senpi agent-session.ts `_buildRuntime`: the built-in tool options. The extensions' filesystem
 /// policies are composed into the file tools (re-read per call, since native extensions may
 /// register theirs at bind time), and the tools honour `images.autoResize`, `shellCommandPrefix`
@@ -119,6 +152,7 @@ pub fn built_in_tools_options(
     session: std::sync::Arc<dyn Fn() -> Option<crate::agent_session::AgentSession> + Send + Sync>,
 ) -> maho_tools::index::ToolsOptions {
     use std::sync::Arc;
+    let bash_session = session.clone();
     let filesystem_policy: maho_tools::FilesystemPolicyChecker = Arc::new(move |request| {
         let session = session();
         Box::pin(async move {
@@ -141,10 +175,17 @@ pub fn built_in_tools_options(
             execution_policy: Some(READ_EXECUTION_POLICY.clone()),
             ..Default::default()
         },
+        // The core bash tool's process work goes through the dispatcher's operations: the same local operations
+        // under in-process, and the tool child's `user.bash` job under child (senpi#3566 todo 9), while truncation
+        // and rendering stay on the server.
         bash: maho_tools::bash::BashToolOptions {
             command_prefix: settings.get_string("shellCommandPrefix"),
             shell_path: settings.get_shell_path(),
             shell_env: Some(shell_env.clone()),
+            operations: Some(Arc::new(DispatcherBashOperations {
+                session: bash_session,
+                shell_path: settings.get_shell_path(),
+            })),
             ..Default::default()
         },
         powershell: maho_tools::bash::BashToolOptions {
@@ -539,8 +580,8 @@ pub async fn create_agent_session(
         .as_ref()
         .map(|loaded| loaded.runtime.flag_values())
         .unwrap_or_default();
-    let session =
-        crate::agent_session::AgentSession::new(crate::agent_session::AgentSessionConfig {
+    let session = crate::agent_session::AgentSession::new_with_tool_runtime(
+        crate::agent_session::AgentSessionConfig {
             agent,
             session_manager: manager,
             settings_manager: settings,
@@ -565,8 +606,17 @@ pub async fn create_agent_session(
             base_tools_override: Some(base_tools.clone()),
             session_start_event,
             auto_title_sessions: options.auto_title_sessions,
-        })
-        .map_err(|error| error.to_string())?;
+        },
+        options.tool_runtime,
+    )
+    .map_err(|error| error.to_string())?;
+    // senpi `new AgentSession({ promptSurface, browserEngine })`: set before the first prompt is built.
+    if let Some(surface) = options.prompt_surface {
+        session.set_prompt_surface(surface);
+    }
+    if let Some(engine) = options.browser_engine.clone() {
+        session.set_browser_engine(engine);
+    }
     // `modelRuntime.setSettingsManager(settings)`: provider concurrency limits follow live settings.
     session
         .with_settings_manager(|settings| session.model_runtime().set_settings_manager(settings));

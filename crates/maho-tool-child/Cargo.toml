@@ -1,0 +1,39 @@
+[package]
+name = "maho-tool-child"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "MIT"
+
+# senpi packages/coding-agent/src/modes/rpc/tool-child/* (pin 26acd9353): the out-of-process tool child,
+# its framed channel, launch barrier, job policy and host calls. Selected with `--tool-runtime child`.
+[dependencies]
+maho-ext-api = { path = "../maho-ext-api" }
+maho-process-env = { path = "../maho-process-env" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror.workspace = true
+futures.workspace = true
+sha2.workspace = true
+getrandom = "=0.3.4"
+subtle = "=2.6.1"
+notify = "=8.2.0"
+libc.workspace = true
+tokio = { workspace = true, features = ["io-util", "sync", "rt", "macros", "net", "time", "fs", "process"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "=1.1.4", features = ["process", "fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Console", "Win32_System_JobObjects", "Win32_Security", "Win32_System_Pipes", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+# Mirrors the workspace lints with unsafe_code = "deny": windows_job.rs / windows_breakaway.rs call Win32 Job Object APIs.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"

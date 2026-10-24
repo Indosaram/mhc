@@ -142,7 +142,16 @@ pub struct ResolvedModelRecord {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum EffectiveModelSource { Category, Explicit, Agent, Set, Cycle, Restore, Fallback, FallbackRevert }
+pub enum EffectiveModelSource {
+    Category,
+    Explicit,
+    Agent,
+    Set,
+    Cycle,
+    Restore,
+    Fallback,
+    FallbackRevert,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffectiveModelRecord {
@@ -164,14 +173,29 @@ pub struct EffectiveModelRecord {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SuspensionReason { DaemonUnavailable, HandoffParked, HostDraining, HostIncompatible, IdleEvicted, OwnHostUnreachable, RevivalDeferred, StoreIndexUnavailable }
+pub enum SuspensionReason {
+    DaemonUnavailable,
+    HandoffParked,
+    HostDraining,
+    HostIncompatible,
+    IdleEvicted,
+    OwnHostUnreachable,
+    RevivalDeferred,
+    StoreIndexUnavailable,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AwaitingInputReason { ResumedTurnAborted, ResumedTurnUnfinished }
+pub enum AwaitingInputReason {
+    ResumedTurnAborted,
+    ResumedTurnUnfinished,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TaskAwaitingInput { pub reason: AwaitingInputReason, pub since: String }
+pub struct TaskAwaitingInput {
+    pub reason: AwaitingInputReason,
+    pub since: String,
+}
 
 impl ResolvedModelRecord {
     pub fn new(source: ResolvedModelSource, provider: &str, model_id: &str) -> Self {
@@ -227,15 +251,27 @@ pub struct TaskRunStats {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DurationSourceStatus { Monotonic, Reconstructed, Unavailable }
+pub enum DurationSourceStatus {
+    Monotonic,
+    Reconstructed,
+    Unavailable,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TokenCoverageStatus { Complete, Partial, Unavailable }
+pub enum TokenCoverageStatus {
+    Complete,
+    Partial,
+    Unavailable,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CostReportStatus { Reported, Invalid, Unavailable }
+pub enum CostReportStatus {
+    Reported,
+    Invalid,
+    Unavailable,
+}
 
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
@@ -369,7 +405,12 @@ pub struct PendingSteeringEntry {
 
 impl PendingSteeringEntry {
     pub fn new(id: String, message: String, deliver_as: DeliverAs) -> Self {
-        Self { id, message, deliver_as, workpool: None }
+        Self {
+            id,
+            message,
+            deliver_as,
+            workpool: None,
+        }
     }
 }
 
@@ -381,7 +422,6 @@ pub struct PendingSteeringWorkpoolMetadata {
     pub key: String,
     pub run_epoch: u32,
 }
-
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TaskRecordInput {
@@ -419,7 +459,11 @@ pub struct TaskRecordInput {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum BackgroundMode { Foreground, Background, Promoted }
+pub enum BackgroundMode {
+    Foreground,
+    Background,
+    Promoted,
+}
 
 /// The durable task record; field order mirrors what the TypeScript store writes.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -515,6 +559,18 @@ pub struct TaskRecord {
     /// The daemon identity of a host-session child (TS TaskRecord.host_session).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_session: Option<HostSessionIdentity>,
+    /// task_cancel accepted while the child was unreachable (omo#9403). The cancel is final: every
+    /// revival reads it and finishes the cancel instead of running the child again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancel_requested: Option<CancelRequest>,
+}
+
+/// A task_cancel accepted while the child was unreachable (TS `CancelRequest`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelRequest {
+    pub requested_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

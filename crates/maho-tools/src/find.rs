@@ -42,6 +42,7 @@ pub fn relativize_find_result_path(result: &str, root: &Path) -> String {
     text
 }
 pub fn create_find_tool_definition(cwd: PathBuf, options: FindToolOptions) -> ToolDefinition {
+    let server_pinned = options.operations.is_some() || options.filesystem_policy.is_some();
     let execute: ToolExecutor = Arc::new(move |call| {
         let cwd = cwd.clone();
         let options = options.clone();
@@ -202,5 +203,8 @@ pub fn create_find_tool_definition(cwd: PathBuf, options: FindToolOptions) -> To
         execute,
     );
     tool.prompt_snippet = Some("Find files by glob pattern (respects .gitignore)".into());
+    if server_pinned {
+        tool.server_pinned = Some(true);
+    }
     tool
 }

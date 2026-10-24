@@ -1,7 +1,13 @@
 use crate::manager::TerminalManager;
 use maho_ai::types::{TextAudience, TextContent};
 use maho_pty::PtyExit;
+use maho_tools::definition::{ToolContent, ToolResult};
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
+use std::future::Future;
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 /// What a background exit notice reads: on the tool child it is a summary the child sent, not the live session.
 pub struct TerminalExitView {
     pub exit_result: Option<PtyExit>,
@@ -25,21 +31,114 @@ impl TerminalExitView {
         )
     }
 }
-/// The tool child's execution barrier for terminal launches: `wrap` rewrites the launch behind a go-line
-/// shim, and `release` records the started session with the server and only then lets the command run.
+/// Writes bytes into a session's PTY.
+pub type PtyWriteFn = dyn Fn(&[u8]) -> Result<(), String> + Send + Sync;
+/// A PTY session's exit as the launch barrier watches it: unset while running.
+pub type PtyExitState = Option<Result<PtyExit, String>>;
+/// Registers a session (id, command, start time) when it turns background.
+pub type BackgroundStartFn = dyn Fn(&str, &str, f64) + Send + Sync;
+/// Notified with a background session's id and exit.
+pub type BackgroundExitFn = dyn Fn(&str, TerminalExitView) + Send + Sync;
+
+/// What the launch barrier sees of a started session (upstream passes `{ pid, write, onExit }`): its pid, a writer
+/// into the PTY, and the exit watch `onExit` listens on.
+pub struct TerminalLaunchSession {
+    pub pid: Option<u32>,
+    pub write: Arc<PtyWriteFn>,
+    pub exit: tokio::sync::watch::Receiver<PtyExitState>,
+}
+pub type TerminalBarrierFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+/// The tool child's execution barrier for terminal launches (senpi#3566 todo 9): `wrap` rewrites the launch behind a
+/// go-line shim, and `release` records the started session with the server and only then lets the command run.
+/// Absent on the in-process path, which spawns exactly as before.
 pub trait TerminalLaunchBarrier: Send + Sync {
     fn wrap(&self, command: &str, args: &[String]) -> (String, Vec<String>);
-    fn release(
-        &self,
-        pid: Option<u32>,
-        write: &mut dyn FnMut(&str) -> std::io::Result<()>,
-    ) -> Result<(), String>;
+    fn release(&self, session: TerminalLaunchSession) -> TerminalBarrierFuture<'_>;
+}
+/// What a command launched on the tool child runs with: the barrier, the environment the server built (the shell
+/// environment with the session's PI_* overrides), and the cwd of the call.
+#[derive(Clone)]
+pub struct TerminalChildLaunch {
+    pub barrier: Arc<dyn TerminalLaunchBarrier>,
+    pub env: BTreeMap<String, String>,
+    pub cwd: PathBuf,
+}
+/// Shared terminal configuration the tool context reads live: resolved settings and the explicit shell path.
+pub type TerminalConfiguration =
+    Arc<Mutex<(crate::settings::ResolvedTerminalSettings, Option<String>)>>;
+/// Shared dependencies handed to the child-placed tool jobs (`tools/context.ts` `TerminalToolContext`, the fields the
+/// placement reads): the live configuration, the session cwd, the environment resolver, and the background hooks.
+#[derive(Clone)]
+pub struct TerminalToolContext {
+    pub configuration: TerminalConfiguration,
+    /// Current extension session cwd (`state.ctx?.cwd`), set on session start.
+    pub session_cwd: Arc<Mutex<Option<PathBuf>>>,
+    /// Resolve the environment for spawned sessions (mirrors core bash `getShellEnv`).
+    pub get_env: Arc<dyn Fn() -> BTreeMap<String, String> + Send + Sync>,
+    /// Registers a session when it transitions to background liveness.
+    pub on_background_start: Option<Arc<BackgroundStartFn>>,
+    /// Notified when a background session exits, so the notify layer can wake the agent.
+    pub on_background_exit: Option<Arc<BackgroundExitFn>>,
+}
+impl TerminalToolContext {
+    pub fn new(
+        configuration: TerminalConfiguration,
+        get_env: Arc<dyn Fn() -> BTreeMap<String, String> + Send + Sync>,
+    ) -> Self {
+        Self {
+            configuration,
+            session_cwd: Arc::new(Mutex::new(None)),
+            get_env,
+            on_background_start: None,
+            on_background_exit: None,
+        }
+    }
+    /// `state.ctx?.cwd ?? process.cwd()`.
+    pub fn cwd(&self) -> PathBuf {
+        self.session_cwd
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+    }
+    pub fn shell_path(&self) -> Option<String> {
+        self.configuration
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .1
+            .clone()
+    }
+    pub fn settings(&self) -> crate::settings::ResolvedTerminalSettings {
+        self.configuration
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0
+            .clone()
+    }
 }
 #[derive(Debug)]
 pub struct TerminalToolResult {
     pub content: Vec<TextContent>,
     pub details: Option<Map<String, Value>>,
     pub is_error: Option<bool>,
+}
+impl TerminalToolResult {
+    /// The tool result a caller receives (model-only parts keep their audience); `isError` rides along.
+    pub fn into_tool_result(self) -> ToolResult {
+        ToolResult {
+            content: self
+                .content
+                .into_iter()
+                .map(|part| ToolContent::Text {
+                    text: part.text,
+                    audience: part.audience.map(|_| "model".to_owned()),
+                })
+                .collect(),
+            details: self.details.map(Value::Object),
+            structured_content: None,
+            is_error: self.is_error,
+        }
+    }
 }
 pub fn text_result(text: impl Into<String>) -> TerminalToolResult {
     TerminalToolResult {

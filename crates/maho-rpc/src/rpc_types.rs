@@ -25,6 +25,22 @@ pub const RPC_ERROR_NOT_ASSISTANT: &str = "not_assistant";
 pub const RPC_ERROR_NOT_USER: &str = "not_user";
 pub const RPC_ERROR_EMPTY_TEXT: &str = "empty";
 pub const RPC_ERROR_STALE_LEAF: &str = "stale_leaf";
+/// `set_session_context` requires an attachment on the requesting connection.
+pub const RPC_ERROR_SESSION_NOT_ATTACHED: &str = "session_not_attached";
+/// `release_session` while a turn runs or is about to start, without `interrupt: true`.
+pub const RPC_ERROR_TURN_ACTIVE: &str = "turn_active";
+/// `release_session` while other session work runs (bash, compaction, another request for the session).
+pub const RPC_ERROR_SESSION_BUSY: &str = "session_busy";
+/// `release_session` while clients are attached, without `force: true`.
+pub const RPC_ERROR_ATTACHED: &str = "attached";
+/// `release_session` with a `reason` other than `takeover` or `move`.
+pub const RPC_ERROR_INVALID_RELEASE_REASON: &str = "invalid_release_reason";
+/// `release_session` for a session this host cannot hand over.
+pub const RPC_ERROR_RELEASE_UNSUPPORTED: &str = "release_unsupported";
+/// `release_session` whose hand-over failed after it began.
+pub const RPC_ERROR_RELEASE_FAILED: &str = "release_failed";
+/// A draining host parks every session itself; `release_session` and `open_session` are refused meanwhile.
+pub const RPC_ERROR_HOST_DRAINING: &str = "host_draining";
 
 /// Capability: `steer_when_idle` (rpc-types.ts `STEER_WHEN_IDLE_CAPABILITY`).
 pub const STEER_WHEN_IDLE_CAPABILITY: &str = "steer_when_idle";
@@ -48,6 +64,10 @@ pub struct RpcCommand {
     tag = "type",
     rename_all = "snake_case",
     rename_all_fields = "camelCase"
+)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "serde wire enum: struct variants (open_session) cannot be boxed without changing the JSON shape"
 )]
 pub enum RpcCommandBody {
     Prompt {
@@ -326,6 +346,35 @@ pub enum RpcCommandBody {
         durable_session_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         attended: Option<bool>,
+        /// Where this session's replies render: `terminal`, `app` or `chat` (validated at the router).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt_surface: Option<Value>,
+        /// Which browser this session's skills drive: `connected`, `builtin` or `none` (validated at the router).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        browser_engine: Option<Value>,
+        /// The fallback policy this session runs with (validated at the router).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_fallback: Option<Value>,
+    },
+    /// Hands a session over to a runtime outside this host (senpi `release_session`). The session id travels in
+    /// the routing envelope. `reason` and `moveId` stay raw so a malformed value is refused with
+    /// `invalid_release_reason` rather than a parse error.
+    ReleaseSession {
+        #[serde(default)]
+        reason: Value,
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        move_id: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        interrupt: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        force: Option<bool>,
+    },
+    /// Patches the context an attached session publishes (senpi `set_session_context`); the session id travels in
+    /// the routing envelope.
+    SetSessionContext {
+        patch: Value,
     },
     /// Release a held wake (senpi `resume_session`); takes no arguments.
     ResumeSession,
@@ -601,6 +650,10 @@ pub enum ExtensionUiProgressType {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "short-lived decode result; boxing the command would only add an allocation per inbound frame"
+)]
 pub enum RpcInboundRecord {
     Command(RpcCommand),
     UiResponse(RpcExtensionUiResponse),

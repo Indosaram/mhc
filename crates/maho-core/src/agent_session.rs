@@ -565,6 +565,10 @@ struct AgentSessionState {
     loaded_context_files: Option<Vec<crate::system_prompt::ContextFile>>,
     resolved_system_prompt: Option<(Option<String>, Vec<String>)>,
     system_prompt_override: Option<String>,
+    /// senpi `_promptSurface` (`None` falls back to `resolvePromptSurface(process.env)`).
+    prompt_surface: Option<maho_ext_api::PromptSurface>,
+    /// senpi `_browserEngine` (`connected` / `builtin` / `none`).
+    browser_engine: Option<String>,
     wake_sources: WakeSourceTracker,
     shown_high_reasoning_warning_keys: BTreeSet<String>,
     extension_mode: ExtensionMode,
@@ -807,10 +811,27 @@ fn name_set(names: Option<Vec<String>>) -> Option<BTreeSet<String>> {
     names.map(|names| names.into_iter().collect())
 }
 
+/// The `list_sessions` row of a session's tool child (senpi `SessionToolChildRow`): `{state: "none" | "live" | "exited",
+/// generation?, pid?}`; absent fields are omitted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct ToolChildRow {
+    pub state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generation: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<i64>,
+}
+
 #[derive(Clone)]
 pub struct AgentSession {
     inner: Arc<AgentSessionInner>,
 }
+
+/// One parent tool call's nested host-call recorder and the counter behind its `<parent>/<n>` ids.
+type NestedHostCallSlot = (
+    Arc<Mutex<crate::session_record::NestedCallRecorder>>,
+    Arc<AtomicU64>,
+);
 
 #[doc(hidden)]
 pub struct AgentSessionInner {
@@ -892,6 +913,21 @@ pub struct AgentSessionInner {
     /// Held outside `state` so a relay never contends with a caller holding the state lock.
     extension_rpc_event_listeners: Mutex<Vec<ExtensionRpcEventListener>>,
     tool_context_disposers: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
+    /// senpi `_toolDispatcher`: where tool calls and `ctx.offload` modules are placed for this session's tool runtime.
+    tool_dispatcher: Arc<dyn crate::tool_dispatch::tool_dispatcher::ToolDispatcher>,
+    /// senpi `_toolChild`: the session's tool child; present only under `--tool-runtime child`.
+    tool_child: Option<Arc<maho_tool_child::session_child::SessionToolChild>>,
+    /// senpi `_toolChildHostTargets`: the `completion` / `reserved` host-call targets registered on the session.
+    tool_child_host_targets: ToolChildHostTargets,
+    /// senpi `_toolChildClosed`: settles once `dispose` has stopped the tool child and closed in-process offload jobs.
+    tool_child_closed:
+        Mutex<Option<futures::future::Shared<futures::future::BoxFuture<'static, ()>>>>,
+    /// The placement fields senpi reads off each `ToolDefinition` (`placement`, `serverPinned`, `childModule`,
+    /// `childJob`); maho's `ToolDefinition` carries none, so the registrar states them here by tool name.
+    tool_placements:
+        Mutex<BTreeMap<String, crate::tool_dispatch::tool_dispatcher::ToolPlacementInfo>>,
+    /// Per parent tool call: the recorder and the counter that give each nested host call its `<parent>/<n>` id.
+    nested_host_calls: Mutex<BTreeMap<String, NestedHostCallSlot>>,
     html_theme_resolver: Mutex<Option<HtmlThemeResolver>>,
     /// senpi `getToolDefinition` over `_baseToolDefinitions`: the built-in tool definitions carry
     /// renderers (`grep`, `find`) that `/export` uses when no extension registered the tool.
@@ -1600,6 +1636,36 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         self.session()
             .is_ok_and(|session| lock(&session.engine_turn_hold).holds_source("goal"))
     }
+    fn offload(
+        &self,
+        id: &str,
+        args: Value,
+        options: maho_ext_api::OffloadOptions,
+    ) -> Option<maho_ext_api::ExtensionFuture<'_, Value>> {
+        let session = self.session().ok()?;
+        let id = id.to_owned();
+        Some(Box::pin(async move {
+            let modules = session
+                .extension_runner_snapshot()
+                .map(|runner| runner.get_all_child_modules())
+                .unwrap_or_default();
+            crate::tool_dispatch::offload::offload(
+                session.tool_dispatcher.as_ref(),
+                &modules,
+                &id,
+                args,
+                Some(options),
+            )
+            .await
+            .map_err(|error| {
+                let mut failure = maho_ext_api::ExtensionFailure::new(error.to_string());
+                failure.code = error
+                    .downcast_ref::<crate::tool_dispatch::offload::OffloadError>()
+                    .map(|offload| offload.code.as_str().to_owned());
+                failure
+            })
+        }))
+    }
     fn note_held_wake(&self, source: &str) {
         if let Ok(session) = self.session() {
             lock(&session.engine_turn_hold).note(source, None);
@@ -2176,6 +2242,14 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         self.session()
             .map_or_else(|_| String::new(), |session| session.system_prompt())
     }
+    fn get_browser_engine(&self) -> Option<&'static str> {
+        match self.session().ok()?.browser_engine()?.as_str() {
+            "connected" => Some("connected"),
+            "builtin" => Some("builtin"),
+            "none" => Some("none"),
+            _ => None,
+        }
+    }
     fn get_system_prompt_options(&self) -> maho_ext_api::BuildSystemPromptOptions {
         let Ok(session) = self.session() else {
             return Default::default();
@@ -2226,7 +2300,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             tool_snippets,
             prompt_guidelines,
             skills,
-            surface: maho_ext_api::PromptSurface::default(),
+            surface: session.effective_prompt_surface(),
             custom_prompt,
             append_system_prompt: (!append.is_empty()).then(|| append.join("\n\n")),
             context_files: session
@@ -2688,7 +2762,7 @@ impl maho_ext_api::ExtensionSessionActions for SessionExtensionActions {
         if let Some((runtime, factory)) = binding {
             let definition = registered.definition.clone();
             let source = registered.source_info.clone();
-            let tool = maho_ext_host::wrapper::wrap_registered_tool(registered, runtime, factory);
+            let tool = session.wrap_extension_tool(registered, runtime, factory);
             let mut active = session.get_active_tool_names();
             if normalize_tool_exposure(&definition, source.clone()).exposure != ToolExposure::Search
                 && !active.contains(&definition.name)
@@ -3222,6 +3296,23 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+type ToolChildHostTargets = Arc<
+    Mutex<
+        Vec<(
+            crate::tool_child_host_calls::RegisteredHostCallKind,
+            crate::tool_child_host_calls::HostCallTarget,
+        )>,
+    >,
+>;
+
+type SessionCell = Arc<std::sync::OnceLock<std::sync::Weak<AgentSessionInner>>>;
+
+fn upgrade_session_cell(cell: &SessionCell) -> Option<AgentSession> {
+    cell.get()
+        .and_then(std::sync::Weak::upgrade)
+        .map(|inner| AgentSession { inner })
+}
+
 /// Claims a released wake once its turn is admitted; `false` leaves the wake in custody.
 type ReleasedWakeAdmit = Box<dyn Fn() -> bool + Send + Sync>;
 
@@ -3243,7 +3334,16 @@ fn downcast_handler<T: Send + Sync + 'static>(
 
 impl AgentSession {
     /// Create a new agent session.
-    pub fn new(mut config: AgentSessionConfig) -> Result<Self, MissingModelAccessError> {
+    pub fn new(config: AgentSessionConfig) -> Result<Self, MissingModelAccessError> {
+        Self::new_with_tool_runtime(config, None)
+    }
+
+    /// senpi `new AgentSession({ ..., toolRuntime })`: `None` is the `in-process` runtime. Kept beside `new`
+    /// so the many `AgentSessionConfig` literals that never choose a runtime stay valid.
+    pub fn new_with_tool_runtime(
+        mut config: AgentSessionConfig,
+        tool_runtime: Option<crate::tool_dispatch::tool_dispatcher::ToolRuntimeKind>,
+    ) -> Result<Self, MissingModelAccessError> {
         if config
             .flag_values
             .get("no-model-fallback")
@@ -3313,6 +3413,16 @@ impl AgentSession {
             .is_some_and(|event| event.attended == Some(false));
         let session_cell: Arc<std::sync::OnceLock<std::sync::Weak<AgentSessionInner>>> =
             Arc::default();
+        let session_logger =
+            SessionLogger::create(Some(&agent_dir), SessionLoggerOptions::default());
+        let (tool_dispatcher, tool_child, tool_child_host_targets) = Self::build_tool_runtime(
+            tool_runtime.unwrap_or_default(),
+            &session_cell,
+            &session_logger,
+            &agent_dir,
+            &config.cwd,
+            config.session_manager.session_id(),
+        );
         let engine_turn_hold = {
             let upgrade = |cell: &Arc<std::sync::OnceLock<std::sync::Weak<AgentSessionInner>>>| {
                 cell.get()
@@ -3414,6 +3524,8 @@ impl AgentSession {
             loaded_context_files: None,
             resolved_system_prompt: None,
             system_prompt_override: None,
+            prompt_surface: None,
+            browser_engine: None,
             wake_sources: WakeSourceTracker::default(),
             shown_high_reasoning_warning_keys: BTreeSet::new(),
             extension_mode: ExtensionMode::Print,
@@ -3512,10 +3624,7 @@ impl AgentSession {
                 event_listeners: Arc::new(Mutex::new(Arc::new(Vec::new()))),
                 next_listener_id: Arc::new(AtomicU64::new(0)),
                 human_input_listeners: Arc::new(Mutex::new(Vec::new())),
-                session_logger: SessionLogger::create(
-                    Some(&agent_dir),
-                    SessionLoggerOptions::default(),
-                ),
+                session_logger,
                 fallback_now: config
                     .fallback_now
                     .unwrap_or_else(|| Arc::new(|| maho_ai::utils::diagnostics::now_ms() as f64)),
@@ -3562,6 +3671,12 @@ impl AgentSession {
                 extension_rpc_event_forwarding: Mutex::new(None),
                 extension_rpc_event_listeners: Mutex::new(Vec::new()),
                 tool_context_disposers: Mutex::new(Vec::new()),
+                tool_dispatcher,
+                tool_child,
+                tool_child_host_targets,
+                tool_child_closed: Mutex::new(None),
+                tool_placements: Mutex::new(BTreeMap::new()),
+                nested_host_calls: Mutex::new(BTreeMap::new()),
                 html_theme_resolver: Mutex::new(None),
                 html_built_in_tool_renderers: Mutex::new(None),
             }),
@@ -7178,7 +7293,9 @@ impl AgentSession {
                     > model.context_window.saturating_sub(reserve)
                 {
                     self.retire_failed_retry_assistant(&message)?;
-                    if let Err(error) = Box::pin(self.revalidate_continuation_admission(false)).await {
+                    if let Err(error) =
+                        Box::pin(self.revalidate_continuation_admission(false)).await
+                    {
                         let attempt = self.state().retry_attempt;
                         self.state().retry_attempt = 0;
                         self.reset_hint_tier_state();
@@ -9976,7 +10093,7 @@ impl AgentSession {
             .insert(key.clone(), signal.clone());
         let prefix = self.with_settings_manager(|manager| manager.get_string("shellCommandPrefix"));
         let shell = self.with_settings_manager(|manager| manager.get_shell_path());
-        let local = maho_tools::bash::create_local_bash_operations(shell.as_deref());
+        let local = self.tool_dispatcher.bash_operations(shell.as_deref());
         let resolved = prefix.map_or_else(
             || command.to_owned(),
             |prefix| format!("{prefix}\n{command}"),
@@ -10080,6 +10197,40 @@ impl AgentSession {
         }
     }
 
+    /// senpi `this._promptSurface ?? resolvePromptSurface(process.env)`.
+    fn effective_prompt_surface(&self) -> maho_ext_api::PromptSurface {
+        if let Some(surface) = self.state().prompt_surface {
+            return surface;
+        }
+        match crate::dynamic_prompt::resolve_prompt_surface(|name| std::env::var(name).ok()) {
+            crate::dynamic_prompt::PromptSurface::Terminal => maho_ext_api::PromptSurface::Terminal,
+            crate::dynamic_prompt::PromptSurface::App => maho_ext_api::PromptSurface::App,
+            crate::dynamic_prompt::PromptSurface::Chat => maho_ext_api::PromptSurface::Chat,
+        }
+    }
+
+    /// senpi `setPromptSurface`: rebuilds the prompt for another surface; the system prompt override is dropped
+    /// and the tool declarations re-applied only when the effective surface changes.
+    pub fn set_prompt_surface(&self, surface: maho_ext_api::PromptSurface) {
+        let current = self.effective_prompt_surface();
+        self.state().prompt_surface = Some(surface);
+        if current == surface {
+            return;
+        }
+        self.state().system_prompt_override = None;
+        self.set_active_tools_by_name(self.get_active_tool_names());
+    }
+
+    /// senpi `setBrowserEngine`: the next tool call sees it.
+    pub fn set_browser_engine(&self, engine: String) {
+        self.state().browser_engine = Some(engine);
+    }
+
+    /// senpi `browserEngine` getter.
+    pub fn browser_engine(&self) -> Option<String> {
+        self.state().browser_engine.clone()
+    }
+
     pub fn rebuild_system_prompt(&self) {
         let skills = self.state().skills.clone();
         let active = self.get_active_tool_names();
@@ -10098,7 +10249,17 @@ impl AgentSession {
                     tuning_section: None,
                     core_prompt: None,
                     workstation_dialect: None,
-                    surface: crate::dynamic_prompt::PromptSurface::default(),
+                    surface: match self.effective_prompt_surface() {
+                        maho_ext_api::PromptSurface::Terminal => {
+                            crate::dynamic_prompt::PromptSurface::Terminal
+                        }
+                        maho_ext_api::PromptSurface::App => {
+                            crate::dynamic_prompt::PromptSurface::App
+                        }
+                        maho_ext_api::PromptSurface::Chat => {
+                            crate::dynamic_prompt::PromptSurface::Chat
+                        }
+                    },
                 },
             )
         });
@@ -10186,7 +10347,7 @@ impl AgentSession {
         let (tool_snippets, prompt_guidelines) = self.tool_prompt_contributions(&tools);
         let (custom_prompt, append) = self.resolved_system_prompt();
         maho_ext_api::BuildSystemPromptOptions {
-            surface: maho_ext_api::PromptSurface::default(),
+            surface: self.effective_prompt_surface(),
             custom_prompt,
             append_system_prompt: (!append.is_empty()).then(|| append.join("\n\n")),
             context_files: self
@@ -11428,6 +11589,368 @@ impl AgentSession {
     ) -> Option<String> {
         crate::tool_call_display_name::streamed_tool_call_name(event)
             .map(|name| self.resolve_tool_call_name(&name))
+    }
+
+    /// senpi `_buildRuntime`'s tool-runtime half of the constructor: the session host-call handler shared by both
+    /// runtimes, the tool child (`child` runtime only) and the dispatcher over them. Every callback reaches the
+    /// session through `session_cell`, so a session that is already dropped serves nothing.
+    #[allow(clippy::type_complexity)]
+    fn build_tool_runtime(
+        runtime: crate::tool_dispatch::tool_dispatcher::ToolRuntimeKind,
+        session_cell: &SessionCell,
+        session_logger: &SessionLogger,
+        agent_dir: &str,
+        cwd: &str,
+        session_id: &str,
+    ) -> (
+        Arc<dyn crate::tool_dispatch::tool_dispatcher::ToolDispatcher>,
+        Option<Arc<maho_tool_child::session_child::SessionToolChild>>,
+        ToolChildHostTargets,
+    ) {
+        use crate::tool_child_host_calls::{SessionHostCallDeps, create_session_host_call_handler};
+        use crate::tool_dispatch::offload::BoxError;
+        use crate::tool_dispatch::tool_dispatcher::{
+            ToolDispatcherOptions, ToolRuntimeKind, create_tool_dispatcher,
+        };
+        use maho_tool_child::session_child::{
+            SessionToolChild, SessionToolChildOptions, SessionToolChildRecordState,
+        };
+
+        let targets: ToolChildHostTargets = Arc::default();
+        // One host-call handler for both runtimes: the child's reverse bridge and an in-process ctx.offload module.
+        let nested_cell = Arc::clone(session_cell);
+        let names_cell = Arc::clone(session_cell);
+        let policy_cell = Arc::clone(session_cell);
+        let target_list = Arc::clone(&targets);
+        let host_calls = create_session_host_call_handler(SessionHostCallDeps {
+            cwd: PathBuf::from(cwd),
+            execute_nested: Arc::new(move |parent_tool_call_id, name, args, signal| {
+                let cell = Arc::clone(&nested_cell);
+                Box::pin(async move {
+                    let session = upgrade_session_cell(&cell)
+                        .ok_or_else(|| BoxError::from("session disposed"))?;
+                    session
+                        .execute_nested_tool_call(&parent_tool_call_id, &name, args, signal)
+                        .await
+                })
+            }),
+            callable_tool_names: Arc::new(move || {
+                upgrade_session_cell(&names_cell)
+                    .map(|session| session.callable_tool_names())
+                    .unwrap_or_default()
+            }),
+            target: Arc::new(move |kind| {
+                lock(&target_list)
+                    .iter()
+                    .find(|(registered, _)| *registered == kind)
+                    .map(|(_, target)| Arc::clone(target))
+            }),
+            filesystem_policy: Arc::new(move || {
+                upgrade_session_cell(&policy_cell)
+                    .and_then(|session| session.filesystem_policy_checker())
+            }),
+        });
+        let tool_child = (runtime == ToolRuntimeKind::Child).then(|| {
+            let roots_cell = Arc::clone(session_cell);
+            let record_cell = Arc::clone(session_cell);
+            let wake_cell = Arc::clone(session_cell);
+            Arc::new(SessionToolChild::new(SessionToolChildOptions {
+                dir: Path::new(agent_dir).join("tool-children").join(session_id),
+                cwd: PathBuf::from(cwd),
+                module_roots: Arc::new(move || {
+                    upgrade_session_cell(&roots_cell)
+                        .map(|session| session.tool_child_module_roots())
+                        .unwrap_or_default()
+                }),
+                on_record: Arc::new(move |record| {
+                    let Some(session) = upgrade_session_cell(&record_cell) else {
+                        return;
+                    };
+                    let state = match record.state {
+                        SessionToolChildRecordState::Spawned => "spawned",
+                        SessionToolChildRecordState::Exited => "exited",
+                        SessionToolChildRecordState::Respawned => "respawned",
+                    }
+                    .to_owned();
+                    session.emit(AgentSessionEvent::SessionToolChild {
+                        state: state.clone(),
+                        generation: record.generation,
+                        pid: record.pid,
+                    });
+                    if state == "exited" {
+                        for job in session.child_jobs() {
+                            if let Some(child_exited) = &job.child_exited {
+                                child_exited(record.generation);
+                            }
+                        }
+                    }
+                }),
+                on_host_call: Some(host_calls.clone()),
+                on_wake: Some(Arc::new(move |wake| {
+                    let Some(session) = upgrade_session_cell(&wake_cell) else {
+                        return;
+                    };
+                    for job in session.child_jobs() {
+                        if job.kind == wake.source
+                            && let Some(on_wake) = &job.wake
+                        {
+                            on_wake(wake.value.as_ref().unwrap_or(&Value::Null), wake.generation);
+                        }
+                    }
+                })),
+                env: None,
+                command: None,
+                now: None,
+            }))
+        });
+        let mut options = ToolDispatcherOptions::new(runtime);
+        let notify_logger = session_logger.clone();
+        options.notify = Some(Arc::new(move |event, data| {
+            notify_logger.info(event, data.as_ref());
+        }));
+        options.host_calls = Some(host_calls);
+        let stuck_cell = Arc::clone(session_cell);
+        let stuck_logger = session_logger.clone();
+        options.on_module_stuck = Some(Arc::new(move |notice| {
+            let mut data = Map::new();
+            data.insert(
+                "modulePath".to_owned(),
+                Value::String(notice.module_path.clone()),
+            );
+            data.insert("export".to_owned(), Value::String(notice.export.clone()));
+            data.insert("deadlineMs".to_owned(), Value::from(notice.deadline_ms));
+            data.insert(
+                "files".to_owned(),
+                Value::Array(notice.files.iter().cloned().map(Value::String).collect()),
+            );
+            stuck_logger.warn("offload_module_stuck", Some(&data));
+            if let Some(session) = upgrade_session_cell(&stuck_cell) {
+                session.emit(AgentSessionEvent::OffloadModuleStuck {
+                    module_path: notice.module_path,
+                    export: notice.export,
+                    deadline_ms: notice.deadline_ms,
+                    files: notice.files,
+                    notice: notice.notice,
+                });
+            }
+        }));
+        if let Some(child) = &tool_child {
+            options.child_runner = Some(child.runner());
+            options.child_kind_runner = Some(child.kind_runner());
+        }
+        (create_tool_dispatcher(options), tool_child, targets)
+    }
+
+    /// senpi `whenToolChildClosed`: settles once `dispose` has stopped the tool child, swept what it launched, and
+    /// closed its in-process offload jobs. Ready at once while the session has not been disposed.
+    pub async fn when_tool_child_closed(&self) {
+        let closed = lock(&self.tool_child_closed).clone();
+        if let Some(closed) = closed {
+            closed.await;
+        }
+    }
+
+    /// senpi `toolChildRow`: the `list_sessions` row for this session's tool child.
+    pub fn tool_child_row(&self) -> ToolChildRow {
+        use maho_tool_child::session_child::SessionToolChildRowState;
+        let Some(child) = &self.tool_child else {
+            return ToolChildRow {
+                state: "none",
+                generation: None,
+                pid: None,
+            };
+        };
+        let row = child.row();
+        ToolChildRow {
+            state: match row.state {
+                SessionToolChildRowState::None => "none",
+                SessionToolChildRowState::Live => "live",
+                SessionToolChildRowState::Exited => "exited",
+            },
+            generation: row.generation,
+            pid: row.pid,
+        }
+    }
+
+    /// senpi `toolDispatcher`.
+    pub fn tool_dispatcher(
+        &self,
+    ) -> Arc<dyn crate::tool_dispatch::tool_dispatcher::ToolDispatcher> {
+        Arc::clone(&self.tool_dispatcher)
+    }
+
+    /// senpi `registerToolChildHostTarget`: serves the tool child's `completion` or `reserved` calls on the server
+    /// (codemode registers its completion handler and `runReservedTool`). Returns the unregister function; a later
+    /// registration replaces it.
+    pub fn register_tool_child_host_target(
+        &self,
+        kind: crate::tool_child_host_calls::RegisteredHostCallKind,
+        target: crate::tool_child_host_calls::HostCallTarget,
+    ) -> Box<dyn FnOnce() + Send + Sync> {
+        let targets = Arc::clone(&self.tool_child_host_targets);
+        {
+            let mut list = lock(&targets);
+            list.retain(|(registered, _)| *registered != kind);
+            list.push((kind, Arc::clone(&target)));
+        }
+        Box::new(move || {
+            lock(&targets).retain(|(registered, current)| {
+                !(*registered == kind && Arc::ptr_eq(current, &target))
+            });
+        })
+    }
+
+    /// Records the placement fields (`placement`, `serverPinned`, `childModule`, `childJob`) senpi reads off a
+    /// registered `ToolDefinition`, which the dispatcher and the child's wake / exit routing need by tool name.
+    pub fn register_tool_placement(
+        &self,
+        info: crate::tool_dispatch::tool_dispatcher::ToolPlacementInfo,
+    ) {
+        lock(&self.tool_placements).insert(info.name.clone(), info);
+    }
+
+    /// senpi `wrapRegisteredTools(..., this._toolDispatcher)`: records the tool's placement fields, then wraps it so its
+    /// body runs through the session's dispatcher.
+    fn wrap_extension_tool(
+        &self,
+        registered: maho_ext_api::RegisteredTool,
+        runtime: maho_ext_api::ExtensionRuntime,
+        context_factory: maho_ext_host::wrapper::ToolContextFactory,
+    ) -> AgentTool {
+        let placement = maho_ext_api::ToolPlacementInfo::from_definition(&registered.definition);
+        self.register_tool_placement(placement.clone());
+        let dispatcher: Arc<dyn maho_ext_api::ToolRunDispatch> = Arc::new(
+            crate::tool_dispatch::tool_dispatcher::DispatcherRun(Arc::clone(&self.tool_dispatcher)),
+        );
+        maho_ext_host::wrapper::wrap_registered_tool(
+            registered,
+            runtime,
+            context_factory,
+            dispatcher,
+            placement,
+        )
+    }
+
+    /// senpi `_childJobs`: the child jobs the registered tools declare (`ToolDefinition.childJob`): who a child's
+    /// wake or exit concerns.
+    fn child_jobs(&self) -> Vec<crate::tool_dispatch::tool_dispatcher::ToolChildJob> {
+        lock(&self.tool_placements)
+            .values()
+            .filter_map(|info| info.child_job.clone())
+            .collect()
+    }
+
+    /// The module files the session's child may load from: the files tools declared (`toolChildModuleRoots`) and the
+    /// files registered child modules name (`childModuleRoots`).
+    fn tool_child_module_roots(&self) -> Vec<String> {
+        let Some(runner) = self.extension_runner_snapshot() else {
+            return Vec::new();
+        };
+        let declared: Vec<maho_tool_child::session_child::RegisteredToolChildModule> = {
+            let placements = lock(&self.tool_placements);
+            runner
+                .get_all_registered_tools()
+                .into_iter()
+                .map(
+                    |tool| maho_tool_child::session_child::RegisteredToolChildModule {
+                        child_module: placements
+                            .get(&tool.definition.name)
+                            .and_then(|info| info.child_module.clone()),
+                        source_path: tool.source_info.path,
+                    },
+                )
+                .collect()
+        };
+        let mut roots = maho_tool_child::session_child::tool_child_module_roots(&declared);
+        roots.extend(crate::tool_dispatch::offload::child_module_roots(
+            &runner.get_all_child_modules(),
+        ));
+        roots
+    }
+
+    /// The session's composed filesystem policy (senpi `_filesystemPolicy`); `None` when no extension registered one.
+    fn filesystem_policy_checker(&self) -> Option<maho_tools::FilesystemPolicyChecker> {
+        let runner = self.extension_runner_snapshot()?;
+        let policies: Vec<maho_tools::FilesystemPolicy> = runner
+            .extensions
+            .iter()
+            .flat_map(|extension| {
+                runner
+                    .runtime
+                    .live_filesystem_policies(&extension.identity.path)
+                    .unwrap_or_else(|| extension.filesystem_policies.clone())
+            })
+            .collect();
+        maho_tools::filesystem_policy::compose_filesystem_policies(policies)
+    }
+
+    /// senpi `_executeNestedToolCall`: runs `name` as a nested call of `parent_tool_call_id` through the session's
+    /// tool pipeline (the same path as in-process `ctx.executeTool`, hooks once). A failed call is an outcome with
+    /// `is_error`, not an error.
+    async fn execute_nested_tool_call(
+        &self,
+        parent_tool_call_id: &str,
+        name: &str,
+        args: Value,
+        signal: maho_ext_api::AbortSignal,
+    ) -> Result<maho_agent::types::AgentToolCallOutcome, crate::tool_dispatch::offload::BoxError>
+    {
+        let (recorder, sequence) = {
+            let mut calls = lock(&self.nested_host_calls);
+            let (recorder, counter) = calls
+                .entry(parent_tool_call_id.to_owned())
+                .or_insert_with(|| (Arc::default(), Arc::new(AtomicU64::new(1))));
+            (Arc::clone(recorder), counter.fetch_add(1, Ordering::SeqCst))
+        };
+        let id = format!("{parent_tool_call_id}/{sequence}");
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let call_signal = controller.signal();
+        let watcher = tokio::spawn(async move {
+            signal.cancelled().await;
+            controller.abort(None);
+        });
+        let result = NESTED_TOOL_SCOPE
+            .scope(
+                (
+                    parent_tool_call_id.to_owned(),
+                    recorder,
+                    Arc::new(AtomicU64::new(sequence)),
+                ),
+                self.execute_tool(
+                    name,
+                    args.clone(),
+                    ExecuteToolOptions {
+                        signal: Some(call_signal),
+                        activate_inactive_tool: None,
+                    },
+                ),
+            )
+            .await;
+        watcher.abort();
+        let (result, is_error) = match result {
+            Ok(result) => {
+                let is_error = result.is_error.unwrap_or(false);
+                (result, is_error)
+            }
+            Err(error) => {
+                let mut failed = AgentToolResult::text(error.message);
+                failed.is_error = Some(true);
+                (failed, true)
+            }
+        };
+        Ok(maho_agent::types::AgentToolCallOutcome {
+            tool_call: maho_ai::types::ToolCall {
+                id,
+                name: name.to_owned(),
+                arguments: args.as_object().cloned().unwrap_or_default(),
+                incomplete: None,
+                error_message: None,
+                thought_signature: None,
+                namespace: None,
+            },
+            result,
+            is_error,
+        })
     }
 
     /// Active tool names plus search-exposed lazy tools; senpi also appends the tool-search catalog,
@@ -12987,7 +13510,7 @@ impl AgentSession {
         for registered in runner.get_all_registered_tools() {
             let definition = registered.definition.clone();
             let source = registered.source_info.clone();
-            let tool = maho_ext_host::wrapper::wrap_registered_tool(
+            let tool = self.wrap_extension_tool(
                 registered,
                 runner.runtime.clone(),
                 context_factory.clone(),
@@ -15147,6 +15670,7 @@ impl AgentSession {
         if self.state().disposed {
             return;
         }
+        lock(&self.inner.nested_host_calls).clear();
         let disposers = std::mem::take(&mut *lock(&self.inner.tool_context_disposers));
         for dispose in disposers {
             dispose();
@@ -15181,6 +15705,23 @@ impl AgentSession {
                     "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
                 );
             }
+        }
+        // In-process offload jobs are closed with the child: replacement awaits both before the next session runs.
+        {
+            let dispatcher = Arc::clone(&self.tool_dispatcher);
+            let child = self.tool_child.clone();
+            let closed: futures::future::BoxFuture<'static, ()> = Box::pin(async move {
+                let in_process_closed = dispatcher.dispose();
+                let child_closed = async {
+                    if let Some(child) = child {
+                        child.close().await;
+                    }
+                };
+                futures::future::join(in_process_closed, child_closed).await;
+            });
+            let closed = futures::future::FutureExt::shared(closed);
+            tokio::spawn(closed.clone());
+            *lock(&self.tool_child_closed) = Some(closed);
         }
         // PERF-DIVERGENCE(senpi agent-session.ts): listener list is a copy-on-write Arc (see emit); clearing swaps in an empty one.
         *lock(&self.event_listeners) = Arc::new(Vec::new());

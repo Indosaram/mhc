@@ -11,6 +11,7 @@ members = [
     "crates/maho-tui",
     "crates/maho-interactive",
     "crates/maho-rpc",
+    "crates/maho-tool-child",
     "crates/maho-server",
     "crates/maho-codemode",
     "crates/maho-cli",

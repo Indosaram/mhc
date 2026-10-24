@@ -57,6 +57,9 @@ pub struct CliRuntimeConfiguration {
     pub project_trust_by_cwd: Arc<std::sync::Mutex<BTreeMap<String, bool>>>,
     /// senpi `parsed.unknownFlags`: extension flag values every mounted session applies.
     pub extension_flag_values: Option<BTreeMap<String, FlagValue>>,
+    /// senpi `toolRuntime`: the resolved `--tool-runtime` (flag, then env); absent means `in-process`.
+    /// A worker isolate never re-reads env, so it travels in `to_worker_json`.
+    pub tool_runtime: Option<super::tool_runtime::ToolRuntimeKind>,
 }
 
 impl Default for CliRuntimeConfiguration {
@@ -84,6 +87,7 @@ impl Default for CliRuntimeConfiguration {
             project_trust_override: None,
             project_trust_by_cwd: Arc::default(),
             extension_flag_values: None,
+            tool_runtime: None,
         }
     }
 }
@@ -112,6 +116,7 @@ impl CliRuntimeConfiguration {
             additional_hook_paths: Vec::new(),
             project_trust_override: parsed.project_trust_override,
             project_trust_by_cwd: Arc::default(),
+            tool_runtime: parsed.tool_runtime,
             extension_flag_values: (!parsed.unknown_flags.is_empty()).then(|| {
                 parsed
                     .unknown_flags
@@ -146,6 +151,7 @@ impl CliRuntimeConfiguration {
             "skills": self.skills, "promptTemplates": self.prompt_templates, "themes": self.themes, "hooks": self.hooks,
             "additionalHookPaths": self.additional_hook_paths.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>(),
             "projectTrustOverride": self.project_trust_override,
+            "toolRuntime": self.tool_runtime.map(|kind| kind.as_str()),
             "extensionFlagValues": self.extension_flag_values.as_ref().map(|flags| flags.iter().map(|(name, value)| (name.clone(), match value {
                 FlagValue::Boolean(value) => serde_json::json!(value),
                 FlagValue::String(value) => serde_json::json!(value),
@@ -215,6 +221,9 @@ impl CliRuntimeConfiguration {
                 .get("projectTrustOverride")
                 .and_then(serde_json::Value::as_bool),
             project_trust_by_cwd: Arc::default(),
+            tool_runtime: text("toolRuntime")
+                .as_deref()
+                .and_then(super::tool_runtime::ToolRuntimeKind::parse),
             extension_flag_values: value
                 .get("extensionFlagValues")
                 .and_then(serde_json::Value::as_object)
@@ -488,6 +497,8 @@ pub struct CliRuntimeRequest {
     /// Mode-specific bindings for the first `bind_extensions`; the mount still sets the mode.
     pub extension_bindings: Option<maho_core::agent_session::ExtensionBindingsFactory>,
     pub extension_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+    /// senpi `createAgentSession({ toolRuntime })`: a caller-chosen runtime wins over the configuration's.
+    pub tool_runtime: Option<maho_core::tool_dispatch::tool_dispatcher::ToolRuntimeKind>,
 }
 
 /// The mounted session runtime plus the diagnostics senpi reports before the first turn.
@@ -539,6 +550,7 @@ pub async fn mount_agent_session_runtime(
         mcp_registry,
         extension_bindings,
         extension_ui,
+        tool_runtime,
     } = request;
     let cwd = cwd.unwrap_or_else(|| config.cwd.clone());
     let mut launch_config = config.clone();
@@ -635,6 +647,12 @@ pub async fn mount_agent_session_runtime(
             no_tools,
             custom_tools,
             auto_title_sessions,
+            // senpi main.ts:1091 `...(toolRuntime !== undefined ? { toolRuntime } : {})`.
+            tool_runtime: tool_runtime.or_else(|| {
+                config
+                    .tool_runtime
+                    .map(super::tool_runtime::to_core_tool_runtime)
+            }),
             extension_factories,
             session_profile: session_profile.clone(),
             extension_flag_values,
@@ -793,6 +811,9 @@ pub fn create_host_core(
     // the sessions share one agent dir, so a per-open rebuild would pay the same catalog load once
     // per open instead of once per host.
     let model_runtime = host_model_runtime(&config)?;
+    let tool_runtime = config
+        .tool_runtime
+        .unwrap_or(super::tool_runtime::ToolRuntimeKind::InProcess);
     let create_runtime = host_runtime_factory_with_mcp_registry(
         config.clone(),
         model_runtime,
@@ -824,7 +845,8 @@ pub fn create_host_core(
                 close_grace_ms: host_close_grace_ms(),
             },
             writer,
-        ),
+        )
+        .with_tool_runtime(tool_runtime),
     ))
 }
 
@@ -855,6 +877,9 @@ pub fn create_worker_host_core(
         )),
     };
     let close_grace_ms = host_close_grace_ms();
+    let tool_runtime = config
+        .tool_runtime
+        .unwrap_or(super::tool_runtime::ToolRuntimeKind::InProcess);
     let workers = maho_rpc::worker_session_registry::WorkerSessionRegistry::new(
         config.to_worker_json(),
         session_worker_spawner(executable),
@@ -877,7 +902,8 @@ pub fn create_worker_host_core(
             },
             writer,
         )
-        .with_worker_registry(workers),
+        .with_worker_registry(workers)
+        .with_tool_runtime(tool_runtime),
     )
 }
 
@@ -1068,7 +1094,9 @@ pub fn host_runtime_factory_with_mcp_registry(
                     Some(settings),
                 )
                 .await?;
-                Ok(mounted.runtime)
+                let mut runtime = mounted.runtime;
+                apply_launch_profile(&mut runtime, &profile)?;
+                Ok(runtime)
             })
                 as std::pin::Pin<
                     Box<
@@ -1078,6 +1106,34 @@ pub fn host_runtime_factory_with_mcp_registry(
                 >
         },
     )
+}
+
+/// senpi `AgentSessionRuntime` constructor + `apply`: the per-open profile values a launch carries.
+/// The holder record names the host endpoint, the retry-fallback policy overlays this session's
+/// settings in memory, and the prompt surface / browser engine are kept on the runtime.
+fn apply_launch_profile(
+    runtime: &mut AgentSessionRuntime,
+    profile: &maho_rpc::session_registry::RpcSessionLaunchProfile,
+) -> Result<(), String> {
+    if let Some(retry_fallback) = &profile.retry_fallback {
+        runtime.set_retry_fallback(retry_fallback);
+    }
+    if let Some(surface) = profile
+        .prompt_surface
+        .as_deref()
+        .and_then(|surface| match surface {
+            "terminal" => Some(maho_ext_api::PromptSurface::Terminal),
+            "app" => Some(maho_ext_api::PromptSurface::App),
+            "chat" => Some(maho_ext_api::PromptSurface::Chat),
+            _ => None,
+        })
+    {
+        runtime.set_prompt_surface(surface);
+    }
+    if let Some(engine) = &profile.browser_engine {
+        runtime.set_browser_engine(engine.clone());
+    }
+    runtime.set_holder_endpoint(profile.holder_endpoint.clone())
 }
 
 /// Initial model and senpi origin forwarded to a fresh session's startup event.

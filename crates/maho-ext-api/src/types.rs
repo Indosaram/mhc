@@ -1350,9 +1350,7 @@ pub trait SessionManager: ToolSessionManager {
         initial: JsonValue,
         reduce: &mut dyn FnMut(JsonValue, &SessionEntry) -> JsonValue,
     ) -> JsonValue {
-        self.get_entries()
-            .iter()
-            .fold(initial, &mut *reduce)
+        self.get_entries().iter().fold(initial, &mut *reduce)
     }
     fn get_usage_totals(&self) -> Option<JsonValue> {
         None
@@ -1595,6 +1593,10 @@ pub trait ExtensionContextActions: Send + Sync {
         Err(ExtensionFailure::new(
             "Monitor admission identity is not supported by this extension context",
         ))
+    }
+    /// senpi `getBrowserEngine`: the session's browser engine (`connected` / `builtin` / `none`).
+    fn get_browser_engine(&self) -> Option<&'static str> {
+        None
     }
     fn get_model(&self) -> Option<Model>;
     fn get_service_tier(&self) -> Option<ServiceTier>;
@@ -2599,6 +2601,11 @@ impl ToolContext for ExtensionContext {
     fn goal_store_file(&self) -> Option<&Path> {
         self.assert_active_or_panic();
         self.goal_store_file.as_deref()
+    }
+    fn browser_engine(&self) -> Option<&str> {
+        self.session_manager
+            .extension_context_actions()
+            .and_then(ExtensionContextActions::get_browser_engine)
     }
     fn get_steering_signal(&self) -> Option<AbortSignal> {
         self.current_steering_signal().ok().flatten()
@@ -6402,6 +6409,20 @@ pub enum AgentSessionEvent {
         selector: String,
         ok: bool,
         error_message: Option<String>,
+    },
+    /// senpi `session_tool_child`: `state` is "spawned" | "exited" | "respawned"; `pid` is -1 when the child has none.
+    SessionToolChild {
+        state: String,
+        generation: u64,
+        pid: i64,
+    },
+    /// senpi `offload_module_stuck` (`StuckModuleNotice`).
+    OffloadModuleStuck {
+        module_path: String,
+        export: String,
+        deadline_ms: u64,
+        files: Vec<String>,
+        notice: String,
     },
     BashExecutionUpdate {
         id: Option<String>,
