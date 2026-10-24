@@ -12,7 +12,7 @@ pub fn parse_permission_flag(value: &str) -> Ruleset {
 }
 pub fn parse_permission_preset_name(value: &str) -> Option<PermissionPresetName> {
     match value {
-        "full-access" => Some(PermissionPresetName::FullAccess), "workspace" => Some(PermissionPresetName::Workspace),
+        "guarded" => Some(PermissionPresetName::Guarded), "full-access" => Some(PermissionPresetName::FullAccess), "workspace" => Some(PermissionPresetName::Workspace),
         "accept-edits" => Some(PermissionPresetName::AcceptEdits), "auto" => Some(PermissionPresetName::Auto),
         "read-only" => Some(PermissionPresetName::ReadOnly), "ask" => Some(PermissionPresetName::Ask), _ => None,
     }

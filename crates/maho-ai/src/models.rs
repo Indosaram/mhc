@@ -126,6 +126,8 @@ pub enum ModelsErrorCode {
     Stream,
     Auth,
     OAuth,
+    /// Recorded risk consent is missing for an impersonating provider (mhc divergence SD-4).
+    ConsentRequired,
 }
 
 impl ModelsErrorCode {
@@ -137,6 +139,7 @@ impl ModelsErrorCode {
             ModelsErrorCode::Stream => "stream",
             ModelsErrorCode::Auth => "auth",
             ModelsErrorCode::OAuth => "oauth",
+            ModelsErrorCode::ConsentRequired => "provider_consent_required",
         }
     }
 }

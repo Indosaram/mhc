@@ -1,7 +1,7 @@
 # AGENTS.md
 
-**Generated:** 2026-10-16
-**Commit:** fca04b8a3
+**Generated:** 2026-10-24
+**Commit:** afbe9b8b
 **Branch:** main
 
 ## OVERVIEW
@@ -14,21 +14,24 @@ crates/
 ├── maho-core/           # senpi coding-agent core: sessions, settings, auth, model runtime, brand/config paths
 ├── maho-agent/          # Core agent loop, execution harness, state machine
 ├── maho-ai/             # Multi-provider LLM abstraction layer & model clients (build.rs needs protoc)
+├── maho-chord/          # Native port of @earendil-works/chord: copy-on-write state revisions and deltas
 ├── maho-tools/          # Builtin tools: read/bash/edit/write/grep/find/ls
+├── maho-tool-child/     # Out-of-process tool child process, framed IPC channel, platform job policy
 ├── maho-tui/            # Keyboard input, fuzzy search, terminal mux primitives
 ├── maho-interactive/    # Terminal UI, streaming reveal pacing, theme engine
 ├── maho-rpc/            # Headless JSONL RPC protocol and print mode
 ├── maho-server/         # Daemon RPC server, Codex app-server, SQLite storage, protocol frames
 ├── maho-codemode/       # eval kernel (bun/js only) and the code-mode tool host
+├── maho-process-env/    # Safe process-environment updates at CLI startup (edition 2021)
 ├── maho-ext-api/        # Static extension contracts
 ├── maho-ext-host/       # Extension host runtime
 ├── maho-test-support/   # Shared test helpers (faux provider sessions)
-├── builtins/            # 42 builtin extensions (maho-ext-*)
+├── builtins/            # 43 builtin extensions (maho-ext-*)
 ├── extensions/          # 14 native ports of user extensions (see PINS.md)
 ├── vendor/              # maho-grep, maho-pty
 └── omo/                 # oh-my-openagent port (SUL-1.0)
     ├── maho-omo/        # omo composition root: registers the components
-    ├── components/      # 30 omo feature components (maho-omo-*: task, memory, lsp, ultrawork, ...)
+    ├── components/      # 33 omo feature components (maho-omo-*: task, memory, lsp, ultrawork, ...)
     ├── senpi-task/      # Multi-agent DAG workflow runner, supervisor, category dispatch
     ├── memory-core/     # Git-backed persistent memory filesystem, identity profiles
     ├── omo-config-core/ # omo.json(c) schema, loader, migrations
@@ -55,8 +58,9 @@ assets/                  # omo-latest skill overlay, omo.schema.json, readme ima
 ## PORT RULES & CONVENTIONS
 - senpi is upstream. Port file-for-file: one TS file maps to one Rust module, keeping names and order.
 - Rendering uses senpi's string/ANSI component model and differential renderer (crossterm for raw mode/IO; no ratatui).
-- Every new `maho-*` crate opts into workspace lints: `unsafe_code = "forbid"`, `clippy::unwrap_used = "deny"`.
+- Workspace lints set `unsafe_code = "forbid"`; a crate that needs unsafe (Win32/FFI) sets `unsafe_code = "deny"` and allows it locally with a SAFETY comment.
 - Native Rust port must not delegate core agent behavior to external JS `omo` CLI.
+- safety/privacy divergences: keep them, see docs/divergences.md.
 
 ## ANTI-PATTERNS (THIS PROJECT)
 - Do not introduce ratatui or codex-rs dependencies.
@@ -85,7 +89,7 @@ scripts/gh-verify.sh --no-wait   # print the run URL and return
 - Build cache: `Swatinem/rust-cache` per job, saved only on `main` (other refs cannot see their own caches after the run, but can read main's). Workspace crates are never cached, so most of a build is compiling them; that is the floor caching cannot remove. sccache with the Actions cache backend was tried (2026-10-19) and was slower: per-object uploads plus 429 rate limiting dropped 40-55% of writes. Warm the release cache with `gh workflow run release.yml --ref main` (no tag).
 - Tests that compare against upstream read a pinned senpi checkout at `~/code/senpi`. CI clones `code-yeongyu/senpi` at `SENPI_PIN` (must match `tools/golden/pin.mjs`) and runs `bun install`.
 - CI cannot reach the mahoquot gateway (tailnet only), so live model QA still runs locally.
-- GitHub Actions is the only remote build target; instabox is gone (keys revoked, `scripts/instabox-build.sh` removed). Do not build locally either: every cargo build/check/clippy/test goes through CI.
+- Builds/tests run only after all code work, once, on the merged result. Linux: this machine when idle, otherwise noye (`ssh box@100.110.229.115`, run cargo under `nohup setsid`). Windows: `ssh win-new`. macOS: `ssh mac`. GitHub CI is an additional check. Instabox is retired.
 
 ## INSTALLING mhc (dev build via CI)
 When the user asks to (re)install mhc, run `scripts/gh-install.sh` from the checkout to install. It snapshots HEAD plus local changes to a temporary `build/YYYY.MM.DD-N` branch, `.github/workflows/mhc-binary.yml` builds `cargo build --release -p maho-cli --bin mhc` with that version as `MHC_BUILD_VERSION`, and the script downloads the `mhc-linux-x86_64` artifact into `~/.local/share/mhc/mhc` (symlinked from `~/.local/bin/mhc`), checks `mhc --version`, and deletes the branch. N counts installs made that day. It blocks until the run finishes; run it in the background and wait on its exit. Linux x86_64 only; `scripts/install-dev.sh` is the local-build fallback, used only when the user asks for it.

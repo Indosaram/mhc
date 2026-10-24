@@ -91,8 +91,25 @@ pub fn plan_facts_routing(
             .push(record.clone());
     };
     if !people.is_some_and(|policy| policy.enabled) {
+        // SAFETY-DIVERGENCE(packages/omo-config-core/src/schema/memory.ts): upstream defaults memory.people.enabled to true; mhc defaults to false.
+        // With people profiling off, facts about anyone but the primary human are dropped.
+        // The primary human is the `system/human.md` card (display name or alias) or a generic
+        // self-reference; without that card only self-references are kept.
+        let human: Vec<FactsPeopleIndexEntry> = read_facts_people_index(repo_dir)
+            .into_iter()
+            .filter(|entry| entry.slug == "human")
+            .collect();
         for record in records {
-            add_note(&mut plan, record);
+            match record {
+                FactsExtractionRecord::Project { .. } => add_note(&mut plan, record),
+                FactsExtractionRecord::Person { person, .. } => {
+                    if is_self_reference(&person.name)
+                        || resolve_person_slug(&human, person, None).is_some()
+                    {
+                        add_note(&mut plan, record);
+                    }
+                }
+            }
         }
         return plan;
     }
@@ -158,6 +175,14 @@ pub fn plan_facts_routing(
         bucket.records.push(record.clone());
     }
     plan
+}
+
+/// Generic first/second-person labels that always denote the primary human.
+fn is_self_reference(name: &str) -> bool {
+    matches!(
+        fold_alias(name).as_str(),
+        "user" | "me" | "you" | "i" | "the user" | "human"
+    )
 }
 
 /// Every repository path the routing plan will write, sorted.

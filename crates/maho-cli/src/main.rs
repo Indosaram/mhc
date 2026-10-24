@@ -56,8 +56,13 @@ fn root_metadata_output(argv: &[String], grok: bool) -> Result<Option<String>, S
         .iter()
         .any(|arg| matches!(arg.as_str(), "--version" | "-v"))
     {
+        let verbose = if argv.iter().any(|arg| arg == "--verbose") {
+            maho_cli::native_update::signature::build_info()
+        } else {
+            String::new()
+        };
         return Ok(Some(format!(
-            "{}\n",
+            "{}\n{verbose}",
             maho_core::config::display_version(
                 option_env!("MHC_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
             )
@@ -216,12 +221,16 @@ fn run() -> Result<(), String> {
     if argv.first().is_some_and(|arg| arg == "import-omo") {
         let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
         let mut from = PathBuf::from(&home).join(".omo/agent");
+        let mut from_given = false;
         let to = PathBuf::from(maho_core::config::get_agent_dir());
         let mut force = false;
         let mut args = argv.iter().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--from" => from = PathBuf::from(args.next().ok_or("--from requires a directory")?),
+                "--from" => {
+                    from = PathBuf::from(args.next().ok_or("--from requires a directory")?);
+                    from_given = true;
+                }
                 "--force" => force = true,
                 "--help" | "-h" => {
                     println!(
@@ -231,6 +240,19 @@ fn run() -> Result<(), String> {
                 }
                 _ => return Err(format!("Unknown import option: {arg}")),
             }
+        }
+        // SAFETY-DIVERGENCE(packages/coding-agent/src/commands/import-omo.ts): upstream's default import copies ~/.omo/agent onto itself and fails; mhc prints that it already reads the directory and exits 0 unless --from is given.
+        if !from_given
+            && (from == to
+                || std::fs::canonicalize(&from)
+                    .ok()
+                    .zip(std::fs::canonicalize(&to).ok())
+                    .is_some_and(|(a, b)| a == b))
+        {
+            println!(
+                "mhc already reads ~/.omo/agent directly; nothing to import. Use --from <dir> to import from another directory."
+            );
+            return Ok(());
         }
         let copied =
             maho_cli::import_omo::import_omo(&from, &to, force).map_err(|e| e.to_string())?;
@@ -313,6 +335,11 @@ fn run() -> Result<(), String> {
         } else {
             1
         };
+        if command.kind == AuthCommandKind::Consent {
+            use std::io::IsTerminal;
+            let code = maho_cli::cli::auth_command::run_auth_consent(&command, &maho_core::config::get_agent_dir(), std::io::stdin().is_terminal(), &mut std::io::stdin().lock(), &mut std::io::stdout(), &mut std::io::stderr());
+            std::process::exit(code);
+        }
         let parsed = match maho_cli::cli::args::parse_args(&command.args, grok) {
             Ok(parsed) => parsed,
             Err(message) => {
@@ -579,6 +606,9 @@ fn run() -> Result<(), String> {
                 option_env!("MHC_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
             )
         );
+        if parsed.verbose {
+            print!("{}", maho_cli::native_update::signature::build_info());
+        }
         return Ok(());
     }
     for diagnostic in &parsed.diagnostics {

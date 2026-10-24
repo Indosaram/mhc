@@ -17,7 +17,7 @@ pub fn package_command_usage(command: PackageCommand) -> &'static str {
         PackageCommand::Install => "mhc install <source> [-l] [--approve|--no-approve]",
         PackageCommand::Remove => "mhc remove <source> [-l] [--approve|--no-approve]",
         PackageCommand::Update => {
-            "mhc update [source|self|mhc] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force]"
+            "mhc update [source|self|mhc] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force] [--allow-unsigned]"
         }
         PackageCommand::List => "mhc list [--approve|--no-approve]",
     }
@@ -103,6 +103,8 @@ pub struct PackageCommandOptions {
     pub update_target: Option<UpdateTarget>,
     pub show_extensions_skipped_note: bool,
     pub force: bool,
+    /// `mhc update --allow-unsigned`: install a release that predates signatures.
+    pub allow_unsigned: bool,
     pub omo_local_update_worker: bool,
     pub project_trust_override: Option<bool>,
     pub help: bool,
@@ -129,6 +131,7 @@ fn parse_package_command_for_app(args: &[String], app_name: &str) -> Option<Pack
         update_target: None,
         show_extensions_skipped_note: false,
         force: false,
+        allow_unsigned: false,
         omo_local_update_worker: false,
         project_trust_override: None,
         help: false,
@@ -159,6 +162,7 @@ fn parse_package_command_for_app(args: &[String], app_name: &str) -> Option<Pack
             "--models" if command == PackageCommand::Update => models_flag = true,
             "--all" if command == PackageCommand::Update => all_flag = true,
             "--force" if command == PackageCommand::Update => parsed.force = true,
+            "--allow-unsigned" if command == PackageCommand::Update => parsed.allow_unsigned = true,
             "--omo-local-update-worker" if command == PackageCommand::Update => {
                 parsed.omo_local_update_worker = true
             }
@@ -444,7 +448,7 @@ pub async fn run_package_command(
                 maho_core::config::app_name(),
             ));
         }
-        return run_self_update(maho_core::brand::brand_profile().update.as_ref()).await;
+        return run_self_update(maho_core::brand::brand_profile().update.as_ref(), options.allow_unsigned).await;
     }
     if options.command == PackageCommand::Update
         && options.update_target == Some(UpdateTarget::Models)
@@ -519,6 +523,7 @@ pub async fn run_package_command(
 
 async fn run_self_update(
     brand_update: Option<&maho_core::brand::BrandUpdateChannel>,
+    allow_unsigned: bool,
 ) -> Result<(), PackageCommandError> {
     if let Some(update) = brand_update {
         maho_core::output_guard::maho_write_stdout(&format!(
@@ -529,7 +534,7 @@ async fn run_self_update(
         ));
         return Ok(());
     }
-    crate::native_update::update().await.map_err(Into::into)
+    crate::native_update::update(allow_unsigned).await.map_err(Into::into)
 }
 
 /// The caller's settings manager is borrowed by the real resource manager throughout execution.
@@ -640,11 +645,11 @@ pub async fn execute_package_command(
                         .await
                         .map_err(|error| error.to_string())?;
                     maho_core::output_guard::maho_write_stdout("Updated packages\n");
-                    return run_self_update(maho_core::brand::brand_profile().update.as_ref())
+                    return run_self_update(maho_core::brand::brand_profile().update.as_ref(), options.allow_unsigned)
                         .await;
                 }
                 UpdateTarget::SelfOnly => {
-                    return run_self_update(maho_core::brand::brand_profile().update.as_ref())
+                    return run_self_update(maho_core::brand::brand_profile().update.as_ref(), options.allow_unsigned)
                         .await;
                 }
                 UpdateTarget::Models => {
@@ -929,7 +934,7 @@ mod update_target_tests {
         ))
         .expect("brand profile");
         // When updating the embedded application.
-        let result = run_self_update(profile.update.as_ref()).await;
+        let result = run_self_update(profile.update.as_ref(), false).await;
         // Then guidance succeeds without running that command or the native release transport.
         assert_eq!(result, Ok(()));
     }

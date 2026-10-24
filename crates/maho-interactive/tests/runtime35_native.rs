@@ -6227,3 +6227,32 @@ async fn r16_tree_and_fork_open_mount_on_a_later_frame() {
     assert!(!rendered.contains("No messages to fork from"));
     assert!(mode.has_parked_action_for_test());
 }
+
+#[tokio::test]
+async fn consent_selector_mounts_before_login_dialog_and_cancel_skips_login() {
+    use maho_tui::tui::Component;
+    let (mut mode, directory) = native_mode_with_provider(None, "github-copilot", "faux-1", false);
+    mode.enqueue_submission(&maho_interactive::interactive_mode::internal_command("/login-provider github-copilot api_key"), None);
+    assert_eq!(mode.dispatch_submission().await.expect("login"), Some(maho_core::agent_session::PromptDisposition::Handled));
+    let rendered = mode.render(100).join("\n");
+    assert!(rendered.contains("Account risk"), "{rendered}");
+    assert!(rendered.contains("I understand the risk - continue"), "{rendered}");
+    assert!(!rendered.to_lowercase().contains("enter api key") && !rendered.contains("Paste"), "login dialog must not mount before consent: {rendered}");
+    mode.enqueue_submission(&maho_interactive::interactive_mode::internal_command("/login-consent-cancel"), None);
+    assert_eq!(mode.dispatch_submission().await.expect("cancel"), Some(maho_core::agent_session::PromptDisposition::Handled));
+    assert!(!directory.path().join("settings.json").exists());
+}
+
+#[tokio::test]
+async fn consent_continue_records_consent_then_queues_the_login() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(
+        None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "github-copilot", "faux-1", false);
+    assert!(!session.with_settings_manager(|s| maho_core::provider_consent::consent_recorded(s, "github-copilot")));
+    mode.enqueue_submission(&maho_interactive::interactive_mode::internal_command("/login-consent github-copilot api_key"), None);
+    assert_eq!(mode.dispatch_submission().await.expect("continue"), Some(maho_core::agent_session::PromptDisposition::Handled));
+    assert!(session.with_settings_manager(|s| maho_core::provider_consent::consent_recorded(s, "github-copilot")));
+    // The resumed `/login-provider` no longer shows the selector.
+    assert_eq!(mode.dispatch_submission().await.expect("resume"), Some(maho_core::agent_session::PromptDisposition::Handled));
+    assert!(!mode.render(100).join("\n").contains("Account risk"));
+}

@@ -51,6 +51,7 @@ pub mod paths;
 pub mod prompt_templates;
 pub mod provider_api_key_auth;
 pub mod provider_composer;
+pub mod provider_consent;
 pub mod resolve_config_value;
 pub mod resource_loader;
 pub mod retry_fallback;

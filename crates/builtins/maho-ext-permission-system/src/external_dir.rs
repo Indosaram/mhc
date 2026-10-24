@@ -79,7 +79,19 @@ pub fn is_external_path(input:&str,cwd:&Path,home:&Path)->bool {
     let target=resolve_without_open(&if expanded.is_absolute(){expanded}else{cwd.join(expanded)});
     !target.starts_with(cwd)
 }
+/// True when `input` resolves to one of mhc's credential files (`auth.json`, `auth.json.lock`) in `agent_dir`,
+/// independent of whether the path is inside the working directory.
+pub fn is_credential_path(input:&str,cwd:&Path,home:&Path,agent_dir:&Path)->bool {
+    let cwd=resolve_without_open(cwd);let expanded=expand_home(input,home);
+    let target=resolve_without_open(&if expanded.is_absolute(){expanded}else{cwd.join(expanded)});
+    let agent_dir=resolve_without_open(agent_dir);
+    ["auth.json","auth.json.lock"].iter().any(|name|target==agent_dir.join(name))
+}
 pub fn extract_external_paths(command:&str,cwd:&Path,home:&Path)->Vec<String>{
+    extract_command_paths(command).into_iter().filter(|token|is_external_path(token,cwd,home)).collect()
+}
+/// Path-like shell tokens (external or not), plus bare credential file names.
+pub fn extract_command_paths(command:&str)->Vec<String>{
     let mut tokens=Vec::new();let mut current=String::new();let mut quote=None;let mut escaped=false;
     for ch in command.chars(){
         if escaped{current.push(ch);escaped=false;continue;}
@@ -93,9 +105,10 @@ pub fn extract_external_paths(command:&str,cwd:&Path,home:&Path)->Vec<String>{
     tokens.into_iter().enumerate().filter_map(|(index,token)|{
         let token=if token.len()>=2&&((token.starts_with('"')&&token.ends_with('"'))||(token.starts_with('\'')&&token.ends_with('\''))){token[1..token.len()-1].to_owned()}else{token};
         let pathlike=token.starts_with('/')||token.starts_with('\\')||token.starts_with('~')||token.starts_with("$HOME")||token.starts_with("./")||token.starts_with(".\\")||token.starts_with("../")||token.starts_with("..\\")||token.contains('/')||token.contains('\\');
+        let credential_name=index>0&&(token=="auth.json"||token=="auth.json.lock");
         if index==0&&!pathlike{return None;}
         let assignment=token.split_once('=').is_some_and(|(name,_)|{let mut chars=name.chars();chars.next().is_some_and(|ch|ch.is_ascii_alphabetic()||ch=='_')&&chars.all(|ch|ch.is_ascii_alphanumeric()||ch=='_')});
-        if token.starts_with('-')||assignment||["|","||","&&",";","&","$(","${","`"].iter().any(|op|token.contains(op))||!pathlike{return None;}
-        is_external_path(&token,cwd,home).then_some(token)
+        if token.starts_with('-')||assignment||["|","||","&&",";","&","$(","${","`"].iter().any(|op|token.contains(op))||!(pathlike||credential_name){return None;}
+        Some(token)
     }).collect()
 }

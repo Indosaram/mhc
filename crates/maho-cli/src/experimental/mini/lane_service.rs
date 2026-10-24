@@ -104,28 +104,41 @@ impl LaneService {
         }
     }
 
+    /// Consent gate (SD-4): the harness streams through `Models` directly, so refuse here before
+    /// any run, queue or resume reaches the provider.
+    async fn consent_gate(&self) -> Option<CommandResult> {
+        let model = self.options.lane.get_model().ok().flatten()?;
+        self.options.models.consent_failure(&model.provider).await.map(CommandResult::Error)
+    }
+
     pub async fn prompt(&self, text: &str) -> CommandResult {
+        if let Some(blocked) = self.consent_gate().await { return blocked; }
         let input = PromptInput::Text { text: text.to_owned(), images: vec![] };
         self.run(self.options.lane.prompt(input, &self.options.context)).await
     }
 
     pub async fn skill(&self, name: &str, additional_instructions: Option<String>) -> CommandResult {
+        if let Some(blocked) = self.consent_gate().await { return blocked; }
         self.run(self.options.lane.skill(name, additional_instructions, &self.options.context)).await
     }
 
     pub async fn steer(&self, text: &str) -> CommandResult {
+        if let Some(blocked) = self.consent_gate().await { return blocked; }
         self.queue(self.options.lane.steer(QueuedInput::Text(text.to_owned()), vec![], &self.options.context)).await
     }
 
     pub async fn follow_up(&self, text: &str) -> CommandResult {
+        if let Some(blocked) = self.consent_gate().await { return blocked; }
         self.queue(self.options.lane.follow_up(QueuedInput::Text(text.to_owned()), vec![], &self.options.context)).await
     }
 
     pub async fn compact(&self) -> CommandResult {
+        if let Some(blocked) = self.consent_gate().await { return blocked; }
         self.run(self.options.lane.compact(None, &self.options.context)).await
     }
 
     pub async fn navigate_tree(&self, target_id: Option<String>, options: NavigationOptions) -> CommandResult {
+        if let Some(blocked) = self.consent_gate().await { return blocked; }
         self.run(self.options.lane.navigate_tree(target_id, options, &self.options.context)).await
     }
 

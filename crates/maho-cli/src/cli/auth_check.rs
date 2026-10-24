@@ -148,7 +148,7 @@ pub async fn check_provider_auth(
         Ok(Some(auth)) => {
             if refresh
                 && runtime
-                    .get_auth(&provider)
+                    .get_auth_unchecked(&provider)
                     .await
                     .map_err(|_| "invalid auth state".to_owned())?
                     .is_none()
@@ -203,7 +203,7 @@ pub async fn provider_credential(
     }
     Ok(get_auth_credential(
         runtime
-            .get_auth(provider)
+            .get_auth_unchecked(provider)
             .await
             .map_err(|_| "invalid auth state".to_owned())?
             .as_ref(),
