@@ -102,11 +102,12 @@ pub fn resolve_facts_people_routing(
     let memory = &config["memory"];
     let overrides = &memory["agents"][identity]["people"];
     let people = &memory["people"];
+    // SAFETY-DIVERGENCE(packages/omo-config-core/src/schema/memory.ts): upstream defaults memory.people.enabled to true; mhc defaults to false.
     FactsPeopleRouting {
         enabled: overrides["enabled"]
             .as_bool()
             .or_else(|| people["enabled"].as_bool())
-            .unwrap_or(true),
+            .unwrap_or(false),
         max_entries: overrides["max_entries"]
             .as_u64()
             .or_else(|| people["max_entries"].as_u64())
@@ -254,7 +255,7 @@ mod tests {
         assert_eq!(
             resolve_facts_people_routing(&serde_json::json!({}), "agent"),
             FactsPeopleRouting {
-                enabled: true,
+                enabled: false,
                 max_entries: 40,
                 max_entry_chars: 200
             }

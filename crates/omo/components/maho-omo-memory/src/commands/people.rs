@@ -100,7 +100,8 @@ pub async fn handle_people(
         Err(error) => return respond(ctx, error, NotifyLevel::Error),
     };
     let people = &settings["people"];
-    if people["enabled"].as_bool() == Some(false) {
+    // SAFETY-DIVERGENCE(packages/omo-config-core/src/schema/memory.ts): upstream treats a missing people.enabled as true; mhc treats it as false.
+    if people["enabled"].as_bool() != Some(true) {
         return respond(ctx, "people records are disabled (memory.people.enabled)", NotifyLevel::Error);
     }
     let limits = PeopleLimits {

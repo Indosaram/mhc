@@ -231,10 +231,17 @@ mod tests {
     }
 
     #[test]
-    fn default_people_gate_has_matching_panels() {
+    fn enabled_people_gate_has_matching_panels() {
         let fixture = create_palace_fixture(false);
 
-        let result = generate_palace_html(&fixture.context, GeneratePalaceOptions::default()).unwrap();
+        let result = generate_palace_html(
+            &fixture.context,
+            GeneratePalaceOptions {
+                people: Some(PalacePeopleOptions { enabled: true, ..Default::default() }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let html = std::fs::read_to_string(&result.path).unwrap();
 
         let tabs = tabs(&html);
