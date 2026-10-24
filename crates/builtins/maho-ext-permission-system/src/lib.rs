@@ -20,7 +20,7 @@ pub struct PermissionSystem;
 impl Extension for PermissionSystem{
     fn register(&self,api:&mut ExtensionApi){
         api.register_flag("permission",FlagType::String{default:None},Some("Set permission rules (format: tool=action or tool:pattern=action)".into()));
-        api.register_flag("permission-preset",FlagType::String{default:None},Some("Set permission preset (full-access, workspace, accept-edits, auto, read-only, or ask)".into()));
+        api.register_flag("permission-preset",FlagType::String{default:None},Some("Set permission preset (guarded, full-access, workspace, accept-edits, auto, read-only, or ask)".into()));
         let state:Arc<Mutex<Option<SessionPolicy>>>=Arc::new(Mutex::new(None));
         let counter=Arc::new(std::sync::atomic::AtomicU64::new(0));
         let start_state=Arc::clone(&state);let runtime=api.runtime.clone();let bus=api.events.clone();
@@ -31,12 +31,12 @@ impl Extension for PermissionSystem{
                 let manager=maho_core::settings_manager::SettingsManager::create(&ctx.cwd.to_string_lossy(),&ctx.agent_dir.to_string_lossy(),&home,ctx.is_project_trusted());
                 let cli=match runtime.get_flag("permission"){Some(FlagValue::String(value))=>cli::parse_permission_flag(&value),_=>Vec::new()};
                 let preset=match runtime.get_flag("permission-preset"){
-                    Some(FlagValue::String(value))=>Some(cli::parse_permission_preset_flag(&value).ok_or_else(||ExtensionFailure::new(format!("Invalid --permission-preset \"{value}\". Expected one of: full-access, workspace, accept-edits, auto, read-only, ask.")))?),_=>None,
+                    Some(FlagValue::String(value))=>Some(cli::parse_permission_preset_flag(&value).ok_or_else(||ExtensionFailure::new(format!("Invalid --permission-preset \"{value}\". Expected one of: guarded, full-access, workspace, accept-edits, auto, read-only, ask.")))?),_=>None,
                 };
                 let (rules,approved)=settings::load_permission_settings(&manager,&cli,(&ctx.cwd,&home),preset).map_err(|error|ExtensionFailure::new(error.to_string()))?;
                 let initial_approved=approved.len();let actions=runtime.session_actions()?;let active=actions.get_active_tools()?;
                 let disabled=config::disabled(&active,&rules);actions.set_active_tools(active.into_iter().filter(|name|!disabled.contains(name)).collect())?;
-                let mut registry = parsers::create_builtin_parser_registry();
+                let mut registry = parsers::create_builtin_parser_registry_in(&ctx.agent_dir);
                 let rt = runtime.clone();
                 registry.set_definition_resolver(Arc::new(move |name: &str| rt.live_tool_definition(name)));
                 *state.lock().expect("permission state lock")=Some(SessionPolicy{service:service::PermissionService::new(rules.clone(),approved,events::PermissionEventEmitter{bus}),registry,static_rules:rules,cli,initial_approved});

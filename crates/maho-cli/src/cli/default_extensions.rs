@@ -712,6 +712,7 @@ impl Extension for Task {
         let parent = self.parent.clone();
         let registered = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let shared = self.runtime.clone();
+        let flag_runtime = api.runtime.clone();
         let engine_slot = self.engine.clone();
         let coordinator = self.coordinator.clone();
         let environment = self.environment.clone();
@@ -730,7 +731,7 @@ impl Extension for Task {
             let parent = parent.clone(); let registered = registered.clone(); let registration = registration.clone();
             let actions = actions.clone();
             let shared = shared.clone(); let engine_slot = engine_slot.clone();
-            let coordinator = coordinator.clone(); let environment = environment.clone();
+            let coordinator = coordinator.clone(); let environment = environment.clone(); let flag_runtime = flag_runtime.clone();
             Box::pin(async move {
                 let mut bound_context = ctx.clone(); shared.bind(&mut bound_context);
                 let ctx = &bound_context;
@@ -750,9 +751,29 @@ impl Extension for Task {
                     });
                 });
                 let parent_registry = super::task_runners::live_parent_registry(weak.clone());
-                let process = super::task_runners::authenticated_rpc_options(super::task_runners::native_rpc_options(
+                let mut native = super::task_runners::native_rpc_options(
                     std::env::current_exe().map_err(|error| ExtensionFailure::new(error.to_string()))?,
-                    &maho_core::config::get_agent_dir(), environment.clone(), Vec::new()), weak.clone());
+                    &maho_core::config::get_agent_dir(), environment.clone(), Vec::new());
+                // Children inherit the parent's effective preset (CLI flag, else project/global `permissionPreset`) only when explicitly non-default; a default parent leaves children on the default (guarded).
+                let explicit_preset = {
+                    let cli = match flag_runtime.get_flag("permission-preset") {
+                        Some(maho_ext_api::FlagValue::String(value)) => maho_ext_permission_system::cli::parse_permission_preset_flag(&value),
+                        _ => None,
+                    };
+                    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
+                    let manager = maho_core::settings_manager::SettingsManager::create(&ctx.cwd.to_string_lossy(), &ctx.agent_dir.to_string_lossy(), &home, ctx.is_project_trusted());
+                    maho_ext_permission_system::settings::explicit_non_default_preset(&manager, cli)
+                        .and_then(|preset| serde_json::to_value(preset).ok())
+                        .and_then(|value| value.as_str().map(str::to_owned))
+                };
+                if let (Some(preset), Some(build)) = (explicit_preset, native.build_spawn.take()) {
+                    native.build_spawn = Some(Arc::new(move |spec| {
+                        let mut spec = spec.clone();
+                        spec.permission_preset.get_or_insert_with(|| preset.clone());
+                        build(&spec)
+                    }));
+                }
+                let process = super::task_runners::authenticated_rpc_options(native, weak.clone());
                 let config = super::task_runners::resolved_omo_config(&ctx.cwd, &environment);
                 // pin `engine-runners.ts:62`: the in-process cap derives from the resolved `task.max_depth` (default 1, as `engine.rs`).
                 let max_depth = config["task"]["max_depth"].as_u64().and_then(|depth| u32::try_from(depth).ok()).unwrap_or(1);
