@@ -27,7 +27,9 @@ die() { printf 'mhc install: %s\n' "$*" >&2; exit 1; }
 
 case "$(uname -s)/$(uname -m)" in
   Linux/x86_64 | Linux/amd64) target="linux-x86_64" ;;
+  Linux/aarch64 | Linux/arm64) target="linux-aarch64" ;;
   Darwin/arm64 | Darwin/aarch64) target="macos-aarch64" ;;
+  Darwin/x86_64) target="macos-x86_64" ;;
   *) die "no prebuilt mhc for $(uname -s) $(uname -m); build from source: https://github.com/$repo#build-from-source" ;;
 esac
 

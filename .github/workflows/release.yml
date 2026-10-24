@@ -67,15 +67,23 @@ jobs:
           - target: linux-x86_64
             runner: ubuntu-24.04
             protoc: linux-x86_64
+          - target: linux-aarch64
+            runner: ubuntu-24.04-arm
+            protoc: linux-aarch_64
+            timeout: 120
           - target: macos-aarch64
             runner: macos-15
             protoc: osx-aarch_64
+          - target: macos-x86_64
+            runner: macos-15-intel
+            protoc: osx-x86_64
+            timeout: 120
           - target: windows-x86_64
             runner: windows-2025
             protoc: win64
             exe: .exe
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: ${{ matrix.timeout || 90 }}
     defaults:
       run:
         shell: bash
@@ -112,10 +120,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
 
       - name: zig + cargo-zigbuild (glibc 2.28 floor)
-        if: matrix.target == 'linux-x86_64'
+        if: matrix.target == 'linux-x86_64' || matrix.target == 'linux-aarch64'
         run: |
           pip3 install --break-system-packages ziglang cargo-zigbuild
-          rustup target add x86_64-unknown-linux-gnu
+          if [ "${{ matrix.target }}" = linux-aarch64 ]; then
+            rustup target add aarch64-unknown-linux-gnu
+          else
+            rustup target add x86_64-unknown-linux-gnu
+          fi
           python3 -m ziglang version
 
       - name: build release binaries
@@ -127,6 +139,12 @@ jobs:
               mkdir -p target/release
               for bin in mhc mhc-launcher ast-grep-mcp lsp-daemon omo-git-bash senpi-desktop-engine; do
                 if [ -f "target/x86_64-unknown-linux-gnu/release/$bin" ]; then cp "target/x86_64-unknown-linux-gnu/release/$bin" target/release/; fi
+              done
+            elif [ "${{ matrix.target }}" = linux-aarch64 ]; then
+              cargo zigbuild --release --locked --target aarch64-unknown-linux-gnu.2.28 "$@"
+              mkdir -p target/release
+              for bin in mhc mhc-launcher ast-grep-mcp lsp-daemon omo-git-bash senpi-desktop-engine; do
+                if [ -f "target/aarch64-unknown-linux-gnu/release/$bin" ]; then cp "target/aarch64-unknown-linux-gnu/release/$bin" target/release/; fi
               done
             else
               cargo build --release --locked "$@"
