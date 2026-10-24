@@ -9,7 +9,7 @@ This file records only the overlay-side provenance.
 | Bytes taken from | `/home/indo/T9-Mac/maho-code-lanes/upstream-omo-audit-20261006` @ `455dee623c9b2f2d2f1e9e68bf7b72a878ee3f0b` |
 | Pinned OMO (unchanged) | `/home/indo/code/oh-my-openagent` @ `77f3067f157a4f88e6d8ed48b3a6c338654402ed` |
 | Pinned senpi (unchanged) | `fe8c564bf33a2cbbdbbba99c9bd8b45b21e37407` |
-| Selection | the 25-name latest set (`manifest.json.selection` = `targetNames`) |
+| Selection | the 26-name latest set (adds `visualize`) (`manifest.json.selection` = `targetNames`) |
 | Retired | `start-work` |
 | Precedence | `packages/omo-senpi/skills` over `packages/shared-skills/skills` |
 | Copy mechanism | byte-exact file copy (mode preserved), filtered by `skill-source-filter.mjs` semantics |

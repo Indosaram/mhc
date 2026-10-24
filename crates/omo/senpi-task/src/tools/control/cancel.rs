@@ -11,7 +11,9 @@ use crate::tools::control::renderers::{
     render_task_cancel_result,
 };
 use crate::tools::control::tool_result::tool_result;
-use crate::tools::control::types::{CancelManager, CancelOutcome, CancelResultDetails, CancelToolResult};
+use crate::tools::control::types::{
+    CancelManager, CancelOutcome, CancelResultDetails, CancelToolResult,
+};
 use crate::tools::render::RendererTheme;
 
 pub const TASK_CANCEL_TOOL_NAME: &str = "task_cancel";
@@ -99,10 +101,10 @@ pub fn run_task_cancel(manager: &dyn CancelManager, params: &TaskCancelInput) ->
                 .or_else(|| TaskStatus::parse("cancelled"))
                 .unwrap_or(previous_status);
             let message = format!(
-                    "Cancelled {task_id} (was {}, now {}).",
-                    previous_status.as_str(),
-                    status.as_str()
-                );
+                "Cancelled {task_id} (was {}, now {}).",
+                previous_status.as_str(),
+                status.as_str()
+            );
             tool_result(
                 &message,
                 CancelResultDetails::Cancelled {
@@ -112,6 +114,20 @@ pub fn run_task_cancel(manager: &dyn CancelManager, params: &TaskCancelInput) ->
                 },
             )
         }
+        CancelOutcome::CancelPending {
+            task_id,
+            previous_status,
+            reason,
+        } => tool_result(
+            &format!(
+                "Cancel requested for {task_id}, but the child is unreachable: its connection to the task host dropped. It is stopped on its host before it runs anything else once reachable, or ends when the connection does not come back; its lane is released then. task_output shows the pending cancel."
+            ),
+            CancelResultDetails::CancelPending {
+                task_id,
+                previous_status,
+                reason,
+            },
+        ),
         CancelOutcome::Noop {
             task_id,
             status,
@@ -124,9 +140,19 @@ pub fn run_task_cancel(manager: &dyn CancelManager, params: &TaskCancelInput) ->
                 reason,
             },
         ),
-        CancelOutcome::Stale { task_id, status, run_epoch, reason } => tool_result(
+        CancelOutcome::Stale {
+            task_id,
+            status,
+            run_epoch,
+            reason,
+        } => tool_result(
             &reason,
-            CancelResultDetails::Stale { task_id, status, run_epoch, reason: reason.clone() },
+            CancelResultDetails::Stale {
+                task_id,
+                status,
+                run_epoch,
+                reason: reason.clone(),
+            },
         ),
         CancelOutcome::NotFound { reason } => tool_result(
             &reason,
@@ -151,7 +177,11 @@ impl TaskCancelTool {
         run_task_cancel(self.deps.manager.as_ref(), params)
     }
 
-    pub fn render_call<'a>(&self, args: &TaskCancelInput, theme: &'a dyn RendererTheme) -> ControlCallComponent<'a> {
+    pub fn render_call<'a>(
+        &self,
+        args: &TaskCancelInput,
+        theme: &'a dyn RendererTheme,
+    ) -> ControlCallComponent<'a> {
         render_task_cancel_call(args, theme)
     }
 

@@ -28,6 +28,7 @@ pub mod screen_text;
 pub mod session_bundle;
 pub mod settings;
 pub mod shared;
+pub mod terminal_jobs;
 pub mod terminal_manifest;
 pub mod terminal_manifest_model;
 pub mod terminal_state;

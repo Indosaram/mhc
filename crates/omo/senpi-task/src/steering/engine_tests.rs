@@ -102,9 +102,7 @@ impl ManagedChildHandle for FakeHandle {
             state.0 = true;
             changed.notify_all();
             while !state.1 {
-                state = changed
-                    .wait(state)
-                    .unwrap_or_else(PoisonError::into_inner);
+                state = changed.wait(state).unwrap_or_else(PoisonError::into_inner);
             }
         }
         lock(&self.order).push(format!("followUp:{text}"));
@@ -181,6 +179,8 @@ fn port_for(
         }),
         destruction,
         run_stats_snapshot: Arc::new(|_| None),
+        stop_requested: None,
+        stop_settled: None,
         now: Arc::new(|| 1_783_296_000_000),
     }
 }
@@ -355,10 +355,12 @@ fn concurrent_send_to_same_task_is_serialized_without_overwriting_record() {
     let record = h.seed_record();
     h.to_completed(&record);
     let fresh_marker = "fresh concurrent metadata".to_string();
-    h.store.mutate(&record.task_id, |fresh| TaskRecord {
-        description: Some(fresh_marker.clone()),
-        ..fresh.clone()
-    }).expect("fresh mutation");
+    h.store
+        .mutate(&record.task_id, |fresh| TaskRecord {
+            description: Some(fresh_marker.clone()),
+            ..fresh.clone()
+        })
+        .expect("fresh mutation");
     let follow_up_gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
     let mut gated = FakeHandle::build(&record.task_id, Flavor::InProcess, false);
     gated.follow_up_gate = Some(follow_up_gate.clone());
@@ -397,10 +399,19 @@ fn concurrent_send_to_same_task_is_serialized_without_overwriting_record() {
         }
         assert!(entered, "follow_up was not entered in time");
         let second = second.expect("second send result").expect("send");
-        assert!(matches!(second, SendOutcome::NotContinuable { .. }), "{second:?}");
-        assert!(matches!(first.join().expect("first send").expect("send"), SendOutcome::Revived { .. }));
+        assert!(
+            matches!(second, SendOutcome::NotContinuable { .. }),
+            "{second:?}"
+        );
+        assert!(matches!(
+            first.join().expect("first send").expect("send"),
+            SendOutcome::Revived { .. }
+        ));
     });
-    assert_eq!(h.load(&record.task_id).description.as_deref(), Some(fresh_marker.as_str()));
+    assert_eq!(
+        h.load(&record.task_id).description.as_deref(),
+        Some(fresh_marker.as_str())
+    );
 }
 
 #[test]
@@ -455,11 +466,17 @@ fn cancel_from_an_earlier_epoch_is_stale_and_does_not_cancel() {
     let fake = FakeHandle::new(&record.task_id, Flavor::InProcess);
     h.set_live(&record.task_id, fake.clone());
     let _ = send(&h, SendInput::new(&record.task_id, "advance epoch"));
-    let outcome = h.engine.cancel_task(
-        &record.task_id,
-        None,
-        CancelOptions { expected_run_epoch: Some(0), ..CancelOptions::default() },
-    ).expect("cancel");
+    let outcome = h
+        .engine
+        .cancel_task(
+            &record.task_id,
+            None,
+            CancelOptions {
+                expected_run_epoch: Some(0),
+                ..CancelOptions::default()
+            },
+        )
+        .expect("cancel");
     assert!(matches!(outcome, CancelOutcome::Stale { run_epoch: 1, .. }));
     assert_eq!(h.load(&record.task_id).status, TaskStatus::Running);
     assert_eq!(fake.aborts(), 0);
@@ -794,6 +811,76 @@ fn pending_cancel_clears_persisted_queue_so_a_post_restart_start_delivers_nothin
         .notify_started(&record.task_id)
         .expect("notify");
     assert!(tracked.order().is_empty());
+}
+
+fn stamp_cancel_requested(h: &Harness, task_id: &str) {
+    h.store
+        .mutate(task_id, |fresh| TaskRecord {
+            cancel_requested: Some(crate::state::CancelRequest {
+                requested_at: "2026-07-06T00:01:00.000Z".to_string(),
+                reason: None,
+            }),
+            ..fresh.clone()
+        })
+        .expect("stamp cancel_requested");
+}
+
+#[test]
+fn pending_cancel_refuses_send_to_a_running_task() {
+    let h = harness();
+    let record = h.seed_record();
+    h.to_running(&record);
+    h.set_live(
+        &record.task_id,
+        FakeHandle::new(&record.task_id, Flavor::InProcess),
+    );
+    stamp_cancel_requested(&h, &record.task_id);
+    let outcome = send(&h, SendInput::new(&record.task_id, "go"));
+    let SendOutcome::NotContinuable { reason, .. } = outcome else {
+        panic!("expected not_continuable, got {outcome:?}");
+    };
+    assert_eq!(
+        reason,
+        format!(
+            "Task {} has a pending cancel and will not run again.",
+            record.task_id
+        )
+    );
+}
+
+#[test]
+fn pending_cancel_makes_interrupt_a_noop() {
+    let h = harness();
+    let record = h.seed_record();
+    h.to_running(&record);
+    stamp_cancel_requested(&h, &record.task_id);
+    let outcome = h.engine.interrupt_task(&record.task_id).expect("interrupt");
+    let InterruptOutcome::Noop { reason, status, .. } = outcome else {
+        panic!("expected noop, got {outcome:?}");
+    };
+    assert_eq!(status, TaskStatus::Running);
+    assert_eq!(
+        reason,
+        format!(
+            "Task {} has a pending cancel; it ends cancelled.",
+            record.task_id
+        )
+    );
+    assert_eq!(h.load(&record.task_id).status, TaskStatus::Running);
+}
+
+#[test]
+fn pending_cancel_does_not_drain_the_queue_on_start() {
+    let h = harness();
+    let record = h.seed_record();
+    send(&h, SendInput::new(&record.task_id, "first"));
+    h.to_running(&record);
+    stamp_cancel_requested(&h, &record.task_id);
+    let fake = FakeHandle::new(&record.task_id, Flavor::InProcess);
+    h.set_live(&record.task_id, fake.clone());
+    h.engine.notify_started(&record.task_id).expect("notify");
+    assert!(fake.follow_ups().is_empty());
+    assert!(fake.steers().is_empty());
 }
 
 fn assert_suspended_send(transition: TaskTransition) {

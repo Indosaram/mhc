@@ -5,7 +5,7 @@ use super::{
     envelope::{envelope_refusal, parse_entry},
     fold::*,
     parse::{ParsedBody, parse_body},
-    receiver::receiver_refusal,
+    receiver::{ReceiverPass, receiver_pass},
     rejection::RejectionCounter,
     rules::check_record_rules,
     signatures::*,
@@ -126,22 +126,35 @@ pub(super) fn verify_keyring_entry(
     mode: LinkMode,
 ) -> Result<(ChainState, ChainStep), ChainRejection> {
     let wire = SyncEntry::Keyring(entry.clone());
-    if let Some(r) = envelope_refusal(&wire) {
+    let pass = receiver_pass(&seen_keyring(state), std::slice::from_ref(&wire));
+    verify_keyring_wire(state, &wire, mode, &pass)
+}
+/// `wire` must be the entry `pass` was built for (the pass knows entries by identity).
+fn verify_keyring_wire(
+    state: &ChainState,
+    wire: &SyncEntry,
+    mode: LinkMode,
+    pass: &ReceiverPass,
+) -> Result<(ChainState, ChainStep), ChainRejection> {
+    let SyncEntry::Keyring(entry) = wire else {
+        return Err("bad_envelope");
+    };
+    if let Some(r) = envelope_refusal(wire) {
         return Err(r);
     }
     if state.anchor.account() != state.account {
         return Err("untrusted_root");
     }
-    if !links_hold(state.head.as_ref(), &wire, mode) {
+    if !links_hold(state.head.as_ref(), wire, mode) {
         return Err("link_mismatch");
     }
-    if let Some(r) = receiver_refusal(&seen_keyring(state), &wire) {
+    if let Some(r) = pass(wire) {
         return Err(r);
     }
     let body = parse_body(&entry.body).ok_or("bad_record")?;
     let before = state.authority.as_ref();
     let key = signer_key(&body, before, &entry.author, &state.history).ok_or("not_member")?;
-    if !verify_record_sig(key, &wire) {
+    if !verify_record_sig(key, wire) {
         return Err("bad_signature");
     }
     if Some(entry.fields.epoch) != expected_epoch(&body, before)
@@ -222,16 +235,19 @@ pub(super) fn verify_keyring_entry(
 }
 fn verify_batch_entry(
     state: &ChainState,
-    entry: &BatchEntry,
+    wire: &SyncEntry,
+    pass: &ReceiverPass,
 ) -> Result<(ChainState, ChainStep), ChainRejection> {
-    let wire = SyncEntry::Batch(entry.clone());
-    if let Some(r) = envelope_refusal(&wire) {
+    let SyncEntry::Batch(entry) = wire else {
+        return Err("bad_envelope");
+    };
+    if let Some(r) = envelope_refusal(wire) {
         return Err(r);
     }
-    if !links_hold(state.head.as_ref(), &wire, LinkMode::Main) {
+    if !links_hold(state.head.as_ref(), wire, LinkMode::Main) {
         return Err("link_mismatch");
     }
-    if let Some(r) = receiver_refusal(&seen_keyring(state), &wire) {
+    if let Some(r) = pass(wire) {
         return Err(r);
     }
     if let Some(r) = forced_rotation_refusal(state.forced_rotation_after, None) {
@@ -249,7 +265,7 @@ fn verify_batch_entry(
         author_signing_key(a, &entry.author)
     }
     .ok_or("not_member")?;
-    if !verify_record_sig(key, &wire) {
+    if !verify_record_sig(key, wire) {
         return Err("bad_signature");
     }
     if entry.fields.account != state.account {
@@ -285,16 +301,32 @@ pub fn append_entries(
 ) -> AppendOutcome {
     let mut current = state.clone();
     let mut steps = Vec::new();
-    for row in entries {
-        let parsed = parse_entry(row);
+    let parsed_rows: Vec<Result<SyncEntry, &'static str>> =
+        entries.iter().map(parse_entry).collect();
+    // The pass covers the pull up to the first malformed row, as the receiver never reaches past it.
+    let pulled: Vec<SyncEntry> = parsed_rows
+        .iter()
+        .map_while(|row| row.as_ref().ok().cloned())
+        .collect();
+    let pass = receiver_pass(&seen_keyring(state), &pulled);
+    for (index, parsed) in parsed_rows.iter().enumerate() {
         let seq = parsed.as_ref().map_or_else(
             |_| current.head.as_ref().map_or(1, |h| h.seq.saturating_add(1)),
             SyncEntry::seq,
         );
-        let result = parsed.and_then(|entry| match entry {
-            SyncEntry::Keyring(e) => verify_keyring_entry(&current, &e, LinkMode::Main),
-            SyncEntry::Batch(e) => verify_batch_entry(&current, &e),
-        });
+        let result = match parsed {
+            Err(reason) => Err(*reason),
+            Ok(entry) => {
+                // `pulled` holds the entries `pass` knows; a row past a malformed one is not in it.
+                let entry = pulled.get(index).unwrap_or(entry);
+                match entry {
+                    SyncEntry::Keyring(_) => {
+                        verify_keyring_wire(&current, entry, LinkMode::Main, &pass)
+                    }
+                    SyncEntry::Batch(_) => verify_batch_entry(&current, entry, &pass),
+                }
+            }
+        };
         match result {
             Ok((next, step)) => {
                 current = next;

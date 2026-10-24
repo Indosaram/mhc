@@ -8,13 +8,17 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use maho_server::app_server::cli_args::{format_usage, parse_cli_args, CliArgs, DaemonVerb, WsAuth};
-use maho_server::app_server::daemon::{run_daemon_command, DaemonPaths};
+use maho_server::app_server::cli_args::{
+    CliArgs, DaemonVerb, WsAuth, format_usage, parse_cli_args,
+};
+use maho_server::app_server::daemon::{DaemonPaths, run_daemon_command};
 use maho_server::app_server::index::run_app_server_mode;
 use maho_server::app_server::runtime::AppServerRuntime;
 use maho_server::app_server::thread_registry::SessionFactory;
 
-use super::host_runtime::{mount_agent_session_runtime, CliRuntimeConfiguration, CliRuntimeRequest};
+use super::host_runtime::{
+    CliRuntimeConfiguration, CliRuntimeRequest, mount_agent_session_runtime,
+};
 
 pub const APP_SERVER_COMMAND: &str = "app-server";
 
@@ -94,6 +98,7 @@ pub fn session_factory(config: CliRuntimeConfiguration) -> SessionFactory {
                 auto_title_sessions,
                 extension_bindings,
                 extension_ui,
+                tool_runtime,
                 ..
             } = options;
             let request = CliRuntimeRequest {
@@ -113,9 +118,12 @@ pub fn session_factory(config: CliRuntimeConfiguration) -> SessionFactory {
                 extension_flag_values: config.extension_flag_values.clone(),
                 extension_bindings,
                 extension_ui,
+                tool_runtime,
                 ..Default::default()
             };
-            let mounted = mount_agent_session_runtime(&config, request, model_runtime, settings_manager).await?;
+            let mounted =
+                mount_agent_session_runtime(&config, request, model_runtime, settings_manager)
+                    .await?;
             Ok(mounted.session().clone())
         })
     })
@@ -142,33 +150,60 @@ pub async fn run_app_server_command(
     shutdown_signal: impl std::future::Future<Output = ()>,
 ) -> Result<AppServerOutcome, String> {
     if !is_app_server_command(args) {
-        return Ok(AppServerOutcome { handled: false, exit_code: 0 });
+        return Ok(AppServerOutcome {
+            handled: false,
+            exit_code: 0,
+        });
     }
     let app_name = maho_core::config::app_name();
     match parse_cli_args(&args[1..]) {
         CliArgs::UsageError { message } => {
             write_stderr(&format!("Error: {message}\n{}\n", format_usage(&app_name)));
-            Ok(AppServerOutcome { handled: true, exit_code: USAGE_EXIT_CODE })
+            Ok(AppServerOutcome {
+                handled: true,
+                exit_code: USAGE_EXIT_CODE,
+            })
         }
         CliArgs::Daemon { verb, listen } => {
             let paths = DaemonPaths::new(Path::new(&config.agent_dir));
             let listen_value = serde_json::to_value(&listen).map_err(|error| error.to_string())?;
-            let output = run_daemon_command(&paths, verb, &listen_value, version, executable, prefix_args).await;
+            let output = run_daemon_command(
+                &paths,
+                verb,
+                &listen_value,
+                version,
+                executable,
+                prefix_args,
+            )
+            .await;
             match output {
                 Ok(payload) => {
-                    println!("{}", serde_json::to_string(&payload).map_err(|error| error.to_string())?);
-                    Ok(AppServerOutcome { handled: true, exit_code: 0 })
+                    println!(
+                        "{}",
+                        serde_json::to_string(&payload).map_err(|error| error.to_string())?
+                    );
+                    Ok(AppServerOutcome {
+                        handled: true,
+                        exit_code: 0,
+                    })
                 }
                 Err(error) => {
                     println!(
                         "{}",
                         serde_json::json!({ "status": "error", "message": error.to_string() })
                     );
-                    Ok(AppServerOutcome { handled: true, exit_code: ERROR_EXIT_CODE })
+                    Ok(AppServerOutcome {
+                        handled: true,
+                        exit_code: ERROR_EXIT_CODE,
+                    })
                 }
             }
         }
-        CliArgs::Server { listen, ws_auth, json_logs } => {
+        CliArgs::Server {
+            listen,
+            ws_auth,
+            json_logs,
+        } => {
             let _ = json_logs;
             let session_dir = session_dir.or_else(|| {
                 std::env::var(maho_core::config::env_session_dir_var())
@@ -191,10 +226,16 @@ pub async fn run_app_server_command(
             // RPC method is added - `MethodRegistry::register` replaces the default registration.
             let packaged_skills_root = maho_omo::builtin_skills_root();
             if packaged_skills_root.is_dir() {
-                let loader = maho_server::app_server::skills::resource_skill_loader(vec![packaged_skills_root.to_string_lossy().into_owned()]);
+                let loader = maho_server::app_server::skills::resource_skill_loader(vec![
+                    packaged_skills_root.to_string_lossy().into_owned(),
+                ]);
                 let mut core = runtime.core.write().await;
                 maho_server::app_server::skills::register_skill_methods_with_loader(
-                    &mut core.registry, config.agent_dir.clone(), config.cwd.clone(), runtime.threads.clone(), loader,
+                    &mut core.registry,
+                    config.agent_dir.clone(),
+                    config.cwd.clone(),
+                    runtime.threads.clone(),
+                    loader,
                 );
             }
             let auth: Option<WsAuth> = ws_auth;
@@ -206,7 +247,10 @@ pub async fn run_app_server_command(
                     ERROR_EXIT_CODE
                 }
             };
-            Ok(AppServerOutcome { handled: true, exit_code })
+            Ok(AppServerOutcome {
+                handled: true,
+                exit_code,
+            })
         }
     }
 }
@@ -231,9 +275,24 @@ pub async fn run_app_server_with_signals(
 ) -> Result<i32, String> {
     // Pinned `index.ts:60-61` installs the SIGINT/SIGTERM handlers inside `runAppServerMode` only;
     // the daemon verbs and usage errors keep the default signal disposition.
-    if !(is_app_server_command(args) && matches!(parse_cli_args(&args[1..]), CliArgs::Server { .. })) {
-        let outcome = run_app_server_command(args, config, version, session_dir, executable, prefix_args, std::future::pending()).await?;
-        return Ok(if outcome.handled { outcome.exit_code } else { 0 });
+    if !(is_app_server_command(args)
+        && matches!(parse_cli_args(&args[1..]), CliArgs::Server { .. }))
+    {
+        let outcome = run_app_server_command(
+            args,
+            config,
+            version,
+            session_dir,
+            executable,
+            prefix_args,
+            std::future::pending(),
+        )
+        .await?;
+        return Ok(if outcome.handled {
+            outcome.exit_code
+        } else {
+            0
+        });
     }
     let mut signals = ShutdownSignals::new();
     let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
@@ -258,9 +317,21 @@ pub async fn run_app_server_with_signals(
     let shutdown = async move {
         let _ = receiver.await;
     };
-    let outcome =
-        run_app_server_command(args, config, version, session_dir, executable, prefix_args, shutdown).await?;
-    Ok(if outcome.handled { outcome.exit_code } else { 0 })
+    let outcome = run_app_server_command(
+        args,
+        config,
+        version,
+        session_dir,
+        executable,
+        prefix_args,
+        shutdown,
+    )
+    .await?;
+    Ok(if outcome.handled {
+        outcome.exit_code
+    } else {
+        0
+    })
 }
 
 /// Non-unix hosts have no SIGINT/SIGTERM signal set; the command runs without the escalation task.
@@ -273,6 +344,19 @@ pub async fn run_app_server_with_signals(
     executable: &Path,
     prefix_args: &[String],
 ) -> Result<i32, String> {
-    let outcome = run_app_server_command(args, config, version, session_dir, executable, prefix_args, std::future::pending()).await?;
-    Ok(if outcome.handled { outcome.exit_code } else { 0 })
+    let outcome = run_app_server_command(
+        args,
+        config,
+        version,
+        session_dir,
+        executable,
+        prefix_args,
+        std::future::pending(),
+    )
+    .await?;
+    Ok(if outcome.handled {
+        outcome.exit_code
+    } else {
+        0
+    })
 }

@@ -109,7 +109,12 @@ pub async fn arm_host_watchdog(
                     pid,
                     std::process::id(),
                     std::time::Duration::from_millis(ppid_interval_ms(pipe_armed)),
-                    || (parent_pid(), crate::host_reservations::process_is_live(pid)),
+                    || {
+                        (
+                            parent_pid(pid),
+                            crate::host_reservations::process_is_live(pid),
+                        )
+                    },
                 )
                 .await
             }
@@ -121,7 +126,7 @@ pub async fn arm_host_watchdog(
             result=receiver=>match result{
                 Ok(reason)=>Some(reason),
                 // The pipe failed later: the ppid check is the only binding left, so it returns to the fast cadence.
-                Err(_)=>match ppid{Some(pid)=>Some(watch_supervisor_parent(pid,std::process::id(),||(parent_pid(),crate::host_reservations::process_is_live(pid))).await),None=>None},
+                Err(_)=>match ppid{Some(pid)=>Some(watch_supervisor_parent(pid,std::process::id(),||(parent_pid(pid),crate::host_reservations::process_is_live(pid))).await),None=>None},
             },
             reason=ppid_watch=>Some(reason),
         }
@@ -137,12 +142,14 @@ pub async fn arm_host_watchdog(
     on_supervisor_gone(reason);
 }
 #[cfg(unix)]
-fn parent_pid() -> u32 {
+fn parent_pid(_supervisor_pid: u32) -> u32 {
     std::os::unix::process::parent_id()
 }
+/// Windows never reparents an orphan (its recorded parent pid stays the dead supervisor's), so senpi's
+/// `process.ppid !== supervisorPid` comparison can never fire there; only the liveness check is meaningful.
 #[cfg(not(unix))]
-fn parent_pid() -> u32 {
-    0
+fn parent_pid(supervisor_pid: u32) -> u32 {
+    supervisor_pid
 }
 /// EOF on the inherited pipe is the primary signal; readable data is ignored, only close matters.
 ///

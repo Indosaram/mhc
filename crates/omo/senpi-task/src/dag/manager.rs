@@ -13,14 +13,17 @@ use crate::dag::fingerprint::{
     DagDefinitionFingerprintInputV1, DagNodeFingerprintInputV1, DagSchedulerContract,
     dag_definition_fingerprint,
 };
-use crate::dag::graph::{DagCompileError, DagCompileOptions, DagDefinition, DagNodeInput, compile_dag};
+use crate::dag::graph::{
+    DagCompileError, DagCompileOptions, DagDefinition, DagNodeInput, compile_dag,
+};
 use crate::dag::journal::{DagJournalCheckpoint, DagJournalOptions, create_dag_journal};
 use crate::dag::skills::{DagSkillManifest, read_dag_skill_manifest, write_dag_skill_manifest};
 use crate::dag::store::{DagEventPage, DagEventReadOptions, DagFileStore, DagStoreError};
 use crate::dag::types::{
-    DAG_SETTINGS_DEFAULTS, DagBottleneck, DagDiagnostic, DagEdge, DagEventLane, DagNode,
-    AmendRecord, DagNodeCounts, DagNodeId, DagNodeState, DagNodeTarget, DagRoute, DagRunEvent, DagRunEventPayload,
-    DagRunEventType, DagRunId, DagRunSnapshot, DagRunStatus, DagSettings, DagWave, SchemaVersion1,
+    AmendRecord, DAG_SETTINGS_DEFAULTS, DagBottleneck, DagDiagnostic, DagEdge, DagEventLane,
+    DagNode, DagNodeCounts, DagNodeId, DagNodeState, DagNodeTarget, DagRoute, DagRunEvent,
+    DagRunEventPayload, DagRunEventType, DagRunId, DagRunSnapshot, DagRunStatus, DagSettings,
+    DagWave, SchemaVersion1,
 };
 
 const LIST_DEFAULT_LIMIT: usize = 100;
@@ -109,7 +112,11 @@ impl DagManagerError {
         self
     }
 
-    pub fn with_compile(mut self, errors: Vec<DagCompileError>, diagnostics: Vec<DagDiagnostic>) -> Self {
+    pub fn with_compile(
+        mut self,
+        errors: Vec<DagCompileError>,
+        diagnostics: Vec<DagDiagnostic>,
+    ) -> Self {
         self.details.errors = errors;
         self.details.diagnostics = diagnostics;
         self
@@ -176,12 +183,13 @@ fn persisted_target(target: &DagNodeTarget) -> DagPersistedNodeTarget {
         DagNodeTarget::Category(category) => DagPersistedNodeTarget::Category {
             category: category.clone(),
         },
-        DagNodeTarget::SubagentType { subagent_type, model } => {
-            DagPersistedNodeTarget::SubagentType {
-                subagent_type: subagent_type.clone(),
-                model: model.clone(),
-            }
-        }
+        DagNodeTarget::SubagentType {
+            subagent_type,
+            model,
+        } => DagPersistedNodeTarget::SubagentType {
+            subagent_type: subagent_type.clone(),
+            model: model.clone(),
+        },
     }
 }
 
@@ -311,7 +319,11 @@ pub struct DagMaterializeSkillsInput<'a> {
     pub at: &'a str,
 }
 
-pub type DagMaterializeSkills = Arc<dyn Fn(DagMaterializeSkillsInput<'_>) -> Result<DagSkillMaterialization, DagManagerError> + Send + Sync>;
+pub type DagMaterializeSkills = Arc<
+    dyn Fn(DagMaterializeSkillsInput<'_>) -> Result<DagSkillMaterialization, DagManagerError>
+        + Send
+        + Sync,
+>;
 
 pub struct DagManagerOptions {
     pub store: Arc<DagFileStore>,
@@ -392,17 +404,25 @@ pub struct DagManager {
 }
 
 pub fn create_dag_manager(options: DagManagerOptions) -> DagManager {
-    let now = options
-        .now
-        .unwrap_or_else(|| Arc::new(|| i64::try_from(crate::state::system_now_ms()).unwrap_or(i64::MAX)));
+    let now = options.now.unwrap_or_else(|| {
+        Arc::new(|| i64::try_from(crate::state::system_now_ms()).unwrap_or(i64::MAX))
+    });
     let new_run_id = options
         .new_run_id
         .unwrap_or_else(|| Arc::new(|| format!("dag_{}", uuid_v4()) as DagRunId));
-    let state_dir = options.store.paths.root.parent().unwrap_or(&options.store.paths.root).to_path_buf();
+    let state_dir = options
+        .store
+        .paths
+        .root
+        .parent()
+        .unwrap_or(&options.store.paths.root)
+        .to_path_buf();
     let settings = DagSettings {
         max_nodes_per_run: options
             .settings
-            .map_or(DAG_SETTINGS_DEFAULTS.max_nodes_per_run, |s| s.max_nodes_per_run),
+            .map_or(DAG_SETTINGS_DEFAULTS.max_nodes_per_run, |s| {
+                s.max_nodes_per_run
+            }),
         ..options.settings.unwrap_or(DAG_SETTINGS_DEFAULTS)
     };
     DagManager {
@@ -477,7 +497,11 @@ impl DagManager {
         self.inner.owned_record(run_id, parent_session_id)
     }
 
-    pub fn list(&self, parent_session_id: &str, limit: Option<usize>) -> Result<Vec<DagRunSummary>, DagManagerError> {
+    pub fn list(
+        &self,
+        parent_session_id: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<DagRunSummary>, DagManagerError> {
         let limit = resolve_limit(limit, LIST_DEFAULT_LIMIT, LIST_MAX_LIMIT)?;
         let mut summaries: Vec<DagRunSummary> = Vec::new();
         // TS readDagDirectory: a runs directory that does not exist yet lists as empty.
@@ -488,7 +512,9 @@ impl DagManager {
         };
         let mut present = HashSet::new();
         for entry in entries {
-            let entry = entry.map_err(DagStoreError::from).map_err(DagManagerError::from)?;
+            let entry = entry
+                .map_err(DagStoreError::from)
+                .map_err(DagManagerError::from)?;
             let path = entry.path();
             if !path.is_file() || path.extension().is_none_or(|ext| ext != "json") {
                 continue;
@@ -504,20 +530,51 @@ impl DagManager {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(DagManagerError::from(DagStoreError::from(error))),
             };
-            let modified = metadata.modified().map_err(DagStoreError::from).map_err(DagManagerError::from)?;
+            let modified = metadata
+                .modified()
+                .map_err(DagStoreError::from)
+                .map_err(DagManagerError::from)?;
             let inode = file_inode(&metadata);
-            let mut cache = self.inner.summary_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let summary = if let Some(cached) = cache.get(&run_id).filter(|cached| cached.inode == inode && cached.size == metadata.len() && cached.modified == modified) {
+            let mut cache = self
+                .inner
+                .summary_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let summary = if let Some(cached) = cache.get(&run_id).filter(|cached| {
+                cached.inode == inode
+                    && cached.size == metadata.len()
+                    && cached.modified == modified
+            }) {
                 cached.summary.clone()
             } else {
-                let Some(record) = self.inner.store.read_checkpoint::<DagRunRecordV1>(&run_id).map_err(DagManagerError::from)? else {
+                let Some(record) = self
+                    .inner
+                    .store
+                    .read_checkpoint::<DagRunRecordV1>(&run_id)
+                    .map_err(DagManagerError::from)?
+                else {
                     cache.remove(&run_id);
                     continue;
                 };
-                let summary = DagRunSummary { run_id: record.run_id, run_key: record.run_key, name: record.name,
-                    parent_session_id: record.parent_session_id, status: record.status, created_at: record.created_at,
-                    updated_at: record.updated_at, counts: count_nodes(&record.nodes) };
-                cache.insert(run_id.clone(), CachedRunSummary { inode, size: metadata.len(), modified, summary: summary.clone() });
+                let summary = DagRunSummary {
+                    run_id: record.run_id,
+                    run_key: record.run_key,
+                    name: record.name,
+                    parent_session_id: record.parent_session_id,
+                    status: record.status,
+                    created_at: record.created_at,
+                    updated_at: record.updated_at,
+                    counts: count_nodes(&record.nodes),
+                };
+                cache.insert(
+                    run_id.clone(),
+                    CachedRunSummary {
+                        inode,
+                        size: metadata.len(),
+                        modified,
+                        summary: summary.clone(),
+                    },
+                );
                 summary
             };
             drop(cache);
@@ -526,7 +583,11 @@ impl DagManager {
             }
             summaries.push(summary);
         }
-        self.inner.summary_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|run_id, _| present.contains(run_id));
+        self.inner
+            .summary_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|run_id, _| present.contains(run_id));
         summaries.sort_by(|a, b| {
             let by_updated = parse_date_ms(&b.updated_at).cmp(&parse_date_ms(&a.updated_at));
             if by_updated != std::cmp::Ordering::Equal {
@@ -595,10 +656,10 @@ fn start_run(
             .map(|error| error.message.clone())
             .collect::<Vec<_>>()
             .join("; ");
-        return Err(DagManagerError::new(
-            DagManagerErrorCode::InvalidDefinition,
-            message,
-        ).with_compile(compiled.errors, compiled.diagnostics));
+        return Err(
+            DagManagerError::new(DagManagerErrorCode::InvalidDefinition, message)
+                .with_compile(compiled.errors, compiled.diagnostics),
+        );
     }
 
     // (2) fingerprint the SUBMITTED definition: never effective_prompt, never skill content.
@@ -661,8 +722,12 @@ fn start_run_locked(
         {
             return Err(DagManagerError::new(
                 DagManagerErrorCode::DefinitionConflict,
-                format!("dag run key \"{}\" has a mismatched stored fingerprint", definition.key),
-            ).with_run_id(existing.run_id.clone()));
+                format!(
+                    "dag run key \"{}\" has a mismatched stored fingerprint",
+                    definition.key
+                ),
+            )
+            .with_run_id(existing.run_id.clone()));
         }
         // Reuse never re-materializes skills: the run keeps its creation-time effective_prompt.
         return Ok(DagStartResult {
@@ -750,7 +815,8 @@ fn start_run_locked(
     })
     .map_err(DagManagerError::from)?;
     journal.set_skip_duplicate(Arc::new(skip_duplicate_terminal_transition));
-    journal.append(DagRunEventPayload::RunCreated {
+    journal
+        .append(DagRunEventPayload::RunCreated {
             run_key: definition.key.clone(),
             name: definition.name.clone(),
             definition_fingerprint: definition_fingerprint.to_string(),
@@ -764,64 +830,187 @@ fn start_run_locked(
     })
 }
 
-fn amend_run(params: DagAmendParams, inner: &DagManagerInner) -> Result<DagRunRecordV1, DagManagerError> {
+fn amend_run(
+    params: DagAmendParams,
+    inner: &DagManagerInner,
+) -> Result<DagRunRecordV1, DagManagerError> {
     if params.run_id.is_some() == params.key.is_some() {
-        return Err(DagManagerError::new(DagManagerErrorCode::InvalidArguments, "amend requires exactly one of runId or key"));
+        return Err(DagManagerError::new(
+            DagManagerErrorCode::InvalidArguments,
+            "amend requires exactly one of runId or key",
+        ));
     }
     let selected = match params.run_id {
         Some(run_id) => run_id,
-        None => inner.store.read_key(&params.parent_session_id, params.key.as_deref().unwrap_or_default())
-            .map_err(DagManagerError::from)?.map(|key| key.run_id)
-            .ok_or_else(|| DagManagerError::new(DagManagerErrorCode::RunNotFound, format!("unknown dag run key \"{}\"", params.key.as_deref().unwrap_or_default())))?,
+        None => inner
+            .store
+            .read_key(
+                &params.parent_session_id,
+                params.key.as_deref().unwrap_or_default(),
+            )
+            .map_err(DagManagerError::from)?
+            .map(|key| key.run_id)
+            .ok_or_else(|| {
+                DagManagerError::new(
+                    DagManagerErrorCode::RunNotFound,
+                    format!(
+                        "unknown dag run key \"{}\"",
+                        params.key.as_deref().unwrap_or_default()
+                    ),
+                )
+            })?,
     };
-    let old = inner.store.read_checkpoint::<DagRunRecordV1>(&selected).map_err(DagManagerError::from)?
-        .ok_or_else(|| DagManagerError::new(DagManagerErrorCode::RunNotFound, format!("unknown dag run \"{selected}\"")).with_run_id(selected.clone()))?;
+    let old = inner
+        .store
+        .read_checkpoint::<DagRunRecordV1>(&selected)
+        .map_err(DagManagerError::from)?
+        .ok_or_else(|| {
+            DagManagerError::new(
+                DagManagerErrorCode::RunNotFound,
+                format!("unknown dag run \"{selected}\""),
+            )
+            .with_run_id(selected.clone())
+        })?;
     if old.parent_session_id != params.parent_session_id {
-        return Err(DagManagerError::new(DagManagerErrorCode::RunNotOwned, format!("dag run \"{selected}\" belongs to another session")).with_run_id(selected));
+        return Err(DagManagerError::new(
+            DagManagerErrorCode::RunNotOwned,
+            format!("dag run \"{selected}\" belongs to another session"),
+        )
+        .with_run_id(selected));
     }
-    if old.status == DagRunStatus::Paused && old.lease_holder_pid.or(old.previous_lease_holder_pid).is_some_and(process_is_alive) {
-        let mut error = DagManagerError::new(DagManagerErrorCode::InvalidAmendment, format!("dag run \"{selected}\" is paused by another live lease"));
+    if old.status == DagRunStatus::Paused
+        && old
+            .lease_holder_pid
+            .or(old.previous_lease_holder_pid)
+            .is_some_and(process_is_alive)
+    {
+        let mut error = DagManagerError::new(
+            DagManagerErrorCode::InvalidAmendment,
+            format!("dag run \"{selected}\" is paused by another live lease"),
+        );
         error.run_id = Some(selected);
         return Err(error);
     }
     let at = crate::shared::iso_from_ms((inner.now)());
-    let compiled = compile_dag(&params.definition, &DagCompileOptions { at: Some(at.clone()), settings: Some(inner.settings) });
+    let compiled = compile_dag(
+        &params.definition,
+        &DagCompileOptions {
+            at: Some(at.clone()),
+            settings: Some(inner.settings),
+        },
+    );
     if !compiled.ok {
-        let mut error = DagManagerError::new(DagManagerErrorCode::InvalidDefinition, compiled.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; ")).with_compile(compiled.errors, compiled.diagnostics);
+        let mut error = DagManagerError::new(
+            DagManagerErrorCode::InvalidDefinition,
+            compiled
+                .errors
+                .iter()
+                .map(|e| e.message.clone())
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+        .with_compile(compiled.errors, compiled.diagnostics);
         error.run_id = Some(selected.clone());
         return Err(error);
     }
     if params.definition.key != old.run_key {
-        return Err(DagManagerError::new(DagManagerErrorCode::InvalidAmendment, "an amendment cannot change the run key").with_run_id(selected));
+        return Err(DagManagerError::new(
+            DagManagerErrorCode::InvalidAmendment,
+            "an amendment cannot change the run key",
+        )
+        .with_run_id(selected));
     }
-    let old_inputs: HashMap<_, _> = old.definition.nodes.iter().map(|n| (n.id.clone(), n)).collect();
-    let new_ids: HashSet<_> = params.definition.nodes.iter().map(|n| n.id.clone()).collect();
+    let old_inputs: HashMap<_, _> = old
+        .definition
+        .nodes
+        .iter()
+        .map(|n| (n.id.clone(), n))
+        .collect();
+    let new_ids: HashSet<_> = params
+        .definition
+        .nodes
+        .iter()
+        .map(|n| n.id.clone())
+        .collect();
     let old_nodes: HashMap<_, _> = old.nodes.iter().map(|n| (n.id.clone(), n)).collect();
-    let mut changed = Vec::new(); let mut added = Vec::new(); let mut removed = Vec::new();
+    let mut changed = Vec::new();
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
     for node in &params.definition.nodes {
         match old_inputs.get(&node.id) {
             None => added.push(node.id.clone()),
-            Some(previous) if previous.prompt != node.prompt || previous.label != node.label || previous.depends_on != node.depends_on || previous.target != persisted_target(&node.target) || previous.description != node.description || previous.task_summary != node.task_summary => changed.push(node.id.clone()),
+            Some(previous)
+                if previous.prompt != node.prompt
+                    || previous.label != node.label
+                    || previous.depends_on != node.depends_on
+                    || previous.target != persisted_target(&node.target)
+                    || previous.description != node.description
+                    || previous.task_summary != node.task_summary =>
+            {
+                changed.push(node.id.clone())
+            }
             _ => (),
         }
     }
-    for node in &old.definition.nodes { if !new_ids.contains(&node.id) { removed.push(node.id.clone()); } }
-    let unsafe_ids: Vec<_> = changed.iter().chain(removed.iter()).filter(|id| old_nodes.get(*id).is_some_and(|n| matches!(n.state, DagNodeState::Scheduled | DagNodeState::Running))).cloned().collect();
-    if !unsafe_ids.is_empty() { return Err(DagManagerError::new(DagManagerErrorCode::AmendRunningNode, format!("cannot amend scheduled or running nodes: {}", unsafe_ids.join(", "))).with_run_id(selected).with_node_ids(unsafe_ids)); }
+    for node in &old.definition.nodes {
+        if !new_ids.contains(&node.id) {
+            removed.push(node.id.clone());
+        }
+    }
+    let unsafe_ids: Vec<_> = changed
+        .iter()
+        .chain(removed.iter())
+        .filter(|id| {
+            old_nodes
+                .get(*id)
+                .is_some_and(|n| matches!(n.state, DagNodeState::Scheduled | DagNodeState::Running))
+        })
+        .cloned()
+        .collect();
+    if !unsafe_ids.is_empty() {
+        return Err(DagManagerError::new(
+            DagManagerErrorCode::AmendRunningNode,
+            format!(
+                "cannot amend scheduled or running nodes: {}",
+                unsafe_ids.join(", ")
+            ),
+        )
+        .with_run_id(selected)
+        .with_node_ids(unsafe_ids));
+    }
     if old.status == DagRunStatus::Running {
-        return Err(DagManagerError::new(DagManagerErrorCode::RunStillActive, format!("dag run \"{selected}\" is still active")).with_run_id(selected));
+        return Err(DagManagerError::new(
+            DagManagerErrorCode::RunStillActive,
+            format!("dag run \"{selected}\" is still active"),
+        )
+        .with_run_id(selected));
     }
     let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
-    for edge in &compiled.edges { dependents.entry(edge.from.clone()).or_default().push(edge.to.clone()); }
-    let mut seen = HashSet::new(); let mut invalidated_order = Vec::new(); let mut queue: VecDeque<_> = changed.iter().chain(added.iter()).cloned().collect();
-    while let Some(id) = queue.pop_front() { if seen.insert(id.clone()) { if !added.contains(&id) { invalidated_order.push(id.clone()); } queue.extend(dependents.get(&id).into_iter().flatten().cloned()); } }
+    for edge in &compiled.edges {
+        dependents
+            .entry(edge.from.clone())
+            .or_default()
+            .push(edge.to.clone());
+    }
+    let mut seen = HashSet::new();
+    let mut invalidated_order = Vec::new();
+    let mut queue: VecDeque<_> = changed.iter().chain(added.iter()).cloned().collect();
+    while let Some(id) = queue.pop_front() {
+        if seen.insert(id.clone()) {
+            if !added.contains(&id) {
+                invalidated_order.push(id.clone());
+            }
+            queue.extend(dependents.get(&id).into_iter().flatten().cloned());
+        }
+    }
     let invalidated = invalidated_order;
     let invalidated_set: HashSet<_> = invalidated.iter().cloned().collect();
     let mut nodes = compiled.nodes.clone();
     for node in &mut nodes {
         if let Some(previous) = old_nodes.get(&node.id) {
-            if !invalidated_set.contains(&node.id) { *node = (*previous).clone(); }
-            else {
+            if !invalidated_set.contains(&node.id) {
+                *node = (*previous).clone();
+            } else {
                 node.exec_attempt = Some(previous.exec_attempt.unwrap_or(0) + 1);
                 node.state = DagNodeState::Pending;
                 node.task_id = previous.task_id.clone();
@@ -835,24 +1024,78 @@ fn amend_run(params: DagAmendParams, inner: &DagManagerInner) -> Result<DagRunRe
             }
         }
     }
-    let materialized = materialize_amended_definition(inner, &old, &params.definition, changed.iter().chain(added.iter()).cloned().collect(), &at)?;
+    let materialized = materialize_amended_definition(
+        inner,
+        &old,
+        &params.definition,
+        changed.iter().chain(added.iter()).cloned().collect(),
+        &at,
+    )?;
     let fingerprint = fingerprint_definition(&params.definition);
     let mut amended = old.clone();
-    amended.name = params.definition.name.clone(); amended.definition = materialized.definition; amended.definition_fingerprint = fingerprint.clone();
-    amended.nodes = nodes; amended.edges = compiled.edges; amended.waves = compiled.waves; amended.critical_path = compiled.critical_path;
-    amended.bottlenecks = compiled.bottlenecks; amended.diagnostics = materialized.diagnostics; amended.updated_at = at.clone();
+    amended.name = params.definition.name.clone();
+    amended.definition = materialized.definition;
+    amended.definition_fingerprint = fingerprint.clone();
+    amended.nodes = nodes;
+    amended.edges = compiled.edges;
+    amended.waves = compiled.waves;
+    amended.critical_path = compiled.critical_path;
+    amended.bottlenecks = compiled.bottlenecks;
+    amended.diagnostics = materialized.diagnostics;
+    amended.updated_at = at.clone();
     let mut history = amended.amend_history.clone().unwrap_or_default();
-        history.push(AmendRecord { at, previous_fingerprint: old.definition_fingerprint.clone(), fingerprint: fingerprint.clone(), changed_node_ids: changed.clone(), added_node_ids: added.clone(), invalidated_node_ids: invalidated.clone() });
+    history.push(AmendRecord {
+        at,
+        previous_fingerprint: old.definition_fingerprint.clone(),
+        fingerprint: fingerprint.clone(),
+        changed_node_ids: changed.clone(),
+        added_node_ids: added.clone(),
+        invalidated_node_ids: invalidated.clone(),
+    });
     amended.amend_history = Some(history);
-    let journal = create_dag_journal(DagJournalOptions { store: Arc::clone(&inner.store), run_id: selected.clone(), initial_checkpoint: old.clone(), apply_event: Arc::new(move |record, event| {
-        apply_run_event(record, event)
-    }), subscriber_ring: None, now: Some(Arc::clone(&inner.now)) }).map_err(DagManagerError::from)?;
+    let journal = create_dag_journal(DagJournalOptions {
+        store: Arc::clone(&inner.store),
+        run_id: selected.clone(),
+        initial_checkpoint: old.clone(),
+        apply_event: Arc::new(apply_run_event),
+        subscriber_ring: None,
+        now: Some(Arc::clone(&inner.now)),
+    })
+    .map_err(DagManagerError::from)?;
     journal.set_skip_duplicate(Arc::new(skip_duplicate_terminal_transition));
-    journal.append(DagRunEventPayload::DefinitionAmended { previous_fingerprint: old.definition_fingerprint, fingerprint: fingerprint.clone(), changed_node_ids: changed, added_node_ids: added, invalidated_node_ids: invalidated, definition: amended.definition.clone(), nodes: amended.nodes.clone(), edges: amended.edges.clone(), waves: amended.waves.clone(), critical_path: amended.critical_path.clone(), bottlenecks: amended.bottlenecks.clone(), diagnostics: amended.diagnostics.clone() }).map_err(DagManagerError::from)?;
-    inner.store.write_key(&crate::dag::store::DagKeyRecord { schema_version: SchemaVersion1, parent_session_id: old.parent_session_id, run_key: old.run_key, run_id: selected.clone(), definition_fingerprint: Some(fingerprint.clone()) }).map_err(DagManagerError::from)?;
+    journal
+        .append(DagRunEventPayload::DefinitionAmended {
+            previous_fingerprint: old.definition_fingerprint,
+            fingerprint: fingerprint.clone(),
+            changed_node_ids: changed,
+            added_node_ids: added,
+            invalidated_node_ids: invalidated,
+            definition: amended.definition.clone(),
+            nodes: amended.nodes.clone(),
+            edges: amended.edges.clone(),
+            waves: amended.waves.clone(),
+            critical_path: amended.critical_path.clone(),
+            bottlenecks: amended.bottlenecks.clone(),
+            diagnostics: amended.diagnostics.clone(),
+        })
+        .map_err(DagManagerError::from)?;
+    inner
+        .store
+        .write_key(&crate::dag::store::DagKeyRecord {
+            schema_version: SchemaVersion1,
+            parent_session_id: old.parent_session_id,
+            run_key: old.run_key,
+            run_id: selected.clone(),
+            definition_fingerprint: Some(fingerprint.clone()),
+        })
+        .map_err(DagManagerError::from)?;
     let result = journal.snapshot();
     if result.definition_fingerprint != fingerprint {
-        return Err(DagManagerError::new(DagManagerErrorCode::RunStillActive, format!("dag run \"{selected}\" changed before the amendment could be applied")).with_run_id(selected));
+        return Err(DagManagerError::new(
+            DagManagerErrorCode::RunStillActive,
+            format!("dag run \"{selected}\" changed before the amendment could be applied"),
+        )
+        .with_run_id(selected));
     }
     Ok(result)
 }
@@ -864,53 +1107,102 @@ fn materialize_amended_definition(
     rematerialized_ids: Vec<String>,
     at: &str,
 ) -> Result<MaterializedAmendment, DagManagerError> {
-    let old_nodes: HashMap<_, _> = old.definition.nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    let old_nodes: HashMap<_, _> = old
+        .definition
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect();
     if inner.materialize_skills.is_none() || rematerialized_ids.is_empty() {
         return Ok(MaterializedAmendment {
             definition: DagPersistedDefinition {
-                key: definition.key.clone(), name: definition.name.clone(),
-                nodes: definition.nodes.iter().map(|node| {
-                    let mut persisted = persisted_node(node, &HashMap::new());
-                    persisted.effective_prompt = old_nodes.get(node.id.as_str()).map_or_else(|| node.prompt.clone(), |old| old.effective_prompt.clone());
-                    persisted
-                }).collect(),
+                key: definition.key.clone(),
+                name: definition.name.clone(),
+                nodes: definition
+                    .nodes
+                    .iter()
+                    .map(|node| {
+                        let mut persisted = persisted_node(node, &HashMap::new());
+                        persisted.effective_prompt = old_nodes.get(node.id.as_str()).map_or_else(
+                            || node.prompt.clone(),
+                            |old| old.effective_prompt.clone(),
+                        );
+                        persisted
+                    })
+                    .collect(),
             },
             diagnostics: old.diagnostics.clone(),
         });
     }
-    let materializer = inner.materialize_skills.as_ref().expect("checked materializer");
+    let materializer = inner
+        .materialize_skills
+        .as_ref()
+        .expect("checked materializer");
     let old_manifest = read_dag_skill_manifest(&inner.store, &old.run_id)?;
-    let selected: Vec<_> = definition.nodes.iter().filter(|node| rematerialized_ids.contains(&node.id)).cloned().collect();
-    let selected_definition = DagDefinition { key: definition.key.clone(), name: definition.name.clone(), nodes: selected.clone() };
-    let fresh = materializer(crate::dag::manager::DagMaterializeSkillsInput { run_id: &old.run_id, definition: &selected_definition, at })?;
+    let selected: Vec<_> = definition
+        .nodes
+        .iter()
+        .filter(|node| rematerialized_ids.contains(&node.id))
+        .cloned()
+        .collect();
+    let selected_definition = DagDefinition {
+        key: definition.key.clone(),
+        name: definition.name.clone(),
+        nodes: selected.clone(),
+    };
+    let fresh = materializer(crate::dag::manager::DagMaterializeSkillsInput {
+        run_id: &old.run_id,
+        definition: &selected_definition,
+        at,
+    })?;
     if let Some(old_manifest) = old_manifest {
-        let fresh_manifest = read_dag_skill_manifest(&inner.store, &old.run_id)?.unwrap_or(DagSkillManifest {
-            schema_version: old_manifest.schema_version,
-            run_id: old.run_id.clone(),
-            cwd: old_manifest.cwd.clone(),
-            at: at.to_string(),
-            nodes: Vec::new(),
-        });
+        let fresh_manifest =
+            read_dag_skill_manifest(&inner.store, &old.run_id)?.unwrap_or(DagSkillManifest {
+                schema_version: old_manifest.schema_version,
+                run_id: old.run_id.clone(),
+                cwd: old_manifest.cwd.clone(),
+                at: at.to_string(),
+                nodes: Vec::new(),
+            });
         let replaced: HashSet<_> = selected.iter().map(|node| node.id.as_str()).collect();
         let mut manifest = fresh_manifest;
         manifest.cwd = old_manifest.cwd;
-        manifest.nodes = old_manifest.nodes.into_iter().filter(|node| !replaced.contains(node.node_id.as_str())).chain(manifest.nodes).collect();
+        manifest.nodes = old_manifest
+            .nodes
+            .into_iter()
+            .filter(|node| !replaced.contains(node.node_id.as_str()))
+            .chain(manifest.nodes)
+            .collect();
         write_dag_skill_manifest(&inner.store, &manifest)?;
     }
     let fresh_prompts: HashMap<_, _> = fresh.nodes.into_iter().collect();
     let definition = DagPersistedDefinition {
-        key: definition.key.clone(), name: definition.name.clone(),
-        nodes: definition.nodes.iter().map(|node| {
-            let mut persisted = persisted_node(node, &HashMap::new());
-            persisted.effective_prompt = fresh_prompts.get(&node.id).cloned()
-                .or_else(|| old_nodes.get(node.id.as_str()).map(|old| old.effective_prompt.clone()))
-                .unwrap_or_else(|| node.prompt.clone());
-            persisted
-        }).collect(),
+        key: definition.key.clone(),
+        name: definition.name.clone(),
+        nodes: definition
+            .nodes
+            .iter()
+            .map(|node| {
+                let mut persisted = persisted_node(node, &HashMap::new());
+                persisted.effective_prompt = fresh_prompts
+                    .get(&node.id)
+                    .cloned()
+                    .or_else(|| {
+                        old_nodes
+                            .get(node.id.as_str())
+                            .map(|old| old.effective_prompt.clone())
+                    })
+                    .unwrap_or_else(|| node.prompt.clone());
+                persisted
+            })
+            .collect(),
     };
     let mut diagnostics = old.diagnostics.clone();
     diagnostics.extend(fresh.diagnostics);
-    Ok(MaterializedAmendment { definition, diagnostics })
+    Ok(MaterializedAmendment {
+        definition,
+        diagnostics,
+    })
 }
 
 struct MaterializedAmendment {
@@ -940,23 +1232,126 @@ fn persisted_node(
 }
 
 fn apply_run_event(record: &DagRunRecordV1, event: &DagRunEvent) -> DagRunRecordV1 {
-    if let DagRunEventPayload::DefinitionAmended { previous_fingerprint, fingerprint, changed_node_ids, added_node_ids, invalidated_node_ids, definition, nodes, edges, waves, critical_path, bottlenecks, diagnostics } = &event.payload {
-        if record.definition_fingerprint != *previous_fingerprint || record.status == DagRunStatus::Running || (record.status == DagRunStatus::Paused && record.lease_holder_pid.or(record.previous_lease_holder_pid).is_some_and(process_is_alive)) { return record.clone(); }
+    if let DagRunEventPayload::DefinitionAmended {
+        previous_fingerprint,
+        fingerprint,
+        changed_node_ids,
+        added_node_ids,
+        invalidated_node_ids,
+        definition,
+        nodes,
+        edges,
+        waves,
+        critical_path,
+        bottlenecks,
+        diagnostics,
+    } = &event.payload
+    {
+        if record.definition_fingerprint != *previous_fingerprint
+            || record.status == DagRunStatus::Running
+            || (record.status == DagRunStatus::Paused
+                && record
+                    .lease_holder_pid
+                    .or(record.previous_lease_holder_pid)
+                    .is_some_and(process_is_alive))
+        {
+            return record.clone();
+        }
         let resulting_ids: HashSet<_> = nodes.iter().map(|node| node.id.as_str()).collect();
-        let removed_ids: Vec<_> = record.nodes.iter().filter(|node| !resulting_ids.contains(node.id.as_str())).map(|node| node.id.as_str()).collect();
-        if changed_node_ids.iter().map(String::as_str).chain(removed_ids.iter().copied()).any(|id| record.nodes.iter().any(|node| node.id == id && matches!(node.state, DagNodeState::Scheduled | DagNodeState::Running))) { return record.clone(); }
+        let removed_ids: Vec<_> = record
+            .nodes
+            .iter()
+            .filter(|node| !resulting_ids.contains(node.id.as_str()))
+            .map(|node| node.id.as_str())
+            .collect();
+        if changed_node_ids
+            .iter()
+            .map(String::as_str)
+            .chain(removed_ids.iter().copied())
+            .any(|id| {
+                record.nodes.iter().any(|node| {
+                    node.id == id
+                        && matches!(node.state, DagNodeState::Scheduled | DagNodeState::Running)
+                })
+            })
+        {
+            return record.clone();
+        }
         let mut history = record.amend_history.clone().unwrap_or_default();
-        history.push(AmendRecord { at: event.at.clone(), previous_fingerprint: previous_fingerprint.clone(), fingerprint: fingerprint.clone(), changed_node_ids: changed_node_ids.clone(), added_node_ids: added_node_ids.clone(), invalidated_node_ids: invalidated_node_ids.clone() });
+        history.push(AmendRecord {
+            at: event.at.clone(),
+            previous_fingerprint: previous_fingerprint.clone(),
+            fingerprint: fingerprint.clone(),
+            changed_node_ids: changed_node_ids.clone(),
+            added_node_ids: added_node_ids.clone(),
+            invalidated_node_ids: invalidated_node_ids.clone(),
+        });
         let invalidated: HashSet<_> = invalidated_node_ids.iter().collect();
         return DagRunRecordV1 {
-            name: definition.name.clone(), definition: definition.clone(), definition_fingerprint: fingerprint.clone(),
-            nodes: nodes.iter().cloned().map(|node| if invalidated.contains(&node.id) { DagNode { state: DagNodeState::Pending, error: None, completed_at: None, started_at: None, run_stats: None, output: None, output_bytes: None, ..node } } else { node }).collect(),
-            edges: edges.clone(), waves: waves.clone(), critical_path: critical_path.clone(), bottlenecks: bottlenecks.clone(),
-            diagnostics: diagnostics.clone(), amend_history: Some(history), updated_at: event.at.clone(), ..record.clone()
+            name: definition.name.clone(),
+            definition: definition.clone(),
+            definition_fingerprint: fingerprint.clone(),
+            nodes: nodes
+                .iter()
+                .cloned()
+                .map(|node| {
+                    if invalidated.contains(&node.id) {
+                        DagNode {
+                            state: DagNodeState::Pending,
+                            error: None,
+                            completed_at: None,
+                            started_at: None,
+                            run_stats: None,
+                            output: None,
+                            output_bytes: None,
+                            ..node
+                        }
+                    } else {
+                        node
+                    }
+                })
+                .collect(),
+            edges: edges.clone(),
+            waves: waves.clone(),
+            critical_path: critical_path.clone(),
+            bottlenecks: bottlenecks.clone(),
+            diagnostics: diagnostics.clone(),
+            amend_history: Some(history),
+            updated_at: event.at.clone(),
+            ..record.clone()
         };
     }
-    if let DagRunEventPayload::NodeRetried { node_id, exec_attempt, .. } = &event.payload {
-        return DagRunRecordV1 { nodes: record.nodes.iter().map(|node| if node.id == *node_id { DagNode { state: DagNodeState::Pending, exec_attempt: Some(*exec_attempt), error: None, completed_at: None, started_at: None, run_stats: None, output: None, output_bytes: None, ..node.clone() } } else { node.clone() }).collect(), updated_at: event.at.clone(), ..record.clone() };
+    if let DagRunEventPayload::NodeRetried {
+        node_id,
+        exec_attempt,
+        ..
+    } = &event.payload
+    {
+        return DagRunRecordV1 {
+            nodes: record
+                .nodes
+                .iter()
+                .map(|node| {
+                    if node.id == *node_id {
+                        DagNode {
+                            state: DagNodeState::Pending,
+                            exec_attempt: Some(*exec_attempt),
+                            error: None,
+                            completed_at: None,
+                            started_at: None,
+                            run_stats: None,
+                            output: None,
+                            output_bytes: None,
+                            ..node.clone()
+                        }
+                    } else {
+                        node.clone()
+                    }
+                })
+                .collect(),
+            updated_at: event.at.clone(),
+            ..record.clone()
+        };
     }
     if matches!(event.payload, DagRunEventPayload::RunCreated { .. }) {
         DagRunRecordV1 {
@@ -968,20 +1363,41 @@ fn apply_run_event(record: &DagRunRecordV1, event: &DagRunEvent) -> DagRunRecord
     }
 }
 
-fn skip_duplicate_terminal_transition(record: &DagRunRecordV1, payload: &DagRunEventPayload) -> bool {
-    let DagRunEventPayload::NodeTransitioned { node_id, to, .. } = payload else { return false; };
-    if !matches!(to, DagNodeState::Completed | DagNodeState::Failed | DagNodeState::Cancelled | DagNodeState::Skipped) { return false; }
-    record.nodes.iter().any(|node| node.id == *node_id && node.state == *to)
+fn skip_duplicate_terminal_transition(
+    record: &DagRunRecordV1,
+    payload: &DagRunEventPayload,
+) -> bool {
+    let DagRunEventPayload::NodeTransitioned { node_id, to, .. } = payload else {
+        return false;
+    };
+    if !matches!(
+        to,
+        DagNodeState::Completed
+            | DagNodeState::Failed
+            | DagNodeState::Cancelled
+            | DagNodeState::Skipped
+    ) {
+        return false;
+    }
+    record
+        .nodes
+        .iter()
+        .any(|node| node.id == *node_id && node.state == *to)
 }
 
 #[cfg(unix)]
 fn process_is_alive(pid: i64) -> bool {
     // Same answer as `kill -0 <pid>` (EPERM and ESRCH both read as not alive) via a syscall instead of a fork.
-    i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw).is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
+    i32::try_from(pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+        .is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
 }
 
 #[cfg(not(unix))]
-fn process_is_alive(_pid: i64) -> bool { false }
+fn process_is_alive(_pid: i64) -> bool {
+    false
+}
 
 fn fingerprint_definition(definition: &DagDefinition) -> String {
     let nodes: Vec<DagNodeFingerprintInputV1> = definition
@@ -1009,15 +1425,24 @@ fn route_of(target: &DagNodeTarget) -> DagRoute {
     crate::dag::graph::route_of(target)
 }
 
-fn project_snapshot_with_state_dir(record: DagRunRecordV1, state_dir: Option<&std::path::Path>) -> DagRunSnapshot {
-    let nodes: Vec<DagNode> = record.nodes.iter().cloned().map(|mut node| {
-        if let (Some(task_id), Some(state_dir)) = (&node.task_id, state_dir)
-            && matches!(node.state, DagNodeState::Scheduled | DagNodeState::Running)
-        {
-            node.last_activity_at = crate::dag::node_activity::read_dag_node_activity_at(state_dir, task_id);
-        }
-        node
-    }).collect();
+fn project_snapshot_with_state_dir(
+    record: DagRunRecordV1,
+    state_dir: Option<&std::path::Path>,
+) -> DagRunSnapshot {
+    let nodes: Vec<DagNode> = record
+        .nodes
+        .iter()
+        .cloned()
+        .map(|mut node| {
+            if let (Some(task_id), Some(state_dir)) = (&node.task_id, state_dir)
+                && matches!(node.state, DagNodeState::Scheduled | DagNodeState::Running)
+            {
+                node.last_activity_at =
+                    crate::dag::node_activity::read_dag_node_activity_at(state_dir, task_id);
+            }
+            node
+        })
+        .collect();
     DagRunSnapshot {
         schema_version: SchemaVersion1,
         run_id: record.run_id,
@@ -1051,7 +1476,9 @@ fn file_inode(metadata: &fs::Metadata) -> u64 {
 }
 
 #[cfg(not(unix))]
-fn file_inode(_metadata: &fs::Metadata) -> u64 { 0 }
+fn file_inode(_metadata: &fs::Metadata) -> u64 {
+    0
+}
 
 fn count_nodes(nodes: &[DagNode]) -> DagNodeCounts {
     let mut counts = DagNodeCounts {

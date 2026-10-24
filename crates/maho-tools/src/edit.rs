@@ -79,6 +79,7 @@ pub fn prepare_edit_arguments(mut input: Value) -> Result<Value, ToolError> {
     Ok(input)
 }
 pub fn create_edit_tool_definition(cwd: PathBuf, options: EditToolOptions) -> ToolDefinition {
+    let server_pinned = options.operations.is_some() || options.filesystem_policy.is_some();
     let ops = options
         .operations
         .unwrap_or_else(|| Arc::new(LocalEditOperations));
@@ -177,6 +178,9 @@ pub fn create_edit_tool_definition(cwd: PathBuf, options: EditToolOptions) -> To
         json!({"type":"object","properties":{"path":{"type":"string","description":"Path to the file to edit (relative or absolute)"},"edits":{"type":"array","description":"One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.","items":{"type":"object","properties":{"oldText":{"type":"string","description":"Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."},"newText":{"type":"string","description":"Replacement text for this targeted edit."}},"required":["oldText","newText"]}}},"required":["path","edits"]}),
         execute,
     );
+    if server_pinned {
+        tool.server_pinned = Some(true);
+    }
     tool.prepare_arguments = Some(Arc::new(prepare_edit_arguments));
     tool.render_shell = Some(RenderShell::Own);
     tool.prompt_snippet = Some("Make precise file edits with exact text replacement, including multiple disjoint edits in one call".into());

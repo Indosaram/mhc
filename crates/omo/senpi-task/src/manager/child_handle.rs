@@ -29,7 +29,12 @@ pub trait ManagedChildHandle: Send + Sync {
     }
     fn steer(&self, text: &str) -> Result<(), HostError>;
     fn follow_up(&self, text: &str) -> Result<(), HostError>;
-    fn rebind_workpool_identity(&self, _identity: WorkpoolChildIdentity) -> Option<Result<(), HostError>> { None }
+    fn rebind_workpool_identity(
+        &self,
+        _identity: WorkpoolChildIdentity,
+    ) -> Option<Result<(), HostError>> {
+        None
+    }
     fn abort(&self) -> Result<(), HostError>;
     fn subscribe(&self, listener: ManagedChildListener) -> Unsubscribe;
     fn wait_for_outcome(&self) -> RunnerOutcome;
@@ -54,6 +59,21 @@ pub trait ManagedChildHandle: Send + Sync {
         Ok(())
     }
     fn dispose(&self) -> Result<(), HostError>;
+    /// True while the child's transport is down and being recovered (TS `transportRecovering`).
+    fn transport_recovering(&self) -> bool {
+        false
+    }
+    /// Whether [`Self::stop_when_reachable`] exists (TS `stopWhenReachable !== undefined`).
+    fn supports_stop_when_reachable(&self) -> bool {
+        false
+    }
+    /// Blocks until the stop is applied on the host once reachable, or the child ends because its
+    /// connection never comes back (TS `stopWhenReachable`).
+    fn stop_when_reachable(&self) -> Result<(), HostError> {
+        Ok(())
+    }
+    /// From here no transport recovery may bring the child back (TS `markStopping`).
+    fn mark_stopping(&self) {}
 }
 
 /// Terminate (when supported) then always dispose.

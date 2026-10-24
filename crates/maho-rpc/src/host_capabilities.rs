@@ -24,6 +24,14 @@ pub enum ToolRuntimeKind {
     Child,
 }
 impl ToolRuntimeKind {
+    /// senpi `isToolRuntimeKind` as a parse: `in-process` or `child`, nothing else.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "in-process" => Some(Self::InProcess),
+            "child" => Some(Self::Child),
+            _ => None,
+        }
+    }
     pub fn as_str(self) -> &'static str {
         match self {
             Self::InProcess => "in-process",
@@ -93,6 +101,34 @@ mod tests {
         assert_eq!(
             child.last().map(String::as_str),
             Some(OFFLOAD_API_CAPABILITY)
+        );
+    }
+    #[test]
+    fn parse_reads_exactly_the_two_kinds() {
+        assert_eq!(
+            ToolRuntimeKind::parse("in-process"),
+            Some(ToolRuntimeKind::InProcess)
+        );
+        assert_eq!(
+            ToolRuntimeKind::parse("child"),
+            Some(ToolRuntimeKind::Child)
+        );
+        assert_eq!(ToolRuntimeKind::parse("bogus"), None);
+        assert_eq!(ToolRuntimeKind::parse(""), None);
+    }
+    #[test]
+    fn child_advertises_every_placement_in_wire_order() {
+        assert_eq!(
+            tool_runtime_capabilities(ToolRuntimeKind::Child),
+            vec![
+                "tool_runtime:child",
+                "placement:launch-barrier",
+                "placement:job-policy",
+                "placement:hostcall",
+                "placement:offload",
+                "placement:terminal",
+                "offload_api",
+            ]
         );
     }
     #[test]

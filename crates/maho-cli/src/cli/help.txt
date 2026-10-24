@@ -68,6 +68,7 @@ Options:
 {grok_neo}  --multi-session               Serve multiple routed RPC sessions
   --listen <address>            RPC listener: stdio://, unix://, unix:///path, or a socket path
   --session-runtime <kind>      Multi-session host runtime: in-process (socket default) or worker
+  --tool-runtime <kind>         Where heavy tool work runs: in-process (default) or child
   --auto-title-sessions         Auto-generate session titles outside interactive mode (deprecated for hosts; prefer open_session.auto_title)
   --help, -h                     Show this help
   --version, -v                  Show version number

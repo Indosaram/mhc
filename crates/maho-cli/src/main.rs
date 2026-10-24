@@ -2,6 +2,8 @@
 mod schedule_command;
 
 fn main() {
+    // senpi `internal-role.ts`: a process the engine started as a tool child becomes one before anything else runs.
+    maho_cli::internal_role::run_internal_role();
     #[cfg(windows)]
     {
         const STACK_SIZE: usize = 8 * 1024 * 1024;
@@ -569,7 +571,7 @@ fn run() -> Result<(), String> {
         }
         _ => {}
     }
-    let parsed = maho_cli::cli::args::parse_args(&argv, grok)?;
+    let mut parsed = maho_cli::cli::args::parse_args(&argv, grok)?;
     if parsed.version {
         println!(
             "{}",
@@ -588,6 +590,20 @@ fn run() -> Result<(), String> {
     }
     if parsed.diagnostics.iter().any(|d| d.error) {
         return Err("Invalid CLI arguments".to_owned());
+    }
+    // senpi main.ts:1197-1203: `--tool-runtime`, then the env, then `in-process`; `--version` and `--help` never run a
+    // tool, so a bad tool-runtime env value must not block them. The resolved kind replaces the flag on `parsed`, so
+    // every later `CliRuntimeConfiguration::from_parsed` and host core carries the resolution, never the raw flag.
+    match maho_cli::cli::tool_runtime::resolve_tool_runtime(parsed.tool_runtime) {
+        maho_cli::cli::tool_runtime::ToolRuntimeResolution::Ok(kind) => {
+            parsed.tool_runtime = Some(kind);
+        }
+        maho_cli::cli::tool_runtime::ToolRuntimeResolution::Err(message) => {
+            if !parsed.version && !parsed.help {
+                return Err(format!("Error: {message}"));
+            }
+            parsed.tool_runtime = Some(maho_cli::cli::tool_runtime::ToolRuntimeKind::InProcess);
+        }
     }
     maho_core::timings::time("parseArgs", maho_core::timings::TimingLabel::Main);
     if let Some(input) = parsed.export.as_deref() {

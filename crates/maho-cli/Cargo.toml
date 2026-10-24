@@ -16,6 +16,7 @@ maho-tui = { path = "../maho-tui" }
 maho-tools = { path = "../maho-tools" }
 maho-interactive = { path = "../maho-interactive" }
 maho-rpc = { path = "../maho-rpc" }
+maho-tool-child = { path = "../maho-tool-child" }
 maho-ext-api = { path = "../maho-ext-api" }
 maho-codemode = { path = "../maho-codemode" }
 maho-ext-gpt-apply-patch = { path = "../builtins/maho-ext-gpt-apply-patch" }

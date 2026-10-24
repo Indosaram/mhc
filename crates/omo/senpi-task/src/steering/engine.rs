@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use serde_json::{Value, json};
 
 use super::types::{
-    CancelAbort, CancelOptions, CancelOutcome, DEFAULT_SEND_DELIVERY, InterruptOutcome, SendInput,
-    SendOutcome, SteeringError, SteeringPort,
+    CANCEL_PENDING_REASON, CancelAbort, CancelOptions, CancelOutcome, DEFAULT_SEND_DELIVERY,
+    InterruptOutcome, SendInput, SendOutcome, SteeringError, SteeringPort,
 };
 use crate::agents::interaction_policy_for_agent;
 use crate::host::HostError;
@@ -19,8 +19,8 @@ use crate::lifecycle::DestroyCause;
 use crate::manager::ManagedChildHandle;
 use crate::shared::iso_from_ms;
 use crate::state::{
-    DeliverAs, Messageability, PendingSteeringEntry, ResidencyState, TaskRecord, TaskStatus,
-    TaskTransition, messageability,
+    CancelRequest, DeliverAs, Messageability, PendingSteeringEntry, ResidencyState, TaskRecord,
+    TaskStatus, TaskTransition, messageability,
 };
 use crate::store::PersistedTaskEvent;
 
@@ -40,7 +40,10 @@ struct SendLease<'a> {
 
 impl Drop for SendLease<'_> {
     fn drop(&mut self) {
-        self.active.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.task_id);
+        self.active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.task_id);
     }
 }
 
@@ -73,7 +76,10 @@ fn stale_send(record: &TaskRecord) -> SendOutcome {
     SendOutcome::Stale {
         task_id: record.task_id.clone(),
         run_epoch: record.notification.run_epoch,
-        reason: format!("Task {}: the handle names an earlier run of this task.", record.task_id),
+        reason: format!(
+            "Task {}: the handle names an earlier run of this task.",
+            record.task_id
+        ),
     }
 }
 
@@ -82,22 +88,36 @@ fn stale_cancel(record: &TaskRecord) -> CancelOutcome {
         task_id: record.task_id.clone(),
         status: record.status,
         run_epoch: record.notification.run_epoch,
-        reason: format!("Task {}: the handle names an earlier run of this task.", record.task_id),
+        reason: format!(
+            "Task {}: the handle names an earlier run of this task.",
+            record.task_id
+        ),
     }
 }
 
 impl SteeringEngine {
     pub fn new(port: SteeringPort) -> Self {
-        Self { port, active_sends: Mutex::new(HashSet::new()) }
+        Self {
+            port,
+            active_sends: Mutex::new(HashSet::new()),
+        }
     }
 
     pub fn has_in_flight_send(&self, task_id: &str) -> bool {
-        self.active_sends.lock().unwrap_or_else(PoisonError::into_inner).contains(task_id)
+        self.active_sends
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(task_id)
     }
 
     pub fn has_pending_sends(&self, task_id: &str) -> bool {
         self.has_in_flight_send(task_id)
-            || self.try_load(task_id).is_some_and(|record| record.pending_steering.as_ref().is_some_and(|queue| !queue.is_empty()))
+            || self.try_load(task_id).is_some_and(|record| {
+                record
+                    .pending_steering
+                    .as_ref()
+                    .is_some_and(|queue| !queue.is_empty())
+            })
     }
 
     pub fn try_begin_send(&self, task_id: &str) -> bool {
@@ -105,7 +125,10 @@ impl SteeringEngine {
     }
 
     pub fn end_send(&self, task_id: &str) {
-        self.active_sends.lock().unwrap_or_else(PoisonError::into_inner).remove(task_id);
+        self.active_sends
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(task_id);
     }
 
     pub fn release_send_lease(&self, task_id: &str) {
@@ -113,7 +136,10 @@ impl SteeringEngine {
     }
 
     fn begin_send(&self, task_id: &str) -> bool {
-        self.active_sends.lock().unwrap_or_else(PoisonError::into_inner).insert(task_id.to_string())
+        self.active_sends
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(task_id.to_string())
     }
 
     fn event(&self, task_id: &str, event_type: &str, payload: Value) -> Result<(), SteeringError> {
@@ -161,15 +187,25 @@ impl SteeringEngine {
         if !self.begin_send(&record.task_id) {
             return Ok(SendOutcome::NotContinuable {
                 task_id: record.task_id.clone(),
-                reason: format!("Task {} already has a steering operation in progress.", record.task_id),
+                reason: format!(
+                    "Task {} already has a steering operation in progress.",
+                    record.task_id
+                ),
                 suggestion: TASK_OUTPUT_SUGGESTION.to_string(),
             });
         }
-        let _lease = SendLease { active: &self.active_sends, task_id: record.task_id.clone() };
+        let _lease = SendLease {
+            active: &self.active_sends,
+            task_id: record.task_id.clone(),
+        };
         self.send_resolved(input, record)
     }
 
-    fn send_resolved(&self, input: &SendInput, record: TaskRecord) -> Result<SendOutcome, SteeringError> {
+    fn send_resolved(
+        &self,
+        input: &SendInput,
+        record: TaskRecord,
+    ) -> Result<SendOutcome, SteeringError> {
         // One-shot policy runs after ownership is established but BEFORE the pending enqueue.
         if let Some(one_shot) = one_shot_policy_denial(&record) {
             return Ok(one_shot);
@@ -177,6 +213,17 @@ impl SteeringEngine {
         let deliver_as = input.deliver_as.unwrap_or(DEFAULT_SEND_DELIVERY);
         if record.status == TaskStatus::Pending {
             return self.enqueue_pending(&record, &input.message, deliver_as);
+        }
+        // An accepted cancel is final: nothing may revive or steer the child it is stopping (omo#9403).
+        if record.status == TaskStatus::Running && record.cancel_requested.is_some() {
+            return Ok(SendOutcome::NotContinuable {
+                task_id: record.task_id.clone(),
+                reason: format!(
+                    "Task {} has a pending cancel and will not run again.",
+                    record.task_id
+                ),
+                suggestion: TASK_OUTPUT_SUGGESTION.to_string(),
+            });
         }
         let mode = messageability(record.status, record.residency_state);
         if mode == Messageability::NotContinuable {
@@ -233,7 +280,9 @@ impl SteeringEngine {
             next
         })?;
         let Some(revived) = revived_record.filter(|_| updated.is_some()) else {
-            let fresh = self.port.store.load(&record.task_id)?.ok_or_else(|| SteeringError::Store(crate::store::StoreError::NotFound(record.task_id.clone())))?;
+            let fresh = self.port.store.load(&record.task_id)?.ok_or_else(|| {
+                SteeringError::Store(crate::store::StoreError::NotFound(record.task_id.clone()))
+            })?;
             return Ok(stale_send(&fresh));
         };
         let run_epoch = revived.notification.run_epoch;
@@ -268,6 +317,12 @@ impl SteeringEngine {
         let mut position = 0;
         let now = (self.port.now)();
         let updated = self.port.store.mutate(&record.task_id, |fresh| {
+            if !matches!(fresh.status, TaskStatus::Pending | TaskStatus::Running)
+                || fresh.killed == Some(true)
+                || fresh.cancel_requested.is_some()
+            {
+                return fresh.clone();
+            }
             let mut queue = fresh.pending_steering.clone().unwrap_or_default();
             queue.push(PendingSteeringEntry {
                 id: format!("ps-{now}-{}", queue.len() + 1),
@@ -281,8 +336,28 @@ impl SteeringEngine {
                 ..fresh.clone()
             }
         })?;
-        if updated.is_none() {
+        let Some(updated) = updated else {
             return Ok(not_found(&record.task_id));
+        };
+        if position == 0 {
+            let detail = [
+                updated.error_message.as_deref(),
+                updated.final_response.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+            return Ok(SendOutcome::NotContinuable {
+                reason: if detail.is_empty() {
+                    format!("Task {} is {}.", updated.task_id, updated.status.as_str())
+                } else {
+                    detail
+                },
+                task_id: updated.task_id,
+                suggestion: TASK_OUTPUT_SUGGESTION.to_string(),
+            });
         }
         self.event(
             &record.task_id,
@@ -335,6 +410,12 @@ impl SteeringEngine {
         let Some(fresh) = self.try_load(task_id) else {
             return Ok(());
         };
+        if !matches!(fresh.status, TaskStatus::Pending | TaskStatus::Running)
+            || fresh.killed == Some(true)
+            || fresh.cancel_requested.is_some()
+        {
+            return Ok(());
+        }
         let Some(queue) = fresh.pending_steering.filter(|q| !q.is_empty()) else {
             return Ok(());
         };
@@ -370,6 +451,17 @@ impl SteeringEngine {
                     "Task {} is {}, not running.",
                     record.task_id,
                     record.status.as_str()
+                ),
+                task_id: record.task_id,
+                status: record.status,
+            });
+        }
+        // An accepted cancel owns this run's ending: an interrupt cannot turn it into a resumable stop.
+        if record.cancel_requested.is_some() {
+            return Ok(InterruptOutcome::Noop {
+                reason: format!(
+                    "Task {} has a pending cancel; it ends cancelled.",
+                    record.task_id
                 ),
                 task_id: record.task_id,
                 status: record.status,
@@ -431,10 +523,16 @@ impl SteeringEngine {
             return Ok(CancelOutcome::Noop {
                 task_id: record.task_id.clone(),
                 status: record.status,
-                reason: format!("Task {} has a steering operation in progress.", record.task_id),
+                reason: format!(
+                    "Task {} has a steering operation in progress.",
+                    record.task_id
+                ),
             });
         }
-        let _lease = SendLease { active: &self.active_sends, task_id: record.task_id.clone() };
+        let _lease = SendLease {
+            active: &self.active_sends,
+            task_id: record.task_id.clone(),
+        };
         if let Some(expected) = options.expected_run_epoch
             && record.notification.run_epoch != expected
         {
@@ -507,6 +605,21 @@ impl SteeringEngine {
                 reason: reason_text,
             });
         }
+        let reachable = (self.port.live_handle)(&record.task_id);
+        let recovering = reachable
+            .as_ref()
+            .is_some_and(|handle| handle.transport_recovering());
+        // The stop already waiting on this child's connection is the cancel; a repeat joins it.
+        if record.cancel_requested.is_some() && recovering {
+            return Ok(cancel_pending(&record));
+        }
+        if !skip_abort
+            && recovering
+            && let Some(reachable) =
+                reachable.filter(|handle| handle.supports_stop_when_reachable())
+        {
+            return self.stop_when_reachable(&record, reachable, reason, expected_run_epoch);
+        }
         let run_stats = (self.port.run_stats_snapshot)(&record.task_id);
         let result = self.port.store.transition_expected_epoch(
             &record.task_id,
@@ -534,6 +647,11 @@ impl SteeringEngine {
             });
         }
         let handle = (self.port.live_handle)(&record.task_id);
+        // From here no transport recovery may bring the child back: a host that crashes before the stop
+        // lands is reached again only to end the session (omo#9403).
+        if let Some(handle) = handle.as_ref() {
+            handle.mark_stopping();
+        }
         // abort() is best-effort: a rejection must NOT skip the destruction that moves the record
         // OUT of resident, or it would leak a residency slot forever.
         if let Some(handle) = handle.as_ref().filter(|_| !skip_abort)
@@ -560,6 +678,104 @@ impl SteeringEngine {
         })
     }
 
+    /// omo#9403: a child whose connection is down cannot be told to stop, and calling it cancelled would
+    /// be false - it may still be running on its host. The stop waits on the handle (applied on the host
+    /// before anything else once reachable, or the child ends when its connection never comes back), and
+    /// only then is the record cancelled and the child torn down, which releases its lane.
+    fn stop_when_reachable(
+        &self,
+        record: &TaskRecord,
+        handle: Arc<dyn ManagedChildHandle>,
+        reason: Option<&str>,
+        expected: Option<i64>,
+    ) -> Result<CancelOutcome, SteeringError> {
+        // Durable first: a parent that shuts down or crashes before the stop lands leaves the cancel on the
+        // record, and every revival finishes it instead of running the child again.
+        let requested_at = self.now_iso();
+        let mut moved: Option<CancelOutcome> = None;
+        self.port.store.mutate(&record.task_id, |fresh| {
+            if let Some(expected) = expected
+                && fresh.notification.run_epoch != expected
+            {
+                moved = Some(stale_cancel(fresh));
+                return fresh.clone();
+            }
+            TaskRecord {
+                cancel_requested: Some(CancelRequest {
+                    requested_at: requested_at.clone(),
+                    reason: reason.map(str::to_string),
+                }),
+                ..fresh.clone()
+            }
+        })?;
+        if let Some(moved) = moved {
+            return Ok(moved);
+        }
+        if let Some(stop_requested) = &self.port.stop_requested {
+            stop_requested(&record.task_id);
+        }
+        let mut payload = json!({ "unreachable": true });
+        if let Some(reason) = reason {
+            payload["reason"] = json!(reason);
+        }
+        self.event(&record.task_id, "cancel_requested", payload)?;
+        // The pending stop is settled on every path, a failed record write included: the outcome tracker
+        // waits on that settlement and ends the run as cancelled itself when this write did not land.
+        let port = self.port.clone();
+        let task_id = record.task_id.clone();
+        let error_message = reason.map(str::to_string);
+        let reason = reason.map(str::to_string);
+        std::thread::spawn(move || {
+            if let Err(error) = handle.stop_when_reachable() {
+                utils::logger::log(
+                    "senpi-task deferred cancel of an unreachable child failed",
+                    Some(&json!({ "taskId": task_id, "error": error.to_string() })),
+                );
+            }
+            let engine = SteeringEngine::new(port);
+            if let Err(error) = engine.finish_stop(&task_id, error_message, reason) {
+                utils::logger::log(
+                    "senpi-task deferred cancel of an unreachable child failed",
+                    Some(&json!({ "taskId": task_id, "error": error.to_string() })),
+                );
+            }
+            if let Some(stop_settled) = &engine.port.stop_settled {
+                stop_settled(&task_id);
+            }
+        });
+        Ok(cancel_pending(record))
+    }
+
+    /// The `finish` step of the deferred stop: cancel the record, then tear the child down.
+    fn finish_stop(
+        &self,
+        task_id: &str,
+        error_message: Option<String>,
+        reason: Option<String>,
+    ) -> Result<(), SteeringError> {
+        let run_stats = (self.port.run_stats_snapshot)(task_id);
+        let result = self.port.store.transition(
+            task_id,
+            &TaskTransition::Cancel {
+                timestamp: self.now_iso(),
+                error_message,
+                run_stats,
+            },
+        )?;
+        if result.applied {
+            self.clear_persisted_queue(task_id, None)?;
+            let mut payload = json!({ "previous_status": "running" });
+            if let Some(reason) = reason {
+                payload["reason"] = json!(reason);
+            }
+            self.event(task_id, "cancelled", payload)?;
+        }
+        self.port
+            .destruction
+            .destroy_resident_task(task_id, DestroyCause::Cancel)?;
+        Ok(())
+    }
+
     /// Lets an in-process child reach its exact outcome boundary before lifecycle disposes it.
     fn destroy_after_settlement(&self, handle: Arc<dyn ManagedChildHandle>, task_id: String) {
         let destruction = Arc::clone(&self.port.destruction);
@@ -578,6 +794,14 @@ impl SteeringEngine {
                 );
             }
         });
+    }
+}
+
+fn cancel_pending(record: &TaskRecord) -> CancelOutcome {
+    CancelOutcome::CancelPending {
+        task_id: record.task_id.clone(),
+        previous_status: TaskStatus::Running,
+        reason: CANCEL_PENDING_REASON.to_string(),
     }
 }
 

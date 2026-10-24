@@ -95,5 +95,6 @@ pub fn create_task_record(
         isolation: None,
         runner_kind,
         host_session,
+        cancel_requested: None,
     })
 }

@@ -144,6 +144,17 @@ impl TerminalManager {
         command: &str,
         options: PtySessionOptions,
     ) -> Result<String, ManagerError> {
+        let id_command = options.command.clone();
+        self.create_with_id_command(command, &id_command, options)
+    }
+    /// `create` with the command the session id prefix comes from (upstream registers `shell.shell` while the
+    /// launch may be wrapped behind a go-line shim): ids read `bash_N` whatever process the PTY starts.
+    pub fn create_with_id_command(
+        &mut self,
+        command: &str,
+        id_command: &str,
+        options: PtySessionOptions,
+    ) -> Result<String, ManagerError> {
         if self.active_size()? >= self.max_sessions {
             return Err(ManagerError::Capacity(self.max_sessions));
         }
@@ -165,7 +176,7 @@ impl TerminalManager {
             }
             self.monitor_ids.retain(|_, runtime_id| runtime_id != &id);
         }
-        let prefix = session_id_prefix(&options.command);
+        let prefix = session_id_prefix(id_command);
         let runtime =
             TerminalRuntimeSession::start_with_scrollback(command, options, self.scrollback)?;
         let id = self.allocate_id(&prefix);

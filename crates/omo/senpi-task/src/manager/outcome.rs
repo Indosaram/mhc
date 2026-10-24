@@ -7,7 +7,7 @@ use serde_json::json;
 
 use crate::manager::ManagedChildHandle;
 use crate::runners::{RunnerFailure, RunnerOutcome};
-use crate::state::{ResidencyState, TaskRecord, TaskRunStats, TaskTransition};
+use crate::state::{ResidencyState, TaskRecord, TaskRunStats, TaskStatus, TaskTransition};
 use crate::store::TaskRecordStore;
 
 /// A cancel's settlement signal, shared by its guard and the outcome watcher.
@@ -93,7 +93,7 @@ fn settle_outcome(
     outcome: RunnerOutcome,
 ) {
     if let Some(stopped) = ports.stop_settlement(task_id, epoch) {
-        settle_stopped(ports, task_id, stopped);
+        settle_stopped(ports, task_id, handle, model, epoch, stopped);
         return;
     }
     if !owns_outcome(ports, task_id, handle, epoch) {
@@ -144,26 +144,94 @@ fn settle_outcome(
     ports.settle_waiters(task_id);
 }
 
-/// The cancel owns the terminal transition; the watcher only settles its isolation.
-fn settle_stopped(ports: &dyn OutcomeTrackerPorts, task_id: &str, stopped: PendingStop) {
+/// The run a pending cancel stopped. The cancel normally wrote the terminal record and let the handle
+/// go; when its write failed the run is still ours, and it ends as cancelled here - never as the
+/// failure the stop caused, which would also start a runtime fallback.
+fn settle_stopped(
+    ports: &dyn OutcomeTrackerPorts,
+    task_id: &str,
+    handle: &Arc<dyn ManagedChildHandle>,
+    model: &str,
+    epoch: i64,
+    stopped: PendingStop,
+) {
     let (settled, wake) = &*stopped;
-    let guard = settled.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = settled
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (guard, _) = wake
         .wait_timeout_while(guard, STOP_SETTLEMENT_WAIT, |settled| !*settled)
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let settled = *guard;
     drop(guard);
     if !settled {
-        log_failure("senpi-task cancelled run settlement timed out", task_id,
-            &"the pending cancel never settled");
+        log_failure(
+            "senpi-task cancelled run settlement timed out",
+            task_id,
+            &"the pending cancel never settled",
+        );
         return;
     }
-    let Some(record) = ports.try_load(task_id) else { return; };
-    let Some(isolation) = record.isolation.as_ref() else { return; };
+    // A teardown that already let the handle go must not strand the run: the record of this same run,
+    // still non-terminal with its cancel on it, is still the cancel's to end.
+    let unfinished = ports
+        .try_load(task_id)
+        .is_some_and(|record| !record.status.is_terminal());
+    if unfinished
+        && (owns_outcome(ports, task_id, handle, epoch)
+            || stopped_run_record(ports, task_id, epoch).is_some())
+    {
+        ports.release_slot(task_id, model, epoch);
+        let timestamp = ports.now_iso();
+        let transition = TaskTransition::Cancel {
+            timestamp,
+            error_message: None,
+            run_stats: ports.run_stats_snapshot(task_id),
+        };
+        if let Err(error) = ports.store().transition(task_id, &transition) {
+            log_failure(
+                "senpi-task manager terminal record write failed",
+                task_id,
+                &error,
+            );
+        }
+        ports.settle_waiters(task_id);
+    }
+    let Some(record) = ports.try_load(task_id) else {
+        return;
+    };
+    let Some(isolation) = record.isolation.as_ref() else {
+        return;
+    };
     if isolation.merge_result.is_none() {
         ports.settle_isolation(task_id, false);
     }
 }
+
+/// Returns the fresh record when this run still carries a pending cancel and has not ended.
+fn stopped_run_record(
+    ports: &dyn OutcomeTrackerPorts,
+    task_id: &str,
+    epoch: i64,
+) -> Option<TaskRecord> {
+    let fresh = ports.try_load(task_id)?;
+    if fresh.cancel_requested.is_none() || fresh.notification.run_epoch != epoch {
+        return None;
+    }
+    if STOPPED_RUN_TERMINAL.contains(&fresh.status) {
+        None
+    } else {
+        Some(fresh)
+    }
+}
+
+const STOPPED_RUN_TERMINAL: [TaskStatus; 5] = [
+    TaskStatus::Completed,
+    TaskStatus::Error,
+    TaskStatus::Cancelled,
+    TaskStatus::Interrupted,
+    TaskStatus::Lost,
+];
 
 fn settle_error_outcome(ports: &dyn OutcomeTrackerPorts, input: &ErrorOutcomeInput) {
     if ports.try_runtime_fallback(input) {
@@ -249,7 +317,10 @@ pub(crate) mod test_barrier {
     }
 
     fn grants() -> std::sync::MutexGuard<'static, u64> {
-        state().grants.lock().unwrap_or_else(PoisonError::into_inner)
+        state()
+            .grants
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     pub(crate) fn grant_spawned() {
@@ -340,7 +411,10 @@ pub(crate) mod test_barrier {
                 .cv
                 .wait_timeout(entries, std::time::Duration::from_secs(30))
                 .map(|(entries, timeout)| {
-                    assert!(!timeout.timed_out(), "outcome watcher never consumed its signal");
+                    assert!(
+                        !timeout.timed_out(),
+                        "outcome watcher never consumed its signal"
+                    );
                     entries
                 })
                 .unwrap_or_else(|error| error.into_inner().0);
@@ -361,7 +435,10 @@ pub(crate) mod test_barrier {
                 .cv
                 .wait_timeout(entries, std::time::Duration::from_secs(30))
                 .map(|(entries, timeout)| {
-                    assert!(!timeout.timed_out(), "outcome watcher never applied handle {ptr}");
+                    assert!(
+                        !timeout.timed_out(),
+                        "outcome watcher never applied handle {ptr}"
+                    );
                     entries
                 })
                 .unwrap_or_else(|error| error.into_inner().0);

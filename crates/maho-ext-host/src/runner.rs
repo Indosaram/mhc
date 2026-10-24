@@ -469,6 +469,9 @@ impl ExtensionContextActions for ContextSessionManager {
         self.active();
         self.actions.is_compacting()
     }
+    fn get_browser_engine(&self) -> Option<&'static str> {
+        self.actions.get_browser_engine()
+    }
     fn check_reload_veto(&self) -> ExtensionFuture<'_, ReloadVetoDecision> {
         Box::pin(async move {
             self.runtime.assert_active()?;

@@ -27,13 +27,19 @@ pub fn destroy_resident_task(
         // A daemon child whose stop could not reach its host (the transport was down) may still hold
         // its session there: the cancel ends it once the host answers.
         if handle.kind() != ResidentKind::InProcess
-            && matches!(cause, DestroyCause::Cancel | DestroyCause::CancelWithoutAbort)
+            && matches!(
+                cause,
+                DestroyCause::Cancel | DestroyCause::CancelWithoutAbort
+            )
         {
             close_parked_session(context, task_id)?;
         }
     } else if matches!(cause, DestroyCause::ReconcileLost | DestroyCause::Ttl) {
         terminate_orphan(context, task_id, orphan_pid)?;
-    } else if matches!(cause, DestroyCause::Cancel | DestroyCause::CancelWithoutAbort) {
+    } else if matches!(
+        cause,
+        DestroyCause::Cancel | DestroyCause::CancelWithoutAbort
+    ) {
         close_parked_session(context, task_id)?;
     }
     if cause != DestroyCause::FallbackHandoff {
@@ -169,7 +175,7 @@ fn close_orphan_session(
     close_host_session_confirmed(context, task_id, host_session, cwd.as_deref());
 }
 
-fn spawn_spec_cwd(record: &TaskRecord) -> Option<String> {
+pub(crate) fn spawn_spec_cwd(record: &TaskRecord) -> Option<String> {
     match record.spawn_spec.as_ref()? {
         TaskSpawnSpec::LegacyProcess { cwd, .. } => Some(cwd.clone()),
         TaskSpawnSpec::V1(spec) => Some(spec.cwd.clone()),

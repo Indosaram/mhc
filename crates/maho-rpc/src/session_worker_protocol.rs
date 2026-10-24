@@ -280,6 +280,28 @@ pub fn profile_to_wire(
     if profile.attended == Some(false) {
         value["attended"] = false.into();
     }
+    if let Some(surface) = &profile.prompt_surface {
+        value["promptSurface"] = surface.clone().into();
+    }
+    if let Some(engine) = &profile.browser_engine {
+        value["browserEngine"] = engine.clone().into();
+    }
+    if let Some(fallback) = &profile.retry_fallback {
+        value["retryFallback"] = fallback.clone();
+    }
+    if let Some(endpoint) = &profile.holder_endpoint {
+        let mut holder = serde_json::Map::new();
+        if let Some(instance) = &endpoint.host_instance {
+            holder.insert("host_instance".into(), instance.clone().into());
+        }
+        if let Some(socket) = &endpoint.host_socket {
+            holder.insert("host_socket".into(), socket.clone().into());
+        }
+        if let Some(dir) = &endpoint.host_daemon_dir {
+            holder.insert("host_daemon_dir".into(), dir.clone().into());
+        }
+        value["holderEndpoint"] = serde_json::Value::Object(holder);
+    }
     value
 }
 pub fn profile_from_wire(
@@ -326,6 +348,25 @@ pub fn profile_from_wire(
             .get("attended")
             .and_then(serde_json::Value::as_bool)
             .filter(|attended| !attended),
+        prompt_surface: text("promptSurface"),
+        browser_engine: text("browserEngine"),
+        retry_fallback: value.get("retryFallback").cloned(),
+        holder_endpoint: value.get("holderEndpoint").and_then(|holder| {
+            let field = |key: &str| {
+                holder
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            };
+            Some(maho_core::session_holders::SessionHolderEndpoint {
+                host_instance: field("host_instance"),
+                host_socket: field("host_socket"),
+                host_daemon_dir: field("host_daemon_dir"),
+            })
+            .filter(|endpoint| {
+                endpoint != &maho_core::session_holders::SessionHolderEndpoint::default()
+            })
+        }),
     })
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -429,6 +470,16 @@ mod tests {
             session_kind: Some(maho_ext_api::SessionKind::Worker),
             session_context: Some(std::collections::BTreeMap::from([("k".into(), "v".into())])),
             attended: Some(false),
+            prompt_surface: Some("app".into()),
+            browser_engine: Some("builtin".into()),
+            retry_fallback: Some(
+                serde_json::json!({"modelFallback":true,"fallbackChains":{"a":["b"]}}),
+            ),
+            holder_endpoint: Some(maho_core::session_holders::SessionHolderEndpoint {
+                host_instance: Some("i".into()),
+                host_socket: None,
+                host_daemon_dir: Some("/d".into()),
+            }),
         };
         assert_eq!(
             profile_from_wire(&profile_to_wire(&profile)).unwrap(),
@@ -442,8 +493,7 @@ mod tests {
             session_path: None,
             durable_session_id: None,
             session_kind: None,
-            session_context: None,
-            attended: None,
+            ..Default::default()
         };
         assert_eq!(profile_from_wire(&profile_to_wire(&bare)).unwrap(), bare);
         assert!(profile_from_wire(&serde_json::json!({})).is_err());

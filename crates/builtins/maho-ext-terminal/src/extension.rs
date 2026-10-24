@@ -70,39 +70,49 @@ fn bind_completion(
             };
             crate::tools::context::TerminalExitView::of_runtime(runtime)
         };
-        notifier
-            .lock()
-            .expect("terminal notifier")
-            .notify_completion(
-                &id,
-                *delivery.lock().expect("terminal delivery"),
-                &view,
-                |content, delivery| {
-                    use maho_ext_api::types::{CustomMessage, DeliverAs, SendMessageOptions};
-                    if let Err(error) = sender.send_message(
-                        CustomMessage {
-                            custom_type: crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE
-                                .to_owned(),
-                            content: vec![ToolContent::text(content)],
-                            display: false,
-                            details: None,
-                        },
-                        SendMessageOptions {
-                            trigger_turn: true,
-                            deliver_as: Some(
-                                if delivery == crate::notify::NotificationDelivery::Steer {
-                                    DeliverAs::Steer
-                                } else {
-                                    DeliverAs::FollowUp
-                                },
-                            ),
-                        },
-                    ) {
-                        maho_ext_api::diagnostic(&format!("terminal notification failed: {error}"));
-                    }
-                },
-            );
+        send_completion_notice(&id, &view, &sender, &delivery, &notifier);
     }))
+}
+/// `state.notifier?.notifyCompletion(id, runtime)`: the once-only completion notice of a background session, read
+/// through `TerminalExitView` (a live session's, or the summary a tool child sent).
+fn send_completion_notice(
+    id: &str,
+    view: &crate::tools::context::TerminalExitView,
+    sender: &Arc<ExtensionApi>,
+    delivery: &Arc<Mutex<Option<crate::notify::NotificationDelivery>>>,
+    notifier: &Arc<Mutex<crate::notify::TerminalNotifier>>,
+) {
+    notifier
+        .lock()
+        .expect("terminal notifier")
+        .notify_completion(
+            id,
+            *delivery.lock().expect("terminal delivery"),
+            view,
+            |content, delivery| {
+                use maho_ext_api::types::{CustomMessage, DeliverAs, SendMessageOptions};
+                if let Err(error) = sender.send_message(
+                    CustomMessage {
+                        custom_type: crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE.to_owned(),
+                        content: vec![ToolContent::text(content)],
+                        display: false,
+                        details: None,
+                    },
+                    SendMessageOptions {
+                        trigger_turn: true,
+                        deliver_as: Some(
+                            if delivery == crate::notify::NotificationDelivery::Steer {
+                                DeliverAs::Steer
+                            } else {
+                                DeliverAs::FollowUp
+                            },
+                        ),
+                    },
+                ) {
+                    maho_ext_api::diagnostic(&format!("terminal notification failed: {error}"));
+                }
+            },
+        );
 }
 pub fn monitor_state_payload(snapshot: &[crate::monitor_registry::MonitorSnapshotEntry]) -> Value {
     let monitors=snapshot.iter().map(|entry| {
@@ -282,6 +292,8 @@ fn send_terminal_reminder(
 }
 impl Extension for TerminalExtension {
     fn register(&self, api: &mut ExtensionApi) {
+        // The session cwd the child placement reads, set by the first session-start handler.
+        let session_cwd: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::new(Mutex::new(None));
         let manager = Arc::new(Mutex::new(TerminalManager::default()));
         let backgrounds: Backgrounds = Arc::new(Mutex::new(indexmap::IndexMap::new()));
         let configuration = Arc::new(Mutex::new((
@@ -290,12 +302,18 @@ impl Extension for TerminalExtension {
         )));
         let start_configuration = configuration.clone();
         let configuration_manager = manager.clone();
+        let start_cwd = session_cwd.clone();
         api.on(
             EventKind::SessionStart,
             Arc::new(move |_, ctx| {
                 let configuration = start_configuration.clone();
                 let manager = configuration_manager.clone();
+                let context_cwd = start_cwd.clone();
                 Box::pin(async move {
+                    *context_cwd
+                        .lock()
+                        .map_err(|_| ExtensionFailure::new("terminal context cwd poisoned"))? =
+                        Some(ctx.cwd.clone());
                     let loaded = crate::settings::load_session_settings(ctx)?;
                     manager
                         .lock()
@@ -882,10 +900,88 @@ impl Extension for TerminalExtension {
         );
         let bash_backgrounds = backgrounds.clone();
         let bash_lifecycle = state_lifecycle.clone();
+        // The tool context the child placement reads (upstream `buildToolContext`): the live configuration, the
+        // session cwd, the shell environment, and the hooks a background session that lives on the child reports to.
+        let mut terminal_context = crate::tools::context::TerminalToolContext::new(
+            configuration.clone(),
+            Arc::new(maho_core::utils::shell::get_shell_env),
+        );
+        terminal_context.session_cwd = session_cwd;
+        {
+            let (backgrounds, sender, lifecycle) = (
+                backgrounds.clone(),
+                bash_sender.clone(),
+                state_lifecycle.clone(),
+            );
+            terminal_context.on_background_start = Some(Arc::new(
+                move |id: &str, description: &str, started_at_ms: f64| {
+                    backgrounds
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(
+                            id.to_owned(),
+                            crate::session_bundle::BackgroundSession {
+                                id: id.to_owned(),
+                                description: description.to_owned(),
+                                started_at_ms,
+                            },
+                        );
+                    publish_backgrounds(&backgrounds, &sender);
+                    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+                        return;
+                    };
+                    let (lifecycle, id, description) =
+                        (lifecycle.clone(), id.to_owned(), description.to_owned());
+                    handle.spawn(async move {
+                        if let Some(lifecycle) = lifecycle.lock().await.as_mut() {
+                            lifecycle
+                                .writer
+                                .record_background_start(
+                                    &id,
+                                    &description,
+                                    started_at_ms,
+                                    manifest_now_ms(),
+                                )
+                                .await;
+                        }
+                    });
+                },
+            ));
+        }
+        {
+            let (backgrounds, sender, lifecycle, delivery, notifier) = (
+                backgrounds.clone(),
+                bash_sender.clone(),
+                state_lifecycle.clone(),
+                completion_delivery.clone(),
+                terminal_notifier.clone(),
+            );
+            terminal_context.on_background_exit = Some(Arc::new(
+                move |id: &str, view: crate::tools::context::TerminalExitView| {
+                    backgrounds
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .shift_remove(id);
+                    publish_backgrounds(&backgrounds, &sender);
+                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                        let (lifecycle, id) = (lifecycle.clone(), id.to_owned());
+                        handle.spawn(async move {
+                            if let Some(lifecycle) = lifecycle.lock().await.as_mut() {
+                                lifecycle
+                                    .writer
+                                    .record_background_exit(&id, manifest_now_ms())
+                                    .await;
+                            }
+                        });
+                    }
+                    send_completion_notice(id, &view, &sender, &delivery, &notifier);
+                },
+            ));
+        }
         let mut bash = ToolDefinition::new(
             "bash",
             r#"Execute a shell command in a persistent PTY-backed session. Set run_in_background:true for long-lived or interactive sessions; steer them with bash_input, snapshot with bash_output, tear down with kill_bash. To wait on observable state (a build finishing, a server coming up, a log line), never run sleep or poll loops — subscribe with the monitor tool instead. Foreground blocking stops at the ~60s window and a still-running command auto-detaches to a live background session; `timeout` is the process kill deadline in seconds."#,
-            json!({"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute in a PTY-backed session."},"timeout":{"type":"number","description":"Process kill deadline in seconds (default 1800). Foreground blocking stops at the ~60s window: a command still running then auto-detaches to a live background session instead of being killed. Ignored for run_in_background sessions (they live until exit or kill_bash)."},"description":{"type":"string","description":"Short human-readable label for this command."},"run_in_background":{"type":"boolean","description":"Run as a persistent background session. Returns a bash_id immediately; query it with bash_output, steer with bash_input, tear down with kill_bash."},"cols":{"type":"number","description":"PTY width in columns (default 120)."},"rows":{"type":"number","description":"PTY height in rows (default 40)."}},"required":["command"]}),
+            crate::tools::bash::pty_bash_schema(),
             Arc::new(move |call| {
                 let manager = Arc::clone(&bash_manager);
                 let sender = bash_sender.clone();
@@ -982,35 +1078,37 @@ impl Extension for TerminalExtension {
             "You can inspect PI_* environment variables for current model and session details."
                 .to_owned(),
         ]);
+        bash.placement = Some(maho_tools::definition::ToolPlacement::Child);
+        bash.child_job = Some(crate::tools::child_placement::terminal_child_job(
+            &terminal_context,
+            crate::tools::child_placement::TERMINAL_CHILD_JOB_KINDS.bash,
+        ));
         api.register_tool(bash);
-        for (name, description, prompt_snippet, properties, required) in [
+        let child_context = terminal_context;
+        for (name, description, prompt_snippet, parameters) in [
             (
                 "bash_output",
                 "Read output from a background bash session without blocking: new output since the last read, the status line, or a rendered full-screen snapshot via view:'screen'. Pattern watches run through monitor; completion arrives as a notification carrying the exit code and output tail.",
                 "Peek at background bash session output (filter, screen view, status); watch patterns with monitor, completion arrives as a notification",
-                json!({"bash_id":{"type":"string","description":"Session id returned by a run_in_background bash call."},"filter":{"type":"string","description":"Only return output lines matching this regex."},"view":{"type":"string","enum":["log","screen"],"description":"'log' returns new raw output (default); 'screen' returns the rendered xterm grid."}}),
-                vec!["bash_id"],
+                crate::tools::bash_output::bash_output_schema(),
             ),
             (
                 "bash_input",
                 "Write stdin or named keys (ctrl+c, enter, up, ...) to a live background bash session — e.g. drive a REPL or send SIGINT. This executes arbitrary shell input and is permission-gated like bash.",
                 "Send stdin/keys to a live background bash session (REPL steering, ctrl+c, etc.)",
-                json!({"bash_id":{"type":"string","description":"Session id returned by a run_in_background bash call."},"input":{"type":"string","description":"Literal text to write to the session's stdin."},"keys":{"type":"array","items":{"type":"string"},"description":"Named keys to send, e.g. ['ctrl+c'], ['enter'], ['up']. Sent after `input` when both are given."},"submit":{"type":"boolean","description":"Append Enter (\\r) after `input`. Default true when `input` is a non-empty string."}}),
-                vec!["bash_id"],
+                crate::tools::bash_input::bash_input_schema(),
             ),
             (
                 "bash_resize",
                 "Resize a live background bash session's PTY (cols x rows) so full-screen TUIs reflow. No-ops with a note under the pipe fallback.",
                 "Resize a background bash session's PTY so TUIs reflow",
-                json!({"bash_id":{"type":"string","description":"Session id returned by a run_in_background bash call."},"cols":{"type":"number","description":"New PTY width in columns."},"rows":{"type":"number","description":"New PTY height in rows."}}),
-                vec!["bash_id", "cols", "rows"],
+                crate::tools::bash_resize::bash_resize_schema(),
             ),
             (
                 "kill_bash",
                 "Terminate a background bash session (or all of them) and its process tree cleanly.",
                 "Tree-kill a background bash session (or all) with no orphans",
-                json!({"bash_id":{"type":"string","description":"Session id to tree-kill."},"all":{"type":"boolean","description":"Tree-kill every live background session."}}),
-                Vec::new(),
+                crate::tools::kill_bash::kill_bash_schema(),
             ),
         ] {
             let manager = Arc::clone(&manager);
@@ -1018,7 +1116,7 @@ impl Extension for TerminalExtension {
             let mut tool = ToolDefinition::new(
                 name,
                 description,
-                json!({"type":"object","properties":properties,"required":required}),
+                parameters,
                 Arc::new(move |call| {
                     let manager = Arc::clone(&manager);
                     let monitors = monitors.clone();
@@ -1154,6 +1252,17 @@ impl Extension for TerminalExtension {
                 }),
             );
             tool.prompt_snippet = Some(prompt_snippet.to_owned());
+            let kinds = &crate::tools::child_placement::TERMINAL_CHILD_JOB_KINDS;
+            tool.placement = Some(maho_tools::definition::ToolPlacement::Child);
+            tool.child_job = Some(crate::tools::child_placement::terminal_child_job(
+                &child_context,
+                match name {
+                    "bash_output" => kinds.output,
+                    "bash_input" => kinds.input,
+                    "bash_resize" => kinds.resize,
+                    _ => kinds.kill,
+                },
+            ));
             if name == "bash_output" {
                 api.register_tool_with_renderers(tool, crate::tools::render::output_renderers())
                     .expect("valid builtin bash_output registration");

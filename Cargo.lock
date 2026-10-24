@@ -3640,6 +3640,7 @@ dependencies = [
  "maho-rpc",
  "maho-senpi-task",
  "maho-server",
+ "maho-tool-child",
  "maho-tools",
  "maho-tui",
  "nix 0.28.0",
@@ -3740,6 +3741,7 @@ dependencies = [
  "maho-ext-host",
  "maho-ext-permission-system",
  "maho-ext-recommended-models",
+ "maho-tool-child",
  "maho-tools",
  "maho-tui",
  "nix 0.28.0",
@@ -4586,6 +4588,7 @@ dependencies = [
  "maho-ext-host",
  "maho-pty",
  "maho-test-support",
+ "maho-tool-child",
  "maho-tools",
  "maho-tui",
  "nix 0.28.0",
@@ -5522,6 +5525,7 @@ dependencies = [
  "maho-ext-api",
  "maho-ext-host",
  "maho-test-support",
+ "maho-tool-child",
  "maho-tools",
  "maho-tui",
  "notify",
@@ -5913,6 +5917,27 @@ dependencies = [
  "serde_json",
  "tempfile",
  "url",
+]
+
+[[package]]
+name = "maho-tool-child"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "getrandom 0.3.4",
+ "libc",
+ "maho-ext-api",
+ "maho-process-env",
+ "notify",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

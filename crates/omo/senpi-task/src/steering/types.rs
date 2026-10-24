@@ -17,6 +17,9 @@ pub type RunStatsSnapshotFn = dyn Fn(&str) -> Option<TaskRunStats> + Send + Sync
 pub type LiveHandleFn = dyn Fn(&str) -> Option<Arc<dyn ManagedChildHandle>> + Send + Sync;
 
 /// What the engine needs from the manager.
+/// Called with a task id when its stop is requested or settled.
+pub type StopHookFn = dyn Fn(&str) + Send + Sync;
+
 #[derive(Clone)]
 pub struct SteeringPort {
     pub store: TaskRecordStore,
@@ -27,9 +30,16 @@ pub struct SteeringPort {
     pub reacquire_for_revive: Arc<dyn Fn(&str) + Send + Sync>,
     pub destruction: Arc<dyn DestructionPort>,
     pub run_stats_snapshot: Arc<RunStatsSnapshotFn>,
+    /// A cancel that must wait for the child's lost connection: until `stop_settled`, only the cancel
+    /// ends that run, so no failure the stop itself causes is written over it.
+    pub stop_requested: Option<Arc<StopHookFn>>,
+    pub stop_settled: Option<Arc<StopHookFn>>,
     /// Epoch milliseconds.
     pub now: Arc<dyn Fn() -> i64 + Send + Sync>,
 }
+
+/// Why a cancel is still pending (TS `CANCEL_PENDING_REASON`).
+pub const CANCEL_PENDING_REASON: &str = "cancel requested, child unreachable";
 
 pub const DEFAULT_SEND_DELIVERY: DeliverAs = DeliverAs::FollowUp;
 
@@ -116,6 +126,13 @@ pub enum CancelOutcome {
     Cancelled {
         task_id: String,
         previous_status: TaskStatus,
+    },
+    /// The child's connection is down: the stop waits on its host and the record carries
+    /// `cancel_requested`.
+    CancelPending {
+        task_id: String,
+        previous_status: TaskStatus,
+        reason: String,
     },
     Stale {
         task_id: String,

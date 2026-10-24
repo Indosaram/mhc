@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct RpcSessionLaunchProfile {
     pub runtime: maho_core::agent_session_runtime::AgentSessionLaunchProfile,
     pub session_path: Option<String>,
@@ -12,6 +12,14 @@ pub struct RpcSessionLaunchProfile {
     pub session_context: Option<BTreeMap<String, String>>,
     /// `Some(false)` only: an observational open whose attach never releases an existing hold (senpi `attended?: false`).
     pub attended: Option<bool>,
+    /// `terminal`, `app` or `chat`: where this session's replies render (senpi `promptSurface`).
+    pub prompt_surface: Option<String>,
+    /// `connected`, `builtin` or `none`: which browser this session's skills drive (senpi `browserEngine`).
+    pub browser_engine: Option<String>,
+    /// This session's own `{ modelFallback, fallbackChains }` policy (senpi `retryFallback`).
+    pub retry_fallback: Option<serde_json::Value>,
+    /// The host endpoint this session's holder record names (senpi `holderEndpoint`).
+    pub holder_endpoint: Option<maho_core::session_holders::SessionHolderEndpoint>,
 }
 pub struct SessionIdentity {
     pub kind: maho_ext_api::SessionKind,
@@ -46,6 +54,8 @@ pub struct RpcSessionEntry {
     pub durable_session_id: Option<String>,
     pub session_path: Option<String>,
     pub last_command_at: f64,
+    /// Patches `set_session_context` applied over the frozen open-time context (senpi `contextOverlay`).
+    pub context_overlay: Option<crate::session_context_patch::SessionContextOverlay>,
 }
 #[derive(Default)]
 pub struct RpcSessionRegistry {
@@ -214,6 +224,7 @@ impl RpcSessionRegistry {
                 profile,
                 identity,
                 last_command_at: now,
+                context_overlay: None,
             },
         );
         Ok(OpenAdmission::Create(handle))
@@ -280,11 +291,11 @@ impl RpcSessionRegistry {
     pub fn list_sessions(&self, include_workers: bool) -> Vec<serde_json::Value> {
         self.entries.iter().filter(|(_,entry)|entry.close.state!=RpcSessionState::Quarantined&&(include_workers||entry.identity.kind!=maho_ext_api::SessionKind::Worker)).map(|(handle,entry)|{
             let status=match entry.close.state{RpcSessionState::Opening=>"opening",RpcSessionState::Open=>"open",RpcSessionState::Closing=>"closing",RpcSessionState::Quarantined=>"quarantined",RpcSessionState::Closed=>"closed"};
-            let mut row=serde_json::json!({"sessionId":handle,"cwd":entry.runtime.as_ref().map_or(entry.profile.runtime.cwd.as_str(),|runtime|runtime.cwd()),"status":status,"attachments":entry.close.attachments,"kind":if entry.identity.kind==maho_ext_api::SessionKind::Worker{"worker"}else{"interactive"},"tool_child":{"state":"none"}});
+            let mut row=serde_json::json!({"sessionId":handle,"cwd":entry.runtime.as_ref().map_or(entry.profile.runtime.cwd.as_str(),|runtime|runtime.cwd()),"status":status,"attachments":entry.close.attachments,"kind":if entry.identity.kind==maho_ext_api::SessionKind::Worker{"worker"}else{"interactive"},"tool_child":entry.runtime.as_ref().and_then(|runtime|serde_json::to_value(runtime.session().tool_child_row()).ok()).unwrap_or_else(||serde_json::json!({"state":"none"}))});
             if let Some(id)=&entry.durable_session_id{row["durableSessionId"]=id.clone().into();}
             if let Some(path)=&entry.session_path{row["sessionPath"]=path.clone().into();}
             if let Some(name)=entry.runtime.as_ref().and_then(|runtime|runtime.session().session_name()){row["name"]=name.into();}
-            if include_workers{row["context"]=serde_json::json!(&*entry.identity.context);}
+            if include_workers{row["context"]=serde_json::Value::Object(crate::session_context_patch::published_session_context(&entry.identity.context,entry.context_overlay.as_ref()));}
             row
         }).collect()
     }
@@ -419,7 +430,7 @@ mod tests {
             durable_session_id: None,
             session_kind: None,
             session_context: Some(BTreeMap::from([("owner".into(), "a".into())])),
-            attended: None,
+            ..Default::default()
         };
         let frozen = frozen_profile(&profile);
         profile
@@ -437,7 +448,7 @@ mod tests {
             durable_session_id: None,
             session_kind: None,
             session_context: None,
-            attended: None,
+            ..Default::default()
         };
         profile.runtime.cwd = "relative".into();
         assert_eq!(
@@ -491,7 +502,7 @@ mod tests {
             durable_session_id: None,
             session_kind: None,
             session_context: Some(BTreeMap::from([("owner".into(), "a".into())])),
-            attended: None,
+            ..Default::default()
         };
         let identity = session_identity(&profile);
         profile

@@ -1,5 +1,8 @@
 use super::context::{TerminalToolResult, error_result, resolve_terminal_id, text_result};
 use crate::manager::TerminalManager;
+pub fn kill_bash_schema() -> serde_json::Value {
+    serde_json::json!({"type":"object","properties":{"bash_id":{"type":"string","description":"Session id to tree-kill."},"all":{"type":"boolean","description":"Tree-kill every live background session."}},"required":[]})
+}
 pub fn execute_kill_bash(
     manager: &mut TerminalManager,
     id: Option<&str>,

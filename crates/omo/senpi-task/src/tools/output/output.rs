@@ -20,8 +20,8 @@ use crate::tools::output::renderers::{
 use crate::tools::output::snapshot::build_task_snapshot;
 use crate::tools::output::transcript::reader::default_transcript_reader;
 use crate::tools::output::types::{
-    OutputManager, TaskOutputDeps, TaskOutputDetails, TaskOutputToolResult, TaskSnapshot, TranscriptMode,
-    TranscriptReaderInput,
+    OutputManager, TaskOutputDeps, TaskOutputDetails, TaskOutputToolResult, TaskSnapshot,
+    TranscriptMode, TranscriptReaderInput,
 };
 use crate::tools::render::RendererTheme;
 
@@ -96,6 +96,8 @@ pub fn task_output_params_schema() -> Value {
 }
 
 const DEFAULT_TAIL_LINES: usize = 60;
+const STOP_PENDING_EXPLANATION: &str =
+    "cancel requested, child unreachable: it is stopped on its host before it runs anything else";
 const BLOCKING_REMOVED_GUIDANCE: &str =
     "blocking removed - completion arrives as a notification; use mode:\"tail\" to peek.";
 
@@ -120,7 +122,9 @@ pub fn run_task_output(
     }
 
     let Some(id_or_name) = params.task_id.as_deref().or(params.name.as_deref()) else {
-        return Ok(invalid_arguments("Provide task_id or name to identify the child task."));
+        return Ok(invalid_arguments(
+            "Provide task_id or name to identify the child task.",
+        ));
     };
 
     // Fast path: a task id owned by the caller's session resolves with one record load instead of
@@ -160,18 +164,28 @@ fn output_for_record(
         Some(clock) => clock(),
         None => chrono::Utc::now().timestamp_millis(),
     };
-    let snapshot = build_task_snapshot(record, &deps.state_dir, now);
+    let mut snapshot = build_task_snapshot(record, &deps.state_dir, now);
+    // Only a still-running child can be waiting on its cancel; a cancelled record says so itself.
+    if record.status.as_str() == "running" && record.cancel_requested.is_some() {
+        snapshot.stop = Some(STOP_PENDING_EXPLANATION.to_string());
+    }
     let mode = params.mode.unwrap_or(TaskOutputMode::Status);
 
     let transcript_mode = match mode {
         TaskOutputMode::Tail => TranscriptMode::Tail,
         TaskOutputMode::Full => TranscriptMode::Full,
         TaskOutputMode::Status => {
-            return Ok(tool_result(&status_text(&snapshot), TaskOutputDetails::Status { snapshot }));
+            return Ok(tool_result(
+                &status_text(&snapshot),
+                TaskOutputDetails::Status { snapshot },
+            ));
         }
     };
     if record.status.as_str() == "lost" {
-        return Ok(tool_result(&status_text(&snapshot), TaskOutputDetails::Status { snapshot }));
+        return Ok(tool_result(
+            &status_text(&snapshot),
+            TaskOutputDetails::Status { snapshot },
+        ));
     }
 
     transcript_result(
@@ -218,7 +232,10 @@ fn transcript_result(
 
 // Fail-closed scope: candidates are ONLY the caller session's children. No caller id -> nothing is
 // visible, so a valid id owned by another session reads as not_found (never cross-session leakage).
-fn scoped_candidates(manager: &dyn OutputManager, caller_session_id: Option<&str>) -> Vec<TaskRecord> {
+fn scoped_candidates(
+    manager: &dyn OutputManager,
+    caller_session_id: Option<&str>,
+) -> Vec<TaskRecord> {
     let Some(session_id) = caller_session_id else {
         return Vec::new();
     };
@@ -233,7 +250,11 @@ fn resolve_target<'a>(candidates: &'a [TaskRecord], id_or_name: &str) -> Option<
     candidates
         .iter()
         .find(|record| record.task_id == id_or_name)
-        .or_else(|| candidates.iter().find(|record| record.name.as_deref() == Some(id_or_name)))
+        .or_else(|| {
+            candidates
+                .iter()
+                .find(|record| record.name.as_deref() == Some(id_or_name))
+        })
 }
 
 fn status_text(snapshot: &TaskSnapshot) -> String {
@@ -248,6 +269,10 @@ fn status_text(snapshot: &TaskSnapshot) -> String {
     if let Some(suspended) = &snapshot.suspended {
         text.push('\n');
         text.push_str(&suspended.explanation);
+    }
+    if let Some(stop) = &snapshot.stop {
+        text.push('\n');
+        text.push_str(stop);
     }
     if let Some(pid) = snapshot.pid {
         let _ = write!(text, "\npid {pid}");
@@ -269,7 +294,12 @@ fn status_text(snapshot: &TaskSnapshot) -> String {
 fn not_found(candidates: &[TaskRecord], id_or_name: &str) -> TaskOutputToolResult {
     let known: Vec<String> = candidates
         .iter()
-        .map(|record| record.name.clone().unwrap_or_else(|| record.task_id.clone()))
+        .map(|record| {
+            record
+                .name
+                .clone()
+                .unwrap_or_else(|| record.task_id.clone())
+        })
         .collect();
     let list_text = if known.is_empty() {
         String::new()
@@ -316,7 +346,11 @@ impl TaskOutputTool {
         run_task_output(&self.deps, params, caller_session_id.as_deref())
     }
 
-    pub fn render_call<'a>(&self, args: &TaskOutputInput, theme: &'a dyn RendererTheme) -> OutputCallComponent<'a> {
+    pub fn render_call<'a>(
+        &self,
+        args: &TaskOutputInput,
+        theme: &'a dyn RendererTheme,
+    ) -> OutputCallComponent<'a> {
         render_task_output_call(args, theme)
     }
 

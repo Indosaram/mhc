@@ -15,6 +15,29 @@ pub fn signal_generation(
         Err(error) => Err(error),
     }
 }
+/// Windows `process.kill(pid, "SIGTERM")`: Node maps it to TerminateProcess of that pid alone (no tree).
+/// `Ok(false)` when the process is already gone (the ESRCH analogue).
+#[cfg(windows)]
+pub fn terminate_generation(pid: u32) -> std::io::Result<bool> {
+    if pid == 0 {
+        return Ok(false);
+    }
+    let status = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/F"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(true)
+    } else if crate::host_reservations::process_is_live(pid) {
+        Err(std::io::Error::other(format!(
+            "taskkill failed for pid {pid}"
+        )))
+    } else {
+        Ok(false)
+    }
+}
 #[derive(Debug, PartialEq, Eq)]
 pub enum StopDecision {
     Drain,
@@ -282,7 +305,15 @@ async fn stop_host_locked(options: StopHostOptions) -> std::io::Result<StopHostO
         }
         Ok(StopHostOutcome::Stopped { pid })
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let delivered = terminate_generation(pid)?;
+        if !delivered {
+            crate::host_daemon_registration::release_generation(&paths, &instance_id, pid)?;
+        }
+        Ok(StopHostOutcome::Stopped { pid })
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (pid, instance_id);
         Err(std::io::Error::new(

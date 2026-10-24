@@ -40,6 +40,7 @@ pub fn build_task_snapshot(record: &TaskRecord, state_dir: &str, now: i64) -> Ta
         error_message: record.error_message.clone(),
         run_stats: record.run_stats.clone(),
         lost: (record.status.as_str() == "lost").then(|| lost_breadcrumbs(record, state_dir)),
+        stop: None,
     }
 }
 
