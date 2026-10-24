@@ -11360,6 +11360,9 @@ impl InteractiveMode {
             }
             AgentSessionEvent::CompactionEnd { reason, result, aborted, will_retry, accepted, rejection_cause, error_message, .. } => {
                 self.clear_status_indicator(Some(StatusIndicatorKind::Compaction));
+                if self.working_started_ms.is_some() {
+                    self.working_started_ms = Some(self.clock.elapsed().as_secs_f64() * 1000.0);
+                }
                 self.show_compaction_end(*reason, result.as_ref(), *aborted, *accepted, *rejection_cause, error_message.as_deref());
                 // senpi: every terminal compaction_end resolves the compaction queue.
                 if *accepted == Some(true) || result.is_some() {
@@ -13446,7 +13449,7 @@ impl InteractiveMode {
     }
 
     pub fn working_frame(&self, now_ms: f64) -> Option<String> {
-        if !self.working_visible {
+        if !self.working_visible || self.active_status_indicator.is_some() {
             return None;
         }
         let elapsed = (now_ms - self.working_started_ms?).max(0.0);
@@ -14068,17 +14071,22 @@ impl InteractiveMode {
             indicator.borrow().kind
                 != crate::components::status_indicator::StatusIndicatorKind::Compaction
         });
-        let indicator = embedded.or_else(|| {
-            self.working_frame(now).map(|frame| {
-                let mut indicator = crate::components::status_indicator::StatusIndicator::working(
-                    &frame,
-                    self.theme.clone(),
-                    self.working_started_ms.unwrap_or(now).max(0.0) as u64,
-                );
-                indicator.tick(now.max(0.0) as u64);
-                Rc::new(RefCell::new(indicator))
+        let indicator = if compaction.is_some() {
+            None
+        } else {
+            embedded.or_else(|| {
+                self.working_frame(now).map(|frame| {
+                    let mut indicator =
+                        crate::components::status_indicator::StatusIndicator::working(
+                            &frame,
+                            self.theme.clone(),
+                            self.working_started_ms.unwrap_or(now).max(0.0) as u64,
+                        );
+                    indicator.tick(now.max(0.0) as u64);
+                    Rc::new(RefCell::new(indicator))
+                })
             })
-        });
+        };
         self.editor.set_working_status_indicator(indicator);
         lines.push(String::new());
         for component in &self.pending_bash_components {
