@@ -29,7 +29,7 @@
 curl -fsSL https://raw.githubusercontent.com/Indosaram/mhc/main/install.sh | sh
 ```
 
-Linux x86_64 and macOS Apple Silicon. Installs to `~/.local/share/mhc` with `mhc` linked into `~/.local/bin`; run the same command again to upgrade. Pin a version with `MHC_VERSION=v2026.10.19`.
+Linux x86_64, Linux aarch64, macOS Apple Silicon and macOS x86_64 (Intel). Installs to `~/.local/share/mhc` with `mhc` linked into `~/.local/bin`; run the same command again to upgrade. Pin a version with `MHC_VERSION=v2026.10.19`.
 
 Windows x86_64 (PowerShell), installs to `%LOCALAPPDATA%\mhc` and adds it to your user PATH:
 

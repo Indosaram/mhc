@@ -37,6 +37,8 @@ fn current_version_returns_non_empty_identity() {
 fn target_mapping_covers_known_platforms_and_rejects_unknown() {
     assert_eq!(target_from_str("linux-x86_64"), Ok("linux-x86_64"));
     assert_eq!(target_from_str("macos-aarch64"), Ok("macos-aarch64"));
+    assert_eq!(target_from_str("linux-aarch64"), Ok("linux-aarch64"));
+    assert_eq!(target_from_str("macos-x86_64"), Ok("macos-x86_64"));
     assert_eq!(target_from_str("windows-x86_64"), Ok("windows-x86_64"));
     assert!(target_from_str("linux-armv7").is_err());
     assert!(target_from_str("unknown-x86_64").is_err());
@@ -52,6 +54,14 @@ fn asset_names_map_to_expected_package_archives() {
     assert_eq!(
         asset_name_for_target("macos-aarch64"),
         Ok("mhc-macos-aarch64.tar.gz".to_string())
+    );
+    assert_eq!(
+        asset_name_for_target("linux-aarch64"),
+        Ok("mhc-linux-aarch64.tar.gz".to_string())
+    );
+    assert_eq!(
+        asset_name_for_target("macos-x86_64"),
+        Ok("mhc-macos-x86_64.tar.gz".to_string())
     );
     assert_eq!(
         asset_name_for_target("windows-x86_64"),
