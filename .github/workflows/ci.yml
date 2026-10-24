@@ -94,12 +94,32 @@ jobs:
           cache-key: macos
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings
+
+  macos-test:
+    runs-on: macos-15
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: macos-test-${{ matrix.shard }}
       - name: install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      - name: native update integration tests
-        run: "cargo nextest run --locked -p maho-cli -E 'test(/^native_update/)'"
+      - name: select crates
+        run: echo "CRATES=$(python3 scripts/ci-shard.py 2 ${{ matrix.shard }})" >> "$GITHUB_ENV"
+      - name: build tests (shard ${{ matrix.shard }}/2)
+        run: |
+          cargo nextest run --locked --no-run $CRATES
+          cargo build --locked -p maho-senpi-desktop-engine
+      - name: run tests (shard ${{ matrix.shard }}/2)
+        timeout-minutes: 40
+        run: cargo nextest run --locked --no-fail-fast $CRATES
 
   windows:
     runs-on: windows-2025
