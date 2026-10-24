@@ -271,6 +271,17 @@ impl TaskRecordStore {
                 Err(error) => return Err(error),
             }
         }
+        if !records
+            .iter()
+            .any(|record| matches!(record.status, TaskStatus::Pending | TaskStatus::Running))
+        {
+            let mut cache = self
+                .list_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            cache.clear();
+            cache.shrink_to_fit();
+        }
         Ok(ListTaskRecordsResult {
             records,
             diagnostics,

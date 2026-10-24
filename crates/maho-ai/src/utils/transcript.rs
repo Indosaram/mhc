@@ -40,10 +40,24 @@ pub fn resolve_provider_context(
     context: &Context,
     supports_mid_convo_system_messages: bool,
 ) -> Context {
-    let transcript = resolve_transcript(
-        &normalize_context(context),
-        supports_mid_convo_system_messages,
-    );
+    let normalized = normalize_context(context);
+    let mut transcript = if supports_mid_convo_system_messages {
+        normalized
+    } else {
+        let initial = get_current_system_message(&normalized.messages).map(Message::System);
+        TranscriptContext {
+            messages: initial
+                .into_iter()
+                .chain(
+                    normalized
+                        .messages
+                        .into_iter()
+                        .filter(|message| !matches!(message, Message::System(_))),
+                )
+                .collect(),
+            active_tool_names: normalized.active_tool_names,
+        }
+    };
     let prompt = get_initial_system_message(&transcript.messages)
         .map(|message| get_system_message_text(&message.content, &message.sections));
     let tools = if supports_mid_convo_system_messages {
@@ -53,10 +67,13 @@ pub fn resolve_provider_context(
     } else {
         get_current_tools(&transcript.messages)
     };
+    if get_initial_system_message(&transcript.messages).is_some() {
+        transcript.messages.remove(0);
+    }
     Context {
         system_prompt: prompt,
         tools: Some(tools),
-        messages: without_initial_system_message(&transcript.messages).to_vec(),
+        messages: transcript.messages,
         active_tool_names: transcript.active_tool_names,
     }
 }
@@ -285,9 +302,46 @@ pub fn resolve_transcript_tools(
     }
 }
 
+/// [`resolve_transcript_tools`] over `normalize_context(context).messages`, reading only the
+/// system messages instead of cloning the whole transcript once per request.
+pub fn resolve_context_transcript_tools(
+    context: &Context,
+    supports_tool_additions: bool,
+) -> TranscriptTools {
+    let initial =
+        create_initial_system_message(context.system_prompt.as_deref(), context.tools.as_deref());
+    let leads_with_system =
+        initial.is_some() || matches!(context.messages.first(), Some(Message::System(_)));
+    let system_messages: Vec<Message> = initial
+        .map(Message::System)
+        .into_iter()
+        .chain(
+            context
+                .messages
+                .iter()
+                .filter(|message| matches!(message, Message::System(_)))
+                .cloned(),
+        )
+        .collect();
+    if leads_with_system {
+        return resolve_transcript_tools(&system_messages, supports_tool_additions);
+    }
+    let anchors_additions =
+        supports_tool_additions && !has_non_additive_tool_changes(&system_messages);
+    TranscriptTools {
+        request_tools: if anchors_additions {
+            Vec::new()
+        } else {
+            get_current_tools(&system_messages)
+        },
+        anchors_additions,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::UserMessage;
     use serde_json::json;
 
     fn tool(name: &str, version: u32) -> Tool {
@@ -331,6 +385,36 @@ mod tests {
         );
         assert!(has_tool_redefinitions(&messages));
         assert!(!resolve_transcript_tools(&messages, true).anchors_additions);
+    }
+
+    #[test]
+    fn context_tool_placement_matches_the_normalized_transcript() {
+        let user = Message::User(UserMessage {
+            content: UserContent::Text("hi".into()),
+            timestamp: 1,
+        });
+        let contexts = [
+            (Some("prompt"), Some(vec![tool("a", 1)]), vec![user.clone(), system(vec![tool("b", 1)], &[])]),
+            (Some("prompt"), Some(vec![tool("a", 1)]), vec![user.clone(), system(vec![tool("a", 2)], &["a"])]),
+            (None, None, vec![system(vec![tool("a", 1)], &[]), user.clone(), system(vec![tool("b", 1)], &[])]),
+            (None, None, vec![user.clone(), system(vec![tool("b", 1)], &[])]),
+            (None, None, vec![user.clone(), system(vec![tool("b", 1)], &[]), system(Vec::new(), &["b"])]),
+            (None, None, vec![user]),
+        ];
+        for (prompt, tools, messages) in contexts {
+            let context = Context {
+                system_prompt: prompt.map(str::to_owned),
+                tools,
+                messages,
+                active_tool_names: None,
+            };
+            for supports_additions in [true, false] {
+                assert_eq!(
+                    resolve_context_transcript_tools(&context, supports_additions),
+                    resolve_transcript_tools(&normalize_context(&context).messages, supports_additions),
+                );
+            }
+        }
     }
 
     #[test]

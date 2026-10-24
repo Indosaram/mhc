@@ -27,15 +27,11 @@ static FORK_OWNED_CATALOGS: LazyLock<IndexMap<String, IndexMap<String, Model>>> 
         catalogs
     });
 
-/// Providers present in the generated catalog, plus the fork-owned ones.
-static BUILTIN_CATALOGS: LazyLock<IndexMap<String, IndexMap<String, Model>>> =
-    LazyLock::new(|| {
-        let mut catalogs = MODELS.clone();
-        for (provider, models) in FORK_OWNED_CATALOGS.iter() {
-            catalogs.insert(provider.clone(), models.clone());
-        }
-        catalogs
-    });
+fn builtin_provider_catalog(provider: &str) -> Option<&'static IndexMap<String, Model>> {
+    FORK_OWNED_CATALOGS
+        .get(provider)
+        .or_else(|| MODELS.get(provider))
+}
 
 const XIAOMI_MIMO_PROVIDERS: &[&str] = &[
     "xiaomi",
@@ -82,14 +78,18 @@ fn normalize_builtin_model(model: Option<&Model>) -> Option<Model> {
 /// Typed read of the generated built-in catalog.
 pub fn get_builtin_model(provider: &str, model_id: &str) -> Option<Model> {
     normalize_builtin_model(
-        BUILTIN_CATALOGS
-            .get(provider)
-            .and_then(|models| models.get(model_id)),
+        builtin_provider_catalog(provider).and_then(|models| models.get(model_id)),
     )
 }
 
 pub fn get_builtin_providers() -> Vec<&'static str> {
-    BUILTIN_CATALOGS.keys().map(String::as_str).collect()
+    let mut keys: Vec<&'static str> = MODELS.keys().map(String::as_str).collect();
+    for key in FORK_OWNED_CATALOGS.keys().map(String::as_str) {
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    keys
 }
 
 /// Generation timestamp shared by all built-in provider catalogs.
@@ -102,8 +102,7 @@ pub fn get_builtin_model_data_generated_at() -> Option<i64> {
 }
 
 pub fn get_builtin_models(provider: &str) -> Vec<Model> {
-    BUILTIN_CATALOGS
-        .get(provider)
+    builtin_provider_catalog(provider)
         .map(|models| {
             models
                 .values()

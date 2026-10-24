@@ -61,10 +61,15 @@ pub type SessionModelRegistry =
 
 type ChildRegistry = Arc<Mutex<BTreeMap<String, Arc<CliKibitzerChild>>>>;
 
+enum KibitzerRuntimeFactory {
+    Ready(maho_core::sdk::HostRuntimeFactory),
+    Lazy(std::sync::OnceLock<maho_core::sdk::HostRuntimeFactory>),
+}
+
 /// The CLI's concrete `KibitzerChildSpawner`.
 pub struct CliKibitzerChildSpawner {
     executor: tokio::runtime::Handle,
-    factory: maho_core::sdk::HostRuntimeFactory,
+    factory: KibitzerRuntimeFactory,
     cwd: String,
     agent_dir: String,
     /// The FULL omo config the resident model resolver reads (`LiveMemoryConfig`).
@@ -89,13 +94,27 @@ impl CliKibitzerChildSpawner {
         registry_for: SessionModelRegistry,
         resources: KibitzerChildResourcesFactory,
     ) -> Arc<Self> {
+        Self::with_factory(executor, KibitzerRuntimeFactory::Ready(factory), paths, config, category, registry_for, resources)
+    }
+
+    fn with_factory(
+        executor: tokio::runtime::Handle,
+        factory: KibitzerRuntimeFactory,
+        paths: (String, String),
+        config: super::memory_runtime::LiveMemoryConfig,
+        category: Option<String>,
+        registry_for: SessionModelRegistry,
+        resources: KibitzerChildResourcesFactory,
+    ) -> Arc<Self> {
         let (cwd, agent_dir) = paths;
         Arc::new(Self { executor, factory, cwd, agent_dir, config, category, registry_for, resources, children: Arc::new(Mutex::new(BTreeMap::new())), inflight: Mutex::new(BTreeSet::new()) })
     }
 
     /// Production construction from the CLI's own install ports: ONE catalog/auth runtime per
     /// spawner (the same `ModelRuntime::create_sync` construction `host_runtime::host_model_runtime`
-    /// uses), so every resident child shares the host's models.json/auth.json.
+    /// uses), so every resident child shares the host's models.json/auth.json. The runtime holds the
+    /// full provider catalog and every mount (and every extension reload) owns a spawner, so it is
+    /// built on the first spawn instead of with the mount.
     pub fn from_agent_dir(
         executor: tokio::runtime::Handle,
         cwd: String,
@@ -105,17 +124,30 @@ impl CliKibitzerChildSpawner {
         registry_for: SessionModelRegistry,
         resources: KibitzerChildResourcesFactory,
     ) -> Result<Arc<Self>, maho_ai::models::ModelsError> {
+        let factory = KibitzerRuntimeFactory::Lazy(std::sync::OnceLock::new());
+        Ok(Self::with_factory(executor, factory, (cwd, agent_dir), config, category, registry_for, resources))
+    }
+
+    fn runtime_factory(&self) -> Result<&maho_core::sdk::HostRuntimeFactory, KibitzerSidecarStartError> {
+        let lazy = match &self.factory {
+            KibitzerRuntimeFactory::Ready(factory) => return Ok(factory),
+            KibitzerRuntimeFactory::Lazy(lazy) => lazy,
+        };
+        if let Some(factory) = lazy.get() {
+            return Ok(factory);
+        }
+        let agent_dir = std::path::Path::new(&self.agent_dir);
         let model_runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
-            models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
-            auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")),
+            models_path: Some(agent_dir.join("models.json")),
+            auth_path: Some(agent_dir.join("auth.json")),
             ..Default::default()
-        })?;
-        let factory = maho_core::sdk::HostRuntimeFactory {
+        })
+        .map_err(|error| KibitzerSidecarStartError::new(KibitzerSidecarStartCode::RuntimeUnavailable, error.to_string()))?;
+        Ok(lazy.get_or_init(|| maho_core::sdk::HostRuntimeFactory {
             model_registry: maho_core::model_registry::ModelRegistry::new(model_runtime.clone()),
             model_runtime,
             extension_factories: Vec::new(),
-        };
-        Ok(Self::new(executor, factory, (cwd, agent_dir), config, category, registry_for, resources))
+        }))
     }
 
     /// Publish nudges accepted this turn to the resident child's `subscribe_nudges` listeners.
@@ -195,7 +227,7 @@ impl CliKibitzerChildSpawner {
             minimal_resources: true,
             ..Default::default()
         };
-        let created = self.factory.create(options).await.map_err(|message| KibitzerSidecarStartError::new(KibitzerSidecarStartCode::SessionCreateFailed, message))?;
+        let created = self.runtime_factory()?.create(options).await.map_err(|message| KibitzerSidecarStartError::new(KibitzerSidecarStartCode::SessionCreateFailed, message))?;
         created.session.set_system_prompt_sources(Some(resources.persona.clone()), Vec::new());
         Ok(Arc::new(CliKibitzerChild::new(
             Arc::new(created.session),

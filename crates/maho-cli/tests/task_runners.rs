@@ -616,3 +616,91 @@ async fn native_child_steer_and_follow_up_propagate_queue_errors() {
 
     child.dispose();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completed_in_process_child_parks_idle_memory_and_rehydrates_on_follow_up() {
+    use std::sync::Arc;
+    use maho_cli::cli::task_session::NativeChild;
+    use senpi_task::runners::{
+        RunnerOutcome,
+        in_process::{
+            child_handle::{ChildSession, InProcessChildHandle},
+            child_options::build_child_session_options,
+            runner::ChildSpec,
+            session_manager::ChildSessionManager,
+        },
+    };
+
+    let dir = tempfile::tempdir().expect("isolated native child");
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let session_dir = dir.path().join("children").join("child").to_string_lossy().into_owned();
+    let large_first = "r".repeat(64 * 1024);
+    let provider = maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
+    provider.set_responses(vec![
+        maho_ai::providers::faux::faux_assistant_message(&large_first, Default::default()).into(),
+        maho_ai::providers::faux::faux_assistant_message("revived second turn", Default::default()).into(),
+    ]);
+    let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+        maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() },
+    )
+    .expect("valid model runtime");
+    runtime.register_native_provider(provider.provider.clone());
+    let registry = maho_core::model_registry::ModelRegistry::new(runtime.clone());
+    registry
+        .auth_storage
+        .set("faux", Some(serde_json::json!({"type":"api_key","key":"native-child-fixture"})))
+        .expect("faux auth");
+    let spec = ChildSpec {
+        cwd: cwd.clone(),
+        agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+        auth_storage: Some(registry.auth_storage.clone()),
+        model_registry: Some(Arc::new(maho_cli::cli::task_runners::NativeChildModelRegistry(registry))),
+        model_runtime: Some(Arc::new(runtime)),
+        model: Some(Arc::new(provider.get_model(Some("faux-1")).expect("model"))),
+        tool_allowlist: Some(Vec::new()),
+        ..Default::default()
+    };
+    let locator = ChildSessionManager::create(&cwd, &session_dir).expect("locator");
+    let child_opts = build_child_session_options(&spec, locator, &[], &[]);
+    let sdk_opts = maho_cli::cli::task_runners::native_child_sdk_options(&child_opts, Vec::new()).expect("sdk options");
+    let created = maho_core::sdk::create_agent_session(sdk_opts).await.expect("child session");
+    let session = Arc::new(created.session);
+    let child: Arc<dyn ChildSession> = Arc::new(NativeChild::new(session.clone(), tokio::runtime::Handle::current()));
+
+    let handle = InProcessChildHandle::start("st_mem_park", child, "first turn prompt");
+    let outcome1 = tokio::task::spawn_blocking({
+        let handle = handle.clone();
+        move || handle.wait_for_idle()
+    })
+    .await
+    .expect("join turn 1");
+    assert_eq!(
+        outcome1,
+        RunnerOutcome::Completed {
+            final_response: large_first.clone()
+        }
+    );
+
+    // The handle parks the child before it publishes the outcome, so the waiter must already
+    // observe a parked store; no polling.
+    let stats_after_turn1 = session.with_session_manager(|m| m.resident_store_stats());
+    assert_eq!(stats_after_turn1.blob_bytes, 0, "parked child resident store must hold 0 bytes in RAM");
+    assert!(stats_after_turn1.evicted_count > 0, "parked child must spill strings to disk");
+
+    handle.follow_up_turn("second turn prompt").expect("follow_up turn");
+    let outcome2 = tokio::task::spawn_blocking({
+        let handle = handle.clone();
+        move || handle.wait_for_idle()
+    })
+    .await
+    .expect("join turn 2");
+    assert_eq!(
+        outcome2,
+        RunnerOutcome::Completed {
+            final_response: "revived second turn".to_owned()
+        }
+    );
+    assert_eq!(provider.get_call_log().len(), 2);
+    handle.dispose_handle();
+}
+

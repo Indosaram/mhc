@@ -23,6 +23,8 @@ tokio = { workspace = true, features = ["io-util", "sync", "rt", "macros", "net"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "=1.1.4", features = ["process", "fs"] }
+tikv-jemallocator = { version = "=0.7.0", features = ["background_threads"] }
+tikv-jemalloc-sys = "=0.7.1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Console", "Win32_System_JobObjects", "Win32_Security", "Win32_System_Pipes", "Win32_Storage_FileSystem"] }

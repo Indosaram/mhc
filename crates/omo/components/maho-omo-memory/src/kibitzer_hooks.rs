@@ -235,7 +235,12 @@ pub fn register_kibitzer_hooks(api: &mut maho_ext_api::ExtensionApi, sink: Arc<d
             {
                 tails.tail(session_id, context.session_manager.as_ref())
             } else {
-                if kind == maho_ext_api::EventKind::SessionShutdown {
+                if matches!(
+                    kind,
+                    maho_ext_api::EventKind::AgentSettled
+                        | maho_ext_api::EventKind::SessionShutdown
+                        | maho_ext_api::EventKind::SessionCompact
+                ) {
                     tails.forget(session_id);
                 }
                 ToolBranchView { len: entries.len(), window: Vec::new(), summary: Vec::new() }

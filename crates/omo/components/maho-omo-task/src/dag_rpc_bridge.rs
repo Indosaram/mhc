@@ -1,14 +1,24 @@
-use std::{collections::{BTreeMap, BTreeSet}, sync::{Arc, Mutex, PoisonError}};
+use std::{collections::{BTreeMap, BTreeSet, hash_map::DefaultHasher}, hash::Hasher, io::{self, Write}, sync::{Arc, Mutex, PoisonError}};
 use serde_json::{Value, json};
 use senpi_task::manager::Unsubscribe;
 use crate::{dag_rpc_bridge_contract::{DagRpcBridgeDeps, DagRpcBridgeOptions}, dag_snapshot_payload::dag_updated_payload};
 pub const DAG_DEFAULT_HEARTBEAT_MS: u64 = 15000;
 pub const DAG_ACTIVITY_COALESCE_MS: u64 = 150;
 pub const DAG_SNAPSHOT_DEBOUNCE_MS: u64 = 50;
+struct HasherWriter(DefaultHasher);
+impl Write for HasherWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> { self.0.write(buf); Ok(buf.len()) }
+    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+}
+fn json_fingerprint(value: &Value) -> u64 {
+    let mut writer = HasherWriter(DefaultHasher::new());
+    let _ = serde_json::to_writer(&mut writer, value);
+    writer.0.finish()
+}
 #[derive(Default)]
 struct State {
     subscriptions: BTreeMap<String, Unsubscribe>, head_seq: BTreeMap<String, u64>, pending_activity: Vec<(String, Value)>,
-    heartbeat: Option<u64>, activity_flush: Option<u64>, snapshot_flush: Option<u64>, fingerprint: Option<String>, attached: bool, disposed: bool,
+    heartbeat: Option<u64>, activity_flush: Option<u64>, snapshot_flush: Option<u64>, fingerprint: Option<u64>, attached: bool, disposed: bool,
     reported_read_faults: BTreeSet<String>,
 }
 pub struct DagRpcBridge { deps: DagRpcBridgeDeps, options: DagRpcBridgeOptions, state: Mutex<State> }
@@ -78,8 +88,8 @@ impl DagRpcBridge {
         let Some(session) = (self.deps.parent_session_id)() else { return; }; let Some(snapshots) = &self.deps.run_snapshots else { return; };
         let snapshots_reader = Arc::clone(snapshots);
         let Some(snapshots) = self.read_store("run snapshot", move || (snapshots_reader.as_ref())()) else { return; };
-        let data = dag_updated_payload(&session, &snapshots); let fingerprint = data.to_string();
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); if state.fingerprint.as_ref() == Some(&fingerprint) { return; } state.fingerprint = Some(fingerprint); drop(state);
+        let data = dag_updated_payload(&session, &snapshots); let fingerprint = json_fingerprint(&data);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); if state.fingerprint == Some(fingerprint) { return; } state.fingerprint = Some(fingerprint); drop(state);
         (self.deps.emit)("omo.dag.updated", data);
     }
     fn read_store<T>(&self, surface: &str, read: impl FnOnce() -> T) -> Option<T> {

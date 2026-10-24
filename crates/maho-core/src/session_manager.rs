@@ -841,6 +841,41 @@ impl SessionManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .hold = None;
         self.release_blobs_dir_unless_shared();
+        self.resident_store.clear_in_memory();
+        self.invalidate_entries_cache();
+        self.file_entries.clear();
+        self.file_entries.shrink_to_fit();
+        self.by_id.clear();
+        self.labels_by_id.clear();
+    }
+
+    pub fn drop_materialized_cache(&self) {
+        *self
+            .entries_cache
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
+    pub fn park_idle_memory(&mut self) -> bool {
+        if !self.persist
+            || !self.flushed
+            || self.resident_store.resolved_blobs_dir().is_none()
+            || !self
+                .session_file
+                .as_ref()
+                .is_some_and(|path| Path::new(path).exists())
+        {
+            return false;
+        }
+        let store = self.resident_store.clone();
+        for entry in &mut self.file_entries {
+            store.externalize_in_place_with_min(entry, 1024);
+        }
+        self.resident_store.spill_resident();
+        self.invalidate_entries_cache();
+        self.file_entries.shrink_to_fit();
+        true
     }
 
     fn writer_owner(&self) -> Arc<dyn crate::session_write_reservation::SessionWriterOwner> {
@@ -1136,6 +1171,7 @@ impl SessionManager {
                 manager.rewrite_file();
             }
             manager.externalize_file_entries();
+            manager.resident_store.spill_resident();
             manager.build_index();
             manager.flushed = true;
         }

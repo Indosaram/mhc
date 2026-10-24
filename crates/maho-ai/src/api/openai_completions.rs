@@ -1017,11 +1017,11 @@ pub fn convert_messages(
     compat: &ResolvedOpenAICompletionsCompat,
     options: &ConvertCompletionsMessagesOptions,
 ) -> Result<Vec<Value>, String> {
-    let transcript = crate::types::transcript::normalize_context(context);
-    let placement = crate::types::transcript::resolve_transcript_tools(
-        &transcript.messages,
+    let transcript_placement = crate::types::transcript::resolve_context_transcript_tools(
+        context,
         compat.supports_mid_convo_system_messages && compat.supports_mid_convo_tool_additions,
     );
+    let placement = &transcript_placement;
     let resolved_context = crate::types::transcript::resolve_provider_context(
         context,
         compat.supports_mid_convo_system_messages,
@@ -1594,16 +1594,11 @@ fn build_params(
     cache_retention: CacheRetention,
     grammar_tool_input_properties: &HashMap<String, String>,
 ) -> Result<Map<String, Value>, String> {
-    let transcript = crate::types::transcript::normalize_context(context);
-    let placement = crate::types::transcript::resolve_transcript_tools(
-        &transcript.messages,
+    let placement = crate::types::transcript::resolve_context_transcript_tools(
+        context,
         compat.supports_mid_convo_system_messages && compat.supports_mid_convo_tool_additions,
     );
-    let mut resolved_context = crate::types::transcript::resolve_provider_context(
-        context,
-        compat.supports_mid_convo_system_messages,
-    );
-    resolved_context.tools = Some(placement.request_tools);
+    let request_tools = placement.request_tools;
     let messages = convert_messages(
         model,
         context,
@@ -1615,7 +1610,6 @@ fn build_params(
             grammar_tool_input_properties: Some(grammar_tool_input_properties.clone()),
         },
     )?;
-    let context = &resolved_context;
     let cache_control = get_compat_cache_control(compat, cache_retention);
     let thinking_level_map = get_thinking_level_map(model, compat);
 
@@ -1678,10 +1672,8 @@ fn build_params(
         } else {
             HashSet::new()
         };
-    let active_tools: Vec<Tool> = context
-        .tools
+    let active_tools: Vec<Tool> = request_tools
         .iter()
-        .flatten()
         .filter(|tool| !deferred_tool_names.contains(&tool.name))
         .cloned()
         .collect();

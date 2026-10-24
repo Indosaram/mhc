@@ -503,21 +503,29 @@ async fn run_loop(
                 }
             }
 
-            let next_turn_context = crate::types::ShouldStopAfterTurnContext {
-                message: message.clone(),
-                tool_results: tool_results.clone(),
-                context: current_context.clone(),
-                new_messages: new_messages.clone(),
-            };
             let decision = match &config.finish_turn {
-                Some(finish) => finish(next_turn_context.clone(), signal.clone()).await,
+                Some(finish) => {
+                    let next_turn_context = crate::types::ShouldStopAfterTurnContext {
+                        message: message.clone(),
+                        tool_results: tool_results.clone(),
+                        context: current_context.clone(),
+                        new_messages: new_messages.clone(),
+                    };
+                    finish(next_turn_context, signal.clone()).await
+                }
                 None => None,
             };
+            let turn_end_tool_results =
+                if config.should_stop_after_turn.is_some() || config.prepare_next_turn.is_some() {
+                    tool_results.clone()
+                } else {
+                    std::mem::take(&mut tool_results)
+                };
             send(
                 &emit,
                 AgentEvent::TurnEnd {
                     message: assistant_event(&message),
-                    tool_results: tool_results.clone(),
+                    tool_results: turn_end_tool_results,
                 },
             )
             .await;
@@ -544,7 +552,13 @@ async fn run_loop(
             }
             explicit_continuation = decision == Some(crate::types::AgentTurnDecision::Continue);
             if let Some(should_stop) = config.should_stop_after_turn.clone()
-                && should_stop(next_turn_context.clone()).await
+                && should_stop(crate::types::ShouldStopAfterTurnContext {
+                    message: message.clone(),
+                    tool_results: tool_results.clone(),
+                    context: current_context.clone(),
+                    new_messages: new_messages.clone(),
+                })
+                .await
             {
                 send(
                     &emit,
@@ -587,7 +601,15 @@ async fn run_loop(
             }
 
             let next_turn_snapshot = match config.prepare_next_turn.clone() {
-                Some(prepare) => prepare(next_turn_context).await,
+                Some(prepare) => {
+                    prepare(crate::types::ShouldStopAfterTurnContext {
+                        message: message.clone(),
+                        tool_results,
+                        context: current_context.clone(),
+                        new_messages: new_messages.clone(),
+                    })
+                    .await
+                }
                 None => None,
             };
             if let Some(error_message) = next_turn_snapshot

@@ -80,16 +80,18 @@ impl ResidentStringStore {
 
     pub fn clear(&self) {
         let dir = self.resolved_blobs_dir();
-        {
-            let mut inner = self.inner.lock().expect("resident store lock");
-            inner.strings.clear();
-            inner.bytes = 0;
-            inner.evicted_count = 0;
-            inner.evicted_bytes = 0;
-        }
+        self.clear_in_memory();
         if let Some(dir) = dir {
             let _ = std::fs::remove_dir_all(dir);
         }
+    }
+
+    pub fn clear_in_memory(&self) {
+        let mut inner = self.inner.lock().expect("resident store lock");
+        inner.strings = IndexMap::new();
+        inner.bytes = 0;
+        inner.evicted_count = 0;
+        inner.evicted_bytes = 0;
     }
 
     /// Spill every resident string to the backing directory, keeping the backing for hydration.
@@ -158,11 +160,39 @@ impl ResidentStringStore {
     }
 
     pub fn externalize_in_place(&self, value: &mut Value) {
-        mutate_strings_in_place(value, &|text| self.externalize_string(text));
+        self.externalize_in_place_with_min(value, RESIDENT_STRING_MIN_BYTES);
+    }
+
+    pub fn externalize_in_place_with_min(&self, value: &mut Value, min_bytes: usize) {
+        mutate_strings_in_place(value, &|text| {
+            self.externalize_string_owned_in_place(text, min_bytes);
+        });
     }
 
     pub fn materialize_in_place(&self, value: &mut Value) {
-        mutate_strings_in_place(value, &|text| self.materialize_string(text, None));
+        mutate_strings_in_place(value, &|text| {
+            if text.starts_with(RESIDENT_STRING_PREFIX) {
+                *text = self.materialize_string(text, None);
+            }
+        });
+    }
+
+    fn externalize_string_owned_in_place(&self, text: &mut String, min_bytes: usize) {
+        if text.len() < min_bytes || text.starts_with(RESIDENT_STRING_PREFIX) {
+            return;
+        }
+        let id = content_hash(text);
+        let token = format!("{RESIDENT_STRING_PREFIX}{id}");
+        let owned = std::mem::replace(text, token);
+        let mut inner = self.inner.lock().expect("resident store lock");
+        if let Some(index) = inner.strings.get_index_of(&id) {
+            let last = inner.strings.len() - 1;
+            inner.strings.move_index(index, last);
+            return;
+        }
+        inner.bytes += owned.len();
+        inner.strings.insert(id, owned);
+        self.enforce_budget(&mut inner);
     }
 
     pub fn externalize_string(&self, text: &str) -> String {
@@ -287,9 +317,9 @@ fn transform_json(value: &Value, transform: &dyn Fn(&str) -> String) -> Value {
     }
 }
 
-fn mutate_strings_in_place(value: &mut Value, transform: &dyn Fn(&str) -> String) {
+fn mutate_strings_in_place(value: &mut Value, transform: &dyn Fn(&mut String)) {
     match value {
-        Value::String(text) => *text = transform(text),
+        Value::String(text) => transform(text),
         Value::Array(items) => {
             for item in items.iter_mut() {
                 mutate_strings_in_place(item, transform);
