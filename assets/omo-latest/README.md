@@ -65,13 +65,13 @@ git-bash flag — there are no aliases. The staged manifest declares the sibling
 | `pinCommit` / `pinSenpi` | the pins that stay unchanged |
 | `versions` | `omoSenpi` 5.1.20 / `sharedSkills` 0.1.0, recorded into the staged manifest in latest mode |
 | `precedence` | `packages/omo-senpi/skills` over `packages/shared-skills/skills` |
-| `selection` | the 25 latest skill names staged in latest mode (= `targetNames`) |
+| `selection` | the 26 latest skill names staged in latest mode (= `targetNames`) |
 | `retired` | `start-work` |
 | `poolDocs` | pool-root docs carried but not staged as skills |
 | `skills` | per skill, the exact file list with `path`/`bytes`/`sha256`/upstream `source` |
 | `targets` | the H1–H13 inventory with per-row file lists |
 | `loader` | the installed-loader binding: `OMO_SENPI_SKILLS_ROOT` → `<install>/skills`, consumed by `omo_mount.rs` |
-| `contentBinding` | complete-content binding: 335 files declared, 8 sha256-bound, the rest bound at the gate |
+| `contentBinding` | complete-content binding: see `contentBinding` counts, the rest bound at the gate |
 | `browserRuntime` | the `browser` skill's build-materialized engine runtime: skill, target dir, materializer, immutable `omowright` identity, version and the exact runtime files |
 
 ## Browser engine runtime (build-materialized, never committed)

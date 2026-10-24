@@ -392,6 +392,7 @@ fn process_image(
     ))
 }
 pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> ToolDefinition {
+    let server_pinned = options.operations.is_some() || options.filesystem_policy.is_some();
     let ops = options
         .operations
         .clone()
@@ -572,6 +573,9 @@ pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> To
     tool.prompt_guidelines = Some(vec![
         "Use read to examine files instead of cat or sed.".into(),
     ]);
+    if server_pinned {
+        tool.server_pinned = Some(true);
+    }
     tool
 }
 
@@ -583,7 +587,9 @@ mod image_resize_tests {
         // Given a landscape image and profiles specifying only one dimension.
         let image = image::DynamicImage::new_rgb8(120, 60);
         let mut encoded = std::io::Cursor::new(Vec::new());
-        image.write_to(&mut encoded, image::ImageFormat::Png).expect("encode fixture");
+        image
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .expect("encode fixture");
         for (max_width, max_height, expected) in [
             (Some(40), None, (40, 20)),
             (None, Some(20), (40, 20)),
@@ -591,16 +597,26 @@ mod image_resize_tests {
         ] {
             // When the partial model profile reaches the read consumer.
             let (content, _) = process_image(
-                encoded.get_ref().clone(), "image/png".into(), true,
+                encoded.get_ref().clone(),
+                "image/png".into(),
+                true,
                 Some(maho_ai::types::ModelImageResizeOptions {
-                    max_width, max_height, ..Default::default()
+                    max_width,
+                    max_height,
+                    ..Default::default()
                 }),
-            ).expect("process fixture");
+            )
+            .expect("process fixture");
             // Then only the specified axis overrides the resize defaults.
-            let ToolContent::Image { data, .. } = &content[0] else { panic!("image attachment") };
+            let ToolContent::Image { data, .. } = &content[0] else {
+                panic!("image attachment")
+            };
             let decoded = image::load_from_memory(
-                &base64::engine::general_purpose::STANDARD.decode(data).expect("base64")
-            ).expect("image");
+                &base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .expect("base64"),
+            )
+            .expect("image");
             assert_eq!((decoded.width(), decoded.height()), expected);
         }
     }
@@ -619,24 +635,42 @@ mod image_resize_tests {
         let resized = fixture.resize_exact(32, 32, image::imageops::FilterType::Lanczos3);
         let mut jpeg = Vec::new();
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 12)
-            .encode_image(&resized.to_rgb8()).expect("jpeg fixture");
+            .encode_image(&resized.to_rgb8())
+            .expect("jpeg fixture");
         let limit = jpeg.len().div_ceil(3) * 4 + 1;
         let mut png = std::io::Cursor::new(Vec::new());
-        resized.write_to(&mut png, image::ImageFormat::Png).expect("png candidate");
+        resized
+            .write_to(&mut png, image::ImageFormat::Png)
+            .expect("png candidate");
         assert!(png.get_ref().len().div_ceil(3) * 4 >= limit);
         let mut input = std::io::Cursor::new(Vec::new());
-        fixture.write_to(&mut input, image::ImageFormat::Png).expect("input");
+        fixture
+            .write_to(&mut input, image::ImageFormat::Png)
+            .expect("input");
         // When resizing requires JPEG with a non-default quality.
-        let (content, _) = process_image(input.into_inner(), "image/png".into(), true,
+        let (content, _) = process_image(
+            input.into_inner(),
+            "image/png".into(),
+            true,
             Some(maho_ai::types::ModelImageResizeOptions {
-                max_width: Some(32), max_height: None,
-                max_bytes: Some(limit), jpeg_quality: Some(12),
+                max_width: Some(32),
+                max_height: None,
+                max_bytes: Some(limit),
+                jpeg_quality: Some(12),
             }),
-        ).expect("process image");
+        )
+        .expect("process image");
         // Then the first accepted JPEG uses the requested quality, not 80.
-        let ToolContent::Image { data, mime_type } = &content[0] else { panic!("image attachment") };
+        let ToolContent::Image { data, mime_type } = &content[0] else {
+            panic!("image attachment")
+        };
         assert_eq!(mime_type, "image/jpeg");
-        assert_eq!(base64::engine::general_purpose::STANDARD.decode(data).expect("base64"), jpeg);
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .expect("base64"),
+            jpeg
+        );
         assert!(data.len() < limit);
     }
 
@@ -645,14 +679,26 @@ mod image_resize_tests {
         // Given resizing disabled and an impossible model resize ceiling.
         let bytes = b"unchanged".to_vec();
         // When processing a supported MIME type.
-        let (content, _) = process_image(bytes.clone(), "image/png".into(), false,
+        let (content, _) = process_image(
+            bytes.clone(),
+            "image/png".into(),
+            false,
             Some(maho_ai::types::ModelImageResizeOptions {
-                max_bytes: Some(1), ..Default::default()
+                max_bytes: Some(1),
+                ..Default::default()
             }),
-        ).expect("process image");
+        )
+        .expect("process image");
         // Then resize limits do not override the explicit opt-out.
-        let ToolContent::Image { data, .. } = &content[0] else { panic!("image attachment") };
-        assert_eq!(base64::engine::general_purpose::STANDARD.decode(data).expect("base64"), bytes);
+        let ToolContent::Image { data, .. } = &content[0] else {
+            panic!("image attachment")
+        };
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .expect("base64"),
+            bytes
+        );
     }
 
     #[test]

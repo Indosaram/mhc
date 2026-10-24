@@ -720,6 +720,10 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
             scoped_models: startup::session_model_entries(options.options.scoped_models)?,
             defer_extension_start: true,
             session_profile,
+            // senpi main.ts:1091 `...(toolRuntime !== undefined ? { toolRuntime } : {})`.
+            tool_runtime: parsed
+                .tool_runtime
+                .map(super::tool_runtime::to_core_tool_runtime),
             auto_title_sessions: Some(startup::resolve_auto_title_sessions(
                 mode,
                 &parsed,
@@ -914,6 +918,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
                 maho_core::timings::print_timings();
                 let code = maho_rpc::rpc_mode::run_rpc_mode(
                     &session,
+                    parsed.tool_runtime,
                     tokio::io::stdin(),
                     tokio::io::stdout(),
                 )

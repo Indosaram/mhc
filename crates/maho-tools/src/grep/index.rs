@@ -106,6 +106,7 @@ fn is_integer(value: f64) -> bool {
     value.is_finite() && value.fract() == 0.0
 }
 pub fn create_grep_tool_definition(cwd: PathBuf, options: GrepToolOptions) -> ToolDefinition {
+    let server_pinned = options.filesystem_policy.is_some();
     let execute: ToolExecutor = Arc::new(move |call| {
         let cwd = cwd.clone();
         let policy = options.filesystem_policy.clone();
@@ -434,5 +435,8 @@ pub fn create_grep_tool_definition(cwd: PathBuf, options: GrepToolOptions) -> To
     tool.prompt_guidelines = Some(vec!["Use tool.grep for content search instead of rg/grep in a shell; paginate with skip and narrow with glob/path when a page is full".into()]);
     tool.exposure = Some(ToolExposure::Eval);
     tool.prompt_snippet = Some("Search file contents (regex/literal) across paths with structured results; respects .gitignore".into());
+    if server_pinned {
+        tool.server_pinned = Some(true);
+    }
     tool
 }

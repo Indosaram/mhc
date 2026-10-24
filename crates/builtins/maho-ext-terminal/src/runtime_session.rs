@@ -313,6 +313,14 @@ impl TerminalRuntimeSession {
         })
     }
 
+    /// The pid of the PTY's process (the session's group leader on Unix).
+    pub fn pid(&self) -> Option<u32> {
+        match &self.session {
+            TerminalSessionBackend::Native(session) => session.pid(),
+            TerminalSessionBackend::PipeFallback(session) => Some(session.pid()),
+        }
+    }
+
     pub fn backend(&self) -> &'static str {
         match self.session {
             TerminalSessionBackend::Native(_) => "native",

@@ -25,9 +25,10 @@ pub type RetryCancel = Box<dyn FnOnce() + Send>;
 pub type RetrySchedule = Arc<dyn Fn(Box<dyn FnOnce() + Send>, u64) -> RetryCancel + Send + Sync>;
 
 /// Only typed infrastructure failures qualify; ordinary child errors never enter this path.
-/// `TaskRecord` carries no durable pending-cancel marker (`cancel_requested`); a cancelled task
-/// settles as `cancelled`, which never qualifies by status.
 pub fn is_infrastructure_failure(task: &TaskRecord) -> bool {
+    if task.cancel_requested.is_some() {
+        return false;
+    }
     if !matches!(task.status, TaskStatus::Error | TaskStatus::Lost) {
         return false;
     }

@@ -1,4 +1,4 @@
-use crate::session_input::{MAX_PENDING_INPUT_BYTES, PtyInput};
+use crate::session_input::{PtyInput, MAX_PENDING_INPUT_BYTES};
 use std::io::Write;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;

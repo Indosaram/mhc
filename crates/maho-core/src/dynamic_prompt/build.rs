@@ -11,9 +11,24 @@ use super::tool_section::build_tool_section;
 use super::types::{AvailableTool, PromptSurface};
 use super::verification::build_verification_section;
 use super::working_task::build_working_task_section;
-use super::workstation::{BuildWorkstationSectionOptions, WorkstationDialect, build_workstation_section};
+use super::workstation::{
+    BuildWorkstationSectionOptions, WorkstationDialect, build_workstation_section,
+};
 use crate::skills::{FileReadTool, Skill, format_skills_for_prompt};
 use crate::system_prompt::ContextFile;
+
+/// `PROMPT_SURFACE_ENV_VAR`.
+pub const PROMPT_SURFACE_ENV_VAR: &str = "SENPI_PROMPT_SURFACE";
+
+/// `resolvePromptSurface(env)`: `SENPI_PROMPT_SURFACE=app` or `=chat` selects that surface; unset or any other
+/// value is the terminal. `env` looks a variable up by name.
+pub fn resolve_prompt_surface(env: impl Fn(&str) -> Option<String>) -> PromptSurface {
+    match env(PROMPT_SURFACE_ENV_VAR).as_deref() {
+        Some("app") => PromptSurface::App,
+        Some("chat") => PromptSurface::Chat,
+        _ => PromptSurface::Terminal,
+    }
+}
 
 /// `DynamicPromptCoreContext`: what a `corePrompt` override may reuse.
 pub struct DynamicPromptCoreContext {
@@ -60,10 +75,15 @@ fn build_context_files_section(context_files: &[ContextFile]) -> String {
 pub fn build_dynamic_system_prompt(options: &BuildDynamicSystemPromptOptions<'_>) -> String {
     let tools = categorize_tools(&options.selected_tools);
 
-    let tool_section = build_tool_section(&tools, &options.tool_snippets, &options.prompt_guidelines);
+    let tool_section =
+        build_tool_section(&tools, &options.tool_snippets, &options.prompt_guidelines);
 
     let mut sections: Vec<String> = match options.core_prompt {
-        Some(core_prompt) => vec![core_prompt(&DynamicPromptCoreContext { tools: tools.clone(), tool_section: tool_section.clone(), surface: options.surface })],
+        Some(core_prompt) => vec![core_prompt(&DynamicPromptCoreContext {
+            tools: tools.clone(),
+            tool_section: tool_section.clone(),
+            surface: options.surface,
+        })],
         None => vec![
             build_identity_section(),
             String::new(),
@@ -83,7 +103,11 @@ pub fn build_dynamic_system_prompt(options: &BuildDynamicSystemPromptOptions<'_>
         ],
     };
 
-    let tuning = options.tuning_section.as_deref().map(str::trim).filter(|tuning| !tuning.is_empty());
+    let tuning = options
+        .tuning_section
+        .as_deref()
+        .map(str::trim)
+        .filter(|tuning| !tuning.is_empty());
     if let Some(tuning) = tuning {
         sections.push(String::new());
         sections.push(tuning.to_string());
@@ -113,8 +137,8 @@ pub fn build_dynamic_system_prompt(options: &BuildDynamicSystemPromptOptions<'_>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source_info::{SyntheticSourceInfoOptions, create_synthetic_source_info};
     use crate::skills::Skill;
+    use crate::source_info::{SyntheticSourceInfoOptions, create_synthetic_source_info};
 
     fn options() -> BuildDynamicSystemPromptOptions<'static> {
         let mut tool_snippets: HashMap<String, String> = HashMap::new();
@@ -139,7 +163,13 @@ mod tests {
             name: name.to_string(),
             description: format!("{name} description"),
             base_dir: format!("/skills/{name}"),
-            source_info: create_synthetic_source_info(&file_path, SyntheticSourceInfoOptions { source: "local".to_string(), ..Default::default() }),
+            source_info: create_synthetic_source_info(
+                &file_path,
+                SyntheticSourceInfoOptions {
+                    source: "local".to_string(),
+                    ..Default::default()
+                },
+            ),
             file_path,
             disable_model_invocation: false,
         }
@@ -156,13 +186,17 @@ mod tests {
         let policies = prompt.find("## Policies").expect("policies");
         let style = prompt.find("## Style").expect("style");
         let workstation = prompt.find("<workstation>").expect("workstation");
-        assert!(identity < intent && intent < working && working < verification && verification < tools);
+        assert!(
+            identity < intent && intent < working && working < verification && verification < tools
+        );
         assert!(tools < policies && policies < style && style < workstation);
-        assert!(prompt.ends_with(&build_workstation_section(&BuildWorkstationSectionOptions {
-            selected_tools: options().selected_tools,
-            dialect: None,
-            facts: None,
-        })));
+        assert!(prompt.ends_with(&build_workstation_section(
+            &BuildWorkstationSectionOptions {
+                selected_tools: options().selected_tools,
+                dialect: None,
+                facts: None,
+            }
+        )));
     }
 
     #[test]
@@ -188,7 +222,10 @@ mod tests {
     #[test]
     fn context_files_render_as_a_project_context_section() {
         let mut options = options();
-        options.context_files = vec![ContextFile { path: "/work/AGENTS.md".to_string(), content: "rules  \n".to_string() }];
+        options.context_files = vec![ContextFile {
+            path: "/work/AGENTS.md".to_string(),
+            content: "rules  \n".to_string(),
+        }];
         let prompt = build_dynamic_system_prompt(&options);
         assert!(prompt.contains("## Project Context"));
         assert!(prompt.contains("### /work/AGENTS.md\n\nrules\n"));
@@ -208,7 +245,8 @@ mod tests {
 
     #[test]
     fn a_core_prompt_override_replaces_identity_through_style_but_keeps_the_rest() {
-        let core = |context: &DynamicPromptCoreContext| format!("CUSTOM CORE\n{}", context.tool_section);
+        let core =
+            |context: &DynamicPromptCoreContext| format!("CUSTOM CORE\n{}", context.tool_section);
         let mut options = options();
         options.core_prompt = Some(&core);
         options.skills = vec![skill("demo")];

@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use serde::{Deserialize, Deserializer, Serialize};
 use serde::ser::Serializer;
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::manager::TaskManager;
 use crate::manager::types::ListScope;
@@ -105,7 +105,11 @@ pub trait SendManager: Send + Sync {
         listed
             .iter()
             .find(|record| record.task_id == to)
-            .or_else(|| listed.iter().find(|record| record.name.as_deref() == Some(to)))
+            .or_else(|| {
+                listed
+                    .iter()
+                    .find(|record| record.name.as_deref() == Some(to))
+            })
             .cloned()
     }
 }
@@ -116,6 +120,11 @@ pub enum CancelOutcome {
     Cancelled {
         task_id: String,
         previous_status: TaskStatus,
+    },
+    CancelPending {
+        task_id: String,
+        previous_status: TaskStatus,
+        reason: String,
     },
     Stale {
         task_id: String,
@@ -208,7 +217,11 @@ impl SendManager for TaskManager {
                 reason,
             },
             SteeringSendOutcome::NotFound { reason, .. } => SendOutcome::NotFound { reason },
-            SteeringSendOutcome::Stale { task_id, run_epoch, reason } => SendOutcome::Stale {
+            SteeringSendOutcome::Stale {
+                task_id,
+                run_epoch,
+                reason,
+            } => SendOutcome::Stale {
                 task_id,
                 run_epoch: u64::try_from(run_epoch).unwrap_or_default(),
                 reason,
@@ -219,7 +232,9 @@ impl SendManager for TaskManager {
     fn list(&self, scope: &ControlListScope) -> Vec<ControlTaskRecord> {
         let scope = match scope {
             ControlListScope::All => ListScope::All,
-            ControlListScope::ParentSession { session_id } => ListScope::ParentSession(session_id.clone()),
+            ControlListScope::ParentSession { session_id } => {
+                ListScope::ParentSession(session_id.clone())
+            }
         };
         TaskManager::list(self, &scope)
             .into_iter()
@@ -249,7 +264,11 @@ impl SendManager for TaskManager {
         listed
             .iter()
             .find(|record| record.task_id == to)
-            .or_else(|| listed.iter().find(|record| record.name.as_deref() == Some(to)))
+            .or_else(|| {
+                listed
+                    .iter()
+                    .find(|record| record.name.as_deref() == Some(to))
+            })
             .cloned()
     }
 }
@@ -264,7 +283,21 @@ impl CancelManager for TaskManager {
                 task_id,
                 previous_status,
             },
-            Ok(SteeringCancelOutcome::Stale { task_id, status, run_epoch, reason }) => CancelOutcome::Stale {
+            Ok(SteeringCancelOutcome::CancelPending {
+                task_id,
+                previous_status,
+                reason,
+            }) => CancelOutcome::CancelPending {
+                task_id,
+                previous_status,
+                reason,
+            },
+            Ok(SteeringCancelOutcome::Stale {
+                task_id,
+                status,
+                run_epoch,
+                reason,
+            }) => CancelOutcome::Stale {
                 task_id,
                 status,
                 run_epoch,
@@ -291,7 +324,10 @@ impl CancelManager for TaskManager {
     }
 }
 
-pub fn serialize_task_status<S: Serializer>(status: &TaskStatus, serializer: S) -> Result<S::Ok, S::Error> {
+pub fn serialize_task_status<S: Serializer>(
+    status: &TaskStatus,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
     serializer.serialize_str(status.as_str())
 }
 
@@ -341,7 +377,10 @@ impl<'de> Deserialize<'de> for ShutdownFailedCode {
             "unknown_member" => Ok(Self::Shutdown(SenpiShutdownErrorCode::UnknownMember)),
             "no_pending_request" => Ok(Self::Shutdown(SenpiShutdownErrorCode::NoPendingRequest)),
             "team_state_missing" => Ok(Self::TeamStateMissing),
-            other => Err(serde::de::Error::unknown_variant(other, &["unknown_member", "no_pending_request", "team_state_missing"])),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["unknown_member", "no_pending_request", "team_state_missing"],
+            )),
         }
     }
 }
@@ -441,6 +480,12 @@ pub enum CancelResultDetails {
         #[serde(serialize_with = "serialize_task_status")]
         status: TaskStatus,
     },
+    CancelPending {
+        task_id: String,
+        #[serde(serialize_with = "serialize_task_status")]
+        previous_status: TaskStatus,
+        reason: String,
+    },
     Stale {
         task_id: String,
         #[serde(serialize_with = "serialize_task_status")]
@@ -466,6 +511,7 @@ impl CancelResultDetails {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Cancelled { .. } => "cancelled",
+            Self::CancelPending { .. } => "cancel_pending",
             Self::Stale { .. } => "stale",
             Self::Noop { .. } => "noop",
             Self::NotFound { .. } => "not_found",

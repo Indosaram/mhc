@@ -1,0 +1,52 @@
+//! senpi tool child (pin 26acd9353 `packages/coding-agent/src/modes/rpc/tool-child/`): one module per upstream file,
+//! same names. `rpc_socket` holds the few `socket-transport.ts` / `socket-ownership.ts` values the child needs,
+//! mirrored from maho-rpc so this crate stays below maho-core in the dependency graph.
+//! `terminal-jobs.ts` lives in maho-ext-terminal and `role.ts` in maho-cli (they need crates above this one).
+pub mod admission;
+pub mod barrier_clock;
+pub mod channel;
+pub mod child_containment;
+pub mod client;
+pub mod client_barrier;
+pub mod codec;
+pub mod context;
+pub mod descendants;
+pub mod entry;
+pub mod entry_error;
+pub mod exclusive_secret;
+pub mod flow_control;
+pub mod gated_bun;
+pub mod gated_child_process;
+pub mod gated_modules;
+pub mod gated_worker;
+pub mod go_shim;
+pub mod group_ownership;
+pub mod host_calls_child;
+pub mod host_calls_server;
+pub mod job_policy;
+pub mod job_supervisor;
+pub mod job_updates;
+pub mod launch;
+pub mod launch_barrier;
+pub mod launch_enforcer;
+pub mod launch_env_names;
+pub mod launch_gate;
+pub mod launch_shim_role;
+pub mod module_host;
+pub mod module_job;
+pub mod module_job_worker;
+pub mod orphan_sweep;
+pub mod payload_ref;
+pub mod payload_ref_paths;
+pub mod payload_wire;
+pub mod protocol;
+pub mod protocol_guard;
+pub mod rpc_socket;
+pub mod session_child;
+pub mod socket_root;
+pub mod test_controls;
+pub mod user_bash_job;
+pub mod windows_breakaway;
+pub mod windows_command_line;
+pub mod windows_job;
+pub mod worker_launch;

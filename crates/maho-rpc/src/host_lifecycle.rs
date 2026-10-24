@@ -157,7 +157,22 @@ pub async fn proxy_connection(
     tokio::io::copy_bidirectional(&mut client, &mut internal).await?;
     Ok(())
 }
-#[cfg(not(unix))]
+/// One authenticated public client proxied to the internal named pipe behind the internal secret.
+#[cfg(windows)]
+pub async fn proxy_connection(
+    mut client: tokio::net::windows::named_pipe::NamedPipeServer,
+    internal_address: &str,
+    internal_secret: Option<&[u8]>,
+) -> std::io::Result<()> {
+    let mut internal =
+        win32_pipe::connect(internal_address, std::time::Duration::from_secs(5)).await?;
+    if let Some(secret) = internal_secret {
+        crate::socket_transport::send_socket_handshake(&mut internal, secret).await?;
+    }
+    tokio::io::copy_bidirectional(&mut client, &mut internal).await?;
+    Ok(())
+}
+#[cfg(not(any(unix, windows)))]
 pub async fn proxy_connection(
     _client: (),
     _internal_socket: &std::path::Path,
@@ -167,7 +182,29 @@ pub async fn proxy_connection(
         "rpc host sockets are not supported on this platform yet",
     ))
 }
-#[cfg(not(unix))]
+/// `run_socket_proxy` for win32: the public and internal endpoints are named-pipe addresses.
+#[cfg(windows)]
+pub async fn run_socket_proxy(
+    listener: tokio::net::windows::named_pipe::NamedPipeServer,
+    public_address: String,
+    internal_address: String,
+    public_secret: Option<Vec<u8>>,
+    internal_secret: Option<Vec<u8>>,
+    draining: tokio::sync::watch::Receiver<bool>,
+    connections: tokio::sync::watch::Sender<usize>,
+) -> std::io::Result<()> {
+    win32_pipe::run_pipe_proxy(
+        listener,
+        public_address,
+        internal_address,
+        public_secret,
+        internal_secret,
+        draining,
+        connections,
+    )
+    .await
+}
+#[cfg(not(any(unix, windows)))]
 pub async fn run_socket_proxy(
     _listener: (),
     _internal_socket: std::path::PathBuf,
@@ -318,7 +355,7 @@ pub fn parse_supervisor_args(argv: &[String]) -> Option<SupervisorLaunch> {
  * only sees the internal socket. It re-enters the committed CLI entry so the host it serves is
  * built from this same executable.
  */
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()> {
     // senpi `reapOrphanedInternalHostDirs`: scratch dirs of supervisors that died without cleanup.
     crate::host_internal_dir_reaper::reap_orphaned_internal_host_dirs();
@@ -354,7 +391,23 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         .bind_socket
         .clone()
         .unwrap_or_else(|| public_socket.clone());
+    // win32: the supervisor owns the public secret, provisioned BEFORE the internal hop and the child so a
+    // provisioning failure leaves no scratch directory and no host process behind (senpi #1370).
+    let public_secret: Option<Vec<u8>> = if platform == "win32" {
+        Some(ensure_public_socket_secret(&public_socket)?.to_vec())
+    } else {
+        None
+    };
     let internal = create_internal_socket_path(&paths.dir, platform)?;
+    let internal_secret: Option<Vec<u8>> = if platform == "win32" {
+        let secret_path = internal
+            .secret_path
+            .as_deref()
+            .ok_or_else(|| std::io::Error::other("internal socket has no secret path"))?;
+        Some(crate::socket_transport::create_socket_secret(secret_path)?.to_vec())
+    } else {
+        None
+    };
     let child_launch = resolve_host_child_launch(&launch, &internal.socket)?;
     let mut child_env = crate::host_successor::successor_env(
         env.clone(),
@@ -364,10 +417,21 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         Some(&agent_dir),
         &std::collections::HashMap::new(),
     );
-    child_env.insert(
-        crate::host_watchdog::HOST_PUBLIC_SOCKET_ENV.into(),
-        public_socket.clone(),
-    );
+    // win32 names no public socket to the child: a named pipe has no filesystem entry to own.
+    if platform != "win32" {
+        child_env.insert(
+            crate::host_watchdog::HOST_PUBLIC_SOCKET_ENV.into(),
+            public_socket.clone(),
+        );
+    }
+    if internal_secret.is_some()
+        && let Some(secret_path) = &internal.secret_path
+    {
+        child_env.insert(
+            crate::socket_transport::SOCKET_SECRET_FILE_ENV.into(),
+            secret_path.to_string_lossy().into_owned(),
+        );
+    }
     if let Some(dir) = &internal.dir {
         child_env.insert(
             crate::host_watchdog::HOST_SCRATCH_DIR_ENV.into(),
@@ -388,20 +452,26 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         cleanup_paths.push(generation.pid_file.to_string_lossy().into_owned());
         cleanup_paths.push(paths.settings_file.to_string_lossy().into_owned());
     }
+    // Windows named pipes have no filesystem entry to own, so the public entry stays listed for the crash-path
+    // cleanup (senpi `hostCrashCleanupPaths`).
+    if platform == "win32" {
+        cleanup_paths.push(public_socket.clone());
+    }
     child_env.insert(
         crate::host_watchdog::HOST_CLEANUP_PATHS_ENV.into(),
         cleanup_paths.join("\n"),
     );
     #[cfg(unix)]
     let _watch_guard = bind_child_watch_pipe(&mut child_env)?;
-    #[cfg(unix)]
     let stderr = {
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(&paths.stderr_log)?
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(&paths.stderr_log)?
     };
     let spawnable = spawnable_child_launch(&child_launch, platform);
     #[cfg(unix)]
@@ -414,6 +484,35 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         .stderr(stderr)
         .process_group(0)
         .spawn()?;
+    // win32: no unix lifetime pipe and no process group. The supervisor is spawned detached and owns no console,
+    // so CREATE_NO_WINDOW gives the child a console without a window (senpi `windowsHide`); the lifetime
+    // binding is the ppid watch alone.
+    #[cfg(windows)]
+    let mut child = {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut command = if spawnable.shell {
+            // Node's `shell: true`: `cmd.exe /d /s /c "<command> <args>"`, every piece pre-quoted verbatim.
+            let mut command = tokio::process::Command::new("cmd.exe");
+            command.raw_arg("/d /s /c \"").raw_arg(&spawnable.command);
+            for arg in &spawnable.args {
+                command.raw_arg(" ").raw_arg(arg);
+            }
+            command.raw_arg("\"");
+            command
+        } else {
+            let mut command = tokio::process::Command::new(&spawnable.command);
+            command.args(&spawnable.args);
+            command
+        };
+        command
+            .env_clear()
+            .envs(child_env)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(stderr)
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()?
+    };
     let child_pid = child
         .id()
         .ok_or_else(|| std::io::Error::other("supervised host has no process identity"))?;
@@ -434,7 +533,12 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     // that connects during startup would be proxied to nothing.
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(30_000);
     let started = loop {
-        if let Some(protocol) = crate::host_probe::probe_protocol_info(&internal.socket, 2000).await
+        if let Some(protocol) = crate::host_probe::probe_protocol_info_with_secret(
+            &internal.socket,
+            internal_secret.as_deref(),
+            2000,
+        )
+        .await
             && protocol.instance_id.as_deref() == Some(instance_id.as_str())
         {
             break protocol;
@@ -478,14 +582,35 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     let drain_request_watch = accept_drain_requests(&generation_files, drain_tx.clone());
     // Publish the public endpoint: an ordinary start binds the public name directly; a successor
     // binds its own generation name and adopts the public one by rename.
-    let listener = tokio::net::UnixListener::bind(&bind_socket)?;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bind_socket, std::fs::Permissions::from_mode(0o600))?;
-    }
-    if launch.bind_socket.is_some() && bind_socket != public_socket {
-        std::fs::rename(&bind_socket, &public_socket)?;
-    }
+    #[cfg(unix)]
+    let listener = {
+        let listener = tokio::net::UnixListener::bind(&bind_socket)?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bind_socket, std::fs::Permissions::from_mode(0o600))?;
+        }
+        if launch.bind_socket.is_some() && bind_socket != public_socket {
+            std::fs::rename(&bind_socket, &public_socket)?;
+        }
+        listener
+    };
+    // win32: the pipe name derives from the logical path AND the public secret; a named pipe has no entry to
+    // rename, so a successor generation cannot adopt the public name (senpi `adoptPublicSocket` finds no entry).
+    #[cfg(windows)]
+    let (listener, public_address) = {
+        if launch.bind_socket.is_some() {
+            return Err(std::io::Error::other(format!(
+                "{public_socket}: owned by another socket entry now; refusing to replace it"
+            )));
+        }
+        let address = crate::socket_transport::resolve_socket_transport_address(
+            &bind_socket,
+            platform,
+            public_secret.as_deref(),
+        )
+        .map_err(std::io::Error::other)?;
+        (win32_pipe::create_first_instance(&address)?, address)
+    };
     let bound = if launch.bind_socket.is_some() {
         crate::socket_ownership::stat_socket_identity(std::path::Path::new(&public_socket))?
     } else {
@@ -513,8 +638,20 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     // which is what ends this generation. The grace timer only re-asks - it never kills a busy child.
     #[cfg(unix)]
     let mut shutdown_rx = register_supervisor_signals(drain_tx.clone())?;
-    #[cfg(not(unix))]
-    let mut shutdown_rx = tokio::sync::watch::channel::<Option<i32>>(None).1;
+    #[cfg(windows)]
+    let mut shutdown_rx = register_supervisor_signals()?;
+    // win32: a child whose identity changed or vanished has exited even when no exit event came.
+    let (gone_tx, mut gone_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    #[cfg(windows)]
+    let identity_watch = watch_win32_child_identity(
+        child_pid,
+        || false,
+        move || {
+            let _ = gone_tx.send(());
+        },
+    );
+    #[cfg(not(windows))]
+    drop(gone_tx);
     // Losing the public entry IS a drain request (senpi `watchForSupersession`, #1893/#1961).
     let supersession = crate::host_supersession::watch_for_supersession_with_pointer(
         public_socket.clone(),
@@ -534,13 +671,31 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     let observer_busy = turns.clone();
     let observer_socket = internal.socket.clone();
     let observer_draining = draining_rx.clone();
+    #[cfg(windows)]
+    let observer_secret = internal_secret.clone();
     let observer = tokio::spawn(async move {
         let mut observed = ObservedHostTurns::default();
         loop {
             if *observer_draining.borrow() {
                 return;
             }
-            if let Ok(mut stream) = tokio::net::UnixStream::connect(&observer_socket).await {
+            #[cfg(unix)]
+            let connected = tokio::net::UnixStream::connect(&observer_socket).await.ok();
+            #[cfg(windows)]
+            let connected = async {
+                let mut stream =
+                    win32_pipe::connect(&observer_socket, std::time::Duration::from_secs(2))
+                        .await
+                        .ok()?;
+                if let Some(secret) = &observer_secret {
+                    crate::socket_transport::send_socket_handshake(&mut stream, secret)
+                        .await
+                        .ok()?;
+                }
+                Some(stream)
+            }
+            .await;
+            if let Some(mut stream) = connected {
                 let busy = observer_busy.clone();
                 let _ = observed
                     .read_events(&mut stream, |observed| {
@@ -576,11 +731,24 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             }
         }
     });
+    #[cfg(unix)]
+    let _ = &public_secret;
+    #[cfg(unix)]
     let proxy = run_socket_proxy(
         listener,
         std::path::PathBuf::from(&internal.socket),
         None,
         None,
+        draining_rx.clone(),
+        connections_tx,
+    );
+    #[cfg(windows)]
+    let proxy = run_socket_proxy(
+        listener,
+        public_address,
+        internal.socket.clone(),
+        public_secret.clone(),
+        internal_secret.clone(),
         draining_rx.clone(),
         connections_tx,
     );
@@ -601,10 +769,17 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
                 // crash leaves evidence in the daemon directory; a clean idle exit writes nothing.
                 child_running.store(false,std::sync::atomic::Ordering::SeqCst);
                 if let Ok(status)=status{
-                    use std::os::unix::process::ExitStatusExt;
-                    let signal=status.signal().map(signal_name);
+                    #[cfg(unix)]
+                    let signal={use std::os::unix::process::ExitStatusExt;status.signal().map(signal_name)};
+                    #[cfg(not(unix))]
+                    let signal:Option<String>=None;
                     crate::host_child_exit::note_child_exit(&paths.dir,status.code(),signal.as_deref(),child_started_at,chrono::Utc::now().timestamp_millis());
                 }
+                break;
+            },
+            Some(())=gone_rx.recv()=>{
+                // senpi: "rpc host child exit observed by identity watchdog", exit 0.
+                child_running.store(false,std::sync::atomic::Ordering::SeqCst);
                 break;
             },
             _changed=shutdown_rx.changed()=>{if let Some(code)=*shutdown_rx.borrow(){signal_code=Some(code);break;}},
@@ -635,7 +810,13 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     draining_tx.send_replace(true);
     publisher.abort();
     observer.abort();
+    #[cfg(windows)]
+    identity_watch.abort();
+    #[cfg(unix)]
     crate::host_stop::signal_generation(child_pid, rustix::process::Signal::TERM).ok();
+    // win32 has no SIGTERM: Node's `process.kill(pid, "SIGTERM")` there is TerminateProcess.
+    #[cfg(windows)]
+    let _ = child.start_kill();
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         if child.try_wait()?.is_some() {
@@ -648,6 +829,9 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
+    // Named-pipe handles can outlive cleanup; the bound (armed once the child is gone, senpi `performShutdown`)
+    // guarantees the supervisor never stays resident. Inert off win32.
+    let _hard_exit = ShutdownHardExit::arm(platform, signal_code.unwrap_or(0));
     crate::socket_ownership::unlink_owned_socket(&public_socket, bound, platform, |_| {});
     crate::host_daemon_registration::release_generation(&paths, &instance_id, child_pid)?;
     crate::host_daemon_registration::release_generation(&paths, &instance_id, std::process::id())?;
@@ -659,7 +843,7 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     }
     Ok(())
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub async fn run_host_supervisor(_launch: SupervisorLaunch) -> std::io::Result<()> {
     Err(std::io::Error::other(
         "rpc host sockets are not supported on this platform yet",
@@ -772,7 +956,7 @@ pub struct DrainRelay {
 }
 /// Asks the child to drain: the relay file everywhere, plus SIGUSR1 as the immediate wake on POSIX (senpi
 /// `requestChildDrain`). A child that already exited is never asked.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn request_child_drain(
     child_pid: u32,
     running: &std::sync::atomic::AtomicBool,
@@ -794,15 +978,18 @@ fn request_child_drain(
     if windows {
         return;
     }
+    #[cfg(unix)]
     if let Err(error) =
         crate::host_stop::signal_generation(child_pid, rustix::process::Signal::USR1)
     {
         eprintln!("senpi rpc host supervisor: could not ask the host to drain: {error}");
     }
+    #[cfg(not(unix))]
+    let _ = child_pid;
 }
 /// The signal-free drain request: the watcher is armed BEFORE the marker is advertised. A marker that cannot be
 /// written only leaves this generation reachable by the POSIX signal, as before.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn accept_drain_requests(
     generation: &crate::host_daemon_paths::HostGenerationPaths,
     drain_tx: tokio::sync::watch::Sender<bool>,
@@ -1029,6 +1216,45 @@ fn register_supervisor_signals(
     });
     Ok(shutdown_rx)
 }
+/// Reuses a valid public secret - including one `ensureHost` just wrote - and creates one when missing or
+/// unusable (senpi `ensurePublicSocketSecret`). Reuse is required: on win32 the pipe name derives from the socket
+/// path AND the secret, so rotating it would move this supervisor off the endpoint its caller published.
+pub fn ensure_public_socket_secret(
+    public_socket: &str,
+) -> std::io::Result<[u8; crate::socket_transport::SOCKET_SECRET_BYTES]> {
+    let path = crate::socket_transport::socket_secret_path(public_socket)
+        .map_err(std::io::Error::other)?;
+    crate::socket_transport::ensure_socket_secret(std::path::Path::new(&path)).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!(
+                "senpi rpc host supervisor: cannot provision public socket secret {path}: {error}"
+            ),
+        )
+    })
+}
+/// win32 has no SIGTERM/SIGHUP; the closest gentle shutdown requests are the console break, close and system
+/// shutdown events. Each carries senpi's SIGTERM exit code 143. There is no SIGUSR1 equivalent: a drain
+/// reaches the supervisor only through the relay file.
+#[cfg(windows)]
+fn register_supervisor_signals() -> std::io::Result<tokio::sync::watch::Receiver<Option<i32>>> {
+    use tokio::signal::windows::{ctrl_break, ctrl_close, ctrl_shutdown};
+    let mut break_event = ctrl_break()?;
+    let mut close_event = ctrl_close()?;
+    let mut shutdown_event = ctrl_shutdown()?;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel::<Option<i32>>(None);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _=break_event.recv()=>{if shutdown_tx.send(Some(143)).is_err(){break;}},
+                _=close_event.recv()=>{if shutdown_tx.send(Some(143)).is_err(){break;}},
+                _=shutdown_event.recv()=>{if shutdown_tx.send(Some(143)).is_err(){break;}},
+                else=>break,
+            }
+        }
+    });
+    Ok(shutdown_rx)
+}
 pub fn resolve_host_policy(
     settings: &serde_json::Value,
     env: &HashMap<String, String>,
@@ -1093,9 +1319,317 @@ impl IdleExitDecider {
         }
     }
 }
+
+/// Win32 named-pipe shutdown can leave supervisor handles live after close starts (senpi
+/// `WINDOWS_SUPERVISOR_SHUTDOWN_HARD_EXIT_MS`).
+pub const WINDOWS_SUPERVISOR_SHUTDOWN_HARD_EXIT_MS: u64 = 2_000;
+/// The hard-exit bound of a win32 shutdown: cleanup that leaves named-pipe handles live must never leave the
+/// supervisor resident or the host orphaned. Dropping the guard (cleanup finished in time) disarms it.
+pub struct ShutdownHardExit(Option<tokio::task::JoinHandle<()>>);
+impl ShutdownHardExit {
+    /// Arms the bound only on win32 (`platform == "win32"`); elsewhere the guard is inert.
+    pub fn arm(platform: &str, exit_code: i32) -> Self {
+        Self::arm_with(
+            platform,
+            std::time::Duration::from_millis(WINDOWS_SUPERVISOR_SHUTDOWN_HARD_EXIT_MS),
+            move || std::process::exit(exit_code),
+        )
+    }
+    pub fn arm_with(
+        platform: &str,
+        after: std::time::Duration,
+        on_expiry: impl FnOnce() + Send + 'static,
+    ) -> Self {
+        if platform != "win32" {
+            return Self(None);
+        }
+        Self(Some(tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            on_expiry();
+        })))
+    }
+    pub fn armed(&self) -> bool {
+        self.0.is_some()
+    }
+}
+impl Drop for ShutdownHardExit {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
+}
+/// The decision core of senpi `watchWin32ChildIdentity`: a child whose identity changes or disappears has exited
+/// even when no exit event came. A failed baseline read is UNKNOWN, so the watch then relies on its own
+/// comparisons; an absent identity is only believed once the pid probe agrees the child is gone, and only after
+/// two consecutive confirmations (a loaded runner's timed-out probe means UNKNOWN, never death).
+#[derive(Debug, Default)]
+pub struct ChildIdentityWatch {
+    baseline: Option<String>,
+    missing_identity_checks: u32,
+}
+impl ChildIdentityWatch {
+    pub fn new(baseline: Option<String>) -> Self {
+        Self {
+            baseline,
+            missing_identity_checks: 0,
+        }
+    }
+    /// One observation; `true` when the child is gone.
+    pub fn observe(&mut self, current: Option<&str>, pid_live: bool) -> bool {
+        match current {
+            None if !pid_live => self.missing_identity_checks += 1,
+            Some(_) => self.missing_identity_checks = 0,
+            None => {}
+        }
+        let identity_changed = matches!((&self.baseline, current), (Some(baseline), Some(current)) if baseline != current);
+        identity_changed || self.missing_identity_checks >= 2
+    }
+}
+/// win32 only: polls the child's start identity every 500 ms until it is gone or `shutting_down` turns true, then
+/// calls `on_gone` once (senpi `watchWin32ChildIdentity`). The probe is a bounded 1 s read run off the runtime.
+pub fn watch_win32_child_identity(
+    pid: u32,
+    shutting_down: impl Fn() -> bool + Send + 'static,
+    on_gone: impl FnOnce() + Send + 'static,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let read = |pid: u32| async move {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(1_000),
+                tokio::task::spawn_blocking(move || {
+                    crate::host_reservations::read_process_start_time(pid)
+                }),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+        };
+        let mut watch = ChildIdentityWatch::new(read(pid).await);
+        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(500));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            if shutting_down() {
+                return;
+            }
+            let current = read(pid).await;
+            let live = crate::host_reservations::process_is_live(pid);
+            if watch.observe(current.as_deref(), live) {
+                on_gone();
+                return;
+            }
+        }
+    })
+}
+/// The Windows named-pipe listener of the supervisor's public endpoint and its authenticated internal hop (senpi
+/// `host-lifecycle-proxy.ts` `listen` on win32). The pipe name is derived from the logical socket path AND the
+/// secret (`socket_transport::resolve_socket_transport_address`), and the secret handshake is the only boundary:
+/// a wrong secret ends the connection before a single JSONL byte is read or answered.
+#[cfg(windows)]
+pub mod win32_pipe {
+    use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions};
+    /// `ERROR_PIPE_BUSY`: every instance of the pipe is momentarily in use; the client waits and retries.
+    const ERROR_PIPE_BUSY: i32 = 231;
+    /// The first instance of a pipe name; a second claimant of the same name fails instead of sharing it.
+    pub fn create_first_instance(address: &str) -> std::io::Result<NamedPipeServer> {
+        ServerOptions::new()
+            .first_pipe_instance(true)
+            .reject_remote_clients(true)
+            .create(address)
+    }
+    fn next_instance(address: &str) -> std::io::Result<NamedPipeServer> {
+        ServerOptions::new()
+            .reject_remote_clients(true)
+            .create(address)
+    }
+    /// Connects to a named pipe, waiting out a busy pipe until `timeout`.
+    pub async fn connect(
+        address: &str,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match ClientOptions::new().open(address) {
+                Ok(client) => return Ok(client),
+                Err(error)
+                    if error.raw_os_error() == Some(ERROR_PIPE_BUSY)
+                        && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    /// One accepted public client: authenticated with the public secret, then proxied to the internal pipe behind
+    /// the internal secret.
+    async fn proxy_client(
+        mut client: NamedPipeServer,
+        internal_address: String,
+        public_secret: Option<Vec<u8>>,
+        internal_secret: Option<Vec<u8>>,
+    ) -> std::io::Result<()> {
+        if let Some(secret) = public_secret {
+            crate::socket_transport::authenticate_socket(&mut client, &secret).await?;
+        }
+        super::proxy_connection(client, &internal_address, internal_secret.as_deref()).await
+    }
+    /// `run_socket_proxy` over a named pipe: serves `public_address` until `draining` turns true, keeps every
+    /// attached connection alive through the drain, and returns once they have all ended.
+    pub async fn run_pipe_proxy(
+        mut listener: NamedPipeServer,
+        public_address: String,
+        internal_address: String,
+        public_secret: Option<Vec<u8>>,
+        internal_secret: Option<Vec<u8>>,
+        mut draining: tokio::sync::watch::Receiver<bool>,
+        connections: tokio::sync::watch::Sender<usize>,
+    ) -> std::io::Result<()> {
+        let mut clients = tokio::task::JoinSet::new();
+        loop {
+            if *draining.borrow() {
+                break;
+            }
+            tokio::select! {
+                biased;
+                changed = draining.changed() => { if changed.is_err() || *draining.borrow() { break; } },
+                result = clients.join_next(), if !clients.is_empty() => {
+                    let _ = result;
+                    connections.send_replace(clients.len());
+                },
+                connected = listener.connect() => {
+                    connected?;
+                    let accepted = std::mem::replace(&mut listener, next_instance(&public_address)?);
+                    if *draining.borrow() { break; }
+                    clients.spawn(proxy_client(
+                        accepted,
+                        internal_address.clone(),
+                        public_secret.clone(),
+                        internal_secret.clone(),
+                    ));
+                    connections.send_replace(clients.len());
+                },
+            }
+        }
+        drop(listener);
+        while clients.join_next().await.is_some() {
+            connections.send_replace(clients.len());
+        }
+        Ok(())
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        fn pipe_address(tag: &str) -> String {
+            crate::socket_transport::resolve_socket_transport_address(
+                &format!("C:\\maho-test\\{tag}-{}.sock", std::process::id()),
+                "win32",
+                Some(&[3; 32]),
+            )
+            .unwrap_or_default()
+        }
+        #[tokio::test]
+        async fn a_wrong_secret_is_refused_before_any_jsonl_byte_and_the_right_one_is_proxied() {
+            let public = pipe_address("public");
+            let internal = pipe_address("internal");
+            let backend = create_first_instance(&internal).unwrap();
+            let listener = create_first_instance(&public).unwrap();
+            let (drain, draining) = tokio::sync::watch::channel(false);
+            let (count, _counts) = tokio::sync::watch::channel(0usize);
+            let proxy = tokio::spawn(run_pipe_proxy(
+                listener,
+                public.clone(),
+                internal.clone(),
+                Some(vec![1; 32]),
+                Some(vec![2; 32]),
+                draining,
+                count,
+            ));
+            let scenario = async {
+                let mut refused = connect(&public, std::time::Duration::from_secs(2))
+                    .await
+                    .unwrap();
+                crate::socket_transport::send_socket_handshake(&mut refused, &[9; 32])
+                    .await
+                    .unwrap();
+                let _ = refused
+                    .write_all(b"{\"type\":\"get_protocol_info\"}\n")
+                    .await;
+                let mut bytes = Vec::new();
+                let _ = refused.read_to_end(&mut bytes).await;
+                assert!(bytes.is_empty());
+
+                let mut client = connect(&public, std::time::Duration::from_secs(2))
+                    .await
+                    .unwrap();
+                crate::socket_transport::send_socket_handshake(&mut client, &[1; 32])
+                    .await
+                    .unwrap();
+                backend.connect().await.unwrap();
+                let mut host = backend;
+                crate::socket_transport::authenticate_socket(&mut host, &[2; 32])
+                    .await
+                    .unwrap();
+                client.write_all(b"request\n").await.unwrap();
+                let mut request = [0u8; 8];
+                host.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"request\n");
+                drop(client);
+                drop(host);
+                drain.send(true).unwrap();
+                proxy.await.unwrap().unwrap();
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(10), scenario)
+                .await
+                .unwrap();
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn identity_watch_needs_two_confirmed_absences_and_never_believes_a_live_pid() {
+        let mut watch = ChildIdentityWatch::new(Some("100".into()));
+        assert!(!watch.observe(Some("100"), true));
+        assert!(!watch.observe(None, true));
+        assert!(!watch.observe(None, false));
+        // A readable identity resets the count.
+        assert!(!watch.observe(Some("100"), true));
+        assert!(!watch.observe(None, false));
+        assert!(watch.observe(None, false));
+    }
+    #[test]
+    fn identity_watch_reports_a_changed_identity_and_works_without_a_baseline() {
+        let mut watch = ChildIdentityWatch::new(Some("100".into()));
+        assert!(watch.observe(Some("200"), true));
+        let mut unknown = ChildIdentityWatch::new(None);
+        assert!(!unknown.observe(Some("200"), true));
+        assert!(!unknown.observe(None, false));
+        assert!(unknown.observe(None, false));
+    }
+    #[tokio::test(start_paused = true)]
+    async fn the_hard_exit_bound_fires_only_on_win32_and_is_disarmed_by_dropping_it() {
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = |fired: &std::sync::Arc<std::sync::atomic::AtomicUsize>| {
+            let fired = fired.clone();
+            move || {
+                fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        };
+        let bound = std::time::Duration::from_millis(WINDOWS_SUPERVISOR_SHUTDOWN_HARD_EXIT_MS);
+        assert!(!ShutdownHardExit::arm_with("linux", bound, counter(&fired)).armed());
+        let disarmed = ShutdownHardExit::arm_with("win32", bound, counter(&fired));
+        assert!(disarmed.armed());
+        drop(disarmed);
+        let armed = ShutdownHardExit::arm_with("win32", bound, counter(&fired));
+        tokio::time::sleep(bound + std::time::Duration::from_millis(1)).await;
+        assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 1);
+        drop(armed);
+    }
     #[test]
     fn supervisor_route_skips_only_complete_injected_prefix() {
         let args = [

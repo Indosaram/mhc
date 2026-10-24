@@ -3,8 +3,8 @@
 use std::io;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
 use serde::ser::Serializer;
+use serde::{Deserialize, Serialize};
 
 use crate::manager::manager::TaskManager;
 use crate::manager::types::{ListScope, ListedTask};
@@ -100,7 +100,10 @@ pub struct SuspendedDetails {
     pub explanation: String,
 }
 
-pub fn serialize_residency_state<S: Serializer>(state: &ResidencyState, serializer: S) -> Result<S::Ok, S::Error> {
+pub fn serialize_residency_state<S: Serializer>(
+    state: &ResidencyState,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
     serializer.serialize_str(state.as_str())
 }
 
@@ -142,6 +145,9 @@ pub struct TaskSnapshot {
     pub run_stats: Option<TaskRunStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lost: Option<LostBreadcrumbs>,
+    /// A cancel was requested of a still-running child that is unreachable: it stops on its host first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

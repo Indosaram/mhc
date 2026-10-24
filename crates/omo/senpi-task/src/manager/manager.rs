@@ -9,16 +9,16 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use crate::lifecycle::port::ReattachFailureKind;
+use crate::isolation::IsolationPreparation;
 use crate::lifecycle::admission_lease::{
     AcquireAdmissionLeaseResult, AdmissionLeaseTimingOverrides, SessionAdmissionLease,
     acquire_session_admission_lease,
 };
+use crate::lifecycle::port::ReattachFailureKind;
 use crate::lifecycle::{
     DestroyCause, LifecycleReattachPorts, ReattachResult, RespawnResult,
     register_lifecycle_reattach_ports,
 };
-use crate::isolation::IsolationPreparation;
 use crate::manager::child_handle::{
     ManagedChildHandle, ManagedChildListener, Unsubscribe, discard_managed_handle,
 };
@@ -30,26 +30,29 @@ use crate::manager::helpers::{
     build_managed_spec, build_record_input, build_spawn_spec_v1, in_session, is_terminal_record,
     now_iso, record_spawned_pid,
 };
-use crate::manager::isolation_wiring::{IsolationWiring, IsolationWiringPorts, create_isolation_wiring};
+use crate::manager::isolation_wiring::{
+    IsolationWiring, IsolationWiringPorts, create_isolation_wiring,
+};
 use crate::manager::launch_fence::{launch_run_of, owns_run};
 use crate::manager::names::NameRegistry;
 use crate::manager::outcome::{ErrorOutcomeInput, OutcomeTrackerPorts, track_outcome};
-use crate::manager::respawn::{RespawnInput, respawn_managed_task};
 use crate::manager::residency_signal::{ResidencyChange, ResidencySignal};
+use crate::manager::respawn::{RespawnInput, respawn_managed_task};
 use crate::manager::transcript_log::subscribe_transcript_log;
 use crate::manager::types::{
     Clock, FallibleAdmit, ListScope, ListedTask, ManagedRunner, ManagedRunnerError,
-    ManagedStartSpec, ManagerStartSpec, NoopDestruction, OwnedStartResult, PlanResolutionCode, PlanResolutionError, ResolvedChildPlan,
-    ResidencyDeniedCause, RpcRespawnRunner, SpawnAdmission, StartFailure,
-    StartResult, StartedTask, TaskManagerOptions,
+    ManagedStartSpec, ManagerStartSpec, NoopDestruction, OwnedStartResult, PlanResolutionCode,
+    PlanResolutionError, ResidencyDeniedCause, ResolvedChildPlan, RpcRespawnRunner, SpawnAdmission,
+    StartFailure, StartResult, StartedTask, TaskManagerOptions,
 };
 use crate::run_stats::{RunStatsTracker, create_run_stats_tracker};
 use crate::runners::RunnerFailureKind;
 use crate::runners::types::RpcRunnerSpec;
 use crate::shared::DagTaskOwner;
 use crate::state::{
-    IsolationRecord, ResidencyState, SpawnSpecV1, TaskRecord, TaskRunStats, TaskSpawnSpec, TaskStatus,
-    TaskTransition, create_task_record, parse_task_id, resolved_reasoning_fields, sync_task_id_floor,
+    IsolationRecord, ResidencyState, SpawnSpecV1, TaskRecord, TaskRunStats, TaskSpawnSpec,
+    TaskStatus, TaskTransition, create_task_record, parse_task_id, resolved_reasoning_fields,
+    sync_task_id_floor,
 };
 use crate::steering::{
     CancelOptions, CancelOutcome, DestructionPort, InterruptOutcome, SendInput, SendOutcome,
@@ -184,7 +187,10 @@ impl AbortSignal {
     }
 
     pub fn aborted(&self) -> bool {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).aborted
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .aborted
     }
 
     /// Registers a waker pinged by [`Self::abort`]; an already-aborted signal pings at once.
@@ -252,13 +258,30 @@ struct PendingStops {
 
 impl PendingStops {
     fn request(&self, task_id: &str, epoch: i64) -> crate::manager::outcome::PendingStop {
-        Arc::clone(lock(&self.pending)
-            .entry((task_id.to_string(), epoch))
-            .or_insert_with(|| Arc::new((Mutex::new(false), std::sync::Condvar::new()))))
+        Arc::clone(
+            lock(&self.pending)
+                .entry((task_id.to_string(), epoch))
+                .or_insert_with(|| Arc::new((Mutex::new(false), std::sync::Condvar::new()))),
+        )
     }
 
-    fn take_settlement(&self, task_id: &str, epoch: i64) -> Option<crate::manager::outcome::PendingStop> {
+    fn take_settlement(
+        &self,
+        task_id: &str,
+        epoch: i64,
+    ) -> Option<crate::manager::outcome::PendingStop> {
         lock(&self.pending).remove(&(task_id.to_string(), epoch))
+    }
+
+    /// Marks the pending stop for this exact run settled and wakes its outcome watcher.
+    fn settle(&self, task_id: &str, epoch: i64) {
+        let pending = lock(&self.pending)
+            .get(&(task_id.to_string(), epoch))
+            .cloned();
+        if let Some(pending) = pending {
+            *lock(&pending.0) = true;
+            pending.1.notify_all();
+        }
     }
 
     fn forget(&self, task_id: &str, epoch: i64) {
@@ -275,10 +298,15 @@ struct StopSettlementGuard<'a> {
     epoch: i64,
     pending: crate::manager::outcome::PendingStop,
     consumed: bool,
+    /// A cancel left pending on an unreachable child settles through the port's `stop_settled`, not here.
+    deferred: bool,
 }
 
 impl Drop for StopSettlementGuard<'_> {
     fn drop(&mut self) {
+        if self.deferred {
+            return;
+        }
         *lock(&self.pending.0) = true;
         self.pending.1.notify_all();
         if !self.consumed {
@@ -473,60 +501,117 @@ impl TaskManager {
         self.inner.residency.changed(parent_session_id)
     }
 
-    pub fn has_free_slot(&self, model: &str) -> bool { lock(&self.inner.concurrency).has_free_slot(model) }
-    pub fn state_dir(&self) -> &Path { self.inner.store.state_dir() }
-    pub fn has_pending_sends(&self, task_id: &str) -> bool { self.inner.steering.has_pending_sends(task_id) }
-    pub fn has_in_flight_sends(&self, task_id: &str) -> bool { self.inner.steering.has_in_flight_send(task_id) }
-    pub fn try_begin_send(&self, task_id: &str) -> bool { self.inner.steering.try_begin_send(task_id) }
-    pub fn end_send(&self, task_id: &str) { self.inner.steering.end_send(task_id); }
-    pub fn run_epoch(&self, task_id: &str) -> Option<i64> { self.inner.try_load(task_id).map(|record| record.notification.run_epoch) }
-    pub fn next_workpool_epoch(&self, task_id: &str) -> Option<i64> { self.run_epoch(task_id).map(|epoch| epoch.saturating_add(1)) }
+    pub fn has_free_slot(&self, model: &str) -> bool {
+        lock(&self.inner.concurrency).has_free_slot(model)
+    }
+    pub fn state_dir(&self) -> &Path {
+        self.inner.store.state_dir()
+    }
+    pub fn has_pending_sends(&self, task_id: &str) -> bool {
+        self.inner.steering.has_pending_sends(task_id)
+    }
+    pub fn has_in_flight_sends(&self, task_id: &str) -> bool {
+        self.inner.steering.has_in_flight_send(task_id)
+    }
+    pub fn try_begin_send(&self, task_id: &str) -> bool {
+        self.inner.steering.try_begin_send(task_id)
+    }
+    pub fn end_send(&self, task_id: &str) {
+        self.inner.steering.end_send(task_id);
+    }
+    pub fn run_epoch(&self, task_id: &str) -> Option<i64> {
+        self.inner
+            .try_load(task_id)
+            .map(|record| record.notification.run_epoch)
+    }
+    pub fn next_workpool_epoch(&self, task_id: &str) -> Option<i64> {
+        self.run_epoch(task_id).map(|epoch| epoch.saturating_add(1))
+    }
 
-    pub fn workpool_worker_eligible(&self, task_id: &str, parent_session_id: &str, expected_epoch: i64) -> bool {
-        let Some(record) = self.inner.try_load(task_id) else { return false; };
+    pub fn workpool_worker_eligible(
+        &self,
+        task_id: &str,
+        parent_session_id: &str,
+        expected_epoch: i64,
+    ) -> bool {
+        let Some(record) = self.inner.try_load(task_id) else {
+            return false;
+        };
         record.parent_session_id == parent_session_id
             && record.killed != Some(true)
             && record.notification.run_epoch.checked_add(1) == Some(expected_epoch)
-            && crate::state::messageability(record.status, record.residency_state) == crate::state::Messageability::Revive
+            && crate::state::messageability(record.status, record.residency_state)
+                == crate::state::Messageability::Revive
             && self.inner.live_handle(task_id).is_some()
             && record.pending_steering.as_ref().is_none_or(Vec::is_empty)
     }
 
-    pub fn workpool_worker_record(&self, task_id: &str) -> Option<TaskRecord> { self.inner.try_load(task_id) }
+    pub fn workpool_worker_record(&self, task_id: &str) -> Option<TaskRecord> {
+        self.inner.try_load(task_id)
+    }
 
     pub fn reserve_slot(&self, model: &str, task_id: &str, epoch: i64) -> bool {
         let mut concurrency = lock(&self.inner.concurrency);
-        if !concurrency.has_free_slot(model) { return false; }
+        if !concurrency.has_free_slot(model) {
+            return false;
+        }
         concurrency.acquire(model, task_id);
-        lock(&self.inner.state).released.insert(task_id.to_string(), epoch.saturating_sub(1));
+        lock(&self.inner.state)
+            .released
+            .insert(task_id.to_string(), epoch.saturating_sub(1));
         true
     }
 
-    pub fn allocate_workpool_record(&self, spec: &crate::workpool::types::WorkpoolSpec, task_id: &str, host_pid: i64) -> Result<(TaskRecord, ManagedStartSpec), crate::state::TaskIdSpaceExhaustedError> {
+    pub fn allocate_workpool_record(
+        &self,
+        spec: &crate::workpool::types::WorkpoolSpec,
+        task_id: &str,
+        host_pid: i64,
+    ) -> Result<(TaskRecord, ManagedStartSpec), crate::state::TaskIdSpaceExhaustedError> {
         let mode = spec.start.execution_mode.unwrap_or_default();
-        let input = crate::manager::helpers::build_record_input(&spec.start, &spec.plan, task_id, mode);
+        let input =
+            crate::manager::helpers::build_record_input(&spec.start, &spec.plan, task_id, mode);
         let mut record = create_task_record(input, u64::try_from((self.inner.now)()).ok())?;
         record.task_id = task_id.to_string();
         record.host_pid = Some(host_pid);
         record.notify_on_terminal = false;
-        let managed = build_managed_spec(&record, &spec.start, &spec.plan, &self.inner.cwd, self.inner.store.state_dir());
+        let managed = build_managed_spec(
+            &record,
+            &spec.start,
+            &spec.plan,
+            &self.inner.cwd,
+            self.inner.store.state_dir(),
+        );
         record.spawn_spec = Some(TaskSpawnSpec::V1(build_spawn_spec_v1(&managed)));
         Ok((record, managed))
     }
 
-    pub fn enqueue_workpool(&self, model: &str, task_id: &str, epoch: i64, grant: crate::manager::concurrency::Grant) -> (usize, bool) {
+    pub fn enqueue_workpool(
+        &self,
+        model: &str,
+        task_id: &str,
+        epoch: i64,
+        grant: crate::manager::concurrency::Grant,
+    ) -> (usize, bool) {
         let mut grant = Some(grant);
         let (position, immediate) = {
             let mut concurrency = lock(&self.inner.concurrency);
-            lock(&self.inner.state).released.insert(task_id.to_string(), epoch.saturating_sub(1));
+            lock(&self.inner.state)
+                .released
+                .insert(task_id.to_string(), epoch.saturating_sub(1));
             if concurrency.has_free_slot(model) {
                 concurrency.acquire(model, task_id);
                 (0, true)
             } else {
-                (concurrency.enqueue(model, task_id, grant.take().expect("pending grant")), false)
+                (
+                    concurrency.enqueue(model, task_id, grant.take().expect("pending grant")),
+                    false,
+                )
             }
         };
-        if immediate { spawn_grant(grant.expect("immediate grant")); }
+        if immediate {
+            spawn_grant(grant.expect("immediate grant"));
+        }
         (position, immediate)
     }
 
@@ -534,56 +619,139 @@ impl TaskManager {
         lock(&self.inner.concurrency).remove(model, task_id)
     }
 
-    pub fn release_reserved_slot(&self, task_id: &str, model: &str, epoch: i64) { self.inner.release_slot(task_id, model, epoch); }
+    pub fn release_reserved_slot(&self, task_id: &str, model: &str, epoch: i64) {
+        self.inner.release_slot(task_id, model, epoch);
+    }
 
     pub fn resolve_workpool_spec(
         &self,
         caller: &crate::workpool::types::WorkpoolCaller,
         agent: &crate::workpool::types::WorkpoolAgent,
-    ) -> Result<crate::workpool::types::WorkpoolSpec, crate::workpool::ports::WorkpoolAdmissionError> {
+    ) -> Result<crate::workpool::types::WorkpoolSpec, crate::workpool::ports::WorkpoolAdmissionError>
+    {
         let mut spec = match agent {
-            crate::workpool::types::WorkpoolAgent::Category { prompt, model, category } => ManagerStartSpec { prompt: prompt.clone(), model: model.clone(), category: Some(category.clone()), ..ManagerStartSpec::default() },
-            crate::workpool::types::WorkpoolAgent::SubagentType { prompt, model, subagent_type } => ManagerStartSpec { prompt: prompt.clone(), model: model.clone(), subagent_type: Some(subagent_type.clone()), ..ManagerStartSpec::default() },
+            crate::workpool::types::WorkpoolAgent::Category {
+                prompt,
+                model,
+                category,
+            } => ManagerStartSpec {
+                prompt: prompt.clone(),
+                model: model.clone(),
+                category: Some(category.clone()),
+                ..ManagerStartSpec::default()
+            },
+            crate::workpool::types::WorkpoolAgent::SubagentType {
+                prompt,
+                model,
+                subagent_type,
+            } => ManagerStartSpec {
+                prompt: prompt.clone(),
+                model: model.clone(),
+                subagent_type: Some(subagent_type.clone()),
+                ..ManagerStartSpec::default()
+            },
         };
         spec.parent_session_id = caller.session_id.clone();
         spec.root_session_id = Some(caller.root_session_id.clone());
         spec.depth = caller.depth.saturating_add(1);
         spec.cwd = Some(caller.cwd.clone());
-        let plan = (self.inner.planner)(&spec).map_err(|error| crate::workpool::ports::WorkpoolAdmissionError(error.message.clone()))?;
+        let plan = (self.inner.planner)(&spec).map_err(|error| {
+            crate::workpool::ports::WorkpoolAdmissionError(error.message.clone())
+        })?;
         let target = spec.subagent_type.as_deref().or(plan.agent_type.as_deref());
         let allowed = plan.allowed_subagents.as_deref().unwrap_or_default();
-        if let crate::manager::depth_policy::DepthDecision::Denied { reason } = crate::manager::depth_policy::decide_depth_policy(&crate::manager::depth_policy::DepthPolicyInput {
-            child_depth: spec.depth, max_depth: plan.max_depth.unwrap_or(self.inner.config.max_depth), target_agent_type: target, allowed_subagents: Some(allowed),
-        }) { return Err(crate::workpool::ports::WorkpoolAdmissionError(reason)); }
-        spec.execution_mode = Some(crate::manager::execution_mode::resolve_execution_mode(crate::manager::execution_mode::ExecutionModeSources {
-            spec_mode: None, agent_mode: plan.agent_execution_mode, config_mode: Some(self.inner.config.default_execution_mode),
-        }));
+        if let crate::manager::depth_policy::DepthDecision::Denied { reason } =
+            crate::manager::depth_policy::decide_depth_policy(
+                &crate::manager::depth_policy::DepthPolicyInput {
+                    child_depth: spec.depth,
+                    max_depth: plan.max_depth.unwrap_or(self.inner.config.max_depth),
+                    target_agent_type: target,
+                    allowed_subagents: Some(allowed),
+                },
+            )
+        {
+            return Err(crate::workpool::ports::WorkpoolAdmissionError(reason));
+        }
+        spec.execution_mode = Some(crate::manager::execution_mode::resolve_execution_mode(
+            crate::manager::execution_mode::ExecutionModeSources {
+                spec_mode: None,
+                agent_mode: plan.agent_execution_mode,
+                config_mode: Some(self.inner.config.default_execution_mode),
+            },
+        ));
         Ok(crate::workpool::types::WorkpoolSpec { start: spec, plan })
     }
 
-    pub fn admission_authorize(&self, session_id: &str) -> Result<(), crate::workpool::ports::WorkpoolAdmissionError> {
+    pub fn admission_authorize(
+        &self,
+        session_id: &str,
+    ) -> Result<(), crate::workpool::ports::WorkpoolAdmissionError> {
         let admission = if let Some(admit) = &self.inner.fallible_admit {
-            admit(session_id).map_err(|error| crate::workpool::ports::WorkpoolAdmissionError(error.to_string()))?
-        } else if let Some(admit) = &self.inner.admit { admit(session_id) } else { return Ok(()); };
+            admit(session_id).map_err(|error| {
+                crate::workpool::ports::WorkpoolAdmissionError(error.to_string())
+            })?
+        } else if let Some(admit) = &self.inner.admit {
+            admit(session_id)
+        } else {
+            return Ok(());
+        };
         match admission {
-            SpawnAdmission::Rejected { message, .. } => Err(crate::workpool::ports::WorkpoolAdmissionError(message)),
+            SpawnAdmission::Rejected { message, .. } => {
+                Err(crate::workpool::ports::WorkpoolAdmissionError(message))
+            }
             SpawnAdmission::Admitted | SpawnAdmission::Evicted { .. } => Ok(()),
         }
     }
 
-    pub fn launch_prepared(&self, record: TaskRecord, managed_spec: ManagedStartSpec) -> Result<(), String> {
-        let mode = ExecutionMode::parse(&record.execution_mode).ok_or_else(|| "Invalid worker execution mode".to_owned())?;
-        let context = LaunchContext { runner: Arc::clone(self.inner.runners.get(mode)), model: record.model.clone(), managed_spec, record };
+    pub fn launch_prepared(
+        &self,
+        record: TaskRecord,
+        managed_spec: ManagedStartSpec,
+    ) -> Result<(), String> {
+        let mode = ExecutionMode::parse(&record.execution_mode)
+            .ok_or_else(|| "Invalid worker execution mode".to_owned())?;
+        let context = LaunchContext {
+            runner: Arc::clone(self.inner.runners.get(mode)),
+            model: record.model.clone(),
+            managed_spec,
+            record,
+        };
         self.inner.launch(&context)
     }
 
-    pub fn revive_workpool_task(&self, task_id: &str, epoch: i64, message: &str) -> Result<SendOutcome, SteeringError> {
-        let record = self.inner.try_load(task_id).ok_or_else(|| SteeringError::Store(crate::store::StoreError::NotFound(task_id.to_string())))?;
-        if record.notification.run_epoch.checked_add(1) != Some(epoch) || crate::state::messageability(record.status, record.residency_state) != crate::state::Messageability::Revive {
-            return Ok(SendOutcome::NotContinuable { task_id: task_id.to_string(), reason: "Worker run epoch changed before revival.".into(), suggestion: "Inspect the task before retrying.".into() });
+    pub fn revive_workpool_task(
+        &self,
+        task_id: &str,
+        epoch: i64,
+        message: &str,
+    ) -> Result<SendOutcome, SteeringError> {
+        let record = self.inner.try_load(task_id).ok_or_else(|| {
+            SteeringError::Store(crate::store::StoreError::NotFound(task_id.to_string()))
+        })?;
+        if record.notification.run_epoch.checked_add(1) != Some(epoch)
+            || crate::state::messageability(record.status, record.residency_state)
+                != crate::state::Messageability::Revive
+        {
+            return Ok(SendOutcome::NotContinuable {
+                task_id: task_id.to_string(),
+                reason: "Worker run epoch changed before revival.".into(),
+                suggestion: "Inspect the task before retrying.".into(),
+            });
         }
-        let handle = self.inner.live_handle(task_id).ok_or_else(|| SteeringError::Host(crate::host::HostError { message: "worker has no resident session for revival".into() }))?;
-        let identity = crate::manager::child_handle::WorkpoolChildIdentity { task_id: task_id.to_string(), state_dir: self.inner.store.state_dir().to_string_lossy().into_owned(), run_epoch: u32::try_from(epoch).map_err(|error| SteeringError::Host(crate::host::HostError { message: error.to_string() }))? };
+        let handle = self.inner.live_handle(task_id).ok_or_else(|| {
+            SteeringError::Host(crate::host::HostError {
+                message: "worker has no resident session for revival".into(),
+            })
+        })?;
+        let identity = crate::manager::child_handle::WorkpoolChildIdentity {
+            task_id: task_id.to_string(),
+            state_dir: self.inner.store.state_dir().to_string_lossy().into_owned(),
+            run_epoch: u32::try_from(epoch).map_err(|error| {
+                SteeringError::Host(crate::host::HostError {
+                    message: error.to_string(),
+                })
+            })?,
+        };
         let mut revived = record.clone();
         revived.final_response = None;
         revived.error_message = None;
@@ -594,38 +762,101 @@ impl TaskManager {
         revived.notification.run_epoch = epoch;
         let mut pending = revived.clone();
         pending.status = TaskStatus::Pending;
-        self.inner.store.replace(&pending).map_err(SteeringError::Store)?;
+        self.inner
+            .store
+            .replace(&pending)
+            .map_err(SteeringError::Store)?;
         let rebind = handle.rebind_workpool_identity(identity);
         match rebind {
             Some(Ok(())) => {}
             Some(Err(_error)) => {
-                self.inner.store.replace(&revived).map_err(SteeringError::Store)?;
-                self.inner.settle_failed_workpool_revival(task_id, epoch, "Resident worker refused workpool identity rebinding.")?;
-                return Ok(SendOutcome::NotContinuable { task_id: task_id.to_string(), reason: "Resident worker refused workpool identity rebinding.".into(), suggestion: "Start a fresh worker instead of reusing this session.".into() });
+                self.inner
+                    .store
+                    .replace(&revived)
+                    .map_err(SteeringError::Store)?;
+                self.inner.settle_failed_workpool_revival(
+                    task_id,
+                    epoch,
+                    "Resident worker refused workpool identity rebinding.",
+                )?;
+                return Ok(SendOutcome::NotContinuable {
+                    task_id: task_id.to_string(),
+                    reason: "Resident worker refused workpool identity rebinding.".into(),
+                    suggestion: "Start a fresh worker instead of reusing this session.".into(),
+                });
             }
             None => {
-                self.inner.store.replace(&revived).map_err(SteeringError::Store)?;
-                self.inner.settle_failed_workpool_revival(task_id, epoch, "Resident worker does not support workpool identity rebinding.")?;
-                return Ok(SendOutcome::NotContinuable { task_id: task_id.to_string(), reason: "Resident worker does not support workpool identity rebinding.".into(), suggestion: "Start a fresh worker instead of reusing this session.".into() });
+                self.inner
+                    .store
+                    .replace(&revived)
+                    .map_err(SteeringError::Store)?;
+                self.inner.settle_failed_workpool_revival(
+                    task_id,
+                    epoch,
+                    "Resident worker does not support workpool identity rebinding.",
+                )?;
+                return Ok(SendOutcome::NotContinuable {
+                    task_id: task_id.to_string(),
+                    reason: "Resident worker does not support workpool identity rebinding.".into(),
+                    suggestion: "Start a fresh worker instead of reusing this session.".into(),
+                });
             }
         }
         if let Err(error) = handle.follow_up(message) {
-            self.inner.store.replace(&revived).map_err(SteeringError::Store)?;
-            self.inner.settle_failed_workpool_revival(task_id, epoch, "Workpool turn delivery is uncertain after identity rebinding.")?;
-            self.inner.store.append_event(task_id, &PersistedTaskEvent { event_type: "workpool_revival_delivery_uncertain".into(), payload: serde_json::json!({"run_epoch":epoch,"error":error.to_string()}) }).map_err(SteeringError::Store)?;
-            return Ok(SendOutcome::NotContinuable { task_id: task_id.to_string(), reason: "Workpool turn delivery is uncertain after identity rebinding.".into(), suggestion: "Do not retry this assignment; start a fresh worker.".into() });
+            self.inner
+                .store
+                .replace(&revived)
+                .map_err(SteeringError::Store)?;
+            self.inner.settle_failed_workpool_revival(
+                task_id,
+                epoch,
+                "Workpool turn delivery is uncertain after identity rebinding.",
+            )?;
+            self.inner
+                .store
+                .append_event(
+                    task_id,
+                    &PersistedTaskEvent {
+                        event_type: "workpool_revival_delivery_uncertain".into(),
+                        payload: serde_json::json!({"run_epoch":epoch,"error":error.to_string()}),
+                    },
+                )
+                .map_err(SteeringError::Store)?;
+            return Ok(SendOutcome::NotContinuable {
+                task_id: task_id.to_string(),
+                reason: "Workpool turn delivery is uncertain after identity rebinding.".into(),
+                suggestion: "Do not retry this assignment; start a fresh worker.".into(),
+            });
         }
-        let mut running = self.inner.try_load(task_id).ok_or_else(|| SteeringError::Store(crate::store::StoreError::NotFound(task_id.to_string())))?;
+        let mut running = self.inner.try_load(task_id).ok_or_else(|| {
+            SteeringError::Store(crate::store::StoreError::NotFound(task_id.to_string()))
+        })?;
         if running.notification.run_epoch != epoch {
-            return Ok(SendOutcome::NotContinuable { task_id: task_id.to_string(), reason: "Worker run epoch changed during revival.".into(), suggestion: "Inspect the task before retrying.".into() });
+            return Ok(SendOutcome::NotContinuable {
+                task_id: task_id.to_string(),
+                reason: "Worker run epoch changed during revival.".into(),
+                suggestion: "Inspect the task before retrying.".into(),
+            });
         }
         running.status = TaskStatus::Running;
         running.residency_state = ResidencyState::Resident;
         running.updated_at = self.inner.now_iso();
-        self.inner.store.replace(&running).map_err(SteeringError::Store)?;
-        let _ = self.inner.store.append_event(task_id, &PersistedTaskEvent { event_type: "task_revived".into(), payload: serde_json::json!({"run_epoch":epoch}) });
+        self.inner
+            .store
+            .replace(&running)
+            .map_err(SteeringError::Store)?;
+        let _ = self.inner.store.append_event(
+            task_id,
+            &PersistedTaskEvent {
+                event_type: "task_revived".into(),
+                payload: serde_json::json!({"run_epoch":epoch}),
+            },
+        );
         self.inner.reacquire_for_revive(task_id, epoch);
-        Ok(SendOutcome::Revived { task_id: task_id.to_string(), run_epoch: epoch })
+        Ok(SendOutcome::Revived {
+            task_id: task_id.to_string(),
+            run_epoch: epoch,
+        })
     }
 
     pub fn start(&self, spec: &ManagerStartSpec) -> StartResult {
@@ -635,7 +866,15 @@ impl TaskManager {
         self.start_prepared(spec, |_, _, _| Ok(()))
     }
 
-    pub fn start_prepared(&self, spec: &ManagerStartSpec, prepare: impl FnOnce(&mut ManagerStartSpec, &ResolvedChildPlan, ExecutionMode) -> Result<(), String>) -> StartResult {
+    pub fn start_prepared(
+        &self,
+        spec: &ManagerStartSpec,
+        prepare: impl FnOnce(
+            &mut ManagerStartSpec,
+            &ResolvedChildPlan,
+            ExecutionMode,
+        ) -> Result<(), String>,
+    ) -> StartResult {
         if let Some(refusal) = member_kernel_tool_refusal(spec) {
             return refusal;
         }
@@ -645,21 +884,28 @@ impl TaskManager {
         };
         let (admission_lease, rejection) = self.admission_rejection(spec, &plan);
         if let Some(rejected) = rejection {
-            if let Some(lease) = admission_lease { lease.release(); }
+            if let Some(lease) = admission_lease {
+                lease.release();
+            }
             return rejected;
         }
         let mut spec = spec.clone();
         let mode = resolve_execution_mode(ExecutionModeSources {
-            spec_mode: spec.execution_mode, agent_mode: plan.agent_execution_mode,
+            spec_mode: spec.execution_mode,
+            agent_mode: plan.agent_execution_mode,
             config_mode: Some(self.inner.config.default_execution_mode),
         });
         if let Err(message) = prepare(&mut spec, &plan, mode) {
             if let Some(lease) = admission_lease {
                 lease.release();
             }
-            return StartResult::PlanUnresolved(PlanResolutionError::new(PlanResolutionCode::InvalidTarget, message));
+            return StartResult::PlanUnresolved(PlanResolutionError::new(
+                PlanResolutionCode::InvalidTarget,
+                message,
+            ));
         }
-        self.inner.start_resolved(&spec, &plan, None, admission_lease)
+        self.inner
+            .start_resolved(&spec, &plan, None, admission_lease)
     }
 
     pub fn start_owned(&self, spec: &ManagerStartSpec, owner: &DagTaskOwner) -> OwnedStartResult {
@@ -669,7 +915,9 @@ impl TaskManager {
         };
         let (admission_lease, rejection) = self.admission_rejection(spec, &plan);
         if let Some(rejected) = rejection {
-            if let Some(lease) = admission_lease { lease.release(); }
+            if let Some(lease) = admission_lease {
+                lease.release();
+            }
             return OwnedStartResult::NotStarted(rejected);
         }
         let lock_path = match owner_lock_path(self.inner.store.state_dir(), owner) {
@@ -685,24 +933,35 @@ impl TaskManager {
             if let Some(raced) = self.owned_result(owner) {
                 return Ok(raced);
             }
-            Ok(match self.inner.start_resolved(spec, &plan, Some(owner), admission_lease.clone()) {
-                StartResult::Started(task) => OwnedStartResult::Started {
-                    task,
-                    reused: false,
+            Ok(
+                match self
+                    .inner
+                    .start_resolved(spec, &plan, Some(owner), admission_lease.clone())
+                {
+                    StartResult::Started(task) => OwnedStartResult::Started {
+                        task,
+                        reused: false,
+                    },
+                    other => OwnedStartResult::NotStarted(other),
                 },
-                other => OwnedStartResult::NotStarted(other),
-            })
+            )
         });
         match locked {
             Ok(result) => result,
             Err(error) => {
-                if let Some(lease) = &admission_lease { lease.release(); }
+                if let Some(lease) = &admission_lease {
+                    lease.release();
+                }
                 OwnedStartResult::NotStarted(bookkeeping_failure(spec, &plan, error))
             }
         }
     }
 
-    fn admission_rejection(&self, spec: &ManagerStartSpec, plan: &ResolvedChildPlan) -> (Option<Arc<dyn SessionAdmissionLease>>, Option<StartResult>) {
+    fn admission_rejection(
+        &self,
+        spec: &ManagerStartSpec,
+        plan: &ResolvedChildPlan,
+    ) -> (Option<Arc<dyn SessionAdmissionLease>>, Option<StartResult>) {
         if self.inner.admit.is_none() && self.inner.fallible_admit.is_none() {
             return (None, None);
         }
@@ -713,20 +972,29 @@ impl TaskManager {
         ) {
             Ok(AcquireAdmissionLeaseResult::Acquired(lease)) => lease,
             Ok(AcquireAdmissionLeaseResult::Contended) => {
-                return (None, Some(StartResult::ResidencyDenied {
-                    reason: "Residency admission is contended.".to_string(),
-                    cause: ResidencyDeniedCause::Lease,
-                }));
+                return (
+                    None,
+                    Some(StartResult::ResidencyDenied {
+                        reason: "Residency admission is contended.".to_string(),
+                        cause: ResidencyDeniedCause::Lease,
+                    }),
+                );
             }
             Err(error) => {
-                return (None, Some(StartResult::StartFailed(StartFailure {
-                    task_id: String::new(), name: spec.name.clone().unwrap_or_default(),
-                    category: spec.category.clone().or(plan.category.clone()),
-                    subagent_type: spec.subagent_type.clone().or(plan.agent_type.clone()),
-                    execution_mode: spec.execution_mode.unwrap_or_default(), model: plan.model.clone(),
-                    resolved_model: plan.resolved_model.clone(), run_in_background: spec.run_in_background,
-                    error_message: error.to_string(),
-                })));
+                return (
+                    None,
+                    Some(StartResult::StartFailed(StartFailure {
+                        task_id: String::new(),
+                        name: spec.name.clone().unwrap_or_default(),
+                        category: spec.category.clone().or(plan.category.clone()),
+                        subagent_type: spec.subagent_type.clone().or(plan.agent_type.clone()),
+                        execution_mode: spec.execution_mode.unwrap_or_default(),
+                        model: plan.model.clone(),
+                        resolved_model: plan.resolved_model.clone(),
+                        run_in_background: spec.run_in_background,
+                        error_message: error.to_string(),
+                    })),
+                );
             }
         };
         let admission = if let Some(admit) = &self.inner.fallible_admit {
@@ -734,14 +1002,20 @@ impl TaskManager {
                 Ok(admission) => admission,
                 Err(error) => {
                     lease.release();
-                    return (None, Some(StartResult::StartFailed(StartFailure {
-                    task_id: String::new(), name: spec.name.clone().unwrap_or_default(),
-                    category: spec.category.clone().or(plan.category.clone()),
-                    subagent_type: spec.subagent_type.clone().or(plan.agent_type.clone()),
-                    execution_mode: spec.execution_mode.unwrap_or_default(), model: plan.model.clone(),
-                    resolved_model: plan.resolved_model.clone(), run_in_background: spec.run_in_background,
-                    error_message: error.to_string(),
-                })));
+                    return (
+                        None,
+                        Some(StartResult::StartFailed(StartFailure {
+                            task_id: String::new(),
+                            name: spec.name.clone().unwrap_or_default(),
+                            category: spec.category.clone().or(plan.category.clone()),
+                            subagent_type: spec.subagent_type.clone().or(plan.agent_type.clone()),
+                            execution_mode: spec.execution_mode.unwrap_or_default(),
+                            model: plan.model.clone(),
+                            resolved_model: plan.resolved_model.clone(),
+                            run_in_background: spec.run_in_background,
+                            error_message: error.to_string(),
+                        })),
+                    );
                 }
             }
         } else if let Some(admit) = &self.inner.admit {
@@ -750,19 +1024,35 @@ impl TaskManager {
             return (Some(lease), None);
         };
         match admission {
-            SpawnAdmission::Rejected { message, max_children, residents } => {
+            SpawnAdmission::Rejected {
+                message,
+                max_children,
+                residents,
+            } => {
                 let residents = residents.unwrap_or_default();
-                let cause = ResidencyDeniedCause::Residents { max_children, residents };
+                let cause = ResidencyDeniedCause::Residents {
+                    max_children,
+                    residents,
+                };
                 lease.release();
-                (None, Some(StartResult::ResidencyDenied { reason: message, cause }))
+                (
+                    None,
+                    Some(StartResult::ResidencyDenied {
+                        reason: message,
+                        cause,
+                    }),
+                )
             }
             SpawnAdmission::Admitted | SpawnAdmission::Evicted { .. } => {
                 if !lease.is_owner() {
                     lease.release();
-                    return (None, Some(StartResult::ResidencyDenied {
-                        reason: "Residency admission lease was displaced.".to_string(),
-                        cause: ResidencyDeniedCause::Lease,
-                    }));
+                    return (
+                        None,
+                        Some(StartResult::ResidencyDenied {
+                            reason: "Residency admission lease was displaced.".to_string(),
+                            cause: ResidencyDeniedCause::Lease,
+                        }),
+                    );
                 }
                 (Some(lease), None)
             }
@@ -850,19 +1140,23 @@ impl TaskManager {
         options: CancelOptions,
     ) -> Result<CancelOutcome, SteeringError> {
         // Only isolated live runs need settlement after cancellation releases handle ownership.
-        let armed = self.inner.resolve_cancel_id(id_or_name).and_then(|task_id| {
-            let record = self.inner.try_load(&task_id)?;
-            (record.status == TaskStatus::Running
-                && record.isolation.is_some()
-                && self.inner.live_handle(&task_id).is_some())
-            .then_some((task_id, record.notification.run_epoch))
-        });
+        let armed = self
+            .inner
+            .resolve_cancel_id(id_or_name)
+            .and_then(|task_id| {
+                let record = self.inner.try_load(&task_id)?;
+                (record.status == TaskStatus::Running
+                    && record.isolation.is_some()
+                    && self.inner.live_handle(&task_id).is_some())
+                .then_some((task_id, record.notification.run_epoch))
+            });
         let mut guard = armed.map(|(task_id, epoch)| StopSettlementGuard {
             pending: self.inner.stops_pending.request(&task_id, epoch),
             stops: &self.inner.stops_pending,
             task_id,
             epoch,
             consumed: false,
+            deferred: false,
         });
         let outcome = self
             .inner
@@ -873,6 +1167,11 @@ impl TaskManager {
             if let Some(guard) = guard.as_mut() {
                 guard.consumed = true;
             }
+        }
+        if matches!(outcome, CancelOutcome::CancelPending { .. })
+            && let Some(guard) = guard.as_mut()
+        {
+            guard.deferred = true;
         }
         Ok(outcome)
     }
@@ -885,7 +1184,9 @@ impl TaskManager {
     pub fn find_in_session_by_name(&self, session_id: &str, name: &str) -> Option<TaskRecord> {
         self.inner
             .store
-            .find_record(|record| in_session(record, session_id) && record.name.as_deref() == Some(name))
+            .find_record(|record| {
+                in_session(record, session_id) && record.name.as_deref() == Some(name)
+            })
             .ok()
             .flatten()
     }
@@ -948,12 +1249,14 @@ impl TaskManager {
             self.inner.remove_waiter(&id, waiter_id);
             return Ok(current);
         }
-        let _abort_waker = signal.map(|signal| AbortWakerGuard(signal, signal.register(WaitWaker::Blocking(sender))));
+        let _abort_waker = signal
+            .map(|signal| AbortWakerGuard(signal, signal.register(WaitWaker::Blocking(sender))));
         let deadline = timeout.map(|timeout| std::time::Instant::now() + timeout);
         let woke = match deadline {
             None => receiver.recv().map_err(|_| RecvTimeoutError::Disconnected),
-            Some(deadline) => receiver
-                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())),
+            Some(deadline) => {
+                receiver.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            }
         };
         let error = match woke {
             Ok(WaitWake::Settled(record)) => return Ok(*record),
@@ -1034,7 +1337,12 @@ impl TaskManager {
     }
 
     pub fn forget(&self, task_id: &str) {
-        self.inner.residency.notify(self.inner.try_load(task_id).as_ref().map(|record| record.parent_session_id.as_str()));
+        self.inner.residency.notify(
+            self.inner
+                .try_load(task_id)
+                .as_ref()
+                .map(|record| record.parent_session_id.as_str()),
+        );
         let (unsubscribe, detaches) = {
             let mut state = lock(&self.inner.state);
             let unsubscribe = state
@@ -1096,7 +1404,6 @@ impl TaskManager {
         })
     }
 
-
     pub fn is_launching(&self, task_id: &str) -> bool {
         lock(&self.inner.state).launching.contains(task_id)
     }
@@ -1144,19 +1451,22 @@ impl TaskManager {
         let before_launch = || -> Result<(), RespawnResult> {
             let mut moved = false;
             let timestamp = self.inner.now_iso();
-            let stamped = self.inner.store.mutate(&record.task_id, &mut |fresh: &TaskRecord| {
-                moved = (is_terminal_record(fresh) && !is_terminal_record(record))
-                    || fresh.killed == Some(true)
-                    || fresh.host_pid != record.host_pid
-                    || fresh.notification.run_epoch != record.notification.run_epoch;
-                if moved || fresh.started_at.is_some() {
-                    fresh.clone()
-                } else {
-                    let mut next = fresh.clone();
-                    next.started_at = Some(timestamp.clone());
-                    next
-                }
-            });
+            let stamped = self
+                .inner
+                .store
+                .mutate(&record.task_id, &mut |fresh: &TaskRecord| {
+                    moved = (is_terminal_record(fresh) && !is_terminal_record(record))
+                        || fresh.killed == Some(true)
+                        || fresh.host_pid != record.host_pid
+                        || fresh.notification.run_epoch != record.notification.run_epoch;
+                    if moved || fresh.started_at.is_some() {
+                        fresh.clone()
+                    } else {
+                        let mut next = fresh.clone();
+                        next.started_at = Some(timestamp.clone());
+                        next
+                    }
+                });
             match stamped {
                 Ok(Some(_)) if !moved => Ok(()),
                 Ok(Some(_)) => Err(RespawnResult::Failed {
@@ -1234,6 +1544,8 @@ fn steering_port(
     let live = this.clone();
     let dequeue = this.clone();
     let revive = this.clone();
+    let stop_requested = this.clone();
+    let stop_settled = this.clone();
     let stats = this;
     SteeringPort {
         store,
@@ -1244,10 +1556,32 @@ fn steering_port(
                 .is_some_and(|inner| inner.dequeue_pending(task_id))
         }),
         reacquire_for_revive: Arc::new(move |task_id| {
-            if let Some(inner) = revive.upgrade() && let Some(record) = inner.try_load(task_id) { inner.reacquire_for_revive(task_id, record.notification.run_epoch); }
+            if let Some(inner) = revive.upgrade()
+                && let Some(record) = inner.try_load(task_id)
+            {
+                inner.reacquire_for_revive(task_id, record.notification.run_epoch);
+            }
         }),
         destruction,
         run_stats_snapshot: Arc::new(move |task_id| stats.upgrade()?.run_stats_snapshot(task_id)),
+        stop_requested: Some(Arc::new(move |task_id| {
+            if let Some(inner) = stop_requested.upgrade()
+                && let Some(record) = inner.try_load(task_id)
+            {
+                inner
+                    .stops_pending
+                    .request(task_id, record.notification.run_epoch);
+            }
+        })),
+        stop_settled: Some(Arc::new(move |task_id| {
+            if let Some(inner) = stop_settled.upgrade()
+                && let Some(record) = inner.try_load(task_id)
+            {
+                inner
+                    .stops_pending
+                    .settle(task_id, record.notification.run_epoch);
+            }
+        })),
         now,
     }
 }
@@ -1336,7 +1670,9 @@ impl Inner {
             allowed_subagents: Some(&allowed_subagents),
         });
         if let DepthDecision::Denied { reason } = decision {
-            if let Some(lease) = &admission_lease { lease.release(); }
+            if let Some(lease) = &admission_lease {
+                lease.release();
+            }
             return StartResult::DepthDenied {
                 reason,
                 child_depth: spec.depth,
@@ -1370,7 +1706,9 @@ impl Inner {
                 if let Some(registration) = &requested_registration {
                     lock(&self.names).release(&spec.parent_session_id, &registration.name);
                 }
-                if let Some(lease) = &admission_lease { lease.release(); }
+                if let Some(lease) = &admission_lease {
+                    lease.release();
+                }
                 return StartResult::StartFailed(StartFailure {
                     task_id: String::new(),
                     name: requested_name.unwrap_or_default(),
@@ -1434,7 +1772,9 @@ impl Inner {
                         started && failed,
                         "isolation refusal transitions were not applied"
                     );
-                    if let Some(lease) = &admission_lease { lease.release(); }
+                    if let Some(lease) = &admission_lease {
+                        lease.release();
+                    }
                     return StartResult::StartFailed(StartFailure {
                         task_id: claimed.task_id.clone(),
                         name: registration.name.clone(),
@@ -1479,10 +1819,14 @@ impl Inner {
             if prepared.is_some() {
                 self.isolation.discard(&claimed.task_id);
             }
-            if let Some(lease) = &admission_lease { lease.release(); }
+            if let Some(lease) = &admission_lease {
+                lease.release();
+            }
             return self.bookkeeping_failed(spec, &claimed, &registration.name, execution_mode);
         }
-        if let Some(lease) = &admission_lease { lease.release(); }
+        if let Some(lease) = &admission_lease {
+            lease.release();
+        }
         if let Some((handle, baseline, _)) = prepared {
             self.isolation.bind(&final_record.task_id, handle, baseline);
         }
@@ -1676,11 +2020,18 @@ impl Inner {
             }
         };
         let current = self.try_load(&record.task_id);
-        let cancelled = current.as_ref().is_some_and(|current| current.status == TaskStatus::Cancelled);
+        let cancelled = current
+            .as_ref()
+            .is_some_and(|current| current.status == TaskStatus::Cancelled);
         if !owns_run(&launch_run_of(&context.record), current.as_ref()) {
             self.discard_stale_launch(context, handle);
             self.end_launch(&record.task_id);
-            return Err(if cancelled { "task was cancelled during launch" } else { "task stopped during launch" }.to_string());
+            return Err(if cancelled {
+                "task was cancelled during launch"
+            } else {
+                "task stopped during launch"
+            }
+            .to_string());
         }
         self.attach_launched(context, &handle);
         self.end_launch(&record.task_id);
@@ -1699,7 +2050,9 @@ impl Inner {
     /// The mark is cleared only after the caller attaches or discards the handle (see
     /// [`Self::end_launch`]) — clearing it here would reopen the window before `live` holds it.
     fn start_marked(&self, context: &LaunchContext) -> crate::manager::types::ManagedRunnerResult {
-        lock(&self.state).launching.insert(context.record.task_id.clone());
+        lock(&self.state)
+            .launching
+            .insert(context.record.task_id.clone());
         let started = context.runner.start(&context.managed_spec);
         if started.is_err() {
             self.end_launch(&context.record.task_id);
@@ -1718,16 +2071,35 @@ impl Inner {
         let task_id = &context.record.task_id;
         let epoch = context.record.notification.run_epoch;
         let current = self.try_load(task_id);
-        if current.as_ref().is_some_and(|current| current.status == TaskStatus::Cancelled && current.notification.run_epoch == epoch) {
+        if current.as_ref().is_some_and(|current| {
+            current.status == TaskStatus::Cancelled && current.notification.run_epoch == epoch
+        }) {
             lock(&self.state).live.insert(
                 task_id.clone(),
-                LiveTask { handle, model: context.model.clone(), unsubscribe: None, managed_spec: None, runner: None },
+                LiveTask {
+                    handle,
+                    model: context.model.clone(),
+                    unsubscribe: None,
+                    managed_spec: None,
+                    runner: None,
+                },
             );
-            if let Err(error) = self.destruction.destroy_resident_task(task_id, DestroyCause::Cancel) {
-                log("senpi-task manager cancel-during-launch destroy failed", task_id, &error);
+            if let Err(error) = self
+                .destruction
+                .destroy_resident_task(task_id, DestroyCause::Cancel)
+            {
+                log(
+                    "senpi-task manager cancel-during-launch destroy failed",
+                    task_id,
+                    &error,
+                );
             }
         } else if let Err(error) = discard_managed_handle(handle.as_ref()) {
-            log("senpi-task manager stale launch discard failed", task_id, &error);
+            log(
+                "senpi-task manager stale launch discard failed",
+                task_id,
+                &error,
+            );
         }
         self.release_slot(task_id, &context.model, epoch);
         self.settle_waiters(task_id);
@@ -2029,7 +2401,12 @@ impl Inner {
         match self.start_marked(context) {
             // The start blocked: a cancel, interrupt or another owner may have moved the task meanwhile.
             // A late child of a run that is no longer this one's is discarded, never attached.
-            Ok(handle) if !owns_run(&launch_run_of(&context.record), self.try_load(task_id).as_ref()) => {
+            Ok(handle)
+                if !owns_run(
+                    &launch_run_of(&context.record),
+                    self.try_load(task_id).as_ref(),
+                ) =>
+            {
                 self.discard_stale_launch(context, handle);
                 self.end_launch(task_id);
             }
@@ -2073,7 +2450,9 @@ impl Inner {
             return;
         };
         lock(&self.concurrency).acquire(&model, task_id);
-        lock(&self.state).released.insert(task_id.to_string(), epoch.saturating_sub(1));
+        lock(&self.state)
+            .released
+            .insert(task_id.to_string(), epoch.saturating_sub(1));
         let now = self.now.clone();
         let clock: Box<dyn Fn() -> u64 + Send> =
             Box::new(move || u64::try_from(now()).unwrap_or_default());
@@ -2092,17 +2471,44 @@ impl Inner {
         track_outcome(self.arc(), task_id.to_string(), handle, model, epoch);
     }
 
-    fn settle_failed_workpool_revival(&self, task_id: &str, epoch: i64, reason: &str) -> Result<(), SteeringError> {
-        let model = lock(&self.state).live.get(task_id).map(|live| live.model.clone());
-        let transition = self.store.transition(task_id, &TaskTransition::Fail { timestamp: self.now_iso(), error_message: reason.to_string(), killed: false, run_stats: None });
-        if let Some(model) = &model { self.release_slot(task_id, model, epoch); }
+    fn settle_failed_workpool_revival(
+        &self,
+        task_id: &str,
+        epoch: i64,
+        reason: &str,
+    ) -> Result<(), SteeringError> {
+        let model = lock(&self.state)
+            .live
+            .get(task_id)
+            .map(|live| live.model.clone());
+        let transition = self.store.transition(
+            task_id,
+            &TaskTransition::Fail {
+                timestamp: self.now_iso(),
+                error_message: reason.to_string(),
+                killed: false,
+                run_stats: None,
+            },
+        );
+        if let Some(model) = &model {
+            self.release_slot(task_id, model, epoch);
+        }
         self.settle_waiters(task_id);
         let transition = transition?;
         if !transition.applied {
-            return Err(SteeringError::Store(crate::store::StoreError::Parse("failed workpool revival did not reach terminal state".into())));
+            return Err(SteeringError::Store(crate::store::StoreError::Parse(
+                "failed workpool revival did not reach terminal state".into(),
+            )));
         }
-        if let Err(error) = self.destruction.destroy_resident_task(task_id, DestroyCause::Cancel) {
-            log("senpi-task manager failed workpool revival destruction failed", task_id, &error);
+        if let Err(error) = self
+            .destruction
+            .destroy_resident_task(task_id, DestroyCause::Cancel)
+        {
+            log(
+                "senpi-task manager failed workpool revival destruction failed",
+                task_id,
+                &error,
+            );
         }
         Ok(())
     }
@@ -2323,7 +2729,11 @@ impl OutcomeTrackerPorts for Inner {
         self.isolation.settle(task_id, merge);
     }
 
-    fn stop_settlement(&self, task_id: &str, epoch: i64) -> Option<crate::manager::outcome::PendingStop> {
+    fn stop_settlement(
+        &self,
+        task_id: &str,
+        epoch: i64,
+    ) -> Option<crate::manager::outcome::PendingStop> {
         self.stops_pending.take_settlement(task_id, epoch)
     }
 

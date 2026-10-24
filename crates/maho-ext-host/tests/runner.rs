@@ -2733,6 +2733,8 @@ async fn registered_tool_wrapper_supplies_context_and_reports_new_active_tools()
         },
         runtime,
         Arc::new(|| Ok(context())),
+        Arc::new(maho_ext_host::wrapper::InProcessRunDispatch),
+        maho_ext_api::ToolPlacementInfo::default(),
     );
     let result = (tool.execute)("call".into(), JsonValue::Null, None, None).await;
     assert_eq!(result.added_tool_names, Some(vec!["new".into()]));
@@ -2779,6 +2781,8 @@ async fn extension_executor_receives_full_context_and_preserves_agent_result_fie
         api.registered.tools[0].clone(),
         runtime,
         Arc::new(|| Ok(context())),
+        Arc::new(maho_ext_host::wrapper::InProcessRunDispatch),
+        maho_ext_api::ToolPlacementInfo::default(),
     );
     let updates = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed = updates.clone();
@@ -2832,6 +2836,8 @@ async fn wrapper_deduplicates_existing_added_names_when_tools_are_activated() {
         api.registered.tools[0].clone(),
         runtime,
         Arc::new(|| Ok(context())),
+        Arc::new(maho_ext_host::wrapper::InProcessRunDispatch),
+        maho_ext_api::ToolPlacementInfo::default(),
     );
     let result = (tool.execute)("call".into(), JsonValue::Null, None, None).await;
     assert_eq!(
@@ -2949,6 +2955,8 @@ async fn typed_tool_decodes_parameters_and_serializes_detail_updates() {
         api.registered.tools[0].clone(),
         runtime,
         Arc::new(|| Ok(context())),
+        Arc::new(maho_ext_host::wrapper::InProcessRunDispatch),
+        maho_ext_api::ToolPlacementInfo::default(),
     );
     let updates = Arc::new(Mutex::new(Vec::new()));
     let observed = updates.clone();
@@ -3075,6 +3083,8 @@ async fn invocation_disposes_when_tool_execution_fails() {
         },
         runtime,
         factory,
+        Arc::new(maho_ext_host::wrapper::InProcessRunDispatch),
+        maho_ext_api::ToolPlacementInfo::default(),
     );
     let result = (tool.execute)("call".into(), JsonValue::Null, None, None).await;
     assert_eq!(result.is_error, Some(true));
@@ -3429,6 +3439,8 @@ async fn invocation_disposes_when_pending_execution_is_dropped() {
         },
         runtime,
         factory,
+        Arc::new(maho_ext_host::wrapper::InProcessRunDispatch),
+        maho_ext_api::ToolPlacementInfo::default(),
     );
     let mut execution = (tool.execute)("call".into(), JsonValue::Null, None, None);
     std::future::poll_fn(|cx| {

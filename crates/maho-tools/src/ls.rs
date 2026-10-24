@@ -81,6 +81,7 @@ pub struct LsToolInput {
     pub limit: Option<usize>,
 }
 pub fn create_ls_tool_definition(cwd: PathBuf, options: LsToolOptions) -> ToolDefinition {
+    let server_pinned = options.operations.is_some() || options.filesystem_policy.is_some();
     let ops = options
         .operations
         .unwrap_or_else(|| Arc::new(LocalLsOperations));
@@ -198,5 +199,8 @@ pub fn create_ls_tool_definition(cwd: PathBuf, options: LsToolOptions) -> ToolDe
         execute,
     );
     tool.prompt_snippet = Some("List directory contents".into());
+    if server_pinned {
+        tool.server_pinned = Some(true);
+    }
     tool
 }

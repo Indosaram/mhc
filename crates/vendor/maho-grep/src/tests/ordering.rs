@@ -1,6 +1,6 @@
 use super::corpus::{Corpus, PREFIX};
+use crate::walk::{order_candidates, Candidate};
 use crate::GrepMode;
-use crate::walk::{Candidate, order_candidates};
 
 #[test]
 fn ordered_limit_ignores_walk_completion_order() {
@@ -144,11 +144,10 @@ fn chunk_boundary_count_files_and_regex_options() {
     let r = c.search(&o);
     assert_eq!(r.file_counts.len(), 257);
     assert_eq!(r.counts.matches, None);
-    assert!(
-        r.file_counts
-            .iter()
-            .all(|f| f.count.is_none() && !f.limit_reached)
-    );
+    assert!(r
+        .file_counts
+        .iter()
+        .all(|f| f.count.is_none() && !f.limit_reached));
     o.mode = Some(GrepMode::Content);
     o.max_count = Some(513);
     let r = c.search(&o);

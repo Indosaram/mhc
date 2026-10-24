@@ -8,6 +8,9 @@ use maho_tools::definition::ToolCall;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+pub fn pty_bash_schema() -> Value {
+    json!({"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute in a PTY-backed session."},"timeout":{"type":"number","description":"Process kill deadline in seconds (default 1800). Foreground blocking stops at the ~60s window: a command still running then auto-detaches to a live background session instead of being killed. Ignored for run_in_background sessions (they live until exit or kill_bash)."},"description":{"type":"string","description":"Short human-readable label for this command."},"run_in_background":{"type":"boolean","description":"Run as a persistent background session. Returns a bash_id immediately; query it with bash_output, steer with bash_input, tear down with kill_bash."},"cols":{"type":"number","description":"PTY width in columns (default 120)."},"rows":{"type":"number","description":"PTY height in rows (default 40)."}},"required":["command"]})
+}
 struct ForegroundSessionGuard {
     manager: Arc<Mutex<TerminalManager>>,
     id: String,
@@ -76,6 +79,63 @@ pub async fn execute_configured_bash(
     settings: &crate::settings::ResolvedTerminalSettings,
     shell: Option<&str>,
 ) -> Result<TerminalToolResult, String> {
+    execute_configured_bash_with_launch(manager, call, foreground_window, settings, shell, None)
+        .await
+}
+/// The `PI_*` variables a spawned command sees about its session (upstream `sessionEnvOverrides`): the session id,
+/// cwd, goal store, session file, model, reasoning level and browser engine of the call's context.
+pub fn session_env_overrides(
+    context: Option<&dyn maho_tools::definition::ToolContext>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut env = std::collections::BTreeMap::new();
+    let Some(context) = context else {
+        return env;
+    };
+    env.insert(
+        "PI_SESSION_ID".to_owned(),
+        context.session_manager().session_id().to_owned(),
+    );
+    env.insert(
+        "PI_SESSION_CWD".to_owned(),
+        context.cwd().to_string_lossy().into_owned(),
+    );
+    if let Some(path) = context.goal_store_file() {
+        env.insert(
+            "PI_GOAL_STORE_FILE".to_owned(),
+            path.to_string_lossy().into_owned(),
+        );
+    }
+    if let Some(path) = context.session_manager().session_file() {
+        env.insert(
+            "PI_SESSION_FILE".to_owned(),
+            path.to_string_lossy().into_owned(),
+        );
+    }
+    if let Some(model) = context.model() {
+        env.insert("PI_PROVIDER".to_owned(), model.provider.clone());
+        env.insert("PI_MODEL".to_owned(), model.id.clone());
+    }
+    if let Some(level) = context.thinking_level()
+        && let Ok(serde_json::Value::String(level)) = serde_json::to_value(level)
+    {
+        env.insert("PI_REASONING_LEVEL".to_owned(), level);
+    }
+    if let Some(engine) = context.browser_engine().filter(|engine| !engine.is_empty()) {
+        env.insert("OMO_BROWSER_ENGINE".to_owned(), engine.to_owned());
+    }
+    env
+}
+/// `execute_configured_bash` with the tool child's launch (senpi#3566 todo 9): the command starts behind the
+/// execution barrier, the cwd and environment are the ones the server built for the call, and the session is
+/// registered under the shell's id prefix (`bash_c<generation>_N`) whatever shim process the PTY starts.
+pub async fn execute_configured_bash_with_launch(
+    manager: Arc<Mutex<TerminalManager>>,
+    call: ToolCall<'_>,
+    foreground_window: Option<&str>,
+    settings: &crate::settings::ResolvedTerminalSettings,
+    shell: Option<&str>,
+    launch: Option<&super::context::TerminalChildLaunch>,
+) -> Result<TerminalToolResult, String> {
     let command = call
         .params
         .get("command")
@@ -98,41 +158,39 @@ pub async fn execute_configured_bash(
     };
     let (options, stdin) = super::spawn::command_options(
         command,
-        call.context.map(maho_tools::definition::ToolContext::cwd),
+        match launch {
+            Some(launch) => Some(launch.cwd.as_path()),
+            None => call.context.map(maho_tools::definition::ToolContext::cwd),
+        },
         shell,
     )
     .map_err(|error| error.to_string())?;
+    let id_command = options.command.clone();
+    let mut options = options;
+    if let Some(launch) = launch {
+        // spawn.ts: `ctx.launchBarrier?.wrap(shell.shell, args)`; `env: { ...ctx.getEnv(), ...envOverrides }`.
+        let (wrapped, wrapped_args) = launch.barrier.wrap(&options.command, &options.args);
+        options.command = wrapped;
+        options.args = wrapped_args;
+        options.env = launch
+            .env
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+    }
     let mut options = options.size(
         dimension("cols", settings.default_cols as u16),
         dimension("rows", settings.default_rows as u16),
     );
     if let Some(context) = call.context {
-        options = options
-            .cwd(context.cwd())
-            .env("PI_SESSION_ID", context.session_manager().session_id())
-            .env("PI_SESSION_CWD", context.cwd().to_string_lossy());
-        if let Some(path) = context.session_manager().session_file() {
-            options = options.env("PI_SESSION_FILE", path.to_string_lossy());
-        }
-        if let Some(path) = context.goal_store_file() {
-            options = options.env("PI_GOAL_STORE_FILE", path.to_string_lossy());
-        }
-        if let Some(model) = context.model() {
-            options = options
-                .env("PI_PROVIDER", &model.provider)
-                .env("PI_MODEL", &model.id);
-        }
-        if let Some(level) = context.thinking_level() {
-            options = options.env(
-                "PI_REASONING_LEVEL",
-                serde_json::to_value(level)
-                    .map_err(|error| error.to_string())?
-                    .as_str()
-                    .ok_or("reasoning level must be a string")?,
-            );
+        options = options.cwd(context.cwd());
+        for (key, value) in session_env_overrides(Some(context)) {
+            options = options.env(key, value);
         }
     }
-    options = options.env("OMO_BROWSER_ENGINE", "");
+    if launch.is_none() {
+        options = options.env("OMO_BROWSER_ENGINE", "");
+    }
     if !background {
         for (key, value) in FOREGROUND_ENV_OVERRIDES {
             options = options.env(*key, *value);
@@ -142,26 +200,65 @@ pub async fn execute_configured_bash(
                 .timeout(Duration::try_from_secs_f64(timeout).map_err(|error| error.to_string())?);
         }
     }
-    let (id, exit) = {
+    let (id, exit, pid) = {
         let mut manager = manager
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let id = manager
-            .create(command, options)
+            .create_with_id_command(command, &id_command, options)
             .map_err(|error| error.to_string())?;
         let runtime = manager.get(&id).ok_or("created terminal session missing")?;
-        if let Some(stdin) = &stdin {
+        if launch.is_none()
+            && let Some(stdin) = &stdin
+        {
             runtime
                 .write(stdin.as_bytes())
                 .map_err(|error| error.to_string())?;
         }
-        (id, runtime.subscribe_exit())
+        (id, runtime.subscribe_exit(), runtime.pid())
     };
     let mut cleanup = ForegroundSessionGuard {
         manager: manager.clone(),
         id: id.clone(),
         armed: !background,
     };
+    if let Some(launch) = launch {
+        let writer_manager = manager.clone();
+        let writer_id = id.clone();
+        let released = launch
+            .barrier
+            .release(super::context::TerminalLaunchSession {
+                pid,
+                write: Arc::new(move |bytes| {
+                    writer_manager
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get(&writer_id)
+                        .ok_or_else(|| "terminal session missing".to_owned())?
+                        .write(bytes)
+                        .map_err(|error| error.to_string())
+                }),
+                exit: exit.clone(),
+            })
+            .await;
+        if let Err(error) = released {
+            // The command never ran: its gated shim and its registration go with the refusal.
+            cleanup.armed = false;
+            if let Err(stop) = crate::manager::stop_shared(&manager, &id).await {
+                maho_ext_api::diagnostic(&format!("terminal launch cleanup failed: {stop}"));
+            }
+            return Err(error);
+        }
+        if let Some(stdin) = &stdin {
+            manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&id)
+                .ok_or("terminal session missing")?
+                .write(stdin.as_bytes())
+                .map_err(|error| error.to_string())?;
+        }
+    }
     if background {
         tokio::select! {_=wait_exit(exit)=>{},_=tokio::time::sleep(Duration::from_millis(250))=>{}}
         let mut manager = manager

@@ -10,6 +10,7 @@ use super::context::{LifecycleContext, is_terminal};
 use super::destroy::{destroy_resident_task, term_then_kill};
 use super::errors::LifecycleError;
 use super::host_session::host_session_resume_path;
+use super::pending_cancel::finish_pending_cancel;
 use super::port::{
     DestroyCause, ReattachFailureKind, ReattachResult, RespawnDisposition, RespawnFailureCode,
     RespawnResult, get_lifecycle_reattach_ports,
@@ -203,6 +204,14 @@ pub fn revive_claimed(
             rollback,
             "session_unavailable",
         ));
+    }
+    // An accepted cancel is final: this claim finishes it rather than running the child again. A host
+    // that does not confirm the session closed leaves the cancel pending for the next revival.
+    if fresh.cancel_requested.is_some() && !is_terminal(fresh.status) {
+        let finished = finish_pending_cancel(context, &fresh)?;
+        return Ok(finished.unwrap_or_else(|| {
+            rollback_or_deferred(context, &fresh.task_id, rollback, "host_unreachable")
+        }));
     }
     if session_path.is_none() {
         if is_terminal(fresh.status) {

@@ -224,6 +224,46 @@ impl ToolPermissionRequest {
 pub type ToolPermissionParser =
     Arc<dyn Fn(&Value, &Path) -> Vec<ToolPermissionRequest> + Send + Sync>;
 
+/// Where a tool runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolPlacement {
+    #[default]
+    Server,
+    Child,
+}
+
+/// Where one call of a child-job tool runs (`ToolChildJob.placement`'s result); `Both` runs the server's body, then
+/// the child's job, and joins their content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolChildJobPlacement {
+    Server,
+    Child,
+    Both,
+}
+
+pub type ToolChildJobArgsFn = dyn Fn(&Value, &str, Option<&dyn ToolContext>) -> Value + Send + Sync;
+pub type ToolChildJobResultFn = dyn Fn(&Value, ToolResult, u64) -> ToolResult + Send + Sync;
+pub type ToolChildJobPlacementFn = dyn Fn(&Value) -> ToolChildJobPlacement + Send + Sync;
+pub type ToolChildJobWakeFn = dyn Fn(&Value, u64) + Send + Sync;
+pub type ToolChildExitedFn = dyn Fn(u64) + Send + Sync;
+
+/// A tool body loaded from a file on the session's tool child (senpi#3566).
+#[derive(Clone)]
+pub struct ToolChildJob {
+    pub kind: String,
+    /// Builds the job's arguments on the server from the call (`params`, `toolCallId`, the call's context).
+    pub args: Arc<ToolChildJobArgsFn>,
+    /// Sees the job's result with the child generation it ran on, and may replace it: state that lives on the child
+    /// (a PTY session) is gone once that generation exits, which only the server can tell apart from "never existed".
+    pub result: Option<Arc<ToolChildJobResultFn>>,
+    /// Where one call runs. Unset: always the child.
+    pub placement: Option<Arc<ToolChildJobPlacementFn>>,
+    /// Receives what a job of this kind reported later from the child (`wake`), with the generation it came from.
+    pub wake: Option<Arc<ToolChildJobWakeFn>>,
+    /// Told when a child generation exited: state that lived on it is gone.
+    pub child_exited: Option<Arc<ToolChildExitedFn>>,
+}
+
 #[derive(Clone)]
 pub struct ToolDefinition {
     pub name: String,
@@ -246,6 +286,14 @@ pub struct ToolDefinition {
     pub execute: ToolExecutor,
     pub kernel_prelude: Option<KernelPrelude>,
     pub permission_parser: Option<ToolPermissionParser>,
+    /// `serverPinned`: set by built-in tool factories that capture injected operations or a policy override; such a
+    /// definition always executes on the session's server process, even when `placement` is `Child`.
+    pub server_pinned: Option<bool>,
+    /// `placement`: where the tool runs (default server); a child-placed tool runs on the session's tool child.
+    pub placement: Option<ToolPlacement>,
+    /// `childJob`: a child-placed tool whose body is a tool-child job kind (built-in tools that keep state on the
+    /// child, such as the terminal's PTY sessions); `args` builds the job's arguments on the server from the call.
+    pub child_job: Option<ToolChildJob>,
 }
 impl ToolDefinition {
     pub fn new(name: &str, description: &str, parameters: Value, execute: ToolExecutor) -> Self {
@@ -270,6 +318,9 @@ impl ToolDefinition {
             permission_parser: None,
             kernel_prelude: None,
             output_schema: None,
+            server_pinned: None,
+            placement: None,
+            child_job: None,
         }
     }
 }

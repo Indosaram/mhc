@@ -60,6 +60,7 @@ pub(crate) fn base_record(task_id: &str, parent_session_id: &str) -> TaskRecord 
         isolation: None,
         runner_kind: None,
         host_session: None,
+        cancel_requested: None,
     }
 }
 

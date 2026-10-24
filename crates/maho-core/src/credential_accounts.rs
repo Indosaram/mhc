@@ -195,11 +195,19 @@ pub async fn summarize_credential_accounts(
         } else {
             stored_slots(credential)
         };
-        let usable: std::collections::HashSet<String> =
-            crate::auth_storage::slots_of_own_kind(credential)
+        let usable: std::collections::HashSet<String> = match serde_json::from_value::<
+            maho_ai::auth::pool::slots::PooledCredential,
+        >(credential.clone())
+        {
+            Ok(pooled) => maho_ai::auth::pool::kinds::slots_of_own_kind(&pooled)
+                .into_iter()
+                .map(|slot| slot.name)
+                .collect(),
+            Err(_) => stored_slots(credential)
                 .iter()
                 .filter_map(|slot| slot_string(slot, "name"))
-                .collect();
+                .collect(),
+        };
         for slot in accounts {
             let name = slot_string(&slot, "name").unwrap_or_default();
             let display_name = account_display_name(slot_string(&slot, "displayName").as_deref());
