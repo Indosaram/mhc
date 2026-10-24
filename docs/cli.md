@@ -23,6 +23,7 @@ message; every other positional argument is a message.
 | `mhc auth check --provider <p>` | Check provider readiness (`--json`, `--credentials`, `--no-refresh`). |
 | `mhc auth print-api-key --provider <p>` | Print the resolved API key for an external client. |
 | `mhc auth print-bearer-token --provider <p>` | Print an OAuth bearer token, refreshing it when expired (`--min-expiry <duration>`). |
+| `mhc auth consent <provider> [--rotation] [--revoke] [--yes]` | Record (or with `--revoke` remove) user risk acknowledgement for first-party-impersonating providers (`anthropic` with OAuth subscription tokens, `anthropic-subscription`, `chatgpt-subscription`, `github-copilot`, `kimi-coding`, `devin`, `cursor`) or for automatic multi-account rotation (`--rotation`). Stored as `providerRiskConsent.<provider>` in global settings. In non-interactive environments, `--yes` is required. |
 | `mhc import-omo [--from <dir>] [--force]` | Copy `settings.json`, `models.json`, `keybindings.json`, `auth.json`, `sessions/` and linked user-extension markers from an OmO agent directory (default `~/.omo/agent`) into the active agent directory. Only needed when the active directory is not `~/.omo/agent` (for example with `MAHO_CODING_AGENT_DIR` set); source and destination must differ. |
 | `mhc doctor` | Read-only diagnostics: omo config load, project trust, category models and packaged resources. |
 | `mhc ulw-loop <command>` | The ulw-loop goal ledger (`create-goals`, `status`, `criteria`, `record-evidence`, `checkpoint`, ...). `mhc ulw-loop help` prints the full usage. |
