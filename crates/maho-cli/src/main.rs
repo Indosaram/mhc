@@ -216,12 +216,16 @@ fn run() -> Result<(), String> {
     if argv.first().is_some_and(|arg| arg == "import-omo") {
         let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
         let mut from = PathBuf::from(&home).join(".omo/agent");
+        let mut from_given = false;
         let to = PathBuf::from(maho_core::config::get_agent_dir());
         let mut force = false;
         let mut args = argv.iter().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--from" => from = PathBuf::from(args.next().ok_or("--from requires a directory")?),
+                "--from" => {
+                    from = PathBuf::from(args.next().ok_or("--from requires a directory")?);
+                    from_given = true;
+                }
                 "--force" => force = true,
                 "--help" | "-h" => {
                     println!(
@@ -231,6 +235,19 @@ fn run() -> Result<(), String> {
                 }
                 _ => return Err(format!("Unknown import option: {arg}")),
             }
+        }
+        // SAFETY-DIVERGENCE(packages/coding-agent/src/commands/import-omo.ts): upstream's default import copies ~/.omo/agent onto itself and fails; mhc prints that it already reads the directory and exits 0 unless --from is given.
+        if !from_given
+            && (from == to
+                || std::fs::canonicalize(&from)
+                    .ok()
+                    .zip(std::fs::canonicalize(&to).ok())
+                    .is_some_and(|(a, b)| a == b))
+        {
+            println!(
+                "mhc already reads ~/.omo/agent directly; nothing to import. Use --from <dir> to import from another directory."
+            );
+            return Ok(());
         }
         let copied =
             maho_cli::import_omo::import_omo(&from, &to, force).map_err(|e| e.to_string())?;
