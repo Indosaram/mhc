@@ -85,6 +85,8 @@ pub mod session_registry;
 pub mod session_release;
 pub mod session_release_adapter;
 pub mod session_release_interrupt;
+pub mod session_relocation;
+pub mod session_relocation_channel;
 pub mod session_teardown;
 pub mod session_worker;
 pub mod session_worker_client;
