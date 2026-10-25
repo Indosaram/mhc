@@ -1,16 +1,10 @@
-//! Session lifecycle controller: per-session event-driven lifecycle controller.
-//!
-//! Port of senpi `packages/coding-agent/src/core/session-lifecycle.ts`.
-
-use std::sync::Arc;
-
+//! Durable session lifecycle controller, shared by session front ends.
+use crate::lifecycle_children::LifecycleChildren;
+use crate::lifecycle_ledger::LifecycleLedger;
 use crate::session_activity::SessionActivitySnapshot;
-use crate::session_lifecycle_reducer::{LifecycleFacts, lifecycle_state, lifecycle_terminal};
-use crate::session_lifecycle_types::{
-    ChildLifecycleReport, EpochOrigin, HumanWait, LifecycleFailure, LifecycleHold, LifecycleWaits,
-    SelfSettleReason, SelfSettleResult, SessionLifecycle, SessionLifecycleState, SessionRole,
-    SpawnedBy,
-};
+use crate::session_lifecycle_types::*;
+use serde_json::{Value, json};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LifecycleRuntimeFacts {
@@ -20,106 +14,88 @@ pub struct LifecycleRuntimeFacts {
     pub human: Vec<HumanWait>,
     pub input_admission_pending: bool,
 }
-
+pub type LifecycleAppend = Arc<dyn Fn(&Value) -> Result<(), String> + Send + Sync>;
 pub struct SessionLifecycleOptions {
     pub session_id: String,
     pub spawned_by: Option<SpawnedBy>,
     pub read_runtime: Arc<dyn Fn() -> LifecycleRuntimeFacts + Send + Sync>,
     pub append_child: Option<Arc<dyn Fn(ChildLifecycleReport) + Send + Sync>>,
+    pub entries: Vec<Value>,
+    pub append: LifecycleAppend,
+    pub custody: Box<dyn crate::work_obligations::CustodyStore>,
 }
-
-/// One event-driven reducer per session, shared by every client surface.
+struct ControllerOptions {
+    session_id: String,
+    read_runtime: Arc<dyn Fn() -> LifecycleRuntimeFacts + Send + Sync>,
+    append_child: Option<Arc<dyn Fn(ChildLifecycleReport) + Send + Sync>>,
+    append: LifecycleAppend,
+}
 pub struct SessionLifecycleController {
-    goal_facts: Arc<maho_ext_api::goal_lifecycle::GoalLifecycleService>,
-    options: SessionLifecycleOptions,
-    lifecycle: SessionLifecycle,
-    run_active: bool,
-    interrupted: bool,
-    run_id: Option<String>,
+    goal_service: Arc<maho_ext_api::goal_lifecycle::GoalLifecycleService>,
+    options: ControllerOptions,
+    pub ledger: LifecycleLedger,
+    pub obligations: crate::work_obligations::SessionWorkObligations,
+    pub children: LifecycleChildren,
     idle_boundary_passed: bool,
     pending_human: bool,
     admitting_human: bool,
-    own_task: Option<ChildLifecycleReport>,
-    child_reports: Vec<ChildLifecycleReport>,
-    evaluating: bool,
-    deferred: bool,
+    goal: Option<Value>,
+    liveness: Option<Value>,
 }
-
 impl SessionLifecycleController {
     pub fn new(options: SessionLifecycleOptions) -> Self {
-        let is_child = options.spawned_by.is_some();
-        let role = if is_child {
-            SessionRole::Child
-        } else {
-            SessionRole::Root
-        };
-        let root_session_id = options
+        let spawned = options
             .spawned_by
             .as_ref()
-            .map(|s| s.root_session_id.clone())
-            .unwrap_or_else(|| options.session_id.clone());
-        let parent_session_id = options
-            .spawned_by
-            .as_ref()
-            .map(|s| s.parent_session_id.clone());
-        let task_id = options.spawned_by.as_ref().map(|s| s.task_id.clone());
-
-        let initial_lifecycle = SessionLifecycle {
-            state: if is_child {
-                SessionLifecycleState::Running
-            } else {
-                SessionLifecycleState::Done
+            .map(|s| serde_json::to_value(s).expect("spawned by"));
+        let ledger = LifecycleLedger::new(&options.session_id, spawned.as_ref(), &options.entries);
+        let children = LifecycleChildren::new(&options.entries);
+        let liveness = ledger.last_turn_end.clone();
+        // Move the custody store out while retaining the remaining immutable options.
+        let SessionLifecycleOptions {
+            session_id,
+            spawned_by: _,
+            read_runtime,
+            append_child,
+            entries: _,
+            append,
+            custody,
+        } = options;
+        let obligations = crate::work_obligations::SessionWorkObligations::new(custody);
+        Self {
+            goal_service: maho_ext_api::goal_lifecycle::goal_lifecycle_service(&session_id),
+            options: ControllerOptions {
+                session_id,
+                read_runtime,
+                append_child,
+                append,
             },
-            seq: 0,
-            epoch: 0,
-            epoch_origin: EpochOrigin::Human,
-            completion_id: None,
-            human_input_revision: 0,
-            self_settle_eligible: false,
-            settle_decision: None,
-            restoring: true,
-            persisted: false,
-            run_paused: false,
-            since: chrono::Utc::now().to_rfc3339(),
-            role,
-            root_session_id,
-            parent_session_id,
-            task_id,
-            waiting_on: None,
-            holds: None,
-            completion: None,
-            failure: None,
-        };
-
-        let mut controller = Self {
-            goal_facts: maho_ext_api::goal_lifecycle::goal_lifecycle_service(&options.session_id),
-            options,
-            lifecycle: initial_lifecycle,
-            run_active: false,
-            interrupted: false,
-            run_id: None,
+            ledger,
+            obligations,
+            children,
             idle_boundary_passed: false,
             pending_human: false,
             admitting_human: false,
-            own_task: None,
-            child_reports: Vec::new(),
-            evaluating: false,
-            deferred: false,
-        };
-
-        controller.recompute();
-        controller
+            goal: None,
+            liveness,
+        }
     }
-
+    fn checkpoint(&mut self) {
+        if self.obligations.flush().is_err() {
+            self.ledger.custody_write_failed();
+            return;
+        }
+        let append = self.options.append.clone();
+        self.ledger.checkpoint(|r| append(r));
+    }
     pub fn snapshot(&mut self) -> SessionLifecycle {
         self.recompute();
-        self.lifecycle.clone()
+        serde_json::from_value(self.ledger.snapshot().clone())
+            .expect("validated lifecycle snapshot")
     }
-
     pub fn requires_human_continuation(&self) -> bool {
-        self.interrupted && !self.pending_human
+        self.ledger.interrupted && !self.pending_human
     }
-
     pub fn next_run_origin(&self) -> EpochOrigin {
         if self.pending_human {
             EpochOrigin::Human
@@ -127,370 +103,427 @@ impl SessionLifecycleController {
             EpochOrigin::Automatic
         }
     }
-
     pub fn restore_complete(&mut self) {
-        self.lifecycle.restoring = false;
+        self.ledger.release_restore_barrier();
         self.idle_boundary_passed = true;
         self.recompute();
+        if self.ledger.current["seq"].as_u64().unwrap_or(0) > 0 {
+            self.checkpoint();
+        }
     }
-
-    pub fn human_input(&mut self, _at: &str) {
+    pub fn human_input(&mut self, at: &str) {
         self.admitting_human = true;
-        self.pending_human = self.pending_human || !self.run_active;
-        self.lifecycle.human_input_revision += 1;
+        self.pending_human |= !self.ledger.run_active;
+        let append = self.options.append.clone();
+        self.ledger.human_input(at, |r| append(r));
     }
-
     pub fn admission_settled(&mut self) {
         self.admitting_human = false;
-        let runtime = (self.options.read_runtime)();
-        if !self.run_active && !self.interrupted && runtime.pending_messages == 0 {
+        if !self.ledger.run_active
+            && !self.ledger.interrupted
+            && (self.options.read_runtime)().pending_messages == 0
+        {
             self.pending_human = false;
         }
         self.recompute();
     }
-
     pub fn start_run(&mut self, origin: Option<EpochOrigin>) {
-        self.goal_facts.start_run();
         self.admitting_human = false;
         self.idle_boundary_passed = false;
-        self.interrupted = false;
-        self.run_active = true;
-        self.lifecycle.epoch += 1;
-        self.lifecycle.epoch_origin = origin.unwrap_or(if self.pending_human {
-            EpochOrigin::Human
-        } else {
-            EpochOrigin::Automatic
-        });
+        self.liveness = None;
+        let interrupted = self
+            .ledger
+            .interrupted
+            .then(|| self.ledger.run_id.clone())
+            .flatten();
+        self.ledger
+            .start_run(match origin.unwrap_or(self.next_run_origin()) {
+                EpochOrigin::Human => "human",
+                EpochOrigin::Automatic => "automatic",
+            });
         self.pending_human = false;
+        if let Some(id) = interrupted {
+            self.obligations.settle_run(&id);
+        }
         self.recompute();
+        self.checkpoint();
     }
-
     pub fn idle(&mut self) {
-        self.run_active = false;
+        self.ledger.run_active = false;
         self.idle_boundary_passed = true;
-        self.recompute();
-    }
-
-    pub fn report_child(&mut self, report: ChildLifecycleReport) {
-        if let Some(pos) = self.child_reports.iter().position(|r| {
-            r.task_id == report.task_id && r.child_session_id == report.child_session_id
-        }) {
-            self.child_reports[pos] = report.clone();
-        } else {
-            self.child_reports.push(report.clone());
-        }
-
-        if report.child_session_id == self.options.session_id
-            && self
-                .options
-                .spawned_by
-                .as_ref()
-                .is_some_and(|s| s.task_id == report.task_id)
-        {
-            self.own_task = Some(report.clone());
-        }
-
-        if let Some(ref append_child) = self.options.append_child {
-            append_child(report);
-        }
-
-        self.recompute();
-    }
-
-    pub fn mark_run_completed(&mut self, run_id: &str) {
-        self.run_id = Some(run_id.to_owned());
-        self.lifecycle.completion_id = Some(run_id.to_owned());
-        self.recompute();
-    }
-
-    pub fn request_self_settle(&mut self) -> SelfSettleResult {
-        let runtime = (self.options.read_runtime)();
-        if self.admitting_human || runtime.input_admission_pending {
-            return SelfSettleResult {
-                recorded: false,
-                reason: Some(SelfSettleReason::NotEligible),
-                epoch: self.lifecycle.epoch,
-                human_input_revision: self.lifecycle.human_input_revision,
-            };
+        if let Some(id) = self.ledger.run_id.clone() {
+            self.obligations.settle_run(&id);
         }
         self.recompute();
-        if !self.lifecycle.self_settle_eligible {
-            return SelfSettleResult {
-                recorded: false,
-                reason: Some(SelfSettleReason::NotEligible),
-                epoch: self.lifecycle.epoch,
-                human_input_revision: self.lifecycle.human_input_revision,
-            };
-        }
-        SelfSettleResult {
-            recorded: true,
-            reason: None,
-            epoch: self.lifecycle.epoch,
-            human_input_revision: self.lifecycle.human_input_revision,
-        }
+        self.checkpoint();
     }
-
-    pub fn recompute(&mut self) {
-        if self.lifecycle.restoring || self.admitting_human {
-            return;
-        }
-        if self.evaluating {
-            self.deferred = true;
-            return;
-        }
-        self.evaluating = true;
-        loop {
-            self.deferred = false;
-            self.evaluate();
-            if !self.deferred {
-                break;
-            }
-        }
-        self.evaluating = false;
+    pub fn goal_facts(&mut self, goal: Option<Value>, input: Option<Value>) {
+        self.liveness = input.clone();
+        self.ledger.last_turn_end = input;
+        self.goal_changed(goal);
     }
-
-    fn evaluate(&mut self) {
-        let runtime = (self.options.read_runtime)();
-
-        let child_count = self
-            .child_reports
-            .iter()
-            .filter(|report| {
-                report.child_session_id != self.options.session_id && report.terminal.is_none()
-            })
-            .count();
-
-        let mut human = if self.lifecycle.role == SessionRole::Root {
-            runtime.human.clone()
-        } else {
-            Vec::new()
-        };
-
-        let facts = self.goal_facts.snapshot();
-        if let Some(id) = facts.completed_goal_id {
-            self.lifecycle.completion_id = Some(id);
-        }
-        let mut background = Vec::new();
-        let mut queued = false;
-        let mut question = false;
-        if let Some(input) = &facts.input {
-            queued = input["will_retry"] == true || input["continuation_queued"].is_string();
-            for wake in input["expectations"].as_array().into_iter().flatten() {
-                let kind = wake["kind"].as_str().unwrap_or_default();
-                if input["deadline_stop"] == true
-                    && matches!(kind, "armed-timer" | "recovery-staged")
-                {
-                    continue;
-                }
-                match kind {
-                    "user-input-queued" => queued = true,
-                    "pending-messages" => queued |= runtime.pending_messages > 0,
-                    "question-to-user" => question = input["ended_by"] == "clean",
-                    "armed-timer" if wake["timer"] == "user-grace" => queued = true,
-                    "armed-timer" | "recovery-staged" | "wake-source" => {
-                        background.push(crate::session_lifecycle_types::BackgroundWait {
-                            source: wake["source"]
-                                .as_str()
-                                .unwrap_or(if kind == "recovery-staged" {
-                                    "staged-recovery"
-                                } else {
-                                    "goal-monitor"
-                                })
-                                .into(),
-                            active_count: 1,
-                            retry_at_ms: None,
-                        })
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if self.lifecycle.role == SessionRole::Root {
-            if question && human.is_empty() {
-                human.push(HumanWait {
-                    kind: crate::session_lifecycle_types::HumanWaitKind::Question,
-                    origin_session_id: self.options.session_id.clone(),
-                    request_id: format!("question:{}", self.lifecycle.epoch),
-                    revision: self.lifecycle.human_input_revision,
-                    child_session_id: None,
-                    child_label: None,
-                    since: self.lifecycle.since.clone(),
-                });
-            }
-            let kind = facts
+    pub fn goal_changed(&mut self, goal: Option<Value>) {
+        if let Some(g) = goal.as_ref().filter(|g| g["status"] == "complete") {
+            if self
                 .goal
                 .as_ref()
-                .and_then(|goal| match goal.status.as_str() {
-                    "blocked" => Some(crate::session_lifecycle_types::HumanWaitKind::GoalBlocked),
-                    "paused" => Some(crate::session_lifecycle_types::HumanWaitKind::GoalPaused),
-                    "active" if goal.continuation_stopped => {
-                        Some(crate::session_lifecycle_types::HumanWaitKind::GoalPaused)
-                    }
-                    "active"
-                        if !self.run_active
-                            && runtime.pending_messages == 0
-                            && child_count == 0
-                            && background.is_empty()
-                            && !queued =>
-                    {
-                        Some(crate::session_lifecycle_types::HumanWaitKind::Stalled)
-                    }
-                    _ => None,
-                });
-            if let Some(kind) = kind {
-                human.push(HumanWait {
-                    kind,
-                    origin_session_id: self.options.session_id.clone(),
-                    request_id: format!("goal:{}", facts.goal.as_ref().unwrap().id),
-                    revision: self.lifecycle.human_input_revision,
-                    child_session_id: None,
-                    child_label: None,
-                    since: self.lifecycle.since.clone(),
-                });
+                .is_none_or(|old| old["status"] != "complete")
+            {
+                if let Some(id) = g["id"].as_str() {
+                    let append = self.options.append.clone();
+                    self.ledger.mark_goal_completed(id, |r| append(r));
+                }
             }
         }
-        let running = self.run_active
-            || queued
-            || runtime.activity.is_streaming
-            || runtime.activity.is_compacting
-            || runtime.activity.is_bash_running
-            || runtime.activity.has_session_work
-            || runtime.pending_messages > 0;
-
-        let failure: Option<LifecycleFailure> = self
-            .own_task
-            .as_ref()
-            .and_then(|task| task.terminal)
-            .and_then(|term| match term {
-                crate::session_lifecycle_types::ChildTerminal::Error => Some(LifecycleFailure {
-                    reason: crate::session_lifecycle_types::FailureReason::TaskError,
-                    message: None,
-                    retry_at_ms: None,
-                    task_id: self.own_task.as_ref().map(|t| t.task_id.clone()),
-                    run_epoch: self.own_task.as_ref().map(|t| t.run_epoch),
-                }),
-                crate::session_lifecycle_types::ChildTerminal::Lost => Some(LifecycleFailure {
-                    reason: crate::session_lifecycle_types::FailureReason::Lost,
-                    message: None,
-                    retry_at_ms: None,
-                    task_id: self.own_task.as_ref().map(|t| t.task_id.clone()),
-                    run_epoch: self.own_task.as_ref().map(|t| t.run_epoch),
-                }),
-                crate::session_lifecycle_types::ChildTerminal::Interrupted => {
-                    Some(LifecycleFailure {
-                        reason: crate::session_lifecycle_types::FailureReason::Interrupted,
-                        message: None,
-                        retry_at_ms: None,
-                        task_id: self.own_task.as_ref().map(|t| t.task_id.clone()),
-                        run_epoch: self.own_task.as_ref().map(|t| t.run_epoch),
-                    })
-                }
-                _ => None,
-            });
-
-        let waits = LifecycleWaits {
-            children: child_count,
-            background,
-            human,
-        };
-
-        let state = lifecycle_state(&LifecycleFacts {
-            role: self.lifecycle.role,
-            terminal: self.own_task.as_ref().and_then(|t| t.terminal),
-            holds: runtime.holds.clone(),
-            waits: waits.clone(),
-            running,
-            failure: failure.clone(),
+        self.goal = goal;
+        self.recompute();
+    }
+    pub fn report_child(&mut self, report: ChildLifecycleReport) {
+        let value = serde_json::to_value(&report).expect("child report");
+        let append = self.options.append_child.clone();
+        let result = self.children.report(&value, |v| {
+            if let Some(append) = append {
+                append(serde_json::from_value(v.clone()).expect("child report"));
+            }
+            Ok(())
         });
+        if result.is_err() {
+            self.ledger.custody_write_failed();
+        }
+        self.recompute();
+    }
+    pub fn mark_run_completed(&mut self, id: &str) {
+        let append = self.options.append.clone();
+        self.ledger.mark_run_completed(id, |r| append(r));
+        self.recompute();
+    }
+    pub fn request_self_settle(&mut self) -> SelfSettleResult {
+        if self.admitting_human || (self.options.read_runtime)().input_admission_pending {
+            return SelfSettleResult {
+                recorded: false,
+                reason: Some(SelfSettleReason::NotEligible),
+                epoch: self.ledger.current["epoch"].as_u64().unwrap_or(0),
+                human_input_revision: self.ledger.current["humanInputRevision"]
+                    .as_u64()
+                    .unwrap_or(0),
+            };
+        }
+        self.recompute();
+        let append = self.options.append.clone();
+        serde_json::from_value(self.ledger.request_self_settle(|r| append(r)))
+            .expect("settle result")
+    }
+    pub fn recompute(&mut self) {
+        let shared = self.goal_service.snapshot();
+        if let Some(id) = shared.completed_goal_id.as_deref() {
+            let append = self.options.append.clone();
+            self.ledger.mark_goal_completed(id, |r|append(r));
+        }
+        if let Some(goal) = shared.goal {
+            let mut value = json!({"id":goal.id,"status":goal.status});
+            if goal.continuation_stopped { value["continuationStoppedAt"] = json!(true); }
+            self.goal = Some(value);
+        }
+        if shared.input.is_some() { self.liveness = shared.input; }
 
-        if lifecycle_terminal(state)
-            && self.own_task.as_ref().and_then(|t| t.terminal).is_none()
-            && !self.idle_boundary_passed
+        if !self.obligations.persisted() {
+            self.ledger.custody_write_failed();
+        }
+        if self.admitting_human || self.ledger.current["restoring"] == true {
+            return;
+        }
+        let runtime = (self.options.read_runtime)();
+        let active = self
+            .obligations
+            .active()
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let reports = self.children.reports();
+        let own = reports.iter().find(|r| {
+            r["childSessionId"] == self.options.session_id
+                && r["taskId"] == self.ledger.current["taskId"]
+        });
+        let children = reports
+            .iter()
+            .filter(|r| {
+                r["childSessionId"] != self.options.session_id && r.get("terminal").is_none()
+            })
+            .count()
+            .max(
+                active
+                    .iter()
+                    .filter(|r| r.kind == crate::work_custody_record::ObligationKind::Children)
+                    .map(|r| r.active_count.unwrap_or(1.) as usize)
+                    .sum(),
+            );
+        let background=active.iter().filter(|r|r.kind==crate::work_custody_record::ObligationKind::Background).map(|r|json!({"source":r.source.as_deref().unwrap_or(&r.key),"activeCount":r.active_count.unwrap_or(1.) as u64})).collect();
+        let facts = evaluate_turn_facts(
+            self.liveness.as_ref(),
+            self.goal.as_ref(),
+            background,
+            runtime.pending_messages,
+            children,
+            self.ledger.run_active,
+            self.ledger.interrupted,
+            &self.ledger.current,
+            runtime.activity.is_streaming
+                || runtime.activity.is_compacting
+                || runtime.activity.is_bash_running
+                || runtime.activity.has_session_work,
+        );
+        let mut human = if self.ledger.current["role"] == "root" {
+            runtime
+                .human
+                .iter()
+                .map(|h| serde_json::to_value(h).expect("human wait"))
+                .collect::<Vec<_>>()
+        } else {
+            vec![]
+        };
+        human.extend(self.ledger.attention.reconcile(&facts.synthetic));
+        let waits = json!({"children":children,"background":facts.background,"human":human});
+        let holds = runtime
+            .holds
+            .iter()
+            .map(|h| serde_json::to_value(h).expect("hold"))
+            .collect::<Vec<_>>();
+        let terminal = own.and_then(|r| r["terminal"].as_str());
+        let state = crate::lifecycle_runtime_facts::lifecycle_state(
+            self.ledger.current["role"].as_str().expect("role"),
+            terminal,
+            &holds,
+            &waits,
+            facts.running,
+            facts.failure.is_some(),
+        );
+        if ["done", "failed", "cancelled"].contains(&state.as_str())
+            && terminal.is_none()
+            && (!self.idle_boundary_passed || !active.is_empty())
         {
             return;
         }
-
-        self.lifecycle.seq += 1;
-        self.lifecycle.state = state;
-        self.lifecycle.waiting_on = Some(waits);
-        self.lifecycle.holds = if runtime.holds.is_empty() {
-            None
-        } else {
-            Some(runtime.holds)
-        };
-        self.lifecycle.failure = failure;
-        self.lifecycle.run_paused = self.lifecycle.state == SessionLifecycleState::Paused;
+        if self.obligations.flush().is_err() {
+            self.ledger.custody_write_failed();
+            return;
+        }
+        let append = self.options.append.clone();
+        self.ledger
+            .update(&state, waits, holds, facts.failure, |r| append(r));
+    }
+}
+pub struct TurnFacts {
+    pub background: Vec<Value>,
+    pub synthetic: Vec<(String, String)>,
+    pub running: bool,
+    pub failure: Option<Value>,
+}
+/// Shared effective-wake evaluation, used by both the durable controller and AgentSession.
+pub fn evaluate_turn_facts(
+    input: Option<&Value>,
+    goal: Option<&Value>,
+    mut background: Vec<Value>,
+    pending: usize,
+    children: usize,
+    run_active: bool,
+    interrupted: bool,
+    snapshot: &Value,
+    activity: bool,
+) -> TurnFacts {
+    let mut continuation = input.is_some_and(|i| {
+        i["willRetry"] == true || i.get("continuationQueued").is_some_and(|v| !v.is_null())
+    });
+    let mut question = false;
+    if let Some(input) = input {
+        for wake in input["expectations"].as_array().into_iter().flatten() {
+            match wake["kind"].as_str() {
+                Some("pending-messages") => continuation |= pending > 0,
+                Some("user-input-queued") => continuation = true,
+                Some("armed-timer") if wake["timer"] == "userGrace" => continuation = true,
+                Some("armed-timer") => {
+                    let source = if wake["timer"] == "providerRetry" {
+                        "provider-retry"
+                    } else {
+                        "goal-monitor"
+                    };
+                    let mut b = json!({"source":source,"activeCount":1});
+                    if source == "provider-retry" {
+                        if let Some(at) = input.get("providerRetryAtMs") {
+                            b["retryAtMs"] = at.clone();
+                        }
+                    }
+                    background.push(b);
+                }
+                Some("recovery-staged") => {
+                    background.push(json!({"source":"staged-recovery","activeCount":1}))
+                }
+                Some("wake-source") => {
+                    if !background.iter().any(|b| b["source"] == wake["source"]) {
+                        background.push(json!({"source":wake["source"],"activeCount":1}));
+                    }
+                }
+                Some("question-to-user") => question = true,
+                _ => {}
+            }
+        }
+    }
+    let mut synthetic = Vec::new();
+    let no_wake = children == 0 && background.is_empty() && !continuation && pending == 0;
+    if snapshot["role"] == "root" {
+        if question {
+            synthetic.push((format!("question:{}", snapshot["epoch"]), "question".into()));
+        }
+        if let Some(g) = goal {
+            if g["status"] == "blocked" {
+                synthetic.push((
+                    format!("goal:{}", g["id"].as_str().unwrap_or_default()),
+                    "goal_blocked".into(),
+                ));
+            } else if g["status"] == "paused" || g.get("continuationStoppedAt").is_some() {
+                synthetic.push((
+                    format!("goal:{}", g["id"].as_str().unwrap_or_default()),
+                    "goal_paused".into(),
+                ));
+            }
+        }
+        if interrupted {
+            synthetic.push((
+                format!("interrupted:{}", snapshot["epoch"]),
+                "interrupted_run".into(),
+            ));
+        }
+        let stalled = input.is_some_and(|i| {
+            !["provider-error", "policy-rejection"]
+                .contains(&i["endedBy"].as_str().unwrap_or_default())
+                && (i["deadlineStop"] == true
+                    || i["budgetSpent"] == true
+                    || ["unknown-abort", "system-abort", "provider-abort"]
+                        .contains(&i["endedBy"].as_str().unwrap_or_default())
+                    || (i["openWork"]["kind"].as_str().is_some_and(|k| k != "none")
+                        && i["goalStopped"] != true))
+        });
+        if no_wake
+            && (stalled
+                || goal.is_some_and(|g| {
+                    g["status"] == "active"
+                        && g.get("continuationStoppedAt").is_none()
+                        && !run_active
+                        && !activity
+                }))
+        {
+            synthetic.push((format!("stall:{}", snapshot["epoch"]), "stalled".into()));
+        }
+    }
+    let failure = input
+        .filter(|i| {
+            ["provider-error", "policy-rejection"]
+                .contains(&i["endedBy"].as_str().unwrap_or_default())
+                && !continuation
+                && background.is_empty()
+        })
+        .map(|i| {
+            let mut f = json!({"reason":"provider_error"});
+            if let Some(at) = i.get("providerRetryAtMs") {
+                f["retryAtMs"] = at.clone();
+            }
+            f
+        });
+    TurnFacts {
+        background,
+        synthetic,
+        running: run_active || activity || pending > 0 || continuation,
+        failure,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn neutral_goal_facts_survive_close_clear_and_drive_waits() {
-        let mut controller = SessionLifecycleController::new(SessionLifecycleOptions {
-            session_id: "neutral-goal-test".into(),
+    struct Store;
+    impl crate::work_obligations::CustodyStore for Store {
+        fn entries(&self) -> Vec<Value> {
+            vec![]
+        }
+        fn append(
+            &mut self,
+            _: &crate::work_custody_record::WorkCustodyRecord,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn changed(&mut self) {}
+    }
+    fn controller() -> SessionLifecycleController {
+        SessionLifecycleController::new(SessionLifecycleOptions {
+            session_id: "s".into(),
             spawned_by: None,
             read_runtime: Arc::new(LifecycleRuntimeFacts::default),
             append_child: None,
-        });
-        let producer = maho_ext_api::goal_lifecycle::goal_lifecycle_service("neutral-goal-test");
-        controller.restore_complete();
-        producer.transition(Some(maho_ext_api::goal_lifecycle::LifecycleGoal {
-            id: "g".into(),
-            status: "blocked".into(),
-            continuation_stopped: false,
-        }));
-        assert_eq!(
-            controller.snapshot().state,
-            SessionLifecycleState::WaitingHuman
-        );
-        producer.transition(Some(maho_ext_api::goal_lifecycle::LifecycleGoal {
-            id: "g".into(),
-            status: "complete".into(),
-            continuation_stopped: false,
-        }));
-        producer.transition(None);
-        assert_eq!(controller.snapshot().completion_id.as_deref(), Some("g"));
-        assert_eq!(controller.snapshot().state, SessionLifecycleState::Done);
-        producer
-            .turn_end(serde_json::json!({"expectations":[{"kind":"wake-source","source":"test"}]}));
-        assert_eq!(
-            controller.snapshot().state,
-            SessionLifecycleState::WaitingBackground
-        );
+            entries: vec![],
+            append: Arc::new(|_| Ok(())),
+            custody: Box::new(Store),
+        })
     }
     #[test]
-    fn root_controller_transitions_from_restore_to_done() {
-        let mut controller = SessionLifecycleController::new(SessionLifecycleOptions {
-            session_id: "root-1".into(),
-            spawned_by: None,
-            read_runtime: Arc::new(|| LifecycleRuntimeFacts::default()),
-            append_child: None,
-        });
-
-        assert!(controller.snapshot().restoring);
-        controller.restore_complete();
-        assert!(!controller.snapshot().restoring);
-        assert_eq!(controller.snapshot().state, SessionLifecycleState::Done);
+    fn ledger_owns_epoch_and_human_revision() {
+        let mut c = controller();
+        c.restore_complete();
+        c.human_input("now");
+        c.start_run(None);
+        assert_eq!(c.snapshot().human_input_revision, 1);
+        let epoch = c.snapshot().epoch;
+        c.idle();
+        c.start_run(None);
+        assert_eq!(c.snapshot().epoch, epoch + 1);
     }
-
     #[test]
-    fn run_lifecycle_flow() {
-        let mut controller = SessionLifecycleController::new(SessionLifecycleOptions {
-            session_id: "root-1".into(),
-            spawned_by: None,
-            read_runtime: Arc::new(|| LifecycleRuntimeFacts::default()),
-            append_child: None,
-        });
-
-        controller.restore_complete();
-        controller.start_run(Some(EpochOrigin::Human));
-        assert_eq!(controller.snapshot().state, SessionLifecycleState::Running);
-        assert_eq!(controller.snapshot().epoch, 1);
-
-        controller.idle();
-        assert_eq!(controller.snapshot().state, SessionLifecycleState::Done);
+    fn custody_prevents_terminal_and_preserves_background_wait() {
+        let mut c = controller();
+        c.restore_complete();
+        c.start_run(None);
+        c.obligations.open(
+            "pending",
+            crate::work_custody_record::ObligationKind::Background,
+            None,
+        );
+        c.idle();
+        assert_eq!(c.snapshot().state, SessionLifecycleState::WaitingBackground);
+    }
+    #[test]
+    fn retries_and_queued_human_input_are_not_stalls() {
+        for wake in [
+            json!({"kind":"user-input-queued"}),
+            json!({"kind":"armed-timer","timer":"providerRetry"}),
+        ] {
+            let input = json!({"endedBy":"provider-error","expectations":[wake]});
+            let f = evaluate_turn_facts(
+                Some(&input),
+                None,
+                vec![],
+                0,
+                0,
+                false,
+                false,
+                &json!({"role":"root","epoch":1}),
+                false,
+            );
+            assert!(f.failure.is_none());
+            assert!(f.synthetic.is_empty());
+            assert!(f.running || !f.background.is_empty());
+        }
+    }
+    #[test]
+    fn exhausted_provider_failure_is_terminal_fact() {
+        let f = evaluate_turn_facts(
+            Some(&json!({"endedBy":"provider-error","expectations":[]})),
+            None,
+            vec![],
+            0,
+            0,
+            false,
+            false,
+            &json!({"role":"root","epoch":1}),
+            false,
+        );
+        assert_eq!(f.failure.expect("failure")["reason"], "provider_error");
     }
 }
