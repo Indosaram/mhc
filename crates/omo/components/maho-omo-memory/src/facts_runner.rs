@@ -273,7 +273,6 @@ impl FactsExtractorRunner {
         let people =
             crate::facts_people_payload::read_facts_people_payload(&self.identity.paths.repo);
         let envelope = memory_core::facts::FactsPayloadEnvelope {
-            agreement_event_version: None,
             version: 1,
             agreement_event_version: Some(1),
             identity: self.identity.id.clone(),
@@ -1257,7 +1256,6 @@ mod tests {
         crate::worker::run_artifacts::write_run_json_atomic(
             &dir.join("facts-payload.json"),
             &FactsPayload {
-                agreement_event_version: None,
                 version: 1,
             agreement_event_version: Some(1),
                 identity: "agent".into(),
@@ -1432,7 +1430,6 @@ mod tests {
         .unwrap();
 
         let payload = FactsPayload {
-            agreement_event_version: None,
             version: 1,
             agreement_event_version: Some(1),
             identity: "agent".into(),
