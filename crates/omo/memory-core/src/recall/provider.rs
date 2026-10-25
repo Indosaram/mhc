@@ -161,6 +161,100 @@ fn acquire_shared_cache(key: &Path, options: &RecallCorpusCacheOptions) -> Share
     cache
 }
 
+/// The corpus one cache holds, kept outside the cache value so a moved cache still reports it.
+#[derive(Default)]
+struct CacheAccounting {
+    held: Mutex<Option<Arc<RecallCorpus>>>,
+}
+
+impl CacheAccounting {
+    fn hold(&self, corpus: Arc<RecallCorpus>) {
+        *self.held.lock().unwrap_or_else(PoisonError::into_inner) = Some(corpus);
+    }
+
+    fn release(&self) {
+        *self.held.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    fn held(&self) -> Option<Arc<RecallCorpus>> {
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// Every cache in the process, read only when a memory report is taken.
+static LIVE_CACHES: LazyLock<Mutex<Vec<Weak<CacheAccounting>>>> = LazyLock::new(Mutex::default);
+
+fn register_live_cache(accounting: &Arc<CacheAccounting>) {
+    let mut caches = LIVE_CACHES.lock().unwrap_or_else(PoisonError::into_inner);
+    caches.retain(|weak| weak.strong_count() > 0);
+    caches.push(Arc::downgrade(accounting));
+}
+
+/// The recall layer's figures in the on-demand memory report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RecallMemoryFigures {
+    /// Caches holding a parsed corpus; a shared corpus counts once however many sessions hold it.
+    pub corpus_caches: usize,
+    pub documents: usize,
+    /// UTF-16 size of every held document's path, description and body.
+    pub document_text_bytes: usize,
+    /// Term id and count arrays the BM25 index keeps for those documents.
+    pub term_array_bytes: usize,
+    /// Terms in the process-wide BM25 dictionary.
+    pub vocabulary_terms: usize,
+}
+
+/// Reads the live caches' figures. Nothing is kept alive for the report, and a corpus several caches
+/// share is counted once.
+pub fn recall_memory_figures() -> RecallMemoryFigures {
+    let live: Vec<Arc<CacheAccounting>> = {
+        let mut caches = LIVE_CACHES.lock().unwrap_or_else(PoisonError::into_inner);
+        caches.retain(|weak| weak.strong_count() > 0);
+        caches.iter().filter_map(Weak::upgrade).collect()
+    };
+    memory_figures_for_caches(live)
+}
+
+fn memory_figures_for_caches(live: Vec<Arc<CacheAccounting>>) -> RecallMemoryFigures {
+    let mut corpora: Vec<Arc<RecallCorpus>> = Vec::new();
+    let mut corpus_caches = 0usize;
+    for accounting in &live {
+        let Some(corpus) = accounting.held() else {
+            continue;
+        };
+        corpus_caches += 1;
+        if corpora.iter().any(|held| Arc::ptr_eq(held, &corpus)) {
+            continue;
+        }
+        corpora.push(corpus);
+    }
+    let mut documents = 0usize;
+    let mut document_text_bytes = 0usize;
+    for corpus in &corpora {
+        for document in &corpus.documents {
+            documents += 1;
+            document_text_bytes += 2 * (document.path.encode_utf16().count()
+                + document.description.encode_utf16().count()
+                + document.body.encode_utf16().count());
+        }
+    }
+    let terms = super::bm25::recall_term_figures(
+        corpora
+            .iter()
+            .flat_map(|corpus| corpus.documents.iter()),
+    );
+    RecallMemoryFigures {
+        corpus_caches,
+        documents,
+        document_text_bytes,
+        term_array_bytes: terms.term_array_bytes,
+        vocabulary_terms: terms.vocabulary_terms,
+    }
+}
+
 struct RecallCorpusCacheEntry {
     revision: Option<String>,
     corpus: Arc<RecallCorpus>,
@@ -180,6 +274,8 @@ pub struct RecallCorpusCache {
     options: RecallCorpusCacheOptions,
     /// Shared mode only: the process-wide caches this instance keeps alive, one per repository.
     held: HashMap<PathBuf, SharedCache>,
+    /// The corpus this cache holds, reported to the memory report without keeping the cache alive.
+    accounting: Arc<CacheAccounting>,
 }
 
 impl Default for RecallCorpusCache {
@@ -194,6 +290,8 @@ impl RecallCorpusCache {
             .head
             .clone()
             .unwrap_or_else(|| Arc::new(|repo: &GitMemoryRepo| repo.head()));
+        let accounting = Arc::new(CacheAccounting::default());
+        register_live_cache(&accounting);
         Self {
             entry: None,
             probe: None,
@@ -203,7 +301,15 @@ impl RecallCorpusCache {
             resolve_head,
             options,
             held: HashMap::new(),
+            accounting,
         }
+    }
+
+    /// The parsed documents this cache holds itself, `None` before its first load (memory report only).
+    pub fn held_documents(&self) -> Option<Vec<RecallDocument>> {
+        self.accounting
+            .held()
+            .map(|corpus| corpus.documents.clone())
     }
 
     /// Loads the corpus at HEAD, reusing the cached entry while the HEAD fingerprint holds.
@@ -246,6 +352,9 @@ impl RecallCorpusCache {
             super::corpus_derived::unregister(&previous.corpus);
         }
         super::corpus_derived::register(&corpus);
+        if revision.is_some() {
+            self.accounting.hold(Arc::clone(&corpus));
+        }
         self.attach_terms(repo, &corpus);
         self.entry = Some(RecallCorpusCacheEntry {
             revision,
@@ -276,6 +385,7 @@ impl RecallCorpusCache {
         }
         self.probe = None;
         self.blobs = None;
+        self.accounting.release();
     }
 
     fn shared_for(&mut self, dir: &Path) -> SharedCache {
