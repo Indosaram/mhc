@@ -20,6 +20,79 @@ pub struct HostAssembly {
     pub parent: Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>,
 }
 impl HostAssembly {
+    fn schedule_recovery(
+        &self,
+        handle: &Arc<handle::HostSessionHandle>,
+        spec: senpi_task::runners::types::RpcRunnerSpec,
+    ) {
+        let weak = Arc::downgrade(handle);
+        let assembly = self.clone();
+        std::thread::spawn(move || {
+            while let Some(handle) = weak.upgrade() {
+                if handle.stopped() {
+                    break;
+                }
+                if handle.heartbeat().is_err() {
+                    let input = assembly.reattach_input(spec.clone());
+                    let socket = match assembly.socket() {
+                        Ok(socket) => socket,
+                        Err(error) => {
+                            eprintln!("host recovery routing failed: {error}");
+                            break;
+                        }
+                    };
+                    match handle.recover(
+                        Arc::new(input),
+                        socket,
+                        std::time::Duration::from_secs(30),
+                    ) {
+                        Ok(true) => {}
+                        result => {
+                            handle.transport_lost(format!("host recovery exhausted: {result:?}"));
+                            break;
+                        }
+                    }
+                }
+                drop(handle);
+                std::thread::park_timeout(std::time::Duration::from_secs(5));
+            }
+        });
+    }
+    fn reattach_input(
+        &self,
+        spec: senpi_task::runners::types::RpcRunnerSpec,
+    ) -> reattach_port::ReattachPortInput {
+        let admission = self.clone();
+        let ensure = self.clone();
+        let open = self.clone();
+        let store = spec.state_dir.clone();
+        let extensions = spec.extensions.clone().unwrap_or_default();
+        reattach_port::ReattachPortInput {
+            delays: [500, 1000, 2000, 4000, 8000]
+                .into_iter()
+                .map(std::time::Duration::from_millis)
+                .collect(),
+            sleep: Arc::new(std::thread::sleep),
+            admit: Arc::new(move || admission.admit(store.clone()).map_err(|e| e.to_string())),
+            ensure: Arc::new(move |socket| {
+                ensure
+                    .ensure(socket.into(), extensions.clone())
+                    .map_err(|e| e.to_string())
+            }),
+            open: Arc::new(move |socket, path| {
+                open.open(
+                    &spec,
+                    session_context::build_child_context(&spec),
+                    socket.into(),
+                    path.into(),
+                )
+                .map(|(port, opened, _)| (port, opened.session))
+                .map_err(|e| e.to_string())
+            }),
+            notice: Arc::new(|notice| eprintln!("task host recovery: {notice}")),
+            attach_only: false,
+        }
+    }
     pub fn block<T: Send + 'static>(
         &self,
         future: impl std::future::Future<Output = Result<T, HostError>> + Send + 'static,
@@ -113,10 +186,15 @@ struct ProductionHostRunner {
 }
 impl ManagedRunner for ProductionHostRunner {
     fn start(&self, spec: &ManagedStartSpec) -> ManagedRunnerResult {
-        use senpi_task::manager::runner::RpcRunnerLike;
-        self.configured
-            .start(&senpi_task::manager::runner::to_rpc_spec(spec))
-            .map_err(ManagedRunnerError::Runner)
+        let rpc = senpi_task::manager::runner::to_rpc_spec(spec);
+        (self.configured.admit)(&rpc).map_err(|e| ManagedRunnerError::Other(e.to_string()))?;
+        let handle = self
+            .configured
+            .runner
+            .start(&rpc, |spec, context| (self.configured.open)(spec, context))
+            .map_err(|e| ManagedRunnerError::Other(e.to_string()))?;
+        self.assembly.schedule_recovery(&handle, rpc);
+        Ok(handle)
     }
     fn settle_teardowns(&self) -> Result<(), ManagedRunnerError> {
         use senpi_task::manager::runner::RpcRunnerLike;

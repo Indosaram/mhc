@@ -17,6 +17,10 @@ pub struct HostSessionReplaced {
     pub durable_session_id: String,
 }
 pub trait HostSessionPort: Send + Sync {
+    fn wait_for_outcome(&self) -> Option<crate::runners::RunnerOutcome> {
+        None
+    }
+    fn transport_lost(&self, _message: String) {}
     fn watch_engine_turn(
         &self,
     ) -> Option<crate::runners::in_process::native_run_pause::EngineTurnWatch> {
