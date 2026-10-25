@@ -1295,8 +1295,11 @@ impl TaskManager {
             })
             .or_else(|| record.queued_admission.clone())
             .ok_or("held admission allocation_missing")?;
+        if admission.task_id != task_id {
+            return Err("held admission task_mismatch".into());
+        }
         if admission.run_epoch != record.notification.run_epoch {
-            return Ok(());
+            return Err("held admission stale_epoch".into());
         }
         let warm = lock(&self.inner.state).held_launches.get(task_id).cloned();
         let mut managed_spec = match &warm {
