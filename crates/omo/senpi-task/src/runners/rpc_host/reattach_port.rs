@@ -31,7 +31,12 @@ pub fn create_reattach_port(
             if abandoned() {
                 return Ok(None);
             }
-            (input.open)(&endpoint, path).map(Some)
+            let opened = (input.open)(&endpoint, path)?;
+            if abandoned() {
+                opened.0.detach().map_err(|error| error.to_string())?;
+                return Ok(None);
+            }
+            Ok(Some(opened))
         })();
         match result {
             Ok(result) => return Ok(result),
