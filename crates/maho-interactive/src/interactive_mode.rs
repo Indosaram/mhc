@@ -5728,6 +5728,12 @@ impl InteractiveMode {
         !self.parked_actions.is_empty()
     }
 
+    /// Whether parked work (`/new`, `/resume`, `/fork`, reload tails) is still in flight. The
+    /// production loop keeps polling it within a frame while its waker fires.
+    pub fn has_parked_actions(&self) -> bool {
+        !self.parked_actions.is_empty()
+    }
+
     /// senpi's awaited `session.prompt` for direct callers: start the turn, then wait it out.
     pub async fn submit(
         &mut self,
