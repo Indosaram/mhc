@@ -16,6 +16,7 @@ pub struct MemoryWiring {
         std::sync::Arc<dyn maho_ext_api::ExtensionUi>,
     )>,
     footer_ticker: bool,
+    pub provenance_by_session: std::collections::HashMap<String, maho_ext_api::ForkProvenance>,
 }
 pub fn create_memory_wiring(options: MemoryWiringOptions) -> MemoryWiring {
     MemoryWiring {
@@ -27,6 +28,7 @@ pub fn create_memory_wiring(options: MemoryWiringOptions) -> MemoryWiring {
         seams: Default::default(),
         live_host: None,
         footer_ticker: false,
+        provenance_by_session: Default::default(),
     }
 }
 struct NativeFooter(std::sync::Arc<dyn maho_ext_api::ExtensionUi>);
@@ -186,11 +188,12 @@ fn register_settled_handler(
                     .into_iter()
                     .map(|entry| entry.data)
                     .collect::<Vec<_>>();
+                let provenance = context.session_manager.fork_provenance();
                 let mut ui = NativeFooter(context.ui.clone());
                 wiring
                     .lock()
                     .await
-                    .on_settled(
+                    .on_settled_with_provenance(
                         context.session_manager.session_id(),
                         &entries,
                         &api,
@@ -199,6 +202,7 @@ fn register_settled_handler(
                         |session, error| {
                             warn(&format!("journal reconcile failed: {session}: {error}"))
                         },
+                        provenance,
                     )
                     .map_err(maho_ext_api::ExtensionFailure::new)?;
                 Ok(maho_ext_api::EventResult::None)
@@ -336,6 +340,13 @@ impl MemoryWiring {
                                 crate::shutdown_drain::ShutdownReason::Reload
                             }
                         };
+                        let provenance = context.session_manager.fork_provenance();
+                        if let Some(prov) = provenance {
+                            wiring.lock().await.record_provenance(
+                                context.session_manager.session_id(),
+                                prov,
+                            );
+                        }
                         wiring
                             .lock()
                             .await
@@ -516,6 +527,9 @@ impl MemoryWiring {
         };
         self.reflection_live.sync_rpc(&api, now)
     }
+    pub fn record_provenance(&mut self, session: &str, provenance: maho_ext_api::ForkProvenance) {
+        self.provenance_by_session.insert(session.to_owned(), provenance);
+    }
     pub fn on_settled(
         &mut self,
         session: &str,
@@ -525,6 +539,22 @@ impl MemoryWiring {
         ui: Option<&mut dyn MemoryFooterUi>,
         warn: impl FnOnce(&str, &memory_core::journal::store::JournalError),
     ) -> Result<(), String> {
+        let provenance = self.provenance_by_session.get(session).cloned();
+        self.on_settled_with_provenance(session, entries, api, now, ui, warn, provenance)
+    }
+    pub fn on_settled_with_provenance(
+        &mut self,
+        session: &str,
+        entries: &[serde_json::Value],
+        api: &maho_ext_api::ExtensionApi,
+        now: i64,
+        ui: Option<&mut dyn MemoryFooterUi>,
+        warn: impl FnOnce(&str, &memory_core::journal::store::JournalError),
+        provenance: Option<maho_ext_api::ForkProvenance>,
+    ) -> Result<(), String> {
+        if let Some(prov) = provenance {
+            self.provenance_by_session.insert(session.to_owned(), prov);
+        }
         let Some(identity) = self.runtime.resolve_context(session).cloned() else {
             return Ok(());
         };
@@ -534,6 +564,9 @@ impl MemoryWiring {
                 .reconcile_session(Some(session), entries, warn)
                 .map_err(|error| error.to_string())?;
             if let Some(facts) = self.runtime.existing_facts_wiring(&identity.identity) {
+                if let Some(prov) = self.provenance_by_session.get(session) {
+                    facts.set_provenance(session, Some(prov.clone()));
+                }
                 facts.on_settled(session);
             }
         }
@@ -550,6 +583,7 @@ impl MemoryWiring {
     pub fn unbind(&mut self, session: &str) {
         self.runtime.contexts.remove(session);
         self.reflection_live.unbind(session);
+        self.provenance_by_session.remove(session);
     }
     pub async fn on_session_shutdown(
         &mut self,
@@ -652,7 +686,11 @@ impl crate::shutdown_drain::ShutdownDrainSteps for MemoryShutdownSteps<'_> {
             else {
                 return Ok(());
             };
+            let provenance = self.wiring.provenance_by_session.get(session).cloned();
             if let Some(facts) = self.wiring.runtime.existing_facts_wiring(&identity) {
+                if let Some(prov) = provenance {
+                    facts.set_provenance(session, Some(prov));
+                }
                 facts.enqueue_settled(session, Some(signal.facts_signal()));
             }
             Ok(())

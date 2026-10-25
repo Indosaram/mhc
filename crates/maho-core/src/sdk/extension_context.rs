@@ -42,6 +42,9 @@ impl SessionManager for SessionView {
         (self.session)().and_then(|session| session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)))
     }
     fn get_session_name(&self) -> Option<String> { (self.session)().and_then(|session| session.session_name()) }
+    fn fork_provenance(&self) -> Option<ForkProvenance> {
+        (self.session)().and_then(|session| session.with_session_manager(|manager| manager.fork_provenance()))
+    }
     fn extension_context_actions(&self) -> Option<&dyn ExtensionContextActions> { Some(self.actions.as_ref()) }
 }
 

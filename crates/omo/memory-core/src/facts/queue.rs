@@ -415,6 +415,35 @@ impl FactsQueue {
         self.locked(|| self.read_cursor_unlocked(conversation_id))
     }
 
+    /// Seed the enqueued_through watermark for an uninitialized conversation (e.g. forked session prefix).
+    /// Under the queue lock; only when no cursor exists; never lowers an existing cursor;
+    /// pending ranges are left untouched.
+    pub fn seed_enqueued_through(
+        &self,
+        conversation_id: &str,
+        end_message_id: &str,
+        end_snapshot_line: u64,
+    ) -> Result<(), FactsQueueError> {
+        self.locked(|| {
+            let cursor = self.read_cursor_unlocked(conversation_id)?;
+            let has_cursor = cursor.enqueued_through_snapshot_line >= 0
+                || cursor.enqueued_through_message_id.is_some();
+            if has_cursor {
+                return Ok(());
+            }
+            if (end_snapshot_line as i64) <= cursor.enqueued_through_snapshot_line {
+                return Ok(());
+            }
+            let updated = FactsCursor {
+                enqueued_through_message_id: Some(end_message_id.to_string()),
+                enqueued_through_snapshot_line: end_snapshot_line as i64,
+                ..cursor
+            };
+            self.write_cursor(conversation_id, &updated)?;
+            Ok(())
+        })
+    }
+
     fn locked<T, F>(&self, task: F) -> Result<T, FactsQueueError>
     where
         F: FnOnce() -> Result<T, FactsQueueError>,

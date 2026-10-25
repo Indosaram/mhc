@@ -1338,6 +1338,11 @@ pub struct SessionEntry {
     pub kind: String,
     pub data: JsonValue,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForkProvenance {
+    pub parent_session: String,
+    pub inherited_through_entry_id: Option<String>,
+}
 pub trait SessionManager: ToolSessionManager {
     fn get_session_dir(&self) -> Option<PathBuf> {
         None
@@ -1378,6 +1383,9 @@ pub trait SessionManager: ToolSessionManager {
     }
     fn get_leaf_id(&self) -> Option<String>;
     fn get_session_name(&self) -> Option<String>;
+    fn fork_provenance(&self) -> Option<ForkProvenance> {
+        None
+    }
     fn extension_context_actions(&self) -> Option<&dyn ExtensionContextActions> {
         None
     }
