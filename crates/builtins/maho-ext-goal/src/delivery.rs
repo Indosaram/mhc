@@ -395,6 +395,7 @@ impl GoalDelivery {
                         }));
                     }));
                 *self.neutral_lifecycle.lock().map_err(failure)? = Some(neutral);
+                self.lifecycle.goal_lifecycle_changed(goal);
                 crate::lifecycle_facts::bind_session_lifecycle(
                     &(self.reference)(ctx),
                     &self.lifecycle,
