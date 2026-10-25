@@ -187,19 +187,19 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 8793,
-        "sha256": "8ffc0504459d6fbc1cbc03e4203b2f5c8da63c241ff775f61dc4806e3396e8cf",
+        "bytes": 8551,
+        "sha256": "85ce606a8bb285c42ef756667986cff9fde414993bb254e6ee3519eb772bcaec",
         "source": "packages/shared-skills/skills/browser/SKILL.md"
       },
       {
         "path": "references/commands.md",
-        "bytes": 6304,
+        "bytes": 6118,
         "sha256": null,
         "source": "packages/shared-skills/skills/browser/references/commands.md"
       },
       {
         "path": "references/install.md",
-        "bytes": 5957,
+        "bytes": 5853,
         "sha256": null,
         "source": "packages/shared-skills/skills/browser/references/install.md"
       },
@@ -241,25 +241,25 @@
       },
       {
         "path": "scripts/browser-doctor.mjs",
-        "bytes": 4224,
+        "bytes": 4219,
         "sha256": null,
         "source": "packages/shared-skills/skills/browser/scripts/browser-doctor.mjs"
       },
       {
         "path": "scripts/browser-engine-guard.mjs",
-        "bytes": 20543,
+        "bytes": 3548,
         "sha256": null,
         "source": "packages/shared-skills/skills/browser/scripts/browser-engine-guard.mjs"
       },
       {
         "path": "scripts/browser-install.mjs",
-        "bytes": 2872,
+        "bytes": 2870,
         "sha256": null,
         "source": "packages/shared-skills/skills/browser/scripts/browser-install.mjs"
       },
       {
         "path": "scripts/omowright.mjs",
-        "bytes": 1861,
+        "bytes": 1725,
         "sha256": null,
         "source": "packages/shared-skills/skills/browser/scripts/omowright.mjs"
       }
@@ -2507,8 +2507,8 @@
         },
         {
           "path": "browser/SKILL.md",
-          "bytes": 8793,
-          "sha256": "8ffc0504459d6fbc1cbc03e4203b2f5c8da63c241ff775f61dc4806e3396e8cf"
+          "bytes": 8551,
+          "sha256": "85ce606a8bb285c42ef756667986cff9fde414993bb254e6ee3519eb772bcaec"
         },
         {
           "path": "browser/references/commands.md",
@@ -4295,8 +4295,8 @@
         },
         {
           "path": "browser/SKILL.md",
-          "bytes": 8793,
-          "sha256": "8ffc0504459d6fbc1cbc03e4203b2f5c8da63c241ff775f61dc4806e3396e8cf"
+          "bytes": 8551,
+          "sha256": "85ce606a8bb285c42ef756667986cff9fde414993bb254e6ee3519eb772bcaec"
         },
         {
           "path": "browser/references/commands.md",
