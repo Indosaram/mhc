@@ -172,7 +172,7 @@ fn setup_paused_run() -> PausedFixture {
 
     let options = DagSchedulerOptions {
         store: Arc::clone(&store),
-        task_manager: Arc::new(harness.manager),
+        task_manager: Arc::new(harness.manager.clone()),
         initial_record: record.clone(),
         execution_mode: None,
         ancestry: None,
@@ -267,7 +267,7 @@ fn test_design_28_model_cannot_reenter_user_paused_workflow() {
     let fixture = setup_paused_run();
     let result = reenter_dag_run(fixture.options);
     assert!(result.is_err());
-    let error = result.unwrap_err();
+    let error = match result { Err(error) => error, Ok(_) => panic!("model reentered a user-paused workflow") };
     assert_eq!(error.code, DagNodeControlErrorCode::RunPausedByUser);
 
     let read_back: DagRunRecordV1 = fixture

@@ -162,7 +162,9 @@ async fn terminal_and_paused_workers_restore_and_unheld_credentials_reach_admiss
     assert_eq!(resumed.workers[0].status, WorkpoolWorkerStatus::Idle); assert_eq!(resumed.workers[0].completed_turns, 1);
     assert_eq!(resumed.workers[1].status, WorkpoolWorkerStatus::Paused);
     assert_eq!(engine.owned_task_ids().expect("inventory"), tasks.iter().map(|t| t.task_id.clone()).collect::<std::collections::BTreeSet<_>>());
-    let credential = crate::pause::admission_barrier::ResumeCredential { pause_seq: 1, resume_id: "resume".into() };
+    let barrier = crate::pause::admission_barrier::AdmissionBarrier::new();
+    barrier.close(&caller.session_id, 1);
+    let credential = barrier.resume(&caller.session_id, 1, "resume").expect("credential");
     assert_eq!(engine.resume_for_run(&caller, &pool.pool_id, 1, Some(credential.clone())).expect("unheld"), ResumePoolResult::NotHeld);
     engine.push(&caller, &pool.pool_id, &[WorkpoolInput { key: "next".into(), input: 1.into() }]).expect("push");
     waiting(&mut events, 1).await;

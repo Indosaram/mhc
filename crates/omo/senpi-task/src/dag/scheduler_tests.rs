@@ -245,6 +245,7 @@ fn state_str(state: DagNodeState) -> &'static str {
         DagNodeState::Pending => "pending",
         DagNodeState::Blocked => "blocked",
         DagNodeState::Scheduled => "scheduled",
+        DagNodeState::Paused => "paused",
         DagNodeState::Running => "running",
         DagNodeState::Completed => "completed",
         DagNodeState::Failed => "failed",

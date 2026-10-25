@@ -150,8 +150,8 @@ pub fn retry_dag_nodes(
             current = amend_retry_prompt(&options, &original, target, prompt.clone())?;
         }
     }
-    if record.status == DagRunStatus::Paused
-        && record.pause.as_ref().is_some_and(|p| p.reason == "user_stop")
+    if current.status == DagRunStatus::Paused
+        && current.pause.as_ref().is_some_and(|p| p.reason == "user_stop")
     {
         let journal = control_journal(&options, current, Default::default()).map_err(|error| {
             control_error(

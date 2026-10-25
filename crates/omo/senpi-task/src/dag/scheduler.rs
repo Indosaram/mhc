@@ -60,6 +60,7 @@ pub struct DagSchedulerOptions {
     pub pre_attached_tasks: Option<BTreeMap<DagNodeId, String>>,
     pub now: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
     /// Injectable retry-backoff timer; defaults to a real timer thread.
+    pub resume_credential: Option<crate::pause::admission_barrier::ResumeCredential>,
     pub schedule_retry: Option<RetrySchedule>,
 }
 
@@ -83,6 +84,7 @@ impl Clone for DagSchedulerOptions {
             subscriber_ring: self.subscriber_ring,
             pre_attached_tasks: self.pre_attached_tasks.clone(),
             now: self.now.clone(),
+            resume_credential: self.resume_credential.clone(),
             schedule_retry: self.schedule_retry.clone(),
         }
     }
@@ -543,6 +545,11 @@ fn with_nodes(
         amend_history: record.amend_history.clone(),
         lease_holder_pid: record.lease_holder_pid,
         previous_lease_holder_pid: record.previous_lease_holder_pid,
+        guidance: record.guidance.clone(),
+        retry_on_resume: record.retry_on_resume.clone(),
+        cancel_requested_nodes: record.cancel_requested_nodes.clone(),
+        paused_child_acks: record.paused_child_acks.clone(),
+        pause: record.pause.clone(),
     }
 }
 
@@ -1511,6 +1518,13 @@ fn attach_or_fail(
                 true,
             )
         }
+        OwnedStartResult::Held { pause_seq } => {
+            context.journal.append(DagRunEventPayload::RunPaused {
+                reason: Some("user_stop".into()),
+                pause_seq: Some(pause_seq),
+            })?;
+            Ok(())
+        }
         OwnedStartResult::NotStarted(start_result) => {
             let failure = start_failure(&start_result);
             fail_node(context, node_id, failure.0, &failure.1)?;
@@ -1908,6 +1922,7 @@ fn start_spec(
         DagRoute::Agent { agent, model } => (None, Some(agent.clone()), model.clone()),
     };
     let mut spec = ManagerStartSpec {
+        resume_credential: context.options.resume_credential.clone(),
         prompt: persisted.effective_prompt.clone(),
         task_summary: persisted.task_summary.clone(),
         parent_session_id: parent_session_id.clone(),
@@ -2083,6 +2098,7 @@ fn count_nodes(nodes: &[DagNode]) -> DagNodeCounts {
             DagNodeState::Pending => counts.pending += 1,
             DagNodeState::Blocked => counts.blocked += 1,
             DagNodeState::Scheduled => counts.scheduled += 1,
+            DagNodeState::Paused => *counts.paused.get_or_insert(0) += 1,
             DagNodeState::Running => counts.running += 1,
             DagNodeState::Completed => counts.completed += 1,
             DagNodeState::Failed => counts.failed += 1,

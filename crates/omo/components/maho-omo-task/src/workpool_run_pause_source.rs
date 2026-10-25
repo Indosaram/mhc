@@ -55,7 +55,7 @@ impl WorkpoolRunPauseSource {
             WorkpoolError::new(WorkpoolErrorCode::AdmissionRefused, error.to_string())
         })?;
         for pool in self.owned(parent) {
-            engine.pause_for_run(&pool.parent_session_id, &pool.pool_id, pause_seq)?;
+            engine.pause_for_run(&WorkpoolCaller { session_id: pool.parent_session_id.clone(), root_session_id: pool.root_session_id.clone(), depth: 0, cwd: String::new() }, &pool.pool_id, pause_seq)?;
         }
         Ok(())
     }
@@ -79,13 +79,13 @@ impl WorkpoolRunPauseSource {
             };
             let guard = TicketGuard(ticket);
             let result = self.workpools.lock().await.resume_for_run(
-                &pool.parent_session_id,
+                &WorkpoolCaller { session_id: pool.parent_session_id.clone(), root_session_id: pool.root_session_id.clone(), depth: 0, cwd: String::new() },
                 &pool.pool_id,
                 pause_seq,
-                credential.clone(),
+                Some(credential.clone()),
             );
             drop(guard);
-            if !result? {
+            if result? == senpi_task::workpool::run_pause::ResumePoolResult::Stale {
                 return Err(held());
             }
         }
@@ -99,7 +99,7 @@ impl WorkpoolRunPauseSource {
             .collect();
         let engine = self.workpools.lock().await;
         for session in sessions {
-            engine.attach(&session)?;
+            engine.attach(&session, None)?;
         }
         Ok(())
     }

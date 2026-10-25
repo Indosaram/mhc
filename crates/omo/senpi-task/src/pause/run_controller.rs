@@ -336,7 +336,7 @@ impl RunPauseController {
             if !current()? {
                 return Ok(ResumeOne::Superseded);
             }
-            if !observed.is_some_and(|o| o.held) {
+            if !observed.as_ref().is_some_and(|o| o.held) {
                 let reason = participant
                     .lost_reason
                     .clone()

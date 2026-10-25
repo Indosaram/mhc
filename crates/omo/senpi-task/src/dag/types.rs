@@ -544,12 +544,7 @@ pub struct GuidanceError {
     pub code: GuidanceErrorCode,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResumeCredential {
-    pub pause_seq: u64,
-    pub resume_id: String,
-}
+pub use crate::pause::admission_barrier::ResumeCredential;
 
 /// The journaled payload union; every member is written to the WAL with a WAL seq.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

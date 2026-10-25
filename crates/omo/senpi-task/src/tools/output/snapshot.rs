@@ -136,6 +136,7 @@ mod parity_tests {
         let mut record = create_task_record(TaskRecordInput::default(), Some(123)).expect("record");
         record.parent_model = Some("provider/parent".into());
         record.parent_model_fallback = Some(ParentModelFallback {
+            phase: None,
             from_model: "provider/exhausted".into(),
             reason: ParentModelFallbackReason::UsageLimit,
             at: "now".into(),

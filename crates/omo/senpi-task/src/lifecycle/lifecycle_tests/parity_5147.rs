@@ -1,4 +1,5 @@
 use super::*;
+use crate::lifecycle::types::SuspendInput;
 use crate::state::SuspensionReason;
 
 #[test]
