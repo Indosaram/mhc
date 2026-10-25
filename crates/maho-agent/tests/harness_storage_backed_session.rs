@@ -180,7 +180,7 @@ async fn composes_bound_values_and_lists_atomically_with_entries_and_usage() {
                                     Write::List(append_list(&events, serde_json::json!("event"))),
                                     insert_usage(NewUsageRow {
                                         id: "usage".to_owned(),
-                                        usage: Usage {
+                                        usage: Usage { context_usage: None,
                                             input: 1,
                                             output: 1,
                                             total_tokens: 2,

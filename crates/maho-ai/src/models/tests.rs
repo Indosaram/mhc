@@ -2141,7 +2141,7 @@ async fn applies_request_wide_pricing_tiers_above_the_configured_input_threshold
             input_tokens_above: 272_000,
         }]),
     };
-    let usage = |cache_write: u64| Usage {
+    let usage = |cache_write: u64| Usage { context_usage: None,
         input: 200_000,
         output: 100_000,
         cache_read: 72_000,

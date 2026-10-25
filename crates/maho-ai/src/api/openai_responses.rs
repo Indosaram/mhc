@@ -2479,7 +2479,7 @@ pub async fn warm_openai_responses_prompt_cache(
         .as_u64()
         .or_else(|| details["cache_creation_tokens"].as_u64())
         .unwrap_or(0);
-    let mut usage = Usage {
+    let mut usage = Usage { context_usage: None,
         input: raw["input_tokens"]
             .as_u64()
             .unwrap_or(0)
