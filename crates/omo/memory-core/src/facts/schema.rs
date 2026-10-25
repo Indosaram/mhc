@@ -1,6 +1,7 @@
 //! Facts queue wire format and path helpers.
 
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -294,6 +295,194 @@ pub fn parse_queue_entry(raw: &str) -> Option<FactsQueueEntry> {
         enqueued_at,
         entries,
     })
+}
+
+struct ValidatedEntries;
+
+struct EntriesValidatorVisitor;
+
+impl<'de> serde::de::Visitor<'de> for EntriesValidatorVisitor {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an array of transcript entries")
+    }
+
+    fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
+        while let Some(item) = seq.next_element::<serde_json::Value>()? {
+            if !is_transcript_entry_json(&item) {
+                return Err(serde::de::Error::custom("invalid transcript entry structure"));
+            }
+            if <TranscriptEntry as Deserialize>::deserialize(&item).is_err() {
+                return Err(serde::de::Error::custom(
+                    "failed to deserialize transcript entry",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'de> Deserialize<'de> for ValidatedEntries {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_seq(EntriesValidatorVisitor)?;
+        Ok(ValidatedEntries)
+    }
+}
+
+struct QueueHeaderReceiver(FactsQueueEntry);
+
+struct QueueHeaderVisitor;
+
+impl<'de> serde::de::Visitor<'de> for QueueHeaderVisitor {
+    type Value = FactsQueueEntry;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a facts queue entry JSON object")
+    }
+
+    fn visit_map<M: serde::de::MapAccess<'de>>(self, mut access: M) -> Result<Self::Value, M::Error> {
+        let mut version: Option<u32> = None;
+        let mut identity: Option<String> = None;
+        let mut session_id: Option<String> = None;
+        let mut conversation_id: Option<String> = None;
+        let mut range: Option<FactsQueueRange> = None;
+        let mut enqueued_at: Option<String> = None;
+        let mut seen_entries = false;
+
+        while let Some(key) = access.next_key::<String>()? {
+            match key.as_str() {
+                "version" => {
+                    let val: serde_json::Value = access.next_value()?;
+                    if val.as_u64() != Some(FACTS_QUEUE_VERSION as u64) {
+                        return Err(serde::de::Error::custom("invalid facts queue version"));
+                    }
+                    version = Some(FACTS_QUEUE_VERSION);
+                }
+                "identity" => {
+                    let val: serde_json::Value = access.next_value()?;
+                    let s = val
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| serde::de::Error::custom("invalid identity"))?;
+                    identity = Some(s.to_string());
+                }
+                "sessionId" => {
+                    let val: serde_json::Value = access.next_value()?;
+                    let s = val
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| serde::de::Error::custom("invalid sessionId"))?;
+                    session_id = Some(s.to_string());
+                }
+                "conversationId" => {
+                    let val: serde_json::Value = access.next_value()?;
+                    let s = val
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| serde::de::Error::custom("invalid conversationId"))?;
+                    conversation_id = Some(s.to_string());
+                }
+                "range" => {
+                    let val: serde_json::Value = access.next_value()?;
+                    let range_obj = val
+                        .as_object()
+                        .ok_or_else(|| serde::de::Error::custom("range must be an object"))?;
+                    let start_message_id = range_obj
+                        .get("start_message_id")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| serde::de::Error::custom("invalid start_message_id"))?
+                        .to_string();
+                    let end_message_id = range_obj
+                        .get("end_message_id")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| serde::de::Error::custom("invalid end_message_id"))?
+                        .to_string();
+                    let start_line = range_obj
+                        .get("start_line")
+                        .and_then(|v| v.as_u64())
+                        .ok_or_else(|| serde::de::Error::custom("invalid start_line"))?;
+                    let end_snapshot_line = range_obj
+                        .get("end_snapshot_line")
+                        .and_then(|v| v.as_u64())
+                        .ok_or_else(|| serde::de::Error::custom("invalid end_snapshot_line"))?;
+                    range = Some(FactsQueueRange {
+                        start_message_id,
+                        end_message_id,
+                        start_line,
+                        end_snapshot_line,
+                    });
+                }
+                "enqueuedAt" => {
+                    let val: serde_json::Value = access.next_value()?;
+                    let s = val
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| serde::de::Error::custom("invalid enqueuedAt"))?;
+                    enqueued_at = Some(s.to_string());
+                }
+                "entries" => {
+                    access.next_value::<ValidatedEntries>()?;
+                    seen_entries = true;
+                }
+                _ => {
+                    access.next_value::<serde::de::IgnoredAny>()?;
+                }
+            }
+        }
+
+        if !seen_entries {
+            return Err(serde::de::Error::custom("missing entries"));
+        }
+        let Some(version) = version else {
+            return Err(serde::de::Error::custom("missing version"));
+        };
+        let Some(identity) = identity else {
+            return Err(serde::de::Error::custom("missing identity"));
+        };
+        let Some(session_id) = session_id else {
+            return Err(serde::de::Error::custom("missing sessionId"));
+        };
+        let Some(conversation_id) = conversation_id else {
+            return Err(serde::de::Error::custom("missing conversationId"));
+        };
+        let Some(range) = range else {
+            return Err(serde::de::Error::custom("missing range"));
+        };
+        let Some(enqueued_at) = enqueued_at else {
+            return Err(serde::de::Error::custom("missing enqueuedAt"));
+        };
+
+        Ok(FactsQueueEntry {
+            version,
+            identity,
+            session_id,
+            conversation_id,
+            range,
+            enqueued_at,
+            entries: Vec::new(),
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for QueueHeaderReceiver {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer
+            .deserialize_map(QueueHeaderVisitor)
+            .map(QueueHeaderReceiver)
+    }
+}
+
+/// Stream-parse a queue entry file header without retaining transcript payloads in memory.
+///
+/// Validates the header fields and each transcript entry in the `entries` array using the
+/// same rules as [`parse_queue_entry`], returning None if corrupt, invalid, or version mismatch.
+pub fn parse_queue_header<R: Read>(reader: R) -> Option<FactsQueueEntry> {
+    serde_json::from_reader::<R, QueueHeaderReceiver>(reader)
+        .ok()
+        .map(|r| r.0)
 }
 
 /// Positional index of a message id among canonical transcript entries.
