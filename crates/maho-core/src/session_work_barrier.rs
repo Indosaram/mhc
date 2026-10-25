@@ -281,6 +281,14 @@ impl ToolBarrier {
         });
     }
 
+    pub fn id(&self) -> Option<String> {
+        self.armed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|a| a.spec.id.clone())
+    }
+
     pub fn release(&self, id: &str) -> bool {
         let mut guard = self
             .armed
