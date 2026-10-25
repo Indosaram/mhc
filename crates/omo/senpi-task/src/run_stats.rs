@@ -11,6 +11,7 @@ use crate::state::{CostReportStatus, DurationSourceStatus, TaskRunStats, TokenCo
 /// `message_start`, `tool_execution_end`, previous `message_end`) and closes on an assistant
 /// `message_end`, so `tokens_per_second` measures streaming speed and excludes tool time.
 pub struct RunStatsTracker<C: Fn() -> u64> {
+    pub run_start_epoch: i64,
     started_at: u64,
     now: C,
     turns: u64,
@@ -37,6 +38,7 @@ pub struct RunStatsTracker<C: Fn() -> u64> {
 
 pub fn create_run_stats_tracker<C: Fn() -> u64>(started_at: u64, now: C) -> RunStatsTracker<C> {
     RunStatsTracker {
+        run_start_epoch: 0,
         started_at,
         now,
         turns: 0,

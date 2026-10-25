@@ -163,6 +163,11 @@ impl InteractiveExtensionUi {
 }
 
 impl ExtensionUi for InteractiveExtensionUi {
+    fn supports_subagent_cost(&self) -> bool { true }
+    fn set_subagent_cost(&self, cost: Option<f64>) {
+        let text = cost.filter(|cost| cost.is_finite() && *cost > 0.0).map(|cost| format!("subagents ${cost:.4}"));
+        self.set_status("subagent-cost", text.as_deref());
+    }
     fn actions(&self) -> Option<&dyn ExtensionUiActions> { Some(self) }
     fn factories(&self) -> Option<&dyn ExtensionUiFactories> { Some(self) }
     fn question(&self, request: QuestionRequest, options: QuestionOptions) -> ExtensionFuture<'_, QuestionResponse> {

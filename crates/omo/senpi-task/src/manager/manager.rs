@@ -1349,6 +1349,12 @@ impl TaskManager {
         lock(&self.inner.state).released.len()
     }
 
+    pub fn live_run_stats(&self, task_id: &str) -> Option<(i64, TaskRunStats)> {
+        let tracker = lock(&self.inner.state).run_stats.get(task_id).map(Arc::clone)?;
+        let tracker = lock(&tracker);
+        let epoch = tracker.run_start_epoch;
+        Some((epoch, tracker.snapshot(u64::try_from(self.inner.now_ms()).unwrap_or_default())))
+    }
     pub fn run_stats_snapshot(&self, task_id: &str) -> Option<TaskRunStats> {
         self.inner.run_stats_snapshot(task_id)
     }
@@ -2274,7 +2280,9 @@ impl Inner {
         let clock: Box<dyn Fn() -> u64 + Send> =
             Box::new(move || u64::try_from(now()).unwrap_or_default());
         let started_at = u64::try_from(self.now_ms()).unwrap_or_default();
-        let tracker = Arc::new(Mutex::new(create_run_stats_tracker(started_at, clock)));
+        let mut tracker_value = create_run_stats_tracker(started_at, clock);
+        tracker_value.run_start_epoch = self.try_load(task_id).map_or(0, |record| record.run_start_epoch);
+        let tracker = Arc::new(Mutex::new(tracker_value));
         lock(&self.state)
             .run_stats
             .insert(task_id.to_string(), Arc::clone(&tracker));
@@ -2498,7 +2506,8 @@ impl Inner {
             Box::new(move || u64::try_from(now()).unwrap_or_default());
         let started_at = u64::try_from(self.now_ms()).unwrap_or_default();
         // PERF-DIVERGENCE(senpi manager/manager.ts): the live event closure holds the tracker Arc, so a revive resets the shared tracker in place instead of replacing the map entry.
-        let fresh_tracker = create_run_stats_tracker(started_at, clock);
+        let mut fresh_tracker = create_run_stats_tracker(started_at, clock);
+        fresh_tracker.run_start_epoch = self.try_load(task_id).map_or(0, |record| record.run_start_epoch);
         let existing = lock(&self.state).run_stats.get(task_id).map(Arc::clone);
         match existing {
             Some(tracker) => *lock(&tracker) = fresh_tracker,

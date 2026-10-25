@@ -11,7 +11,8 @@ pub fn task_identity(record: &TaskRecord) -> String {
     task_identity_label(&TaskIdentityInput { task_id: &record.task_id, name: record.name.as_deref(), description: record.description.as_deref(), task_summary: record.task_summary.as_deref() })
 }
 fn record_status_target(record: &TaskRecord) -> String {
-    format_status_target(&StatusTargetInput { category: record.category.as_deref(), agent_type: record.agent_type.as_deref(), resolved_model: record.resolved_model.as_ref(), model: Some(&record.model), fallback_count: record.fallback_attempts.as_ref().map(|items| u64::try_from(items.len()).unwrap_or(u64::MAX)) }).unwrap_or_else(|| "task".into())
+    let target = format_status_target(&StatusTargetInput { category: record.category.as_deref(), agent_type: record.agent_type.as_deref(), resolved_model: record.resolved_model.as_ref(), model: Some(&record.model), fallback_count: record.fallback_attempts.as_ref().map(|items| u64::try_from(items.len()).unwrap_or(u64::MAX)) }).unwrap_or_else(|| "task".into());
+    senpi_task::status_line::format_parent_model_fallback(record).map_or_else(|| target.clone(), |fallback| format!("{target} · {fallback}"))
 }
 pub fn format_task_row(record: &TaskRecord) -> String {
     let identity = task_identity(record);
