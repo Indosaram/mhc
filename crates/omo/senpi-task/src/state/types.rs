@@ -184,6 +184,7 @@ pub enum SuspensionReason {
     IdleEvicted,
     OwnHostUnreachable,
     RevivalDeferred,
+    SessionQuit,
     StoreIndexUnavailable,
 }
 
