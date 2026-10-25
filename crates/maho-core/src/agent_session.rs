@@ -14846,6 +14846,7 @@ impl AgentSession {
             "goal_store_changed",
             "goal_continuation_timer_state",
             "turn_end_liveness",
+            "goal_lifecycle_facts",
             "security_notice",
         ] {
             let weak = Arc::downgrade(&self.inner);
@@ -14856,6 +14857,12 @@ impl AgentSession {
                         let session = AgentSession { inner };
                         if channel == "security_notice" {
                             session.state().security_notices.accept(data);
+                        }
+                        if channel == "goal_lifecycle_facts"
+                            && data["sessionId"] == session.session_id()
+                        {
+                            let goal = data.get("goal").filter(|g| !g.is_null());
+                            session.update_lifecycle_facts(Vec::new(), Vec::new(), goal, None);
                         }
                         if channel == "turn_end_liveness"
                             && data["sessionId"] == session.session_id()

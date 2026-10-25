@@ -400,6 +400,15 @@ impl GoalDelivery {
                     &(self.reference)(ctx),
                     &self.lifecycle,
                 );
+                let events = self.api.events.clone();
+                let session_id = ctx.session_manager.session_id();
+                self.lifecycle
+                    .on_goal_lifecycle_change(Arc::new(move |goal| {
+                        events.emit(
+                            "goal_lifecycle_facts",
+                            &serde_json::json!({"sessionId":session_id,"goal":goal}),
+                        );
+                    }));
                 self.todo_backstop.lock().map_err(failure)?.reset_chain();
                 let facts = self.last_facts.clone();
                 self.lifecycle
