@@ -2269,6 +2269,7 @@ impl TaskManager {
             .filter(|saved| saved.run_epoch == epoch && saved.task_id == task_id);
         let model = allocation.map_or(record.model.as_str(), |saved| saved.model.as_str());
         let mut concurrency = lock(&self.inner.concurrency);
+        concurrency.withdraw(model, task_id, epoch);
         let grant: Grant = Box::new(move || {
             let _ = wake.send(());
         });
