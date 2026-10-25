@@ -146,7 +146,7 @@ fn test_exact_cap_accepted_and_one_byte_more_rejected() {
         rejected
             .oversized
             .iter()
-            .map(|c| c.range.end_message_id.as_str())
+            .map(|c| c.header.range.end_message_id.as_str())
             .collect::<Vec<_>>(),
         vec!["m1"]
     );
@@ -339,7 +339,62 @@ fn test_oversized_entry_reported_and_never_truncated() {
 
     // then
     assert_eq!(endpoints(&selection.selected), vec!["beta/m9"]);
-    assert_eq!(selection.oversized, vec![oversized]);
+    let expected_bytes =
+        measure_facts_payload_bytes(&test_envelope().to_payload(vec![oversized.clone()]));
+    let mut expected_header = oversized;
+    expected_header.entries.clear();
+    assert_eq!(
+        selection.oversized,
+        vec![OversizedFactsEntry {
+            header: expected_header,
+            bytes: expected_bytes,
+        }]
+    );
+    assert!(selection.oversized[0].header.entries.is_empty());
+}
+
+#[test]
+fn test_two_conversations_with_oversized_first_entries_retain_empty_entries_headers() {
+    // given
+    let over1 = entry_sized_to("alpha", "m1", 1, MAX_FACTS_PAYLOAD_BYTES + 100);
+    let over2 = entry_sized_to("beta", "m1", 1, MAX_FACTS_PAYLOAD_BYTES + 200);
+    let healthy = sample_entry("gamma", "m9", 1, None, None);
+
+    let bytes1 = measure_facts_payload_bytes(&test_envelope().to_payload(vec![over1.clone()]));
+    let bytes2 = measure_facts_payload_bytes(&test_envelope().to_payload(vec![over2.clone()]));
+
+    let mut header1 = over1.clone();
+    header1.entries.clear();
+    let mut header2 = over2.clone();
+    header2.entries.clear();
+
+    // when
+    let selection = select_capped_facts_batch(&CappedFactsBatchInput {
+        entries: vec![over1, over2, healthy],
+        envelope: test_envelope(),
+        now: T0.to_string(),
+        max_bytes: None,
+        starvation_ms: None,
+    });
+
+    // then: healthy entry is selected unchanged
+    assert_eq!(endpoints(&selection.selected), vec!["gamma/m9"]);
+    // both oversized candidates are retained as headers with empty entries and correct bytes
+    assert_eq!(selection.oversized.len(), 2);
+    assert_eq!(
+        selection.oversized,
+        vec![
+            OversizedFactsEntry {
+                header: header1,
+                bytes: bytes1,
+            },
+            OversizedFactsEntry {
+                header: header2,
+                bytes: bytes2,
+            },
+        ]
+    );
+    assert!(selection.oversized.iter().all(|o| o.header.entries.is_empty()));
 }
 
 #[test]

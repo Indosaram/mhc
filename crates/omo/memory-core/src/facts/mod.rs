@@ -38,8 +38,9 @@ pub use failures_selection::{
 };
 pub use payload_cap::{
     CappedFactsBatch, CappedFactsBatchInput, FACTS_STARVATION_MS, FactsKnownPerson, FactsPayload,
-    FactsPayloadEnvelope, FactsPrimaryHuman, MAX_FACTS_PAYLOAD_BYTES, measure_facts_payload_bytes,
-    select_capped_facts_batch, select_capped_facts_batch_with, serialize_facts_payload,
+    FactsPayloadEnvelope, FactsPrimaryHuman, MAX_FACTS_PAYLOAD_BYTES, OversizedFactsEntry,
+    measure_facts_payload_bytes, select_capped_facts_batch, select_capped_facts_batch_with,
+    serialize_facts_payload,
 };
 pub use person_index::{FactsPeopleIndexEntry, display_name_of, read_facts_people_index};
 pub use person_routing::{
