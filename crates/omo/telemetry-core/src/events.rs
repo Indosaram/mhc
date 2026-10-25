@@ -158,6 +158,8 @@ impl EventTelemetryClient {
         }
 
         let payload = TelemetryCaptureMessage {
+            uuid: Some(uuid::Uuid::new_v4().to_string()),
+            timestamp: Some(crate::diagnostics::to_iso_string(chrono::Utc::now())),
             distinct_id: client.distinct_id.clone(),
             event: name.to_string(),
             properties: payload_properties,
