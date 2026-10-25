@@ -1275,6 +1275,12 @@ impl TaskManager {
         if record.status != TaskStatus::Pending {
             return Err("held admission already_started".into());
         }
+        if record.host_pid.is_some_and(|pid| {
+            pid != self.inner.host_pid
+                && u32::try_from(pid).is_ok_and(utils::process_sweep::default_is_process_alive)
+        }) {
+            return Err("held admission owner is still alive".into());
+        }
         let admission = saved
             .cloned()
             .or_else(|| {
