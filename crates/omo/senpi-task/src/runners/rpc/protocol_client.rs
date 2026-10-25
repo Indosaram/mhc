@@ -143,6 +143,15 @@ pub struct RpcProtocolClient {
 /// One in-flight request; [`Self::wait`] blocks until the correlated response or the exit.
 pub struct PendingResponse {
     receiver: Receiver<Result<Value, RpcClientError>>,
+    id: String,
+    shared: Weak<ClientShared>,
+}
+impl Drop for PendingResponse {
+    fn drop(&mut self) {
+        if let Some(shared) = self.shared.upgrade() {
+            shared.lock().pending.remove(&self.id);
+        }
+    }
 }
 
 impl PendingResponse {
@@ -271,7 +280,11 @@ impl RpcProtocolClient {
                 message: error.to_string(),
             });
         }
-        Ok(PendingResponse { receiver })
+        Ok(PendingResponse {
+            receiver,
+            id,
+            shared: Arc::downgrade(&self.shared),
+        })
     }
 }
 
