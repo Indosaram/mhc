@@ -125,9 +125,13 @@ impl RpcProcessRunner {
             now: Arc::clone(&self.now),
         });
         let configured = match (&spec.model, &spec.fallback_models) {
-            (Some(model), Some(chain)) if !chain.is_empty() => client.send(json!({"type":"set_retry_fallback","profile":{"modelFallback":true,"fallbackChains":{model:chain}}})).and_then(|response| {
-                if response["success"] == true { Ok(()) } else { Err(crate::runners::rpc::errors::RpcCommandError::new("set_retry_fallback", response["error"].as_str().unwrap_or("fallback configuration rejected")).into()) }
-            }),
+            (Some(model), Some(chain)) if !chain.is_empty() => {
+                match client.send(json!({"type":"set_retry_fallback","retryFallback":{"modelFallback":true,"fallbackChains":{(model):chain}}})) {
+                    Ok(response) if response["success"] == true => {},
+                    result => utils::logger::log("senpi-task child fallback chain unavailable; retaining manager fallback", Some(&json!({"taskId":spec.task_id,"result":format!("{result:?}")}))),
+                }
+                Ok::<(), RpcClientError>(())
+            }
             _ => Ok(()),
         };
         let started = configured
