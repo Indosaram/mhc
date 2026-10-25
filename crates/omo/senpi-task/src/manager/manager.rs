@@ -4549,17 +4549,20 @@ impl Inner {
                 reason: "task already has a live handle".to_string(),
             };
         }
-        let unsubscribe = self.subscribe_child_facts(&handle, &fresh.task_id);
         lock(&self.state).live.insert(
             fresh.task_id.clone(),
             LiveTask {
                 handle: Arc::clone(&handle),
                 model: fresh.model.clone(),
-                unsubscribe: Some(unsubscribe),
+                unsubscribe: None,
                 managed_spec: None,
                 runner: None,
             },
         );
+        let unsubscribe = self.subscribe_child_facts(&handle, &fresh.task_id);
+        if let Some(live) = lock(&self.state).live.get_mut(&fresh.task_id) {
+            live.unsubscribe = Some(unsubscribe);
+        }
         self.attach_child_subscribers(&fresh.task_id, &handle);
         // Stamp the child's own identity onto the clone so a sweep can tell a live child from a dead host.
         self.isolation.stamp(&fresh.task_id, handle.as_ref());
