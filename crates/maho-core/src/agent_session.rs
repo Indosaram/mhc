@@ -2457,17 +2457,26 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             .skills
             .iter()
             .map(|skill| maho_ext_api::Skill {
-                provenance: skill.provenance.as_ref().map(|provenance| maho_ext_api::SkillProvenance {
-                    kind: match provenance.kind {
-                        crate::skill_access::SkillProvenanceKind::User => "user",
-                        crate::skill_access::SkillProvenanceKind::ProjectAuto => "project-auto",
-                        crate::skill_access::SkillProvenanceKind::ProjectSelected => "project-selected",
-                    }.into(),
-                    selected_root: provenance.selected_root.clone(),
-                    project_root: provenance.project_root.clone(),
+                provenance: skill.provenance.as_ref().map(|provenance| {
+                    maho_ext_api::SkillProvenance {
+                        kind: match provenance.kind {
+                            crate::skill_access::SkillProvenanceKind::User => "user",
+                            crate::skill_access::SkillProvenanceKind::ProjectAuto => "project-auto",
+                            crate::skill_access::SkillProvenanceKind::ProjectSelected => {
+                                "project-selected"
+                            }
+                        }
+                        .into(),
+                        selected_root: provenance.selected_root.clone(),
+                        project_root: provenance.project_root.clone(),
+                    }
                 }),
-                allowed_set: skill.allowed_set.as_ref().map(|allowed| maho_ext_api::SkillAllowedSet {
-                    roots: allowed.roots.clone(), files: allowed.files.clone(), digest: allowed.digest.clone(),
+                allowed_set: skill.allowed_set.as_ref().map(|allowed| {
+                    maho_ext_api::SkillAllowedSet {
+                        roots: allowed.roots.clone(),
+                        files: allowed.files.clone(),
+                        digest: allowed.digest.clone(),
+                    }
                 }),
                 name: skill.name.clone(),
                 description: skill.description.clone(),
@@ -11387,11 +11396,13 @@ impl AgentSession {
         let security_diagnostics = diagnostics
             .iter()
             .filter(|diagnostic| diagnostic.category.as_deref() == Some("skill-link-blocked"))
-            .map(|diagnostic| serde_json::json!({
-                "category": "skill-link-blocked",
-                "message": diagnostic.message,
-                "path": diagnostic.path,
-            }))
+            .map(|diagnostic| {
+                serde_json::json!({
+                    "category": "skill-link-blocked",
+                    "message": diagnostic.message,
+                    "path": diagnostic.path,
+                })
+            })
             .collect::<Vec<_>>();
         self.set_resource_security_notices(&security_diagnostics);
         let mut state = self.state();
@@ -12033,18 +12044,29 @@ impl AgentSession {
                 .skills
                 .iter()
                 .map(|skill| maho_ext_api::Skill {
-                provenance: skill.provenance.as_ref().map(|provenance| maho_ext_api::SkillProvenance {
-                    kind: match provenance.kind {
-                        crate::skill_access::SkillProvenanceKind::User => "user",
-                        crate::skill_access::SkillProvenanceKind::ProjectAuto => "project-auto",
-                        crate::skill_access::SkillProvenanceKind::ProjectSelected => "project-selected",
-                    }.into(),
-                    selected_root: provenance.selected_root.clone(),
-                    project_root: provenance.project_root.clone(),
-                }),
-                allowed_set: skill.allowed_set.as_ref().map(|allowed| maho_ext_api::SkillAllowedSet {
-                    roots: allowed.roots.clone(), files: allowed.files.clone(), digest: allowed.digest.clone(),
-                }),
+                    provenance: skill.provenance.as_ref().map(|provenance| {
+                        maho_ext_api::SkillProvenance {
+                            kind: match provenance.kind {
+                                crate::skill_access::SkillProvenanceKind::User => "user",
+                                crate::skill_access::SkillProvenanceKind::ProjectAuto => {
+                                    "project-auto"
+                                }
+                                crate::skill_access::SkillProvenanceKind::ProjectSelected => {
+                                    "project-selected"
+                                }
+                            }
+                            .into(),
+                            selected_root: provenance.selected_root.clone(),
+                            project_root: provenance.project_root.clone(),
+                        }
+                    }),
+                    allowed_set: skill.allowed_set.as_ref().map(|allowed| {
+                        maho_ext_api::SkillAllowedSet {
+                            roots: allowed.roots.clone(),
+                            files: allowed.files.clone(),
+                            digest: allowed.digest.clone(),
+                        }
+                    }),
                     name: skill.name.clone(),
                     description: skill.description.clone(),
                     file_path: skill.file_path.clone(),
@@ -21768,6 +21790,65 @@ mod tests {
         assert_eq!(first["entryId"], second["entryId"]);
         assert_eq!(second["duplicate"], true);
         assert_eq!(session.held_inputs().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn run_resume_cutoff_cannot_release_a_newer_stop_or_another_parent() {
+        let session = test_session();
+        let run = crate::run_holds::RunRef {
+            kind: "task".into(),
+            id: "child".into(),
+        };
+        let receipt = session
+            .pause_for_run("parent", 3, run.clone())
+            .await
+            .unwrap();
+        let crate::run_holds::InheritResult::Inherited { child_seq } = receipt else {
+            panic!("inherit refused")
+        };
+        session.with_run_holds(|holds| holds.stamp());
+        assert_eq!(
+            session.resume_for_run("other", 3, child_seq).await.unwrap(),
+            crate::run_holds::ReleaseInheritedResult::WrongParent
+        );
+        assert_eq!(
+            session
+                .resume_for_run("parent", 2, child_seq)
+                .await
+                .unwrap(),
+            crate::run_holds::ReleaseInheritedResult::Stale
+        );
+        assert_eq!(
+            session
+                .resume_for_run("parent", 3, child_seq)
+                .await
+                .unwrap(),
+            crate::run_holds::ReleaseInheritedResult::Released {
+                other_hold_live: true
+            }
+        );
+        assert!(session.paused());
+        assert_eq!(
+            session
+                .resume_for_run("parent", 3, child_seq)
+                .await
+                .unwrap(),
+            crate::run_holds::ReleaseInheritedResult::NotHeld
+        );
+        let latest = session.pause_for_run("parent", 4, run).await.unwrap();
+        let crate::run_holds::InheritResult::Inherited { child_seq } = latest else {
+            panic!("inherit refused")
+        };
+        assert_eq!(
+            session
+                .resume_for_run("parent", 4, child_seq)
+                .await
+                .unwrap(),
+            crate::run_holds::ReleaseInheritedResult::Released {
+                other_hold_live: false
+            }
+        );
+        assert!(!session.paused());
     }
 
     fn test_session() -> AgentSession {
@@ -32465,18 +32546,26 @@ mod tests {
         let diagnostic = crate::diagnostics::ResourceDiagnostic {
             category: Some("skill-link-blocked".into()),
             diagnostic_type: crate::diagnostics::ResourceDiagnosticType::Warning,
-            message: "blocked".into(), path: Some("/project/skill".into()), collision: None,
+            message: "blocked".into(),
+            path: Some("/project/skill".into()),
+            collision: None,
         };
         session.set_prompt_resources_with_diagnostics(vec![], vec![], vec![diagnostic]);
         assert_eq!(session.security_notice_state().notices.len(), 1);
         let runner = ExtensionRunner::new(
-            Vec::new(), Default::default(), EventBus::default(), test_extension_context(&session),
+            Vec::new(),
+            Default::default(),
+            EventBus::default(),
+            test_extension_context(&session),
         );
         let events = runner.events.clone();
         session.set_extension_runner(runner).await;
-        events.emit("security_notice", &serde_json::json!({
-            "category":"mcp-env-withheld", "path":"server", "message":"withheld",
-        }));
+        events.emit(
+            "security_notice",
+            &serde_json::json!({
+                "category":"mcp-env-withheld", "path":"server", "message":"withheld",
+            }),
+        );
         assert_eq!(session.security_notice_state().notices.len(), 2);
         session.set_prompt_resources(vec![], vec![]);
         assert_eq!(session.security_notice_state().notices.len(), 1);
@@ -32499,7 +32588,8 @@ mod tests {
         let path = outside.path().join("SKILL.md");
         std::fs::write(&path, "---\nname: blocked\n---\nPrivate outside body").unwrap();
         session.state().skills.push(crate::skills::Skill {
-            name: "blocked".into(), file_path: path.to_string_lossy().into_owned(),
+            name: "blocked".into(),
+            file_path: path.to_string_lossy().into_owned(),
             base_dir: outside.path().to_string_lossy().into_owned(),
             provenance: Some(crate::skill_access::SkillProvenance {
                 kind: crate::skill_access::SkillProvenanceKind::ProjectAuto,
@@ -32508,10 +32598,16 @@ mod tests {
             }),
             ..Default::default()
         });
-        assert_eq!(session.expand_input("$blocked task", false).unwrap(), "$blocked task");
+        assert_eq!(
+            session.expand_input("$blocked task", false).unwrap(),
+            "$blocked task"
+        );
         let notices = session.security_notice_state().notices;
         assert_eq!(notices.len(), 1);
-        assert_eq!(notices[0].category, crate::security_notices::SecurityNoticeCategory::SkillLinkBlocked);
+        assert_eq!(
+            notices[0].category,
+            crate::security_notices::SecurityNoticeCategory::SkillLinkBlocked
+        );
         assert_eq!(notices[0].path.as_deref(), path.to_str());
         session.dispose().await;
     }
