@@ -5015,13 +5015,24 @@ impl AgentSession {
             r["childSessionId"] == self.session_id() && ledger.current["taskId"] == r["taskId"]
         });
         let terminal = own.as_ref().and_then(|r| r["terminal"].as_str());
+        let failure = facts.failure.or_else(|| {
+            own.and_then(|r| {
+                let reason = match r["terminal"].as_str()? {
+                    "error" => "task_error",
+                    "lost" => "lost",
+                    "interrupted" => "interrupted",
+                    _ => return None,
+                };
+                Some(json!({"reason":reason,"taskId":r["taskId"],"runEpoch":r["runEpoch"]}))
+            })
+        });
         let state = crate::lifecycle_runtime_facts::lifecycle_state(
             ledger.current["role"].as_str().unwrap_or("root"),
             terminal,
             &holds,
             &waits,
             running,
-            facts.failure.is_some(),
+            failure.is_some(),
         );
         if terminal.is_none()
             && ["done", "failed", "cancelled"].contains(&state.as_str())
@@ -5029,7 +5040,7 @@ impl AgentSession {
         {
             return;
         }
-        let changed = ledger.update(&state, waits, holds, facts.failure, |record| {
+        let changed = ledger.update(&state, waits, holds, failure, |record| {
             self.persist_lifecycle_record(record)
         });
         let snapshot = ledger.snapshot().clone();
@@ -15013,7 +15024,7 @@ impl AgentSession {
                         .await;
                     if signal.as_ref().is_some_and(|signal| signal.aborted()) {
                         return Some(maho_agent::types::BeforeToolCallResult {
-                            block: true,
+                            block: Some(true),
                             reason: Some("Tool call aborted before execution".into()),
                             ..Default::default()
                         });
