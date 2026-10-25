@@ -355,6 +355,7 @@ pub struct NativeChild {
     listeners: Arc<std::sync::Mutex<std::collections::BTreeMap<u64, ChildSessionListener>>>,
     next_listener_id: std::sync::atomic::AtomicU64,
     reopen: Option<ReopenChildSession>,
+    run_control: std::sync::Mutex<()>,
     pub executor: tokio::runtime::Handle,
     workpool_events: Option<super::task_runners::WorkpoolEvents>,
 }
@@ -411,6 +412,7 @@ impl NativeChild {
             listeners,
             next_listener_id: std::sync::atomic::AtomicU64::new(0),
             reopen,
+            run_control: std::sync::Mutex::new(()),
             executor,
             workpool_events,
         }
@@ -1168,6 +1170,10 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
         senpi_task::pause::native_child_pause::NativePauseError,
     > {
         use senpi_task::pause::{native_child_pause::NativePauseError, ports::*};
+        let _control = self
+            .run_control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = self
             .ensure_session()
             .map_err(|error| NativePauseError::Engine(error.to_string()))?;
@@ -1208,6 +1214,10 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
             native_child_pause::{NativePauseError, NativeResumeResult},
             ports::*,
         };
+        let _control = self
+            .run_control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = self
             .ensure_session()
             .map_err(|error| NativePauseError::Engine(error.to_string()))?;
@@ -1293,21 +1303,20 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
                 other_hold_live: false,
             } => {
                 if !has_held_inputs {
-                    self.executor.spawn(async move {
-                        if let Err(error) = session
+                    let result = block_on_sync(self.executor.clone(), async move {
+                        session
                             .prompt(
                                 maho_core::manual_continue::MANUAL_CONTINUE_DIRECTIVE,
                                 Default::default(),
                             )
                             .await
-                        {
-                            let _ =
-                                prompt_failed.try_send(senpi_task::runners::RunnerOutcome::error(
-                                    senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
-                                    error,
-                                ));
-                        }
                     });
+                    if let Err(error) = result {
+                        let _ = prompt_failed.try_send(senpi_task::runners::RunnerOutcome::error(
+                            senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
+                            error.to_string(),
+                        ));
+                    }
                 }
                 NativeResumeResult::Turn(ResumedChildTurn {
                     turn_id,
