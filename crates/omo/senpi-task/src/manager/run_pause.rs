@@ -126,6 +126,16 @@ pub enum LostResumeResult {
 
 /// The effects a task run pause needs from the composition.
 pub trait TaskRunPausePorts: Send + Sync {
+    fn begin_native_pause(&self, _task_id: &str, _epoch: i64) {}
+    fn finish_native_pause(
+        &self,
+        _task_id: &str,
+        _epoch: i64,
+        _accepted: bool,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     fn store(&self) -> &TaskRecordStore;
     /// Milliseconds since the epoch, as the store's timestamps are spelled.
     fn now(&self) -> i64;
@@ -314,6 +324,7 @@ impl TaskRunPause {
         };
         lock(&self.resumed).remove(task_id);
         // Registration above MUST precede the child call: its abort can settle immediately.
+        self.ports.begin_native_pause(task_id, epoch);
         let ack = match port.pause_for_run(&handle, owner) {
             Ok(ack) => ack,
             Err(error) => {
@@ -327,16 +338,19 @@ impl TaskRunPause {
                         if settled.is_some() {
                             self.intents.clear(task_id);
                         }
+                        self.ports.finish_native_pause(task_id, epoch, false)?;
                         return Err(error);
                     }
                 }
             }
         };
         let Some(ack) = ack else {
+            self.ports.finish_native_pause(task_id, epoch, false)?;
             self.intents.clear(task_id);
             return Ok(None);
         };
         self.remember(task_id, owner)?;
+        self.ports.finish_native_pause(task_id, epoch, true)?;
         // A pause that landed while a Resume was in flight cancels that attempt: the child stays held.
         if lock(&self.attempts).remove(task_id).is_some() && record.status == TaskStatus::Paused {
             self.park(task_id, epoch);

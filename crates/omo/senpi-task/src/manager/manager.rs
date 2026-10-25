@@ -2064,6 +2064,58 @@ impl TaskManager {
         }
     }
 
+    pub fn begin_native_pause(&self, task_id: &str, epoch: i64) {
+        self.inner.pauses_pending.request(task_id, epoch);
+        if let Some((_, wake)) = lock(&self.inner.state).resume_attempts.remove(task_id) {
+            let _ = wake.send(());
+        }
+    }
+
+    pub fn finish_native_pause(
+        &self,
+        task_id: &str,
+        epoch: i64,
+        accepted: bool,
+    ) -> Result<(), String> {
+        let result = if accepted {
+            let mut changed = false;
+            let result = self
+                .inner
+                .store
+                .mutate(task_id, &mut |record: &TaskRecord| {
+                    if record.notification.run_epoch != epoch
+                        || !matches!(record.status, TaskStatus::Running | TaskStatus::Paused)
+                    {
+                        return record.clone();
+                    }
+                    changed = true;
+                    TaskRecord {
+                        status: TaskStatus::Paused,
+                        ..record.clone()
+                    }
+                })
+                .map_err(|error| error.to_string());
+            if result.is_ok() && changed {
+                self.inner.next_tracking_generation(task_id);
+                if let Some(lease) = lock(&self.inner.concurrency).park(task_id, epoch) {
+                    lock(&self.inner.parked).insert(task_id.into(), lease);
+                }
+                let grants = lock(&self.inner.concurrency).drain();
+                for grant in grants {
+                    spawn_grant(grant);
+                }
+            }
+            result.map(|_| ())
+        } else {
+            Ok(())
+        };
+        self.inner.pauses_pending.settle(task_id, epoch);
+        if !accepted {
+            self.inner.pauses_pending.forget(task_id, epoch);
+        }
+        result
+    }
+
     pub fn track_resumed_turn(
         &self,
         task_id: &str,
