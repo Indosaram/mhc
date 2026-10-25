@@ -114,6 +114,8 @@ type PendingSender = Sender<Result<Value, RpcClientError>>;
 
 #[derive(Default)]
 struct ClientState {
+    durable_id: Option<String>,
+    durable_listeners: Vec<(u64, Arc<dyn Fn(&str) + Send + Sync>)>,
     pending: HashMap<String, PendingSender>,
     event_listeners: Vec<(u64, RpcEventListener)>,
     exit_listeners: Vec<(u64, RpcExitListener)>,
@@ -141,9 +143,26 @@ pub struct RpcProtocolClient {
 /// One in-flight request; [`Self::wait`] blocks until the correlated response or the exit.
 pub struct PendingResponse {
     receiver: Receiver<Result<Value, RpcClientError>>,
+    id: String,
+    shared: Weak<ClientShared>,
+}
+impl Drop for PendingResponse {
+    fn drop(&mut self) {
+        if let Some(shared) = self.shared.upgrade() {
+            shared.lock().pending.remove(&self.id);
+        }
+    }
 }
 
 impl PendingResponse {
+    pub fn wait_until(self, deadline: std::time::Instant) -> Result<Value, RpcClientError> {
+        self.receiver
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .map_err(|error| RpcClientError::Write {
+                message: format!("RPC configuration deadline: {error}"),
+            })?
+    }
+
     pub fn wait(self) -> Result<Value, RpcClientError> {
         self.receiver.recv().unwrap_or_else(|_| {
             Err(RpcClientError::Exited {
@@ -261,7 +280,11 @@ impl RpcProtocolClient {
                 message: error.to_string(),
             });
         }
-        Ok(PendingResponse { receiver })
+        Ok(PendingResponse {
+            receiver,
+            id,
+            shared: Arc::downgrade(&self.shared),
+        })
     }
 }
 
@@ -270,17 +293,19 @@ impl RpcClientPort for RpcProtocolClient {
         &self,
         listener: Arc<dyn Fn(&str) + Send + Sync>,
     ) -> Option<Unsubscribe> {
-        Some(self.on_event(Arc::new(move |event| {
-            if event["type"] == "session_id" || event["type"] == "session_replaced" {
-                if let Some(id) = event
-                    .get("sessionId")
-                    .and_then(Value::as_str)
-                    .filter(|id| !id.is_empty())
-                {
-                    listener(id);
-                }
-            }
-        })))
+        let id = self.shared.next_listener_id.fetch_add(1, Ordering::SeqCst);
+        let known = {
+            let mut state = self.shared.lock();
+            state.durable_listeners.push((id, listener.clone()));
+            state.durable_id.clone()
+        };
+        if let Some(known) = known {
+            listener(&known);
+        }
+        let weak = Arc::downgrade(&self.shared);
+        Some(Box::new(move || {
+            remove_listener(&weak, id, |state| &mut state.durable_listeners)
+        }))
     }
     fn publish_task_status(&self, status: crate::state::TaskStatus) -> Result<(), RpcClientError> {
         if self.shared.lock().exit.is_some() {
@@ -335,6 +360,7 @@ impl RpcClientPort for RpcProtocolClient {
     fn detach(&self) {
         let mut state = self.shared.lock();
         state.event_listeners.clear();
+        state.durable_listeners.clear();
         state.exit_listeners.clear();
     }
 
@@ -413,6 +439,25 @@ fn handle_line(
             }
         }
         _ => {
+            if matches!(
+                parsed["type"].as_str(),
+                Some("session_id" | "session_replaced" | "session_info_changed")
+            ) {
+                if let Some(id) = parsed["sessionId"].as_str().filter(|id| !id.is_empty()) {
+                    let listeners = {
+                        let mut state = shared.lock();
+                        state.durable_id = Some(id.to_owned());
+                        state
+                            .durable_listeners
+                            .iter()
+                            .map(|(_, listener)| listener.clone())
+                            .collect::<Vec<_>>()
+                    };
+                    for listener in listeners {
+                        listener(id);
+                    }
+                }
+            }
             let listeners: Vec<RpcEventListener> = shared
                 .lock()
                 .event_listeners

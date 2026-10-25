@@ -5279,6 +5279,18 @@ impl AgentSession {
         Ok(result)
     }
 
+    pub fn release_run_hold(
+        &self,
+        parent: &str,
+        pause_seq: u64,
+        child_seq_cutoff: u64,
+    ) -> Result<crate::run_holds::ReleaseInheritedResult, String> {
+        let result = crate::run_holds::RunHolds::new(&mut lock(&self.engine_turn_hold))
+            .release_inherited(parent, pause_seq, child_seq_cutoff)?;
+        self.refresh_lifecycle();
+        Ok(result)
+    }
+
     pub async fn resume_for_run(
         &self,
         parent: &str,
@@ -21827,6 +21839,65 @@ mod tests {
         assert_eq!(first["entryId"], second["entryId"]);
         assert_eq!(second["duplicate"], true);
         assert_eq!(session.held_inputs().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn run_resume_cutoff_cannot_release_a_newer_stop_or_another_parent() {
+        let session = test_session();
+        let run = crate::run_holds::RunRef {
+            kind: "task".into(),
+            id: "child".into(),
+        };
+        let receipt = session
+            .pause_for_run("parent", 3, run.clone())
+            .await
+            .unwrap();
+        let crate::run_holds::InheritResult::Inherited { child_seq } = receipt else {
+            panic!("inherit refused")
+        };
+        session.with_run_holds(|holds| holds.stamp());
+        assert_eq!(
+            session.resume_for_run("other", 3, child_seq).await.unwrap(),
+            crate::run_holds::ReleaseInheritedResult::WrongParent
+        );
+        assert_eq!(
+            session
+                .resume_for_run("parent", 2, child_seq)
+                .await
+                .unwrap(),
+            crate::run_holds::ReleaseInheritedResult::Stale
+        );
+        assert_eq!(
+            session
+                .resume_for_run("parent", 3, child_seq)
+                .await
+                .unwrap(),
+            crate::run_holds::ReleaseInheritedResult::Released {
+                other_hold_live: true
+            }
+        );
+        assert!(session.paused());
+        assert_eq!(
+            session
+                .resume_for_run("parent", 3, child_seq)
+                .await
+                .unwrap(),
+            crate::run_holds::ReleaseInheritedResult::NotHeld
+        );
+        let latest = session.pause_for_run("parent", 4, run).await.unwrap();
+        let crate::run_holds::InheritResult::Inherited { child_seq } = latest else {
+            panic!("inherit refused")
+        };
+        assert_eq!(
+            session
+                .resume_for_run("parent", 4, child_seq)
+                .await
+                .unwrap(),
+            crate::run_holds::ReleaseInheritedResult::Released {
+                other_hold_live: false
+            }
+        );
+        assert!(!session.paused());
     }
 
     fn test_session() -> AgentSession {

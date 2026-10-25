@@ -7,9 +7,7 @@
 
 use std::sync::Arc;
 
-use super::host_session::{
-    HostSessionProbe, HostSessionProbePorts, create_host_session_probe,
-};
+use super::host_session::{HostSessionProbe, HostSessionProbePorts, create_host_session_probe};
 use super::host_session_close::{
     HostSessionCloseError, HostSessionCloseRequest, HostSessionCloser,
 };
@@ -17,6 +15,19 @@ use super::host_session_close::{
 /// The host-owned transport the lifecycle consumes (the exact adapter signature the host owner must
 /// provide). This is the ONLY surface the lifecycle needs from the rpc-host engine.
 pub trait HostTransport: Send + Sync {
+    fn publish_task_status(
+        &self,
+        _identity: &crate::state::HostSessionIdentity,
+        _status: crate::state::TaskStatus,
+    ) -> Result<(), String> {
+        Err("host status transport unavailable".into())
+    }
+    fn durable_session_id(
+        &self,
+        _identity: &crate::state::HostSessionIdentity,
+    ) -> Result<Option<String>, String> {
+        Err("host identity transport unavailable".into())
+    }
     /// `rpc-host/liveness.daemonReachable(socket)`: does the daemon answer on this socket?
     fn daemon_reachable(&self, socket: &str) -> bool;
     /// `rpc-host/liveness.liveSessionPaths(socket)`: `list_sessions { include_workers: true }`; `Err`
@@ -24,7 +35,10 @@ pub trait HostTransport: Send + Sync {
     fn live_session_paths(&self, socket: &str) -> Result<Vec<String>, String>;
     /// `rpc-host/close.closeHostSession(request)`: abort + close_session. Resolves only when the
     /// daemon confirmed the close; a refused attach or close_session is `Err`.
-    fn close_host_session(&self, request: &HostSessionCloseRequest) -> Result<(), HostSessionCloseError>;
+    fn close_host_session(
+        &self,
+        request: &HostSessionCloseRequest,
+    ) -> Result<(), HostSessionCloseError>;
 }
 
 /// The safe default when no host transport is wired: nothing is reachable, nothing can be closed.
@@ -39,7 +53,10 @@ impl HostTransport for NoHostTransport {
         Err("no host transport is wired into this session".to_string())
     }
 
-    fn close_host_session(&self, _request: &HostSessionCloseRequest) -> Result<(), HostSessionCloseError> {
+    fn close_host_session(
+        &self,
+        _request: &HostSessionCloseRequest,
+    ) -> Result<(), HostSessionCloseError> {
         Err(HostSessionCloseError {
             message: "no host transport is wired into this session".to_string(),
         })

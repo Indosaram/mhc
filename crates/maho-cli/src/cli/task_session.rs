@@ -355,6 +355,7 @@ pub struct NativeChild {
     listeners: Arc<std::sync::Mutex<std::collections::BTreeMap<u64, ChildSessionListener>>>,
     next_listener_id: std::sync::atomic::AtomicU64,
     reopen: Option<ReopenChildSession>,
+    run_control: std::sync::Mutex<()>,
     pub executor: tokio::runtime::Handle,
     workpool_events: Option<super::task_runners::WorkpoolEvents>,
 }
@@ -411,6 +412,7 @@ impl NativeChild {
             listeners,
             next_listener_id: std::sync::atomic::AtomicU64::new(0),
             reopen,
+            run_control: std::sync::Mutex::new(()),
             executor,
             workpool_events,
         }
@@ -888,6 +890,153 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stop_crossing_real_native_staged_creation_holds_first_prompt_without_running_it() {
+        use senpi_task::manager::types::*;
+        struct CrossingRunner {
+            barrier: senpi_task::pause::admission_barrier::AdmissionBarrier,
+            child: Arc<senpi_task::runners::in_process::child_handle::InProcessChildHandle>,
+        }
+        impl ManagedRunner for CrossingRunner {
+            fn start(&self, _: &ManagedStartSpec) -> ManagedRunnerResult {
+                panic!("must stage")
+            }
+            fn start_staged(
+                &self,
+                _: &ManagedStartSpec,
+            ) -> Option<Result<StagedManagedChild, ManagedRunnerError>> {
+                self.barrier.close("parent", 8);
+                Some(Ok(StagedManagedChild {
+                    child: self.child.clone(),
+                    first_prompt: "held first prompt".into(),
+                    begin: Box::new(|| panic!("Stop crossed creation; first turn must not begin")),
+                }))
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let session = Arc::new(
+            maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
+                cwd: Some(root.path().to_string_lossy().into_owned()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .session,
+        );
+        let native = Arc::new(super::NativeChild::new(
+            session.clone(),
+            tokio::runtime::Handle::current(),
+        ));
+        let barrier = senpi_task::pause::admission_barrier::AdmissionBarrier::new();
+        let child = senpi_task::runners::in_process::child_handle::InProcessChildHandle::restored(
+            "staged", native,
+        );
+        let runner = Arc::new(CrossingRunner {
+            barrier: barrier.clone(),
+            child,
+        });
+        let store = senpi_task::store::TaskRecordStore::new(&senpi_task::store::StateDirConfig {
+            project_dir: root.path().into(),
+            task_state_dir: None,
+        });
+        let mut options = TaskManagerOptions::new(
+            store.clone(),
+            ManagedRunners {
+                in_process: runner.clone(),
+                process: runner,
+            },
+            Arc::new(|_| {
+                Ok(ResolvedChildPlan {
+                    model: "p/m".into(),
+                    ..Default::default()
+                })
+            }),
+            root.path().to_string_lossy(),
+        );
+        options.admission_barrier = Some(barrier);
+        let manager = senpi_task::manager::create_task_manager(options);
+        tokio::task::spawn_blocking(move || {
+            let started = manager.start(&ManagerStartSpec {
+                parent_session_id: "parent".into(),
+                prompt: "held first prompt".into(),
+                ..Default::default()
+            });
+            let StartResult::Started(task) = started else {
+                panic!("start refused: {started:?}")
+            };
+            assert_eq!(
+                store.load(&task.task_id).unwrap().unwrap().status,
+                senpi_task::state::TaskStatus::Paused
+            );
+            assert_eq!(session.held_inputs()[0]["text"], "held first prompt");
+            assert!(session.paused());
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_pause_receipts_are_real_and_idempotent() {
+        use senpi_task::pause::{native_child_pause::NativeRunPause, ports::*};
+        let root = tempfile::tempdir().unwrap();
+        let session =
+            maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
+                cwd: Some(root.path().to_string_lossy().into_owned()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .session;
+        let child = super::NativeChild::new(Arc::new(session), tokio::runtime::Handle::current());
+        tokio::task::spawn_blocking(move || {
+            let owner = RunPauseOwner {
+                parent_session_id: "parent".into(),
+                parent_pause_seq: 2,
+                run_ref: RunRef::task("task"),
+            };
+            assert!(matches!(
+                child.pause_for_run(owner).unwrap(),
+                EngineInheritReceipt::Inherited { .. }
+            ));
+            let input = HoldInput {
+                input_id: "input".into(),
+                revision: 1,
+                text: "guidance".into(),
+            };
+            let first = child.hold_input("parent", input.clone()).unwrap();
+            assert!(matches!(
+                first,
+                EngineHoldInputResult::Held {
+                    duplicate: false,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                child.hold_input("parent", input).unwrap(),
+                EngineHoldInputResult::Held {
+                    duplicate: true,
+                    ..
+                }
+            ));
+            assert!(
+                child
+                    .hold_input(
+                        "other",
+                        HoldInput {
+                            input_id: "other".into(),
+                            revision: 1,
+                            text: "wrong".into()
+                        }
+                    )
+                    .is_err()
+            );
+            assert!(child.observe_hold("parent").unwrap().unwrap().held);
+            assert!(child.observe_hold("other").unwrap().is_none());
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn native_child_shared_write_stays_in_child_cwd() {
         let root = tempfile::tempdir().expect("temporary workspace");
         let parent_cwd = root.path().join("parent");
@@ -1021,6 +1170,10 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
         senpi_task::pause::native_child_pause::NativePauseError,
     > {
         use senpi_task::pause::{native_child_pause::NativePauseError, ports::*};
+        let _control = self
+            .run_control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = self
             .ensure_session()
             .map_err(|error| NativePauseError::Engine(error.to_string()))?;
@@ -1061,11 +1214,14 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
             native_child_pause::{NativePauseError, NativeResumeResult},
             ports::*,
         };
+        let _control = self
+            .run_control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = self
             .ensure_session()
             .map_err(|error| NativePauseError::Engine(error.to_string()))?;
         let turn_id = request.resume_id.clone();
-        let has_held_inputs = !session.held_inputs().is_empty();
         let (settled, outcome) = std::sync::mpsc::sync_channel(1);
         let prompt_failed = settled.clone();
         let turn_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1073,6 +1229,10 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
             let Ok(record) = maho_rpc::session_binding::session_event_record(event) else {
                 return;
             };
+            if record["type"] == "session_paused" {
+                let _ = settled.try_send(senpi_task::runners::RunnerOutcome::Cancelled);
+                return;
+            }
             if record["type"] == "agent_start" {
                 turn_started.store(true, std::sync::atomic::Ordering::Release);
             }
@@ -1114,17 +1274,13 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
             };
             let _ = settled.try_send(result);
         }));
-        let resumed = session.clone();
-        let result = block_on_sync(self.executor.clone(), async move {
-            resumed
-                .resume_for_run(
-                    &request.owner.parent_session_id,
-                    request.owner.parent_pause_seq,
-                    request.child_seq_cutoff,
-                )
-                .await
-        })
-        .map_err(|error| NativePauseError::Engine(error.to_string()))?;
+        let result = session
+            .release_run_hold(
+                &request.owner.parent_session_id,
+                request.owner.parent_pause_seq,
+                request.child_seq_cutoff,
+            )
+            .map_err(NativePauseError::Engine)?;
         Ok(match result {
             maho_core::run_holds::ReleaseInheritedResult::WrongParent => {
                 NativeResumeResult::Refused(ResumeRefusal::WrongParent)
@@ -1141,22 +1297,41 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
             maho_core::run_holds::ReleaseInheritedResult::Released {
                 other_hold_live: false,
             } => {
-                if !has_held_inputs {
+                {
+                    let (admitted, admission) = std::sync::mpsc::sync_channel(1);
                     self.executor.spawn(async move {
-                        if let Err(error) = session
+                        let signal = admitted.clone();
+                        let result = session
                             .prompt(
                                 maho_core::manual_continue::MANUAL_CONTINUE_DIRECTIVE,
-                                Default::default(),
+                                maho_core::agent_session::PromptOptions {
+                                    prompt_admitted: Some(Arc::new(move |_| {
+                                        let _ = signal.try_send(());
+                                    })),
+                                    ..Default::default()
+                                },
                             )
-                            .await
-                        {
-                            let _ =
-                                prompt_failed.try_send(senpi_task::runners::RunnerOutcome::error(
-                                    senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
-                                    error,
-                                ));
+                            .await;
+                        match result {
+                            Err(error) => {
+                                let _ = prompt_failed.try_send(
+                                    senpi_task::runners::RunnerOutcome::error(
+                                        senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
+                                        error,
+                                    ),
+                                );
+                            }
+                            Ok(maho_core::agent_session::PromptDisposition::Handled) => {
+                                let _ = prompt_failed
+                                    .try_send(senpi_task::runners::RunnerOutcome::completed(""));
+                            }
+                            _ => {}
                         }
+                        let _ = admitted.try_send(());
                     });
+                    admission
+                        .recv()
+                        .map_err(|error| NativePauseError::Engine(error.to_string()))?;
                 }
                 NativeResumeResult::Turn(ResumedChildTurn {
                     turn_id,
