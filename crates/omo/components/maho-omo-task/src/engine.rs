@@ -158,7 +158,7 @@ pub fn compose_task_engine_with_clock(
         TaskSettings::from_resolved(&settings),
     );
     lifecycle_deps.now = now;
-    lifecycle_deps.host_transport = deps.host_transport;
+    lifecycle_deps.host_transport = deps.host_transport.clone();
     lifecycle_deps.isolation = Some(isolation_runtime.clone());
     let lifecycle = Arc::new(create_task_lifecycle(lifecycle_deps));
     let claude_dir = claude_code_compat_core::shared::get_claude_config_dir();
@@ -207,6 +207,7 @@ pub fn compose_task_engine_with_clock(
         planner,
         deps.cwd.to_string_lossy(),
     );
+    options.host_transport = deps.host_transport;
     options.rpc_respawn_runner = rpc_respawn;
     options.admission_barrier = Some(senpi_task::pause::admission_barrier::AdmissionBarrier::new());
     options.child_pause_port = Some(Arc::new(

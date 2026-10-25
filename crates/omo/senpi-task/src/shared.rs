@@ -68,6 +68,7 @@ pub struct ManagedChildEvent {
     pub from: Option<String>,
     pub chain_key: Option<String>,
     pub reason: Option<String>,
+    pub limit: Option<String>,
     pub last_error: Option<String>,
 }
 
