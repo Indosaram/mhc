@@ -1945,6 +1945,43 @@ impl TaskManager {
         lock(&self.inner.state).released.len()
     }
 
+    pub fn active_parent_model_fallback(
+        &self,
+        task_id: &str,
+    ) -> Option<(crate::state::ParentModelFallback, &'static str)> {
+        let record = self.inner.try_load(task_id)?;
+        let note = record.parent_model_fallback.clone()?;
+        let parent = record.parent_model.as_deref()?;
+        if let Some(observed) = &record.effective_model {
+            if format!("{}/{}", observed.provider, observed.model_id) == parent {
+                return Some((note, "observed"));
+            }
+            if observed.switched_by_operator == Some(true)
+                || matches!(
+                    observed.source,
+                    crate::state::EffectiveModelSource::Set
+                        | crate::state::EffectiveModelSource::Cycle
+                        | crate::state::EffectiveModelSource::Restore
+                        | crate::state::EffectiveModelSource::FallbackRevert
+                )
+            {
+                return None;
+            }
+        }
+        let selected = record.resolved_model.as_ref()?;
+        if format!("{}/{}", selected.provider, selected.model_id) != parent {
+            return None;
+        }
+        Some((
+            note,
+            if matches!(record.status, TaskStatus::Running | TaskStatus::Pending) {
+                "switching"
+            } else {
+                "unconfirmed"
+            },
+        ))
+    }
+
     pub fn live_run_stats(&self, task_id: &str) -> Option<(i64, TaskRunStats)> {
         let tracker = lock(&self.inner.state)
             .run_stats
