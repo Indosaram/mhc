@@ -27,6 +27,22 @@ pub struct ProjectMcpAuthority {
     trusted: bool,
     explicit: BTreeMap<String, String>,
     ambient: BTreeMap<String, String>,
+    ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+    first: std::sync::atomic::AtomicBool,
+    started_names: Mutex<Vec<String>>,
+}
+fn decisions() -> &'static Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>> {
+    static DECISIONS: std::sync::OnceLock<Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+        std::sync::OnceLock::new();
+    DECISIONS.get_or_init(Default::default)
+}
+fn decision_lock(path: &Path, identity: &str) -> Arc<tokio::sync::Mutex<()>> {
+    decisions()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(format!("{}\0{identity}", path.display()))
+        .or_default()
+        .clone()
 }
 fn policies() -> &'static Mutex<BTreeMap<String, Arc<ProjectMcpAuthority>>> {
     static POLICIES: std::sync::OnceLock<Mutex<BTreeMap<String, Arc<ProjectMcpAuthority>>>> =
@@ -72,6 +88,14 @@ fn current_raw(name: &str, path: &Path) -> Result<serde_json::Value, McpError> {
             )
         })
 }
+pub fn skill_project_root(cwd: &Path) -> PathBuf {
+    for ancestor in cwd.ancestors() {
+        if ancestor.join(".git").exists() {
+            return ancestor.into();
+        }
+    }
+    cwd.into()
+}
 fn identity_for(
     name: &str,
     source: &Path,
@@ -83,11 +107,17 @@ fn identity_for(
             .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))
     };
     Ok(declaration_digest(
-        &serde_json::json!({"sourcePath":canonical(source)?,"sourceKind":if source.file_name().is_some_and(|name|name=="mcp.json"){"sidecar"}else{"frontmatter"},"projectRoot":canonical(cwd)?,"serverName":name,"raw":raw,"cwdBase":canonical(cwd)?}),
+        &serde_json::json!({"sourcePath":canonical(source)?,"sourceKind":if source.file_name().is_some_and(|name|name=="mcp.json"){"sidecar"}else{"frontmatter"},"projectRoot":canonical(&skill_project_root(cwd))?,"serverName":name,"raw":raw,"cwdBase":canonical(cwd)?}),
     ))
 }
 impl ProjectMcpAuthority {
-    pub fn resolve(&self) -> Result<ProjectMcpMaterialization, McpError> {
+    pub fn started_grant_names(&self) -> Vec<String> {
+        self.started_names
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    pub async fn resolve(&self) -> Result<ProjectMcpMaterialization, McpError> {
         let latest = current_raw(&self.name, &self.source_path)?;
         if identity_for(&self.name, &self.source_path, &latest, &self.cwd)? != self.identity {
             return Err(McpError::new(
@@ -95,8 +125,73 @@ impl ProjectMcpAuthority {
                 "Project MCP declaration changed; reload its skills",
             ));
         }
-        let names = effective_grant_names(&read(&self.store_path), &self.identity);
-        self.materialize(&names)
+        let decision = decision_lock(&self.store_path, &self.identity);
+        let _decision = decision.lock().await;
+        let mut names = effective_grant_names(&read(&self.store_path), &self.identity);
+        if !self.first.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            let policy = crate::project_env::project_mcp_environment(
+                &self.raw,
+                self.trusted,
+                &names,
+                Some(&self.explicit),
+                &self.ambient,
+            )
+            .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
+            if !policy.withheld.is_empty()
+                && let Some(ui) = &self.ui
+            {
+                let choices = vec!["Allow".into(), "Deny".into()];
+                if ui
+                    .select(
+                        &format!(
+                            "Project MCP server {} wants: {}",
+                            self.name,
+                            policy.withheld.join(", ")
+                        ),
+                        &choices,
+                        Default::default(),
+                    )
+                    .await
+                    .as_deref()
+                    == Some("Allow")
+                {
+                    if identity_for(
+                        &self.name,
+                        &self.source_path,
+                        &current_raw(&self.name, &self.source_path)?,
+                        &self.cwd,
+                    )? != self.identity
+                    {
+                        return Err(McpError::new(
+                            McpErrorKind::Connect,
+                            "Project MCP declaration changed; reload its skills",
+                        ));
+                    }
+                    match add_grant(
+                        &self.store_path,
+                        &self.identity,
+                        GrantLabel {
+                            project: self.cwd.display().to_string(),
+                            skill: String::new(),
+                            server: self.name.clone(),
+                        },
+                        &policy.withheld,
+                    ) {
+                        Ok(snapshot) => names = effective_grant_names(&snapshot, &self.identity),
+                        Err(error) => ui.notify(
+                            &format!("Could not save MCP environment grant: {error}"),
+                            maho_ext_api::NotificationType::Error,
+                        ),
+                    }
+                }
+            }
+        }
+        let materialized = self.materialize(&names)?;
+        *self
+            .started_names
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = names;
+        Ok(materialized)
     }
     fn materialize(&self, names: &[String]) -> Result<ProjectMcpMaterialization, McpError> {
         let policy = crate::project_env::project_mcp_environment(
@@ -136,12 +231,14 @@ pub async fn prepare_project_skill_server(
     agent_dir: &Path,
     trusted: bool,
     explicit: &BTreeMap<String, String>,
-    ui: Option<&dyn maho_ext_api::ExtensionUi>,
+    ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
 ) -> Result<ResolvedMcpServer, McpError> {
     let raw = current_raw(name, &original.source_path)?;
     let identity = identity_for(name, &original.source_path, &raw, cwd)?;
     let store_path = resolve_grants_store_path(Some(agent_dir));
     let ambient = std::env::vars().collect();
+    let decision = decision_lock(&store_path, &identity);
+    let _decision = decision.lock().await;
     let mut names = effective_grant_names(&read(&store_path), &identity);
     let policy = crate::project_env::project_mcp_environment(
         &raw,
@@ -152,7 +249,7 @@ pub async fn prepare_project_skill_server(
     )
     .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
     if !policy.withheld.is_empty()
-        && let Some(ui) = ui
+        && let Some(ui) = &ui
     {
         let choices = vec!["Allow".into(), "Deny".into()];
         if ui
@@ -221,6 +318,9 @@ pub async fn prepare_project_skill_server(
         trusted,
         explicit: explicit.clone(),
         ambient,
+        ui,
+        first: std::sync::atomic::AtomicBool::new(true),
+        started_names: Mutex::new(names.clone()),
     };
     authority.initial = authority.materialize(&names)?;
     let mut config = authority.initial.config.clone();

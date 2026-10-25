@@ -155,7 +155,7 @@ fn create_session_connection(
         let weak = Arc::downgrade(&connection);
         let path = authority.store_path.clone();
         let identity = authority.identity.clone();
-        let started = authority.initial.granted_names.clone();
+
         let task = tokio::spawn(async move {
             let mut observer = crate::env_grants_store::GrantObserver::default();
             let mut timer = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -169,7 +169,7 @@ fn create_session_connection(
                         || crate::project_skill_policy::effective_grant_names(
                             &observation.snapshot,
                             &identity,
-                        ) != started)
+                        ) != authority.started_grant_names())
                 {
                     if let Err(error) = connection.bump_generation().await {
                         maho_ext_api::diagnostic(&format!(

@@ -305,3 +305,132 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod upstream_invariants {
+    use super::*;
+    #[test]
+    fn every_stop_hold_work_wake_and_start_combination() {
+        for stop in [
+            "clean",
+            "user-abort",
+            "system-abort",
+            "provider-abort",
+            "unknown-abort",
+            "provider-error",
+            "policy-rejection",
+        ] {
+            for hold in 0..7 {
+                for work in [
+                    OpenWork::None,
+                    OpenWork::ActiveGoal {
+                        goal_id: "g".into(),
+                    },
+                    OpenWork::OpenTodos { count: 1 },
+                ] {
+                    for wake in [
+                        None,
+                        Some(WakeExpectation::WakeSource {
+                            source: "senpi-task".into(),
+                        }),
+                        Some(WakeExpectation::ArmedTimer {
+                            timer: "monitor".into(),
+                        }),
+                        Some(WakeExpectation::QuestionToUser),
+                        Some(WakeExpectation::UserInputQueued),
+                        Some(WakeExpectation::PendingMessages),
+                    ] {
+                        for start in 0..3 {
+                            let i = TurnEndLivenessInput {
+                                is_child_session: hold == 3,
+                                mode: if hold == 5 {
+                                    maho_ext_api::ExtensionMode::Print
+                                } else {
+                                    maho_ext_api::ExtensionMode::Tui
+                                },
+                                ended_by: stop.into(),
+                                ledger_hold: (hold == 6).then(|| "unattended".into()),
+                                will_retry: start == 1,
+                                deadline_stop: hold == 1,
+                                goal_stopped: hold == 2,
+                                open_work: work.clone(),
+                                continuation_queued: (start == 2).then(|| "goal".into()),
+                                expectations: wake.clone().into_iter().collect(),
+                                budget_spent: hold == 4,
+                                provider_retry_at_ms: None,
+                            };
+                            let verdict = evaluate_turn_end_liveness(&i);
+                            if verdict == TurnEndLivenessVerdict::Done {
+                                assert_eq!(stop, "clean");
+                                assert_eq!(work, OpenWork::None);
+                            }
+                            let person = i.expectations.contains(&WakeExpectation::UserInputQueued);
+                            if i.ledger_hold.is_some() && !i.will_retry && !person {
+                                assert_eq!(
+                                    verdict,
+                                    TurnEndLivenessVerdict::Held {
+                                        reason: "unattended".into()
+                                    }
+                                );
+                            }
+                            let starting = i.will_retry
+                                || (i.continuation_queued.is_some()
+                                    && (i.ledger_hold.is_none() || person));
+                            assert_eq!(
+                                matches!(verdict, TurnEndLivenessVerdict::Continuing { .. }),
+                                starting
+                            );
+                            if let TurnEndLivenessVerdict::Waiting { on, .. } = verdict {
+                                assert!(!on.is_empty());
+                                if i.deadline_stop {
+                                    assert!(!on.iter().any(|wake| matches!(
+                                        wake,
+                                        WakeExpectation::ArmedTimer { .. }
+                                    )));
+                                }
+                                if stop != "clean" {
+                                    assert!(!on.contains(&WakeExpectation::QuestionToUser));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn last_stall_deduplication_resets_at_user_and_matches_retry_time() {
+        let stall = |reason: &str, retry: Option<f64>| maho_ext_api::SessionEntry {
+            id: "s".into(),
+            parent_id: None,
+            timestamp: String::new(),
+            kind: "custom".into(),
+            data: serde_json::json!({"customType":TURN_END_LIVENESS_ENTRY_TYPE,"data":{"verdict":{"kind":"stalled","reason":reason,"retryAtMs":retry}}}),
+        };
+        let verdict = TurnEndLivenessVerdict::Stalled {
+            reason: "provider-error".into(),
+            retry_at_ms: Some(1000.0),
+            abort_source: None,
+        };
+        assert!(repeats_last_stall(
+            &[stall("provider-error", Some(1000.0))],
+            &verdict
+        ));
+        assert!(!repeats_last_stall(
+            &[stall("provider-error", Some(2000.0))],
+            &verdict
+        ));
+        let user = maho_ext_api::SessionEntry {
+            id: "u".into(),
+            parent_id: None,
+            timestamp: String::new(),
+            kind: "message".into(),
+            data: serde_json::json!({"message":{"role":"user"}}),
+        };
+        assert!(!repeats_last_stall(
+            &[stall("provider-error", Some(1000.0)), user],
+            &verdict
+        ));
+        assert!(!repeats_last_stall(&[], &verdict));
+    }
+}

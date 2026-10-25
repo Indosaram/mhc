@@ -22,9 +22,9 @@ impl ProjectStdioTransport {
     pub fn invalidate(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
-    pub fn start(&self) -> Result<ProjectMcpMaterialization, McpError> {
+    pub async fn start(&self) -> Result<ProjectMcpMaterialization, McpError> {
         let generation = self.generation.load(Ordering::Acquire);
-        let resolved = self.authority.resolve()?;
+        let resolved = self.authority.resolve().await?;
         if self.generation.load(Ordering::Acquire) != generation {
             let mut error = McpError::new(
                 McpErrorKind::Connect,
@@ -71,7 +71,7 @@ mod tests {
                 .unwrap();
         let transport = ProjectStdioTransport::new(authority.clone());
         assert_eq!(
-            transport.start().unwrap().config.args.unwrap(),
+            transport.start().await.unwrap().config.args.unwrap(),
             ["${TOKEN}"]
         );
         crate::env_grants_store::add_grant(
@@ -85,10 +85,13 @@ mod tests {
             &["TOKEN".into()],
         )
         .unwrap();
-        assert_eq!(transport.start().unwrap().config.args.unwrap(), ["secret"]);
+        assert_eq!(
+            transport.start().await.unwrap().config.args.unwrap(),
+            ["secret"]
+        );
         crate::env_grants_store::revoke(&authority.store_path, &authority.identity, None).unwrap();
         assert_eq!(
-            transport.start().unwrap().config.args.unwrap(),
+            transport.start().await.unwrap().config.args.unwrap(),
             ["${TOKEN}"]
         );
         std::fs::write(
@@ -96,6 +99,6 @@ mod tests {
             r#"{"mcpServers":{"test":{"command":"different"}}}"#,
         )
         .unwrap();
-        assert!(transport.start().is_err());
+        assert!(transport.start().await.is_err());
     }
 }

@@ -42,8 +42,24 @@ impl TodoOwedBackstop {
         sources: &[String],
         enabled: bool,
     ) -> Result<String, ExtensionFailure> {
-        let open = crate::todo_gate::open_todo_task_contents(&ctx.session_manager.get_branch());
-        let suppression = if matches!(
+        let branch = ctx.session_manager.get_branch();
+        let values = branch
+            .iter()
+            .map(|entry| {
+                let mut value = entry.data.clone();
+                value["type"] = entry.kind.clone().into();
+                value
+            })
+            .collect::<Vec<_>>();
+        let state = maho_ext_todotools::todo_storage::get_latest_state_from_branch_entries(&values);
+        let (ask, now, next) = maho_ext_todotools::todo_format::describe_ask_now_next(
+            &state.phases,
+            state.ask.as_ref(),
+        );
+        let open = crate::todo_gate::open_todo_task_contents(&branch);
+        let suppression = if ctx.session_manager.fork_provenance().is_some() {
+            Some("subagent")
+        } else if matches!(
             ctx.mode,
             maho_ext_api::ExtensionMode::Print | maho_ext_api::ExtensionMode::Json
         ) {
@@ -80,6 +96,27 @@ impl TodoOwedBackstop {
             None
         };
         if let Some(reason) = suppression {
+            if reason == "waiting" {
+                let mut on_duty = sources.to_vec();
+                if goal.is_some_and(|goal| {
+                    goal.status == GoalStatus::Active && goal.continuation_stopped_at.is_none()
+                }) {
+                    on_duty.push("active-goal".into());
+                }
+                if pending {
+                    on_duty.push("continuation-pending".into());
+                }
+                if ctx.has_pending_messages()? {
+                    on_duty.push("pending-messages".into());
+                }
+                let mut seen = BTreeSet::new();
+                on_duty.retain(|source| seen.insert(source.clone()));
+                ctx.ui.set_status(
+                    "todo-waiting",
+                    Some(&format!("waiting: {}", on_duty.join(", "))),
+                );
+                pi.events.emit(TODO_OWED_REMINDER_EVENT,&serde_json::json!({"sessionId":ctx.session_manager.session_id(),"chainCount":self.reminders,"openTasks":open.len(),"now":now,"next":next,"reason":"waiting","sources":on_duty}));
+            }
             return Ok(reason.into());
         }
         let current: BTreeSet<_> = open.iter().cloned().collect();
@@ -101,14 +138,12 @@ impl TodoOwedBackstop {
             self.reminders += 1;
             self.previous = Some(current);
             let content = format!(
-                "<system-reminder>\n{}The turn ended with open todo work and no question to the user. Now: {}. Next: {}. Either continue the next open task now with real tool calls, or mark it done/dropped via the todo tool and tell the user in one sentence why you stopped. Do not restate the plan.\n</system-reminder>",
+                "<system-reminder>\n{}The turn ended with open todo work and no question to the user. Now: {now}. Next: {next}. Ask: {ask}. Either continue the next open task now with real tool calls, or mark it done/dropped via the todo tool and tell the user in one sentence why you stopped. Do not restate the plan.\n</system-reminder>",
                 if self.reminders == TODO_OWED_CHAIN_LIMIT {
                     "Second and final reminder. "
                 } else {
                     ""
-                },
-                open[0],
-                open.get(1).unwrap_or(&open[0])
+                }
             );
             pi.send_message(
                 maho_ext_api::CustomMessage {
@@ -124,7 +159,7 @@ impl TodoOwedBackstop {
             )?;
             "delivered"
         };
-        pi.events.emit(TODO_OWED_REMINDER_EVENT,&serde_json::json!({"sessionId":ctx.session_manager.session_id(),"chainCount":self.reminders,"openTasks":open.len(),"now":open[0],"next":open.get(1).unwrap_or(&open[0]),"reason":outcome}));
+        pi.events.emit(TODO_OWED_REMINDER_EVENT,&serde_json::json!({"sessionId":ctx.session_manager.session_id(),"chainCount":self.reminders,"openTasks":open.len(),"now":now,"next":next,"reason":outcome}));
         Ok(outcome.into())
     }
 }
