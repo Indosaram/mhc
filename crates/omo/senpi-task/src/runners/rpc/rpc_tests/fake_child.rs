@@ -155,6 +155,10 @@ fn handle_command(command: &Value) {
         .unwrap_or("unknown");
     let message = command.get("message").cloned().unwrap_or(Value::Null);
     match kind {
+        "emit_identity" => {
+            emit(&json!({"type":"session_info_changed","sessionId":"durable-late"}));
+            respond(kind, &id, None);
+        }
         "get_protocol_info" => match std::env::var("FAKE_FALLBACK").as_deref() {
             Ok("silent") => {}
             Ok("supported") | Ok("refused") => respond(
