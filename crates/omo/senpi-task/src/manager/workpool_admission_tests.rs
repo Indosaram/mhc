@@ -36,7 +36,7 @@ fn harness(limit: usize) -> Harness {
 fn pool(h: &Harness, task_id: &str, worker: Option<WorkpoolWorker>) -> (WorkpoolRecord,WorkpoolItem) {
     let item=WorkpoolItem{key:"k".into(),input:serde_json::json!({"value":"work"}),item_id:"wi_00000000000000000000000000000000".into(),status:WorkpoolItemStatus::Queued,binding:None,delivery:None,data:None,error:None,yield_sha256:None};
     let start=ManagerStartSpec{prompt:"base".into(),parent_session_id:"parent".into(),root_session_id:Some("root".into()),depth:1,category:Some("quick".into()),model:Some("test/model".into()),..ManagerStartSpec::default()};
-    let record=WorkpoolRecord{version:1,pool_id:"wp_00000000000000000000000000000000".into(),name:"pool".into(),parent_session_id:"parent".into(),root_session_id:"root".into(),generation:1,revision:0,mode:WorkpoolMode::Fresh,agent:WorkpoolAgent::Category{prompt:"base".into(),model:Some("test/model".into()),category:"quick".into()},worker_spec:WorkpoolSpec{start,plan:ResolvedChildPlan{model:"test/model".into(),..ResolvedChildPlan::default()}},status:WorkpoolStatus::Open,kernel_tool_names:None,items:vec![item.clone()],workers:worker.into_iter().collect(),aggregate:None};
+    let record=WorkpoolRecord { hold: None, version:1,pool_id:"wp_00000000000000000000000000000000".into(),name:"pool".into(),parent_session_id:"parent".into(),root_session_id:"root".into(),generation:1,revision:0,mode:WorkpoolMode::Fresh,agent:WorkpoolAgent::Category{prompt:"base".into(),model:Some("test/model".into()),category:"quick".into()},worker_spec:WorkpoolSpec{start,plan:ResolvedChildPlan{model:"test/model".into(),..ResolvedChildPlan::default()}},status:WorkpoolStatus::Open,kernel_tool_names:None,items:vec![item.clone()],workers:worker.into_iter().collect(),aggregate:None};
     let _=(&h.project,task_id);(record,item)
 }
 
@@ -72,7 +72,7 @@ fn valid_reuse_binds_next_epoch_and_uses_real_manager_revival_path() {
     let current=h.store.load(&started.task_id).expect("load running worker").expect("record");
     h.store.replace(&TaskRecord{status:TaskStatus::Completed,notification:crate::state::TaskNotification{run_epoch:current.notification.run_epoch,..current.notification.clone()},final_response:Some("done".into()),..current}).expect("terminalize reusable worker");
     let worker=WorkpoolWorker{task_id:started.task_id.clone(),run_epoch:0,status:WorkpoolWorkerStatus::Idle,completed_turns:0,idle_since:0};let(mut pool,_item)=pool(&h,&started.task_id,Some(worker.clone()));
-    pool.items[0].status=WorkpoolItemStatus::Assigned;pool.items[0].binding=Some(crate::workpool::types::WorkpoolBinding{task_id:started.task_id.clone(),run_epoch:1,generation:1});pool.items[0].delivery=Some(WorkpoolDelivery{phase:WorkpoolDeliveryPhase::Queued,message_sha256:None});save_pool(&h,&mut pool);
+    pool.items[0].status=WorkpoolItemStatus::Assigned;pool.items[0].binding=Some(crate::workpool::types::WorkpoolBinding{task_id:started.task_id.clone(),run_epoch:1,generation:1});pool.items[0].delivery=Some(WorkpoolDelivery{phase:WorkpoolDeliveryPhase::Queued,message_sha256:None,entry_ids:None});save_pool(&h,&mut pool);
     let item=pool.items[0].clone();
     let(request,_current,events,binds)=request(pool,item,Some(worker));let _handle=h.admission.request(request);
     wait_until("real worker revival",||events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|event|event.kind==crate::workpool::types::WorkpoolEventKind::Dispatched));
@@ -103,7 +103,7 @@ fn burnt_worker_epoch_is_not_reused() {
     let current=h.store.load(&started.task_id).expect("load running worker").expect("record");
     h.store.replace(&TaskRecord{status:TaskStatus::Completed,notification:crate::state::TaskNotification{run_epoch:current.notification.run_epoch,..current.notification.clone()},final_response:Some("done".into()),..current}).expect("terminal task");
     let worker=WorkpoolWorker{task_id:started.task_id.clone(),run_epoch:0,status:WorkpoolWorkerStatus::Idle,completed_turns:0,idle_since:0};let(mut pool,_item)=pool(&h,&started.task_id,Some(worker.clone()));
-    pool.items[0].status=WorkpoolItemStatus::Assigned;pool.items[0].binding=Some(crate::workpool::types::WorkpoolBinding{task_id:started.task_id.clone(),run_epoch:2,generation:1});pool.items[0].delivery=Some(WorkpoolDelivery{phase:WorkpoolDeliveryPhase::Queued,message_sha256:None});save_pool(&h,&mut pool);
+    pool.items[0].status=WorkpoolItemStatus::Assigned;pool.items[0].binding=Some(crate::workpool::types::WorkpoolBinding{task_id:started.task_id.clone(),run_epoch:2,generation:1});pool.items[0].delivery=Some(WorkpoolDelivery{phase:WorkpoolDeliveryPhase::Queued,message_sha256:None,entry_ids:None});save_pool(&h,&mut pool);
     let item=pool.items[0].clone();
     let(request,_current,events,binds)=request(pool,item,Some(worker));let _handle=h.admission.request(request);
     wait_until("burnt epoch denial",||events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|event|event.kind==crate::workpool::types::WorkpoolEventKind::AdmissionFailed));
