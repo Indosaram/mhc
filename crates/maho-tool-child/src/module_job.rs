@@ -359,6 +359,15 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    /// An absolute path on this platform: POSIX `/a` is drive-relative (not absolute) on Windows.
+    fn abs(path: &str) -> String {
+        if cfg!(windows) {
+            format!("C:{path}")
+        } else {
+            path.to_string()
+        }
+    }
+
     fn code_of<T: std::fmt::Debug>(result: Result<T, ToolChildJobError>) -> String {
         result.expect_err("an error").code
     }
@@ -366,12 +375,12 @@ mod tests {
     #[test]
     fn parses_job_args_and_refuses_malformed_ones() {
         let parsed =
-            parse_module_job_args(&json!({ "modulePath": "/a/b.rs", "export": "x", "args": [1] }))
+            parse_module_job_args(&json!({ "modulePath": abs("/a/b.rs"), "export": "x", "args": [1] }))
                 .expect("valid");
         assert_eq!(
             parsed,
             ModuleJobArgs {
-                module_path: "/a/b.rs".into(),
+                module_path: abs("/a/b.rs"),
                 export: "x".into(),
                 args: json!([1])
             }
@@ -388,7 +397,7 @@ mod tests {
         );
         assert_eq!(
             code_of(parse_module_job_args(
-                &json!({ "modulePath": "/a", "export": "" })
+                &json!({ "modulePath": abs("/a"), "export": "" })
             )),
             "module_job_invalid"
         );
@@ -408,8 +417,8 @@ mod tests {
             Vec::<String>::new()
         );
         assert_eq!(
-            parse_module_roots(&env("[\"/a\",\"/b\"]")).expect("roots"),
-            vec!["/a", "/b"]
+            parse_module_roots(&env(&json!([abs("/a"), abs("/b")]).to_string())).expect("roots"),
+            vec![abs("/a"), abs("/b")]
         );
         assert_eq!(
             code_of(parse_module_roots(&env("[\"rel\"]"))),

@@ -218,6 +218,14 @@ mod tests {
         std::fs::write(dir.join(name), format!("{}\n", lines.join("\n")))
     }
 
+    /// A session header whose cwd is absolute on this platform (`/real` is relative on Windows).
+    fn header(id: &str, cwd: &str) -> String {
+        serde_json::json!({ "type": "session", "id": id, "cwd": cwd }).to_string()
+    }
+
+    const PROBE: &str = if cfg!(windows) { "C:\\probe" } else { "/probe" };
+    const REAL: &str = if cfg!(windows) { "C:\\real" } else { "/real" };
+
     #[test]
     fn startup_only_sessions_are_skipped_and_real_ones_confirm_the_folder()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -227,7 +235,7 @@ mod tests {
             root,
             "probe.jsonl",
             &[
-                r#"{"type":"session","id":"a","cwd":"/probe"}"#,
+                header("a", PROBE).as_str(),
                 r#"{"type":"model_change"}"#,
             ],
         )?;
@@ -235,7 +243,7 @@ mod tests {
             root,
             "real.jsonl",
             &[
-                r#"{"type":"session","id":"b","cwd":"/real"}"#,
+                header("b", REAL).as_str(),
                 r#"{"type":"message"}"#,
             ],
         )?;
@@ -257,7 +265,7 @@ mod tests {
             &[root.to_string_lossy().into_owned()],
         );
         let cwds: Vec<&str> = found.projects.iter().map(|p| p.cwd.as_str()).collect();
-        assert_eq!(cwds, vec!["/real"]);
+        assert_eq!(cwds, vec![REAL]);
         assert_eq!(found.found, 4);
         assert!(!found.truncated);
         Ok(())

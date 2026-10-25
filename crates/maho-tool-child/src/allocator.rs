@@ -16,10 +16,16 @@ pub type MahoAllocator = std::alloc::System;
 pub const ALLOCATOR: MahoAllocator = std::alloc::System;
 
 /// Read by jemalloc at its first allocation; `_RJEM_MALLOC_CONF` in the environment still overrides it.
-#[cfg(unix)]
+/// jemalloc only builds its background purge thread on non-Mach-O pthread targets, so other
+/// unix targets leave `background_thread` out instead of warning at every startup.
+#[cfg(target_os = "linux")]
 #[unsafe(export_name = "_rjem_malloc_conf")]
 pub static JEMALLOC_CONF: &[u8; 103] =
     b"background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0,narenas:1,slab_sizes:1-4096:1,tcache_max:1024\0";
+#[cfg(all(unix, not(target_os = "linux")))]
+#[unsafe(export_name = "_rjem_malloc_conf")]
+pub static JEMALLOC_CONF: &[u8; 80] =
+    b"dirty_decay_ms:0,muzzy_decay_ms:0,narenas:1,slab_sizes:1-4096:1,tcache_max:1024\0";
 
 /// Flush the calling thread's cache and purge every arena after a large release.
 pub fn reclaim_unused_heap() {
@@ -88,6 +94,7 @@ mod tests {
         assert_eq!(option::<isize>(b"opt.muzzy_decay_ms\0"), 0);
         assert_eq!(option::<u32>(b"opt.narenas\0"), 1);
         assert_eq!(option::<usize>(b"opt.tcache_max\0"), 1024);
+        #[cfg(target_os = "linux")]
         assert!(option::<bool>(b"opt.background_thread\0"));
     }
 

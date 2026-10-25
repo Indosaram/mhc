@@ -171,7 +171,12 @@ mod wheel_scroll_tests {
     fn auto_mode_accelerates_a_fast_wheel_gesture() {
         let mut wheel = WheelScrollAccelerator::default();
         assert_eq!(wheel.next(1, 100), 1);
-        assert_eq!(wheel.next(1, 120), if cfg!(target_os = "macos") { 1 } else { 5 });
+        // Only a macOS session over SSH pins wheel steps to one line; anywhere else it accelerates.
+        let pinned = cfg!(target_os = "macos")
+            && ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
+                .iter()
+                .any(|key| std::env::var_os(key).is_some());
+        assert_eq!(wheel.next(1, 120), if pinned { 1 } else { 5 });
     }
 }
 
