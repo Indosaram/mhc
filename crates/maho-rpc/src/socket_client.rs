@@ -15,6 +15,15 @@ impl RpcSocket {
             deadline,
         })
     }
+    /// Transfer an authenticated, pre-session connection to the persistent mux.
+    pub fn into_stream(self) -> std::io::Result<tokio::net::UnixStream> {
+        if !self.reader.buffer().is_empty() {
+            return Err(std::io::Error::other(
+                "unexpected buffered host data at authentication handoff",
+            ));
+        }
+        Ok(self.reader.into_inner())
+    }
     pub async fn request(
         &mut self,
         mut command: serde_json::Value,

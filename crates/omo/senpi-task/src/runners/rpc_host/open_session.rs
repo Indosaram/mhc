@@ -30,8 +30,33 @@ pub fn open_task_host_session(
                 .cloned()
                 .and_then(|model| serde_json::from_value::<CatalogModelIdentity>(model).ok());
             if let Some(pin) = pinned {
+                let catalog = if effective.as_ref().is_some_and(|model| {
+                    differs_only_by_priority_alias(&model.identity(), &pin.identity())
+                }) {
+                    match client.get_available_models() {
+                        Ok(catalog) => catalog,
+                        Err(error) => {
+                            if let Err(close) = client.close() {
+                                eprintln!("failed pinned-session cleanup: {close}");
+                            }
+                            return Err(error);
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
+                let entry = catalog
+                    .iter()
+                    .find(|entry| entry.provider == pin.provider && entry.id == pin.id)
+                    .unwrap_or(pin);
                 if !effective.as_ref().is_some_and(|model| {
-                    started_on_pinned_model(&model.identity(), &pin.identity(), Some(pin), None)
+                    started_on_pinned_model(&model.identity(), &pin.identity(), Some(entry), None)
+                        || catalog
+                            .iter()
+                            .find(|entry| entry.provider == model.provider && entry.id == model.id)
+                            .is_some_and(|entry| {
+                                is_priority_alias_of(Some(entry), &pin.identity(), None)
+                            })
                 }) {
                     if let Err(error) = client.close() {
                         eprintln!("failed pinned-session cleanup: {error}");
