@@ -173,6 +173,17 @@ impl ProjectMcpAuthority {
             .clone()
     }
     pub async fn resolve(&self) -> Result<ProjectMcpMaterialization, McpError> {
+        self.resolve_with_signal(None).await
+    }
+    pub async fn resolve_with_signal(
+        &self,
+        signal: Option<maho_ext_api::AbortSignal>,
+    ) -> Result<ProjectMcpMaterialization, McpError> {
+        let cancelled =
+            || McpError::new(McpErrorKind::Connect, "Project MCP authorization cancelled");
+        if signal.as_ref().is_some_and(|signal| signal.aborted()) {
+            return Err(cancelled());
+        }
         let registration = current_registration(
             &self.name,
             &crate::skills::SkillServerDecl {
@@ -218,20 +229,28 @@ impl ProjectMcpAuthority {
                 && let Some(ui) = &self.ui
             {
                 let choices = vec!["Allow".into(), "Deny".into()];
-                if ui
-                    .select(
-                        &format!(
-                            "Project MCP server {} wants: {}",
-                            self.name,
-                            policy.withheld.join(", ")
-                        ),
-                        &choices,
-                        Default::default(),
-                    )
-                    .await
-                    .as_deref()
-                    == Some("Allow")
-                {
+                let title = format!(
+                    "Project MCP server {} wants: {}",
+                    self.name,
+                    policy.withheld.join(", ")
+                );
+                let selected = ui.select(
+                    &title,
+                    &choices,
+                    maho_ext_api::ExtensionUiDialogOptions {
+                        signal: signal.clone(),
+                        ..Default::default()
+                    },
+                );
+                let answer = if let Some(signal) = &signal {
+                    tokio::select! { biased; _ = signal.cancelled() => return Err(cancelled()), answer = selected => answer }
+                } else {
+                    selected.await
+                };
+                if signal.as_ref().is_some_and(|signal| signal.aborted()) {
+                    return Err(cancelled());
+                }
+                if answer.as_deref() == Some("Allow") {
                     if identity_for_roots(
                         &self.name,
                         &self.source_path,
