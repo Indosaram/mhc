@@ -1,6 +1,5 @@
 //! Cross-process locks for memory writes, reflection scheduling, and transcript state.
 
-pub mod proven_dead_takeovers;
 pub mod acquire;
 pub mod candidate_sweep;
 pub mod counting_lease;
@@ -8,8 +7,10 @@ pub mod domains;
 pub mod lock_record;
 pub mod os_file_lock;
 pub mod process_identity;
+pub mod proven_dead_takeovers;
 pub mod recall_wake_domain;
 pub mod reflection_run_domain;
+pub mod reflection_run_lease;
 
 pub use acquire::{
     AcquireLockError, AcquireLockOptions, LockContentionError, LockNonce, WithLockError,
@@ -46,4 +47,9 @@ pub use recall_wake_domain::{
     RecallWakeLeaseOptions, acquire_recall_wake_lease, recall_wake_lock_path,
     recall_wake_ticket_directory, with_recall_wake_lease,
 };
-pub use reflection_run_domain::acquire_reflection_run_lease;
+pub use reflection_run_domain::acquire_counting_reflection_run_lease;
+pub use reflection_run_lease::{
+    REFLECTION_RUN_DEFAULT_SLOTS, ReflectionRunLease, ReflectionRunLeaseError,
+    ReflectionRunLeaseOptions, acquire_reflection_run_lease, reflection_run_lock_path,
+    reflection_run_ticket_directory,
+};
