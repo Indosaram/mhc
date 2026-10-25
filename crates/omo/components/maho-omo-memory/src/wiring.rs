@@ -190,9 +190,11 @@ fn register_settled_handler(
                     .collect::<Vec<_>>();
                 let provenance = context.session_manager.fork_provenance();
                 let mut ui = NativeFooter(context.ui.clone());
-                wiring
-                    .lock()
-                    .await
+                let mut locked = wiring.lock().await;
+                if let Some(prov) = provenance {
+                    locked.record_provenance(context.session_manager.session_id(), prov);
+                }
+                locked
                     .on_settled_with_provenance(
                         context.session_manager.session_id(),
                         &entries,
@@ -202,7 +204,6 @@ fn register_settled_handler(
                         |session, error| {
                             warn(&format!("journal reconcile failed: {session}: {error}"))
                         },
-                        provenance,
                     )
                     .map_err(maho_ext_api::ExtensionFailure::new)?;
                 Ok(maho_ext_api::EventResult::None)
@@ -539,10 +540,8 @@ impl MemoryWiring {
         ui: Option<&mut dyn MemoryFooterUi>,
         warn: impl FnOnce(&str, &memory_core::journal::store::JournalError),
     ) -> Result<(), String> {
-        let provenance = self.provenance_by_session.get(session).cloned();
-        self.on_settled_with_provenance(session, entries, api, now, ui, warn, provenance)
+        self.on_settled_with_provenance(session, entries, api, now, ui, warn)
     }
-    #[allow(clippy::too_many_arguments)]
     pub fn on_settled_with_provenance(
         &mut self,
         session: &str,
@@ -551,11 +550,7 @@ impl MemoryWiring {
         now: i64,
         ui: Option<&mut dyn MemoryFooterUi>,
         warn: impl FnOnce(&str, &memory_core::journal::store::JournalError),
-        provenance: Option<maho_ext_api::ForkProvenance>,
     ) -> Result<(), String> {
-        if let Some(prov) = provenance {
-            self.provenance_by_session.insert(session.to_owned(), prov);
-        }
         let Some(identity) = self.runtime.resolve_context(session).cloned() else {
             return Ok(());
         };
@@ -582,6 +577,15 @@ impl MemoryWiring {
     }
     /// Drops the session's bound context so later settles resolve nothing (pin `wiring-runtime.ts:51-52`).
     pub fn unbind(&mut self, session: &str) {
+        let identity = self
+            .runtime
+            .resolve_context(session)
+            .map(|context| context.identity.clone());
+        if let Some(identity) = identity
+            && let Some(facts) = self.runtime.existing_facts_wiring(&identity)
+        {
+            facts.set_provenance(session, None);
+        }
         self.runtime.contexts.remove(session);
         self.reflection_live.unbind(session);
         self.provenance_by_session.remove(session);
@@ -981,5 +985,63 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn test_unbind_clears_facts_provenance_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = memory_core::identity::layout::build_identity_paths(root.path(), "agent");
+        let identity = crate::context::MemoryIdentityContext::new(
+            "agent".into(),
+            paths.clone(),
+            crate::binding::create_memory_binding("agent", "repo", 0.0),
+        );
+        let mut wiring = create_memory_wiring(MemoryWiringOptions {
+            runtime: Default::default(),
+            skills_usage: Default::default(),
+        });
+        wiring
+            .runtime
+            .contexts
+            .insert("session".into(), identity.clone());
+        wiring.runtime.facts_wiring_for(&identity, || {
+            crate::facts_wiring::MemoryFactsWiringOptions {
+                identity: "agent".into(),
+                identity_paths: paths.clone(),
+                facts_enabled: Box::new(|| true),
+                debounce_settles: Box::new(|| 4),
+                extractor: None,
+                now: Some(std::sync::Arc::new(|| 0)),
+                warn: std::sync::Arc::new(|error| panic!("{error}")),
+            }
+        });
+        let prov = maho_ext_api::ForkProvenance {
+            parent_session: "parent".into(),
+            inherited_through_entry_id: Some("entry-1".into()),
+        };
+        wiring
+            .runtime
+            .existing_facts_wiring("agent")
+            .unwrap()
+            .set_provenance("session", Some(prov.clone()));
+        wiring.record_provenance("session", prov);
+        assert!(wiring.provenance_by_session.contains_key("session"));
+        assert!(wiring
+            .runtime
+            .existing_facts_wiring("agent")
+            .unwrap()
+            .provenance("session")
+            .is_some());
+
+        wiring.unbind("session");
+
+        assert!(!wiring.provenance_by_session.contains_key("session"));
+        assert!(wiring
+            .runtime
+            .existing_facts_wiring("agent")
+            .unwrap()
+            .provenance("session")
+            .is_none());
+        assert!(wiring.runtime.resolve_context("session").is_none());
     }
 }
