@@ -127,6 +127,13 @@ impl EngineTurnHoldNotices {
         )
     }
 
+    pub fn note_items(&mut self, notices: Vec<Value>) -> Result<(), String> {
+        let data = json!({"notices":notices});
+        (self.append)("session-notice", data.clone())?;
+        for notice in data["notices"].as_array().into_iter().flatten() { self.remember(notice); }
+        Ok(())
+    }
+
     pub fn stopped_notice_text(count: usize) -> String {
         format!("Paused: {count} {} arrived while paused. Send a message or /resume to continue.", if count == 1 { "update" } else { "updates" })
     }
@@ -265,10 +272,13 @@ impl EngineTurnHoldNotices {
         let Some(id) = notice.get("noticeId").and_then(Value::as_str) else {
             return;
         };
-        let index = match self.wakes.iter().position(|(s, _)| s == producer) {
+        let custody_key = notice.get("itemId").and_then(Value::as_str)
+            .map(|id| format!("{producer}:item:{id}:{}", id.len()))
+            .unwrap_or_else(|| producer.to_owned());
+        let index = match self.wakes.iter().position(|(s, _)| s == &custody_key) {
             Some(index) => index,
             None => {
-                self.wakes.push((producer.to_string(), HeldWake::default()));
+                self.wakes.push((custody_key, HeldWake::default()));
                 self.wakes.len() - 1
             }
         };
@@ -364,4 +374,16 @@ mod tests {
         assert!(replay.consume("codemode", 1, None));
         assert!(replay.messages().is_empty());
     }
+}
+
+#[cfg(test)] mod itemized_tests {
+ use super::*;
+ #[test] fn failed_batch_has_no_custody_and_successful_items_keep_own_payloads() {
+  let notices=vec![json!({"noticeId":"a","producer":"task","itemId":"a","message":{"content":"one"}}),json!({"noticeId":"b","producer":"task","itemId":"b","message":{"content":"two"}})];
+  let mut failed=EngineTurnHoldNotices::new(&[],Box::new(|_,_|Err("disk full".into())),Box::new(|_|{}));
+  assert!(failed.note_items(notices.clone()).is_err());assert_eq!(failed.notice_count(),0);
+  let mut held=EngineTurnHoldNotices::new(&[],Box::new(|_,_|Ok(())),Box::new(|_|{}));
+  held.note_items(notices).expect("persist");assert_eq!(held.notice_count(),2);
+  let messages=held.messages();assert_eq!(messages.len(),2);assert_eq!(messages[0].message["content"],"one");assert_eq!(messages[1].message["content"],"two");
+ }
 }

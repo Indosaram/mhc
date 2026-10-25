@@ -1756,6 +1756,8 @@ impl SessionManager {
         }
     }
 
+    pub fn last_persistence_error(&self) -> Option<&str> { self.last_write_error.as_deref() }
+
     pub fn take_write_error(&mut self) -> Option<String> { self.last_write_error.take() }
 
     pub fn append_entry_raw(&mut self, entry: Value) {
