@@ -30,6 +30,7 @@ pub struct SessionLifecycleOptions {
 
 /// One event-driven reducer per session, shared by every client surface.
 pub struct SessionLifecycleController {
+    goal_facts: Arc<maho_ext_api::goal_lifecycle::GoalLifecycleService>,
     options: SessionLifecycleOptions,
     lifecycle: SessionLifecycle,
     run_active: bool,
@@ -91,6 +92,7 @@ impl SessionLifecycleController {
         };
 
         let mut controller = Self {
+            goal_facts: maho_ext_api::goal_lifecycle::goal_lifecycle_service(&options.session_id),
             options,
             lifecycle: initial_lifecycle,
             run_active: false,
@@ -148,6 +150,7 @@ impl SessionLifecycleController {
     }
 
     pub fn start_run(&mut self, origin: Option<EpochOrigin>) {
+        self.goal_facts.start_run();
         self.admitting_human = false;
         self.idle_boundary_passed = false;
         self.interrupted = false;
@@ -169,11 +172,9 @@ impl SessionLifecycleController {
     }
 
     pub fn report_child(&mut self, report: ChildLifecycleReport) {
-        if let Some(pos) = self
-            .child_reports
-            .iter()
-            .position(|r| r.task_id == report.task_id && r.child_session_id == report.child_session_id)
-        {
+        if let Some(pos) = self.child_reports.iter().position(|r| {
+            r.task_id == report.task_id && r.child_session_id == report.child_session_id
+        }) {
             self.child_reports[pos] = report.clone();
         } else {
             self.child_reports.push(report.clone());
@@ -259,13 +260,97 @@ impl SessionLifecycleController {
             })
             .count();
 
-        let human = if self.lifecycle.role == SessionRole::Root {
+        let mut human = if self.lifecycle.role == SessionRole::Root {
             runtime.human.clone()
         } else {
             Vec::new()
         };
 
+        let facts = self.goal_facts.snapshot();
+        if let Some(id) = facts.completed_goal_id {
+            self.lifecycle.completion_id = Some(id);
+        }
+        let mut background = Vec::new();
+        let mut queued = false;
+        let mut question = false;
+        if let Some(input) = &facts.input {
+            queued = input["will_retry"] == true || input["continuation_queued"].is_string();
+            for wake in input["expectations"].as_array().into_iter().flatten() {
+                let kind = wake["kind"].as_str().unwrap_or_default();
+                if input["deadline_stop"] == true
+                    && matches!(kind, "armed-timer" | "recovery-staged")
+                {
+                    continue;
+                }
+                match kind {
+                    "user-input-queued" => queued = true,
+                    "pending-messages" => queued |= runtime.pending_messages > 0,
+                    "question-to-user" => question = input["ended_by"] == "clean",
+                    "armed-timer" if wake["timer"] == "user-grace" => queued = true,
+                    "armed-timer" | "recovery-staged" | "wake-source" => {
+                        background.push(crate::session_lifecycle_types::BackgroundWait {
+                            source: wake["source"]
+                                .as_str()
+                                .unwrap_or(if kind == "recovery-staged" {
+                                    "staged-recovery"
+                                } else {
+                                    "goal-monitor"
+                                })
+                                .into(),
+                            active_count: 1,
+                            retry_at_ms: None,
+                        })
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if self.lifecycle.role == SessionRole::Root {
+            if question && human.is_empty() {
+                human.push(HumanWait {
+                    kind: crate::session_lifecycle_types::HumanWaitKind::Question,
+                    origin_session_id: self.options.session_id.clone(),
+                    request_id: format!("question:{}", self.lifecycle.epoch),
+                    revision: self.lifecycle.human_input_revision,
+                    child_session_id: None,
+                    child_label: None,
+                    since: self.lifecycle.since.clone(),
+                });
+            }
+            let kind = facts
+                .goal
+                .as_ref()
+                .and_then(|goal| match goal.status.as_str() {
+                    "blocked" => Some(crate::session_lifecycle_types::HumanWaitKind::GoalBlocked),
+                    "paused" => Some(crate::session_lifecycle_types::HumanWaitKind::GoalPaused),
+                    "active" if goal.continuation_stopped => {
+                        Some(crate::session_lifecycle_types::HumanWaitKind::GoalPaused)
+                    }
+                    "active"
+                        if !self.run_active
+                            && runtime.pending_messages == 0
+                            && child_count == 0
+                            && background.is_empty()
+                            && !queued =>
+                    {
+                        Some(crate::session_lifecycle_types::HumanWaitKind::Stalled)
+                    }
+                    _ => None,
+                });
+            if let Some(kind) = kind {
+                human.push(HumanWait {
+                    kind,
+                    origin_session_id: self.options.session_id.clone(),
+                    request_id: format!("goal:{}", facts.goal.as_ref().unwrap().id),
+                    revision: self.lifecycle.human_input_revision,
+                    child_session_id: None,
+                    child_label: None,
+                    since: self.lifecycle.since.clone(),
+                });
+            }
+        }
         let running = self.run_active
+            || queued
             || runtime.activity.is_streaming
             || runtime.activity.is_compacting
             || runtime.activity.is_bash_running
@@ -277,24 +362,20 @@ impl SessionLifecycleController {
             .as_ref()
             .and_then(|task| task.terminal)
             .and_then(|term| match term {
-                crate::session_lifecycle_types::ChildTerminal::Error => {
-                    Some(LifecycleFailure {
-                        reason: crate::session_lifecycle_types::FailureReason::TaskError,
-                        message: None,
-                        retry_at_ms: None,
-                        task_id: self.own_task.as_ref().map(|t| t.task_id.clone()),
-                        run_epoch: self.own_task.as_ref().map(|t| t.run_epoch),
-                    })
-                }
-                crate::session_lifecycle_types::ChildTerminal::Lost => {
-                    Some(LifecycleFailure {
-                        reason: crate::session_lifecycle_types::FailureReason::Lost,
-                        message: None,
-                        retry_at_ms: None,
-                        task_id: self.own_task.as_ref().map(|t| t.task_id.clone()),
-                        run_epoch: self.own_task.as_ref().map(|t| t.run_epoch),
-                    })
-                }
+                crate::session_lifecycle_types::ChildTerminal::Error => Some(LifecycleFailure {
+                    reason: crate::session_lifecycle_types::FailureReason::TaskError,
+                    message: None,
+                    retry_at_ms: None,
+                    task_id: self.own_task.as_ref().map(|t| t.task_id.clone()),
+                    run_epoch: self.own_task.as_ref().map(|t| t.run_epoch),
+                }),
+                crate::session_lifecycle_types::ChildTerminal::Lost => Some(LifecycleFailure {
+                    reason: crate::session_lifecycle_types::FailureReason::Lost,
+                    message: None,
+                    retry_at_ms: None,
+                    task_id: self.own_task.as_ref().map(|t| t.task_id.clone()),
+                    run_epoch: self.own_task.as_ref().map(|t| t.run_epoch),
+                }),
                 crate::session_lifecycle_types::ChildTerminal::Interrupted => {
                     Some(LifecycleFailure {
                         reason: crate::session_lifecycle_types::FailureReason::Interrupted,
@@ -309,7 +390,7 @@ impl SessionLifecycleController {
 
         let waits = LifecycleWaits {
             children: child_count,
-            background: Vec::new(),
+            background,
             human,
         };
 
@@ -346,6 +427,40 @@ impl SessionLifecycleController {
 mod tests {
     use super::*;
 
+    #[test]
+    fn neutral_goal_facts_survive_close_clear_and_drive_waits() {
+        let mut controller = SessionLifecycleController::new(SessionLifecycleOptions {
+            session_id: "neutral-goal-test".into(),
+            spawned_by: None,
+            read_runtime: Arc::new(LifecycleRuntimeFacts::default),
+            append_child: None,
+        });
+        let producer = maho_ext_api::goal_lifecycle::goal_lifecycle_service("neutral-goal-test");
+        controller.restore_complete();
+        producer.transition(Some(maho_ext_api::goal_lifecycle::LifecycleGoal {
+            id: "g".into(),
+            status: "blocked".into(),
+            continuation_stopped: false,
+        }));
+        assert_eq!(
+            controller.snapshot().state,
+            SessionLifecycleState::WaitingHuman
+        );
+        producer.transition(Some(maho_ext_api::goal_lifecycle::LifecycleGoal {
+            id: "g".into(),
+            status: "complete".into(),
+            continuation_stopped: false,
+        }));
+        producer.transition(None);
+        assert_eq!(controller.snapshot().completion_id.as_deref(), Some("g"));
+        assert_eq!(controller.snapshot().state, SessionLifecycleState::Done);
+        producer
+            .turn_end(serde_json::json!({"expectations":[{"kind":"wake-source","source":"test"}]}));
+        assert_eq!(
+            controller.snapshot().state,
+            SessionLifecycleState::WaitingBackground
+        );
+    }
     #[test]
     fn root_controller_transitions_from_restore_to_done() {
         let mut controller = SessionLifecycleController::new(SessionLifecycleOptions {
