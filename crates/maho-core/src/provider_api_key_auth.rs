@@ -500,6 +500,9 @@ impl ComposedApiKeyAuth {
 
 #[async_trait]
 impl ApiKeyAuth for ComposedApiKeyAuth {
+    fn key_optional(&self) -> bool {
+        self.inherited.as_ref().is_some_and(|auth| auth.key_optional())
+    }
     fn name(&self) -> &str {
         self.inherited
             .as_ref()
@@ -772,5 +775,22 @@ mod tests {
             .expect("check")
             .expect("configured");
         assert_eq!(check.source.as_deref(), Some("configured API key"));
+    }
+}
+
+#[cfg(test)]
+mod optionality_tests {
+    use super::*;
+    struct OptionalAuth;
+    #[async_trait]
+    impl ApiKeyAuth for OptionalAuth {
+        fn name(&self)->&str { "optional" }
+        fn key_optional(&self)->bool { true }
+        async fn resolve(&self,_:&dyn AuthContext,_:Option<&ApiKeyCredential>,_:&AbortSignal)->anyhow::Result<Option<AuthResult>> { Ok(None) }
+    }
+    #[test]
+    fn inherits_optional_key_semantics() {
+        let config=ModelsJsonProvider { base_url:Some("http://localhost".into()), ..Default::default() };
+        let auth=compose_api_key_auth("optional",Some(Arc::new(OptionalAuth)),None,Some(&config),None).expect("composed"); assert!(auth.key_optional());
     }
 }

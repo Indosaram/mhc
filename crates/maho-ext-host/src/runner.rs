@@ -1433,6 +1433,9 @@ impl ExtensionRunner {
         self.extensions.iter().filter(|ext| ext.source_info.source != "builtin" && ext.handlers.get(&EventKind::SessionStart).is_some_and(|handlers| !handlers.is_empty())).map(|ext| ext.identity.path.clone()).collect()
     }
 
+    pub fn extension_paths(&self) -> Vec<String> { self.extensions.iter().map(|extension| extension.identity.path.clone()).collect() }
+    pub fn third_party_session_start_paths(&self) -> Vec<String> { self.get_third_party_session_start_paths() }
+
     pub fn preview_unsafe_before_agent_start_paths(&self) -> Vec<String> {
         self.extensions
             .iter()

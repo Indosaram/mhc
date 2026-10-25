@@ -106,6 +106,7 @@ impl BlockedSkillLinkError {
             display(target)
         );
         let diag = ResourceDiagnostic {
+            category: Some("skill-link-blocked".into()),
             diagnostic_type: crate::diagnostics::ResourceDiagnosticType::Warning,
             message: msg.clone(),
             path: Some(path.to_string_lossy().into_owned()),
@@ -195,7 +196,8 @@ pub fn read_skill_file_checked(
             return Err(BlockedSkillLinkError::new(path, &canonical));
         }
 
-        let file = std::fs::File::open(&canonical)
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new().read(true).custom_flags(nix::libc::O_NOFOLLOW).open(&canonical)
             .map_err(|_| BlockedSkillLinkError::new(path, &canonical))?;
         let opened = file
             .metadata()
@@ -225,6 +227,41 @@ pub fn read_skill_file_checked(
             return Err(BlockedSkillLinkError::new(path, &canonical));
         }
         std::fs::read_to_string(&canonical).map_err(|_| BlockedSkillLinkError::new(path, &canonical))
+    }
+}
+
+pub fn select_skill_root(
+    root: &str,
+    scope: crate::source_info::SourceScope,
+    cwd: &str,
+    selected: bool,
+) -> SkillProvenance {
+    let spelled = PathBuf::from(crate::paths::lexical_resolve(root));
+    let repository = skill_project_root(Path::new(cwd));
+    let owner = spelled.parent().and_then(Path::parent);
+    let ancestor = spelled.file_name().is_some_and(|name| name == "skills")
+        && spelled
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| [".agents", ".senpi", ".pi"].iter().any(|s| name == *s))
+        && owner.is_some_and(|owner| Path::new(cwd).starts_with(owner));
+    let project_root = if !selected && ancestor && !spelled.starts_with(&repository) {
+        owner.unwrap_or(&repository).to_string_lossy().into()
+    } else {
+        repository.to_string_lossy().into()
+    };
+    SkillProvenance {
+        kind: if scope == crate::source_info::SourceScope::Project {
+            if selected {
+                SkillProvenanceKind::ProjectSelected
+            } else {
+                SkillProvenanceKind::ProjectAuto
+            }
+        } else {
+            SkillProvenanceKind::User
+        },
+        selected_root: root.into(),
+        project_root: Some(project_root),
     }
 }
 
