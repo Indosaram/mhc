@@ -35,7 +35,8 @@ mod held_tests {
         assert_eq!(
             to_continue_result(SendOutcome::Held {
                 task_id: "task".into(),
-                run_epoch: 3
+                pause_seq: 3,
+                entry_id: "input".into()
             }),
             ContinueResult::Continued {
                 task_id: "task".into(),
@@ -48,11 +49,6 @@ mod held_tests {
 
 pub fn to_continue_result(outcome: SendOutcome) -> ContinueResult {
     match outcome {
-        SendOutcome::Held { task_id, .. } => ContinueResult::Continued {
-            task_id,
-            status: TaskStatus::Paused,
-            delivered: ContinueDelivery::Held,
-        },
         SendOutcome::Stale {
             task_id, reason, ..
         } => ContinueResult::NotContinuable {

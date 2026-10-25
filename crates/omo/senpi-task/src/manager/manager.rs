@@ -1721,7 +1721,8 @@ impl TaskManager {
                     .map_err(|e| SteeringError::Store(StoreError::Parse(e)))?;
                     return Ok(SendOutcome::Held {
                         task_id: record.task_id,
-                        run_epoch: record.notification.run_epoch,
+                        pause_seq: pause.parent_pause_seq,
+                        entry_id: id,
                     });
                 }
             }
