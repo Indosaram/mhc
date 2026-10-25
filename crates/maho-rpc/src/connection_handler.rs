@@ -729,6 +729,8 @@ async fn handle_session_command_with_sink(
             (kind,result.map(Some))
         },
         RpcCommandBody::HostResponse{..}=>("host_response",Err("unknown_host_request".into())),
+        RpcCommandBody::ArmToolBarrier { spec } => ("arm_tool_barrier",serde_json::from_value(spec.clone()).map_err(|e|e.to_string()).and_then(|spec|session.arm_tool_barrier(spec)).map(|()|None)),
+        RpcCommandBody::ReleaseToolBarrier { barrier_id } => ("release_tool_barrier",Ok(Some(serde_json::json!({"released":session.release_tool_barrier(barrier_id)})))),
         RpcCommandBody::Prompt{message,images,streaming_behavior,thinking_level,session_title_prompt,expand_prompt_templates}=>{
             let options=(||{
                 if thinking_level.is_some()&&session.is_streaming()&&streaming_behavior.is_some(){return Err("Cannot set thinkingLevel on a queued prompt; set it after the current turn completes.".to_owned());}

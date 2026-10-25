@@ -33,8 +33,17 @@ Branch: p5147/senpi-67. No Cargo commands executed.
 5. **Tool interruption result - previously implemented.** interrupted_tool_result.rs and session stop integration.
 6. **Footer subagent cost - previously implemented.** footer_data_provider.rs and interactive footer.
 
+## Integration follow-up after a50d4024
+
+- Move sealing/export: export.rs automatically resolves the state_attempt named by the release seal when no explicit override is supplied. A focused test checks that the sealed payload is bundled. Import restoration accepts a managed mark callback; AgentSession appends the restored entry through its live SessionManager, preserving the in-memory leaf as well as disk history before deleting payload state.
+- Tool-barrier runtime/API: prompt options carry a validated barrier, client input ID and observed pause sequence; extension and RPC arm/release methods reach the same barrier. Waiting/expiry events publish runtime facts. Expected retries retain the barrier; settled provider completion and consumed follow-ups clear it. Nested/shared tool execution also waits and checks cancellation before dispatch.
+- Preparation-time input custody: human input behind a run fence is expanded/prepared before durable hold, does not release the fence or run older held commands, and uses the caller input ID. A Stop arriving during preparation stores the prepared input instead of admitting it. Existing interactive/task-parent hold_input handlers remain authoritative after rebase; their Result handling was reconciled with AgentSession.
+- Reentrant held commands: a per-session async preparation lock serializes independent captures; a task-local command scope prevents a command's nested prompt from recapturing siblings or deadlocking on that lock. All selected commands leave custody before ordered invocation.
+- Concurrent queued turns: preparation reserves IDs synchronously under the preparation lock. RAII reservations release on error/cancellation. Admitted IDs remain claimed, while settlement consumes only IDs whose held-input message was observed by the run; later queued inputs are not consumed by an earlier run's end. Failed consumption restores the claim for retry.
+- Custom workspace effects: ToolDefinition carries the shared Read/Write contract, and AgentSession checks registered custom definitions before conservative builtin/default lookup. Unspecified tools remain writes. Focused tests cover custom read effects, concurrent reservation, reentrant capture exclusion, barrier validation and request replay.
+
 ## Verification and remaining risk
 
 Rustfmt checks and git diff --check are the available local gates. Cargo build/check/test/clippy were prohibited; no Rust test or executable validation is claimed. The new controller options are a Rust API change; repository search found only local constructor sites before the rewrite. All added test behavior remains unexecuted until the global Cargo gate.
 
-Implementation is substantially extended, but full upstream equivalence is NOT verified. In particular, exhaustive command/reentrant prompt ordering, concurrent queued-turn consumption, and custom-tool workspace-effect propagation still need runtime coverage/review at the global gate. Do not infer tested parity from commit subjects containing 'finish'.
+The requested integration paths now have concrete code and focused test coverage, but full upstream equivalence is NOT verified: no Cargo compilation or tests were run. All new tests are unexecuted until the global gate. Manual review and rustfmt are not a substitute for type checking or runtime validation.

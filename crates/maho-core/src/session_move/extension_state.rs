@@ -107,6 +107,22 @@ where
     F: FnOnce(MovedStateDelivery) -> Fut,
     Fut: std::future::Future<Output = Result<bool, String>>,
 {
+    restore_moved_state_with_mark(file, deliver, |data| {
+        super::append_custom(file, MOVED_STATE_RESTORED, data)
+    })
+    .await
+}
+
+pub async fn restore_moved_state_with_mark<F, Fut, Mark>(
+    file: &Path,
+    deliver: F,
+    mark: Mark,
+) -> Result<(), String>
+where
+    F: FnOnce(MovedStateDelivery) -> Fut,
+    Fut: std::future::Future<Output = Result<bool, String>>,
+    Mark: FnOnce(Value) -> Result<(), String>,
+{
     let Some(pending) = pending_moved_state(file)? else {
         return Ok(());
     };
@@ -147,9 +163,7 @@ where
     if !result? {
         return Ok(());
     }
-    super::append_custom(
-        file,
-        MOVED_STATE_RESTORED,
+    mark(
         json!({"move_id":pending.move_id,"restored_at":crate::session_manager::now_iso_millis()}),
     )?;
     super::remove(&pending.dir)?;
