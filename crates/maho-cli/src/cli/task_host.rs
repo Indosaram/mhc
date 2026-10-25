@@ -127,18 +127,18 @@ impl HostAssembly {
     ) -> Result<T, HostError> {
         // Callers include synchronous extension hooks on a current-thread runtime. Borrowing
         // that runtime's handle while joining this thread stalls its I/O driver forever.
-        static HOST_RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> =
-            std::sync::OnceLock::new();
-        let runtime = if let Some(runtime) = HOST_RUNTIME.get() {
-            runtime
-        } else {
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .map_err(error)?;
-            HOST_RUNTIME.get_or_init(|| runtime)
-        };
+        static HOST_RUNTIME: std::sync::OnceLock<
+            Result<tokio::runtime::Runtime, std::io::Error>,
+        > = std::sync::OnceLock::new();
+        let runtime = HOST_RUNTIME
+            .get_or_init(|| {
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+            })
+            .as_ref()
+            .map_err(error)?;
         std::thread::spawn(move || runtime.block_on(future))
             .join()
             .map_err(|_| error("task host assembly thread panicked"))?
