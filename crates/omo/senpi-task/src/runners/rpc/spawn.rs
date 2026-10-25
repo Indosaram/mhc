@@ -263,6 +263,8 @@ fn push_extensions(args: &mut Vec<String>, extensions: &[String]) {
 
 /// The env/extension preamble shared by the real child and the catalog probe: member identity is
 /// stripped before explicit `member_env` applies, and the session dir is always ours.
+pub const TRACEPARENT_ENV: &str = "OMO_SENPI_TASK_TRACEPARENT";
+
 fn build_child_profile(
     spec: &RpcRunnerSpec,
     runtime: &RpcSpawnRuntime,
@@ -274,12 +276,9 @@ fn build_child_profile(
     if let Some(member_env) = &spec.member_env {
         env.extend(member_env.clone());
     }
-    env.remove("OMO_SENPI_TASK_TRACEPARENT");
+    env.remove(TRACEPARENT_ENV);
     if let Some(traceparent) = &spec.traceparent {
-        env.insert(
-            "OMO_SENPI_TASK_TRACEPARENT".to_string(),
-            traceparent.clone(),
-        );
+        env.insert(TRACEPARENT_ENV.to_string(), traceparent.clone());
     }
     env.insert(
         SESSION_DIR_ENV.to_string(),
