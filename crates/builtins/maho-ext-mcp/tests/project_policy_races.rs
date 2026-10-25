@@ -1,0 +1,123 @@
+use maho_ext_api::*;
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
+struct BlockingUi {
+    entered: tokio::sync::mpsc::UnboundedSender<AbortSignal>,
+    calls: std::sync::atomic::AtomicUsize,
+}
+impl ExtensionUi for BlockingUi {
+    fn select<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        options: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
+        Box::pin(async move {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                return None;
+            }
+            let signal = options.signal.expect("reauthorization passes signal");
+            self.entered.send(signal.clone()).unwrap();
+            signal.cancelled().await;
+            None
+        })
+    }
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
+        Box::pin(async { true })
+    }
+    fn input<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
+    fn notify(&self, _: &str, _: NotificationType) {}
+    fn set_status(&self, _: &str, _: Option<&str>) {}
+    fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
+    fn set_header(&self, _: Option<ComponentFactory>) {}
+    fn set_footer(&self, _: Option<ComponentFactory>) {}
+    fn set_title(&self, _: &str) {}
+    fn paste_to_editor(&self, _: &str) {}
+    fn set_editor_text(&self, _: &str) {}
+    fn get_editor_text(&self) -> String {
+        String::new()
+    }
+    fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> {
+        Box::pin(async { Err("custom UI must not be used".into()) })
+    }
+    fn theme(&self) -> Theme {
+        Theme::default()
+    }
+}
+#[tokio::test]
+async fn real_service_reauthorization_disable_cancels_prompt_and_prevents_spawn() {
+    let root = tempfile::tempdir().unwrap();
+    let agent = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("mcp.json"),
+        r#"{"probe":{"command":"${MISSING_TOKEN}"}}"#,
+    )
+    .unwrap();
+    let declarations =
+        maho_ext_mcp::skills::parse_skill_mcp_declarations(&[maho_ext_mcp::skills::SkillLike {
+            name: "fixture".into(),
+            file_path: root.path().join("SKILL.md"),
+            base_dir: root.path().into(),
+            scope: Some("project".into()),
+            ..Default::default()
+        }]);
+    let registry = Arc::new(maho_ext_mcp::host_registry::HostMcpRegistry::default());
+    let mut service = maho_ext_mcp::service::McpService::new(registry.clone(), 73);
+    service
+        .attach_session(root.path(), agent.path(), &BTreeMap::new(), false, &[])
+        .await
+        .unwrap();
+    let (entered, mut events) = tokio::sync::mpsc::unbounded_channel();
+    service.set_elicitation_ui(Some(Arc::new(BlockingUi {
+        entered,
+        calls: Default::default(),
+    })));
+    // Initial denial is followed by a fresh-spawn reauthorization.
+    service
+        .attach_skill_mcp_servers(&declarations)
+        .await
+        .unwrap();
+    let config = service.config.as_ref().unwrap().servers["probe"]
+        .config
+        .as_ref()
+        .unwrap();
+    let authority = maho_ext_mcp::project_skill_policy::get_project_mcp_authority(config).unwrap();
+    authority.resolve().await.unwrap();
+    let connection = service.connections["probe"]
+        .entry
+        .lock()
+        .await
+        .connection
+        .clone();
+    let pending = tokio::spawn({
+        let connection = connection.clone();
+        async move { connection.connect().await }
+    });
+    let signal = tokio::time::timeout(Duration::from_secs(3), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    connection.disable().await.unwrap();
+    assert!(signal.aborted());
+    assert!(
+        tokio::time::timeout(Duration::from_secs(3), pending)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err()
+    );
+    assert!(connection.get_root_pid().is_none());
+    service.dispose().await.unwrap();
+    registry.dispose().await.unwrap();
+}
