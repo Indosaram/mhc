@@ -18,6 +18,7 @@ fn create_session_connection(options:SessionConnectionOptions<'_>,shared_cwd:Opt
     let refresh=plan.refresh.clone();
     let shared=shared_cwd.filter(|cwd|crate::sharing_policy::shareable(&config,Some(cwd))).map(|_|registry.attach_shared(key,owner,||{let connection=ServerConnection::new(name,config.clone(),env.clone(),logger.clone());if let Some(refresh)=refresh.clone(){connection.set_auth(refresh);}crate::shared_connection::SharedMcpConnection::with_idle_timeout(connection,agent_dir.into(),config_hash.into(),std::time::Duration::from_secs_f64(config.request_timeout_ms.unwrap_or(30000.0)/1000.0),std::time::Duration::from_secs_f64(config.idle_timeout_min.unwrap_or(10.0)*60.0))})).transpose()?;
     let connection=match &shared {Some(lease)=>lease.base_connection(),None=>registry.attach(key,owner,||ServerConnection::new(name,config.clone(),env,logger.clone()),false)};
+    if let Some(policy)=crate::transport::project_policy(config_hash){connection.set_project_policy(policy);}
     if shared.is_none() && let Some(refresh)=refresh {connection.set_auth(refresh);}
     // Service-owned interactive step-up (pinned `handleStepUpIfNeeded` -> `provider.login()` plus
     // `withOperationRetry` -> `forceReconnect`): the transport performs the real re-login through

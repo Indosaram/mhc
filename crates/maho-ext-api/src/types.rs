@@ -2690,7 +2690,7 @@ pub struct BeforeAgentStartEvent {
     pub system_prompt: String,
     pub system_prompt_options: BuildSystemPromptOptions,
 }
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DynamicSystemPromptPart { pub name: String, pub source: Option<String>, pub text: String }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BeforeAgentStartEventResult {
@@ -2700,6 +2700,7 @@ pub struct BeforeAgentStartEventResult {
 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BeforeAgentStartCombinedResult {
+    pub system_prompt_parts: Option<Vec<DynamicSystemPromptPart>>,
     pub messages: Vec<CustomMessage>,
     pub system_prompt: Option<String>,
 }
@@ -4021,7 +4022,21 @@ pub struct ExecResult {
 
 /// Additive session actions keep the original ExtensionActions implementors source-compatible.
 /// Hosts bind these separately; an unbound capability fails explicitly, never silently succeeds.
+#[derive(Clone,Debug,PartialEq,serde::Serialize,serde::Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct RelocationTarget {pub name:String,pub online:bool,pub capacity:Option<String>,pub about_to_sleep:Option<bool>}
+#[derive(Clone,Debug,PartialEq,serde::Serialize,serde::Deserialize)]
+#[serde(tag="status",rename_all="lowercase")]
+pub enum RelocationTargetsResult {Listed{targets:Vec<RelocationTarget>},Unavailable{reason:String,detail:String},Refused{reason:String,detail:String}}
+#[derive(Clone,Debug,PartialEq,serde::Serialize,serde::Deserialize)]
+#[serde(tag="status",rename_all="lowercase")]
+pub enum RelocationRequestResult {Scheduled{target:String,#[serde(rename="moveId")]move_id:String},Unavailable{reason:String,detail:String},Refused{reason:String,detail:String}}
+#[derive(Clone,Debug,PartialEq,serde::Serialize,serde::Deserialize)]
+pub struct RelocationRequest {pub target:String,pub reason:String}
 pub trait ExtensionSessionActions: Send + Sync {
+    fn relocation_offered(&self)->bool {false}
+    fn relocation_targets(&self,_signal:AbortSignal)->ExtensionFuture<'_,RelocationTargetsResult> {Box::pin(async {Ok(RelocationTargetsResult::Unavailable{reason:"not_offered".into(),detail:"no app connected to this session offers moving it to another computer".into()})})}
+    fn request_relocation(&self,_request:RelocationRequest,_signal:AbortSignal)->ExtensionFuture<'_,RelocationRequestResult> {Box::pin(async {Ok(RelocationRequestResult::Unavailable{reason:"not_offered".into(),detail:"no app connected to this session offers moving it to another computer".into()})})}
     fn set_session_name(&self, name: &str) -> Result<(), ExtensionFailure>;
     fn get_session_name(&self) -> Result<Option<String>, ExtensionFailure>;
     fn set_label(&self, entry_id: &str, label: Option<&str>) -> Result<(), ExtensionFailure>;

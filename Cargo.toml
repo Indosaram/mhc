@@ -47,6 +47,8 @@ members = [
     "crates/builtins/maho-ext-openai-web-search",
     "crates/builtins/maho-ext-permission-system",
     "crates/builtins/maho-ext-prompt-preset",
+    "crates/builtins/maho-ext-relocate-session",
+    "crates/builtins/maho-ext-moved-path-guard",
     "crates/builtins/maho-ext-reasoning",
     "crates/builtins/maho-ext-recommended-models",
     "crates/builtins/maho-ext-rule-activation",
