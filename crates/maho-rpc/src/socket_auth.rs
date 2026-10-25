@@ -1,6 +1,7 @@
 //! Strict POSIX key records and mutual host authentication (`socket-auth.ts`).
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
 use std::{
     fs::{self, OpenOptions},
     io::Read,

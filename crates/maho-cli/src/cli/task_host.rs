@@ -14,6 +14,7 @@ use senpi_task::{
     manager::{child_handle::ManagedChildHandle, types::*},
     runners::rpc_host::*,
 };
+#[cfg(unix)]
 use serde_json::json;
 use std::{path::PathBuf, sync::Arc};
 fn error(error: impl std::fmt::Display) -> HostError {
@@ -251,7 +252,7 @@ impl HostAssembly {
                     attached:opened["attached"]==true,durable_session_id:None,reported_model:None,
                 },Arc::new(move ||outcome.outcome()) as Arc<dyn Fn()->senpi_task::runners::RunnerOutcome+Send+Sync>))
             }
-            #[cfg(not(unix))] {let _=(spec,agent_dir,runtime,socket,path,context);Err(error("host runner unavailable on Windows"))}
+            #[cfg(not(unix))] {let _=(spec,agent_dir,runtime,socket,path,context,turn);Err(error("host runner unavailable on Windows"))}
         })
     }
 }
