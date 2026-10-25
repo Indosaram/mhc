@@ -22,6 +22,7 @@ pub mod logger;
 pub mod logging;
 pub mod migration;
 pub mod omo_config;
+pub mod path_containment;
 pub mod port_utils;
 pub mod process_stream_reader;
 pub mod process_sweep;
@@ -61,6 +62,7 @@ pub use logger::*;
 pub use logging::*;
 pub use migration::*;
 pub use omo_config::*;
+pub use path_containment::*;
 pub use port_utils::*;
 pub use process_stream_reader::*;
 pub use process_tree::{
