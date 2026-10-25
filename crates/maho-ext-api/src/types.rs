@@ -1053,8 +1053,23 @@ pub struct SourceInfo {
     pub origin: SourceOrigin,
     pub base_dir: Option<String>,
 }
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillProvenance {
+    pub kind: String,
+    pub selected_root: String,
+    pub project_root: Option<String>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SkillAllowedSet {
+    pub roots: Vec<String>,
+    pub files: Vec<String>,
+    pub digest: String,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Skill {
+    pub provenance: Option<SkillProvenance>,
+    pub allowed_set: Option<SkillAllowedSet>,
     pub name: String,
     pub description: String,
     pub file_path: String,
