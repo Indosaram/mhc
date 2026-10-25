@@ -192,7 +192,8 @@ mod tests {
                 memory_write: crate::wiring_memory_write::MemoryWriteOptions {
                     resolve_session: Arc::new(|_| None),
                     on_memory_write: Arc::new(|_| Ok(())),
-                    refresh_status: Arc::new(|_, _| panic!("unbound")),
+                    refresh_status: Arc::new(|_, _, _| panic!("unbound")),
+                    sync_status: None,
                 },
                 skills_usage: crate::skills_usage_wiring::SkillsUsageOptions {
                     resolve_context: Arc::new(|_| None),
@@ -288,7 +289,8 @@ mod tests {
                 memory_write: crate::wiring_memory_write::MemoryWriteOptions {
                     resolve_session: Arc::new(|_| None),
                     on_memory_write: Arc::new(|_| Ok(())),
-                    refresh_status: Arc::new(|_, _| panic!("unbound")),
+                    refresh_status: Arc::new(|_, _, _| panic!("unbound")),
+                    sync_status: None,
                 },
                 skills_usage: crate::skills_usage_wiring::SkillsUsageOptions {
                     resolve_context: Arc::new(|_| None),
@@ -448,7 +450,8 @@ mod tests {
                 memory_write: crate::wiring_memory_write::MemoryWriteOptions {
                     resolve_session: Arc::new(|_| None),
                     on_memory_write: Arc::new(|_| Ok(())),
-                    refresh_status: Arc::new(|_, _| panic!("unbound")),
+                    refresh_status: Arc::new(|_, _, _| panic!("unbound")),
+                    sync_status: None,
                 },
                 skills_usage: crate::skills_usage_wiring::SkillsUsageOptions {
                     resolve_context: Arc::new(|_| None),

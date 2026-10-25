@@ -31,6 +31,18 @@ pub fn create_memory_wiring(options: MemoryWiringOptions) -> MemoryWiring {
         provenance_by_session: Default::default(),
     }
 }
+/// The host UI the sync notices are written to (`SyncNoticeUi`).
+struct NativeSyncNotice(std::sync::Arc<dyn maho_ext_api::ExtensionUi>);
+impl crate::sync_status_cached::SyncNoticeUi for NativeSyncNotice {
+    fn notify(&self, message: &str, level: &str) {
+        let kind = match level {
+            "error" => maho_ext_api::NotificationType::Error,
+            "warning" => maho_ext_api::NotificationType::Warning,
+            _ => maho_ext_api::NotificationType::Info,
+        };
+        self.0.notify(message, kind);
+    }
+}
 struct NativeFooter(std::sync::Arc<dyn maho_ext_api::ExtensionUi>);
 impl MemoryFooterUi for NativeFooter {
     fn set_status(&mut self, key: &str, text: &str) {
@@ -527,6 +539,47 @@ impl MemoryWiring {
             return Ok(());
         };
         self.reflection_live.sync_rpc(&api, now)
+    }
+    /// Installs the sync-status reader the footer, the notices and [`Self::on_sync_status_changed`] read.
+    pub fn set_sync_status(&mut self, sync_status: Option<crate::sync_status_cached::SyncStatusReader>) {
+        self.seams.sync_status = sync_status.clone();
+        self.reflection_live.set_sync_status(sync_status);
+    }
+    /// A repository's sync failure appeared, changed kind or cleared: redraw the footer and tell the person.
+    ///
+    /// Only the active session's repository redraws a footer or pushes the desktop snapshot; any other
+    /// repository still feeds the notifier, so its notice state follows every transition.
+    pub fn on_sync_status_changed(&mut self, repo: &std::path::Path, now: i64) -> Result<(), String> {
+        let session = self.reflection_live.session().map(str::to_owned);
+        let active_repo = session
+            .as_deref()
+            .and_then(|session| self.runtime.resolve_context(session))
+            .map(|context| context.identity_paths.repo.as_path() == repo)
+            .unwrap_or(false);
+        let host = self.live_host.clone();
+        let notice = if active_repo {
+            host.as_ref().map(|(_, ui)| NativeSyncNotice(ui.clone()))
+        } else {
+            None
+        };
+        let notifier = self.reflection_live.sync_notifier.clone();
+        let mut apply = || -> Result<(), String> {
+            let (Some((api, ui)), Some(session)) = (host.as_ref(), session.as_deref()) else {
+                return Ok(());
+            };
+            // Redrawing the footer and pushing the desktop snapshot is exactly what a settle does.
+            self.reflection_live
+                .on_settled(session, api, now, Some(&mut NativeFooter(ui.clone())))
+        };
+        crate::sync_status_cached::deliver_sync_status_change(
+            crate::sync_status_cached::SyncStatusChange {
+                repo,
+                is_active_repo: active_repo,
+                notifier: notifier.as_deref(),
+                ui: notice.as_ref().map(|notice| notice as &dyn crate::sync_status_cached::SyncNoticeUi),
+                apply: &mut apply,
+            },
+        )
     }
     pub fn record_provenance(&mut self, session: &str, provenance: maho_ext_api::ForkProvenance) {
         self.provenance_by_session.insert(session.to_owned(), provenance);

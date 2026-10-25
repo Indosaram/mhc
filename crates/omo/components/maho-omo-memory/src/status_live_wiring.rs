@@ -1,8 +1,9 @@
 use std::{collections::BTreeMap,path::PathBuf};
 use memory_core::git::GitMemoryRepo;
-use crate::{context::MemoryIdentityContext,status::{format_memory_status_line,format_relative_age,read_memory_status_segments},status_live::{MemoryFooterLive,MemoryFooterProbe,MemoryFooterUi}};
-#[derive(Default)]pub struct MemoryFooterStatusLive{live:MemoryFooterLive,repos:BTreeMap<PathBuf,GitMemoryRepo>}
-struct Probe<'a>{context:&'a MemoryIdentityContext,session_id:&'a str,active:bool,now_ms:i64,repos:&'a mut BTreeMap<PathBuf,GitMemoryRepo>}
+use crate::{context::MemoryIdentityContext,status::{format_memory_status_line,format_relative_age,read_memory_status_segments},status_live::{MemoryFooterLive,MemoryFooterProbe,MemoryFooterUi},sync_status_cached::SyncStatusReader};
+#[derive(Default)]pub struct MemoryFooterStatusLive{live:MemoryFooterLive,repos:BTreeMap<PathBuf,GitMemoryRepo>,/// Reads each repository's sync status for the ` sync blocked` segment (`MemoryFooterStatusLiveOptions.syncStatus`).
+sync_status:Option<SyncStatusReader>}
+struct Probe<'a>{context:&'a MemoryIdentityContext,session_id:&'a str,active:bool,now_ms:i64,repos:&'a mut BTreeMap<PathBuf,GitMemoryRepo>,sync_status:Option<&'a SyncStatusReader>}
 impl Probe<'_>{fn repo(&mut self)->Result<&GitMemoryRepo,String>{
     let path=&self.context.identity_paths.repo;
     if !self.repos.contains_key(path){let repo=GitMemoryRepo::new(memory_core::git::repo_types::GitMemoryRepoOptions::new(path,"omo-status")).map_err(|e|e.to_string())?;self.repos.insert(path.clone(),repo);}
@@ -14,8 +15,8 @@ impl MemoryFooterProbe for Probe<'_>{
         let context=self.context;let session=self.session_id;let now=self.now_ms;let active=self.active;
         let repo=self.repo()?;let head=repo.head().map_err(|e|e.to_string())?;
         let Some(head)=head else{return Ok(Some(format!("none|{active}")));};
-        let segments=read_memory_status_segments(repo,context,Some(session),now);
-        Ok(Some(format!("{head}|{}|{}|{}|{active}",if segments.dirty{"dirty"}else{"clean"},segments.backlog_steps,segments.streak)))
+        let segments=read_memory_status_segments(repo,context,Some(session),now,self.sync_status);
+        Ok(Some(format!("{head}|{}|{}|{}|{active}|{}",if segments.dirty{"dirty"}else{"clean"},segments.backlog_steps,segments.streak,if segments.sync_blocked{"sync-blocked"}else{"sync-ok"})))
     }
     fn refresh_segments(&mut self,identity:&str)->Result<Option<String>,String>{
         if self.context.identity!=identity{return Ok(None);}
@@ -23,17 +24,19 @@ impl MemoryFooterProbe for Probe<'_>{
         if repo.head().map_err(|e|e.to_string())?.is_none(){return Ok(None);}
         let Some(timestamp)=repo.head_commit_timestamp().map_err(|e|e.to_string())?else{return Ok(None);};
         let Some(age)=format_relative_age(timestamp.to_string().parse::<f64>().unwrap_or(f64::NAN)*1000.0,now.to_string().parse().unwrap_or(f64::NAN))else{return Ok(None);};
-        Ok(Some(format_memory_status_line(identity,&age,&read_memory_status_segments(repo,context,Some(session),now))))
+        Ok(Some(format_memory_status_line(identity,&age,&read_memory_status_segments(repo,context,Some(session),now,self.sync_status))))
     }
 }
 impl MemoryFooterStatusLive{
+    /// Installs the sync-status reader every later fingerprint and refresh consults.
+    pub fn set_sync_status(&mut self,sync_status:Option<SyncStatusReader>){self.sync_status=sync_status;}
     pub fn sync_active(&mut self,context:Option<&MemoryIdentityContext>,session_id:Option<&str>,active:bool,now_ms:i64,ui:Option<&mut dyn MemoryFooterUi>){
         let (Some(context),Some(session_id))=(context,session_id)else{return;};
-        let mut probe=Probe{context,session_id,active,now_ms,repos:&mut self.repos};self.live.set_active(Some(&context.identity),active,ui,&mut probe);
+        let sync_status=self.sync_status.clone();let mut probe=Probe{context,session_id,active,now_ms,repos:&mut self.repos,sync_status:sync_status.as_ref()};self.live.set_active(Some(&context.identity),active,ui,&mut probe);
     }
     pub fn refresh(&mut self,context:Option<&MemoryIdentityContext>,session_id:Option<&str>,active:bool,now_ms:i64,ui:Option<&mut dyn MemoryFooterUi>){
         let (Some(context),Some(session_id))=(context,session_id)else{return;};
-        let mut probe=Probe{context,session_id,active,now_ms,repos:&mut self.repos};self.live.refresh(Some(&context.identity),ui,&mut probe);
+        let sync_status=self.sync_status.clone();let mut probe=Probe{context,session_id,active,now_ms,repos:&mut self.repos,sync_status:sync_status.as_ref()};self.live.refresh(Some(&context.identity),ui,&mut probe);
     }
     pub fn tick(&mut self,ui:&mut dyn MemoryFooterUi){self.live.tick(ui);}
     pub fn is_animating(&self)->bool{self.live.is_animating()}

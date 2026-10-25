@@ -1,16 +1,20 @@
 use std::sync::{Arc,Mutex};
 use maho_ext_api::{EventKind,EventResult,ExtensionApi,ExtensionContext,ExtensionEvent,ExtensionFailure,ToolResultEvent};
-use crate::{context::MemoryIdentityContext,status::MemoryStatusResult,tool_metadata::{MEMORY_TOOL_NAME,MEMORY_APPLY_PATCH_TOOL_NAME}};
+use crate::{context::MemoryIdentityContext,status::MemoryStatusResult,sync_status_cached::SyncStatusReader,tool_metadata::{MEMORY_TOOL_NAME,MEMORY_APPLY_PATCH_TOOL_NAME}};
 
 pub struct MemoryWriteSession { pub context:MemoryIdentityContext,pub memory_status_attempted:bool }
 pub type ResolveMemoryWriteSession=Arc<dyn Fn(&str)->Option<Arc<Mutex<MemoryWriteSession>>>+Send+Sync>;
-pub type MemoryWriteRefresh=Arc<dyn Fn(&MemoryIdentityContext,&ExtensionContext)->Result<MemoryStatusResult,String>+Send+Sync>;
+/// The post-write status refresh; the sync-status reader travels with it so the footer's ` sync blocked`
+/// segment reflects the same transition that triggered the write (`wiring-memory-write.ts` syncStatus).
+pub type MemoryWriteRefresh=Arc<dyn Fn(&MemoryIdentityContext,&ExtensionContext,Option<&SyncStatusReader>)->Result<MemoryStatusResult,String>+Send+Sync>;
 pub type MemoryWriteNotification=Arc<dyn Fn(&str)->Result<(),String>+Send+Sync>;
 #[derive(Clone)]
 pub struct MemoryWriteOptions {
     pub resolve_session:ResolveMemoryWriteSession,
     pub on_memory_write:MemoryWriteNotification,
     pub refresh_status:MemoryWriteRefresh,
+    /// A memory repository's sync status for the footer and its notice; production passes the sync runner's.
+    pub sync_status:Option<SyncStatusReader>,
 }
 fn matches_tool_name(name:&str,expected:&str)->bool {
     let name=name.trim().to_lowercase().replace('-',"_");
@@ -25,7 +29,7 @@ pub fn handle_memory_write(options:&MemoryWriteOptions,event:&ToolResultEvent,co
     let Some(id)=crate::wiring_context::session_id_from(Some(context)) else { return Ok(()); };
     let Some(session)=(options.resolve_session)(id) else { return Ok(()); };
     (options.on_memory_write)(id)?;
-    refresh_after_write(&session,|identity|(options.refresh_status)(identity,context))
+    refresh_after_write(&session,|identity|(options.refresh_status)(identity,context,options.sync_status.as_ref()))
 }
 fn refresh_after_write(session:&Mutex<MemoryWriteSession>,refresh:impl FnOnce(&MemoryIdentityContext)->Result<MemoryStatusResult,String>)->Result<(),String> {
     let identity={
