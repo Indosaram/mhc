@@ -139,6 +139,7 @@ pub mod status_live;
 pub mod status_live_wiring;
 pub mod supervisor;
 pub mod sync_runner;
+pub mod sync_status_surface;
 pub mod sync_runtime;
 pub mod sync_config_error;
 pub mod sync_status_surface;
@@ -162,3 +163,5 @@ pub mod worker;
 pub mod bindings;
 pub mod commands;
 pub mod palace;
+
+pub mod sync_status_cached;
