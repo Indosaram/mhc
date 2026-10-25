@@ -108,6 +108,17 @@ pub struct WorkpoolChildIdentity {
 
 /// The host agent-session surface an in-process child drives. `prompt` blocks until the turn ends.
 pub trait ChildSession: Send + Sync {
+    fn priority_pairing_registry(
+        &self,
+    ) -> Option<&dyn crate::runners::pinned_model_equivalence::PriorityPairingRegistry> {
+        None
+    }
+    fn model(&self) -> Option<crate::runners::pinned_model_equivalence::ModelIdentity> {
+        None
+    }
+    fn hold_session(&self) -> Option<Arc<dyn super::native_run_pause::RunHoldSession>> {
+        None
+    }
     fn run_pause(&self) -> Option<&dyn crate::pause::native_child_pause::NativeRunPause> {
         None
     }
@@ -230,6 +241,7 @@ pub struct InProcessChildHandle {
     session: Arc<dyn ChildSession>,
     tracked: Arc<Tracked>,
     completion: ChildCompletionPolicy,
+    native_pause: Option<super::native_run_pause::InProcessRunPause>,
     unsubscribe_observer: Mutex<Option<Unsubscribe>>,
 }
 
@@ -253,13 +265,101 @@ impl InProcessChildHandle {
         let unsubscribe = session.subscribe(Arc::new(move |event| {
             observer.lock().observation.observe(event);
         }));
+        let native_pause = session.hold_session().map(|hold| {
+            let child = session.clone();
+            super::native_run_pause::create_in_process_run_pause(
+                hold,
+                Arc::new(move || Self::watch_engine_turn(child.clone(), completion)),
+            )
+        });
         Arc::new(Self {
+            native_pause,
             task_id: task_id.to_string(),
             session,
             tracked,
             completion,
             unsubscribe_observer: Mutex::new(Some(unsubscribe)),
         })
+    }
+
+    pub fn create_staged_child_handle(
+        task_id: &str,
+        session: Arc<dyn ChildSession>,
+        completion: ChildCompletionPolicy,
+    ) -> Arc<Self> {
+        Self::tracked(task_id, session, completion)
+    }
+
+    pub fn watch_engine_turn(
+        session: Arc<dyn ChildSession>,
+        completion: ChildCompletionPolicy,
+    ) -> super::native_run_pause::EngineTurnWatch {
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        let sender = Arc::new(Mutex::new(Some(send)));
+        let pending = sender.clone();
+        let observation = Arc::new(Mutex::new(TurnObservation {
+            baseline: session.get_last_assistant_text(),
+            ..Default::default()
+        }));
+        let observed = observation.clone();
+        let child = session.clone();
+        let started = std::sync::atomic::AtomicBool::new(false);
+        let unsubscribe = session.subscribe(Arc::new(move |event| {
+            if event["type"] == "agent_start" {
+                started.store(true, std::sync::atomic::Ordering::Release);
+            }
+            if !started.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
+            observed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .observe(event);
+            if event["type"] == "agent_end" {
+                let outcome = turn_outcome(
+                    child.as_ref(),
+                    &observed.lock().unwrap_or_else(PoisonError::into_inner),
+                    completion,
+                );
+                if let Some(sender) = pending
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+                {
+                    let _ = sender.send(outcome);
+                }
+            }
+        }));
+        let subscription = Arc::new(Mutex::new(Some(unsubscribe)));
+        let cancel_subscription = subscription.clone();
+        super::native_run_pause::EngineTurnWatch {
+            outcome: Box::new(move || {
+                let result = receive.recv().unwrap_or_else(|_| {
+                    RunnerOutcome::error(
+                        RunnerFailureKind::ChildTurnFailed,
+                        "engine turn watch cancelled",
+                    )
+                });
+                if let Some(unsubscribe) = subscription
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+                {
+                    unsubscribe();
+                }
+                result
+            }),
+            cancel: Box::new(move || {
+                sender.lock().unwrap_or_else(PoisonError::into_inner).take();
+                if let Some(unsubscribe) = cancel_subscription
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+                {
+                    unsubscribe();
+                }
+            }),
+        }
     }
 
     /// `createChildHandle` with the DEFAULT `FinalText` policy; other callers keep this signature.
@@ -418,7 +518,10 @@ impl InProcessChildHandle {
 
 impl ManagedChildHandle for InProcessChildHandle {
     fn run_pause(&self) -> Option<&dyn crate::pause::native_child_pause::NativeRunPause> {
-        self.session.run_pause()
+        self.native_pause
+            .as_ref()
+            .map(|pause| pause as &dyn crate::pause::native_child_pause::NativeRunPause)
+            .or_else(|| self.session.run_pause())
     }
     fn task_id(&self) -> &str {
         &self.task_id

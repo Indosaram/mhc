@@ -95,6 +95,8 @@ pub mod session_worker_protocol;
 pub mod session_worker_requests;
 pub mod session_worker_signals;
 pub mod shutdown;
+pub mod socket_auth;
+pub mod socket_client;
 pub mod socket_event_fanout;
 pub mod socket_ownership;
 pub mod socket_peer_recovery;

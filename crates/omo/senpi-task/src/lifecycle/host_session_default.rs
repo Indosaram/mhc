@@ -7,9 +7,7 @@
 
 use std::sync::Arc;
 
-use super::host_session::{
-    HostSessionProbe, HostSessionProbePorts, create_host_session_probe,
-};
+use super::host_session::{HostSessionProbe, HostSessionProbePorts, create_host_session_probe};
 use super::host_session_close::{
     HostSessionCloseError, HostSessionCloseRequest, HostSessionCloser,
 };
@@ -21,10 +19,20 @@ pub trait HostTransport: Send + Sync {
     fn daemon_reachable(&self, socket: &str) -> bool;
     /// `rpc-host/liveness.liveSessionPaths(socket)`: `list_sessions { include_workers: true }`; `Err`
     /// means the daemon answered but could not list (read as `unknown` liveness).
+    fn live_session_paths_with_agent_dir(
+        &self,
+        socket: &str,
+        _agent_dir: Option<&std::path::Path>,
+    ) -> Result<Vec<String>, String> {
+        self.live_session_paths(socket)
+    }
     fn live_session_paths(&self, socket: &str) -> Result<Vec<String>, String>;
     /// `rpc-host/close.closeHostSession(request)`: abort + close_session. Resolves only when the
     /// daemon confirmed the close; a refused attach or close_session is `Err`.
-    fn close_host_session(&self, request: &HostSessionCloseRequest) -> Result<(), HostSessionCloseError>;
+    fn close_host_session(
+        &self,
+        request: &HostSessionCloseRequest,
+    ) -> Result<(), HostSessionCloseError>;
 }
 
 /// The safe default when no host transport is wired: nothing is reachable, nothing can be closed.
@@ -39,7 +47,10 @@ impl HostTransport for NoHostTransport {
         Err("no host transport is wired into this session".to_string())
     }
 
-    fn close_host_session(&self, _request: &HostSessionCloseRequest) -> Result<(), HostSessionCloseError> {
+    fn close_host_session(
+        &self,
+        _request: &HostSessionCloseRequest,
+    ) -> Result<(), HostSessionCloseError> {
         Err(HostSessionCloseError {
             message: "no host transport is wired into this session".to_string(),
         })
@@ -48,11 +59,20 @@ impl HostTransport for NoHostTransport {
 
 /// The production probe over a host transport (TS `defaultHostSessionProbe`).
 pub fn default_host_session_probe(transport: Arc<dyn HostTransport>) -> Arc<dyn HostSessionProbe> {
+    default_host_session_probe_with_agent_dir(transport, None)
+}
+
+pub fn default_host_session_probe_with_agent_dir(
+    transport: Arc<dyn HostTransport>,
+    agent_dir: Option<std::path::PathBuf>,
+) -> Arc<dyn HostSessionProbe> {
     let daemon = Arc::clone(&transport);
     let listing = transport;
     create_host_session_probe(HostSessionProbePorts {
         daemon_reachable: Arc::new(move |socket| daemon.daemon_reachable(socket)),
-        live_session_paths: Arc::new(move |socket| listing.live_session_paths(socket)),
+        live_session_paths: Arc::new(move |socket| {
+            listing.live_session_paths_with_agent_dir(socket, agent_dir.as_deref())
+        }),
     })
 }
 
