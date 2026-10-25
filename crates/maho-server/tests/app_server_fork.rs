@@ -73,7 +73,7 @@ async fn fork_copies_history_into_a_new_persisted_session_referencing_the_source
     harness.write_source("source-thread");
     let response = harness.call(json!({"id":2,"method":"thread/fork","params":{"threadId":"source-thread"}})).await;
     assert_eq!(response["id"],2);
-    assert_eq!(response["result"]["approvalPolicy"],"on-request");
+    assert_eq!(response["result"]["approvalPolicy"],"never");
     assert_eq!(response["result"]["sandbox"],json!({"type":"dangerFullAccess"}));
     assert_eq!(response["result"]["thread"]["forkedFromId"],"source-thread");
     let forked_id = response["result"]["thread"]["id"].as_str().unwrap().to_owned();
@@ -104,10 +104,11 @@ fn write_agent_settings(harness: &Harness, settings: Value) {
 #[tokio::test]
 async fn thread_responses_report_effective_approval_and_sandbox() {
     for (settings, approval, sandbox) in [
-        (json!({}), "on-request", json!({"type":"dangerFullAccess"})),
+        (json!({}), "never", json!({"type":"dangerFullAccess"})),
+        (json!({"permissionPreset":"guarded"}), "on-request", json!({"type":"dangerFullAccess"})),
         (json!({"permissionPreset":"full-access"}), "never", json!({"type":"dangerFullAccess"})),
         (json!({"permissionPreset":"read-only"}), "untrusted", json!({"type":"dangerFullAccess"})),
-        (json!({"bashSandbox":"required"}), "on-request", json!({"type":"workspaceWrite","writableRoots":["/work"],"networkAccess":true,"excludeTmpdirEnvVar":false,"excludeSlashTmp":true})),
+        (json!({"bashSandbox":"required"}), "never", json!({"type":"workspaceWrite","writableRoots":["/work"],"networkAccess":true,"excludeTmpdirEnvVar":false,"excludeSlashTmp":true})),
     ] {
         let mut harness = harness().await;
         write_agent_settings(&harness, settings);

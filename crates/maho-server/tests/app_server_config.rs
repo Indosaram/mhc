@@ -16,7 +16,7 @@ async fn config_read_maps_settings_and_project_origins_with_nullable_layers() {
     let response = registry.dispatch(connection.clone(), json!({"id":1,"method":"config/read","params":{"includeLayers":true}})).await;
     assert_eq!(response["result"]["config"]["model"], "local");
     assert_eq!(response["result"]["config"]["model_provider"], "faux");
-    assert_eq!(response["result"]["config"]["approval_policy"], "on-request");
+    assert_eq!(response["result"]["config"]["approval_policy"], "never");
     assert_eq!(response["result"]["config"]["sandbox_mode"], "danger-full-access");
     assert_eq!(response["result"]["origins"]["model"]["name"]["type"], "project");
     assert_eq!(response["result"]["layers"].as_array().expect("test").len(), 2);
@@ -44,12 +44,13 @@ async fn safety(settings: &str, flags: &[(&str, &str)]) -> (String, String) {
 // SAFETY-DIVERGENCE(SD-3): config/read reports the resolved permission config and OS isolation, not constants.
 #[tokio::test]
 async fn config_read_reports_effective_approval_and_sandbox() {
-    assert_eq!(safety("{}", &[]).await, ("on-request".into(), "danger-full-access".into()));
+    assert_eq!(safety("{}", &[]).await, ("never".into(), "danger-full-access".into()));
+    assert_eq!(safety(r#"{"permissionPreset":"guarded"}"#, &[]).await, ("on-request".into(), "danger-full-access".into()));
     assert_eq!(safety(r#"{"permissionPreset":"full-access"}"#, &[]).await, ("never".into(), "danger-full-access".into()));
     assert_eq!(safety(r#"{"permissionPreset":"read-only"}"#, &[]).await, ("untrusted".into(), "danger-full-access".into()));
     assert_eq!(safety(r#"{"permissionPreset":"full-access"}"#, &[("permission-preset", "ask")]).await, ("untrusted".into(), "danger-full-access".into()));
     assert_eq!(safety("{}", &[("permission-preset", "full-access")]).await, ("never".into(), "danger-full-access".into()));
     assert_eq!(safety(r#"{"permissionPreset":"full-access"}"#, &[("permission", "bash=ask")]).await, ("on-request".into(), "danger-full-access".into()));
-    assert_eq!(safety(r#"{"bashSandbox":"required"}"#, &[]).await, ("on-request".into(), "workspace-write".into()));
-    assert_eq!(safety(r#"{"bashSandbox":"off"}"#, &[]).await, ("on-request".into(), "danger-full-access".into()));
+    assert_eq!(safety(r#"{"bashSandbox":"required"}"#, &[]).await, ("never".into(), "workspace-write".into()));
+    assert_eq!(safety(r#"{"bashSandbox":"off"}"#, &[]).await, ("never".into(), "danger-full-access".into()));
 }
