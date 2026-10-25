@@ -97,7 +97,10 @@ mod tests {
 mod regression_tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    struct History(Mutex<Vec<SessionEntry>>);
+    struct History(
+        Mutex<Vec<SessionEntry>>,
+        Arc<dyn maho_ext_api::ExtensionContextActions>,
+    );
     impl maho_ext_api::ToolSessionManager for History {
         fn session_id(&self) -> &str {
             "s"
@@ -107,6 +110,9 @@ mod regression_tests {
         }
     }
     impl maho_ext_api::SessionManager for History {
+        fn extension_context_actions(&self) -> Option<&dyn maho_ext_api::ExtensionContextActions> {
+            Some(self.1.as_ref())
+        }
         fn get_entries(&self) -> Vec<SessionEntry> {
             self.0.lock().unwrap().clone()
         }
@@ -142,11 +148,16 @@ mod regression_tests {
         let goal = crate::store::create_goal(&reference, "work", None, 0)
             .await
             .unwrap();
-        let history = Arc::new(History(Mutex::new(vec![entry(
-            "custom",
-            serde_json::json!({"customType":"session-hold","data":{"op":"add","kind":"session_hold","key":"stop"}}),
-        )])));
         let mut ctx = crate::test_context::context();
+        let session = crate::test_context::bind_session(&mut ctx);
+        session.abort().await;
+        let history = Arc::new(History(
+            Mutex::new(vec![entry(
+                "custom",
+                serde_json::json!({"customType":"session-hold","data":{"op":"add","kind":"session_hold","key":"stop"}}),
+            )]),
+            session.extension_context_actions(),
+        ));
         ctx.has_ui = false;
         ctx.session_manager = history.clone();
         let paused = runtime
