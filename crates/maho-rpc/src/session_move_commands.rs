@@ -123,7 +123,7 @@ pub async fn move_session(agent_dir: &str, hosted_paths: &[String], command: &Va
     let result:Result<Value,String>=async{match op{
         "prepare"=>ledger.prepare(id).await.map(wire).map_err(|error|error.to_string()),
         "cancel"=>ledger.decline(id,DeclineReason::Cancelled).await.map(wire).map_err(|error|error.to_string()),
-        "status"=>{let path=command["sessionPath"].as_str();let moved=path.is_some_and(|path|maho_core::session_manager::load_entries_from_file(path).iter().any(|entry|entry["customType"]=="session_moved_in"&&entry["data"]["move_id"]==id));if path.is_some_and(|path|Path::new(path).exists())&&!moved{return Err("move_mismatch: sessionPath is not this move's import".into());}ledger.answer_status(id,moved).await.map(status_wire).map_err(|error|error.to_string())},
+        "status"=>{let path=command["sessionPath"].as_str();let entries=path.map(maho_core::session_manager::load_entries_from_file).unwrap_or_default();let moved=entries.iter().any(|entry|entry["customType"]=="session_moved_in"&&entry["data"]["move_id"]==id);if path.is_some_and(|path|Path::new(path).exists())&&!moved{return Err("move_mismatch: sessionPath is not this move's import".into());}if entries.iter().any(|entry|entry["customType"]=="session_moved"&&entry["data"]["move_id"]==id&&entry["data"]["reason"]=="revoked"){ledger.mark_revoked(id).await.map_err(|error|error.to_string())?;}ledger.answer_status(id,moved).await.map(status_wire).map_err(|error|error.to_string())},
         "export"=>export(&root,hosted_paths,command),
         "finish"=>finish(&root,hosted_paths,command),
         "import"=>import(agent_dir,&ledger,command).await,
