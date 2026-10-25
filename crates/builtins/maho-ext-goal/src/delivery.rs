@@ -730,6 +730,108 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn backstop_real_branch_delivers_caps_and_resets_on_progress() {
+        use maho_ext_api::*;
+        struct Branch {
+            entries: Mutex<Vec<SessionEntry>>,
+            actions: Arc<dyn ExtensionContextActions>,
+        }
+        impl ToolSessionManager for Branch {
+            fn session_id(&self) -> &str {
+                "backstop"
+            }
+            fn session_file(&self) -> Option<&std::path::Path> {
+                None
+            }
+        }
+        impl SessionManager for Branch {
+            fn get_entries(&self) -> Vec<SessionEntry> {
+                self.entries.lock().unwrap().clone()
+            }
+            fn get_branch(&self) -> Vec<SessionEntry> {
+                self.get_entries()
+            }
+            fn get_leaf_id(&self) -> Option<String> {
+                None
+            }
+            fn get_session_name(&self) -> Option<String> {
+                None
+            }
+            fn extension_context_actions(&self) -> Option<&dyn ExtensionContextActions> {
+                Some(self.actions.as_ref())
+            }
+        }
+        let mut ctx = crate::test_context::context();
+        let session = crate::test_context::bind_session(&mut ctx);
+        let entry = |remaining: bool| SessionEntry {
+            id: "todo".into(),
+            parent_id: None,
+            timestamp: String::new(),
+            kind: "message".into(),
+            data: serde_json::json!({"message":{"role":"toolResult","toolName":"todo","details":{"op":"init","phases":[{"name":"Build","tasks":[{"content":"Write parser","status":if remaining {"in_progress"}else{"completed"}},{"content":"Wire parser","status":"pending"}]}],"storage":"memory"}}}),
+        };
+        let branch = Arc::new(Branch {
+            entries: Mutex::new(vec![entry(true)]),
+            actions: session.extension_context_actions(),
+        });
+        ctx.session_manager = branch.clone();
+        let capture = Arc::new(Capture(Mutex::new(Vec::new())));
+        let transport = ExtensionRuntime::default();
+        transport.bind(capture.clone());
+        let api = ExtensionApi::new(
+            LoadedExtension::new("goal", "/tmp".into(), Default::default()),
+            Default::default(),
+            Default::default(),
+            transport,
+        );
+        let event = maho_core::agent_abort_provenance::AgentEndEvent {
+            messages: vec![maho_agent::types::AgentMessage::Llm(
+                maho_ai::types::Message::Assistant(Box::new(
+                    maho_ai::providers::faux::faux_assistant_message(
+                        "Continuing parser work.",
+                        Default::default(),
+                    ),
+                )),
+            )],
+            aborted: false,
+            abort_source: None,
+            will_retry: false,
+        };
+        let mut backstop = crate::todo_owed_backstop::TodoOwedBackstop::default();
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &event, None, false, &["child".into()], true)
+                .unwrap(),
+            "waiting"
+        );
+        assert!(capture.0.lock().unwrap().is_empty());
+        for expected in ["delivered", "delivered", "capped", "cap"] {
+            assert_eq!(
+                backstop
+                    .after_agent_end(&api, &ctx, &event, None, false, &[], true)
+                    .unwrap(),
+                expected
+            );
+        }
+        assert_eq!(capture.0.lock().unwrap().len(), 2);
+        branch.entries.lock().unwrap()[0] = entry(false);
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &event, None, false, &[], true)
+                .unwrap(),
+            "delivered"
+        );
+        assert_eq!(capture.0.lock().unwrap().len(), 3);
+        backstop.reset_chain();
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &event, None, false, &[], false)
+                .unwrap(),
+            "disabled"
+        );
+        session.dispose().await;
+    }
+    #[tokio::test]
     async fn concurrent_admission_delivers_once_and_records_before_followup() {
         let dir = tempfile::tempdir().unwrap();
         let reference = crate::types::GoalStoreRef {
