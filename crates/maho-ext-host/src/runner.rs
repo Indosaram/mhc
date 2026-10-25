@@ -13,18 +13,54 @@ struct GatedActions {
     gate: Arc<crate::session_start_turn_gate::SessionStartTurnGate>,
 }
 impl ExtensionActions for GatedActions {
-    fn send_message(&self, message: CustomMessage, options: SendMessageOptions) -> Result<(), ExtensionFailure> {
+    fn send_message(
+        &self,
+        message: CustomMessage,
+        options: SendMessageOptions,
+    ) -> Result<(), ExtensionFailure> {
         if options.trigger_turn {
             let inner = Arc::clone(&self.inner);
-            self.gate.admit(Box::new(move || inner.send_message(message, options)))
-        } else { self.inner.send_message(message, options) }
+            self.gate
+                .admit(Box::new(move || inner.send_message(message, options)))
+        } else {
+            self.inner.send_message(message, options)
+        }
     }
-    fn send_user_message(&self, content: UserMessageContent, options: SendUserMessageOptions) -> Result<(), ExtensionFailure> { self.inner.send_user_message(content, options) }
-    fn send_user_message_with_origin(&self, content: UserMessageContent, options: SendUserMessageOptions, origin: InputOrigin) -> Result<(), ExtensionFailure> { self.inner.send_user_message_with_origin(content, options, origin) }
-    fn append_entry(&self, custom_type: &str, data: Option<JsonValue>) -> Result<(), ExtensionFailure> { self.inner.append_entry(custom_type, data) }
-    fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> { self.inner.get_all_tools() }
-    fn lifecycle(&self) -> Result<Arc<dyn LifecycleApi>, ExtensionFailure> { self.inner.lifecycle() }
-    fn send_itemized_message(&self, message: CustomMessage, options: SendMessageOptions, items: Vec<SendMessageItem>) -> ExtensionFuture<'_, Option<Vec<SendMessageReceipt>>> {
+    fn send_user_message(
+        &self,
+        content: UserMessageContent,
+        options: SendUserMessageOptions,
+    ) -> Result<(), ExtensionFailure> {
+        self.inner.send_user_message(content, options)
+    }
+    fn send_user_message_with_origin(
+        &self,
+        content: UserMessageContent,
+        options: SendUserMessageOptions,
+        origin: InputOrigin,
+    ) -> Result<(), ExtensionFailure> {
+        self.inner
+            .send_user_message_with_origin(content, options, origin)
+    }
+    fn append_entry(
+        &self,
+        custom_type: &str,
+        data: Option<JsonValue>,
+    ) -> Result<(), ExtensionFailure> {
+        self.inner.append_entry(custom_type, data)
+    }
+    fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> {
+        self.inner.get_all_tools()
+    }
+    fn lifecycle(&self) -> Result<Arc<dyn LifecycleApi>, ExtensionFailure> {
+        self.inner.lifecycle()
+    }
+    fn send_itemized_message(
+        &self,
+        message: CustomMessage,
+        options: SendMessageOptions,
+        items: Vec<SendMessageItem>,
+    ) -> ExtensionFuture<'_, Option<Vec<SendMessageReceipt>>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let inner = Arc::clone(&self.inner);
         let trigger_turn = options.trigger_turn;
@@ -35,22 +71,54 @@ impl ExtensionActions for GatedActions {
             });
             Ok(())
         });
-        let admitted = if trigger_turn { self.gate.admit(start) } else { start() };
+        let admitted = if trigger_turn {
+            self.gate.admit(start)
+        } else {
+            start()
+        };
         Box::pin(async move {
             admitted?;
-            rx.await.map_err(|_| ExtensionFailure::new("Itemized admission was cancelled"))?
+            rx.await
+                .map_err(|_| ExtensionFailure::new("Itemized admission was cancelled"))?
         })
     }
-    fn arm_tool_barrier(&self, spec: JsonValue) -> Result<(), ExtensionFailure> { self.inner.arm_tool_barrier(spec) }
-    fn release_tool_barrier(&self, id: &str) -> Result<bool, ExtensionFailure> { self.inner.release_tool_barrier(id) }
-    fn relocation_offered(&self) -> Result<bool, ExtensionFailure> { self.inner.relocation_offered() }
-    fn relocation_targets(&self) -> ExtensionFuture<'_, JsonValue> { self.inner.relocation_targets() }
-    fn request_relocation(&self, request: JsonValue) -> ExtensionFuture<'_, JsonValue> { self.inner.request_relocation(request) }
-    fn redact_for_upload(&self, text: &str, literals: &[String]) -> Option<UploadRedaction> { self.inner.redact_for_upload(text, literals) }
-    fn host_version(&self) -> Option<String> { self.inner.host_version() }
-    fn get_subscription_limits(&self) -> Vec<AccountLimits> { self.inner.get_subscription_limits() }
-    fn on_subscription_limits(&self, listener: SubscriptionLimitsListener) -> Option<UiUnsubscribe> { self.inner.on_subscription_limits(listener) }
-    fn send_message_with_receipt(&self, message: CustomMessage, options: SendMessageOptions) -> Result<MessageDeliveryReceipt, ExtensionFailure> { self.inner.send_message_with_receipt(message, options) }
+    fn arm_tool_barrier(&self, spec: JsonValue) -> Result<(), ExtensionFailure> {
+        self.inner.arm_tool_barrier(spec)
+    }
+    fn release_tool_barrier(&self, id: &str) -> Result<bool, ExtensionFailure> {
+        self.inner.release_tool_barrier(id)
+    }
+    fn relocation_offered(&self) -> Result<bool, ExtensionFailure> {
+        self.inner.relocation_offered()
+    }
+    fn relocation_targets(&self) -> ExtensionFuture<'_, JsonValue> {
+        self.inner.relocation_targets()
+    }
+    fn request_relocation(&self, request: JsonValue) -> ExtensionFuture<'_, JsonValue> {
+        self.inner.request_relocation(request)
+    }
+    fn redact_for_upload(&self, text: &str, literals: &[String]) -> Option<UploadRedaction> {
+        self.inner.redact_for_upload(text, literals)
+    }
+    fn host_version(&self) -> Option<String> {
+        self.inner.host_version()
+    }
+    fn get_subscription_limits(&self) -> Vec<AccountLimits> {
+        self.inner.get_subscription_limits()
+    }
+    fn on_subscription_limits(
+        &self,
+        listener: SubscriptionLimitsListener,
+    ) -> Option<UiUnsubscribe> {
+        self.inner.on_subscription_limits(listener)
+    }
+    fn send_message_with_receipt(
+        &self,
+        message: CustomMessage,
+        options: SendMessageOptions,
+    ) -> Result<MessageDeliveryReceipt, ExtensionFailure> {
+        self.inner.send_message_with_receipt(message, options)
+    }
 }
 
 pub type ErrorListener = Arc<dyn Fn(&ExtensionError) + Send + Sync>;
@@ -278,15 +346,17 @@ fn with_provider_exclude_path(path: String, handler: ExtensionHandler) -> Extens
         // A handler still running across a session replacement touches its now-stale ctx, which
         // panics with an `ExtensionFailure` (senpi throws the same error). Surface it as that
         // handler's error instead of unwinding through the UI runtime and aborting the process.
-        Box::pin(std::future::poll_fn(move |cx| {
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| future.as_mut().poll(cx))) {
+        Box::pin(std::future::poll_fn(
+            move |cx| match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                future.as_mut().poll(cx)
+            })) {
                 Ok(poll) => poll,
                 Err(payload) => match payload.downcast::<ExtensionFailure>() {
                     Ok(failure) => std::task::Poll::Ready(Err(*failure)),
                     Err(payload) => std::panic::resume_unwind(payload),
                 },
-            }
-        }))
+            },
+        ))
     })
 }
 struct ContextSessionManager {
@@ -387,6 +457,10 @@ impl SessionManager for ContextSessionManager {
         self.active();
         self.session.get_session_name()
     }
+    fn is_child_session(&self) -> bool {
+        self.active();
+        self.session.is_child_session()
+    }
     fn fork_provenance(&self) -> Option<ForkProvenance> {
         self.active();
         self.session.fork_provenance()
@@ -464,15 +538,34 @@ impl ExtensionContextActions for ContextSessionManager {
         self.active();
         self.actions.engine_turns_held()
     }
+    fn todo_turn_end_backstop_enabled(&self) -> bool {
+        self.active();
+        self.actions.todo_turn_end_backstop_enabled()
+    }
     fn note_held_wake(&self, source: &str) {
         self.active();
         self.actions.note_held_wake(source);
     }
-    fn get_pause_state(&self) -> JsonValue { self.active(); self.actions.get_pause_state() }
-    fn fence_run(&self, run_ref: JsonValue) -> Result<(), ExtensionFailure> { self.runtime.assert_active()?; self.actions.fence_run(run_ref) }
-    fn supports_release_run_fence(&self) -> bool { self.active(); self.actions.supports_release_run_fence() }
-    fn release_run_fence(&self, run_ref: JsonValue) -> Result<(), ExtensionFailure> { self.runtime.assert_active()?; self.actions.release_run_fence(run_ref) }
-    fn has_queued_person_input(&self) -> bool { self.active(); self.actions.has_queued_person_input() }
+    fn get_pause_state(&self) -> JsonValue {
+        self.active();
+        self.actions.get_pause_state()
+    }
+    fn fence_run(&self, run_ref: JsonValue) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        self.actions.fence_run(run_ref)
+    }
+    fn supports_release_run_fence(&self) -> bool {
+        self.active();
+        self.actions.supports_release_run_fence()
+    }
+    fn release_run_fence(&self, run_ref: JsonValue) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        self.actions.release_run_fence(run_ref)
+    }
+    fn has_queued_person_input(&self) -> bool {
+        self.active();
+        self.actions.has_queued_person_input()
+    }
 
     fn offload(
         &self,
@@ -969,7 +1062,10 @@ impl ExtensionRunner {
         Ok(())
     }
     pub fn bind_core(&mut self, actions: Arc<dyn ExtensionActions>, context: ExtensionContext) {
-        self.runtime.bind(Arc::new(GatedActions { inner: actions, gate: Arc::clone(&self.session_start_turns) }));
+        self.runtime.bind(Arc::new(GatedActions {
+            inner: actions,
+            gate: Arc::clone(&self.session_start_turns),
+        }));
         self.context = context;
         *self
             .context_session_manager
@@ -1014,17 +1110,34 @@ impl ExtensionRunner {
         self.runtime.assert_active()?;
         let wait = Arc::clone(&self.lifecycle_human_wait);
         let attention = Arc::clone(&self.lifecycle_attention);
-        let ui: Arc<dyn ExtensionUi> = Arc::new(crate::ui::LifecycleUi::new(ui, self.runtime.clone(), Arc::new(move |event| {
-            match event {
-                ExtensionEvent::UiPromptStart { kind, .. } => {
-                    *wait.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(serde_json::json!({"kind": if matches!(kind, UiPromptKind::Confirm) { "approval" } else { "question" }, "requestId": uuid::Uuid::new_v4().to_string(), "revision": 1, "since": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)}));
+        let ui: Arc<dyn ExtensionUi> = Arc::new(crate::ui::LifecycleUi::new(
+            ui,
+            self.runtime.clone(),
+            Arc::new(move |event| {
+                match event {
+                    ExtensionEvent::UiPromptStart { kind, .. } => {
+                        *wait
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
+                            serde_json::json!({"kind": if matches!(kind, UiPromptKind::Confirm) { "approval" } else { "question" }, "requestId": uuid::Uuid::new_v4().to_string(), "revision": 1, "since": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)}),
+                        );
+                    }
+                    ExtensionEvent::UiPromptEnd { .. } => {
+                        wait.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take();
+                    }
+                    _ => return,
                 }
-                ExtensionEvent::UiPromptEnd { .. } => { wait.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(); }
-                _ => return,
-            }
-            let observer = attention.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-            if let Some(observer) = observer { observer(); }
-        })));
+                let observer = attention
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                if let Some(observer) = observer {
+                    observer();
+                }
+            }),
+        ));
         self.context.ui = Arc::clone(&ui);
         self.live_bindings
             .lock()
@@ -1422,15 +1535,33 @@ impl ExtensionRunner {
         })
     }
     pub fn set_lifecycle_attention_observer(&self, observer: Arc<dyn Fn() + Send + Sync>) {
-        *self.lifecycle_attention.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(observer);
+        *self
+            .lifecycle_attention
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(observer);
     }
     pub fn get_lifecycle_human_wait(&self) -> Option<JsonValue> {
-        if self.context.mode == ExtensionMode::Rpc { return None; }
-        self.lifecycle_human_wait.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        if self.context.mode == ExtensionMode::Rpc {
+            return None;
+        }
+        self.lifecycle_human_wait
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub fn get_third_party_session_start_paths(&self) -> Vec<String> {
-        self.extensions.iter().filter(|ext| ext.source_info.source != "builtin" && ext.handlers.get(&EventKind::SessionStart).is_some_and(|handlers| !handlers.is_empty())).map(|ext| ext.identity.path.clone()).collect()
+        self.extensions
+            .iter()
+            .filter(|ext| {
+                ext.source_info.source != "builtin"
+                    && ext
+                        .handlers
+                        .get(&EventKind::SessionStart)
+                        .is_some_and(|handlers| !handlers.is_empty())
+            })
+            .map(|ext| ext.identity.path.clone())
+            .collect()
     }
 
     pub fn extension_paths(&self) -> Vec<String> { self.extensions.iter().map(|extension| extension.identity.path.clone()).collect() }
@@ -1980,8 +2111,13 @@ impl ExtensionRunner {
         let signal = AbortSignal::default();
         match event {
             ExtensionEvent::SessionShutdown(shutdown) => shutdown.signal = Some(signal.clone()),
-            ExtensionEvent::SessionMoveExport { signal: current, .. } | ExtensionEvent::SessionMoveImport { signal: current, .. } => *current = signal.clone(),
-            _ => {},
+            ExtensionEvent::SessionMoveExport {
+                signal: current, ..
+            }
+            | ExtensionEvent::SessionMoveImport {
+                signal: current, ..
+            } => *current = signal.clone(),
+            _ => {}
         }
         let future = handler(event, context);
         tokio::pin!(future);
@@ -2013,10 +2149,16 @@ impl ExtensionRunner {
             }
         }
     }
-    pub async fn emit_session_move(&mut self, mut event: ExtensionEvent) -> Result<Vec<ExtensionError>, ExtensionFailure> {
+    pub async fn emit_session_move(
+        &mut self,
+        mut event: ExtensionEvent,
+    ) -> Result<Vec<ExtensionError>, ExtensionFailure> {
         self.runtime.assert_active()?;
         let kind = event.kind();
-        if !matches!(kind, EventKind::SessionMoveExport | EventKind::SessionMoveImport) {
+        if !matches!(
+            kind,
+            EventKind::SessionMoveExport | EventKind::SessionMoveImport
+        ) {
             return Err(ExtensionFailure::new("Expected a session move event"));
         }
         if let Some(budget) = &self.shutdown_budget {
@@ -2025,8 +2167,16 @@ impl ExtensionRunner {
         let mut failures = Vec::new();
         for (path, handler) in self.handlers(kind) {
             let context = self.create_context_for_extension(Some(&path))?;
-            if let Err(error) = self.run_shutdown(&path, &mut event, &context, &handler, false).await {
-                failures.push(ExtensionError { extension_path: path.clone(), event: kind.as_str().into(), error: error.message.clone(), stack: error.stack.clone() });
+            if let Err(error) = self
+                .run_shutdown(&path, &mut event, &context, &handler, false)
+                .await
+            {
+                failures.push(ExtensionError {
+                    extension_path: path.clone(),
+                    event: kind.as_str().into(),
+                    error: error.message.clone(),
+                    stack: error.stack.clone(),
+                });
                 self.report(&path, kind, error);
             }
         }
@@ -2043,7 +2193,9 @@ impl ExtensionRunner {
     pub async fn emit_before_agent_start_observed(
         &mut self,
         event: BeforeAgentStartEvent,
-        observe: Option<&(dyn Fn(&str, &str, &str, Option<&[DynamicSystemPromptPart]>) + Send + Sync)>,
+        observe: Option<
+            &(dyn Fn(&str, &str, &str, Option<&[DynamicSystemPromptPart]>) + Send + Sync),
+        >,
     ) -> Result<Option<BeforeAgentStartCombinedResult>, ExtensionFailure> {
         self.runtime.assert_active()?;
         let mut event = ExtensionEvent::BeforeAgentStart(event);
@@ -2054,7 +2206,10 @@ impl ExtensionRunner {
                 let prompt = current.system_prompt.clone();
                 context.get_system_prompt_fn = Arc::new(move || prompt.clone());
             }
-            let before = match &event { ExtensionEvent::BeforeAgentStart(current) => current.system_prompt.clone(), _ => String::new() };
+            let before = match &event {
+                ExtensionEvent::BeforeAgentStart(current) => current.system_prompt.clone(),
+                _ => String::new(),
+            };
             let mut parts = None;
             match handler(&mut event, &context).await {
                 Ok(EventResult::BeforeAgentStart(next)) => {
@@ -2074,7 +2229,11 @@ impl ExtensionRunner {
                 Err(error) => self.report(&path, EventKind::BeforeAgentStart, error),
             }
             if let ExtensionEvent::BeforeAgentStart(current) = &event {
-                if current.preview { if let Some(observe) = observe { observe(&path, &before, &current.system_prompt, parts.as_deref()); } }
+                if current.preview {
+                    if let Some(observe) = observe {
+                        observe(&path, &before, &current.system_prompt, parts.as_deref());
+                    }
+                }
             }
             self.runtime.assert_active()?;
         }
