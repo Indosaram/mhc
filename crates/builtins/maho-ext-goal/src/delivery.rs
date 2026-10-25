@@ -22,6 +22,7 @@ pub struct GoalDelivery {
     subscriptions: Mutex<Vec<maho_ext_api::BusSubscription>>,
     todo_backstop: Mutex<crate::todo_owed_backstop::TodoOwedBackstop>,
     pub lifecycle: Arc<crate::lifecycle_facts::GoalLifecycleCollector>,
+    neutral_lifecycle: Mutex<Option<Arc<maho_ext_api::goal_lifecycle::GoalLifecycleService>>>,
     last_facts: Arc<Mutex<Option<crate::lifecycle_facts::GoalLifecycleFacts>>>,
 }
 impl GoalDelivery {
@@ -58,6 +59,7 @@ impl GoalDelivery {
             subscriptions: Mutex::new(Vec::new()),
             todo_backstop: Default::default(),
             lifecycle: Default::default(),
+            neutral_lifecycle: Default::default(),
             last_facts: Default::default(),
         }
     }
@@ -372,6 +374,27 @@ impl GoalDelivery {
     ) -> Result<(), ExtensionFailure> {
         match event {
             ExtensionEvent::SessionStart(start) => {
+                let neutral = maho_ext_api::goal_lifecycle::goal_lifecycle_service(
+                    ctx.session_manager.session_id(),
+                );
+                let publish = neutral.clone();
+                self.lifecycle
+                    .on_goal_lifecycle_change(Arc::new(move |goal| {
+                        publish.transition(goal.map(|goal| {
+                            maho_ext_api::goal_lifecycle::LifecycleGoal {
+                                id: goal.id.clone(),
+                                status: match goal.status {
+                                    GoalStatus::Active => "active",
+                                    GoalStatus::Paused => "paused",
+                                    GoalStatus::Blocked => "blocked",
+                                    GoalStatus::Complete => "complete",
+                                }
+                                .into(),
+                                continuation_stopped: goal.continuation_stopped_at.is_some(),
+                            }
+                        }));
+                    }));
+                *self.neutral_lifecycle.lock().map_err(failure)? = Some(neutral);
                 crate::lifecycle_facts::bind_session_lifecycle(
                     &(self.reference)(ctx),
                     &self.lifecycle,
@@ -553,6 +576,9 @@ impl GoalDelivery {
                     (self.now)() as i64,
                 )?;
                 crate::turn_end_liveness_report::report_turn_end_liveness(&self.api, ctx, &input);
+                if let Some(service) = self.neutral_lifecycle.lock().map_err(failure)?.as_ref() {
+                    service.turn_end(serde_json::to_value(&input).map_err(failure)?);
+                }
                 *self.last_facts.lock().map_err(failure)? =
                     Some(crate::lifecycle_facts::GoalLifecycleFacts {
                         goal: goal.cloned(),
@@ -655,6 +681,7 @@ impl GoalDelivery {
             }
             ExtensionEvent::SessionShutdown(_) => {
                 self.lifecycle.retire();
+                self.neutral_lifecycle.lock().map_err(failure)?.take();
                 *self.last_facts.lock().map_err(failure)? = None;
                 self.pending.store(false, Ordering::Release);
                 self.subscriptions.lock().map_err(failure)?.clear();

@@ -25,7 +25,7 @@ pub enum OpenWork {
     },
     None,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct TurnEndLivenessInput {
     pub is_child_session: bool,
     pub mode: maho_ext_api::ExtensionMode,
