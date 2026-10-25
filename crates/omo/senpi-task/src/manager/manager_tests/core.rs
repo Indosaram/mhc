@@ -34,6 +34,28 @@ fn model_record(
 }
 
 #[test]
+fn stale_resume_allocation_is_rejected_even_when_capacity_is_already_held() {
+    let harness = default_manager();
+    let task = started(harness.manager.start(&base_spec()));
+    let record = harness.store.load(&task.task_id).unwrap().unwrap();
+    let allocation = crate::manager::concurrency::QueuedTaskAdmission {
+        model: record.model.clone(),
+        lane_key: record.model.clone(),
+        task_id: task.task_id.clone(),
+        run_epoch: record.notification.run_epoch + 1,
+        sequence: 0,
+    };
+    assert_eq!(
+        harness.manager.acquire_resume_capacity(
+            &task.task_id,
+            record.notification.run_epoch,
+            Some(&allocation)
+        ),
+        Err("stale resume allocation".into()),
+    );
+}
+
+#[test]
 fn given_valid_spec_when_started_then_returns_st_id_and_running_status_with_persisted_record() {
     let harness = default_manager();
 

@@ -9,7 +9,7 @@ Paths are relative to `crates/omo/senpi-task/src/` unless qualified.
 | Unit | Status | Evidence / concrete remaining behavior |
 | --- | --- | --- |
 | 1 Preserve admission custody | DONE | `manager/concurrency.rs`: epoch leases, serializable lane/sequence admission, ordered withdrawal/requeue; custody tests. |
-| 2 Suspend capacity-waiting Resume | PARTIAL | Cold Resume now enqueues/requeues saved allocation, waits for grant, suspends superseded attempts, and checks parked-token identity. `TaskRecord.queued_admission` persists withdrawn lane/sequence/epoch and the parser accepts legacy records. Custody/parser regressions added. End-to-end fresh-manager contention and restart execution remain unverified; no cargo run. |
+| 2 Suspend capacity-waiting Resume | DONE | Cold Resume enqueues/requeues saved lane/sequence/epoch; stale allocations are rejected before held-capacity fast paths. A dedicated capacity mutex serializes cold attempt registration/enqueue, replacement cleanup, and Stop withdrawal, preventing obsolete attempts from withdrawing replacement custody. Waits settle on grant/cancellation rather than an arbitrary 30-second capacity deadline. Parked token identity and epoch are checked. Regressions cover persisted FIFO/second Stop and stale allocation with held capacity. Implementation closure only: cargo/type and behavioral execution remain reserved for the global gate. |
 | 3 Extend normalized child seam | PARTIAL | Canonical borrowed pause seam retained. `maho-cli/src/cli/task_session.rs::NativeChild` now forwards real core pause/resume/input/hold controls. Native resume subscribes before release, captures the first non-retrying started turn outcome, and prompts when no held inputs exist; held-input receipts use the core `kind` discriminator. RPC process status/identity controls are concrete. Native resume ownership races and host-session status/identity transport still require proof. |
 | 4 Project held sends | DONE | `manager/continue_result.rs`: one Held arm maps Paused/FollowUp; retained `ContinueDelivery::Held` enum variant for compatibility but not returned by mapping. Projection test uses canonical pause_seq/entry_id fields. |
 | 5 Carry trace context | DONE | Existing parity `TraceparentFor` and component engine wiring retained; `manager/helpers.rs::build_managed_spec` receives parent trace at launch; `manager/runner.rs::to_rpc_spec`, `runners/types.rs`, `runners/rpc/spawn.rs::TRACEPARENT_ENV` forward it. Inherited/member-env stale value stripped, exact delegating value inserted. Managed-spec persistence test and spawn env test added. Saved omo-21 patch inspected: correct propagation already present; invalid statement in respawn test and wrong OMO_TRACEPARENT env name NOT applied. Upstream uses OMO_SENPI_TASK_TRACEPARENT. |
@@ -32,7 +32,7 @@ Paths are relative to `crates/omo/senpi-task/src/` unless qualified.
 | 22 Cancel/shutdown cleanup | DONE | Accepted cancel settles waiters/releases task leases. Shared-deadline initial/final teardown settlement contains errors/panics, subscribes via launch condvar, parks/withdraws unadmitted contexts in final cleanup; component shutdown invokes it. |
 | 23 Departed parent notes | DONE | `manager/runtime_fallback_event.rs`: fallback revert and operator model-change clear stale parent note; parent route retained, colon-containing selector regression. |
 
-Final counts: **10 DONE, 1 PRESENT, 12 PARTIAL**. Remaining units: 2,3,6,8,10,11,12,14,15,16,18,19.
+Current counts: **11 DONE, 1 PRESENT, 11 PARTIAL**. Remaining units: 3,6,8,10,11,12,14,15,16,18,19.
 
 ## pause-gaps gap 3
 
@@ -46,7 +46,7 @@ Implemented exact resumed outcome ownership end-to-end:
 
 ## Continuation evidence
 
-The requested 12 units all received implementation or regression-test work, but **none is promoted solely on a commit title or rustfmt result**. The table retains PARTIAL where executable proof or concrete behavior remains missing. In particular, host-session status/identity transport, fallback capability/deadline behavior, and real Stop/Resume races remain actual gaps, not merely unrun cargo checks.
+The requested 12 units all received implementation or regression-test work. DONE denotes implementation closure after static contract review, not executable acceptance: no cargo build or test has run. The table retains PARTIAL where concrete behavior still needs review or implementation. Earlier continuation notes below describe historical gaps and are superseded by the per-unit table as each unit closes.
 
 Additional changes in this continuation:
 - Durable queued admission metadata is parsed through the actual store parser, with a legacy-compatible roundtrip test.
