@@ -443,6 +443,11 @@ impl EngineTurnHold {
             || (source == "goal" && self.goal_deferred)
     }
 
+    pub fn note_items(&mut self, mut notices: Vec<Value>) -> Result<(), String> {
+        for notice in &mut notices { notice["pauseSeq"] = json!(self.pause_seq); }
+        self.notices.note_items(notices)
+    }
+
     pub fn note(&mut self, source: &str, message: Option<Value>) {
         let id = self.notices.note_with_stop(source, self.pause_seq, message, self.stopped());
         (self.emit)(SessionHoldEvent::SessionNotice { notice_ids: vec![id], notice_count: self.notice_count(), disposition: "notice_persisted" });

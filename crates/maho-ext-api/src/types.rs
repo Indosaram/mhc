@@ -853,6 +853,9 @@ pub enum EventKind {
     SessionMoveExport,
     SessionMoveImport,
     SessionAbort,
+    SessionMoveExport,
+    SessionMoveImport,
+    SessionHoldChanged,
     SessionExtensionsRemoved,
     SessionBeforeTree,
     SessionTree,
@@ -889,7 +892,7 @@ pub enum EventKind {
     HeldWakesReleased,
 }
 impl EventKind {
-    pub const ALL: [Self; 50] = [
+    pub const ALL: [Self; 51] = [
         Self::ProjectTrust,
         Self::ResourcesDiscover,
         Self::SessionStart,
@@ -906,6 +909,9 @@ impl EventKind {
         Self::SessionMoveExport,
         Self::SessionMoveImport,
         Self::SessionAbort,
+        Self::SessionMoveExport,
+        Self::SessionMoveImport,
+        Self::SessionHoldChanged,
         Self::SessionExtensionsRemoved,
         Self::SessionBeforeTree,
         Self::SessionTree,
@@ -959,6 +965,9 @@ impl EventKind {
             Self::SessionMoveImport => "session_move_import",
             Self::SessionShutdown => "session_shutdown",
             Self::SessionAbort => "session_abort",
+            Self::SessionMoveExport => "session_move_export",
+            Self::SessionMoveImport => "session_move_import",
+            Self::SessionHoldChanged => "session_hold_changed",
             Self::SessionExtensionsRemoved => "session_extensions_removed",
             Self::SessionBeforeTree => "session_before_tree",
             Self::SessionTree => "session_tree",
@@ -2189,6 +2198,7 @@ pub trait ExtensionUi: Send + Sync {
     ) -> UiFuture<'a, Option<String>>;
     fn notify(&self, message: &str, kind: NotificationType);
     fn set_status(&self, key: &str, text: Option<&str>);
+    fn set_subagent_cost(&self, _cost_usd: Option<f64>) {}
     fn set_widget(
         &self,
         key: &str,
@@ -3031,6 +3041,9 @@ pub enum ExtensionEvent {
     },
     SessionShutdown(SessionShutdownEvent),
     SessionAbort,
+    SessionMoveExport { move_id: String, dir: PathBuf, signal: AbortSignal },
+    SessionMoveImport { move_id: String, dir: PathBuf, redelivered: bool, signal: AbortSignal },
+    SessionHoldChanged { change: String, pause_seq: u64, holds: Vec<JsonValue> },
     SessionExtensionsRemoved {
         reason: SessionReason,
         removed: Vec<ExtensionIdentity>,
@@ -3186,6 +3199,9 @@ impl ExtensionEvent {
             Self::SessionCompactFailed { .. } => EventKind::SessionCompactFailed,
             Self::SessionShutdown(_) => EventKind::SessionShutdown,
             Self::SessionAbort => EventKind::SessionAbort,
+            Self::SessionMoveExport { .. } => EventKind::SessionMoveExport,
+            Self::SessionMoveImport { .. } => EventKind::SessionMoveImport,
+            Self::SessionHoldChanged { .. } => EventKind::SessionHoldChanged,
             Self::SessionExtensionsRemoved { .. } => EventKind::SessionExtensionsRemoved,
             Self::SessionBeforeTree { .. } => EventKind::SessionBeforeTree,
             Self::SessionTree { .. } => EventKind::SessionTree,
@@ -4031,6 +4047,17 @@ pub trait ExtensionActions: Send + Sync {
         None
     }
     /// `send_message` with a delivery receipt that settles only once the message is appended or dropped.
+    fn relocation_offered(&self) -> bool { false }
+    fn relocation_targets(&self, _signal: Option<AbortSignal>) -> ExtensionFuture<'_, JsonValue> {
+        Box::pin(async { Ok(serde_json::json!({"status":"unavailable","reason":"not_offered","detail":"no app connected to this session offers moving it to another computer"})) })
+    }
+    fn request_relocation(&self, _request: JsonValue, _signal: Option<AbortSignal>) -> ExtensionFuture<'_, JsonValue> {
+        Box::pin(async { Ok(serde_json::json!({"status":"unavailable","reason":"not_offered","detail":"no app connected to this session offers moving it to another computer"})) })
+    }
+    fn send_itemized_message<'a>(&'a self, message: CustomMessage, options: SendMessageOptions, _items: Vec<JsonValue>) -> ExtensionFuture<'a, Option<Vec<JsonValue>>> {
+        Box::pin(async move { self.send_message(message, options)?; Ok(None) })
+    }
+
     fn send_message_with_receipt(
         &self,
         message: CustomMessage,
