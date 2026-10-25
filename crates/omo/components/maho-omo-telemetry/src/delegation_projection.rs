@@ -247,9 +247,9 @@ mod tests {
         let props = project(&record);
         assert_eq!(props["cost_status"], "invalid");
         assert!(!props.contains_key("cost_usd"));
-        let mut record = record();
-        record.run_stats.as_mut().expect("fixture stats").cost_status = Some(CostReportStatus::Partial);
-        assert_eq!(project(&record)["cost_status"], "invalid");
+        let mut missing = super::tests::record();
+        missing.run_stats.as_mut().expect("fixture stats").cost_status = Some(CostReportStatus::Partial);
+        assert_eq!(project(&missing)["cost_status"], "invalid");
     }
     #[test]
     fn missing_stats_falls_back_to_wall_clock() {

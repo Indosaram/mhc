@@ -50,7 +50,7 @@ pub fn omo_native_event_schemas()->serde_json::Value {
                 (_,"feature")=>Some(vec!["goal_tool","team_create","memory_tool"]),
                 _=>None,
             };
-            let property=if let Some(values)=values {json!({"type":"string","values":values})} else {let kind=if key.starts_with("is_") || matches!(key,"keyword_any"|"keyword_ultrawork_full"|"keyword_ulw_abbrev"|"background"|"subscription") {"boolean"} else if key=="connected_account_count" { "string" } else if key.ends_with("_count") || key.ends_with("_tokens") || matches!(key,"cost_usd"|"cost_1e4"|"turn_index"|"sample_rate") {"number"} else {"string"};json!({"type":kind})};
+            let property=if let Some(values)=values {json!({"type":"string","values":values})} else {let kind=if key.starts_with("is_") || matches!(key,"keyword_any"|"keyword_ultrawork_full"|"keyword_ulw_abbrev"|"background"|"subscription") {"boolean"} else if key=="connected_account_count" { "string" } else if key.ends_with("_count") || key.ends_with("_tokens") || matches!(key,"cost_usd"|"cost_1e4"|"turn_index"|"sample_rate"|"fresh_usd"|"next_reply_usd"|"saving_usd") {"number"} else {"string"};json!({"type":kind})};
             properties.insert(key.into(),property);
         }
         events.insert(event.into(),Value::Object(properties));
