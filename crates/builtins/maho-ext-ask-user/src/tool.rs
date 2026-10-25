@@ -33,6 +33,8 @@ fn unavailable(request: &QuestionRequest) -> QuestionResponse {
             .map(|question| question.id.clone())
             .collect(),
         auto_resolved_after_ms: None,
+        cancel_origin: None,
+        resolved_by: None,
     }
 }
 fn result(
