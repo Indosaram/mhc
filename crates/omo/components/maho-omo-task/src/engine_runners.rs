@@ -238,8 +238,7 @@ impl senpi_task::manager::types::RpcRespawnRunner for ConfiguredRpcRespawn {
         &self,
         spec: &senpi_task::runners::types::RpcRunnerSpec,
     ) -> senpi_task::manager::types::ManagedRunnerResult {
-        // The Rust `RpcRunnerSpec` carries no fallback selectors (the chain lives on the task record
-        // and is filtered at start/resume), so a respawn needs no exclusion pass of its own.
+        // RpcProcessRunner applies current exclusions to rebuilt decorated selectors.
         self.0
             .start(spec)
             .map(|handle| handle as std::sync::Arc<dyn senpi_task::manager::ManagedChildHandle>)
@@ -256,9 +255,10 @@ pub fn build_rpc_respawn_runner(
 /// The respawn seam as the engine builds it: the excluded models are enforced on the manager's start
 /// and resume paths, which is where a revived child's chain is filtered.
 pub fn build_rpc_respawn_runner_with_exclusions(
-    options: senpi_task::runners::rpc_process::RpcProcessRunnerOptions,
-    _exclude_models: Vec<String>,
+    mut options: senpi_task::runners::rpc_process::RpcProcessRunnerOptions,
+    exclude_models: Vec<String>,
 ) -> std::sync::Arc<dyn senpi_task::manager::types::RpcRespawnRunner> {
+    options.exclude_models = Some(std::sync::Arc::new(move || exclude_models.clone()));
     build_rpc_respawn_runner(options)
 }
 
