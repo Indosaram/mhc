@@ -1,6 +1,7 @@
 use pretty_assertions::assert_eq;
 
 use super::*;
+use crate::agreements::{AgreementAuthor, AgreementScope, FactsKnownAgreement};
 use crate::facts::schema::{FACTS_QUEUE_VERSION, FactsQueueEntry, FactsQueueRange};
 use crate::journal::entries::TranscriptEntry;
 use crate::support::time::format_rfc3339_millis;
@@ -441,4 +442,43 @@ fn test_incremental_total_matches_full_measurement() {
         let full = measure_facts_payload_bytes(&envelope.to_payload(entries[..count].to_vec()));
         assert_eq!(total, full, "count {count}");
     }
+}
+
+#[test]
+fn test_measure_entries_bytes_agreements_parity() {
+    // given
+    let mut envelope = test_envelope();
+    envelope.agreements = Some(vec![
+        FactsKnownAgreement {
+            id: "agr-1".to_string(),
+            scope: AgreementScope::Global,
+            by: AgreementAuthor::Human,
+            text: "Always preserve user intent".to_string(),
+            n: 0,
+        },
+        FactsKnownAgreement {
+            id: "agr-2".to_string(),
+            scope: AgreementScope::Project,
+            by: AgreementAuthor::Agent,
+            text: "Do not touch unrelated files".to_string(),
+            n: 2,
+        },
+    ]);
+    let entry = sample_entry("alpha", "m1", 1, Some("café ☕"), None);
+    let entries = [&entry];
+
+    // when
+    let measured = measure_entries_bytes(&envelope, &entries);
+
+    // then
+    let payload = envelope.to_payload(vec![entry]);
+    let serialized = serialize_facts_payload(&payload);
+    assert_eq!(measured, serialized.len());
+    assert_eq!(measured, measure_facts_payload_bytes(&payload));
+
+    let empty_measured = measure_entries_bytes(&envelope, &[]);
+    let empty_payload = envelope.to_payload(Vec::new());
+    let empty_serialized = serialize_facts_payload(&empty_payload);
+    assert_eq!(empty_measured, empty_serialized.len());
+    assert_eq!(empty_measured, measure_facts_payload_bytes(&empty_payload));
 }
