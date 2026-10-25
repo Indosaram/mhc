@@ -224,6 +224,13 @@ impl TelemetryTransportOptions {
 /// no flush step, matching the optional `flush` of the TS contract.
 pub trait TelemetryTransport: Send + Sync {
     fn capture(&self, message: &TelemetryCaptureMessage) -> Result<(), TelemetryError>;
+    /// Durable send: resolves only after acknowledgment, never merely after enqueueing.
+    fn capture_durable(
+        &self,
+        message: TelemetryCaptureMessage,
+    ) -> BoxFuture<'_, Result<(), TelemetryError>> {
+        Box::pin(async move { self.capture(&message) })
+    }
     fn flush(&self) -> Option<BoxFuture<'_, Result<(), TelemetryError>>>;
     fn shutdown(&self) -> BoxFuture<'_, Result<(), TelemetryError>>;
 }
