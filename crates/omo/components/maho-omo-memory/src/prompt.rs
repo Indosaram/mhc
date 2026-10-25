@@ -306,7 +306,8 @@ pub fn register_memory_prompt_handler_with_cache(
                     Ok(match result {
                         None => EventResult::None,
                         Some(result) => {
-                            EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt_parts: None,
+                            EventResult::BeforeAgentStart(BeforeAgentStartEventResult {
+                                system_prompt_parts: None,
                                 system_prompt: Some(result.system_prompt),
                                 message: Some(CustomMessage {
                                     custom_type: result.message.custom_type.into(),

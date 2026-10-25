@@ -1,6 +1,5 @@
 //! Cross-process locks for memory writes, reflection scheduling, and transcript state.
 
-pub mod proven_dead_takeovers;
 pub mod acquire;
 pub mod candidate_sweep;
 pub mod counting_lease;
@@ -8,6 +7,7 @@ pub mod domains;
 pub mod lock_record;
 pub mod os_file_lock;
 pub mod process_identity;
+pub mod proven_dead_takeovers;
 pub mod recall_wake_domain;
 pub mod reflection_run_domain;
 pub mod reflection_run_lease;

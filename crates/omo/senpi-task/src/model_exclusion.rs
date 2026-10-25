@@ -53,11 +53,7 @@ fn selector_tails(model: &str) -> Vec<&str> {
         .match_indices('/')
         .map(|(index, _)| &model[index + 1..])
         .collect();
-    if tails.is_empty() {
-        vec![model]
-    } else {
-        tails
-    }
+    if tails.is_empty() { vec![model] } else { tails }
 }
 
 /// The entry that keeps `model` out, or `None` (`excluded-models.ts` `excludedModelPattern`).

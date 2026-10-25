@@ -23,7 +23,9 @@ use crate::fs;
 use crate::locks::acquire::{
     AcquireLockError, AcquireLockOptions, delay, is_lock_owner_proven_dead, release_lock,
 };
-use crate::locks::lock_record::{CreateLockRecordOptions, LockRecord, create_lock_record, parse_lock_record};
+use crate::locks::lock_record::{
+    CreateLockRecordOptions, LockRecord, create_lock_record, parse_lock_record,
+};
 use crate::support::random::random_uuid;
 use crate::support::time::now_millis;
 
@@ -250,7 +252,9 @@ pub fn acquire_reflection_run_lease(
     locks_directory: &Path,
     options: &ReflectionRunLeaseOptions<'_>,
 ) -> Result<ReflectionRunLease, ReflectionRunLeaseError> {
-    let max_concurrent = options.max_concurrent.unwrap_or(REFLECTION_RUN_DEFAULT_SLOTS);
+    let max_concurrent = options
+        .max_concurrent
+        .unwrap_or(REFLECTION_RUN_DEFAULT_SLOTS);
     let retry_delay_ms = options.retry_delay_ms.unwrap_or(DEFAULT_RETRY_DELAY_MS);
     if max_concurrent < 1 {
         return Err(ReflectionRunLeaseError::InvalidOptions(format!(
@@ -381,22 +385,26 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(error, ReflectionRunLeaseError::Aborted));
-        assert!(list_tickets(&reflection_run_ticket_directory(root.path()))
-            .unwrap()
-            .is_empty());
+        assert!(
+            list_tickets(&reflection_run_ticket_directory(root.path()))
+                .unwrap()
+                .is_empty()
+        );
         assert!(!reflection_run_lock_path(root.path(), 1).unwrap().exists());
     }
 
     #[test]
     fn a_slot_is_released_and_a_second_contender_can_take_it() {
         let root = tempfile::tempdir().unwrap();
-        let first = acquire_reflection_run_lease(root.path(), &ReflectionRunLeaseOptions::default())
-            .unwrap();
+        let first =
+            acquire_reflection_run_lease(root.path(), &ReflectionRunLeaseOptions::default())
+                .unwrap();
         assert_eq!(first.slot, 1);
         assert!(first.try_release().unwrap());
         assert!(!first.release());
-        let second = acquire_reflection_run_lease(root.path(), &ReflectionRunLeaseOptions::default())
-            .unwrap();
+        let second =
+            acquire_reflection_run_lease(root.path(), &ReflectionRunLeaseOptions::default())
+                .unwrap();
         assert_eq!(second.slot, 1);
         second.release();
     }
@@ -404,8 +412,9 @@ mod tests {
     #[test]
     fn a_retained_slot_names_the_child_so_the_supervisor_can_die() {
         let root = tempfile::tempdir().unwrap();
-        let lease = acquire_reflection_run_lease(root.path(), &ReflectionRunLeaseOptions::default())
-            .unwrap();
+        let lease =
+            acquire_reflection_run_lease(root.path(), &ReflectionRunLeaseOptions::default())
+                .unwrap();
         let child_pid = std::process::id();
         let child_start = crate::locks::process_identity::get_process_start_identity(child_pid);
         lease.retain_for(child_pid, child_start.as_deref()).unwrap();
@@ -440,9 +449,11 @@ mod tests {
         assert!(matches!(queued, Err(ReflectionRunLeaseError::Aborted)));
         first.release();
         second.release();
-        assert!(list_tickets(&reflection_run_ticket_directory(root.path()))
-            .unwrap()
-            .is_empty());
+        assert!(
+            list_tickets(&reflection_run_ticket_directory(root.path()))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -459,9 +470,14 @@ mod tests {
             "created_at": "2026-01-01T00:00:00.000Z",
             "purpose": TICKET_PURPOSE,
         });
-        fs::write(&tickets.join("0000000000000001-000000-0000000001-dead.ticket"), format!("{dead}\n").as_bytes()).unwrap();
-        let lease = acquire_reflection_run_lease(root.path(), &ReflectionRunLeaseOptions::default())
-            .unwrap();
+        fs::write(
+            &tickets.join("0000000000000001-000000-0000000001-dead.ticket"),
+            format!("{dead}\n").as_bytes(),
+        )
+        .unwrap();
+        let lease =
+            acquire_reflection_run_lease(root.path(), &ReflectionRunLeaseOptions::default())
+                .unwrap();
         assert_eq!(lease.slot, 1);
         lease.release();
     }
