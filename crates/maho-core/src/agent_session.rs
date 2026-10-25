@@ -346,6 +346,8 @@ pub struct PromptOptions {
     pub session_title_prompt: Option<SessionTitlePrompt>,
     /// Internal: the caller already reported this input to `on_human_input_admitted`.
     pub human_input_reported: bool,
+    pub held_messages: Vec<AgentMessage>,
+    pub held_input_ids: Vec<String>,
     /// Internal: who started this input when it differs from `source` (a person's answer sent through the extension API).
     pub input_origin: Option<InputOrigin>,
 }
@@ -932,8 +934,11 @@ pub struct AgentSessionInner {
     lifecycle: Mutex<crate::lifecycle_ledger::LifecycleLedger>,
     external_admission: crate::external_admission::ExternalAdmission,
     held_inputs: Mutex<crate::held_inputs::HeldInputs>,
+    delivered_held_inputs: Mutex<Vec<(String, u64)>>,
     stop_interrupt: Mutex<Option<Value>>,
     lifecycle_human_pending: std::sync::atomic::AtomicBool,
+    lifecycle_goal: Mutex<Option<Value>>,
+    lifecycle_turn_facts: Mutex<Option<Value>>,
     settings_manager: Arc<Mutex<SettingsManager>>,
     model_registry: ModelRegistry,
     state: Mutex<AgentSessionState>,
@@ -3916,9 +3921,12 @@ impl AgentSession {
                 agent,
                 lifecycle: Mutex::new(lifecycle),
                 held_inputs: Mutex::new(held_inputs),
+                delivered_held_inputs: Mutex::new(Vec::new()),
                 external_admission: Default::default(),
                 stop_interrupt: Mutex::new(None),
                 lifecycle_human_pending: std::sync::atomic::AtomicBool::new(false),
+                lifecycle_goal: Mutex::new(None),
+                lifecycle_turn_facts: Mutex::new(None),
                 session_manager: Mutex::new(config.session_manager),
                 settings_manager: Arc::new(Mutex::new(config.settings_manager)),
                 model_registry,
@@ -4405,6 +4413,17 @@ impl AgentSession {
         if let Some(boundary) = &end_boundary {
             self.with_work_obligations(|registry| registry.settle_run(&lock(&self.custody_run_id)));
             self.external_admission.observe_run_settled();
+            let generation = self.user_abort_generation.load(Ordering::SeqCst);
+            let claimed = std::mem::take(&mut *lock(&self.delivered_held_inputs));
+            let ids = claimed
+                .into_iter()
+                .filter(|(_, admitted)| *admitted == generation)
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>();
+            if let Err(error_message) = self.consume_held_inputs(&ids) {
+                self.emit(AgentSessionEvent::ContinuationError { error_message });
+            }
+
             lock(&self.lifecycle).run_active = false;
             self.clear_tool_barrier();
             self.refresh_lifecycle();
@@ -4767,6 +4786,10 @@ impl AgentSession {
         goal: Option<&Value>,
         turn_end: Option<&Value>,
     ) {
+        *lock(&self.lifecycle_goal) = goal.cloned();
+        if let Some(input) = turn_end {
+            *lock(&self.lifecycle_turn_facts) = Some(input.clone());
+        }
         let mut ledger = lock(&self.lifecycle);
         if let Some(goal) = goal.filter(|g| g["status"] == "complete") {
             if let Some(id) = goal["id"].as_str() {
@@ -4900,12 +4923,16 @@ impl AgentSession {
             .into_iter()
             .map(|h| json!({"kind":h.kind.as_str(),"since":h.since}))
             .collect::<Vec<_>>();
-        let (active, custody_persisted) = self.with_work_obligations(|registry| {
+        let (active, custody_persisted) = {
+            let registry = lock(&self.work_obligations);
+            let Some(registry) = registry.as_ref() else {
+                return;
+            };
             (
                 registry.active().into_iter().cloned().collect::<Vec<_>>(),
                 registry.persisted(),
             )
-        });
+        };
         let mut ledger = lock(&self.lifecycle);
         let mut waits = ledger
             .current
@@ -4934,24 +4961,31 @@ impl AgentSession {
         if !custody_persisted {
             ledger.custody_write_failed();
         }
-        let synthetic = if ledger.interrupted {
-            vec![(
-                format!("interrupted:{}", ledger.current["epoch"]),
-                "interrupted_run".to_owned(),
-            )]
-        } else {
-            vec![]
-        };
-        if ledger.interrupted {
-            waits["human"] = json!(ledger.attention.reconcile(&synthetic));
+        let goal = lock(&self.lifecycle_goal).clone();
+        let input = lock(&self.lifecycle_turn_facts).clone();
+        let facts = crate::session_lifecycle::evaluate_turn_facts(
+            input.as_ref(),
+            goal.as_ref(),
+            waits["background"].as_array().cloned().unwrap_or_default(),
+            pending,
+            waits["children"].as_u64().unwrap_or(0) as usize,
+            ledger.run_active,
+            ledger.interrupted,
+            &ledger.current,
+            activity.is_streaming
+                || activity.is_compacting
+                || activity.is_bash_running
+                || activity.has_session_work,
+        );
+        waits["background"] = json!(facts.background);
+        let mut human = waits["human"].as_array().cloned().unwrap_or_default();
+        human.retain(|h| h["synthetic"] != true);
+        human.extend(ledger.attention.reconcile(&facts.synthetic));
+        if ledger.current["role"] == "child" {
+            human.clear();
         }
-        let running = ledger.run_active
-            || activity.is_streaming
-            || activity.is_compacting
-            || activity.is_bash_running
-            || activity.has_session_work
-            || pending > 0
-            || self.external_admission.has_input_work();
+        waits["human"] = json!(human);
+        let running = facts.running || self.external_admission.has_input_work();
         let own = children.reports().into_iter().find(|r| {
             r["childSessionId"] == self.session_id() && ledger.current["taskId"] == r["taskId"]
         });
@@ -4962,9 +4996,15 @@ impl AgentSession {
             &holds,
             &waits,
             running,
-            false,
+            facts.failure.is_some(),
         );
-        let changed = ledger.update(&state, waits, holds, None, |record| {
+        if terminal.is_none()
+            && ["done", "failed", "cancelled"].contains(&state.as_str())
+            && !active.is_empty()
+        {
+            return;
+        }
+        let changed = ledger.update(&state, waits, holds, facts.failure, |record| {
             self.persist_lifecycle_record(record)
         });
         let snapshot = ledger.snapshot().clone();
@@ -4983,32 +5023,105 @@ impl AgentSession {
         })
     }
 
-    pub async fn deliver_held_inputs(&self) -> Result<(), String> {
+    /// Held commands leave custody before invocation; commands run once, in input order.
+    async fn take_held_input_messages(&self) -> Result<(Vec<AgentMessage>, Vec<String>), String> {
         let pending = self.held_inputs();
-        for input in pending {
-            let text = input["text"].as_str().ok_or("held input text is missing")?;
-            let images = input
-                .get("images")
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|e| format!("invalid held input images: {e}"))?;
-            Box::pin(self.prompt(
-                text,
-                PromptOptions {
-                    images,
-                    source: Some(InputSource::Interactive),
-                    ..Default::default()
-                },
-            ))
-            .await?;
-            let id = input["inputId"]
-                .as_str()
-                .ok_or("held input id is missing")?
-                .to_owned();
-            self.consume_held_inputs(&[id])?;
+        let mut commands = Vec::new();
+        for input in &pending {
+            if input["prepare"] != true {
+                continue;
+            }
+            let text = input["text"].as_str().expect("validated held text");
+            if let Some(command) = text.strip_prefix('/') {
+                let name = command.split_once(' ').map_or(command, |(name, _)| name);
+                let is_command = self
+                    .extension_runner
+                    .lock()
+                    .await
+                    .as_ref()
+                    .is_some_and(|r| r.get_command(name).is_some());
+                if is_command {
+                    commands.push(input.clone());
+                }
+            }
         }
-        Ok(())
+        self.consume_held_inputs(
+            &commands
+                .iter()
+                .map(|i| i["inputId"].as_str().expect("input id").to_owned())
+                .collect::<Vec<_>>(),
+        )?;
+        for input in commands {
+            if let Err(error) = Box::pin(
+                self.try_execute_extension_command(input["text"].as_str().expect("held command")),
+            )
+            .await
+            {
+                self.session_logger.warn(
+                    "held_command_failed",
+                    Some(&serde_json::Map::from_iter([(
+                        "error".into(),
+                        json!(error),
+                    )])),
+                );
+            }
+        }
+        let mut messages = Vec::new();
+        let mut ids = Vec::new();
+        let claimed = lock(&self.delivered_held_inputs)
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for input in self.held_inputs() {
+            let id = input["inputId"].as_str().expect("input id").to_owned();
+            if claimed.contains(&id) {
+                continue;
+            }
+            ids.push(id);
+            let text = input["text"].as_str().expect("held text");
+            let has_images = input
+                .get("images")
+                .and_then(Value::as_array)
+                .is_some_and(|i| !i.is_empty());
+            if input["prepare"] == true
+                && crate::manual_continue::is_manual_continue_submission(
+                    text,
+                    self.agent.has_messages(),
+                    has_images,
+                )
+            {
+                continue;
+            }
+            let text = self.expand_input(text, input["prepare"] == true)?;
+            let content = if has_images {
+                let mut blocks = vec![json!({"type":"text","text":text})];
+                blocks.extend(input["images"].as_array().expect("images").iter().cloned());
+                json!(blocks)
+            } else {
+                json!(text)
+            };
+            messages.push(session_message_from_value(json!({"role":"custom","customType":crate::held_inputs::HELD_INPUT_ENTRY,"content":content,"display":true,"timestamp":maho_ai::utils::diagnostics::now_ms()}))?);
+        }
+        Ok((messages, ids))
+    }
+
+    pub async fn deliver_held_inputs(&self) -> Result<(), String> {
+        if self.held_inputs().is_empty() {
+            return Ok(());
+        }
+        Box::pin(self.send_custom_message_content(
+            crate::manual_continue::MANUAL_CONTINUE_CUSTOM_TYPE.into(),
+            maho_agent::harness::messages::CustomMessageContent::Text(
+                crate::manual_continue::MANUAL_CONTINUE_DIRECTIVE.into(),
+            ),
+            false,
+            None,
+            maho_ext_api::SendMessageOptions {
+                trigger_turn: true,
+                deliver_as: None,
+            },
+        ))
+        .await
     }
 
     pub fn hold_input(&self, input: Value) -> Result<Value, String> {
@@ -5318,6 +5431,11 @@ impl AgentSession {
             self.human_input_admitted(prompt_kind(&options));
         }
         options.human_input_reported = true;
+        // Preparation runs before prompt admission locks; a held command may itself submit input.
+        let (held_messages, held_ids) = Box::pin(self.take_held_input_messages()).await?;
+        options.held_messages = held_messages;
+        options.held_input_ids = held_ids;
+
         let origin = options
             .input_origin
             .unwrap_or_else(|| input_origin_of(options.source));
@@ -5992,6 +6110,7 @@ impl AgentSession {
             Some(options.source.unwrap_or(InputSource::Interactive)),
         );
         let mut messages = self.engine_turn_input_messages();
+        messages.extend(options.held_messages.clone());
         messages.push(user_message);
         messages.extend(consumed.clone());
         self.apply_before_agent_start_result(&mut messages, before)?;
@@ -6016,6 +6135,14 @@ impl AgentSession {
         if let Some(admitted) = &options.prompt_admitted {
             admitted(PromptDisposition::Started);
         }
+        let generation = self.user_abort_generation.load(Ordering::SeqCst);
+        lock(&self.delivered_held_inputs).extend(
+            options
+                .held_input_ids
+                .iter()
+                .cloned()
+                .map(|id| (id, generation)),
+        );
         lock(&self.transcript_write_failures).start_run();
         if let Some(kept) = lock(&self.transcript_write_failures).take_refused_out(&self.messages())
         {
@@ -14641,6 +14768,7 @@ impl AgentSession {
                             registry.sync_source(source, kind, count);
                         }
                     }
+                    AgentSession { inner }.refresh_lifecycle();
                 }
             }),
         ));
@@ -16791,6 +16919,7 @@ impl AgentSession {
         user_abort_generation: u64,
         released: Option<ReleasedWakeAdmit>,
     ) -> Result<bool, String> {
+        let (held_messages, held_ids) = Box::pin(self.take_held_input_messages()).await?;
         let _admission = self.prompt_admission.lock().await;
         let _work = self.work_barrier.begin();
         let app_message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(
@@ -16819,7 +16948,8 @@ impl AgentSession {
             return Ok(false);
         }
         self.state().user_aborted = false;
-        let mut messages = vec![app_message.clone()];
+        let mut messages = held_messages;
+        messages.push(app_message.clone());
         self.state().trigger_turn_admission_abort_generation = Some(user_abort_generation);
         let admitted: Result<bool, String> = async {
             self.revalidate_continuation_admission(false).await?;
@@ -16894,6 +17024,8 @@ impl AgentSession {
         {
             return Ok(false);
         }
+        lock(&self.delivered_held_inputs)
+            .extend(held_ids.into_iter().map(|id| (id, user_abort_generation)));
         if crate::input_origin::custom_turn_origin(&message.custom_type) == InputOrigin::Engine {
             self.record_engine_turn_start(&message.custom_type);
         }
@@ -32552,9 +32684,13 @@ impl AgentSession {
         &self,
         f: impl FnOnce(&mut crate::work_obligations::SessionWorkObligations) -> R,
     ) -> R {
-        f(lock(&self.work_obligations)
-            .as_mut()
-            .expect("session custody initialized"))
+        let result = {
+            f(lock(&self.work_obligations)
+                .as_mut()
+                .expect("session custody initialized"))
+        };
+        self.refresh_lifecycle();
+        result
     }
 }
 
