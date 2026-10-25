@@ -83,6 +83,7 @@ fn test_render_memory_file_when_description_has_newlines_then_collapses_to_space
             read_only: Some("true".to_string()),
             kind: None,
             aliases: None,
+            extra: None,
         },
         "Body.",
     )
@@ -111,6 +112,7 @@ fn test_render_memory_file_when_body_is_empty_then_produces_trailing_newline() {
             read_only: None,
             kind: None,
             aliases: None,
+            extra: None,
         },
         "",
     )
@@ -167,6 +169,7 @@ fn test_render_memory_file_when_empty_description_then_throws_frontmatter_error(
             read_only: None,
             kind: None,
             aliases: None,
+            extra: None,
         },
         "body",
     )
@@ -182,6 +185,7 @@ fn test_render_memory_file_when_whitespace_only_description_then_throws_frontmat
             read_only: None,
             kind: None,
             aliases: None,
+            extra: None,
         },
         "body",
     )
@@ -198,6 +202,7 @@ fn test_frontmatter_when_varied_inputs_given_then_roundtrip_is_stable() {
                 read_only: None,
                 kind: None,
                 aliases: None,
+                extra: None,
             },
             body: "Body one.".to_string(),
         },
@@ -207,6 +212,7 @@ fn test_frontmatter_when_varied_inputs_given_then_roundtrip_is_stable() {
                 read_only: Some("true".to_string()),
                 kind: None,
                 aliases: None,
+                extra: None,
             },
             body: "Body two.\nSecond line.".to_string(),
         },
@@ -216,6 +222,7 @@ fn test_frontmatter_when_varied_inputs_given_then_roundtrip_is_stable() {
                 read_only: None,
                 kind: None,
                 aliases: None,
+                extra: None,
             },
             body: String::new(),
         },
@@ -225,6 +232,7 @@ fn test_frontmatter_when_varied_inputs_given_then_roundtrip_is_stable() {
                 read_only: Some("false".to_string()),
                 kind: None,
                 aliases: None,
+                extra: None,
             },
             body: "Body with special content.\n\nNew paragraph.".to_string(),
         },
@@ -245,6 +253,7 @@ fn test_render_memory_file_when_description_has_surrounding_whitespace_then_trim
             read_only: None,
             kind: None,
             aliases: None,
+            extra: None,
         },
         "body",
     )
@@ -438,3 +447,58 @@ fn test_parse_memory_file_when_aliases_has_special_chars_then_preserves_through_
         Some(vec!["O'Brien".to_string(), "Name with spaces".to_string()])
     );
 }
+
+#[test]
+fn test_frontmatter_extra_keys_parse_and_roundtrip() {
+    let content = "---\ndescription: With extras\nname: deploy\nversion: 1.0.0\ndeprecated: \"false\"\n---\nBody text.\n";
+    let parsed = parse_memory_file(content).unwrap();
+    assert_eq!(parsed.frontmatter.description, "With extras");
+    let extra = parsed.frontmatter.extra.as_ref().unwrap();
+    assert_eq!(extra.get("name").unwrap(), "deploy");
+    assert_eq!(extra.get("version").unwrap(), "1.0.0");
+    assert_eq!(extra.get("deprecated").unwrap(), "\"false\"");
+
+    let rendered = render_memory_file(&parsed.frontmatter, &parsed.body).unwrap();
+    let reparsed = parse_memory_file(&rendered).unwrap();
+    assert_eq!(parsed, reparsed);
+}
+
+#[test]
+fn test_frontmatter_extra_invalid_key_rejected() {
+    let mut extra = std::collections::BTreeMap::new();
+    extra.insert("invalid key with space".to_string(), "val".to_string());
+    let fm = MemoryFrontmatter {
+        description: "Test".to_string(),
+        read_only: None,
+        kind: None,
+        aliases: None,
+        extra: Some(extra),
+    };
+    let err = render_memory_file(&fm, "body").unwrap_err();
+    assert!(err.message.contains("is not a valid extra frontmatter key"));
+}
+
+#[test]
+fn test_lookalike_and_duplicate_frontmatter_keys() {
+    use crate::memfs::frontmatter_entries::{
+        duplicate_frontmatter_keys, look_alike_frontmatter_keys, normalized_frontmatter_key,
+    };
+    use crate::memfs::lookalike_text::look_alike_skeleton;
+
+    assert_eq!(look_alike_skeleton("Provenance"), "provenance");
+    assert_eq!(look_alike_skeleton("provenance\u{200b}"), "provenance");
+    assert_eq!(look_alike_skeleton("provenance\u{034f}"), "provenance");
+    assert_eq!(look_alike_skeleton("\u{0440}rovenance"), "provenance");
+    assert_eq!(normalized_frontmatter_key("\"provenance\""), "provenance");
+    assert_eq!(normalized_frontmatter_key("'provenance'"), "provenance");
+
+    let dup_content = "---\ndescription: Note\nprovenance: a\nprovenance: b\n---\nbody\n";
+    assert_eq!(duplicate_frontmatter_keys(dup_content), vec!["provenance"]);
+
+    let lookalike_content = "---\ndescription: Note\nProvenance: a\n---\nbody\n";
+    assert_eq!(
+        look_alike_frontmatter_keys(lookalike_content, "provenance"),
+        vec!["Provenance"]
+    );
+}
+
