@@ -328,6 +328,7 @@ fn recover_dead_owner(
         created_at: crate::support::time::now_iso(),
         purpose: format!("{}:recovery", contender.purpose),
         run_id: contender.run_id.clone(),
+        git_activity_lock: contender.git_activity_lock,
     };
 
     for attempt in 0..2 {
