@@ -30,7 +30,12 @@ pub mod parallelism_schema;
 mod process_crash_records;
 pub mod product_identity;
 pub mod savings_math;
+mod session_summary_recovery;
+mod session_summary_recovery_storage;
+#[cfg(test)]
+mod session_summary_recovery_tests;
 pub mod session_summary_schema;
+mod session_summary_storage;
 mod session_summary_store;
 mod session_summary_window;
 #[cfg(test)]

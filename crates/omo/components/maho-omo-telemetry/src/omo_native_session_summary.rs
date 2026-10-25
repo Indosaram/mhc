@@ -16,7 +16,8 @@ pub struct SessionSummaryRecorder {
     store: SummaryStore,
     live: BTreeMap<String, Value>,
     retired: BTreeMap<String, u64>,
-    recovered: bool,
+    recovery: crate::session_summary_recovery::SummaryRecovery,
+    publish: crate::session_summary_recovery::SummaryPublish,
     consent: Arc<NativeConsent>,
     capture: SummaryCapture,
     now: Arc<dyn Fn() -> f64 + Send + Sync>,
@@ -28,52 +29,44 @@ impl SessionSummaryRecorder {
         capture: SummaryCapture,
         now: Arc<dyn Fn() -> f64 + Send + Sync>,
     ) -> Self {
+        let summary_capture = Arc::clone(&capture);
+        Self::new_with_publish(
+            state,
+            consent,
+            capture,
+            now,
+            Arc::new(move |record| {
+                summary_capture("session_summary", record["properties"].clone());
+                true
+            }),
+        )
+    }
+    pub fn new_with_publish(
+        state: &Path,
+        consent: Arc<NativeConsent>,
+        capture: SummaryCapture,
+        now: Arc<dyn Fn() -> f64 + Send + Sync>,
+        publish: crate::session_summary_recovery::SummaryPublish,
+    ) -> Self {
         Self {
             store: SummaryStore::new(state),
             live: BTreeMap::new(),
             retired: BTreeMap::new(),
-            recovered: false,
+            recovery: Default::default(),
+            publish,
             consent,
             capture,
             now,
         }
     }
     fn recover(&mut self) -> std::io::Result<()> {
-        if self.recovered {
-            return Ok(());
-        }
-        self.recovered = true;
-        for mut orphan in self.store.claim_orphans((self.now)())? {
-            if !self.still_consented(&orphan) {
-                continue;
-            }
-            let hash = orphan["sessionHash"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned();
-            let seq = orphan["nextSeq"].as_u64().unwrap_or(0);
-            let window = orphan["window"].take();
-            orphan["nextSeq"] = json!(seq + u64::from(!window.is_null()));
-            orphan["pid"] = json!(std::process::id());
-            if orphan["nextSeq"].as_u64().unwrap_or(0) > 0 {
-                self.store.write(&orphan)?;
-            }
-            if !window.is_null() {
-                (self.capture)(
-                    "session_summary",
-                    summary_properties(
-                        &hash,
-                        &window,
-                        seq,
-                        "recovered",
-                        orphan["sessionRole"].as_str().unwrap_or("main"),
-                        RAW_TURN_SAMPLE_RATE,
-                    ),
-                );
-            }
-            self.live.insert(hash, orphan);
-        }
-        Ok(())
+        let consent = Arc::clone(&self.consent);
+        self.recovery.sweep(
+            &self.store,
+            (self.now)(),
+            &|cwd| consent.allowed_for(cwd),
+            &self.publish,
+        )
     }
     fn still_consented(&self, value: &Value) -> bool {
         value["consent"] == "enabled"
@@ -91,12 +84,30 @@ impl SessionSummaryRecorder {
                 .and_modify(|seq| *seq = (*seq).max(value["nextSeq"].as_u64().unwrap_or(0)))
                 .or_insert(value["nextSeq"].as_u64().unwrap_or(0));
         }
+        let own_key = format!(
+            "{hash}@{}",
+            self.store.owner["bootId"].as_str().unwrap_or_default()
+        );
         let stored = self
             .store
-            .read(hash)?
+            .read(&own_key)?
+            .or(self.store.read(hash)?)
             .filter(|value| self.still_consented(value));
         let mut value =
             stored.unwrap_or_else(|| rollup(hash, 0, Value::Null, cwd, (self.now)(), role));
+        if value["owner"] != self.store.owner && self.store.is_owner_alive(&value["owner"])? {
+            let seq = value["nextSeq"].as_u64().unwrap_or(0);
+            value = rollup(hash, seq, Value::Null, cwd, (self.now)(), role);
+            value["storageKey"] = json!(own_key);
+        } else {
+            value["owner"] = self.store.owner.clone();
+            if value["epoch"].is_null() {
+                value["epoch"] = json!(crate::session_summary_storage::new_summary_epoch()?);
+            }
+            if !value["window"].is_null() && value["windowId"].is_null() {
+                value["windowId"] = json!(crate::session_summary_storage::new_summary_id()?);
+            }
+        }
         let seq = value["nextSeq"]
             .as_u64()
             .unwrap_or(0)
@@ -104,7 +115,7 @@ impl SessionSummaryRecorder {
         value["nextSeq"] = json!(seq);
         Ok(value)
     }
-    fn flush(&self, hash: &str, value: &mut Value, reason: &str) -> std::io::Result<()> {
+    fn flush(&mut self, hash: &str, value: &mut Value, reason: &str) -> std::io::Result<()> {
         let window = value["window"].take();
         let window = if window.is_null() {
             open_window((self.now)(), &json!(0))
@@ -112,23 +123,37 @@ impl SessionSummaryRecorder {
             window
         };
         let seq = value["nextSeq"].as_u64().unwrap_or(0);
+        let id = value["windowId"]
+            .as_str()
+            .map(str::to_owned)
+            .map(Ok)
+            .unwrap_or_else(crate::session_summary_storage::new_summary_id)?;
+        let mut properties = summary_properties(
+            hash,
+            &window,
+            seq,
+            reason,
+            value["sessionRole"].as_str().unwrap_or("main"),
+            RAW_TURN_SAMPLE_RATE,
+        );
+        properties["summary_epoch"] = value["epoch"].clone();
+        properties["dropped_events"] = json!(std::mem::take(&mut self.recovery.dropped));
+        let pending = json!({"v":2,"consent":value["consent"],"scope":value["scope"],"uuid":id,"sessionHash":hash,"owner":self.store.owner,"createdAt":(self.now)(),"properties":properties});
+        self.store.write_pending(&pending)?;
+        value["windowId"] = Value::Null;
         value["nextSeq"] = json!(seq + 1);
         if reason == "shutdown" {
-            self.store.remove(hash)?;
+            self.store
+                .remove(value["storageKey"].as_str().unwrap_or(hash))?;
         } else {
             self.store.write(value)?;
         }
-        (self.capture)(
-            "session_summary",
-            summary_properties(
-                hash,
-                &window,
-                seq,
-                reason,
-                value["sessionRole"].as_str().unwrap_or("main"),
-                RAW_TURN_SAMPLE_RATE,
-            ),
-        );
+        self.recovery.deliver(
+            &self.store,
+            &pending,
+            &|cwd| self.consent.allowed_for(cwd),
+            &self.publish,
+        )?;
         Ok(())
     }
     pub fn record(
@@ -151,7 +176,12 @@ impl SessionSummaryRecorder {
         let at = (self.now)();
         if value["window"].is_null() {
             value["window"] = open_window(at, &properties["turn_index"]);
+            value["windowId"] = json!(crate::session_summary_storage::new_summary_id()?);
+            if value["epoch"].is_null() {
+                value["epoch"] = json!(crate::session_summary_storage::new_summary_epoch()?);
+            }
         }
+        value["owner"] = self.store.owner.clone();
         add_turn(&mut value["window"], &properties, event, invalid, at);
         value["updatedAt"] = json!(at);
         value["scope"] = json!({"cwd":cwd});
@@ -205,12 +235,23 @@ impl SessionSummaryRecorder {
     }
     fn discard(&mut self, hash: &str) -> std::io::Result<()> {
         if let Some(value) = self.live.remove(hash).or(self.store.read(hash)?) {
+            if let Some(key) = value["storageKey"].as_str() {
+                self.store.remove(key)?;
+            }
             self.retired
                 .entry(hash.into())
                 .and_modify(|seq| *seq = (*seq).max(value["nextSeq"].as_u64().unwrap_or(0)))
                 .or_insert(value["nextSeq"].as_u64().unwrap_or(0));
         }
-        self.store.remove(hash)
+        self.store.remove(hash)?;
+        for uuid in self.store.pending_uuids()? {
+            if let Some(record) = self.store.read_pending(&uuid)? {
+                if record["sessionHash"] == hash {
+                    self.store.remove_pending(&uuid)?;
+                }
+            }
+        }
+        Ok(())
     }
     pub fn purge(&mut self) -> std::io::Result<()> {
         let allowed = self.consent.allowed();
@@ -223,7 +264,30 @@ impl SessionSummaryRecorder {
         for hash in hashes {
             self.discard(&hash)?;
         }
+        for uuid in self.store.pending_uuids()? {
+            if let Some(record) = self.store.read_pending(&uuid)? {
+                if !self.still_consented(&record) {
+                    self.store.remove_pending(&uuid)?;
+                }
+            }
+        }
+        for key in self.store.window_keys()? {
+            if let Some(record) = self.store.read(&key)? {
+                if !self.still_consented(&record) {
+                    self.store.remove(&key)?;
+                }
+            }
+        }
         Ok(())
+    }
+    fn tick(&mut self) -> std::io::Result<()> {
+        self.purge()?;
+        let now = (self.now)();
+        for value in self.live.values_mut() {
+            value["updatedAt"] = json!(now);
+            self.store.write(value)?;
+        }
+        self.recover()
     }
 }
 
@@ -265,7 +329,7 @@ pub fn register_session_summary(
                     if let Err(error) = periodic
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
-                        .purge()
+                        .tick()
                     {
                         maho_ext_api::diagnostic(&format!(
                             "omo-native summary consent purge failed: {error}"
