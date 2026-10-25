@@ -176,7 +176,13 @@ impl HostAssembly {
                 let (socket_client,info)=maho_rpc::host_probe::authenticated_host_socket(&socket,&json!({"type":"get_protocol_info","observe":true}),30_000,Some(&agent_dir)).await.map_err(error)?;
                 let client=Arc::new(maho_rpc::rpc_client::RpcClient::from_stream(socket_client.into_stream(),Default::default()));
                 let live=connection::LiveClient::new(client.clone(),runtime.clone(),turn);
-                let opened=client.open_session(json!({"sessionPath":path,"cwd":spec.cwd,"kind":context.kind,"context":context.context,"retainOnDisconnect":true,"autoTitle":false,"model":spec.model,"thinkingLevel":spec.reasoning})).await.map_err(error)?;
+                let mut request=json!({"sessionPath":path,"cwd":spec.cwd,"kind":context.kind,"context":context.context,"retainOnDisconnect":true,"autoTitle":false});
+                if let Some(reference)=spec.model.as_deref() {
+                    let (provider,id)=reference.split_once('/').ok_or_else(||error("model_unavailable: noncanonical host model pin"))?;
+                    request["provider"]=provider.into();request["modelId"]=id.into();
+                }
+                if let Some(reasoning)=spec.reasoning.as_ref().or(spec.variant.as_ref()){request["thinkingLevel"]=reasoning.clone().into();}
+                let opened=client.open_session(request).await.map_err(error)?;
                 let routing_id=client.session_id().ok_or_else(||error("host open returned no routing ID"))?;
                 let watch=live.clone();
                 let port=Arc::new(session_client_connection::SessionClientConnection::new(routing_id.clone(),live.clone(),live.clone()).with_turn_watcher(Arc::new(move ||watch.watch())));
