@@ -6,7 +6,7 @@ fn resource(path: &str, enabled: bool) -> ResolvedResource {
     ResolvedResource {
         path: path.to_owned(),
         enabled,
-        metadata: PathMetadata {
+        metadata: PathMetadata { skill_provenance: None,
             source: "config".into(),
             scope: SourceScope::User,
             origin: SourceOrigin::TopLevel,

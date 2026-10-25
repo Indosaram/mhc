@@ -484,6 +484,30 @@ pub struct LoadSkillsOptions {
     pub include_defaults: bool,
 }
 
+/// Provenance-aware loading used by resource discovery. Authorization precedes all skill bytes.
+pub fn load_skills_with_provenance(options: &LoadSkillsOptions, provenance_by_path: &std::collections::HashMap<String, crate::skill_access::SkillProvenance>, user_skill_roots: &[String]) -> LoadSkillsResult {
+    let allowed = crate::skill_access::build_skill_allowed_set(&user_skill_roots.iter().map(std::path::PathBuf::from).collect::<Vec<_>>());
+    let mut result = LoadSkillsResult::default();
+    let mut seen = HashSet::new();
+    for path in &options.skill_paths {
+        let provenance = provenance_by_path.get(path);
+        let loaded = if Path::new(path).is_dir() {
+            load_skills_from_dir_internal(path, "path", true, None, None, provenance, Some(&allowed), &std::collections::BTreeSet::new())
+        } else {
+            let (skill, diagnostics) = load_skill_from_file_internal(path, "path", provenance, Some(&allowed));
+            LoadSkillsResult { skills:skill.into_iter().collect(), diagnostics }
+        };
+        result.diagnostics.extend(loaded.diagnostics);
+        for skill in loaded.skills {
+            if !seen.insert(canonicalize_path(&skill.file_path)) { continue; }
+            if let Some(existing) = result.skills.iter().find(|s| s.name == skill.name) {
+                result.diagnostics.push(ResourceDiagnostic { category: None, diagnostic_type:ResourceDiagnosticType::Collision, message:format!("name \"{}\" collision",skill.name), path:Some(skill.file_path.clone()), collision:Some(ResourceCollision { resource_type:ResourceCollisionType::Skill, name:skill.name, winner_path:existing.file_path.clone(), loser_path:skill.file_path, winner_source:None, loser_source:None }) });
+            } else { result.skills.push(skill); }
+        }
+    }
+    result
+}
+
 /// `loadSkills`: every configured location, with name collisions reported as diagnostics.
 pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
     let process_cwd = std::env::current_dir().map(|path| path.to_string_lossy().into_owned()).unwrap_or_default();
@@ -533,6 +557,9 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
             true,
             None,
             None,
+            None,
+            None,
+            &std::collections::BTreeSet::new(),
         );
         add_skills(user, &mut all_diagnostics, &mut collision_diagnostics, &mut skill_map, &mut real_path_set);
         let project = load_skills_from_dir_internal(
@@ -541,6 +568,9 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
             true,
             None,
             None,
+            None,
+            None,
+            &std::collections::BTreeSet::new(),
         );
         add_skills(project, &mut all_diagnostics, &mut collision_diagnostics, &mut skill_map, &mut real_path_set);
     }
@@ -573,7 +603,7 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
         };
         let source = get_source(&resolved_path);
         if metadata.is_dir() {
-            let result = load_skills_from_dir_internal(&resolved_path, &source, true, None, None);
+            let result = load_skills_from_dir_internal(&resolved_path, &source, true, None, None, None, None, &std::collections::BTreeSet::new());
             add_skills(result, &mut all_diagnostics, &mut collision_diagnostics, &mut skill_map, &mut real_path_set);
         } else if metadata.is_file() && resolved_path.ends_with(".md") {
             let (skill, diagnostics) = load_skill_from_file(&resolved_path, &source);

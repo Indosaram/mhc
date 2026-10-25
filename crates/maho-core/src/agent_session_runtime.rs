@@ -84,6 +84,7 @@ impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
             stream_simple: config.stream_simple,
             oauth: config.oauth,
             fallback_eligible: config.fallback_eligible,
+            owns_account_selection: config.owns_account_selection,
             refresh_models,
             retry_policy,
             ambient_auth: config.ambient_auth,

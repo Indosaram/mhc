@@ -612,6 +612,7 @@ pub struct ProviderModelConfig {
 }
 #[derive(Clone, Default)]
 pub struct ProviderConfig {
+    pub owns_account_selection: bool,
     pub ambient_auth: Option<Arc<dyn maho_ai::auth::types::ApiKeyAuth>>,
     pub images: BTreeMap<String, Arc<dyn maho_ai::types::ProviderImages>>,
     pub classifiers: BTreeMap<String, Arc<dyn maho_ai::types::ProviderClassifier>>,
