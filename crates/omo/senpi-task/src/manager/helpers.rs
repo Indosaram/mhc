@@ -37,6 +37,7 @@ pub fn build_record_input(
         execution_mode: execution_mode.as_str().to_string(),
         model: plan.model.clone(),
         notify_on_terminal: spec.run_in_background,
+        parent_model: spec.parent_model.clone(),
         task_summary: spec.task_summary.clone(),
         description: spec.description.clone(),
         requested_model: plan.requested_model.clone(),
@@ -56,6 +57,7 @@ pub fn build_managed_spec(
     plan: &ResolvedChildPlan,
     cwd: &str,
     state_dir: &Path,
+    traceparent: Option<String>,
 ) -> ManagedStartSpec {
     let prompt = match plan.prompt_append.as_deref() {
         Some(append) if !append.is_empty() => format!("{}\n\n{append}", spec.prompt),
@@ -67,6 +69,8 @@ pub fn build_managed_spec(
         env
     });
     ManagedStartSpec {
+        admission: spec.admission.clone(),
+        traceparent,
         task_id: record.task_id.clone(),
         cwd: spec.cwd.clone().unwrap_or_else(|| cwd.to_string()),
         state_dir: child_state_dir(state_dir, &record.task_id),
