@@ -240,6 +240,7 @@ pub fn mass_revive_at_cap(state: &ChaosState) {
             revival_deferred_reason: None,
             recovery_deadline_at: None,
             residency_claim: None,
+            terminal_at: None,
         };
         if terminal {
             record.final_response = Some("already done".to_string());

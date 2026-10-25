@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::host::HostError;
 use crate::state::{ResolvedModelRecord, TaskRecord, TaskRunStats, TaskStatus};
@@ -38,7 +38,7 @@ pub use crate::pause::ports::{RunRef, RunRefKind};
 
 /// Why a category child ended up on its parent session's model (`state/record-types.ts`
 /// `PARENT_MODEL_FALLBACK_REASONS`): every rung of its category chain failed first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParentModelFallbackReason {
     UsageLimit,
@@ -50,7 +50,7 @@ pub enum ParentModelFallbackReason {
 
 /// Derived on read, never persisted: `switching` while the handoff is in flight, `unconfirmed`
 /// once the task ended without a child ever being observed on the parent's model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParentModelFallbackPhase {
     Switching,
@@ -59,7 +59,7 @@ pub enum ParentModelFallbackPhase {
 
 /// The parent-model handoff record carried on a task record (`state/record-types.ts`
 /// `ParentModelFallback`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParentModelFallback {
     pub from_model: String,
     pub reason: ParentModelFallbackReason,
@@ -70,7 +70,7 @@ pub struct ParentModelFallback {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interrupted_tools: Option<Vec<String>>,
     pub at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub phase: Option<ParentModelFallbackPhase>,
 }
 

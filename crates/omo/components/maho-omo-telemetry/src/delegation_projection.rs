@@ -79,6 +79,10 @@ fn cost_of(props: &mut DelegationProperties, stats: Option<&TaskRunStats>) {
             Some(cost) if cost.is_finite() && cost >= 0.0 => { props.insert("cost_usd".into(), json!(cost)); "reported" }
             Some(_) | None => "invalid",
         },
+        Some(CostReportStatus::Partial) => match stats.and_then(|s| s.cost_usd) {
+            Some(cost) if cost.is_finite() && cost >= 0.0 => { props.insert("cost_usd".into(), json!(cost)); "partial" }
+            Some(_) | None => "invalid",
+        },
         Some(CostReportStatus::Invalid) => "invalid",
         Some(CostReportStatus::Unavailable) | None => "unavailable",
     };

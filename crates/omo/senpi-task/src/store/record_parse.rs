@@ -3,7 +3,7 @@ use serde_json::{Map, Value};
 use crate::shared::{DagOwnerKind, DagTaskOwner};
 use crate::state::{
     BackgroundMode, CancelRequest, DeliverAs, EffectiveModelRecord, FallbackClosingChild,
-    HostSessionIdentity, IsolationRecord, ParentModelFallback, PendingSteeringEntry,
+    HostSessionIdentity, IsolationRecord, PendingSteeringEntry,
     RESIDENCY_STATES, RESOLVED_MODEL_SOURCES, RecordedRunPause, ResidencyState,
     ResolvedModelRecord, ResolvedModelSource, ReviveDeliveryUncertainty, RunnerKind, SpawnSpecV1,
     StartQueued, SuspensionReason, TASK_STATUSES, TaskAwaitingInput, TaskIsolationSpec,
@@ -74,9 +74,13 @@ pub fn parse_task_record(
 
     let task_id =
         parse_task_id(&read_string(record, "task_id")?).map_err(|error| error.to_string())?;
+    let status = read_task_status(record)?;
+    let updated_at = read_string(record, "updated_at")?;
+    let terminal_at = read_optional_string(record, "terminal_at")?
+        .or_else(|| status.is_terminal().then(|| updated_at.clone()));
     Ok(TaskRecord {
         task_id: task_id.to_string(),
-        status: read_task_status(record)?,
+        status,
         residency_state: read_residency_state(record)?,
         parent_session_id: read_string(record, "parent_session_id")?,
         root_session_id: read_string(record, "root_session_id")?,
@@ -86,10 +90,11 @@ pub fn parse_task_record(
         model: read_string(record, "model")?,
         notify_on_terminal,
         created_at: read_string(record, "created_at")?,
-        updated_at: read_string(record, "updated_at")?,
+        updated_at,
         started_at,
+        terminal_at,
         notification: read_notification(record)?,
-        run_start_epoch: read_optional_integer(record, "run_start_epoch")?.unwrap_or(0),
+        run_start_epoch: read_optional_integer(record, "run_start_epoch")?.unwrap_or(crate::state::LEGACY_RUN_START_EPOCH),
         team_run_id: read_optional_string(record, "team_run_id")?,
         team_name: read_optional_string(record, "team_name")?,
         team_member_name: read_optional_string(record, "team_member_name")?,
@@ -134,7 +139,7 @@ pub fn parse_task_record(
         host_session,
         cancel_requested,
         parent_model: read_optional_string(record, "parent_model")?,
-        parent_model_fallback: parse_optional_parent_model_fallback(record),
+        parent_model_fallback: super::parent_model_fallback_parse::parse_optional_parent_model_fallback(value),
         fallback_closing_child: parse_optional_closing_child(record)?,
         start_queued: parse_optional_start_queued(record)?,
         revive_delivery_uncertain: parse_optional_revive_delivery_uncertainty(record)?,
@@ -147,23 +152,6 @@ pub fn parse_task_record(
         recovery_deadline_at: read_optional_number(record, "recovery_deadline_at")?,
         residency_claim: read_optional_string(record, "residency_claim")?,
     })
-}
-
-pub fn parse_optional_parent_model_fallback(record: &Object) -> Option<ParentModelFallback> {
-    let value = record.get("parent_model_fallback")?.as_object()?;
-    let parsed = (|| -> ParseResult<ParentModelFallback> {
-        Ok(ParentModelFallback {
-            from_model: read_string(value, "from_model")?,
-            reason: serde_json::from_value(value.get("reason").cloned().unwrap_or(Value::Null))
-                .map_err(|error| error.to_string())?,
-            at: read_string(value, "at")?,
-            detail: read_optional_string(value, "detail")?,
-            resets: read_optional_string(value, "resets")?,
-            interrupted_tools: read_optional_string_array(value, "interrupted_tools")?
-                .filter(|tools| !tools.is_empty()),
-        })
-    })();
-    parsed.ok()
 }
 
 pub fn parse_optional_closing_child(record: &Object) -> ParseResult<Option<FallbackClosingChild>> {
