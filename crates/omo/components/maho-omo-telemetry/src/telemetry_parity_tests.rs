@@ -223,6 +223,8 @@ fn orphan_window_is_claimed_once_and_uses_originating_consent() {
             "main",
         );
         value["pid"] = json!(2_147_483_647);
+        value["owner"] = json!({"pid":2_147_483_647_i64,"bootId":"dead"});
+        value["windowId"] = json!(crate::session_summary_storage::new_summary_id().unwrap());
         store.write(&value).unwrap();
     }
     let rows = Arc::new(Mutex::new(Vec::new()));
@@ -231,7 +233,7 @@ fn orphan_window_is_claimed_once_and_uses_originating_consent() {
         dir.path(),
         consent,
         Arc::new(move |name, props| captured.lock().unwrap().push((name.to_owned(), props))),
-        Arc::new(|| 1001.0),
+        Arc::new(|| 301_001.0),
     );
     recorder
         .finish(&"d".repeat(64), dir.path(), "shutdown", "main")
@@ -245,5 +247,5 @@ fn orphan_window_is_claimed_once_and_uses_originating_consent() {
             .join(format!("rollups/{}.json", "c".repeat(64)))
             .exists()
     );
-    assert!(store.claim_orphans(1002.0).unwrap().is_empty());
+    assert!(store.claim_orphans(301_002.0).unwrap().is_empty());
 }

@@ -123,12 +123,32 @@ impl Extension for OmoNativeTelemetryComponent {
                 client.capture_event(name, properties);
             }
         });
+        let summary_client = Arc::clone(&shared);
+        let summary_consent = Arc::clone(&consent);
         let summary = Arc::new(Mutex::new(
-            crate::omo_native_session_summary::SessionSummaryRecorder::new(
+            crate::omo_native_session_summary::SessionSummaryRecorder::new_with_publish(
                 &state_dir,
                 Arc::clone(&consent),
                 Arc::clone(&capture),
                 Arc::clone(&self.clock),
+                Arc::new(move |record| {
+                    if !summary_consent.allowed() {
+                        return false;
+                    }
+                    summary_client
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_ref()
+                        .is_some_and(|client| {
+                            record["properties"].as_object().is_some_and(|properties| {
+                                client.capture_event_with_delivery(
+                                    "session_summary",
+                                    properties,
+                                    record["uuid"].as_str().zip(record["createdAt"].as_f64()),
+                                )
+                            })
+                        })
+                }),
             ),
         ));
         let identity_client = Arc::clone(&shared);
