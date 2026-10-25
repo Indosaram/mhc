@@ -214,6 +214,52 @@ pub fn repeats_last_stall(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn complete_upstream_decision_table() {
+        let rows: Vec<(String, String, serde_json::Value, serde_json::Value)> =
+            serde_json::from_str(include_str!("../tests/fixtures/turn-end-rules.json")).unwrap();
+        let mut covered = std::collections::BTreeSet::new();
+        for (rule, label, overrides, expected) in rows {
+            let mut i = input();
+            for (key, value) in overrides.as_object().unwrap() {
+                match key.as_str() {
+                    "isChildSession" => i.is_child_session = value.as_bool().unwrap(),
+                    "mode" => {
+                        i.mode = match value.as_str().unwrap() {
+                            "print" => maho_ext_api::ExtensionMode::Print,
+                            "json" => maho_ext_api::ExtensionMode::Json,
+                            _ => maho_ext_api::ExtensionMode::Tui,
+                        }
+                    }
+                    "endedBy" => i.ended_by = value.as_str().unwrap().into(),
+                    "ledgerHold" => i.ledger_hold = Some(value.as_str().unwrap().into()),
+                    "willRetry" => i.will_retry = value.as_bool().unwrap(),
+                    "deadlineStop" => i.deadline_stop = value.as_bool().unwrap(),
+                    "goalStopped" => i.goal_stopped = value.as_bool().unwrap(),
+                    "openWork" => i.open_work = serde_json::from_value(value.clone()).unwrap(),
+                    "continuationQueued" => {
+                        i.continuation_queued = Some(value.as_str().unwrap().into())
+                    }
+                    "expectations" => {
+                        i.expectations = serde_json::from_value(value.clone()).unwrap()
+                    }
+                    "budgetSpent" => i.budget_spent = value.as_bool().unwrap(),
+                    "providerRetryAtMs" => i.provider_retry_at_ms = value.as_f64(),
+                    other => panic!("untranslated upstream input {other}"),
+                }
+            }
+            assert_eq!(
+                serde_json::to_value(evaluate_turn_end_liveness(&i)).unwrap(),
+                expected,
+                "{rule}: {label}"
+            );
+            covered.insert(rule);
+        }
+        assert_eq!(
+            covered,
+            TURN_END_RULES.iter().map(|rule| rule.to_string()).collect()
+        );
+    }
     fn input() -> TurnEndLivenessInput {
         TurnEndLivenessInput {
             is_child_session: false,

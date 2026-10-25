@@ -267,3 +267,131 @@ mod tests {
         assert_eq!(merge_project_env(&[&a, &b], true), b);
     }
 }
+
+#[cfg(test)]
+mod upstream_policy_cases {
+    use super::*;
+    fn env(items: &[(&str, &str)]) -> BTreeMap<String, String> {
+        items
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect()
+    }
+    #[test]
+    fn off_pattern_names_and_locale_secrets_are_withheld() {
+        let raw = serde_json::json!({"command":"synthetic","env":{
+            "A":"${ODD_SECRET}","B":"${SERVICE_DSN}","C":"${COOKIE_VALUE}","D":"${LC_SECRET}","E":"${HTTPS_PROXY}"}});
+        let ambient = env(&[
+            ("PATH", "/synthetic/bin"),
+            ("HOME", "/synthetic/home"),
+            ("LC_TIME", "C"),
+            ("LC_SECRET", "private"),
+            ("ODD_SECRET", "secret"),
+            ("SERVICE_DSN", "dsn"),
+            ("COOKIE_VALUE", "cookie"),
+            ("HTTPS_PROXY", "http://synthetic.invalid"),
+        ]);
+        let policy = project_mcp_environment(&raw, false, &[], None, &ambient).unwrap();
+        assert_eq!(
+            policy.withheld,
+            [
+                "COOKIE_VALUE",
+                "HTTPS_PROXY",
+                "LC_SECRET",
+                "ODD_SECRET",
+                "SERVICE_DSN"
+            ]
+        );
+        assert_eq!(policy.env["LC_TIME"], "C");
+        assert!(!policy.env.contains_key("LC_SECRET"));
+        assert_eq!(policy.env["A"], "${ODD_SECRET}");
+    }
+    #[test]
+    fn grants_expand_exactly_named_references_and_keep_layer_order() {
+        let raw = serde_json::json!({"command":"synthetic","env":{"REF":"${ODD_DSN}","OTHER":"${ODD_COOKIE}","HOME":"declared"}});
+        let policy = project_mcp_environment(
+            &raw,
+            false,
+            &["ODD_DSN".into()],
+            Some(&env(&[("HOME", "explicit"), ("SESSION", "caller")])),
+            &env(&[
+                ("HOME", "ambient"),
+                ("ODD_DSN", "dsn"),
+                ("ODD_COOKIE", "cookie"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            policy.env,
+            env(&[
+                ("HOME", "declared"),
+                ("ODD_DSN", "dsn"),
+                ("SESSION", "caller"),
+                ("REF", "dsn"),
+                ("OTHER", "${ODD_COOKIE}")
+            ])
+        );
+        assert_eq!(policy.withheld, ["ODD_COOKIE"]);
+        assert_eq!(raw["env"]["REF"], "${ODD_DSN}");
+    }
+    #[test]
+    fn remote_bearer_and_header_grants_do_not_grant_url_reference() {
+        let raw = serde_json::json!({"url":"https://synthetic.invalid/${PATH_PART}","headers":{"X-Token":"${HEADER_TOKEN}"},"auth":"bearer","bearerTokenEnv":"BEARER_TOKEN"});
+        let ambient = env(&[
+            ("PATH_PART", "part"),
+            ("HEADER_TOKEN", "header"),
+            ("BEARER_TOKEN", "bearer"),
+        ]);
+        let withheld = project_mcp_environment(&raw, true, &[], None, &ambient).unwrap();
+        assert_eq!(withheld.declaration["auth"], false);
+        assert!(withheld.declaration.get("bearerTokenEnv").is_none());
+        let granted = project_mcp_environment(
+            &raw,
+            true,
+            &["BEARER_TOKEN".into(), "HEADER_TOKEN".into()],
+            None,
+            &ambient,
+        )
+        .unwrap();
+        assert_eq!(granted.declaration["auth"], "bearer");
+        assert_eq!(granted.declaration["headers"]["X-Token"], "header");
+        assert_eq!(granted.declaration["url"], raw["url"]);
+        assert_eq!(granted.withheld, ["PATH_PART"]);
+    }
+    #[test]
+    fn trusted_stdio_uses_caller_and_rejects_command_substitution() {
+        let policy = project_mcp_environment(
+            &serde_json::json!({"command":"synthetic","env":{"REF":"${VALUE}"}}),
+            true,
+            &[],
+            Some(&env(&[("VALUE", "caller")])),
+            &env(&[("VALUE", "ambient")]),
+        )
+        .unwrap();
+        assert_eq!(policy.env["REF"], "caller");
+        assert!(
+            project_mcp_environment(
+                &serde_json::json!({"command":"$(synthetic)"}),
+                true,
+                &[],
+                None,
+                &BTreeMap::new()
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn windows_declared_key_replaces_all_previous_case_variants() {
+        assert_eq!(
+            merge_project_env(
+                &[
+                    &env(&[("Path", "mixed"), ("PATH", "upper")]),
+                    &env(&[("path", "explicit")]),
+                    &env(&[("Path", "declared")])
+                ],
+                true
+            ),
+            env(&[("Path", "declared")])
+        );
+    }
+}
