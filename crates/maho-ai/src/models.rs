@@ -426,10 +426,10 @@ impl ModelsAuth for ProviderModelsAuth {
                             .as_ref()
                             .filter(|method| method.has_login())
                             .ok_or_else(unsupported)?;
-                        method
-                            .login(&provider_interaction)
-                            .await
-                            .map(Credential::ApiKey)
+                        method.login(&provider_interaction).await.map(|mut credential| {
+                            if method.key_optional() && credential.key.as_ref().is_some_and(|key| key.trim().is_empty()) { credential.key = None; }
+                            Credential::ApiKey(credential)
+                        })
                     }
                     AuthType::OAuth => {
                         let method = auth.oauth.as_ref().ok_or_else(unsupported)?;

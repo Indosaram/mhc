@@ -1822,7 +1822,28 @@ impl SessionManager {
         thinking_selection: Option<Value>,
         model: Option<(&str, &str)>,
     ) -> Value {
+        self.append_thinking_level_change_context(thinking_level, thinking_selection, None, model)
+    }
+
+    pub fn append_thinking_level_change_with_context(
+        &mut self,
+        thinking_level: &str,
+        thinking_selection: Option<Value>,
+        source: Option<&str>,
+        model: Option<&maho_ai::types::Model>,
+    ) -> Value {
+        self.append_thinking_level_change_context(thinking_level, thinking_selection, source, model.map(|model| (model.provider.as_str(), model.id.as_str())))
+    }
+
+    fn append_thinking_level_change_context(
+        &mut self,
+        thinking_level: &str,
+        thinking_selection: Option<Value>,
+        source: Option<&str>,
+        model: Option<(&str, &str)>,
+    ) -> Value {
         let mut entry = self.base_entry("thinking_level_change");
+        if let Some(source) = source { entry.insert("source".into(), Value::from(source)); }
         entry.insert("thinkingLevel".to_owned(), Value::from(thinking_level));
         if let Some(selection) = thinking_selection {
             entry.insert("thinkingSelection".to_owned(), selection);
