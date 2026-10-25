@@ -122,13 +122,16 @@ impl HostTransport for CliHostTransport {
             .and_then(|reply| reply.get("data").cloned())
             .ok_or("host identity listing unanswered")?;
             #[cfg(not(unix))]
-            let reply = maho_rpc::host_probe::request_on_socket(
-                &socket,
-                &serde_json::json!({"type":"list_sessions","include_workers":true}),
-                LIST_TIMEOUT_MS,
-            )
-            .await
-            .ok_or("host identity listing unanswered")?;
+            let reply = {
+                let _ = &agent_dir;
+                maho_rpc::host_probe::request_on_socket(
+                    &socket,
+                    &serde_json::json!({"type":"list_sessions","include_workers":true}),
+                    LIST_TIMEOUT_MS,
+                )
+                .await
+                .ok_or("host identity listing unanswered")?
+            };
             let sessions = reply["sessions"]
                 .as_array()
                 .ok_or("host identity listing malformed")?;
@@ -216,12 +219,15 @@ async fn live_session_paths_with_agent_dir(
     .map_err(|error| error.to_string())?
     .and_then(|reply| reply.get("data").cloned());
     #[cfg(not(unix))]
-    let reply = maho_rpc::host_probe::request_on_socket(
-        socket,
-        &serde_json::json!({ "type": "list_sessions", "include_workers": true }),
-        LIST_TIMEOUT_MS,
-    )
-    .await;
+    let reply = {
+        let _ = agent_dir;
+        maho_rpc::host_probe::request_on_socket(
+            socket,
+            &serde_json::json!({ "type": "list_sessions", "include_workers": true }),
+            LIST_TIMEOUT_MS,
+        )
+        .await
+    };
     let Some(reply) = reply else {
         return Err(format!("list_sessions failed on {socket}"));
     };

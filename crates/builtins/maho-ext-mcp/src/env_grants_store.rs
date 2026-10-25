@@ -4,7 +4,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    fs::{File, OpenOptions},
+    fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
 };
@@ -137,7 +137,7 @@ fn update(
     temporary.as_file().sync_all()?;
     temporary.persist(path).map_err(|error| error.error)?;
     #[cfg(unix)]
-    File::open(directory)?.sync_all()?;
+    std::fs::File::open(directory)?.sync_all()?;
     lock.unlock()?;
     Ok(next)
 }
