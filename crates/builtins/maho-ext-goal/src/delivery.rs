@@ -829,6 +829,44 @@ mod tests {
                 .unwrap(),
             "disabled"
         );
+        let mut aborted = event.clone();
+        aborted.aborted = true;
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &aborted, None, false, &[], true)
+                .unwrap(),
+            "not-clean"
+        );
+        let mut question = event.clone();
+        question.messages = vec![maho_agent::types::AgentMessage::Llm(
+            maho_ai::types::Message::Assistant(Box::new(
+                maho_ai::providers::faux::faux_assistant_message(
+                    "Which parser?",
+                    Default::default(),
+                ),
+            )),
+        )];
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &question, None, false, &[], true)
+                .unwrap(),
+            "question"
+        );
+        ctx.mode = ExtensionMode::Print;
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &event, None, false, &[], true)
+                .unwrap(),
+            "non-interactive"
+        );
+        ctx.mode = ExtensionMode::Tui;
+        branch.entries.lock().unwrap().clear();
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &event, None, false, &[], true)
+                .unwrap(),
+            "no-open-tasks"
+        );
         session.dispose().await;
     }
     #[tokio::test]
