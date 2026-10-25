@@ -21,8 +21,10 @@ impl HandleRecovery {
     ) -> Option<T> {
         let state = self.clone();
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let deadline = std::time::Instant::now() + budget;
         std::thread::spawn(move || {
-            let predicate = Arc::new(move || state.abandoned());
+            let predicate =
+                Arc::new(move || state.abandoned() || std::time::Instant::now() >= deadline);
             let result = reattach(predicate);
             let _ = tx.send(result);
         });
