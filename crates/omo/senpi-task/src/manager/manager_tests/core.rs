@@ -75,8 +75,15 @@ fn given_team_member_with_parent_kernel_tools_when_started_then_refused_before_r
     let StartResult::PlanUnresolved(error) = result else {
         panic!("expected plan_unresolved");
     };
-    assert_eq!(error.code, crate::manager::types::PlanResolutionCode::InvalidTarget);
-    assert!(error.message.contains("cannot reach a parent JavaScript kernel"));
+    assert_eq!(
+        error.code,
+        crate::manager::types::PlanResolutionCode::InvalidTarget
+    );
+    assert!(
+        error
+            .message
+            .contains("cannot reach a parent JavaScript kernel")
+    );
     assert!(harness.store.list().expect("list").records.is_empty());
 }
 
@@ -613,7 +620,10 @@ fn given_cancel_lands_while_runner_start_awaits_when_handle_arrives_then_destroy
     // TS `await flush()`: destruction disposes the handle, then forgets it in its `finally`.
     wait_until("delayed handle disposed and forgotten", || {
         delayed.dispose_calls() >= 1
-            && !harness.manager.resident_task_ids().contains(&queued.task_id)
+            && !harness
+                .manager
+                .resident_task_ids()
+                .contains(&queued.task_id)
     });
 
     assert!(matches!(cancelled, CancelOutcome::Cancelled { .. }));
