@@ -1032,6 +1032,9 @@ pub struct AgentSessionInner {
     /// the session's runtime, or it dies with the caller's runtime after the action returned Ok.
     runtime_handle: Option<tokio::runtime::Handle>,
     /// Receipts for custom messages that rode a queue instead of appending immediately.
+    transcript_write_failures: Mutex<crate::transcript_write_failures::TranscriptWriteFailures>,
+    work_obligations: Mutex<Option<crate::work_obligations::SessionWorkObligations>>,
+    custody_run_id: Mutex<String>,
     queued_custom_receipts: Mutex<
         Vec<(
             maho_agent::harness::messages::CustomMessage,
@@ -3821,12 +3824,16 @@ impl AgentSession {
                 html_theme_resolver: Mutex::new(None),
                 html_built_in_tool_renderers: Mutex::new(None),
                 runtime_handle: tokio::runtime::Handle::try_current().ok(),
+                transcript_write_failures: Mutex::new(Default::default()),
+                work_obligations: Mutex::new(None),
+                custody_run_id: Mutex::new(uuid::Uuid::new_v4().to_string()),
                 queued_custom_receipts: Mutex::new(Vec::new()),
             }),
         };
         // The hold's callbacks reach the session through this cell; a session that never gets here has no hold users.
         let _ = session_cell.set(Arc::downgrade(&session.inner));
 
+        *lock(&session.work_obligations) = Some(crate::work_obligations::SessionWorkObligations::new(Box::new(SessionCustodyStore(Arc::downgrade(&session.inner)))));
         let initial_model = session.agent.state().model;
         let scoped_tier = lock(&session.state)
             .scoped_models
@@ -3945,6 +3952,7 @@ impl AgentSession {
             let mut state = self.state();
             match &mut event {
                 AgentEvent::AgentStart => {
+                    *lock(&self.custody_run_id) = uuid::Uuid::new_v4().to_string();
                     state.required_compaction_turn_error = None;
                     state.turn_index = 0;
                     state.message_replacements.clear();
@@ -4127,6 +4135,7 @@ impl AgentSession {
             }
         }
         if let Some(boundary) = &end_boundary {
+            self.with_work_obligations(|registry| registry.settle_run(&lock(&self.custody_run_id)));
             // senpi mutates the live agent_end event on a late User join (agent-abort-provenance.ts
             // `join`), so subscribers see the settled owner, not the snapshot taken at begin.
             let settled = self
@@ -4161,16 +4170,15 @@ impl AgentSession {
             {
                 match serde_json::to_value(&custom.content) {
                     Ok(content) => {
-                        self.with_session_manager_mut(|manager| {
-                            manager.append_custom_message(
-                                &custom.custom_type,
-                                content,
-                                custom.display,
-                                custom.details.clone(),
-                            )
+                        let failure = self.with_session_manager_mut(|manager| {
+                            manager.append_custom_message(&custom.custom_type, content, custom.display, custom.details.clone());
+                            manager.take_write_error()
                         });
                         self.state().message_revision += 1;
-                        self.settle_queued_custom_receipt(custom, Ok(()));
+                        if let Some(error) = failure {
+                            lock(&self.transcript_write_failures).record(message.clone(), error.clone());
+                            self.settle_queued_custom_receipt(custom, Err(error));
+                        } else { self.settle_queued_custom_receipt(custom, Ok(())); }
                     }
                     Err(error) => {
                         let error_message = error.to_string();
@@ -4188,11 +4196,16 @@ impl AgentSession {
             } else {
                 None
             };
+            let refused_message = message.clone();
             match serde_json::to_value(message) {
                 Ok(message) => {
-                    let entry = self.with_session_manager_mut(|manager| {
-                        manager.append_owned_message(message, input_source)
+                    let (entry, failure) = self.with_session_manager_mut(|manager| {
+                        let entry = manager.append_owned_message(message, input_source);
+                        (entry, manager.take_write_error())
                     });
+                    if let Some(error) = failure {
+                        lock(&self.transcript_write_failures).record(refused_message, error);
+                    }
                     if let Some(id) = entry.get("id").and_then(Value::as_str) {
                         if entry["message"]["role"] == "assistant" {
                             let mut state = self.state();
@@ -5184,6 +5197,10 @@ impl AgentSession {
         if let Some(admitted) = &options.prompt_admitted {
             admitted(PromptDisposition::Started);
         }
+        lock(&self.transcript_write_failures).start_run();
+        if let Some(kept) = lock(&self.transcript_write_failures).take_refused_out(&self.messages()) {
+            self.agent.set_messages(kept);
+        }
         self.agent_run_active.store(true, Ordering::SeqCst);
         self.hydrate_runtime_messages_for_run();
         // senpi `_promptAgent`: abort on a provider-side model substitution only when the setting
@@ -5199,6 +5216,7 @@ impl AgentSession {
         )
         .await;
         Box::pin(self.finish_provider_turn()).await?;
+        let transcript_failure = lock(&self.transcript_write_failures).take_report();
         self.flush_pending_bash_messages();
         let required_compaction_error = self.state().required_compaction_admission_error.take();
         let title_prompt = match options.session_title_prompt {
@@ -5218,9 +5236,8 @@ impl AgentSession {
         drop(_admission);
         self.emit_agent_settled().await;
         // senpi `_promptAgent`: the stored admission rejection surfaces as the prompt rejecting.
-        if let Some(error) = required_compaction_error {
-            return Err(error);
-        }
+        if let Some(error) = required_compaction_error { return Err(error); }
+        if let Some(failure) = transcript_failure { return Err(failure.error); }
         Ok(PromptDisposition::Started)
     }
 
@@ -9019,6 +9036,8 @@ impl AgentSession {
         previous: Option<String>,
     ) -> Result<(), String> {
         self.clear_queue(false);
+        *lock(&self.work_obligations) = Some(crate::work_obligations::SessionWorkObligations::new(Box::new(SessionCustodyStore(Arc::downgrade(&self.inner)))));
+        *lock(&self.transcript_write_failures) = Default::default();
         self.state().pending_model_switch = None;
         self.state().retry_attempt = 0;
         self.reset_hint_tier_state();
@@ -11780,7 +11799,8 @@ impl AgentSession {
             is_streaming: self.is_streaming(),
             is_compacting: self.is_compacting(),
             is_bash_running: self.is_bash_running(),
-            has_session_work: self.work_barrier.has_active_work() || self.is_retrying(),
+            has_session_work: self.work_barrier.has_active_work() || self.is_retrying()
+                || lock(&self.work_obligations).as_ref().is_some_and(|registry| !registry.active().is_empty()),
             has_active_wake_source: self.state().wake_sources.has_active(),
         }
     }
@@ -13679,6 +13699,12 @@ impl AgentSession {
             Arc::new(move |data| {
                 if let Some(inner) = weak.upgrade() {
                     lock(&inner.state).wake_sources.observe(data);
+                    if let (Some(source), Some(count)) = (data["source"].as_str(), data["activeCount"].as_f64()) {
+                        if let Some(registry) = lock(&inner.work_obligations).as_mut() {
+                            let kind = if data["kind"] == "children" { crate::work_custody_record::ObligationKind::Children } else { crate::work_custody_record::ObligationKind::Background };
+                            registry.sync_source(source, kind, count);
+                        }
+                    }
                 }
             }),
         ));
@@ -14644,6 +14670,10 @@ impl AgentSession {
         };
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(event))
             .await;
+        self.with_work_obligations(|registry| registry.retire_restored_sources());
+        if let Err(error_message) = self.with_work_obligations(|registry| registry.flush()) {
+            self.emit(AgentSessionEvent::ContinuationError { error_message });
+        }
         self.state().extension_lifecycle_started = true;
         let defaults = self.state().default_tool_names.clone();
         if let Some(defaults) = defaults {
@@ -31375,5 +31405,58 @@ mod tests {
         let entry = session.with_session_manager(|manager| manager.entries()[0].clone());
         assert_eq!(entry["message"]["command"], "printf native");
         assert_eq!(entry["message"]["excludeFromContext"], true);
+    }
+}
+
+struct SessionCustodyStore(std::sync::Weak<AgentSessionInner>);
+impl crate::work_obligations::CustodyStore for SessionCustodyStore {
+    fn entries(&self) -> Vec<Value> { self.0.upgrade().map_or_else(Vec::new, |inner| lock(&inner.session_manager).entries()) }
+    fn append(&mut self, record: &crate::work_custody_record::WorkCustodyRecord) -> Result<(), String> {
+        let inner = self.0.upgrade().ok_or("Session disposed")?;
+        let mut manager = lock(&inner.session_manager);
+        manager.append_custom("work-custody", Some(serde_json::to_value(record).map_err(|e| e.to_string())?));
+        manager.take_write_error().map_or(Ok(()), Err)
+    }
+    fn changed(&mut self) {
+        if let Some(inner) = self.0.upgrade() { inner.event_bus.emit("work-custody-changed", &serde_json::json!({})); }
+    }
+}
+impl AgentSession {
+    pub fn with_work_obligations<R>(&self, f: impl FnOnce(&mut crate::work_obligations::SessionWorkObligations) -> R) -> R {
+        f(lock(&self.work_obligations).as_mut().expect("session custody initialized"))
+    }
+}
+
+impl AgentSession {
+    /// Ticket admission precedes every write. Delivery is acknowledged only by the transcript receipt.
+    pub fn send_work_ticket(&self, ticket: &str, payload: crate::work_custody_record::CustodyPayload, trigger_turn: bool) -> Result<(), String> {
+        let admission = self.with_work_obligations(|registry| registry.admission(ticket));
+        if admission != crate::work_obligations::TicketAdmission::Admitted {
+            return Err(crate::work_obligations::DeliveryTicketRefused { ticket_id: ticket.into(), reason: admission }.to_string());
+        }
+        let mut wire = payload.message.clone();
+        wire["timestamp"] = serde_json::json!(maho_ai::utils::diagnostics::now_ms());
+        let message: maho_agent::harness::messages::CustomMessage = serde_json::from_value(wire).map_err(|e| e.to_string())?;
+        let options = maho_ext_api::SendMessageOptions { trigger_turn, deliver_as: payload.deliver_as.as_deref().map(|s| match s {
+            "followUp" => maho_ext_api::DeliverAs::FollowUp, "nextTurn" => maho_ext_api::DeliverAs::NextTurn, _ => maho_ext_api::DeliverAs::Steer,
+        }) };
+        if !self.with_work_obligations(|registry| registry.queue(ticket, payload)).map_err(|e| e.to_string())? { return Err("Delivery ticket no longer admitted".into()); }
+        let receipt = maho_ext_api::MessageDeliveryReceipt::pending();
+        let weak = Arc::downgrade(&self.inner); let ticket_id = ticket.to_owned();
+        receipt.on_settled(move |outcome| {
+            if let Some(inner) = weak.upgrade() {
+                let session = AgentSession { inner };
+                let run_id = lock(&session.custody_run_id).clone();
+                let entry_id = session.with_session_manager(|manager| manager.entries().last().and_then(|e| e["id"].as_str()).unwrap_or_default().to_owned());
+                session.with_work_obligations(|registry| {
+                    let result = if outcome.is_ok() { registry.consumed(&ticket_id, &run_id, &entry_id) } else { registry.failed(&ticket_id) };
+                    registry.end_delivery(&ticket_id);
+                    if let Err(error) = result { session.emit(AgentSessionEvent::ContinuationError { error_message: error.to_string() }); }
+                });
+            }
+        });
+        let result = self.send_custom_message_content_with_receipt(message, options, Some(receipt.clone())).map_err(|e| e.message);
+        if let Err(error) = &result { receipt.resolve_failed(error.clone()); }
+        result
     }
 }

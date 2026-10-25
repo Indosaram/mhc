@@ -11,6 +11,7 @@ pub const WORKPOOL_TOOL_LABEL: &str = "Workpool";
 pub const WORKPOOL_DESCRIPTION: &str = "Create and inspect engine-owned keyed work queues. Push returns durable IDs without waiting for capacity. Omitted mode uses the approved keep_alive default; fresh remains selectable. Inspect reads durable keyed data or errors; close delivers one aggregate; uncertain delivery is never retried automatically.";
 
 pub trait WorkpoolToolBackend: Send + Sync {
+    fn attach<'a>(&'a self, _session_id: &'a str) -> Pin<Box<dyn Future<Output = Result<(), WorkpoolError>> + Send + 'a>> { Box::pin(async { Ok(()) }) }
     fn execute<'a>(&'a self, caller: &'a WorkpoolCaller, input: WorkpoolToolParams) -> Pin<Box<dyn Future<Output = Result<Value, WorkpoolError>> + Send + 'a>>;
 }
 
