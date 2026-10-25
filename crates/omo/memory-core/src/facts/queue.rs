@@ -4,10 +4,13 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
+use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, Poll, Waker};
 
 use serde::{Deserialize, Serialize};
 
@@ -28,33 +31,98 @@ use super::schema::{
 
 const LOCK_WAIT_MS: u64 = 2000;
 
-/// Abort signal for cancelling facts queue operations.
-#[derive(Debug, Clone, Default)]
-pub struct FactsAbortSignal {
+#[derive(Debug, Default)]
+struct FactsAbortSignalInner {
     aborted: Arc<AtomicBool>,
+    wakers: Mutex<Vec<Waker>>,
+}
+
+/// Abort signal for cancelling facts queue operations.
+#[derive(Debug, Clone)]
+pub struct FactsAbortSignal {
+    inner: Arc<FactsAbortSignalInner>,
+}
+
+impl Default for FactsAbortSignal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Future that resolves when a [`FactsAbortSignal`] is aborted.
+#[derive(Debug, Clone)]
+pub struct FactsAbortedFuture {
+    inner: Arc<FactsAbortSignalInner>,
+}
+
+impl Future for FactsAbortedFuture {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.inner.aborted.load(Ordering::SeqCst) {
+            return Poll::Ready(());
+        }
+
+        let mut wakers = self
+            .inner
+            .wakers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.inner.aborted.load(Ordering::SeqCst) {
+            return Poll::Ready(());
+        }
+
+        let waker = cx.waker();
+        if !wakers.iter().any(|w| w.will_wake(waker)) {
+            wakers.push(waker.clone());
+        }
+
+        Poll::Pending
+    }
 }
 
 impl FactsAbortSignal {
     /// Create a new un-aborted signal.
     pub fn new() -> Self {
         Self {
-            aborted: Arc::new(AtomicBool::new(false)),
+            inner: Arc::new(FactsAbortSignalInner {
+                aborted: Arc::new(AtomicBool::new(false)),
+                wakers: Mutex::new(Vec::new()),
+            }),
         }
     }
 
-    /// Mark the signal as aborted.
+    /// Mark the signal as aborted and wake all registered wakers.
     pub fn abort(&self) {
-        self.aborted.store(true, Ordering::SeqCst);
+        self.inner.aborted.store(true, Ordering::SeqCst);
+        let wakers = {
+            let mut guard = self
+                .inner
+                .wakers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *guard)
+        };
+        for waker in wakers {
+            waker.wake();
+        }
     }
 
     /// Check whether the signal has been aborted.
     pub fn is_aborted(&self) -> bool {
-        self.aborted.load(Ordering::SeqCst)
+        self.inner.aborted.load(Ordering::SeqCst)
     }
 
     /// Access the underlying atomic flag for shared cancellation state.
     pub fn flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.aborted)
+        Arc::clone(&self.inner.aborted)
+    }
+
+    /// Returns a future that resolves when the signal is marked as aborted.
+    pub fn aborted(&self) -> FactsAbortedFuture {
+        FactsAbortedFuture {
+            inner: Arc::clone(&self.inner),
+        }
     }
 }
 
