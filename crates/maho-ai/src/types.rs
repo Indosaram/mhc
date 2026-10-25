@@ -870,7 +870,17 @@ pub struct UsageCost {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RequestContextUsage { pub input: u64, pub output: u64 }
+
+fn deserialize_context_usage<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Option<RequestContextUsage>>, D::Error> {
+    Ok(Some(Option::<RequestContextUsage>::deserialize(deserializer)?))
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Usage {
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_context_usage")]
+    pub context_usage: Option<Option<RequestContextUsage>>,
     pub input: u64,
     pub output: u64,
     pub cache_read: u64,

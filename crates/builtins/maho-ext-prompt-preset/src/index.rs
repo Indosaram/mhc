@@ -50,7 +50,7 @@ fn settings(ctx: &ExtensionContext) -> PromptPresetName {
     load_prompt_preset_settings(settings.get_project().get("promptPreset").and_then(|value| value.as_str()), settings.get_global().get("promptPreset").and_then(|value| value.as_str()))
 }
 fn builder_input(options: &BuildSystemPromptOptions, ctx: &ExtensionContext) -> BuildDynamicSystemPromptOptions<'static> {
-    BuildDynamicSystemPromptOptions {
+    BuildDynamicSystemPromptOptions { custom_prompt: None, append_system_prompt: None, on_parts: None,
         cwd: if options.cwd.as_os_str().is_empty() { ctx.cwd.to_string_lossy().into_owned() } else { options.cwd.to_string_lossy().into_owned() },
             selected_tools: options.tools.clone(), tool_snippets: options.tool_snippets.iter().map(|(name, snippet)| (name.clone(), snippet.clone())).collect(), prompt_guidelines: options.prompt_guidelines.clone(),
         context_files: options.context_files.iter().map(|file| maho_core::system_prompt::ContextFile { path: file.path.clone(), content: file.content.clone() }).collect(),

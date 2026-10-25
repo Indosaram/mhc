@@ -24,7 +24,7 @@ fn clone_legacy_message(source: &AssistantMessage, content: Vec<ContentBlock>) -
         response_id: source.response_id.clone(),
         provider_thinking_level: None,
         diagnostics: None,
-        usage: Usage {
+        usage: Usage { context_usage: source.usage.context_usage,
             input: source.usage.input,
             output: source.usage.output,
             cache_read: source.usage.cache_read,
@@ -124,7 +124,7 @@ mod tests {
     };
 
     fn usage(reasoning: Option<u64>) -> Usage {
-        Usage {
+        Usage { context_usage: None,
             input: 1,
             output: 2,
             cache_read: 3,

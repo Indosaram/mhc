@@ -1963,7 +1963,7 @@ fn finalize_response(
                     .unwrap_or(0)
             })
             .unwrap_or(0);
-        output.usage = Usage {
+        output.usage = Usage { context_usage: None,
             input: field_u64(usage, "input_tokens")
                 .saturating_sub(cached_tokens)
                 .saturating_sub(cache_write_tokens),

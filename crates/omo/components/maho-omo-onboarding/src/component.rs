@@ -517,7 +517,7 @@ fn register_onboarding(
             let base=if forced {format!("Follow {skills_root}/onboarding/SKILL.md. Tour using their message.")}
                 else {format!("Answer fully; greet in their language; offer a one-line tour. On request/acceptance: Follow {skills_root}/onboarding/SKILL.md.")};
             let content=with_inventory(base).await;
-            Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult {message:Some(CustomMessage {custom_type:"omo-onboarding:context".into(),content:vec![ToolContent::text(content)],display:false,details:None}),system_prompt:None}))
+            Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt_parts: None,message:Some(CustomMessage {custom_type:"omo-onboarding:context".into(),content:vec![ToolContent::text(content)],display:false,details:None}),system_prompt:None}))
         })
     }));
 

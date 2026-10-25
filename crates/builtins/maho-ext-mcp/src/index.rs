@@ -71,7 +71,7 @@ pub fn register_mcp_lifecycle_with_tool_search(api:&mut ExtensionApi,registry:Ar
         deferred.wait(std::time::Duration::from_millis(crate::startup_race::MCP_ATTACH_SETTLE_TIMEOUT_MS)).await;
         let service=service.lock().await;
         let block=crate::instructions::refresh_mcp_instructions_for_session(&service).await;
-        Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult {message:None,system_prompt:crate::instructions::inject_mcp_instructions(&block,&event.system_prompt)}))
+        Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt_parts: None,message:None,system_prompt:crate::instructions::inject_mcp_instructions(&block,&event.system_prompt)}))
     })}));
     service
 }

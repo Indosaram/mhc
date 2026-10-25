@@ -29,7 +29,7 @@ use maho_ai::types::{
 use serde_json::{Map, json};
 
 fn usage() -> Usage {
-    Usage {
+    Usage { context_usage: None,
         input: 100,
         output: 50,
         cache_read: 0,

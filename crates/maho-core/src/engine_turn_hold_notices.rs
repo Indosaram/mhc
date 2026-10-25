@@ -12,6 +12,7 @@ pub type WarnFn = Box<dyn Fn(&str) + Send + Sync>;
 struct HeldWake {
     notice_ids: Vec<String>,
     message: Option<Value>,
+    items: Vec<(String, Value)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -19,6 +20,21 @@ pub struct HeldMessage {
     pub source: String,
     pub notice_ids: Vec<String>,
     pub message: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct HeldItem {
+    pub source: String,
+    pub message: Value,
+    pub item_id: String,
+    pub run_ref: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldItemReceipt {
+    pub item_id: String,
+    pub notice_id: String,
+    pub entry_id: String,
 }
 
 pub struct EngineTurnHoldNotices {
@@ -41,7 +57,11 @@ impl EngineTurnHoldNotices {
             }
             let data = entry.get("data").cloned().unwrap_or(Value::Null);
             match entry.get("customType").and_then(Value::as_str) {
-                Some("session-notice") => this.remember(&data),
+                Some("session-notice") => {
+                    if let Some(notices) = data.get("notices").and_then(Value::as_array) {
+                        for notice in notices { this.remember(notice); }
+                    } else { this.remember(&data); }
+                },
                 Some("session-notices-consumed") => {
                     let ids: Vec<&str> = data
                         .get("noticeIds")
@@ -50,6 +70,8 @@ impl EngineTurnHoldNotices {
                         .unwrap_or_default();
                     for (_, wake) in this.wakes.iter_mut() {
                         wake.notice_ids.retain(|id| !ids.contains(&id.as_str()));
+                        wake.items.retain(|(id, _)| !ids.contains(&id.as_str()));
+                        if !wake.notice_ids.iter().any(|id| !wake.items.iter().any(|(item, _)| item == id)) { wake.message = None; }
                     }
                     this.wakes.retain(|(_, wake)| !wake.notice_ids.is_empty());
                 }
@@ -57,6 +79,10 @@ impl EngineTurnHoldNotices {
             }
         }
         this
+    }
+
+    pub fn notice_ids(&self, source: &str) -> Vec<String> {
+        self.wakes.iter().find(|(s, _)| s == source).map(|(_, wake)| wake.notice_ids.clone()).unwrap_or_default()
     }
 
     pub fn sources(&self) -> Vec<(String, usize)> {
@@ -101,7 +127,15 @@ impl EngineTurnHoldNotices {
         )
     }
 
-    pub fn note(&mut self, source: &str, pause_seq: u64, message: Option<Value>) {
+    pub fn stopped_notice_text(count: usize) -> String {
+        format!("Paused: {count} {} arrived while paused. Send a message or /resume to continue.", if count == 1 { "update" } else { "updates" })
+    }
+
+    pub fn note(&mut self, source: &str, pause_seq: u64, message: Option<Value>) -> String {
+        self.note_with_stop(source, pause_seq, message, false)
+    }
+
+    pub fn note_with_stop(&mut self, source: &str, pause_seq: u64, message: Option<Value>, stopped: bool) -> String {
         let count = self.notice_count() + 1;
         let mut data = Map::new();
         data.insert("noticeId".into(), json!(uuid::Uuid::new_v4().to_string()));
@@ -114,7 +148,7 @@ impl EngineTurnHoldNotices {
         data.insert("heldCount".into(), json!(count));
         data.insert(
             "text".into(),
-            json!(self.notice_text_for(count, Some(source))),
+            json!(if stopped { Self::stopped_notice_text(count) } else { self.notice_text_for(count, Some(source)) }),
         );
         data.insert("action".into(), json!("resume_session"));
         if source != "goal"
@@ -126,49 +160,50 @@ impl EngineTurnHoldNotices {
         if let Err(error) = (self.append)("session-notice", data.clone()) {
             (self.warn)(&error);
         }
+        let id = data["noticeId"].as_str().unwrap_or_default().to_owned();
         self.remember(&data);
+        id
+    }
+
+    pub fn note_items(&mut self, pause_seq: u64, items: &[HeldItem], stopped: bool, append: impl FnOnce(Value) -> Result<String, String>) -> Result<Vec<HeldItemReceipt>, String> {
+        let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let notices: Vec<Value> = items.iter().enumerate().map(|(index, item)| {
+            let count = self.notice_count() + index + 1;
+            let mut notice = json!({"noticeId": uuid::Uuid::new_v4().to_string(), "producer": item.source, "pauseSeq": pause_seq, "at": at, "heldCount": count, "text": if stopped { Self::stopped_notice_text(count) } else { self.notice_text_for(count, Some(&item.source)) }, "action": "resume_session", "message": item.message, "itemId": item.item_id});
+            if let Some(run_ref) = &item.run_ref { notice["runRef"] = run_ref.clone(); }
+            notice
+        }).collect();
+        let entry_id = append(json!({"notices": notices}))?;
+        let receipts = items.iter().zip(&notices).map(|(item, notice)| HeldItemReceipt { item_id: item.item_id.clone(), notice_id: notice["noticeId"].as_str().unwrap_or_default().to_owned(), entry_id: entry_id.clone() }).collect();
+        for notice in &notices { self.remember(notice); }
+        Ok(receipts)
     }
 
     pub fn messages(&self) -> Vec<HeldMessage> {
         let mut out = Vec::new();
         for (source, wake) in &self.wakes {
-            let Some(message) = wake.message.as_ref() else {
-                continue;
-            };
-            if source == "goal" {
-                continue;
-            }
-            let notice_ids = wake.notice_ids.clone();
-            if source != "monitor" {
-                out.push(HeldMessage {
-                    source: source.clone(),
-                    notice_ids,
-                    message: message.clone(),
-                });
-                continue;
-            }
-            let prefix = format!(
-                "{} automatic monitor wakes held. Latest event:\n",
-                wake.notice_ids.len()
-            );
-            let mut message = message.clone();
-            if let Some(object) = message.as_object_mut() {
-                let content = match object.get("content") {
-                    Some(Value::String(text)) => Value::String(format!("{prefix}{text}")),
-                    Some(Value::Array(blocks)) => {
-                        let mut next = vec![json!({"type": "text", "text": prefix})];
-                        next.extend(blocks.iter().cloned());
-                        Value::Array(next)
+            let notice_ids: Vec<String> = wake.notice_ids.iter().filter(|id| !wake.items.iter().any(|(item, _)| item == *id)).cloned().collect();
+            if source != "goal" && !notice_ids.is_empty() {
+                if let Some(message) = &wake.message {
+                    let mut message = message.clone();
+                    if source == "monitor" {
+                        let prefix = format!("{} automatic monitor wakes held. Latest event:\n", notice_ids.len());
+                        if let Some(object) = message.as_object_mut() {
+                            let content = match object.get("content") {
+                                Some(Value::String(text)) => Value::String(format!("{prefix}{text}")),
+                                Some(Value::Array(blocks)) => {
+                                    let mut next = vec![json!({"type": "text", "text": prefix})];
+                                    next.extend(blocks.iter().cloned()); Value::Array(next)
+                                }
+                                _ => Value::Array(vec![json!({"type": "text", "text": prefix})]),
+                            };
+                            object.insert("content".into(), content);
+                        }
                     }
-                    _ => Value::Array(vec![json!({"type": "text", "text": prefix})]),
-                };
-                object.insert("content".into(), content);
+                    out.push(HeldMessage { source: source.clone(), notice_ids, message });
+                }
             }
-            out.push(HeldMessage {
-                source: source.clone(),
-                notice_ids,
-                message,
-            });
+            out.extend(wake.items.iter().map(|(id, message)| HeldMessage { source: source.clone(), notice_ids: vec![id.clone()], message: message.clone() }));
         }
         out
     }
@@ -202,6 +237,8 @@ impl EngineTurnHoldNotices {
         }
         let wake = &mut self.wakes[index].1;
         wake.notice_ids.retain(|id| !notice_ids.contains(id));
+        wake.items.retain(|(id, _)| !notice_ids.contains(id));
+        if !wake.notice_ids.iter().any(|id| !wake.items.iter().any(|(item, _)| item == id)) { wake.message = None; }
         if wake.notice_ids.is_empty() {
             self.wakes.remove(index);
         }
@@ -216,7 +253,8 @@ impl EngineTurnHoldNotices {
             .map(|(s, _)| s.clone())
             .collect();
         for source in sources {
-            self.consume(&source, pause_seq, None);
+            let ids: Vec<String> = self.wakes.iter().find(|(s, _)| s == &source).map(|(_, wake)| wake.notice_ids.iter().filter(|id| !wake.items.iter().any(|(item, _)| item == *id)).cloned().collect()).unwrap_or_default();
+            self.consume(&source, pause_seq, Some(&ids));
         }
     }
 
@@ -237,7 +275,8 @@ impl EngineTurnHoldNotices {
         let wake = &mut self.wakes[index].1;
         wake.notice_ids.push(id.to_string());
         if let Some(message) = notice.get("message").filter(|m| !m.is_null()) {
-            wake.message = Some(message.clone());
+            if notice.get("itemId").is_some() { wake.items.push((id.to_owned(), message.clone())); }
+            else { wake.message = Some(message.clone()); }
         }
     }
 }
@@ -259,6 +298,26 @@ mod tests {
             Ok(())
         });
         (log, append)
+    }
+
+    #[test]
+    fn itemized_payloads_survive_replay_and_plain_wakes() {
+        let mut notices = EngineTurnHoldNotices::new(&[], Box::new(|_, _| Ok(())), Box::new(|_| {}));
+        let items = vec![HeldItem { source: "monitor".into(), message: json!({"content": "first"}), item_id: "one".into(), run_ref: None }, HeldItem { source: "monitor".into(), message: json!({"content": "second"}), item_id: "two".into(), run_ref: Some(json!({"runId":"run"})) }];
+        assert!(notices.note_items(1, &items, true, |_| Err("disk full".into())).is_err());
+        assert_eq!(notices.notice_count(), 0);
+        let batch = std::sync::Mutex::new(Value::Null);
+        let receipts = notices.note_items(1, &items, true, |data| { *batch.lock().expect("batch") = data; Ok("entry".into()) }).expect("written");
+        notices.note("monitor", 1, Some(json!({"content": "latest"})));
+        assert_eq!(notices.messages().len(), 3);
+        let entries = vec![json!({"type":"custom", "customType":"session-notice", "data":batch.into_inner().expect("batch")})];
+        let mut replay = EngineTurnHoldNotices::new(&entries, Box::new(|_, _| Ok(())), Box::new(|_| {}));
+        assert_eq!(replay.messages()[0].message["content"], "first");
+        assert_eq!(replay.messages()[1].message["content"], "second");
+        replay.consume_notices(1);
+        assert_eq!(replay.notice_count(), 2);
+        assert!(replay.consume("monitor", 1, Some(&[receipts[0].notice_id.clone()])));
+        assert_eq!(replay.messages()[0].message["content"], "second");
     }
 
     #[test]

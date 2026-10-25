@@ -33,7 +33,7 @@ fn metadata() -> SessionMetadata {
 }
 
 fn zero_usage() -> Usage {
-    Usage {
+    Usage { context_usage: None,
         input: 0,
         output: 0,
         cache_read: 0,

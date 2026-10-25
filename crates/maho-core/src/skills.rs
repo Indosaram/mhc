@@ -255,6 +255,7 @@ fn load_skills_from_dir_internal(
 
 fn warning(message: impl Into<String>, path: &str) -> ResourceDiagnostic {
     ResourceDiagnostic {
+        category: None,
         diagnostic_type: ResourceDiagnosticType::Warning,
         message: message.into(),
         path: Some(path.to_string()),
@@ -426,6 +427,7 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
             }
             match map.iter().find(|(name, _)| *name == skill.name) {
                 Some((_, existing)) => collisions.push(ResourceDiagnostic {
+                    category: None,
                     diagnostic_type: ResourceDiagnosticType::Collision,
                     message: format!("name \"{}\" collision", skill.name),
                     path: Some(skill.file_path.clone()),
