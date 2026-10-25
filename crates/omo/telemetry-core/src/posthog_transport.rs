@@ -162,12 +162,11 @@ impl TelemetryTransport for PostHogTelemetryTransport {
             if let Some(uuid) = message.properties.get("$insert_id").and_then(Value::as_str) {
                 entry["uuid"] = json!(uuid);
             }
-            if let Some(seconds) = message.properties.get("$time").and_then(Value::as_f64) {
-                if let Some(at) = chrono::DateTime::from_timestamp_millis((seconds * 1000.0) as i64)
+            if let Some(seconds) = message.properties.get("$time").and_then(Value::as_f64)
+                && let Some(at) = chrono::DateTime::from_timestamp_millis((seconds * 1000.0) as i64)
                 {
                     entry["timestamp"] = json!(to_iso_string(at));
                 }
-            }
             let response = self
                 .inner
                 .http

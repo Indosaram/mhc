@@ -235,11 +235,10 @@ impl Drop for GrantsLock {
                 eprintln!("MCP grants lock heartbeat failed");
             }
         }
-        if self.ensure_owned().is_ok() {
-            if let Err(error) = fs::remove_dir(&self.path) {
+        if self.ensure_owned().is_ok()
+            && let Err(error) = fs::remove_dir(&self.path) {
                 eprintln!("MCP grants lock release: {error}");
             }
-        }
     }
 }
 fn replace_with_retry(
@@ -313,11 +312,10 @@ fn update(
             .map_err(|e| e.to_string())?;
         Ok(next)
     })();
-    if let Err(error) = fs::remove_file(&temporary) {
-        if error.kind() != std::io::ErrorKind::NotFound {
+    if let Err(error) = fs::remove_file(&temporary)
+        && error.kind() != std::io::ErrorKind::NotFound {
             eprintln!("MCP grants temporary cleanup: {error}");
         }
-    }
     result
 }
 pub fn add_grant(

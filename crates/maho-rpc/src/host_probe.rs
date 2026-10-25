@@ -195,56 +195,6 @@ pub async fn probe_session_count(socket_path: &str, timeout_ms: u64) -> Option<u
     .as_array()
     .map(Vec::len)
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn reply_matches_id_and_success() {
-        assert!(read_answer(r#"{"id":"other","success":true}"#).is_none());
-        assert!(read_answer(r#"{"id":"ensure-host-probe","success":false}"#).is_none());
-        assert_eq!(
-            read_answer(r#"{"id":"ensure-host-probe","success":true,"data":null}"#),
-            Some(serde_json::json!({}))
-        );
-    }
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn actual_socket_ignores_broadcast_and_unrelated_reply() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("probe.sock");
-        let listener = tokio::net::UnixListener::bind(&path).unwrap();
-        let serve = tokio::spawn(async move {
-            let (socket, _) = listener.accept().await.unwrap();
-            let mut socket = tokio::io::BufReader::new(socket);
-            use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-            let mut line = String::new();
-            socket.read_line(&mut line).await.unwrap();
-            let request: Value = serde_json::from_str(&line).unwrap();
-            let response = serde_json::json!({"id":request["id"],"success":true,"data":{}});
-            socket
-                .get_mut()
-                .write_all(format!("{response}\n").as_bytes())
-                .await
-                .unwrap();
-            line.clear();
-            socket.read_line(&mut line).await.unwrap();
-            let request: Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(request["id"], PROBE_REQUEST_ID);
-            socket.get_mut().write_all(b"{\"type\":\"agent_start\"}\n{\"id\":\"other\",\"success\":true}\n{\"id\":\"ensure-host-probe\",\"success\":true,\"data\":{\"sessions\":[{},{}]}}\n").await.unwrap();
-        });
-        assert_eq!(
-            probe_session_count(path.to_str().unwrap(), 1000).await,
-            Some(2)
-        );
-        serve.await.unwrap();
-    }
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn absent_endpoint_is_not_reachable() {
-        let temp = tempfile::tempdir().unwrap();
-        assert!(!probe_socket_reachable(temp.path().join("missing").to_str().unwrap(), 1000).await);
-    }
-}
 
 /// Authenticated raw request. Identity failures are typed, never mistaken for a missing endpoint.
 #[cfg(unix)]
@@ -343,12 +293,11 @@ pub async fn authenticated_host_socket(
                     "SENPI_CODING_AGENT_DIR",
                     "PI_CODING_AGENT_DIR",
                 ] {
-                    if let Ok(value) = std::env::var(name) {
-                        if !value.trim().is_empty() {
+                    if let Ok(value) = std::env::var(name)
+                        && !value.trim().is_empty() {
                             return std::path::absolute(value.trim())
                                 .unwrap_or_else(|_| std::path::PathBuf::from(value.trim()));
                         }
-                    }
                 }
                 let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
                 for path in [home.join(".omo/agent"), home.join(".omo")] {
@@ -390,7 +339,7 @@ pub async fn authenticated_host_socket(
             if GRACE_ROOTS
                 .get_or_init(Default::default)
                 .lock()
-                .unwrap()
+                .expect("authentication grace roots lock poisoned")
                 .insert(root.clone())
             {
                 eprintln!(
@@ -401,4 +350,54 @@ pub async fn authenticated_host_socket(
         }
     }
     Ok((socket, info))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn reply_matches_id_and_success() {
+        assert!(read_answer(r#"{"id":"other","success":true}"#).is_none());
+        assert!(read_answer(r#"{"id":"ensure-host-probe","success":false}"#).is_none());
+        assert_eq!(
+            read_answer(r#"{"id":"ensure-host-probe","success":true,"data":null}"#),
+            Some(serde_json::json!({}))
+        );
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn actual_socket_ignores_broadcast_and_unrelated_reply() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("probe.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let serve = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = tokio::io::BufReader::new(socket);
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+            let mut line = String::new();
+            socket.read_line(&mut line).await.unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            let response = serde_json::json!({"id":request["id"],"success":true,"data":{}});
+            socket
+                .get_mut()
+                .write_all(format!("{response}\n").as_bytes())
+                .await
+                .unwrap();
+            line.clear();
+            socket.read_line(&mut line).await.unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["id"], PROBE_REQUEST_ID);
+            socket.get_mut().write_all(b"{\"type\":\"agent_start\"}\n{\"id\":\"other\",\"success\":true}\n{\"id\":\"ensure-host-probe\",\"success\":true,\"data\":{\"sessions\":[{},{}]}}\n").await.unwrap();
+        });
+        assert_eq!(
+            probe_session_count(path.to_str().unwrap(), 1000).await,
+            Some(2)
+        );
+        serve.await.unwrap();
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn absent_endpoint_is_not_reachable() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(!probe_socket_reachable(temp.path().join("missing").to_str().unwrap(), 1000).await);
+    }
 }

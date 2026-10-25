@@ -74,11 +74,10 @@ pub fn describe_category_chain(
     let mut merged = builtin_category(name)
         .map(|builtin| builtin.config.to_value())
         .unwrap_or_else(|| serde_json::json!({}));
-    if let Some(user) = user.and_then(Value::as_object) {
-        if let Some(merged) = merged.as_object_mut() {
+    if let Some(user) = user.and_then(Value::as_object)
+        && let Some(merged) = merged.as_object_mut() {
             merged.extend(user.clone());
         }
-    }
     let mut declared = Vec::new();
     for candidate in category_model_candidates(&merged) {
         if user_models.contains(&candidate.model) {

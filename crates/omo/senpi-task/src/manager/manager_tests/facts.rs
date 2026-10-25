@@ -230,7 +230,7 @@ fn streamed_failed_tool_facts_survive_next_message_start_but_clear_after_parent_
     let task = started(harness.manager.start(&base_spec()));
     harness
         .store
-        .mutate(&task.task_id, &mut |fresh: &crate::state::TaskRecord| {
+        .mutate(&task.task_id, |fresh: &crate::state::TaskRecord| {
             crate::state::TaskRecord {
                 parent_model: Some("parent/model".into()),
                 ..fresh.clone()
@@ -328,7 +328,7 @@ fn concrete_host_lookup_stamps_durable_identity_not_predecessor_route() {
     let task = started(harness.manager.start(&base_spec()));
     harness
         .store
-        .mutate(&task.task_id, &mut |fresh: &crate::state::TaskRecord| {
+        .mutate(&task.task_id, |fresh: &crate::state::TaskRecord| {
             crate::state::TaskRecord {
                 child_session_id: Some("predecessor".into()),
                 host_session: Some(crate::state::HostSessionIdentity {

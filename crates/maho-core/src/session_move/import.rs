@@ -7,13 +7,14 @@ use super::ownership::*;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
+pub type RepositoryIdentityReader<'a> = &'a dyn Fn(&Path) -> Result<Option<RepositoryIdentity>, String>;
 pub struct ImportMovedSessionOptions<'a> {
     pub bundle_dir: &'a Path,
     pub target_cwd: &'a Path,
     pub ledger: &'a MoveLedger,
     pub session_dir: Option<&'a Path>,
     pub from: Option<&'a str>,
-    pub read_identity: Option<&'a dyn Fn(&Path) -> Result<Option<RepositoryIdentity>, String>>,
+    pub read_identity: Option<RepositoryIdentityReader<'a>>,
 }
 pub fn import_outcome(file: &Path, move_id: &str) -> LandingOutcome {
     let mut outcome = LandingOutcome::Absent;
@@ -140,8 +141,8 @@ pub async fn import_moved_session(
         Ok(file)
     }
     .await;
-    if let Err(error) = &result {
-        if !error.contains("move_fenced") && !error.contains("can no longer be imported") {
+    if let Err(error) = &result
+        && !error.contains("move_fenced") && !error.contains("can no longer be imported") {
             let reason = if error.contains("could not be verified") {
                 FailReason::BundleInvalid
             } else {
@@ -153,7 +154,6 @@ pub async fn import_moved_session(
                 .await
                 .map_err(|e| e.to_string())?;
         }
-    }
     result
 }
 fn replace_predecessor(target: &Path, session_id: &str, session_dir: &Path) -> Result<(), String> {

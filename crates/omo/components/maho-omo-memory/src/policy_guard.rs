@@ -43,13 +43,11 @@ pub fn build_memory_filesystem_policy(context:&MemoryIdentityContext)->std::io::
 impl FilesystemPolicy {
     pub fn check(&self,operation:FilesystemOperation,path:&Path)->std::io::Result<FilesystemPolicyDecision>{
         let target=resolve_path(path)?;
-        if matches!(operation, FilesystemOperation::Read) {
-            if let Some(ctx) = &self.context {
-                if crate::project_memory_grants::is_granted_project_memory_read(ctx, &target) {
+        if matches!(operation, FilesystemOperation::Read)
+            && let Some(ctx) = &self.context
+                && crate::project_memory_grants::is_granted_project_memory_read(ctx, &target) {
                     return Ok(FilesystemPolicyDecision::Allow);
                 }
-            }
-        }
         if self.own_roots.iter().any(|root|within(root,&target)) {
             return Ok(FilesystemPolicyDecision::Allow);
         }

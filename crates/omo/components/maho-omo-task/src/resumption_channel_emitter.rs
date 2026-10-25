@@ -1,3 +1,5 @@
+pub type OwnedWorkpoolTaskIdsCallback = Option<Arc<dyn Fn() -> Result<std::collections::BTreeSet<String>, String> + Send + Sync>>;
+pub type LoggerCallback = Option<Arc<dyn Fn(&str) + Send + Sync>>;
 use std::sync::Arc;
 use maho_ext_api::EventBus;
 use serde_json::{json, Value};
@@ -22,7 +24,7 @@ pub struct TaskResumptionChannelManager {
     pub manager: Arc<senpi_task::manager::TaskManager>,
     pub ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps,
     /// The session's workpool ownership view, when the composition wires one.
-    pub owned_workpool_task_ids: Option<Arc<dyn Fn() -> Result<std::collections::BTreeSet<String>, String> + Send + Sync>>,
+    pub owned_workpool_task_ids: OwnedWorkpoolTaskIdsCallback,
 }
 
 #[derive(Clone, Copy)]
@@ -32,7 +34,7 @@ pub struct QueuedResumptionChannelEmitter {
     events: EventBus,
     manager: Arc<dyn ResumptionChannelManager>,
     session_id: Arc<dyn Fn() -> Option<String> + Send + Sync>,
-    logger: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    logger: LoggerCallback,
     active: std::sync::atomic::AtomicBool,
     state: std::sync::Mutex<QueuedState>,
 }
@@ -87,7 +89,7 @@ impl QueuedResumptionChannelEmitter {
     pub fn new(events: EventBus, manager: Arc<dyn ResumptionChannelManager>, session_id: Arc<dyn Fn() -> Option<String> + Send + Sync>) -> Arc<Self> {
         Self::with_logger(events, manager, session_id, None)
     }
-    pub fn with_logger(events: EventBus, manager: Arc<dyn ResumptionChannelManager>, session_id: Arc<dyn Fn() -> Option<String> + Send + Sync>, logger: Option<Arc<dyn Fn(&str) + Send + Sync>>) -> Arc<Self> {
+    pub fn with_logger(events: EventBus, manager: Arc<dyn ResumptionChannelManager>, session_id: Arc<dyn Fn() -> Option<String> + Send + Sync>, logger: LoggerCallback) -> Arc<Self> {
         Arc::new(Self { events, manager, session_id, logger, active: std::sync::atomic::AtomicBool::new(false), state: std::sync::Mutex::new(QueuedState { last_ids: String::new(), tail: None }) })
     }
     /// A store failure is logged ONCE per snapshot, never once per record.

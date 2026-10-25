@@ -884,6 +884,286 @@ pub fn factory_with_workpool_events(
     })
 }
 
+impl senpi_task::runners::pinned_model_equivalence::PriorityPairingRegistry for NativeChild {
+    fn get_service_tier(
+        &self,
+        identity: &senpi_task::runners::pinned_model_equivalence::ModelIdentity,
+    ) -> Option<String> {
+        let session = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .session
+            .clone()?;
+        let registry = session.model_registry();
+        let model = registry.find(&identity.provider, &identity.id)?;
+        registry
+            .get_service_tier(&model)
+            .and_then(|tier| serde_json::to_value(tier).ok())
+            .and_then(|value| value.as_str().map(str::to_string))
+    }
+    fn get_upstream_model_id(
+        &self,
+        identity: &senpi_task::runners::pinned_model_equivalence::ModelIdentity,
+    ) -> Option<String> {
+        let session = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .session
+            .clone()?;
+        let registry = session.model_registry();
+        let model = registry.find(&identity.provider, &identity.id)?;
+        registry.get_upstream_model_id(&model)
+    }
+}
+
+impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
+    fn pause_for_run(
+        &self,
+        owner: senpi_task::pause::ports::RunPauseOwner,
+    ) -> Result<
+        senpi_task::pause::ports::EngineInheritReceipt,
+        senpi_task::pause::native_child_pause::NativePauseError,
+    > {
+        use senpi_task::pause::{native_child_pause::NativePauseError, ports::*};
+        let _control = self
+            .run_control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session = self
+            .ensure_session()
+            .map_err(|error| NativePauseError::Engine(error.to_string()))?;
+        let kind = match owner.run_ref.kind {
+            RunRefKind::Task => "task",
+            RunRefKind::Dag => "dag",
+            RunRefKind::Team => "team",
+            RunRefKind::Workpool => "workpool",
+        };
+        block_on_sync(self.executor.clone(), async move {
+            session
+                .pause_for_run(
+                    &owner.parent_session_id,
+                    owner.parent_pause_seq,
+                    maho_core::run_holds::RunRef {
+                        kind: kind.into(),
+                        id: owner.run_ref.id,
+                    },
+                )
+                .await
+        })
+        .map(|receipt| match receipt {
+            maho_core::run_holds::InheritResult::Inherited { child_seq } => {
+                EngineInheritReceipt::Inherited { child_seq }
+            }
+            maho_core::run_holds::InheritResult::WrongParent => EngineInheritReceipt::WrongParent,
+        })
+        .map_err(|error| NativePauseError::Engine(error.to_string()))
+    }
+    fn resume_for_run(
+        &self,
+        request: senpi_task::pause::ports::ResumeTurnRequest,
+    ) -> Result<
+        senpi_task::pause::native_child_pause::NativeResumeResult,
+        senpi_task::pause::native_child_pause::NativePauseError,
+    > {
+        use senpi_task::pause::{
+            native_child_pause::{NativePauseError, NativeResumeResult},
+            ports::*,
+        };
+        let _control = self
+            .run_control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session = self
+            .ensure_session()
+            .map_err(|error| NativePauseError::Engine(error.to_string()))?;
+        let turn_id = request.resume_id.clone();
+        let (settled, outcome) = std::sync::mpsc::sync_channel(1);
+        let prompt_failed = settled.clone();
+        let turn_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let subscription = session.subscribe(Arc::new(move |event| {
+            let Ok(record) = maho_rpc::session_binding::session_event_record(event) else {
+                return;
+            };
+            if record["type"] == "session_paused" {
+                let _ = settled.try_send(senpi_task::runners::RunnerOutcome::Cancelled);
+                return;
+            }
+            if record["type"] == "agent_start" {
+                turn_started.store(true, std::sync::atomic::Ordering::Release);
+            }
+            if record["type"] != "agent_end"
+                || record["willRetry"] == true
+                || !turn_started.load(std::sync::atomic::Ordering::Acquire)
+            {
+                return;
+            }
+            let message = record["messages"].as_array().and_then(|messages| {
+                messages
+                    .iter()
+                    .rev()
+                    .find(|message| message["role"] == "assistant")
+            });
+            let result = match message {
+                Some(message) if message["stopReason"] == "aborted" => {
+                    senpi_task::runners::RunnerOutcome::Cancelled
+                }
+                Some(message) if message["stopReason"] == "error" => {
+                    senpi_task::runners::RunnerOutcome::error(
+                        senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
+                        message["errorMessage"]
+                            .as_str()
+                            .unwrap_or("child turn failed"),
+                    )
+                }
+                Some(message) => senpi_task::runners::RunnerOutcome::completed(
+                    message["content"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|block| block["type"] == "text")
+                        .filter_map(|block| block["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ),
+                None => senpi_task::runners::RunnerOutcome::completed(""),
+            };
+            let _ = settled.try_send(result);
+        }));
+        let result = session
+            .release_run_hold(
+                &request.owner.parent_session_id,
+                request.owner.parent_pause_seq,
+                request.child_seq_cutoff,
+            )
+            .map_err(NativePauseError::Engine)?;
+        Ok(match result {
+            maho_core::run_holds::ReleaseInheritedResult::WrongParent => {
+                NativeResumeResult::Refused(ResumeRefusal::WrongParent)
+            }
+            maho_core::run_holds::ReleaseInheritedResult::NotHeld => {
+                NativeResumeResult::Refused(ResumeRefusal::NotHeld)
+            }
+            maho_core::run_holds::ReleaseInheritedResult::Stale => {
+                NativeResumeResult::Refused(ResumeRefusal::Stale)
+            }
+            maho_core::run_holds::ReleaseInheritedResult::Released {
+                other_hold_live: true,
+            } => NativeResumeResult::OtherHoldLive,
+            maho_core::run_holds::ReleaseInheritedResult::Released {
+                other_hold_live: false,
+            } => {
+                {
+                    let (admitted, admission) = std::sync::mpsc::sync_channel(1);
+                    self.executor.spawn(async move {
+                        let signal = admitted.clone();
+                        let result = session
+                            .prompt(
+                                maho_core::manual_continue::MANUAL_CONTINUE_DIRECTIVE,
+                                maho_core::agent_session::PromptOptions {
+                                    prompt_admitted: Some(Arc::new(move |_| {
+                                        let _ = signal.try_send(());
+                                    })),
+                                    ..Default::default()
+                                },
+                            )
+                            .await;
+                        match result {
+                            Err(error) => {
+                                let _ = prompt_failed.try_send(
+                                    senpi_task::runners::RunnerOutcome::error(
+                                        senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
+                                        error,
+                                    ),
+                                );
+                            }
+                            Ok(maho_core::agent_session::PromptDisposition::Handled) => {
+                                let _ = prompt_failed
+                                    .try_send(senpi_task::runners::RunnerOutcome::completed(""));
+                            }
+                            _ => {}
+                        }
+                        let _ = admitted.try_send(());
+                    });
+                    admission
+                        .recv()
+                        .map_err(|error| NativePauseError::Engine(error.to_string()))?;
+                }
+                NativeResumeResult::Turn(ResumedChildTurn {
+                    turn_id,
+                    outcome: Box::new(move || {
+                        let _subscription = subscription;
+                        outcome.recv().unwrap_or_else(|error| {
+                            senpi_task::runners::RunnerOutcome::error(
+                                senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
+                                error.to_string(),
+                            )
+                        })
+                    }),
+                })
+            }
+        })
+    }
+    fn hold_input(
+        &self,
+        parent: &str,
+        input: senpi_task::pause::ports::HoldInput,
+    ) -> Result<
+        senpi_task::pause::ports::EngineHoldInputResult,
+        senpi_task::pause::native_child_pause::NativePauseError,
+    > {
+        use senpi_task::pause::{
+            native_child_pause::NativePauseError, ports::EngineHoldInputResult,
+        };
+        let session = self
+            .ensure_session()
+            .map_err(|error| NativePauseError::Engine(error.to_string()))?;
+        if session
+            .with_run_holds(|holds| holds.inherited_owner())
+            .is_none_or(|owner| owner.parent_session_id != parent)
+        {
+            return Err(NativePauseError::Engine("wrong_parent".into()));
+        }
+        let receipt = session.hold_input(serde_json::json!({"inputId":input.input_id,"revision":input.revision,"text":input.text,"origin":"human"})).map_err(NativePauseError::Engine)?;
+        if let Some(revision) = receipt["heldRevision"].as_u64() {
+            return Ok(EngineHoldInputResult::InputIdConflict {
+                held_revision: revision,
+            });
+        }
+        if let Some(revision) = receipt["revision"]
+            .as_u64()
+            .filter(|_| receipt["kind"] == "already_delivered")
+        {
+            return Ok(EngineHoldInputResult::AlreadyDelivered { revision });
+        }
+        Ok(EngineHoldInputResult::Held {
+            entry_id: receipt["entryId"].as_str().unwrap_or_default().into(),
+            duplicate: receipt["duplicate"] == true,
+        })
+    }
+    fn observe_hold(
+        &self,
+        parent: &str,
+    ) -> Result<
+        Option<senpi_task::pause::ports::ObservedHold>,
+        senpi_task::pause::native_child_pause::NativePauseError,
+    > {
+        let session = self.ensure_session().map_err(|error| {
+            senpi_task::pause::native_child_pause::NativePauseError::Engine(error.to_string())
+        })?;
+        Ok(session.with_run_holds(|holds| {
+            holds
+                .inherited_owner()
+                .filter(|owner| owner.parent_session_id == parent)
+                .map(|_| senpi_task::pause::ports::ObservedHold {
+                    held: true,
+                    child_seq: holds.pause_seq(),
+                })
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{block_on_sync, factory};
@@ -1173,285 +1453,5 @@ mod tests {
             "child"
         );
         assert!(!parent_cwd.join("child-only.txt").exists());
-    }
-}
-
-impl senpi_task::runners::pinned_model_equivalence::PriorityPairingRegistry for NativeChild {
-    fn get_service_tier(
-        &self,
-        identity: &senpi_task::runners::pinned_model_equivalence::ModelIdentity,
-    ) -> Option<String> {
-        let session = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .session
-            .clone()?;
-        let registry = session.model_registry();
-        let model = registry.find(&identity.provider, &identity.id)?;
-        registry
-            .get_service_tier(&model)
-            .and_then(|tier| serde_json::to_value(tier).ok())
-            .and_then(|value| value.as_str().map(str::to_string))
-    }
-    fn get_upstream_model_id(
-        &self,
-        identity: &senpi_task::runners::pinned_model_equivalence::ModelIdentity,
-    ) -> Option<String> {
-        let session = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .session
-            .clone()?;
-        let registry = session.model_registry();
-        let model = registry.find(&identity.provider, &identity.id)?;
-        registry.get_upstream_model_id(&model)
-    }
-}
-
-impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
-    fn pause_for_run(
-        &self,
-        owner: senpi_task::pause::ports::RunPauseOwner,
-    ) -> Result<
-        senpi_task::pause::ports::EngineInheritReceipt,
-        senpi_task::pause::native_child_pause::NativePauseError,
-    > {
-        use senpi_task::pause::{native_child_pause::NativePauseError, ports::*};
-        let _control = self
-            .run_control
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let session = self
-            .ensure_session()
-            .map_err(|error| NativePauseError::Engine(error.to_string()))?;
-        let kind = match owner.run_ref.kind {
-            RunRefKind::Task => "task",
-            RunRefKind::Dag => "dag",
-            RunRefKind::Team => "team",
-            RunRefKind::Workpool => "workpool",
-        };
-        block_on_sync(self.executor.clone(), async move {
-            session
-                .pause_for_run(
-                    &owner.parent_session_id,
-                    owner.parent_pause_seq,
-                    maho_core::run_holds::RunRef {
-                        kind: kind.into(),
-                        id: owner.run_ref.id,
-                    },
-                )
-                .await
-        })
-        .map(|receipt| match receipt {
-            maho_core::run_holds::InheritResult::Inherited { child_seq } => {
-                EngineInheritReceipt::Inherited { child_seq }
-            }
-            maho_core::run_holds::InheritResult::WrongParent => EngineInheritReceipt::WrongParent,
-        })
-        .map_err(|error| NativePauseError::Engine(error.to_string()))
-    }
-    fn resume_for_run(
-        &self,
-        request: senpi_task::pause::ports::ResumeTurnRequest,
-    ) -> Result<
-        senpi_task::pause::native_child_pause::NativeResumeResult,
-        senpi_task::pause::native_child_pause::NativePauseError,
-    > {
-        use senpi_task::pause::{
-            native_child_pause::{NativePauseError, NativeResumeResult},
-            ports::*,
-        };
-        let _control = self
-            .run_control
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let session = self
-            .ensure_session()
-            .map_err(|error| NativePauseError::Engine(error.to_string()))?;
-        let turn_id = request.resume_id.clone();
-        let (settled, outcome) = std::sync::mpsc::sync_channel(1);
-        let prompt_failed = settled.clone();
-        let turn_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let subscription = session.subscribe(Arc::new(move |event| {
-            let Ok(record) = maho_rpc::session_binding::session_event_record(event) else {
-                return;
-            };
-            if record["type"] == "session_paused" {
-                let _ = settled.try_send(senpi_task::runners::RunnerOutcome::Cancelled);
-                return;
-            }
-            if record["type"] == "agent_start" {
-                turn_started.store(true, std::sync::atomic::Ordering::Release);
-            }
-            if record["type"] != "agent_end"
-                || record["willRetry"] == true
-                || !turn_started.load(std::sync::atomic::Ordering::Acquire)
-            {
-                return;
-            }
-            let message = record["messages"].as_array().and_then(|messages| {
-                messages
-                    .iter()
-                    .rev()
-                    .find(|message| message["role"] == "assistant")
-            });
-            let result = match message {
-                Some(message) if message["stopReason"] == "aborted" => {
-                    senpi_task::runners::RunnerOutcome::Cancelled
-                }
-                Some(message) if message["stopReason"] == "error" => {
-                    senpi_task::runners::RunnerOutcome::error(
-                        senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
-                        message["errorMessage"]
-                            .as_str()
-                            .unwrap_or("child turn failed"),
-                    )
-                }
-                Some(message) => senpi_task::runners::RunnerOutcome::completed(
-                    message["content"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter(|block| block["type"] == "text")
-                        .filter_map(|block| block["text"].as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                ),
-                None => senpi_task::runners::RunnerOutcome::completed(""),
-            };
-            let _ = settled.try_send(result);
-        }));
-        let result = session
-            .release_run_hold(
-                &request.owner.parent_session_id,
-                request.owner.parent_pause_seq,
-                request.child_seq_cutoff,
-            )
-            .map_err(NativePauseError::Engine)?;
-        Ok(match result {
-            maho_core::run_holds::ReleaseInheritedResult::WrongParent => {
-                NativeResumeResult::Refused(ResumeRefusal::WrongParent)
-            }
-            maho_core::run_holds::ReleaseInheritedResult::NotHeld => {
-                NativeResumeResult::Refused(ResumeRefusal::NotHeld)
-            }
-            maho_core::run_holds::ReleaseInheritedResult::Stale => {
-                NativeResumeResult::Refused(ResumeRefusal::Stale)
-            }
-            maho_core::run_holds::ReleaseInheritedResult::Released {
-                other_hold_live: true,
-            } => NativeResumeResult::OtherHoldLive,
-            maho_core::run_holds::ReleaseInheritedResult::Released {
-                other_hold_live: false,
-            } => {
-                {
-                    let (admitted, admission) = std::sync::mpsc::sync_channel(1);
-                    self.executor.spawn(async move {
-                        let signal = admitted.clone();
-                        let result = session
-                            .prompt(
-                                maho_core::manual_continue::MANUAL_CONTINUE_DIRECTIVE,
-                                maho_core::agent_session::PromptOptions {
-                                    prompt_admitted: Some(Arc::new(move |_| {
-                                        let _ = signal.try_send(());
-                                    })),
-                                    ..Default::default()
-                                },
-                            )
-                            .await;
-                        match result {
-                            Err(error) => {
-                                let _ = prompt_failed.try_send(
-                                    senpi_task::runners::RunnerOutcome::error(
-                                        senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
-                                        error,
-                                    ),
-                                );
-                            }
-                            Ok(maho_core::agent_session::PromptDisposition::Handled) => {
-                                let _ = prompt_failed
-                                    .try_send(senpi_task::runners::RunnerOutcome::completed(""));
-                            }
-                            _ => {}
-                        }
-                        let _ = admitted.try_send(());
-                    });
-                    admission
-                        .recv()
-                        .map_err(|error| NativePauseError::Engine(error.to_string()))?;
-                }
-                NativeResumeResult::Turn(ResumedChildTurn {
-                    turn_id,
-                    outcome: Box::new(move || {
-                        let _subscription = subscription;
-                        outcome.recv().unwrap_or_else(|error| {
-                            senpi_task::runners::RunnerOutcome::error(
-                                senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
-                                error.to_string(),
-                            )
-                        })
-                    }),
-                })
-            }
-        })
-    }
-    fn hold_input(
-        &self,
-        parent: &str,
-        input: senpi_task::pause::ports::HoldInput,
-    ) -> Result<
-        senpi_task::pause::ports::EngineHoldInputResult,
-        senpi_task::pause::native_child_pause::NativePauseError,
-    > {
-        use senpi_task::pause::{
-            native_child_pause::NativePauseError, ports::EngineHoldInputResult,
-        };
-        let session = self
-            .ensure_session()
-            .map_err(|error| NativePauseError::Engine(error.to_string()))?;
-        if session
-            .with_run_holds(|holds| holds.inherited_owner())
-            .is_none_or(|owner| owner.parent_session_id != parent)
-        {
-            return Err(NativePauseError::Engine("wrong_parent".into()));
-        }
-        let receipt = session.hold_input(serde_json::json!({"inputId":input.input_id,"revision":input.revision,"text":input.text,"origin":"human"})).map_err(NativePauseError::Engine)?;
-        if let Some(revision) = receipt["heldRevision"].as_u64() {
-            return Ok(EngineHoldInputResult::InputIdConflict {
-                held_revision: revision,
-            });
-        }
-        if let Some(revision) = receipt["revision"]
-            .as_u64()
-            .filter(|_| receipt["kind"] == "already_delivered")
-        {
-            return Ok(EngineHoldInputResult::AlreadyDelivered { revision });
-        }
-        Ok(EngineHoldInputResult::Held {
-            entry_id: receipt["entryId"].as_str().unwrap_or_default().into(),
-            duplicate: receipt["duplicate"] == true,
-        })
-    }
-    fn observe_hold(
-        &self,
-        parent: &str,
-    ) -> Result<
-        Option<senpi_task::pause::ports::ObservedHold>,
-        senpi_task::pause::native_child_pause::NativePauseError,
-    > {
-        let session = self.ensure_session().map_err(|error| {
-            senpi_task::pause::native_child_pause::NativePauseError::Engine(error.to_string())
-        })?;
-        Ok(session.with_run_holds(|holds| {
-            holds
-                .inherited_owner()
-                .filter(|owner| owner.parent_session_id == parent)
-                .map(|_| senpi_task::pause::ports::ObservedHold {
-                    held: true,
-                    child_seq: holds.pause_seq(),
-                })
-        }))
     }
 }

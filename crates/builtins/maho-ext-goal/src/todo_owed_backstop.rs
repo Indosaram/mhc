@@ -38,10 +38,10 @@ impl TodoOwedBackstop {
         ctx: &ExtensionContext,
         event: &AgentEndEvent,
         goal: Option<&Goal>,
-        pending: bool,
-        sources: &[String],
+        wake: (bool, &[String]),
         enabled: bool,
     ) -> Result<String, ExtensionFailure> {
+        let (pending, sources) = wake;
         let branch = ctx.session_manager.get_branch();
         let values = branch
             .iter()

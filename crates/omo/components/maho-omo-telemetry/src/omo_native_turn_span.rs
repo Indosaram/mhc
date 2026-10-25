@@ -468,11 +468,11 @@ mod tests {
         let parent = telemetry_core::read_turn_traceparent("raw-parent").unwrap();
         let child = fixture
             .spans
-            .run(|| telemetry_core::active_turn_traceparent());
+            .run(telemetry_core::active_turn_traceparent);
         assert_eq!(child.as_deref(), Some(parent.as_str()));
         fixture.spans.end(None, None, false);
         assert_eq!(
-            fixture.spans.run(|| telemetry_core::active_turn_traceparent()),
+            fixture.spans.run(telemetry_core::active_turn_traceparent),
             None
         );
     }

@@ -176,9 +176,8 @@ impl LifecycleSessionBinding {
             let entries = manager.entries();
             let mut custody = std::collections::BTreeMap::new();
             for entry in &entries {
-                if entry["customType"] == "work-custody" && entry.pointer("/data/sessionId").and_then(Value::as_str) == Some(self.session_id.as_str()) {
-                    if let Some(key) = entry.pointer("/data/key").and_then(Value::as_str) { custody.insert(key.to_owned(), entry["data"].clone()); }
-                }
+                if entry["customType"] == "work-custody" && entry.pointer("/data/sessionId").and_then(Value::as_str) == Some(self.session_id.as_str())
+                    && let Some(key) = entry.pointer("/data/key").and_then(Value::as_str) { custody.insert(key.to_owned(), entry["data"].clone()); }
             }
             for record in custody.values() {
                 let Some(ticket) = record["ticketId"].as_str() else { continue };
@@ -199,11 +198,9 @@ impl LifecycleSessionBinding {
                 if entry["customType"] == "work-custody"
                     && entry.pointer("/data/sessionId").and_then(Value::as_str)
                         == Some(self.session_id.as_str())
-                {
-                    if let Some(key) = entry.pointer("/data/key").and_then(Value::as_str) {
+                    && let Some(key) = entry.pointer("/data/key").and_then(Value::as_str) {
                         records.insert(key.to_owned(), entry["data"].clone());
                     }
-                }
             }
             records
                 .into_values()
@@ -268,12 +265,11 @@ pub fn record_interrupted_tools(
         let message = &entry["message"];
         if message["role"] == "assistant" {
             for part in message["content"].as_array().into_iter().flatten() {
-                if part["type"] == "toolCall" {
-                    if let (Some(id), Some(name)) = (part["id"].as_str(), part["name"].as_str()) {
+                if part["type"] == "toolCall"
+                    && let (Some(id), Some(name)) = (part["id"].as_str(), part["name"].as_str()) {
                         pending.retain(|(key, _)| key != id);
                         pending.push((id.into(), name.into()));
                     }
-                }
             }
         } else if message["role"] == "toolResult" {
             pending.retain(|(id, _)| Some(id.as_str()) != message["toolCallId"].as_str());

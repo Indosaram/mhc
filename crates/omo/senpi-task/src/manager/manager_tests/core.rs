@@ -809,7 +809,7 @@ fn late_durable_id_replaces_predecessor_once_and_ignores_later_reports() {
     let task = started(harness.manager.start(&base_spec()));
     harness
         .store
-        .mutate(&task.task_id, &mut |record: &crate::state::TaskRecord| {
+        .mutate(&task.task_id, |record: &crate::state::TaskRecord| {
             crate::state::TaskRecord {
                 child_session_id: Some("predecessor".into()),
                 ..record.clone()
@@ -901,7 +901,7 @@ fn fresh_manager_reconstructs_withdrawn_first_launch_with_saved_custody() {
         .store
         .mutate(
             &waiting.task_id,
-            &mut |record: &crate::state::TaskRecord| crate::state::TaskRecord {
+            |record: &crate::state::TaskRecord| crate::state::TaskRecord {
                 host_pid: None,
                 ..record.clone()
             },
@@ -957,7 +957,7 @@ fn accepted_stop_and_immediate_exact_resume_ignore_the_old_abort() {
         .unwrap();
     harness
         .store
-        .mutate(&task.task_id, &mut |fresh: &crate::state::TaskRecord| {
+        .mutate(&task.task_id, |fresh: &crate::state::TaskRecord| {
             crate::state::TaskRecord {
                 status: TaskStatus::Running,
                 ..fresh.clone()

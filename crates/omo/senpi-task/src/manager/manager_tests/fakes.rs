@@ -3,6 +3,7 @@
 //! fake event (runner start, subscribe, abort, dispose) notifies one condvar; manager-internal state
 //! (waiters, released slots) has no event hook, so each wait slice is also capped at `RECHECK`.
 
+pub type DurableListenersCallback = Vec<Arc<dyn Fn(&str) + Send + Sync>>;
 use std::collections::HashMap;
 #[path = "dag_fake.rs"]
 pub(crate) mod dag_fake;
@@ -86,7 +87,7 @@ struct HandleState {
     workpool_identity: Option<crate::manager::child_handle::WorkpoolChildIdentity>,
     abort_calls: usize,
     dispose_calls: usize,
-    durable_listeners: Vec<Arc<dyn Fn(&str) + Send + Sync>>,
+    durable_listeners: DurableListenersCallback,
 }
 
 pub(crate) struct FakeHandle {

@@ -545,7 +545,7 @@ mod tests {
                 vec![]
             }
         }
-        let mut screen = TuiMainScreen::new();
+        let screen = TuiMainScreen::new();
         let target: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(Target));
         let press = MousePress {
             target: TuiMouseDispatchTarget {

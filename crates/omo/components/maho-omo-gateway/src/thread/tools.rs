@@ -3,6 +3,7 @@
 //! Upstream counterpart: `thread/tools.ts`. Every failure is data (`{ kind: "error", error }`), and a
 //! session op's tool is its own namespace (`ext_<extension>_<toolName>`).
 
+pub type ExecuteCallback = Arc<dyn Fn(&str, Value) -> BoxFuture<Value> + Send + Sync>;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -21,7 +22,7 @@ pub struct ThreadTool {
     pub name: String,
     pub description: String,
     pub parameters: Value,
-    pub execute: Arc<dyn Fn(&str, Value) -> BoxFuture<Value> + Send + Sync>,
+    pub execute: ExecuteCallback,
 }
 
 impl std::fmt::Debug for ThreadTool {
@@ -44,7 +45,7 @@ pub struct ThreadToolsOptions {
     pub caller_provenance: Arc<dyn Fn() -> super::types::Provenance + Send + Sync>,
 }
 
-fn error_result(error: super::errors::ThreadToolFailure) -> Value {
+fn error_result(error: impl serde::Serialize) -> Value {
     json!({ "kind": "error", "error": error })
 }
 
@@ -449,8 +450,8 @@ pub async fn record_thread_creator(
     let Some(created_id) = created["thread"]["thread_id"].as_str() else {
         return Ok(());
     };
-    if let Some(creator) = resolve_caller_durable_id(resolve, runtime_id).await {
-        if creator != created_id {
+    if let Some(creator) = resolve_caller_durable_id(resolve, runtime_id).await
+        && creator != created_id {
             store.record_thread_creation(
                 &super::store_extension_facade::ThreadCreationRecord {
                     creator_durable_id: creator,
@@ -459,7 +460,6 @@ pub async fn record_thread_creator(
                 store.now(),
             )?;
         }
-    }
     Ok(())
 }
 

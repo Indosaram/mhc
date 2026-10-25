@@ -1,4 +1,6 @@
 //! Lost-lock reporting and a final write fence. No compromise callback can unwind the owner.
+pub type OnLostCallbackState = Arc<Mutex<Option<Arc<dyn Fn(&FileLockLostError) + Send + Sync>>>>;
+pub type OnLostCallback = Option<Arc<dyn Fn(&FileLockLostError) + Send + Sync>>;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -25,13 +27,13 @@ pub struct HeldFileLock {
     token: String,
     released: Arc<AtomicBool>,
     loss: Arc<Mutex<Option<FileLockLostError>>>,
-    on_lost: Arc<Mutex<Option<Arc<dyn Fn(&FileLockLostError) + Send + Sync>>>>,
+    on_lost: OnLostCallbackState,
 }
 impl HeldFileLock {
     pub fn new(
         path: &Path,
         lock_dir: &Path,
-        on_lost: Option<Arc<dyn Fn(&FileLockLostError) + Send + Sync>>,
+        on_lost: OnLostCallback,
     ) -> std::io::Result<Self> {
         let token = uuid::Uuid::new_v4().to_string();
         let token_path = lock_dir.join("owner-token");
@@ -58,11 +60,10 @@ impl HeldFileLock {
                 if held.assert_held().is_err() {
                     break;
                 }
-                if let Some(dir) = held.token_path.parent() {
-                    if let Err(error) = filetime::set_file_mtime(dir, filetime::FileTime::now()) {
+                if let Some(dir) = held.token_path.parent()
+                    && let Err(error) = filetime::set_file_mtime(dir, filetime::FileTime::now()) {
                         held.report_compromised(error.to_string());
                     }
-                }
             }
         });
     }
@@ -100,12 +101,11 @@ impl HeldFileLock {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        if let Some(callback) = callback {
-            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(&error))).is_err()
+        if let Some(callback) = callback
+            && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(&error))).is_err()
             {
                 eprintln!("file_lock_on_lost_threw");
             }
-        }
     }
     pub fn lost(&self) -> bool {
         self.loss
@@ -144,7 +144,7 @@ impl HeldFileLock {
 }
 pub async fn lock_with_loss_handling(
     path: &str,
-    on_lost: Option<Arc<dyn Fn(&FileLockLostError) + Send + Sync>>,
+    on_lost: OnLostCallback,
 ) -> Result<(crate::lockfile_policy::LockGuard, HeldFileLock), String> {
     let guard = crate::lockfile_policy::acquire_lock_async(
         path,
@@ -195,7 +195,7 @@ impl std::fmt::Debug for HeldFileLock {
 
 #[cfg(test)]
 mod write_fence_tests {
-    use super::*;
+
     #[test]
     fn lost_lock_does_not_delete_replacement_or_write_data() {
         let root = tempfile::tempdir().expect("temp");

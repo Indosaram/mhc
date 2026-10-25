@@ -4,6 +4,7 @@
 //! privacy client's immediate send, so the pending file is retired only once the server accepted that very
 //! event. The raw-turn sample rate is resolved lazily from config, env and sink.
 
+pub type FlushCallback = Mutex<Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>>;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -40,7 +41,7 @@ pub type CaptureFn = Arc<
 #[derive(Default)]
 pub struct NativeCaptureState {
     pub capture: Mutex<Option<CaptureFn>>,
-    pub flush: Mutex<Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>>,
+    pub flush: FlushCallback,
     pub session_hash: Mutex<Option<String>>,
     /// Event uuids the privacy client actually handed to the transport.
     pub delivered: Mutex<BTreeSet<String>>,

@@ -189,20 +189,20 @@ mod tests {
     #[test]
     fn env_fallback_names_the_role() {
         assert_eq!(
-            resolve_telemetry_session_role(None_or_empty(), &env(&[("OMO_SENPI_TASK_RPC_CHILD", "1")])),
+            resolve_telemetry_session_role(none_or_empty(), &env(&[("OMO_SENPI_TASK_RPC_CHILD", "1")])),
             TelemetrySessionRole::Child
         );
         assert_eq!(
-            resolve_telemetry_session_role(None_or_empty(), &env(&[("SENPI_TASK_MEMBER", "team-a")])),
+            resolve_telemetry_session_role(none_or_empty(), &env(&[("SENPI_TASK_MEMBER", "team-a")])),
             TelemetrySessionRole::Child
         );
         assert_eq!(
-            resolve_telemetry_session_role(None_or_empty(), &env(&[])),
+            resolve_telemetry_session_role(none_or_empty(), &env(&[])),
             TelemetrySessionRole::Root
         );
     }
 
-    fn None_or_empty() -> Option<&'static ExtensionSessionProfile> {
+    fn none_or_empty() -> Option<&'static ExtensionSessionProfile> {
         None
     }
 

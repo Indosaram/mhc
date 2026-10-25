@@ -157,9 +157,8 @@ pub fn load_skills_from_dir(options: &LoadSkillsFromDirOptions) -> LoadSkillsRes
     load_skills_from_dir_internal(
         &options.dir,
         &options.source,
-        true,
-        None,
-        None,
+        true, (None,
+        None),
         Some(&provenance),
         options.allowed_set.as_ref(),
         &std::collections::BTreeSet::new(),
@@ -197,12 +196,12 @@ fn load_skills_from_dir_internal(
     dir: &str,
     source: &str,
     include_root_files: bool,
-    ignore_matcher: Option<&IgnoreMatcher>,
-    root_dir: Option<&str>,
+    location: (Option<&IgnoreMatcher>, Option<&str>),
     provenance: Option<&crate::skill_access::SkillProvenance>,
     allowed_set: Option<&crate::skill_access::SkillAllowedSet>,
     ancestry: &std::collections::BTreeSet<String>,
 ) -> LoadSkillsResult {
+    let (ignore_matcher, root_dir) = location;
     let mut skills: Vec<Skill> = Vec::new();
     let mut diagnostics: Vec<ResourceDiagnostic> = Vec::new();
 
@@ -215,7 +214,7 @@ fn load_skills_from_dir_internal(
 
     let canonical = match crate::skill_access::authorize_skill_path(Path::new(dir), provenance, allowed, true) {
         Ok(c) => c,
-        Err(error) => return LoadSkillsResult { skills, diagnostics: vec![error.diagnostic] },
+        Err(error) => return LoadSkillsResult { skills, diagnostics: vec![*error.diagnostic] },
     };
     let canonical_str = canonical.to_string_lossy().into_owned();
     if ancestry.contains(&canonical_str) {
@@ -280,9 +279,8 @@ fn load_skills_from_dir_internal(
             let sub_result = load_skills_from_dir_internal(
                 &full_path.to_string_lossy(),
                 source,
-                false,
-                Some(&matcher),
-                Some(&root),
+                false, (Some(&matcher),
+                Some(&root)),
                 provenance,
                 Some(allowed),
                 &descendants,
@@ -340,7 +338,7 @@ pub fn load_skill_from_file_internal(
             let allowed = allowed_set.cloned().unwrap_or_default();
             match crate::skill_access::read_skill_file_checked(Path::new(file_path), Some(p), &allowed) {
                 Ok(content) => content,
-                Err(err) => return (None, vec![err.diagnostic]),
+                Err(err) => return (None, vec![*err.diagnostic]),
             }
         }
         _ => match read_skill_markdown_source(file_path) {
@@ -492,7 +490,7 @@ pub fn load_skills_with_provenance(options: &LoadSkillsOptions, provenance_by_pa
     for path in &options.skill_paths {
         let provenance = provenance_by_path.get(path);
         let loaded = if Path::new(path).is_dir() {
-            load_skills_from_dir_internal(path, "path", true, None, None, provenance, Some(&allowed), &std::collections::BTreeSet::new())
+            load_skills_from_dir_internal(path, "path", true, (None, None), provenance, Some(&allowed), &std::collections::BTreeSet::new())
         } else {
             let (skill, diagnostics) = load_skill_from_file_internal(path, "path", provenance, Some(&allowed));
             LoadSkillsResult { skills:skill.into_iter().collect(), diagnostics }
@@ -554,9 +552,8 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
         let user = load_skills_from_dir_internal(
             &Path::new(&resolved_agent_dir).join("skills").to_string_lossy(),
             "user",
-            true,
-            None,
-            None,
+            true, (None,
+            None),
             None,
             None,
             &std::collections::BTreeSet::new(),
@@ -565,9 +562,8 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
         let project = load_skills_from_dir_internal(
             &lexical_resolve(&Path::new(&resolved_cwd).join(config_dir_name()).join("skills").to_string_lossy()),
             "project",
-            true,
-            None,
-            None,
+            true, (None,
+            None),
             None,
             None,
             &std::collections::BTreeSet::new(),
@@ -603,7 +599,7 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
         };
         let source = get_source(&resolved_path);
         if metadata.is_dir() {
-            let result = load_skills_from_dir_internal(&resolved_path, &source, true, None, None, None, None, &std::collections::BTreeSet::new());
+            let result = load_skills_from_dir_internal(&resolved_path, &source, true, (None, None), None, None, &std::collections::BTreeSet::new());
             add_skills(result, &mut all_diagnostics, &mut collision_diagnostics, &mut skill_map, &mut real_path_set);
         } else if metadata.is_file() && resolved_path.ends_with(".md") {
             let (skill, diagnostics) = load_skill_from_file(&resolved_path, &source);

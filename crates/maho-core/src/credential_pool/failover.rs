@@ -68,11 +68,10 @@ pub fn is_available(slot: &RunSlot, now: u64) -> bool {
 pub fn no_slots_message(slots: &[RunSlot], now: u64) -> String {
     let blocked: Vec<String> = slots.iter().map(|slot| {
         let reason = slot.block_reason.as_deref().unwrap_or("blocked");
-        if let Some(until) = slot.blocked_until.filter(|until| *until > now) {
-            if let Some(date) = i64::try_from(until).ok().and_then(chrono::DateTime::from_timestamp_millis) {
+        if let Some(until) = slot.blocked_until.filter(|until| *until > now)
+            && let Some(date) = i64::try_from(until).ok().and_then(chrono::DateTime::from_timestamp_millis) {
                 return format!("{} ({reason} until {})", slot.name, date.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
             }
-        }
         if reason == "account_disabled" {
             format!("{} (account_disabled until re-login)", slot.name)
         } else {

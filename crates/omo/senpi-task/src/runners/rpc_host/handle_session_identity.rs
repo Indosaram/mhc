@@ -17,19 +17,19 @@ pub fn create_handle_session_identity(
 }
 impl HandleSessionIdentity {
     pub fn current(&self) -> HostSessionIdentity {
-        self.current.lock().unwrap().0.clone()
+        self.current.lock().expect("hosted child state lock poisoned").0.clone()
     }
     pub fn durable_id(&self) -> Option<String> {
-        self.current.lock().unwrap().1.clone()
+        self.current.lock().expect("hosted child state lock poisoned").1.clone()
     }
     pub fn adopt(&self, next: HostSessionIdentity) {
-        self.current.lock().unwrap().0 = next;
+        self.current.lock().expect("hosted child state lock poisoned").0 = next;
     }
     pub fn observe_durable_id(&self, id: &serde_json::Value) {
         let Some(id) = id.as_str().filter(|id| !id.is_empty()) else {
             return;
         };
-        let mut current = self.current.lock().unwrap();
+        let mut current = self.current.lock().expect("hosted child state lock poisoned");
         if current.1.is_some() {
             return;
         }
@@ -38,7 +38,7 @@ impl HandleSessionIdentity {
         (self.learned)(id);
     }
     pub fn follow_replace(&self, event: HostSessionReplaced) -> HostSessionReplaced {
-        let mut current = self.current.lock().unwrap();
+        let mut current = self.current.lock().expect("hosted child state lock poisoned");
         current.0.session_path = event.session_file.clone();
         current.1 = Some(event.durable_session_id.clone());
         event

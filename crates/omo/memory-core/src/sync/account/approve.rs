@@ -33,6 +33,11 @@ pub enum ApproveOutcome {
     Declined,
     Refused(String),
 }
+pub struct ApprovalConfirmation<'a> {
+    pub pending_id: &'a str,
+    pub confirm_code: &'a dyn Fn(String) -> PortFuture<'static, bool>,
+}
+
 pub async fn approve_device(
     account: &str,
     keyring: Rc<dyn DeviceKeyring>,
@@ -40,9 +45,9 @@ pub async fn approve_device(
     chain: AccountHttp,
     pairing: &PairingHttp,
     clock: &dyn CeremonyClock,
-    pending_id: &str,
-    confirm_code: &dyn Fn(String) -> PortFuture<'static, bool>,
+    confirmation: ApprovalConfirmation<'_>,
 ) -> EngineResult<ApproveOutcome> {
+    let ApprovalConfirmation { pending_id, confirm_code } = confirmation;
     let PinLoad::Loaded { anchor } =
         load_trust_anchor(pin_dir, account).map_err(|e| EngineError::Recovery(e.into()))?
     else {

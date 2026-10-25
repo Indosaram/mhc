@@ -22,7 +22,7 @@ pub fn approval_commitment(
     account: &str,
     joining: &PairingParty<'_>,
 ) -> Result<String, RecoveryError> {
-    Ok(tagged_hash("omo-sync/v1/approval-commitment", &json!({"account":account,"sealing_public_key":joining.principal.sealing_public_key,"signing_public_key":joining.principal.signing_public_key,"nonce":joining.nonce})).ok_or(RecoveryError::Crypto)?)
+    tagged_hash("omo-sync/v1/approval-commitment", &json!({"account":account,"sealing_public_key":joining.principal.sealing_public_key,"signing_public_key":joining.principal.signing_public_key,"nonce":joining.nonce})).ok_or(RecoveryError::Crypto)
 }
 pub fn approval_code(
     account: &str,

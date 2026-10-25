@@ -157,7 +157,7 @@ fn prune(git: &Path) -> std::io::Result<()> {
             entries.push((modified, path));
         }
     }
-    entries.sort_by(|a, b| b.0.cmp(&a.0));
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     for (_, path) in entries.into_iter().skip(KEEP_ENTRIES) {
         remove_if_present(&path)?;
     }

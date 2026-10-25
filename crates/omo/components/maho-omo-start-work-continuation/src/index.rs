@@ -242,13 +242,12 @@ fn observe_completion(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .observe(&ctx.cwd, id);
-    if let Some(run) = run {
-        if let Err(error) = lifecycle.mark_run_completed(&run) {
+    if let Some(run) = run
+        && let Err(error) = lifecycle.mark_run_completed(&run) {
             log_warn(
                 &ctx.logger,
                 "omo-senpi ulw-execute run completion failed",
                 Some(serde_json::json!({"runId":run,"error":error.message})),
             );
         }
-    }
 }

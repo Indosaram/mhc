@@ -106,7 +106,6 @@ impl LazySummaryRecovery {
 mod tests {
     use super::*;
     use crate::session_summary_store::{Probes, RecordConsent, WindowRecord, create_summary_storage};
-    use crate::session_summary_window::open_window;
     use futures::FutureExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -158,7 +157,7 @@ mod tests {
     #[tokio::test]
     async fn a_quiet_directory_loads_nothing() {
         let (_dir, storage, publisher) = fixture();
-        let own: Arc<dyn Fn() -> Vec<String> + Send + Sync> = Arc::new(|| Vec::new());
+        let own: Arc<dyn Fn() -> Vec<String> + Send + Sync> = Arc::new(Vec::new);
         let recovery = LazySummaryRecovery::new(
             storage.clone(),
             publisher,
@@ -212,7 +211,7 @@ mod tests {
             publisher,
             Arc::new(|_| true),
             None,
-            Arc::new(|| Vec::<String>::new()),
+            Arc::new(Vec::<String>::new),
         );
         recovery.sweep().await;
         assert!(recovery.runtime().is_some());

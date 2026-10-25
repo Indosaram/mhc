@@ -102,14 +102,13 @@ impl RpcProcessRunner {
     /// Failed non-resume starts discard their child in a tracked background teardown.
     pub fn start(&self, spec_input: &RpcRunnerSpec) -> Result<Arc<RpcChildHandle>, RunnerFailure> {
         let mut spec = spec_input.clone();
-        if let Some(resolve) = &self.exclude_models {
-            if let Some(chain) = &spec.fallback_models {
+        if let Some(resolve) = &self.exclude_models
+            && let Some(chain) = &spec.fallback_models {
                 spec.fallback_models = Some(crate::manager::runner::without_excluded_selectors(
                     chain,
                     &resolve(),
                 ));
             }
-        }
         if spec.extensions.is_none() && !self.inherited_extensions.is_empty() {
             spec.extensions = Some(self.inherited_extensions.clone());
         }
@@ -130,8 +129,8 @@ impl RpcProcessRunner {
             heartbeat_interval_ms: self.heartbeat_interval_ms,
             now: Arc::clone(&self.now),
         });
-        if let (Some(model), Some(chain)) = (&spec.model, &spec.fallback_models) {
-            if !chain.is_empty() {
+        if let (Some(model), Some(chain)) = (&spec.model, &spec.fallback_models)
+            && !chain.is_empty() {
                 let deadline = std::time::Instant::now()
                     + std::time::Duration::from_millis(self.fallback_chain_deadline_ms);
                 let configured = protocol.request(json!({"type":"get_protocol_info"}))
@@ -158,7 +157,6 @@ impl RpcProcessRunner {
                     );
                 }
             }
-        }
         let started = match &spec.resume_session_path {
             None => handle
                 .start_initial_prompt(&spec.prompt)

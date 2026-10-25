@@ -144,7 +144,7 @@ struct DiskRecord {
 
 impl DiskRecord {
     fn from_record(r: &WorkpoolRecord) -> Result<Self, WorkpoolError> {
-        Ok(Self { hold:r.hold.clone(), version:r.version, pool_id:r.pool_id.clone(), name:r.name.clone(), parent_session_id:r.parent_session_id.clone(), root_session_id:r.root_session_id.clone(), generation:r.generation, revision:r.revision, mode:r.mode, agent:r.agent.clone(), worker_spec:serde_json::json!({"start":r.worker_spec.start,"plan":r.worker_spec.plan}), status:r.status, kernel_tool_names:r.kernel_tool_names.clone(), items:r.items.clone(), workers:r.workers.clone(), aggregate:r.aggregate })
+        Ok(Self { hold:r.hold, version:r.version, pool_id:r.pool_id.clone(), name:r.name.clone(), parent_session_id:r.parent_session_id.clone(), root_session_id:r.root_session_id.clone(), generation:r.generation, revision:r.revision, mode:r.mode, agent:r.agent.clone(), worker_spec:serde_json::json!({"start":r.worker_spec.start,"plan":r.worker_spec.plan}), status:r.status, kernel_tool_names:r.kernel_tool_names.clone(), items:r.items.clone(), workers:r.workers.clone(), aggregate:r.aggregate })
     }
     fn into_record(self) -> Result<WorkpoolRecord, WorkpoolError> {
         let mut spec = self.worker_spec;
@@ -185,15 +185,14 @@ fn split_pause(record: &WorkpoolRecord) -> (WorkpoolRecord, Option<PauseState>) 
         }
     }
     for item in &mut base.items {
-        if let Some(delivery) = &mut item.delivery {
-            if let Some(ids) = delivery.entry_ids.take() { pause.entry_ids.insert(item.item_id.clone(), ids); }
-        }
+        if let Some(delivery) = &mut item.delivery
+            && let Some(ids) = delivery.entry_ids.take() { pause.entry_ids.insert(item.item_id.clone(), ids); }
     }
     let present = pause.hold.is_some() || !pause.paused_workers.is_empty() || !pause.entry_ids.is_empty();
     (base, present.then_some(pause))
 }
 fn with_pause(record: &mut WorkpoolRecord, pause: &PauseState) {
-    if pause.hold.is_some() { record.hold = pause.hold.clone(); }
+    if pause.hold.is_some() { record.hold = pause.hold; }
     for worker in &mut record.workers {
         if pause.paused_workers.contains(&worker.task_id) { worker.status = super::types::WorkpoolWorkerStatus::Paused; }
     }

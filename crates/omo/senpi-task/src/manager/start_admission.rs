@@ -173,7 +173,7 @@ pub struct EnteredStart {
 
 pub enum StartAdmissionEntry {
     Held(HeldStart),
-    Entered(EnteredStart),
+    Entered(Box<EnteredStart>),
 }
 
 /// Enters the root's barrier for one start; a held result means nothing may be created.
@@ -215,7 +215,7 @@ pub fn enter_start_admission(input: EnterStartAdmissionInput<'_>) -> StartAdmiss
             };
             let mut spec = spec.clone();
             spec.admission = Some(scope.clone());
-            StartAdmissionEntry::Entered(EnteredStart { scope, spec })
+            StartAdmissionEntry::Entered(Box::new(EnteredStart { scope, spec }))
         }
     }
 }
@@ -276,7 +276,7 @@ impl StartAdmissions {
         });
         let EnteredStart { scope, spec } = match entered {
             StartAdmissionEntry::Held(custody) => return Ok(StartOutcome::Held(custody)),
-            StartAdmissionEntry::Entered(entered) => entered,
+            StartAdmissionEntry::Entered(entered) => *entered,
         };
         let outcome = body(spec, scope.clone()).await;
         let transferred = scope.transferred();

@@ -226,7 +226,8 @@ mod tests {
         std::fs::write(dir.join(name), value.to_string()).unwrap();
     }
 
-    fn diagnostics() -> (InventoryDiagnostics, Arc<Mutex<Vec<(String, String)>>>) {
+    type RecordedDiagnostics = Arc<Mutex<Vec<(String, String)>>>;
+    fn diagnostics() -> (InventoryDiagnostics, RecordedDiagnostics) {
         let recorded: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
         let observed = Arc::clone(&recorded);
         let sink: InventoryDiagnostics = Arc::new(move |input| {

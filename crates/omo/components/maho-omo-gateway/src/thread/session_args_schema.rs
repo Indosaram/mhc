@@ -74,7 +74,7 @@ pub fn schema_problem(schema: &Value, path: &str) -> Option<String> {
         return Some(format!("{path}.additionalProperties must be true or false"));
     }
     if let Some(entries) = object.get("enum")
-        && !entries.as_array().is_some_and(|entries| !entries.is_empty())
+        && entries.as_array().is_none_or(|entries| entries.is_empty())
     {
         return Some(format!("{path}.enum must be a non-empty array"));
     }
@@ -139,9 +139,7 @@ fn pointer(path: &str, key: &str) -> String {
 /// The first place `value` breaks `schema`, or none.
 pub fn argument_failure(schema: &Value, value: &Value, path: &str) -> Option<ArgumentFailure> {
     let fail = |message: String| ArgumentFailure { path: path.to_owned(), message };
-    let Some(object) = schema.as_object() else {
-        return None;
-    };
+    let object = schema.as_object()?;
     if let Some(type_field) = object.get("type") {
         let types: Vec<&str> = match type_field {
             Value::Array(entries) => entries.iter().filter_map(Value::as_str).collect(),

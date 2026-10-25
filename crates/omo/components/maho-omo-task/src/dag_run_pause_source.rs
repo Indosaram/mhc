@@ -4,6 +4,18 @@
 //! revisions into the held input custody, and installs a resumed scheduler under the admission
 //! credential. A run that is not the pause sequence's own run is left alone.
 
+pub type RecordsCallback = Arc<dyn Fn(&str) -> Vec<DagRunRecordV1> + Send + Sync>;
+pub type RetireCallback = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+pub type InstallResumedRunCallback = Arc<
+        dyn Fn(
+                &str,
+                &str,
+                u64,
+                &ResumeCredential,
+            ) -> Result<senpi_task::dag::recovery::InstalledDagRun, String>
+            + Send
+            + Sync,
+    >;
 use std::sync::Arc;
 
 use senpi_task::{
@@ -27,24 +39,15 @@ pub type DagGuidanceDelivery =
 
 pub struct DagRunPauseSourcePorts {
     pub barrier: AdmissionBarrier,
-    pub records: Arc<dyn Fn(&str) -> Vec<DagRunRecordV1> + Send + Sync>,
+    pub records: RecordsCallback,
     pub options: Arc<dyn Fn(&DagRunRecordV1) -> DagSchedulerOptions + Send + Sync>,
     pub pauses: Arc<DagPauseStore>,
-    pub retire: Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
+    pub retire: RetireCallback,
     pub prepare_resume: Arc<dyn Fn(&str) + Send + Sync>,
     /// `installResumedRun`: `Ok(true)` when a scheduler was installed.
-    pub install_resumed_run: Arc<
-        dyn Fn(
-                &str,
-                &str,
-                u64,
-                &ResumeCredential,
-            ) -> Result<senpi_task::dag::recovery::InstalledDagRun, String>
-            + Send
-            + Sync,
-    >,
+    pub install_resumed_run: InstallResumedRunCallback,
     pub adopt: Arc<dyn Fn(senpi_task::dag::recovery::InstalledDagRun) + Send + Sync>,
-    pub cancel_run: Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
+    pub cancel_run: RetireCallback,
     pub deliver_guidance: Option<DagGuidanceDelivery>,
 }
 
@@ -222,7 +225,7 @@ impl RunPauseSource for DagRunPauseSource {
                     source: self,
                     record: record.clone(),
                 };
-                if let Err(error) = dispatch_guidance(&[entry.clone()], &targets, &mut ports) {
+                if let Err(error) = dispatch_guidance(std::slice::from_ref(&entry), &targets, &mut ports) {
                     eprintln!(
                         "[omo-task] dag guidance dispatch failed: run={} guidance={} error={error}",
                         record.run_id, entry.id

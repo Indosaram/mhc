@@ -9,6 +9,7 @@
 //! channels. The device session source is injected; the account sign-in that produces a real
 //! session is not part of this component.
 
+pub type OnEndedCallback = Option<Rc<dyn Fn(Box<dyn Fn()>)>>;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -45,7 +46,7 @@ pub type DeviceNameLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 pub struct DeviceSyncSession {
     pub session: SyncSession,
     pub device_name: Option<DeviceNameLookup>,
-    pub on_ended: Option<Rc<dyn Fn(Box<dyn Fn()>)>>,
+    pub on_ended: OnEndedCallback,
 }
 
 /// Resolves the account session for an identity. Called on the engine thread, so the returned

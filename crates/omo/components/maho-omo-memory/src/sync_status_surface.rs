@@ -68,11 +68,10 @@ impl SyncStatusNotifier {
         let previous = announced.get(repo).cloned();
         let Some(failure) = failure else {
             announced.remove(repo);
-            if previous.is_some() {
-                if let Some(ui) = ui {
+            if previous.is_some()
+                && let Some(ui) = ui {
                     ui.notify(SYNC_RECOVERED_NOTICE, SyncNoticeLevel::Info);
                 }
-            }
             return;
         };
         let key = if failure.paths.is_empty() {

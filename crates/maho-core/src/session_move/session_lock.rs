@@ -58,11 +58,9 @@ pub async fn with_session_move_lock<T>(
             if let Some(pid) = name
                 .strip_suffix(".json")
                 .and_then(|name| name.parse::<u32>().ok())
-            {
-                if crate::schedule::runner_lease::native_pid_alive(pid) {
+                && crate::schedule::runner_lease::native_pid_alive(pid) {
                     return Err(format!("ESESSIONHELD: {} is held by {pid}", file.display()));
                 }
-            }
         }
         let result = step.await;
         drop(_fence);

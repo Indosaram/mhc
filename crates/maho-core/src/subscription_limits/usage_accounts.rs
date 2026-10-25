@@ -265,23 +265,21 @@ pub fn token_endpoint_rejected(error: &anyhow::Error) -> bool {
 
     for cause in error.chain() {
         let msg = cause.to_string();
-        if let Some(caps) = re.captures(&msg) {
-            if let Some(status) = caps.get(1) {
+        if let Some(caps) = re.captures(&msg)
+            && let Some(status) = caps.get(1) {
                 let s = status.as_str();
                 return s == "400" || s == "401";
             }
-        }
         if msg.contains("invalid_grant") {
             return true;
         }
     }
     let full = error.to_string();
-    if let Some(caps) = re.captures(&full) {
-        if let Some(status) = caps.get(1) {
+    if let Some(caps) = re.captures(&full)
+        && let Some(status) = caps.get(1) {
             let s = status.as_str();
             return s == "400" || s == "401";
         }
-    }
     full.contains("invalid_grant")
 }
 

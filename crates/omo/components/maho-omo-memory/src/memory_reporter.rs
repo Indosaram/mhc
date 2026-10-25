@@ -48,8 +48,9 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    type RegisteredReporters = BTreeMap<String, Arc<dyn Fn() -> BTreeMap<String, usize> + Send + Sync>>;
     struct FakeHost {
-        registered: Mutex<BTreeMap<String, Arc<dyn Fn() -> BTreeMap<String, usize> + Send + Sync>>>,
+        registered: Mutex<RegisteredReporters>,
     }
 
     impl MemoryReporterHost for FakeHost {

@@ -1,3 +1,4 @@
+pub type PauseReasonCallback = Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>;
 use crate::tools::tool_text;
 use maho_ext_api::{ToolDefinition, ToolError, ToolResult};
 use senpi_task::dag::paused_controls::PausedDagGuideCommand;
@@ -213,7 +214,7 @@ pub struct DagToolDeps {
     pub guide: Option<DagGuide>,
     /// Why the run is paused right now, when the runtime can tell. A user-stopped run refuses a
     /// model-driven `resume`; nothing else does.
-    pub pause_reason: Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    pub pause_reason: PauseReasonCallback,
 }
 
 pub fn quiet_nodes_notice(nodes: &[DagNode], now: i64) -> String {
@@ -404,7 +405,7 @@ fn guidance_state_str(state: senpi_task::pause::guidance::GuidanceState) -> &'st
 fn guide_command(
     input: &DagToolInput,
     snapshot: &DagRunSnapshot,
-) -> Result<PausedDagGuideCommand, ToolResult> {
+) -> Result<PausedDagGuideCommand, Box<ToolResult>> {
     if let Some(guidance_id) = &input.guidance_id {
         if input.remove == Some(true) {
             return Ok(PausedDagGuideCommand::Remove {
@@ -416,49 +417,49 @@ fn guide_command(
                 id: guidance_id.clone(),
                 text: text.to_string(),
             }),
-            None => Err(failure(
+            None => Err(Box::new(failure(
                 "invalid_arguments",
                 "Editing guidance requires text or remove=true.",
                 vec![],
                 vec![],
                 vec![],
                 vec![],
-            )),
+            ))),
         };
     }
     let Some(text) = input.text.as_deref().filter(|text| !text.trim().is_empty()) else {
-        return Err(failure(
+        return Err(Box::new(failure(
             "invalid_arguments",
             "New guidance requires text.",
             vec![],
             vec![],
             vec![],
             vec![],
-        ));
+        )));
     };
     if input.remove == Some(true) {
-        return Err(failure(
+        return Err(Box::new(failure(
             "invalid_arguments",
             "New guidance requires text.",
             vec![],
             vec![],
             vec![],
             vec![],
-        ));
+        )));
     }
     let node_id = match input.node_id.as_deref() {
         None => None,
         Some(node_id) => match snapshot.nodes.iter().find(|node| node.id == node_id) {
             Some(node) => Some(node.id.clone()),
             None => {
-                return Err(failure(
+                return Err(Box::new(failure(
                     "node_not_found",
                     "Guidance target does not exist.",
                     vec![],
                     vec![],
                     vec![],
                     vec![],
-                ));
+                )));
             }
         },
     };
@@ -905,7 +906,7 @@ pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResul
             };
             let command = match guide_command(&input, &snapshot) {
                 Ok(command) => command,
-                Err(result) => return Ok(result),
+                Err(result) => return Ok(*result),
             };
             match guide(run_id, command) {
                 Ok(guidance) => Ok(tool_text(

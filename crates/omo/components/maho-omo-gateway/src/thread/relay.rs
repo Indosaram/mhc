@@ -3,6 +3,7 @@
 //! Upstream counterpart: `thread/gateway/relay.ts`. Every result is data: `{ kind: "ok", ... }` or
 //! `{ kind: "error", error }` with a taxonomy code and a `next_action`.
 
+pub type LocateCallback = Arc<dyn Fn(&str) -> BoxFuture<Option<GatewayEndpointRef>> + Send + Sync>;
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -15,9 +16,9 @@ use super::store_relay_ops::{
     AnswerClaim, AnswerClaimRef, AnswerDelivered, BindInput, BindingsFilter, BindingRecord, CLOSED_ELSEWHERE, InboundMode, OutboxPage, PriorAnswer, RELAY_TEXT_MAX_BYTES, RelayOutcome,
     ReportOpRequest, ReportOpResult,
 };
-use super::types::{ExternalAuthor, GatewayDeliveryMode, GatewayDeliveryResult, GatewaySender, StoreRefusal};
+use super::types::{ExternalAuthor, GatewayDeliveryMode, GatewayDeliveryResult, GatewaySender};
 
-pub type RelayResult<T> = Result<T, ThreadToolFailure>;
+pub type RelayResult<T> = Result<T, Box<ThreadToolFailure>>;
 
 /// Endpoint refusals meaning the session no longer waits on the request.
 const SESSION_NO_LONGER_WAITS: [&str; 3] = ["question_already_resolved", "unknown_extension_ui_request", "unknown_request"];
@@ -43,8 +44,8 @@ fn next_action(code: &str) -> &'static str {
     }
 }
 
-fn failure(code: &str, message: impl Into<String>, details: Option<Value>, next: Option<&str>) -> ThreadToolFailure {
-    thread_tool_failure(code, message, next.unwrap_or_else(|| next_action(code)), details)
+fn failure(code: &str, message: impl Into<String>, details: Option<Value>, next: Option<&str>) -> Box<ThreadToolFailure> {
+    Box::new(thread_tool_failure(code, message, next.unwrap_or_else(|| next_action(code)), details))
 }
 
 fn from_store<T>(outcome: RelayOutcome<T>) -> RelayResult<T> {
@@ -54,11 +55,7 @@ fn from_store<T>(outcome: RelayOutcome<T>) -> RelayResult<T> {
     }
 }
 
-fn from_refusal(refusal: StoreRefusal) -> ThreadToolFailure {
-    failure(refusal.code.as_str(), refusal.message, refusal.details, None)
-}
-
-fn text_too_large(text: &str) -> Option<ThreadToolFailure> {
+fn text_too_large(text: &str) -> Option<Box<ThreadToolFailure>> {
     (text.len() > RELAY_TEXT_MAX_BYTES).then(|| failure("message_too_large", format!("The text is {} bytes, above the {RELAY_TEXT_MAX_BYTES}-byte limit.", text.len()), None, None))
 }
 
@@ -81,7 +78,7 @@ pub struct GatewayRelayOptions {
     pub engine: GatewayEngine,
     pub endpoints: GatewayEndpointPort,
     /// The endpoint serving a session right now, or null when nothing answers for it.
-    pub locate: Arc<dyn Fn(&str) -> BoxFuture<Option<GatewayEndpointRef>> + Send + Sync>,
+    pub locate: LocateCallback,
     pub now: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
 }
 
@@ -266,13 +263,13 @@ impl GatewayRelay {
                 && !matches!(mode.as_str(), "auto" | "follow_up")
             {
                 return GatewayDeliveryResult::Error {
-                    error: failure("invalid_arguments", format!("A binding message is delivered as auto or follow_up, never {mode}."), Some(serde_json::json!({ "mode": mode })), None),
+                    error: *failure("invalid_arguments", format!("A binding message is delivered as auto or follow_up, never {mode}."), Some(serde_json::json!({ "mode": mode })), None),
                 };
             }
             let binding = match relay.options.store.binding_view(relay.now(), &request.binding_id) {
                 Ok(Some(binding)) => binding,
-                Ok(None) => return GatewayDeliveryResult::Error { error: failure("not_found", "No binding has this id.", Some(serde_json::json!({ "binding_id": request.binding_id })), None) },
-                Err(error) => return GatewayDeliveryResult::Error { error: failure("internal_error", error.message(), None, None) },
+                Ok(None) => return GatewayDeliveryResult::Error { error: *failure("not_found", "No binding has this id.", Some(serde_json::json!({ "binding_id": request.binding_id })), None) },
+                Err(error) => return GatewayDeliveryResult::Error { error: *failure("internal_error", error.message(), None, None) },
             };
             // An event the session already took keeps its stored result whatever the binding did since.
             let prior = relay.options.store.delivery_receipt(relay.now(), &format!("binding:{}", binding.binding_id), &format!("event:{}", request.event_id));
@@ -292,16 +289,16 @@ impl GatewayRelay {
             }
             if binding.status != super::store_relay_ops::BindingStatus::Active {
                 return GatewayDeliveryResult::Error {
-                    error: failure("binding_inactive", format!("The binding is {}.", binding.status.as_str()), Some(serde_json::json!({ "binding_id": binding.binding_id, "status": binding.status.as_str() })), None),
+                    error: *failure("binding_inactive", format!("The binding is {}.", binding.status.as_str()), Some(serde_json::json!({ "binding_id": binding.binding_id, "status": binding.status.as_str() })), None),
                 };
             }
             if !binding.direction.inbound {
-                return GatewayDeliveryResult::Error { error: failure("unsupported", "The binding carries no inbound direction.", Some(serde_json::json!({ "binding_id": binding.binding_id })), None) };
+                return GatewayDeliveryResult::Error { error: *failure("unsupported", "The binding carries no inbound direction.", Some(serde_json::json!({ "binding_id": binding.binding_id })), None) };
             }
             let mode = request.mode.clone().unwrap_or_else(|| binding.inbound_mode.clone());
             if mode == "auto" && binding.inbound_mode == "follow_up" {
                 return GatewayDeliveryResult::Error {
-                    error: failure(
+                    error: *failure(
                         "invalid_arguments",
                         "The binding delivers at most follow_up; a message cannot ask for more than its binding's inbound_mode.",
                         Some(serde_json::json!({ "binding_id": binding.binding_id, "mode": mode, "inbound_mode": binding.inbound_mode })),
@@ -336,7 +333,7 @@ impl GatewayRelay {
 
 /// The refusal a closed answer route reports while it keeps the question pending.
 pub fn closed_elsewhere(error: &str) -> ThreadToolFailure {
-    failure("already_answered", format!("{CLOSED_ELSEWHERE} ({error})."), Some(serde_json::json!({ "reason": error })), None)
+    *failure("already_answered", format!("{CLOSED_ELSEWHERE} ({error})."), Some(serde_json::json!({ "reason": error })), None)
 }
 
 #[cfg(test)]

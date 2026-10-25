@@ -31,8 +31,8 @@ impl GoalLifecycleService {
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(goal) = &goal {
-            if goal.status == "complete"
+        if let Some(goal) = &goal
+            && goal.status == "complete"
                 && state
                     .goal
                     .as_ref()
@@ -40,7 +40,6 @@ impl GoalLifecycleService {
             {
                 state.completed_goal_id = Some(goal.id.clone());
             }
-        }
         state.goal = goal;
     }
     pub fn turn_end(&self, input: serde_json::Value) {

@@ -4,6 +4,9 @@
 //! the upstream JavaScript import: the worker resolves `moduleUrl` in a registry of built modules,
 //! so a session op never loads code at call time.
 
+pub type RegisterStoreExtensionCallback = Arc<dyn Fn(&StoreExtensionRegistration, i64) -> StoreExtensionResult<i64> + Send + Sync>;
+pub type ExtensionCallCallback = Arc<dyn Fn(&str, &str, &Value, i64) -> StoreExtensionResult<Value> + Send + Sync>;
+pub type ExtensionSessionAwaitCallback = Arc<dyn Fn(&str, &str, &Value, &SessionCaller, i64) -> StoreExtensionResult<Value> + Send + Sync>;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -173,20 +176,24 @@ pub struct SessionCaller {
     pub caller_durable_id: String,
 }
 
+pub type TransactionAll<'a> = std::rc::Rc<dyn Fn(&[String], &str, &[Value], Option<&str>) -> Result<Vec<SqlRow>, String> + 'a>;
+pub type TransactionOne<'a> = std::rc::Rc<dyn Fn(&[String], &str, &[Value]) -> Result<Option<SqlRow>, String> + 'a>;
+pub type TransactionExec<'a> = std::rc::Rc<dyn Fn(&str, &[Value]) -> Result<usize, String> + 'a>;
+pub type TransactionSessions<'a> = std::rc::Rc<dyn Fn(&str) -> Result<Vec<Value>, String> + 'a>;
 /// The transaction helpers an extension op may call, all inside its own transaction.
 #[derive(Clone)]
 pub struct StoreExtensionTransaction<'a> {
-    pub all: Arc<dyn Fn(&[String], &str, &[Value], Option<&str>) -> Result<Vec<SqlRow>, String> + 'a>,
-    pub one: Arc<dyn Fn(&[String], &str, &[Value]) -> Result<Option<SqlRow>, String> + 'a>,
-    pub exec: Arc<dyn Fn(&str, &[Value]) -> Result<usize, String> + 'a>,
-    pub enqueue: Arc<dyn Fn(ExtensionEnqueueRequest) -> Result<GatewayDeliveryResult, String> + 'a>,
-    pub outbox_ack: Arc<dyn Fn(ExtensionAckRequest) -> Result<ExtensionAckReply, String> + 'a>,
-    pub bind: Arc<dyn Fn(ExtensionBindRequest) -> Result<ExtensionBindReply, String> + 'a>,
-    pub unbind: Arc<dyn Fn(ExtensionUnbindRequest) -> Result<ExtensionUnbindReply, String> + 'a>,
-    pub rebind: Arc<dyn Fn(ExtensionRebindRequest) -> Result<ExtensionRebindReply, String> + 'a>,
-    pub binding_for: Arc<dyn Fn(ExtensionBindingLookup) -> Result<Option<Value>, String> + 'a>,
-    pub bindings_for_session: Arc<dyn Fn(&str) -> Result<Vec<Value>, String> + 'a>,
-    pub outbox_pending: Arc<dyn Fn(ExtensionOutboxRequest) -> Result<Value, String> + 'a>,
+    pub all: TransactionAll<'a>,
+    pub one: TransactionOne<'a>,
+    pub exec: TransactionExec<'a>,
+    pub enqueue: std::rc::Rc<dyn Fn(ExtensionEnqueueRequest) -> Result<GatewayDeliveryResult, String> + 'a>,
+    pub outbox_ack: std::rc::Rc<dyn Fn(ExtensionAckRequest) -> Result<ExtensionAckReply, String> + 'a>,
+    pub bind: std::rc::Rc<dyn Fn(ExtensionBindRequest) -> Result<ExtensionBindReply, String> + 'a>,
+    pub unbind: std::rc::Rc<dyn Fn(ExtensionUnbindRequest) -> Result<ExtensionUnbindReply, String> + 'a>,
+    pub rebind: std::rc::Rc<dyn Fn(ExtensionRebindRequest) -> Result<ExtensionRebindReply, String> + 'a>,
+    pub binding_for: std::rc::Rc<dyn Fn(ExtensionBindingLookup) -> Result<Option<Value>, String> + 'a>,
+    pub bindings_for_session: TransactionSessions<'a>,
+    pub outbox_pending: std::rc::Rc<dyn Fn(ExtensionOutboxRequest) -> Result<Value, String> + 'a>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,14 +297,14 @@ pub type ExtensionModuleRegistry = BTreeMap<String, BTreeMap<String, StoreExtens
 
 /// The public extension surface the store facade exposes.
 pub struct StoreExtensionApi {
-    pub register_store_extension: Arc<dyn Fn(&StoreExtensionRegistration, i64) -> StoreExtensionResult<i64> + Send + Sync>,
-    pub extension_call: Arc<dyn Fn(&str, &str, &Value, i64) -> StoreExtensionResult<Value> + Send + Sync>,
+    pub register_store_extension: RegisterStoreExtensionCallback,
+    pub extension_call: ExtensionCallCallback,
 }
 
 /// The session channel: reachable only from the session's own extension tools.
 pub struct StoreExtensionSessionApi {
     pub session_callable_ops: Arc<dyn Fn() -> Vec<DeclaredSessionOp> + Send + Sync>,
-    pub extension_session_await: Arc<dyn Fn(&str, &str, &Value, &SessionCaller, i64) -> StoreExtensionResult<Value> + Send + Sync>,
+    pub extension_session_await: ExtensionSessionAwaitCallback,
 }
 
 /// The delivery facts an extension enqueue carries back.

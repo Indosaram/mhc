@@ -44,11 +44,10 @@ pub fn write_text_durably(path: &Path, text: &str) -> io::Result<()> {
     }
     #[cfg(not(windows))]
     {
-        if let Err(error) = File::open(parent)?.sync_all() {
-            if ![Some(22), Some(95)].contains(&error.raw_os_error()) {
+        if let Err(error) = File::open(parent)?.sync_all()
+            && ![Some(22), Some(95)].contains(&error.raw_os_error()) {
                 return Err(error);
             }
-        }
     }
     Ok(())
 }

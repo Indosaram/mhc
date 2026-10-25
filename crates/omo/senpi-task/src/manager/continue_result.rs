@@ -27,25 +27,7 @@ pub enum ContinueResult {
     },
 }
 
-#[cfg(test)]
-mod held_tests {
-    use super::*;
-    #[test]
-    fn held_send_projects_to_paused_follow_up() {
-        assert_eq!(
-            to_continue_result(SendOutcome::Held {
-                task_id: "task".into(),
-                pause_seq: 3,
-                entry_id: "input".into()
-            }),
-            ContinueResult::Continued {
-                task_id: "task".into(),
-                status: TaskStatus::Paused,
-                delivered: ContinueDelivery::FollowUp
-            }
-        );
-    }
-}
+
 
 pub fn to_continue_result(outcome: SendOutcome) -> ContinueResult {
     match outcome {
@@ -111,5 +93,25 @@ pub fn to_continue_result(outcome: SendOutcome) -> ContinueResult {
             reason,
             suggestion,
         },
+    }
+}
+
+#[cfg(test)]
+mod held_tests {
+    use super::*;
+    #[test]
+    fn held_send_projects_to_paused_follow_up() {
+        assert_eq!(
+            to_continue_result(SendOutcome::Held {
+                task_id: "task".into(),
+                pause_seq: 3,
+                entry_id: "input".into()
+            }),
+            ContinueResult::Continued {
+                task_id: "task".into(),
+                status: TaskStatus::Paused,
+                delivered: ContinueDelivery::FollowUp
+            }
+        );
     }
 }

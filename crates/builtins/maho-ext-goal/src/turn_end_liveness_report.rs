@@ -28,11 +28,11 @@ pub fn collect_turn_end_liveness_input(
     event: &AgentEndEvent,
     goal: Option<&Goal>,
     todo_outcome: Option<&str>,
-    deadline_stop: bool,
-    pending: bool,
+    stop_and_pending: (bool, bool),
     monitor: &MonitorAwareGoalContinuation,
     now: i64,
 ) -> Result<TurnEndLivenessInput, ExtensionFailure> {
+    let (deadline_stop, pending) = stop_and_pending;
     let count = crate::todo_gate::open_todo_task_contents(&ctx.session_manager.get_branch()).len();
     let open_work = if let Some(goal) = goal.filter(|goal| goal.status == GoalStatus::Active) {
         OpenWork::ActiveGoal {

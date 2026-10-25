@@ -1,4 +1,5 @@
 //! Production composition over the current public manager and lifecycle ports.
+pub type OwnedSessionsCallback = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
 use crate::{
     lifecycle_adapters::{TaskLifecycleDestruction, admit_lifecycle},
     parent_notifier::{CompletionCoordinator, TaskParentNotifier},
@@ -66,7 +67,7 @@ impl TaskEngine {
         &self,
         workpools: Arc<tokio::sync::Mutex<senpi_task::workpool::engine::WorkpoolEngine>>,
         barrier: senpi_task::pause::admission_barrier::AdmissionBarrier,
-        owned_sessions: Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>,
+        owned_sessions: OwnedSessionsCallback,
     ) -> crate::workpool_run_pause_source::WorkpoolRunPauseSource {
         crate::workpool_run_pause_source::WorkpoolRunPauseSource {
             store: senpi_task::workpool::store::WorkpoolStore::new(self.store.state_dir()),

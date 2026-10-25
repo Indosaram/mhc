@@ -112,8 +112,8 @@ impl ProjectScopeProbe {
             match self.stat_kind(&marker).await {
                 Some(EntryKind::Directory) => break,
                 Some(EntryKind::File) => {
-                    if let Some(text) = self.read_text(&marker).await {
-                        if let Some(target) = text
+                    if let Some(text) = self.read_text(&marker).await
+                        && let Some(target) = text
                             .lines()
                             .next()
                             .and_then(|s| s.trim().strip_prefix("gitdir:"))
@@ -146,7 +146,6 @@ impl ProjectScopeProbe {
                                 .await;
                             }
                         }
-                    }
                     break;
                 }
                 _ => {}

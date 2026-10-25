@@ -52,7 +52,6 @@ mod session_summary_purge;
 mod session_summary_recovery;
 mod session_summary_sampling;
 pub mod session_summary_schema;
-mod session_summary_storage;
 mod session_summary_store;
 mod session_summary_window;
 #[cfg(test)]

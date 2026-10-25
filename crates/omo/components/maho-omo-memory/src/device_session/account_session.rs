@@ -163,11 +163,10 @@ impl Chain {
                 };
             let head = state.head().map_or(0, |head| head.seq);
             for entry in entries {
-                if let Some(seq) = entry["seq"].as_u64().filter(|seq| *seq <= head) {
-                    if let Some(link) = entry["link"].as_str() {
+                if let Some(seq) = entry["seq"].as_u64().filter(|seq| *seq <= head)
+                    && let Some(link) = entry["link"].as_str() {
                         self.links.insert(seq, link.into());
                     }
-                }
             }
             for step in steps {
                 let seq = match &step {

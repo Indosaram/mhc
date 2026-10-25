@@ -141,7 +141,7 @@ pub struct FactsEnqueueRequest {
 #[serde(tag = "enqueued")]
 pub enum FactsEnqueueResult {
     #[serde(rename = "true")]
-    Enqueued { entry: FactsQueueEntry },
+    Enqueued { entry: Box<FactsQueueEntry> },
     #[serde(rename = "false")]
     NotEnqueued { reason: String },
 }
@@ -355,7 +355,7 @@ impl FactsQueue {
             self.publish(&entry, &at_iso, request.signal.as_ref())?;
 
             if aborted_now() {
-                return Ok(FactsEnqueueResult::Enqueued { entry });
+                return Ok(FactsEnqueueResult::Enqueued { entry: Box::new(entry) });
             }
 
             self.advance_enqueued(
@@ -363,7 +363,7 @@ impl FactsQueue {
                 &entry.range,
                 request.signal.as_ref(),
             )?;
-            Ok(FactsEnqueueResult::Enqueued { entry })
+            Ok(FactsEnqueueResult::Enqueued { entry: Box::new(entry) })
         })
     }
 
@@ -651,10 +651,7 @@ impl FactsQueue {
         };
         let mut names = Vec::new();
         for dir_entry in read_dir {
-            let dir_entry = match dir_entry {
-                Ok(de) => de,
-                Err(error) => return Err(error.into()),
-            };
+            let dir_entry = dir_entry?;
             let file_name = dir_entry.file_name().to_string_lossy().into_owned();
             names.push(file_name);
         }

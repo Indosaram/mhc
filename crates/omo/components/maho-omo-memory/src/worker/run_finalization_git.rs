@@ -1,3 +1,4 @@
+pub type WarnCallback<'a> = Option<&'a (dyn Fn(&str, &std::collections::BTreeMap<String, String>) + Send + Sync)>;
 use super::{
     reservation_run_ledger::{
         ReservationRunLedger, parse_reservation_run_ledger, worktree_from_ledger,
@@ -96,7 +97,7 @@ pub fn resolve_finalization_decision(
     run_dir: &Path,
     input: &ReservationRunLedger,
     child: &RunOutcome,
-    warn: Option<&(dyn Fn(&str, &std::collections::BTreeMap<String, String>) + Send + Sync)>,
+    warn: WarnCallback<'_>,
 ) -> Result<DurableFinalizationDecision, String> {
     let path = run_dir.join("ledger.json");
     let mut ledger =
@@ -324,6 +325,33 @@ pub fn resolve_finalization_decision(
     Ok(result)
 }
 
+pub(super) fn preflight_descriptions(
+    worktree: &memory_core::reflection::ReflectionWorktree,
+    base: &str,
+    warn: WarnCallback<'_>,
+) {
+    let adapter = |message: &str, fields: &serde_json::Value| {
+        if let Some(warn) = warn {
+            let fields = fields
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(key, value)| {
+                    (
+                        key.clone(),
+                        value
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| value.to_string()),
+                    )
+                })
+                .collect();
+            warn(message, &fields);
+        }
+    };
+    preflight_reflection_descriptions(worktree, base, worktree.exec.as_ref(), Some(&adapter));
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::run_artifacts::{ChildExit, write_run_json_atomic};
@@ -496,31 +524,4 @@ mod tests {
             serde_json::json!(["reference-fact.md"])
         );
     }
-}
-
-pub(super) fn preflight_descriptions(
-    worktree: &memory_core::reflection::ReflectionWorktree,
-    base: &str,
-    warn: Option<&(dyn Fn(&str, &std::collections::BTreeMap<String, String>) + Send + Sync)>,
-) {
-    let adapter = |message: &str, fields: &serde_json::Value| {
-        if let Some(warn) = warn {
-            let fields = fields
-                .as_object()
-                .into_iter()
-                .flatten()
-                .map(|(key, value)| {
-                    (
-                        key.clone(),
-                        value
-                            .as_str()
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| value.to_string()),
-                    )
-                })
-                .collect();
-            warn(message, &fields);
-        }
-    };
-    preflight_reflection_descriptions(worktree, base, worktree.exec.as_ref(), Some(&adapter));
 }

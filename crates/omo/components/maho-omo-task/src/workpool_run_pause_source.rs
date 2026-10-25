@@ -1,3 +1,4 @@
+pub type OwnedSessionsCallback = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
 use senpi_task::{
     pause::{
         admission_barrier::{
@@ -16,7 +17,7 @@ pub struct WorkpoolRunPauseSource {
     pub store: WorkpoolStore,
     pub barrier: AdmissionBarrier,
     pub workpools: Arc<tokio::sync::Mutex<WorkpoolEngine>>,
-    pub owned_sessions: Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>,
+    pub owned_sessions: OwnedSessionsCallback,
 }
 impl WorkpoolRunPauseSource {
     fn owned(&self, parent: &str) -> Vec<WorkpoolRecord> {

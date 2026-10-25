@@ -89,13 +89,11 @@ impl PathCommitTimes {
                 break;
             }
         }
-        if base.is_none() {
-            if let Some(stored) = &stored {
-                if stored.revision == oid || ancestor(&stored.revision)? {
+        if base.is_none()
+            && let Some(stored) = &stored
+                && (stored.revision == oid || ancestor(&stored.revision)?) {
                     base = Some((stored.revision.clone(), stored.times.clone(), true));
                 }
-            }
-        }
         let (all, write) = if let Some((key, mut times, persisted)) = base {
             if key != oid {
                 for (path, time) in
@@ -117,8 +115,8 @@ impl PathCommitTimes {
                 },
             )
         };
-        if write {
-            if let Some(path) = path {
+        if write
+            && let Some(path) = path {
                 let temporary = path.with_extension(format!(
                     "{}.{}.tmp",
                     std::process::id(),
@@ -137,7 +135,6 @@ impl PathCommitTimes {
                     let _ = std::fs::remove_file(temporary);
                 }
             }
-        }
         let live = live_times(present, &all);
         cache.push((oid, all));
         if cache.len() > 4 {

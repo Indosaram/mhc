@@ -47,11 +47,10 @@ fn conversation_message(entry: &Value) -> Option<(String, String, Vec<String>)> 
         Some(Value::Array(blocks)) => blocks
             .iter()
             .filter_map(|block| {
-                if block.get("type").and_then(Value::as_str) == Some("toolCall") {
-                    if let Some(id) = block.get("id").and_then(Value::as_str) {
+                if block.get("type").and_then(Value::as_str) == Some("toolCall")
+                    && let Some(id) = block.get("id").and_then(Value::as_str) {
                         ids.push(id.to_owned());
                     }
-                }
                 (block.get("type").and_then(Value::as_str) == Some("text"))
                     .then(|| block.get("text").and_then(Value::as_str))
                     .flatten()

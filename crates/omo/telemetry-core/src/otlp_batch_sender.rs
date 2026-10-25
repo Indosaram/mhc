@@ -303,14 +303,13 @@ impl BatchSender {
             PostOutcome::Accepted { partial } => {
                 let _deleted = delete_file(&ctx.dir, &current);
                 (self.input.on_accepted)();
-                if let Some(partial) = partial {
-                    if partial.rejected > 0 {
+                if let Some(partial) = partial
+                    && partial.rejected > 0 {
                         (self.input.report)(
                             TelemetryDiagnosticEvent::TelemetryOtlpPartialSuccess,
                             Some(TelemetryError::new(partial.message)),
                         );
                     }
-                }
             }
             PostOutcome::Rejected { .. } => {
                 let _dropped = drop_file(ctx, &current, DropReason::Rejected);

@@ -4,6 +4,8 @@
 //! drain need goes through these two ports: the sender side (`GatewayEndpointPort`) and the
 //! receiver side (`SessionRuntimePort`).
 
+pub type ReleaseSessionCallback = Option<Arc<dyn Fn(GatewayEndpointRef, ReleaseSessionRequest) -> BoxFuture<ReleaseSessionReply> + Send + Sync>>;
+pub type RespondUiCallback = Option<Arc<dyn Fn(GatewayEndpointRef, UiAnswer) -> BoxFuture<UiAnswerReply> + Send + Sync>>;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -210,9 +212,9 @@ pub enum UiAnswerReply {
 #[derive(Clone)]
 pub struct GatewayEndpointPort {
     pub wake: Arc<dyn Fn(GatewayEndpointRef, Vec<String>) -> BoxFuture<GatewayWakeReply> + Send + Sync>,
-    pub release_session: Option<Arc<dyn Fn(GatewayEndpointRef, ReleaseSessionRequest) -> BoxFuture<ReleaseSessionReply> + Send + Sync>>,
+    pub release_session: ReleaseSessionCallback,
     pub classify_liveness: Option<Arc<dyn Fn(GatewayEndpointRef) -> BoxFuture<EndpointLiveness> + Send + Sync>>,
-    pub respond_ui: Option<Arc<dyn Fn(GatewayEndpointRef, UiAnswer) -> BoxFuture<UiAnswerReply> + Send + Sync>>,
+    pub respond_ui: RespondUiCallback,
 }
 
 impl GatewayEndpointPort {

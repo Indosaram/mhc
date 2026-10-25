@@ -260,9 +260,9 @@ mod tests {
         module.insert(
             "core".to_owned(),
             Arc::new(|tx: &crate::thread::store_extensions::StoreExtensionTransaction, args: Value| {
-                (tx.exec)("CREATE TABLE IF NOT EXISTS alpha_notes (id INTEGER PRIMARY KEY, note TEXT)", &[]).map_err(|error| crate::thread::store_extensions::StoreExtensionError::failed(error))?;
+                (tx.exec)("CREATE TABLE IF NOT EXISTS alpha_notes (id INTEGER PRIMARY KEY, note TEXT)", &[]).map_err(crate::thread::store_extensions::StoreExtensionError::failed)?;
                 let note = args.get("note").and_then(Value::as_str).unwrap_or_default().to_owned();
-                (tx.exec)("INSERT INTO alpha_notes (note) VALUES (?)", &[json!(note)]).map_err(|error| crate::thread::store_extensions::StoreExtensionError::failed(error))?;
+                (tx.exec)("INSERT INTO alpha_notes (note) VALUES (?)", &[json!(note)]).map_err(crate::thread::store_extensions::StoreExtensionError::failed)?;
                 Ok(json!({ "ok": true }))
             }),
         );

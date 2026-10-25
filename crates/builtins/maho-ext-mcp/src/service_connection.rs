@@ -176,18 +176,16 @@ fn create_session_connection(
                 let Some(connection) = weak.upgrade() else {
                     return;
                 };
-                if observation.conservative
+                if (observation.conservative
                     || crate::project_skill_policy::effective_grant_names(
                         &observation.snapshot,
                         &identity,
-                    ) != authority.started_grant_names()
-                {
-                    if let Err(error) = connection.bump_generation().await {
+                    ) != authority.started_grant_names())
+                    && let Err(error) = connection.bump_generation().await {
                         maho_ext_api::diagnostic(&format!(
                             "MCP grant invalidation failed: {error}"
                         ));
                     }
-                }
             }
         });
         // Registration is synchronous; the entry is fresh and has no competing owner yet.

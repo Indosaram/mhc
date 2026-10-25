@@ -380,7 +380,7 @@ fn recover_stranded_locks(root: &Path, git_dir: &Path) -> EngineResult<bool> {
         for path in &candidates {
             std::fs::remove_file(path)?;
         }
-        return Ok(!candidates.is_empty());
+        Ok(!candidates.is_empty())
     }
     #[cfg(not(target_os = "linux"))]
     Ok(false)

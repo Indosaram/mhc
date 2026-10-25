@@ -2,6 +2,12 @@
 //!
 //! Upstream counterpart: `thread/component.ts`.
 
+pub type LocateCallback = Arc<
+        dyn Fn(&str) -> super::adapter::BoxFuture<Option<super::adapter::GatewayEndpointRef>>
+            + Send
+            + Sync,
+    >;
+pub type NotifyCallback = Option<Arc<dyn Fn(&str) + Send + Sync>>;
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -23,13 +29,9 @@ pub struct GatewayThreadComponentOptions {
     pub caller_provenance: Arc<dyn Fn() -> super::types::Provenance + Send + Sync>,
     pub resolve: GatewayResolve,
     pub endpoints: super::adapter::GatewayEndpointPort,
-    pub locate: Arc<
-        dyn Fn(&str) -> super::adapter::BoxFuture<Option<super::adapter::GatewayEndpointRef>>
-            + Send
-            + Sync,
-    >,
-    pub notify: Option<Arc<dyn Fn(&str) + Send + Sync>>,
-    pub log: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    pub locate: LocateCallback,
+    pub notify: NotifyCallback,
+    pub log: NotifyCallback,
 }
 
 /// One session's gateway: its drain, its relay and the tools its model calls.
@@ -42,7 +44,7 @@ pub struct GatewayThreadComponent {
     pub tools: Vec<ThreadTool>,
     pub durable_id: String,
     registration: Arc<std::sync::Mutex<super::tools::ExtensionToolRegistration>>,
-    log: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    log: NotifyCallback,
 }
 
 pub fn create_gateway_thread_component(
@@ -298,7 +300,7 @@ mod tests {
                 turn_epoch: 1,
             }),
             admit_external_message: Arc::new(|_| Err("not in this test".to_owned())),
-            list_admitted_deliveries: Arc::new(|| super::super::types::AdmissionLedger::default()),
+            list_admitted_deliveries: Arc::new(super::super::types::AdmissionLedger::default),
         };
         let component = create_gateway_thread_component(Arc::new(GatewayThreadComponentOptions {
             store,

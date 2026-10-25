@@ -124,8 +124,8 @@ pub fn compile_memory_block_with_reads(
         limits: options.projection.unwrap_or_default(),
         ..Default::default()
     };
-    if let Some(revision) = revision {
-        if !external_paths.is_empty()
+    if let Some(revision) = revision
+        && !external_paths.is_empty()
             && (external.limits.max_entries_per_directory > 0 || external.limits.max_bytes > 0)
         {
             match projection_times(repo, revision) {
@@ -137,7 +137,6 @@ pub fn compile_memory_block_with_reads(
                 }
             }
         }
-    }
     let projection = render_projection(
         persona.as_ref(),
         identity.as_ref(),
@@ -286,11 +285,10 @@ fn projection_times(
     for line in result.stdout.lines() {
         if let Some(time) = line.strip_prefix('\0') {
             stamp = time.trim().parse::<i64>().ok();
-        } else if !line.is_empty() {
-            if let Some(time) = stamp {
+        } else if !line.is_empty()
+            && let Some(time) = stamp {
                 times.entry(line.to_owned()).or_insert(time);
             }
-        }
     }
     Ok(times)
 }

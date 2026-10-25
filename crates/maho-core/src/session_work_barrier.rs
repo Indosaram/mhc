@@ -209,7 +209,7 @@ pub fn tool_barrier_spec_error(value: &serde_json::Value) -> Option<String> {
     };
     let _ = id;
     let deadline_ms = match obj.get("deadlineMs").and_then(|v| v.as_u64()) {
-        Some(n) if n >= 1 && n <= MAX_TOOL_BARRIER_DEADLINE_MS => n,
+        Some(n) if (1..=MAX_TOOL_BARRIER_DEADLINE_MS).contains(&n) => n,
         _ => {
             return Some(format!(
                 "toolBarrier.deadlineMs must be a whole number of milliseconds in 1..{MAX_TOOL_BARRIER_DEADLINE_MS}."
@@ -294,13 +294,12 @@ impl ToolBarrier {
             .armed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if guard.as_ref().is_some_and(|a| a.spec.id == id) {
-            if let Some(armed) = guard.take() {
+        if guard.as_ref().is_some_and(|a| a.spec.id == id)
+            && let Some(armed) = guard.take() {
                 armed.timer_handle.abort();
                 armed.notify.notify_waiters();
                 return true;
             }
-        }
         false
     }
 

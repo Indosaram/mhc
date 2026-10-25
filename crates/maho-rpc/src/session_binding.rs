@@ -1,3 +1,4 @@
+pub type SendCallback = std::sync::Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 use crate::session_attribution::{SessionActivityRegistry, ToolAttributionSpans};
 pub fn session_event_record(
     event: &maho_ext_api::AgentSessionEvent,
@@ -572,7 +573,7 @@ impl RpcSessionBinding {
             });
         let send_fanout = fanout;
         let tag = self.session_id.clone();
-        let send: std::sync::Arc<dyn Fn(&str, serde_json::Value) + Send + Sync> =
+        let send: SendCallback =
             std::sync::Arc::new(move |id, mut record| {
                 record["sessionId"] = tag.clone().into();
                 if let Err(error) = send_fanout

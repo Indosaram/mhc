@@ -148,7 +148,7 @@ fn legacy_recovery_migrates_original_last_before_modern_correction() {
     };
     std::fs::write(
         root.join(AGREEMENTS_PATH),
-        render_agreements_file(None, &[item.clone()]).unwrap(),
+        render_agreements_file(None, std::slice::from_ref(&item)).unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -261,7 +261,7 @@ fn reworded_new_record_adds_alias_and_survives_drop() {
     };
     apply(root, &[reaffirm], 64);
     let replay = changed(record("turn-3"), Some(text), Some("2026-10-03"));
-    assert_eq!(apply(root, &[replay.clone()], 64)[0].n, 3);
+    assert_eq!(apply(root, std::slice::from_ref(&replay), 64)[0].n, 3);
     assert_eq!(receipts(&content(root)).len(), 4);
     std::fs::write(
         root.join(AGREEMENTS_PATH),

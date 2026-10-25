@@ -1,5 +1,6 @@
 //! `runners/rpc/handle.ts`: the steerable handle over one RPC child, tracking each turn's outcome.
 
+pub type ResumedListenersCallback = Mutex<Vec<(u64, Arc<dyn Fn() + Send + Sync>)>>;
 use std::borrow::Cow;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread;
@@ -57,7 +58,7 @@ struct HandleState {
 
 struct HandleShared {
     claims: TurnClaim,
-    resumed_listeners: Mutex<Vec<(u64, Arc<dyn Fn() + Send + Sync>)>>,
+    resumed_listeners: ResumedListenersCallback,
     next_listener: std::sync::atomic::AtomicU64,
     state: Mutex<HandleState>,
     changed: Condvar,

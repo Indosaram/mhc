@@ -296,11 +296,9 @@ fn ten_contenders_acquire_in_fifo_order() {
                         .expect("tickets")
                         .len()
                         == index - 1
-                {
-                    if !signalled.swap(true, Ordering::SeqCst) {
+                    && !signalled.swap(true, Ordering::SeqCst) {
                         queued_tx.send(()).expect("queued signal");
                     }
-                }
                 false
             };
             let lease = acquire_recall_wake_lease(

@@ -5,6 +5,7 @@
 //! malformed line is reported and skipped; the connection survives. The client itself never
 //! signals the process: [`RpcClientPort::terminate`] delegates to `terminate.rs`.
 
+pub type DurableListenersCallback = Vec<(u64, Arc<dyn Fn(&str) + Send + Sync>)>;
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -115,7 +116,7 @@ type PendingSender = Sender<Result<Value, RpcClientError>>;
 #[derive(Default)]
 struct ClientState {
     durable_id: Option<String>,
-    durable_listeners: Vec<(u64, Arc<dyn Fn(&str) + Send + Sync>)>,
+    durable_listeners: DurableListenersCallback,
     pending: HashMap<String, PendingSender>,
     event_listeners: Vec<(u64, RpcEventListener)>,
     exit_listeners: Vec<(u64, RpcExitListener)>,
@@ -442,8 +443,8 @@ fn handle_line(
             if matches!(
                 parsed["type"].as_str(),
                 Some("session_id" | "session_replaced" | "session_info_changed")
-            ) {
-                if let Some(id) = parsed["sessionId"].as_str().filter(|id| !id.is_empty()) {
+            )
+                && let Some(id) = parsed["sessionId"].as_str().filter(|id| !id.is_empty()) {
                     let listeners = {
                         let mut state = shared.lock();
                         state.durable_id = Some(id.to_owned());
@@ -457,7 +458,6 @@ fn handle_line(
                         listener(id);
                     }
                 }
-            }
             let listeners: Vec<RpcEventListener> = shared
                 .lock()
                 .event_listeners

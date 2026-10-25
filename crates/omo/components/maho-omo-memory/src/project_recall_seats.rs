@@ -80,7 +80,7 @@ where
         project_ranked_lists.push(qualified);
     }
     let project_ranked = interleave(&project_ranked_lists);
-    let project_seats = ((max_items + 1) / 2).min(project_ranked.len());
+    let project_seats = max_items.div_ceil(2).min(project_ranked.len());
     let own_take_count = max_items.saturating_sub(project_seats);
     let own_taken: Vec<RecallCandidate> = own_ranked.into_iter().take(own_take_count).collect();
     let project_take_count = max_items.saturating_sub(own_taken.len());
@@ -97,12 +97,11 @@ fn interleave(lists: &[Vec<RecallCandidate>]) -> Vec<RecallCandidate> {
     let max_len = lists.iter().map(|l| l.len()).max().unwrap_or(0);
     for index in 0..max_len {
         for list in lists {
-            if let Some(candidate) = list.get(index) {
-                if !seen.contains(&candidate.path) {
+            if let Some(candidate) = list.get(index)
+                && !seen.contains(&candidate.path) {
                     seen.insert(candidate.path.clone());
                     out.push(candidate.clone());
                 }
-            }
         }
     }
     out
@@ -175,7 +174,7 @@ mod tests {
 
         let own_part: Vec<_> = with_project.iter().filter(|c| !c.path.starts_with("@project/")).cloned().collect();
         assert_eq!(own_part, alone[..own_part.len()]);
-        assert_eq!(own_part.len(), max_items - (max_items + 1) / 2);
+        assert_eq!(own_part.len(), max_items - max_items.div_ceil(2));
         assert!(with_project.iter().any(|c| c.path.starts_with("@project/")));
     }
 

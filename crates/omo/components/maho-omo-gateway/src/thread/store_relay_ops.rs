@@ -261,7 +261,7 @@ pub fn normalize_bind_input(input: &BindInput) -> Result<BindInput, StoreRefusal
             return Err(refused("invalid_arguments", format!("{label} must be a non-empty identifier of at most {IDENTIFIER_MAX_LENGTH} characters.")));
         }
     }
-    let direction = input.direction.clone().unwrap_or(BindingDirection { inbound: true, outbound: true });
+    let direction = input.direction.unwrap_or(BindingDirection { inbound: true, outbound: true });
     if !direction.inbound && !direction.outbound {
         return Err(refused("invalid_arguments", "A binding needs at least one direction."));
     }
@@ -404,7 +404,7 @@ pub fn bind_thread(ctx: &StoreContext, now: i64, input: &BindInput) -> Result<Re
         let stamp = rfc3339(now);
         let expires_at = input.ttl_seconds.map(|ttl| rfc3339(now + ttl * 1_000));
         let binding_id = super::store_ops::new_id("bind");
-        let direction = input.direction.clone().unwrap_or(BindingDirection { inbound: true, outbound: true });
+        let direction = input.direction.unwrap_or(BindingDirection { inbound: true, outbound: true });
         let events = serde_json::to_string(&input.outbound_events.clone().unwrap_or_default()).unwrap_or_else(|_| "[]".to_owned());
         ctx.run(
             "INSERT INTO bindings (binding_id, schema_version, revision, status, platform, account_id, chat_id, thread_id, root_message_id, progress_message_id, session_realm_id, session_durable_id, direction_inbound, direction_outbound, inbound_mode, outbound_events, policy_id, created_at, updated_at, lease_started_at, ttl_seconds, expires_at) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -462,11 +462,11 @@ pub fn bindings_for_session(ctx: &StoreContext, session_durable_id: &str, now: i
     select_bindings(
         ctx,
         "session_durable_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?)",
-        &[v_str(session_durable_id), v_str(&rfc3339(now))],
+        &[v_str(session_durable_id), v_str(rfc3339(now))],
     )
 }
 
-pub fn list_bindings(ctx: &StoreContext, now: i64, filter: &BindingsFilter, cursor: Option<&str>, limit: Option<i64>) -> Result<RelayOutcome<(Vec<BindingRecord>, Option<String>)>, StoreError> {
+pub fn list_bindings(ctx: &StoreContext, now: i64, filter: &BindingsFilter, cursor: Option<&str>, limit: Option<i64>) -> super::store_api::BindingPageResult {
     transaction(ctx, "list_bindings", || {
         expire_due(ctx, now)?;
         let mut clauses: Vec<String> = Vec::new();

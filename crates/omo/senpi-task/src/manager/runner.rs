@@ -102,6 +102,7 @@ pub fn without_excluded_selectors(selectors: &[String], patterns: &[String]) -> 
         .collect()
 }
 
+pub type InProcessCreation = Result<(Arc<dyn ManagedChildHandle>, String), RunnerError>;
 pub type InProcessHandleResult = Result<Arc<dyn ManagedChildHandle>, RunnerError>;
 
 /// `InProcessRunnerLike`.
@@ -109,7 +110,7 @@ pub trait InProcessRunnerLike: Send + Sync {
     fn create(
         &self,
         _spec: &ChildSpec,
-    ) -> Option<Result<(Arc<dyn ManagedChildHandle>, String), RunnerError>> {
+    ) -> Option<InProcessCreation> {
         None
     }
     fn start(&self, spec: &ChildSpec) -> InProcessHandleResult;
@@ -127,7 +128,7 @@ impl InProcessRunnerLike for InProcessRunner {
     fn create(
         &self,
         spec: &ChildSpec,
-    ) -> Option<Result<(Arc<dyn ManagedChildHandle>, String), RunnerError>> {
+    ) -> Option<InProcessCreation> {
         Some(InProcessRunner::create(self, spec).map(|(handle, prompt)| (erase(handle), prompt)))
     }
     fn start(&self, spec: &ChildSpec) -> InProcessHandleResult {

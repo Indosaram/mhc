@@ -90,12 +90,11 @@ fn reindex_unchanged_copies(dir: &Path, run: &Runner<'_>) -> Result<bool, GitErr
         if !seen.insert(path) {
             continue;
         }
-        if let Ok(copy) = std::fs::read(dir.join(path)) {
-            if matches_index_blob(run, path, &copy)? {
+        if let Ok(copy) = std::fs::read(dir.join(path))
+            && matches_index_blob(run, path, &copy)? {
                 input.extend_from_slice(path.as_bytes());
                 input.push(0);
             }
-        }
     }
     if input.is_empty() {
         return Ok(true);

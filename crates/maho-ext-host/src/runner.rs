@@ -1,5 +1,7 @@
 //! Port of senpi extensions/runner.ts dispatch, using native static registration.
+pub type LifecycleAttentionCallback = Arc<std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
 use maho_ext_api::*;
+pub type PromptStartObserver<'a> = dyn Fn(&str, &str, &str, Option<&[DynamicSystemPromptPart]>) + Send + Sync + 'a;
 #[path = "shutdown_quit_budget.rs"]
 pub mod shutdown_quit_budget;
 use std::{
@@ -845,7 +847,7 @@ pub struct ExtensionRunner {
     pub shutdown_warn_ms: u64,
     pub shutdown_timeout_ms: u64,
     hook_observer: Option<HookObserver>,
-    lifecycle_attention: Arc<std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
+    lifecycle_attention: LifecycleAttentionCallback,
     lifecycle_human_wait: Arc<std::sync::Mutex<Option<JsonValue>>>,
     warning_listener: Option<WarningListener>,
     next_hook_index: u64,
@@ -2193,9 +2195,7 @@ impl ExtensionRunner {
     pub async fn emit_before_agent_start_observed(
         &mut self,
         event: BeforeAgentStartEvent,
-        observe: Option<
-            &(dyn Fn(&str, &str, &str, Option<&[DynamicSystemPromptPart]>) + Send + Sync),
-        >,
+        observe: Option<&PromptStartObserver<'_>>,
     ) -> Result<Option<BeforeAgentStartCombinedResult>, ExtensionFailure> {
         self.runtime.assert_active()?;
         let mut event = ExtensionEvent::BeforeAgentStart(event);
@@ -2228,13 +2228,11 @@ impl ExtensionRunner {
                 Ok(_) => {}
                 Err(error) => self.report(&path, EventKind::BeforeAgentStart, error),
             }
-            if let ExtensionEvent::BeforeAgentStart(current) = &event {
-                if current.preview {
-                    if let Some(observe) = observe {
+            if let ExtensionEvent::BeforeAgentStart(current) = &event
+                && current.preview
+                    && let Some(observe) = observe {
                         observe(&path, &before, &current.system_prompt, parts.as_deref());
                     }
-                }
-            }
             self.runtime.assert_active()?;
         }
         Ok(

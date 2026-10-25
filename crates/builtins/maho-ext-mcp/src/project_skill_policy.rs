@@ -408,13 +408,13 @@ pub async fn prepare_project_skill_server(
         cwd,
         agent_dir,
         trusted,
-        explicit,
-        ui,
+        explicit, (ui,
         Arc::default(),
-        None,
+        None),
     )
     .await
 }
+pub type NoticePresentation = (Option<Arc<dyn maho_ext_api::ExtensionUi>>, Arc<crate::policy_notices::PolicyNotices>, Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>);
 pub async fn prepare_project_skill_server_with_notices(
     name: &str,
     original: &crate::skills::SkillServerDecl,
@@ -422,10 +422,9 @@ pub async fn prepare_project_skill_server_with_notices(
     agent_dir: &Path,
     trusted: bool,
     explicit: &BTreeMap<String, String>,
-    ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
-    notices: Arc<crate::policy_notices::PolicyNotices>,
-    notice_event: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
+    presentation: NoticePresentation,
 ) -> Result<ResolvedMcpServer, McpError> {
+    let (ui, notices, notice_event) = presentation;
     let original = &current_registration(name, original)?;
     let project_root = original
         .provenance
@@ -521,10 +520,9 @@ pub async fn prepare_project_skill_server_with_notices(
             cwd,
             agent_dir,
             trusted,
-            explicit,
-            ui,
+            explicit, (ui,
             notices,
-            notice_event,
+            notice_event),
         ))
         .await;
     }
@@ -699,8 +697,8 @@ mod tests {
             let sink = events.clone();
             let _server = prepare_project_skill_server_with_notices(
                 name, &declarations.servers[name], root.path(), root.path(), false,
-                &BTreeMap::new(), None, Arc::new(Default::default()),
-                Some(Arc::new(move |event| sink.lock().unwrap().push(event))),
+                &BTreeMap::new(), (None, Arc::new(Default::default()),
+                Some(Arc::new(move |event| sink.lock().unwrap().push(event)))),
             ).await.unwrap();
         }
         let events = events.lock().unwrap();

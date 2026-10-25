@@ -2,6 +2,7 @@
 //!
 //! Nudges the model with project-scoped memory when touching files in child projects.
 
+pub type ResolveContextCallback = Arc<dyn Fn(&str) -> Option<MemoryIdentityContext> + Send + Sync>;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -46,14 +47,14 @@ struct SessionScope {
 }
 
 pub struct ProjectMemoryScope {
-    resolve_context: Arc<dyn Fn(&str) -> Option<MemoryIdentityContext> + Send + Sync>,
+    resolve_context: ResolveContextCallback,
     switches: Arc<dyn Fn() -> ProjectMemorySwitches + Send + Sync>,
     sessions: Mutex<BTreeMap<String, SessionScope>>,
 }
 
 impl ProjectMemoryScope {
     pub fn new(
-        resolve_context: Arc<dyn Fn(&str) -> Option<MemoryIdentityContext> + Send + Sync>,
+        resolve_context: ResolveContextCallback,
         switches: Arc<dyn Fn() -> ProjectMemorySwitches + Send + Sync>,
     ) -> Self {
         Self {
@@ -149,8 +150,8 @@ impl ProjectMemoryScope {
                     maho_ext_api::ExtensionEvent::SessionCompact(
                         maho_ext_api::SessionCompactEvent::Accepted { .. }
                     )
-                ) {
-                    if let Some(state) = scope
+                )
+                    && let Some(state) = scope
                         .sessions
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -158,7 +159,6 @@ impl ProjectMemoryScope {
                     {
                         state.nudged.clear();
                     }
-                }
                 Box::pin(async { Ok(maho_ext_api::EventResult::None) })
             }),
         );

@@ -17,31 +17,31 @@ pub fn create_handle_teardown(
 }
 impl HandleTeardown {
     pub fn publish_task_status(&self, status: TaskStatus) -> Result<(), HostError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().expect("hosted child state lock poisoned");
         if state.2 {
             return Ok(());
         }
         state.0 = status != TaskStatus::Running;
         state.1 = Some(status);
         drop(state);
-        let port = self.port.lock().unwrap().clone();
+        let port = self.port.lock().expect("hosted child state lock poisoned").clone();
         port.send(serde_json::json!({"type":"set_session_context","patch":{"task_status":status.as_str()}}))
     }
     pub fn publish_running(&self) -> Result<(), HostError> {
-        if !self.state.lock().unwrap().0 {
+        if !self.state.lock().expect("hosted child state lock poisoned").0 {
             return Ok(());
         }
         self.publish_task_status(TaskStatus::Running)
     }
     pub fn republish_status(&self) -> Result<(), HostError> {
-        let status = self.state.lock().unwrap().1;
+        let status = self.state.lock().expect("hosted child state lock poisoned").1;
         if let Some(status) = status.filter(|status| *status != TaskStatus::Running) {
             self.publish_task_status(status)?;
         }
         Ok(())
     }
     pub fn detach(&self) -> Result<(), HostError> {
-        let port = self.port.lock().unwrap().clone();
+        let port = self.port.lock().expect("hosted child state lock poisoned").clone();
         port.detach()
     }
     pub fn close(&self) -> Result<(), HostError> {
@@ -51,19 +51,18 @@ impl HandleTeardown {
         self.end_on_host(2)
     }
     fn end_on_host(&self, intent: u8) -> Result<(), HostError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().expect("hosted child state lock poisoned");
         state.3 = state.3.max(intent);
         if state.2 {
             return Ok(());
         }
         state.2 = true;
         drop(state);
-        let port = self.port.lock().unwrap().clone();
-        if intent == 2 {
-            if let Err(error) = port.send(serde_json::json!({"type":"abort"})) {
+        let port = self.port.lock().expect("hosted child state lock poisoned").clone();
+        if intent == 2
+            && let Err(error) = port.send(serde_json::json!({"type":"abort"})) {
                 eprintln!("host abort failed: {error}");
             }
-        }
         port.close()
     }
 }

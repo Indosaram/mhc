@@ -51,11 +51,10 @@ pub fn publish_scheduler_event_marked(
     marker: &CompletionMarker,
     on_completed: &DurableDagListener,
 ) {
-    if marker.mark(event) {
-        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_completed(event))).is_err() {
+    if marker.mark(event)
+        && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_completed(event))).is_err() {
             maho_ext_api::diagnostic("DAG run completion marker failed");
         }
-    }
     publish_scheduler_event(event, delivered, listeners, on_event);
 }
 

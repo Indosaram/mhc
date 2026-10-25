@@ -65,10 +65,9 @@ pub fn test_spans() -> SpanAllowlist {
 pub fn test_wire_projection() -> OtlpWireProjection {
     Arc::new(|_event: &str, properties: &Map<String, Value>| {
         let mut attributes = WireAttributes::new();
-        if let Some(Value::String(session)) = properties.get("$session_id") {
-            if !session.is_empty() {
+        if let Some(Value::String(session)) = properties.get("$session_id")
+            && !session.is_empty() {
                 attributes.insert("session.id".to_string(), Value::String(session.clone()));
-            }
         }
         for (key, value) in properties {
             if !is_wire_attribute_key(key) {
@@ -130,7 +129,7 @@ pub struct RecordedRequest {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
-    pub wire_bytes: usize,
+    pub _wire_bytes: usize,
 }
 
 impl RecordedRequest {
@@ -175,7 +174,7 @@ pub fn recording_fetch(respond: Responder) -> RecordingFetch {
                 url: url.clone(),
                 headers,
                 body,
-                wire_bytes: request.body.len(),
+                _wire_bytes: request.body.len(),
             });
             calls.len()
         };

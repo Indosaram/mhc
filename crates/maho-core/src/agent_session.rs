@@ -832,14 +832,11 @@ pub fn message_fingerprint(message: Option<&AgentMessage>) -> String {
             }
             _ => {}
         },
-        AgentMessage::Custom(c) => match c {
-            maho_agent::types::CustomAgentMessage::Custom(custom) => {
-                size = match &custom.content {
-                    maho_agent::harness::messages::CustomMessageContent::Text(text) => text.len(),
-                    maho_agent::harness::messages::CustomMessageContent::Blocks(blocks) => blocks.len(),
-                };
-            }
-            _ => {}
+        AgentMessage::Custom(c) => if let maho_agent::types::CustomAgentMessage::Custom(custom) = c {
+            size = match &custom.content {
+                maho_agent::harness::messages::CustomMessageContent::Text(text) => text.len(),
+                maho_agent::harness::messages::CustomMessageContent::Blocks(blocks) => blocks.len(),
+            };
         },
     }
     let usage = match message {
@@ -4292,8 +4289,8 @@ impl AgentSession {
                 | AgentEvent::ToolExecutionEnd { .. } => {}
             }
         }
-        if let AgentEvent::MessageStart { message } = &event {
-            if let Ok(value) = session_message_to_value(message) {
+        if let AgentEvent::MessageStart { message } = &event
+            && let Ok(value) = session_message_to_value(message) {
                 if let Some(id) = value
                     .pointer("/details/heldInputId")
                     .and_then(Value::as_str)
@@ -4306,11 +4303,10 @@ impl AgentSession {
                     let entries = manager.entries();
                     let mut latest = indexmap::IndexMap::<String, Value>::new();
                     for entry in &entries {
-                        if entry["type"] == "custom" && entry["customType"] == "work-custody" {
-                            if let Some(id) = entry["data"]["id"].as_str() {
+                        if entry["type"] == "custom" && entry["customType"] == "work-custody"
+                            && let Some(id) = entry["data"]["id"].as_str() {
                                 latest.insert(id.into(), entry["data"].clone());
                             }
-                        }
                     }
                     let active = latest
                         .into_values()
@@ -4353,7 +4349,6 @@ impl AgentSession {
                     });
                 }
             }
-        }
         if let AgentEvent::MessageEnd { message } = &event
             && let Some(assistant) = message.as_assistant()
         {
@@ -4529,7 +4524,7 @@ impl AgentSession {
                 .messages
                 .iter()
                 .filter_map(AgentMessage::as_assistant)
-                .last();
+                .next_back();
             let ended_by = if last.is_some_and(|m| m.stop_reason == StopReason::Error) {
                 "provider-error"
             } else if boundary.aborted {
@@ -4910,11 +4905,10 @@ impl AgentSession {
             *lock(&self.lifecycle_turn_facts) = Some(input.clone());
         }
         let mut ledger = lock(&self.lifecycle);
-        if let Some(goal) = goal.filter(|g| g["status"] == "complete") {
-            if let Some(id) = goal["id"].as_str() {
+        if let Some(goal) = goal.filter(|g| g["status"] == "complete")
+            && let Some(id) = goal["id"].as_str() {
                 ledger.mark_goal_completed(id, |record| self.persist_lifecycle_record(record));
             }
-        }
         if let Some(end) = turn_end {
             ledger.last_turn_end = Some(end.clone());
         }
@@ -5085,11 +5079,9 @@ impl AgentSession {
         let facts = crate::session_lifecycle::evaluate_turn_facts(
             input.as_ref(),
             goal.as_ref(),
-            waits["background"].as_array().cloned().unwrap_or_default(),
-            pending,
-            waits["children"].as_u64().unwrap_or(0) as usize,
-            ledger.run_active,
-            ledger.interrupted,
+            waits["background"].as_array().cloned().unwrap_or_default(), (pending,
+            waits["children"].as_u64().unwrap_or(0) as usize), (ledger.run_active,
+            ledger.interrupted),
             &ledger.current,
             activity.is_streaming
                 || activity.is_compacting
@@ -5440,8 +5432,8 @@ impl AgentSession {
     }
     pub async fn begin_resume(&self, request: &Value) -> Result<Value, String> {
         let seq = self.pause_seq();
-        if let Some(effect) = request["effectId"].as_str() {
-            if let Some(mut answer) = self.with_session_manager(|manager| {
+        if let Some(effect) = request["effectId"].as_str()
+            && let Some(mut answer) = self.with_session_manager(|manager| {
                 manager
                     .entries()
                     .iter()
@@ -5455,7 +5447,6 @@ impl AgentSession {
                 answer["replayed"] = true.into();
                 return Ok(answer);
             }
-        }
         let idle = serde_json::json!({"resumed":false,"pauseSeq":seq,"turnStarted":false,"deliveredNotices":0,"deliveredHeldInputs":0});
         if !self.paused() {
             let mut answer = idle;
@@ -5472,8 +5463,8 @@ impl AgentSession {
         }
         let inherited =
             crate::run_holds::RunHolds::new(&mut lock(&self.engine_turn_hold)).inherited_owner();
-        if let Some(owner) = inherited.as_ref() {
-            if self
+        if let Some(owner) = inherited.as_ref()
+            && self
                 .holds()
                 .iter()
                 .all(|hold| hold.kind == crate::engine_turn_hold::HoldKind::InheritedHold)
@@ -5483,7 +5474,6 @@ impl AgentSession {
                 answer["parentSessionId"] = owner.parent_session_id.clone().into();
                 return Ok(answer);
             }
-        }
         if request["mode"] == "release" || inherited.is_some() {
             let mut hold = lock(&self.engine_turn_hold);
             hold.attend();
@@ -5773,11 +5763,10 @@ impl AgentSession {
                 .any(|h| h.kind == crate::engine_turn_hold::HoldKind::InheritedHold)
         {
             let mut input = json!({"inputId":options.client_message_id.clone().unwrap_or_else(||format!("prompt-{}",uuid::Uuid::new_v4())),"revision":0,"text":text});
-            if let Some(images) = &options.images {
-                if !images.is_empty() {
+            if let Some(images) = &options.images
+                && !images.is_empty() {
                     input["images"] = serde_json::to_value(images).map_err(|e| e.to_string())?;
                 }
-            }
             if options.expand_prompt_templates.unwrap_or(true) {
                 input["prepare"] = json!(true);
             }
@@ -6102,7 +6091,7 @@ impl AgentSession {
                 .collect::<Vec<_>>();
             let report = accounting.map(|accounting| accounting.report(&tools));
             let options = serde_json::json!({"thinkingLevel":self.thinking_level(),"thinkingSelection":self.thinking_selection(),"sessionId":self.session_id(),"serviceTier":self.service_tier()});
-            PromptCachePrefixResult::Ready(PromptCachePrefixRequest {
+            PromptCachePrefixResult::Ready(Box::new(PromptCachePrefixRequest {
                 model: self.model(),
                 system_prompt,
                 tools,
@@ -6114,7 +6103,7 @@ impl AgentSession {
                     None,
                     false,
                 )),
-            })
+            }))
         };
         tokio::select! { biased; () = signal.cancelled() => crate::prompt_cache_prefix_request::PromptCachePrefixResult::Skipped("prefix build cancelled".into()), result = work => result }
     }
@@ -6537,11 +6526,10 @@ impl AgentSession {
                 }))
         {
             let mut held = json!({"inputId":options.client_message_id.clone().unwrap_or_else(||format!("prompt-{}",uuid::Uuid::new_v4())),"revision":0,"text":text});
-            if let Some(images) = prepared_images {
-                if !images.is_empty() {
+            if let Some(images) = prepared_images
+                && !images.is_empty() {
                     held["images"] = serde_json::to_value(images).map_err(|e| e.to_string())?;
                 }
-            }
             self.hold_input(held)?;
             self.state()
                 .pending_next_turn_messages
@@ -15276,8 +15264,7 @@ impl AgentSession {
                     lock(&inner.state).wake_sources.observe(data);
                     if let (Some(source), Some(count)) =
                         (data["source"].as_str(), data["activeCount"].as_f64())
-                    {
-                        if let Some(registry) = lock(&inner.work_obligations).as_mut() {
+                        && let Some(registry) = lock(&inner.work_obligations).as_mut() {
                             let kind = if data["kind"] == "children" {
                                 crate::work_custody_record::ObligationKind::Children
                             } else {
@@ -15285,7 +15272,6 @@ impl AgentSession {
                             };
                             registry.sync_source(source, kind, count);
                         }
-                    }
                     AgentSession { inner }.refresh_lifecycle();
                 }
             }),
@@ -15452,11 +15438,10 @@ impl AgentSession {
                 Box::pin(async move {
                     let inner = weak.upgrade()?;
                     let session = AgentSession { inner };
-                    if let Some(id) = session.tool_barrier.id() {
-                        if session.get_tool_workspace_effect(&context.tool_call.name) != crate::session_work_barrier::ToolWorkspaceEffect::Read {
+                    if let Some(id) = session.tool_barrier.id()
+                        && session.get_tool_workspace_effect(&context.tool_call.name) != crate::session_work_barrier::ToolWorkspaceEffect::Read {
                             session.emit_extension_event("tool_barrier_waiting", &json!({"type":"tool_barrier_waiting","id":id,"toolCallId":context.tool_call.id,"toolName":context.tool_call.name}));
                         }
-                    }
                     session
                         .wait_for_tool_barrier(&context.tool_call.name, signal.as_ref())
                         .await;
@@ -19041,19 +19026,16 @@ impl AgentSession {
         {
             selection = Some(explicit_thinking_selection(level));
         }
-        if requested.is_none() {
-            if let Some(level_str) =
+        if requested.is_none()
+            && let Some(level_str) =
                 self.get_session_model_thinking_level(&model.provider, &model.id)
-            {
-                if let Some(level) = ModelThinkingLevel::ALL
+                && let Some(level) = ModelThinkingLevel::ALL
                     .into_iter()
                     .find(|candidate| candidate.as_str() == level_str)
                 {
                     requested = Some(level);
                     selection = Some(explicit_thinking_selection(level));
                 }
-            }
-        }
         if requested.is_none() {
             let remembered = self.with_settings_manager(|manager| {
                 manager
@@ -19503,6 +19485,122 @@ fn extension_thinking_level(level: ThinkingLevel) -> ModelThinkingLevel {
         ThinkingLevel::High => ModelThinkingLevel::High,
         ThinkingLevel::Xhigh => ModelThinkingLevel::Xhigh,
         ThinkingLevel::Max => ModelThinkingLevel::Max,
+    }
+}
+
+struct SessionCustodyStore(std::sync::Weak<AgentSessionInner>);
+impl crate::work_obligations::CustodyStore for SessionCustodyStore {
+    fn entries(&self) -> Vec<Value> {
+        self.0
+            .upgrade()
+            .map_or_else(Vec::new, |inner| lock(&inner.session_manager).entries())
+    }
+    fn append(
+        &mut self,
+        record: &crate::work_custody_record::WorkCustodyRecord,
+    ) -> Result<(), String> {
+        let inner = self.0.upgrade().ok_or("Session disposed")?;
+        let mut manager = lock(&inner.session_manager);
+        manager.append_custom(
+            "work-custody",
+            Some(serde_json::to_value(record).map_err(|e| e.to_string())?),
+        );
+        manager.take_write_error().map_or(Ok(()), Err)
+    }
+    fn changed(&mut self) {
+        if let Some(inner) = self.0.upgrade() {
+            inner
+                .event_bus
+                .emit("work-custody-changed", &serde_json::json!({}));
+        }
+    }
+}
+impl AgentSession {
+    pub fn with_work_obligations<R>(
+        &self,
+        f: impl FnOnce(&mut crate::work_obligations::SessionWorkObligations) -> R,
+    ) -> R {
+        let result = {
+            f(lock(&self.work_obligations)
+                .as_mut()
+                .expect("session custody initialized"))
+        };
+        self.refresh_lifecycle();
+        result
+    }
+}
+
+impl AgentSession {
+    /// Ticket admission precedes every write. Delivery is acknowledged only by the transcript receipt.
+    pub fn send_work_ticket(
+        &self,
+        ticket: &str,
+        payload: crate::work_custody_record::CustodyPayload,
+        trigger_turn: bool,
+    ) -> Result<(), String> {
+        let admission = self.with_work_obligations(|registry| registry.admission(ticket));
+        if admission != crate::work_obligations::TicketAdmission::Admitted {
+            return Err(crate::work_obligations::DeliveryTicketRefused {
+                ticket_id: ticket.into(),
+                reason: admission,
+            }
+            .to_string());
+        }
+        let mut wire = payload.message.clone();
+        wire["timestamp"] = serde_json::json!(maho_ai::utils::diagnostics::now_ms());
+        let message: maho_agent::harness::messages::CustomMessage =
+            serde_json::from_value(wire).map_err(|e| e.to_string())?;
+        let options = maho_ext_api::SendMessageOptions {
+            trigger_turn,
+            deliver_as: payload.deliver_as.as_deref().map(|s| match s {
+                "followUp" => maho_ext_api::DeliverAs::FollowUp,
+                "nextTurn" => maho_ext_api::DeliverAs::NextTurn,
+                _ => maho_ext_api::DeliverAs::Steer,
+            }),
+        };
+        if !self
+            .with_work_obligations(|registry| registry.queue(ticket, payload))
+            .map_err(|e| e.to_string())?
+        {
+            return Err("Delivery ticket no longer admitted".into());
+        }
+        let receipt = maho_ext_api::MessageDeliveryReceipt::pending();
+        let weak = Arc::downgrade(&self.inner);
+        let ticket_id = ticket.to_owned();
+        receipt.on_settled(move |outcome| {
+            if let Some(inner) = weak.upgrade() {
+                let session = AgentSession { inner };
+                let run_id = lock(&session.custody_run_id).clone();
+                let entry_id = session.with_session_manager(|manager| {
+                    manager
+                        .entries()
+                        .last()
+                        .and_then(|e| e["id"].as_str())
+                        .unwrap_or_default()
+                        .to_owned()
+                });
+                session.with_work_obligations(|registry| {
+                    let result = if outcome.is_ok() {
+                        registry.consumed(&ticket_id, &run_id, &entry_id)
+                    } else {
+                        registry.failed(&ticket_id)
+                    };
+                    registry.end_delivery(&ticket_id);
+                    if let Err(error) = result {
+                        session.emit(AgentSessionEvent::ContinuationError {
+                            error_message: error.to_string(),
+                        });
+                    }
+                });
+            }
+        });
+        let result = self
+            .send_custom_message_content_with_receipt(message, options, Some(receipt.clone()))
+            .map_err(|e| e.message);
+        if let Err(error) = &result {
+            receipt.resolve_failed(error.clone());
+        }
+        result
     }
 }
 
@@ -33456,121 +33554,5 @@ mod tests {
         let entry = session.with_session_manager(|manager| manager.entries()[0].clone());
         assert_eq!(entry["message"]["command"], "printf native");
         assert_eq!(entry["message"]["excludeFromContext"], true);
-    }
-}
-
-struct SessionCustodyStore(std::sync::Weak<AgentSessionInner>);
-impl crate::work_obligations::CustodyStore for SessionCustodyStore {
-    fn entries(&self) -> Vec<Value> {
-        self.0
-            .upgrade()
-            .map_or_else(Vec::new, |inner| lock(&inner.session_manager).entries())
-    }
-    fn append(
-        &mut self,
-        record: &crate::work_custody_record::WorkCustodyRecord,
-    ) -> Result<(), String> {
-        let inner = self.0.upgrade().ok_or("Session disposed")?;
-        let mut manager = lock(&inner.session_manager);
-        manager.append_custom(
-            "work-custody",
-            Some(serde_json::to_value(record).map_err(|e| e.to_string())?),
-        );
-        manager.take_write_error().map_or(Ok(()), Err)
-    }
-    fn changed(&mut self) {
-        if let Some(inner) = self.0.upgrade() {
-            inner
-                .event_bus
-                .emit("work-custody-changed", &serde_json::json!({}));
-        }
-    }
-}
-impl AgentSession {
-    pub fn with_work_obligations<R>(
-        &self,
-        f: impl FnOnce(&mut crate::work_obligations::SessionWorkObligations) -> R,
-    ) -> R {
-        let result = {
-            f(lock(&self.work_obligations)
-                .as_mut()
-                .expect("session custody initialized"))
-        };
-        self.refresh_lifecycle();
-        result
-    }
-}
-
-impl AgentSession {
-    /// Ticket admission precedes every write. Delivery is acknowledged only by the transcript receipt.
-    pub fn send_work_ticket(
-        &self,
-        ticket: &str,
-        payload: crate::work_custody_record::CustodyPayload,
-        trigger_turn: bool,
-    ) -> Result<(), String> {
-        let admission = self.with_work_obligations(|registry| registry.admission(ticket));
-        if admission != crate::work_obligations::TicketAdmission::Admitted {
-            return Err(crate::work_obligations::DeliveryTicketRefused {
-                ticket_id: ticket.into(),
-                reason: admission,
-            }
-            .to_string());
-        }
-        let mut wire = payload.message.clone();
-        wire["timestamp"] = serde_json::json!(maho_ai::utils::diagnostics::now_ms());
-        let message: maho_agent::harness::messages::CustomMessage =
-            serde_json::from_value(wire).map_err(|e| e.to_string())?;
-        let options = maho_ext_api::SendMessageOptions {
-            trigger_turn,
-            deliver_as: payload.deliver_as.as_deref().map(|s| match s {
-                "followUp" => maho_ext_api::DeliverAs::FollowUp,
-                "nextTurn" => maho_ext_api::DeliverAs::NextTurn,
-                _ => maho_ext_api::DeliverAs::Steer,
-            }),
-        };
-        if !self
-            .with_work_obligations(|registry| registry.queue(ticket, payload))
-            .map_err(|e| e.to_string())?
-        {
-            return Err("Delivery ticket no longer admitted".into());
-        }
-        let receipt = maho_ext_api::MessageDeliveryReceipt::pending();
-        let weak = Arc::downgrade(&self.inner);
-        let ticket_id = ticket.to_owned();
-        receipt.on_settled(move |outcome| {
-            if let Some(inner) = weak.upgrade() {
-                let session = AgentSession { inner };
-                let run_id = lock(&session.custody_run_id).clone();
-                let entry_id = session.with_session_manager(|manager| {
-                    manager
-                        .entries()
-                        .last()
-                        .and_then(|e| e["id"].as_str())
-                        .unwrap_or_default()
-                        .to_owned()
-                });
-                session.with_work_obligations(|registry| {
-                    let result = if outcome.is_ok() {
-                        registry.consumed(&ticket_id, &run_id, &entry_id)
-                    } else {
-                        registry.failed(&ticket_id)
-                    };
-                    registry.end_delivery(&ticket_id);
-                    if let Err(error) = result {
-                        session.emit(AgentSessionEvent::ContinuationError {
-                            error_message: error.to_string(),
-                        });
-                    }
-                });
-            }
-        });
-        let result = self
-            .send_custom_message_content_with_receipt(message, options, Some(receipt.clone()))
-            .map_err(|e| e.message);
-        if let Err(error) = &result {
-            receipt.resolve_failed(error.clone());
-        }
-        result
     }
 }

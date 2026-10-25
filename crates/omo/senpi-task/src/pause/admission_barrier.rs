@@ -164,7 +164,7 @@ impl AdmissionTicket {
     }
 
     pub fn commit(&self) -> AdmissionCommit {
-        let mut root = self.lock();
+        let root = self.lock();
         match root.check(self.entered_seq, self.credential.as_ref()) {
             AdmissionCheck::Allowed => AdmissionCommit::Launch,
             AdmissionCheck::Held { pause_seq } => AdmissionCommit::StartPaused {

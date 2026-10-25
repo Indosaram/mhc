@@ -161,11 +161,10 @@ impl MemoryBlockCache {
         *self.computing.lock().unwrap_or_else(|e| e.into_inner()) += 1;
         let result = compute();
         let result = result.map(|(value, persist)| {
-            if persist {
-                if let Some(store) = store {
+            if persist
+                && let Some(store) = store {
                     store.put(key, value.clone());
                 }
-            }
             value
         });
         *self.computing.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
@@ -273,11 +272,10 @@ impl MemoryBlockCache {
 
         let compute = || {
             let result = compile_memory_block_with_reads(repo, revision, options)?;
-            if !result.degraded.is_empty() {
-                if let Some(report) = &self.options.on_degraded {
+            if !result.degraded.is_empty()
+                && let Some(report) = &self.options.on_degraded {
                     report(&repo.dir, revision.unwrap_or("no-head"), &result.degraded);
                 }
-            }
             Ok((result.block, result.degraded.is_empty()))
         };
         let compiled = match revision {

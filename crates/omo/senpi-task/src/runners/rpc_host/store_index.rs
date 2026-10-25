@@ -64,12 +64,12 @@ pub async fn register_store_index(
     let lock = ADMISSIONS
         .get_or_init(Default::default)
         .lock()
-        .unwrap()
+        .expect("hosted child state lock poisoned")
         .entry(key.clone())
         .or_default()
         .clone();
     tokio::task::spawn_blocking(move || {
-        let _guard = lock.lock().unwrap();
+        let _guard = lock.lock().expect("hosted child state lock poisoned");
         admit_to_store_index(&key, &store_dir, now)
     })
     .await

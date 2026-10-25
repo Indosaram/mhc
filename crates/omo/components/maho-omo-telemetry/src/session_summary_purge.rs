@@ -67,11 +67,12 @@ pub fn summary_dir(state_dir: &Path) -> PathBuf {
     state_dir.join("session-summary")
 }
 
-/// True when `<state>/session-summary` holds any entry.
+#[cfg(test)]
 pub fn has_queued_summary_files(state_dir: &Path) -> bool {
     !names(&summary_dir(state_dir)).is_empty()
 }
 
+#[cfg(test)]
 pub fn pending_dir(state_dir: &Path) -> PathBuf {
     summary_dir(state_dir).join("pending")
 }

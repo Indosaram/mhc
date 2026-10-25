@@ -40,7 +40,7 @@ impl LazyLiveThreadSurface {
                 }
                 Ok(surface)
             }
-            Err(error) => Err(format!("host_unavailable:{}", if error.is_empty() { self.socket.clone() } else { self.socket.clone() })),
+            Err(error) => Err(format!("host_unavailable:{}:{error}", self.socket)),
         }
     }
 

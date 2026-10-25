@@ -15,20 +15,7 @@ pub fn carries_attribution_directive<'a>(texts: impl IntoIterator<Item = &'a str
         .any(|text| text.contains(crate::directive::COMMIT_ATTRIBUTION_OPEN_TAG))
 }
 
-#[cfg(test)]
-mod attribution_tests {
-    use super::carries_attribution_directive;
 
-    #[test]
-    fn detects_directive_in_later_result_items() {
-        assert!(carries_attribution_directive([
-            "skill",
-            "<commit_attribution>existing"
-        ]));
-        assert!(!carries_attribution_directive(["skill", "ordinary text"]));
-        assert!(!carries_attribution_directive(std::iter::empty()));
-    }
-}
 
 /// Upstream `GitMasterSkillAdditions`.
 pub struct GitMasterSkillAdditions {
@@ -266,4 +253,19 @@ fn prefix_inline_git(line: &str, prefix: &str) -> String {
     }
     out.push_str(&line[cursor..]);
     out
+}
+
+#[cfg(test)]
+mod attribution_tests {
+    use super::carries_attribution_directive;
+
+    #[test]
+    fn detects_directive_in_later_result_items() {
+        assert!(carries_attribution_directive([
+            "skill",
+            "<commit_attribution>existing"
+        ]));
+        assert!(!carries_attribution_directive(["skill", "ordinary text"]));
+        assert!(!carries_attribution_directive(std::iter::empty()));
+    }
 }

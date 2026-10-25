@@ -1,3 +1,4 @@
+pub type OnDeliveryFailedCallback = Option<Arc<dyn Fn(&[String], String) + Send + Sync>>;
 use std::sync::Arc;
 use maho_ext_api::{CustomMessage, DeliverAs, ExtensionActions, IdleInjection, IdleInjectionSource, SendMessageOptions, ToolContent};
 use senpi_task::{completion::{DeliveryCallbacks, ParentNotifier, ParentNotifierMessage, build_completion_message}, host::HostError, pause::ports::{RunRef, RunRefKind}};
@@ -24,7 +25,7 @@ pub struct TaskParentNotifier {
     pub is_streaming: Arc<dyn Fn() -> bool + Send + Sync>,
     /// Per-completion delivery failure: the engine keeps `notified_epoch` unpersisted for exactly
     /// the tasks named here, so the post-reload reconcile can redeliver them.
-    pub on_delivery_failed: Option<Arc<dyn Fn(&[String], String) + Send + Sync>>,
+    pub on_delivery_failed: OnDeliveryFailedCallback,
 }
 
 impl ParentNotifier for TaskParentNotifier {
@@ -40,7 +41,7 @@ impl ParentNotifier for TaskParentNotifier {
                 let settle = (index == last).then(|| callbacks.clone());
                 let receipt = DeliveryCallbacks::new(move |result: Result<(), HostError>| {
                     if let Err(error) = &result && let Some(failed) = &failure_hook {
-                        failed(&[task_id.clone()], error.message.clone());
+                        failed(std::slice::from_ref(&task_id), error.message.clone());
                     }
                     match (result, settle) {
                         (Ok(()), Some(caller)) => caller.delivered(),

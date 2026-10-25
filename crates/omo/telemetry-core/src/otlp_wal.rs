@@ -1,3 +1,6 @@
+pub type WalErrorCallback = Arc<dyn Fn(&io::Error, usize) + Send + Sync>;
+pub type WalWriteCallback = Arc<dyn Fn(&mut File, &[u8]) -> io::Result<usize> + Send + Sync>;
+pub type TruncateCallback = Option<Arc<dyn Fn(&File, u64) -> io::Result<()> + Send + Sync>>;
 use crate::otlp_spool_dir::{active_name, batch_name, delete_file, publish_batch};
 use crate::otlp_spool_file::{Signal, field, frame, varint};
 use serde_json::{Map, Value};
@@ -15,9 +18,9 @@ pub struct SpoolWriterInput {
     pub boot_id: String,
     pub header: Vec<u8>,
     pub consent: Arc<dyn Fn() -> bool + Send + Sync>,
-    pub on_error: Arc<dyn Fn(&io::Error, usize) + Send + Sync>,
-    pub write: Option<Arc<dyn Fn(&mut File, &[u8]) -> io::Result<usize> + Send + Sync>>,
-    pub truncate: Option<Arc<dyn Fn(&File, u64) -> io::Result<()> + Send + Sync>>,
+    pub on_error: WalErrorCallback,
+    pub write: Option<WalWriteCallback>,
+    pub truncate: TruncateCallback,
 }
 pub struct SpoolWriter {
     input: SpoolWriterInput,

@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use super::session_args_schema::schema_problem;
 use super::store_extensions::{DeclaredSessionOp, ExtensionModuleRegistry, PersistedDescriptor, SessionCallableOp, StoreExtensionOperation, StoreExtensionRegistration};
-use super::store_ops::{SqlAccess, SqlRow, StoreError, row_opt_str, row_str, v_str};
+use super::store_ops::{SqlAccess, StoreError, row_str, v_str};
 
 pub const RESERVED_CALLER_KEYS: [&str; 2] = ["caller_session_durable_id", "caller_created_target"];
 pub const AWAIT_TIMEOUT_MAX_MS: i64 = 120_000;
@@ -107,7 +107,7 @@ fn entry_problem(entry: &SessionCallableOp, extension: &str, wake_dir: Option<&s
         Some(_) => return Some(format!("{label}: parameters.properties must be an object")),
     };
     let reserved = RESERVED_CALLER_KEYS.iter().find(|key| properties.get(**key).is_some());
-    if let Some(key) = reserved {
+    if let Some(_key) = reserved {
         return Some(format!("{label}: parameters must not declare {}; the store stamps them", RESERVED_CALLER_KEYS.join(" or ")));
     }
     if let Some(problem) = schema_problem(parameters, "parameters") {
@@ -296,6 +296,7 @@ pub fn module_exports(module: &std::collections::BTreeMap<String, StoreExtension
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::store_ops::{SqlRow, row_opt_str};
     use serde_json::json;
 
     fn descriptor(name: &str, entries: Vec<SessionCallableOp>) -> StoreExtensionRegistration {

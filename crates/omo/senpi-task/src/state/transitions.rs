@@ -65,8 +65,7 @@ pub fn messageability_with_runner(
         | TaskStatus::Error
         | TaskStatus::Interrupted
         | TaskStatus::Cancelled
-        | TaskStatus::Lost
-        | TaskStatus::Paused => Messageability::NotContinuable,
+        | TaskStatus::Lost => Messageability::NotContinuable,
     }
 }
 

@@ -138,7 +138,7 @@ async fn the_attempt_gate_decides_whether_a_batch_is_still_ours_to_send() {
 async fn an_aborted_signal_stops_before_the_first_request() {
     let calls = Arc::new(Mutex::new(0usize));
     let delays = Arc::new(Mutex::new(Vec::new()));
-    let mut deps = deps(status_fetch(200, None, Arc::clone(&calls)), Arc::clone(&delays));
+    let deps = deps(status_fetch(200, None, Arc::clone(&calls)), Arc::clone(&delays));
     deps.abort.abort();
 
     let outcome = post_with_retry(&deps, Signal::Logs, b"body").await;

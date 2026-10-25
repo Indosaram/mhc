@@ -1,4 +1,5 @@
 //! Resolve the bound project's sticky space before opening a trust-pinned account session.
+pub type EndedCallback = Rc<RefCell<Vec<Box<dyn Fn()>>>>;
 use super::account_source::{DeviceAccount, DeviceAccountSource};
 use memory_core::{
     identity::layout::MemoryIdentityPaths,
@@ -35,7 +36,7 @@ pub enum SyncSessionResolution {
 pub struct ResolvedDeviceSession {
     pub device_name: Option<crate::sync_runner::DeviceNameLookup>,
     pub session: SyncSession,
-    pub ended: Rc<RefCell<Vec<Box<dyn Fn()>>>>,
+    pub ended: EndedCallback,
 }
 impl ResolvedDeviceSession {
     pub fn on_ended(&self, notify: Box<dyn Fn()>) {
@@ -120,7 +121,7 @@ pub fn create_device_session_resolver(
 }
 fn account_token(
     account: Arc<DeviceAccount>,
-    ended: Rc<RefCell<Vec<Box<dyn Fn()>>>>,
+    ended: EndedCallback,
 ) -> Rc<dyn Fn() -> LocalFuture<String>> {
     Rc::new(move || {
         let account = account.clone();

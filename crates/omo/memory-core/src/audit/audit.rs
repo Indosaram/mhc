@@ -76,11 +76,10 @@ pub fn audit_memory_repo(
         if orphan {
             issues.push(issue("path_orphan", path, if split.is_some() { "outside memory homes" } else { "outside memory homes; no frontmatter (add a description in the same commit as the move, or leave it)" }));
         }
-        if is_memory_content_path(path) {
-            if let Some(detail) = describe_frontmatter_violation(&content) {
+        if is_memory_content_path(path)
+            && let Some(detail) = describe_frontmatter_violation(&content) {
                 issues.push(issue("frontmatter_invalid", path, detail));
             }
-        }
         let body = split.map(|(_, body)| body).unwrap_or(content);
         if !body.trim().is_empty() {
             bodies
@@ -101,15 +100,14 @@ pub fn audit_memory_repo(
             issues.push(entry);
         }
     }
-    if let (Some(tokens), Some(budget)) = (options.system_tokens, options.budget_tokens) {
-        if tokens as f64 >= 0.8 * budget as f64 {
+    if let (Some(tokens), Some(budget)) = (options.system_tokens, options.budget_tokens)
+        && tokens as f64 >= 0.8 * budget as f64 {
             issues.push(issue(
                 "system_pressure",
                 "system/",
                 format!("{tokens} tokens of {budget} budget"),
             ));
         }
-    }
     let mut counts: BTreeMap<String, usize> = [
         "link_dangling",
         "frontmatter_invalid",

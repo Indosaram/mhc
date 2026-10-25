@@ -266,16 +266,13 @@ pub struct ToolChildJob {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ToolWorkspaceEffect {
     Read,
+    #[default]
     Write,
 }
 
-impl Default for ToolWorkspaceEffect {
-    fn default() -> Self {
-        Self::Write
-    }
-}
 
 #[derive(Clone)]
 pub struct ToolDefinition {

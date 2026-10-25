@@ -28,8 +28,8 @@ pub fn normalize_remote_url(url: &str) -> String {
     if let Some((_, tail)) = value.split_once('@') {
         value = tail.into();
     }
-    if let Some((host, path)) = value.split_once(':') {
-        if !path.starts_with('/') {
+    if let Some((host, path)) = value.split_once(':')
+        && !path.starts_with('/') {
             if let Some((port, rest)) = path.split_once('/') {
                 if port.chars().all(|ch| ch.is_ascii_digit()) {
                     value = format!("{host}/{rest}");
@@ -40,7 +40,6 @@ pub fn normalize_remote_url(url: &str) -> String {
                 value = format!("{host}/{path}");
             }
         }
-    }
     let mut value = value.trim_end_matches('/').to_lowercase();
     if value.ends_with(".git") {
         value.truncate(value.len() - 4);
@@ -76,6 +75,28 @@ pub async fn read_repository_identity(dir: &str) -> Option<RepositoryIdentity> {
         })
     }
 }
+pub fn compare_repository_identities(
+    a: Option<&RepositoryIdentity>,
+    b: Option<&RepositoryIdentity>,
+) -> &'static str {
+    let (Some(a), Some(b)) = (a, b) else {
+        return "unknown";
+    };
+    if !a.root_commits.is_empty() && !b.root_commits.is_empty() {
+        if a.root_commits
+            .iter()
+            .any(|root| b.root_commits.contains(root))
+        {
+            "same"
+        } else {
+            "different"
+        }
+    } else if let (Some(a), Some(b)) = (&a.origin_url, &b.origin_url) {
+        if a == b { "same" } else { "different" }
+    } else {
+        "unknown"
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,27 +125,5 @@ mod tests {
             "different"
         );
         assert_eq!(compare_repository_identities(Some(&a), None), "unknown");
-    }
-}
-pub fn compare_repository_identities(
-    a: Option<&RepositoryIdentity>,
-    b: Option<&RepositoryIdentity>,
-) -> &'static str {
-    let (Some(a), Some(b)) = (a, b) else {
-        return "unknown";
-    };
-    if !a.root_commits.is_empty() && !b.root_commits.is_empty() {
-        if a.root_commits
-            .iter()
-            .any(|root| b.root_commits.contains(root))
-        {
-            "same"
-        } else {
-            "different"
-        }
-    } else if let (Some(a), Some(b)) = (&a.origin_url, &b.origin_url) {
-        if a == b { "same" } else { "different" }
-    } else {
-        "unknown"
     }
 }

@@ -94,11 +94,10 @@ impl InProcessSessionContextProvider for ParentRegistrySessionContext {
             .as_ref()
             .map(|model| format!("{}/{}", model.provider, model.model_id))
             .or_else(|| spec.model.clone());
-        if let Some(model) = selected.as_deref() {
-            if is_excluded_model(model, &(self.exclude_models)()) {
+        if let Some(model) = selected.as_deref()
+            && is_excluded_model(model, &(self.exclude_models)()) {
                 return Err(format!("model_unavailable: excluded model {model}"));
             }
-        }
         Ok(())
     }
     fn provide(&self, spec: &ManagedStartSpec) -> InProcessSessionContext {
@@ -158,6 +157,15 @@ pub fn resolve_resume_context(
     Ok(registry_context(registry, Some(model), spec))
 }
 
+/// Compatibility constructor with fixed exclusions.
+pub fn create_parent_registry_session_context_with_exclusions(
+    resolve_registry: ParentModelRegistryResolver,
+    exclude_models: Vec<String>,
+) -> ParentRegistrySessionContext {
+    create_parent_registry_session_context(resolve_registry)
+        .with_exclude_models(Arc::new(move || exclude_models.clone()))
+}
+
 #[cfg(test)]
 mod exclusion_tests {
     use super::*;
@@ -184,13 +192,4 @@ mod exclusion_tests {
                 .is_err()
         );
     }
-}
-
-/// Compatibility constructor with fixed exclusions.
-pub fn create_parent_registry_session_context_with_exclusions(
-    resolve_registry: ParentModelRegistryResolver,
-    exclude_models: Vec<String>,
-) -> ParentRegistrySessionContext {
-    create_parent_registry_session_context(resolve_registry)
-        .with_exclude_models(Arc::new(move || exclude_models.clone()))
 }

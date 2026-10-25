@@ -130,9 +130,9 @@ pub(crate) fn suspend_handle(
             .store
             .load(handle.task_id())?
             .is_some_and(|r| super::host_session::is_host_session_record(&r));
-    if hosted {
-        if let Some(record) = context.store.load(handle.task_id())? {
-            if record.status.is_terminal() {
+    if hosted
+        && let Some(record) = context.store.load(handle.task_id())?
+            && record.status.is_terminal() {
                 let publisher = handle.clone();
                 let status = record.status;
                 let (send, receive) = std::sync::mpsc::sync_channel(1);
@@ -150,8 +150,6 @@ pub(crate) fn suspend_handle(
                     });
                 best_effort(handle.task_id(), "publish_task_status", result, "suspend");
             }
-        }
-    }
     // Ownership drops BEFORE abort settles the turn so the outcome guard sees a forgotten child.
     context.registry.forget(handle.task_id());
     if !hosted {

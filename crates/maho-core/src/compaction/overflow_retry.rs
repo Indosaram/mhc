@@ -73,9 +73,8 @@ fn truncate_request_to_budget(messages: &[Value], target: u64) -> Option<Vec<Val
     };
     let mut text = full.as_str();
     let mut already_cut = 0;
-    if let Some((prefix, suffix)) = full.rsplit_once("\n\n[... ") {
-        if let Some(count) = suffix.strip_suffix(" more characters truncated]").and_then(|count| count.parse::<usize>().ok()) { text = prefix; already_cut = count; }
-    }
+    if let Some((prefix, suffix)) = full.rsplit_once("\n\n[... ")
+        && let Some(count) = suffix.strip_suffix(" more characters truncated]").and_then(|count| count.parse::<usize>().ok()) { text = prefix; already_cut = count; }
     let chars: Vec<char> = text.chars().collect();
     if chars.len() <= 200 { return None; }
     let available = target.saturating_sub(estimate_total_tokens(messages).saturating_sub(estimate_wire_tokens(request)));

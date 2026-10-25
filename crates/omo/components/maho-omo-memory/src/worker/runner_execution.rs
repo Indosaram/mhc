@@ -282,7 +282,7 @@ fn finalize_execution_failure(
 mod tests {
     use super::*;
     fn admitted_ledger(root: &Path, hard_deadline_at: f64) {
-        super::super::run_artifacts::write_run_json_atomic(&root.join("ledger.json"),&serde_json::json!({"version":1,"runId":"run","kind":"reflection","trigger":"manual","startedAt":"now","hardDeadlineAt":hard_deadline_at,"terminationGraceMs":1000,"deadlineAt":hard_deadline_at+1000.0,"mergePolicy":"auto","worktreeDir":"missing","worktreeBranch":"memory/run","baseSha":"sha","gitFilePath":"missing/.git","gitFileSnapshot":"gitdir: missing","commonConfigPath":"config","commonConfigSnapshot":null}),0o600).unwrap();
+        super::super::run_artifacts::write_run_json_atomic(&root.join("ledger.json"),&serde_json::json!({"version":1,"runId":"run","kind":"reflection","trigger":"manual","startedAt":"now","hardDeadlineAt":hard_deadline_at,"terminationGraceMs":1000,"deadlineAt":hard_deadline_at+1000.0,"mergePolicy":"auto","worktreeDir":"missing","worktreeBranch":"memory/run","baseSha":"sha","gitFilePath":"missing/.git","gitFileSnapshot":"gitdir: missing","commonConfigPath":"config","commonConfigSnapshot":null}),0o600).expect("write admitted ledger");
     }
     #[test]
     fn a_fallback_attempt_reuses_the_admitted_deadline_instead_of_the_pre_queue_one() {

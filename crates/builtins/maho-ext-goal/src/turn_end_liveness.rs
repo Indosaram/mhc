@@ -90,8 +90,8 @@ pub fn effective_wakes(input: &TurnEndLivenessInput) -> Vec<WakeExpectation> {
         .expectations
         .iter()
         .filter(|wake| {
-            !(matches!(wake, WakeExpectation::QuestionToUser) && input.ended_by != "clean")
-                && !(input.deadline_stop
+            !(matches!(wake, WakeExpectation::QuestionToUser) && input.ended_by != "clean"
+                || input.deadline_stop
                     && matches!(
                         wake,
                         WakeExpectation::ArmedTimer { .. } | WakeExpectation::RecoveryStaged

@@ -451,7 +451,7 @@ impl ModelsAuth for ProviderModelsAuth {
                 .await
                 .map_err(abort_error)??;
             let key_optional = auth_type == AuthType::ApiKey
-                && auth.api_key.as_ref().map_or(false, |k| k.key_optional());
+                && auth.api_key.as_ref().is_some_and(|k| k.key_optional());
             let credential = if key_optional {
                 crate::auth::pool::slots::without_blank_key(logged_in)
             } else {

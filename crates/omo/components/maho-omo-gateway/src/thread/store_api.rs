@@ -3,6 +3,7 @@
 //! Upstream counterpart: `thread/gateway/store-api.ts`. Every call is synchronous: the store owns one
 //! connection and the worker protocol serializes calls onto it.
 
+pub type BindingPageResult = Result<RelayOutcome<(Vec<BindingRecord>, Option<String>)>, StoreError>;
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -97,7 +98,7 @@ pub trait GatewayStoreApi: Send + Sync {
         filter: &BindingsFilter,
         cursor: Option<&str>,
         limit: Option<i64>,
-    ) -> Result<RelayOutcome<(Vec<BindingRecord>, Option<String>)>, StoreError>;
+    ) -> BindingPageResult;
     fn binding_view(&self, now: i64, binding_id: &str)
     -> Result<Option<BindingRecord>, StoreError>;
     fn report(

@@ -170,18 +170,15 @@ impl SessionLifecycleController {
                 continuation_stopped: g.get("continuationStoppedAt").is_some(),
             }
         }));
-        if let Some(g) = goal.as_ref().filter(|g| g["status"] == "complete") {
-            if self
+        if let Some(g) = goal.as_ref().filter(|g| g["status"] == "complete")
+            && self
                 .goal
                 .as_ref()
                 .is_none_or(|old| old["status"] != "complete")
-            {
-                if let Some(id) = g["id"].as_str() {
+                && let Some(id) = g["id"].as_str() {
                     let append = self.options.append.clone();
                     self.ledger.mark_goal_completed(id, |r| append(r));
                 }
-            }
-        }
         self.goal = goal;
         self.recompute();
     }
@@ -273,11 +270,9 @@ impl SessionLifecycleController {
         let facts = evaluate_turn_facts(
             self.liveness.as_ref(),
             self.goal.as_ref(),
-            background,
-            runtime.pending_messages,
-            children,
-            self.ledger.run_active,
-            self.ledger.interrupted,
+            background, (runtime.pending_messages,
+            children), (self.ledger.run_active,
+            self.ledger.interrupted),
             &self.ledger.current,
             runtime.activity.is_streaming
                 || runtime.activity.is_compacting
@@ -335,13 +330,13 @@ pub fn evaluate_turn_facts(
     input: Option<&Value>,
     goal: Option<&Value>,
     mut background: Vec<Value>,
-    pending: usize,
-    children: usize,
-    run_active: bool,
-    interrupted: bool,
+    counts: (usize, usize),
+    run: (bool, bool),
     snapshot: &Value,
     activity: bool,
 ) -> TurnFacts {
+    let (pending, children) = counts;
+    let (run_active, interrupted) = run;
     let mut continuation = input.is_some_and(|i| {
         i["willRetry"] == true || i.get("continuationQueued").is_some_and(|v| !v.is_null())
     });
@@ -368,21 +363,19 @@ pub fn evaluate_turn_facts(
                         "goal-monitor"
                     };
                     let mut b = json!({"source":source,"activeCount":1});
-                    if source == "provider-retry" {
-                        if let Some(at) = input.get("providerRetryAtMs") {
+                    if source == "provider-retry"
+                        && let Some(at) = input.get("providerRetryAtMs") {
                             b["retryAtMs"] = at.clone();
                         }
-                    }
                     background.push(b);
                 }
                 Some("recovery-staged") => {
                     background.push(json!({"source":"staged-recovery","activeCount":1}))
                 }
-                Some("wake-source") => {
-                    if !background.iter().any(|b| b["source"] == wake["source"]) {
+                Some("wake-source")
+                    if !background.iter().any(|b| b["source"] == wake["source"]) => {
                         background.push(json!({"source":wake["source"],"activeCount":1}));
                     }
-                }
                 Some("question-to-user") => question = true,
                 _ => {}
             }
@@ -559,11 +552,9 @@ mod tests {
             let f = evaluate_turn_facts(
                 Some(&input),
                 None,
-                vec![],
-                0,
-                0,
-                false,
-                false,
+                vec![], (0,
+                0), (false,
+                false),
                 &json!({"role":"root","epoch":1}),
                 false,
             );
@@ -577,11 +568,9 @@ mod tests {
         let f = evaluate_turn_facts(
             Some(&json!({"endedBy":"provider-error","expectations":[]})),
             None,
-            vec![],
-            0,
-            0,
-            false,
-            false,
+            vec![], (0,
+            0), (false,
+            false),
             &json!({"role":"root","epoch":1}),
             false,
         );

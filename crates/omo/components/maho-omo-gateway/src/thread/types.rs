@@ -339,7 +339,7 @@ pub struct StoreRefusal {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EnqueueOutcome {
-    Inserted { row: DeliveryRow, queue_position: i64 },
+    Inserted { row: Box<DeliveryRow>, queue_position: i64 },
     Replay { result: Value },
     Refused { code: super::errors::ThreadErrorCode, message: String, details: Option<Value> },
     Busy,
@@ -395,7 +395,7 @@ pub struct ClaimRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ClaimOutcome {
-    Claimed { row: DeliveryRow },
+    Claimed { row: Box<DeliveryRow> },
     Lost { state: Option<DeliveryState> },
 }
 
