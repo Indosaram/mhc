@@ -80,6 +80,11 @@ pub enum SendOutcome {
         task_id: String,
         run_epoch: i64,
     },
+    Held {
+        task_id: String,
+        pause_seq: u64,
+        entry_id: String,
+    },
     Queued {
         task_id: String,
         queue_position: usize,

@@ -115,6 +115,7 @@ pub struct ManagerStartSpec {
     pub category: Option<String>,
     pub subagent_type: Option<String>,
     pub execution_mode: Option<ExecutionMode>,
+    pub parent_model: Option<String>,
     pub model: Option<String>,
     pub name: Option<String>,
     pub description: Option<String>,
@@ -224,6 +225,7 @@ pub struct StartFailure {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartResult {
+    Held(super::start_admission::HeldStart),
     Started(StartedTask),
     DepthDenied {
         reason: String,
@@ -263,6 +265,7 @@ pub enum MaxChildren {
 impl StartResult {
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::Held(_) => "held",
             Self::Started(_) => "started",
             Self::DepthDenied { .. } => "depth_denied",
             Self::PlanUnresolved(_) => "plan_unresolved",
