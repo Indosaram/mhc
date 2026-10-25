@@ -20,8 +20,12 @@ pub async fn run_pause_for_run(
         .unwrap_or_default();
     let result = session.pause_for_run(parent, parent_seq, run).await?;
     match result {
-        maho_core::run_holds::InheritResult::Inherited{child_seq}=>Ok(json!({"held":true,"childSeq":child_seq})),
-        maho_core::run_holds::InheritResult::WrongParent=>Err("wrong_parent: this child is paused for another parent session".into()),
+        maho_core::run_holds::InheritResult::Inherited { child_seq } => {
+            Ok(json!({"held":true,"childSeq":child_seq}))
+        }
+        maho_core::run_holds::InheritResult::WrongParent => {
+            Err("wrong_parent: this child is paused for another parent session".into())
+        }
     }
 }
 
@@ -45,9 +49,13 @@ pub async fn run_resume_for_run(
     let result = session.resume_for_run(parent, parent_seq, cutoff).await?;
     use maho_core::run_holds::ReleaseInheritedResult;
     match result {
-        ReleaseInheritedResult::Released{other_hold_live}=>Ok(json!({"released":true,"otherHoldLive":other_hold_live})),
-        ReleaseInheritedResult::WrongParent=>Err("wrong_parent: this child is paused for another parent session".into()),
-        ReleaseInheritedResult::Stale=>Ok(json!({"released":false,"reason":"stale"})),
-        ReleaseInheritedResult::NotHeld=>Ok(json!({"released":false,"reason":"not_held"})),
+        ReleaseInheritedResult::Released { other_hold_live } => {
+            Ok(json!({"released":true,"otherHoldLive":other_hold_live}))
+        }
+        ReleaseInheritedResult::WrongParent => {
+            Err("wrong_parent: this child is paused for another parent session".into())
+        }
+        ReleaseInheritedResult::Stale => Ok(json!({"released":false,"reason":"stale"})),
+        ReleaseInheritedResult::NotHeld => Ok(json!({"released":false,"reason":"not_held"})),
     }
 }
