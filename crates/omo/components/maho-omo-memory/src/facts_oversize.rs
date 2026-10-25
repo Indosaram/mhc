@@ -105,7 +105,6 @@ mod tests {
     #[test]
     fn envelope_refuses_launch_and_charges_frontiers() {
         let envelope = FactsPayloadEnvelope {
-            agreement_event_version: None,
             version: 1,
             agreement_event_version: Some(1),
             identity: "agent".into(),
@@ -147,7 +146,6 @@ mod tests {
     #[test]
     fn entry_oversize_records_each_without_global_refusal() {
         let envelope = FactsPayloadEnvelope {
-            agreement_event_version: None,
             version: 1,
             agreement_event_version: Some(1),
             identity: "agent".into(),
