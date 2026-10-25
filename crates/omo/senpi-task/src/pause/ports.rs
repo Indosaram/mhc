@@ -1,9 +1,13 @@
 //! Run pause ports (`pause/ports.ts`).
 
 use serde::Serialize;
+use std::sync::Arc;
 
-/// What a run belongs to. `workpool` names a pool, `team` a team run, `dag` a DAG run, and `task`
-/// the task itself.
+use super::admission_barrier::AdmissionTicket;
+use crate::host::HostError;
+use crate::manager::child_handle::ManagedChildHandle;
+use crate::manager::types::{ManagedRunner, ManagedRunnerError, ManagedStartSpec};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunRefKind {
@@ -13,13 +17,11 @@ pub enum RunRefKind {
     Team,
 }
 
-/// The run a handle, hold, or completion belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct RunRef {
     pub kind: RunRefKind,
     pub id: String,
 }
-
 impl RunRef {
     pub fn new(kind: RunRefKind, id: impl Into<String>) -> Self {
         Self {
@@ -27,16 +29,100 @@ impl RunRef {
             id: id.into(),
         }
     }
-
     pub fn task(id: impl Into<String>) -> Self {
         Self::new(RunRefKind::Task, id)
     }
 }
 
-/// The run's pause owner: the parent session, the pause sequence it was stopped at, and the run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunPauseOwner {
     pub parent_session_id: String,
     pub parent_pause_seq: u64,
     pub run_ref: RunRef,
+}
+
+/// A turn's outcome remains deferred until the caller waits, matching the blocking child seam.
+pub struct ResumedChildTurn {
+    pub turn_id: String,
+    pub outcome: Box<dyn FnOnce() -> crate::runners::RunnerOutcome + Send>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineInheritReceipt {
+    Inherited { child_seq: u64 },
+    WrongParent,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedHold {
+    pub held: bool,
+    pub child_seq: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeTurnRequest {
+    pub owner: RunPauseOwner,
+    pub resume_id: String,
+    pub child_seq_cutoff: u64,
+}
+pub enum ResumeChildTurnResult {
+    Resumed(ResumedChildTurn),
+    OtherHoldLive { child_seq: Option<u64> },
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoldInput {
+    pub input_id: String,
+    pub revision: u64,
+    pub text: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineHoldInputResult {
+    Held { entry_id: String, duplicate: bool },
+    AlreadyDelivered { revision: u64 },
+    InputIdConflict { held_revision: u64 },
+}
+
+pub trait ChildPausePort: Send + Sync {
+    fn pause_for_run(
+        &self,
+        child: &dyn ManagedChildHandle,
+        owner: &RunPauseOwner,
+    ) -> Result<EngineInheritReceipt, HostError>;
+    fn observe_hold(
+        &self,
+        _child: &dyn ManagedChildHandle,
+        _parent_session_id: &str,
+    ) -> Result<Option<ObservedHold>, HostError> {
+        Ok(None)
+    }
+    fn resume_turn(
+        &self,
+        child: &dyn ManagedChildHandle,
+        request: &ResumeTurnRequest,
+    ) -> Result<ResumeChildTurnResult, HostError>;
+    fn hold_input(
+        &self,
+        child: &dyn ManagedChildHandle,
+        input: &HoldInput,
+        parent_session_id: &str,
+    ) -> Result<EngineHoldInputResult, HostError>;
+}
+
+pub enum GuardedChildActivation {
+    Resumed(ResumedChildTurn),
+    Paused {
+        child_seq: u64,
+        owner: RunPauseOwner,
+    },
+}
+pub struct GuardedChild {
+    pub child: Arc<dyn ManagedChildHandle>,
+    pub activate: Box<dyn FnOnce() -> Result<GuardedChildActivation, ManagedRunnerError> + Send>,
+}
+pub trait ChildCreationPort: Send + Sync {
+    /// Return an unstarted child; activation performs the final admission check before prompting.
+    fn start_paused(
+        &self,
+        spec: &ManagedStartSpec,
+        runner: &dyn ManagedRunner,
+        ticket: AdmissionTicket,
+    ) -> Result<GuardedChild, ManagedRunnerError>;
 }

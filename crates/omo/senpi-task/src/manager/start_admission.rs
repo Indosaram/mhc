@@ -203,8 +203,8 @@ pub fn enter_start_admission(input: EnterStartAdmissionInput<'_>) -> StartAdmiss
             }
             StartAdmissionEntry::Held(custody)
         }
-        AdmissionEntry::Entered { ticket } => StartAdmissionEntry::Entered(EnteredStart {
-            scope: StartAdmission {
+        AdmissionEntry::Entered { ticket } => {
+            let scope = StartAdmission {
                 ticket,
                 task_id: Arc::new(Mutex::new(task_id)),
                 root_session_id,
@@ -212,9 +212,11 @@ pub fn enter_start_admission(input: EnterStartAdmissionInput<'_>) -> StartAdmiss
                 transferred: Arc::new(AtomicBool::new(false)),
                 held,
                 spec: Arc::new(spec.clone()),
-            },
-            spec: spec.clone(),
-        }),
+            };
+            let mut spec = spec.clone();
+            spec.admission = Some(scope.clone());
+            StartAdmissionEntry::Entered(EnteredStart { scope, spec })
+        }
     }
 }
 
@@ -269,7 +271,7 @@ impl StartAdmissions {
             spec,
             task_id: (self.new_task_id)(),
             run_ref,
-            credential,
+            credential: credential.or_else(|| spec.resume_credential.clone()),
             held: self.held.clone(),
         });
         let EnteredStart { scope, spec } = match entered {
@@ -283,16 +285,18 @@ impl StartAdmissions {
         }
         match outcome {
             Ok(value) => Ok(StartOutcome::Done(value)),
-            Err(error) => match (error as &dyn std::error::Error).downcast_ref::<AdmissionHeld>() {
-                Some(held) => {
-                    let custody = held.result.clone();
-                    if let Some(callback) = &self.held {
-                        callback(&custody, &scope.spec);
+            Err(error) => {
+                match (&error as &dyn std::error::Error).downcast_ref::<AdmissionHeld>() {
+                    Some(held) => {
+                        let custody = held.result.clone();
+                        if let Some(callback) = &self.held {
+                            callback(&custody, &scope.spec);
+                        }
+                        Ok(StartOutcome::Held(custody))
                     }
-                    Ok(StartOutcome::Held(custody))
+                    None => Err(error),
                 }
-                None => Err(error),
-            },
+            }
         }
     }
 }
@@ -317,7 +321,9 @@ mod tests {
         let log: Arc<Mutex<Vec<HeldStart>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&log);
         let callback: HeldCallback = Arc::new(move |held: &HeldStart, _spec: &ManagerStartSpec| {
-            sink.lock().unwrap_or_else(PoisonError::into_inner).push(held.clone());
+            sink.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(held.clone());
         });
         (callback, log)
     }
@@ -435,9 +441,11 @@ mod tests {
     async fn run_reports_held_custody_when_the_body_is_paused_mid_start() {
         let barrier = AdmissionBarrier::new();
         let (callback, log) = held_log();
-        let admissions = StartAdmissions::new(barrier.clone(), Some(callback), Arc::new(|| {
-            "task-1".to_string()
-        }));
+        let admissions = StartAdmissions::new(
+            barrier.clone(),
+            Some(callback),
+            Arc::new(|| "task-1".to_string()),
+        );
         let outcome = admissions
             .run(&spec(), None, None, |_admitted, scope| async move {
                 let _ = scope;

@@ -235,6 +235,8 @@ struct Inner {
     destruction: Arc<dyn DestructionPort>,
     admit: Option<crate::manager::types::AdmitResident>,
     fallible_admit: Option<FallibleAdmit>,
+    traceparent_for: Option<crate::manager::types::TraceparentFor>,
+    admission_barrier: crate::pause::admission_barrier::AdmissionBarrier,
     trusted_respawn_launch: Option<crate::manager::types::TrustedRespawnLaunchResolver>,
     host_pid: i64,
     rpc_respawn_runner: Arc<dyn RpcRespawnRunner>,
@@ -453,6 +455,8 @@ impl TaskManager {
                 destruction,
                 admit: options.admit,
                 fallible_admit: options.fallible_admit,
+                traceparent_for: options.traceparent_for,
+                admission_barrier: options.admission_barrier.unwrap_or_default(),
                 trusted_respawn_launch: options.trusted_respawn_launch,
                 host_pid: options
                     .host_pid
@@ -491,6 +495,17 @@ impl TaskManager {
             },
         );
         manager
+    }
+
+    pub fn admission_barrier(&self) -> &crate::pause::admission_barrier::AdmissionBarrier {
+        &self.inner.admission_barrier
+    }
+
+    pub fn traceparent_for(&self, parent_session_id: &str) -> Option<String> {
+        self.inner
+            .traceparent_for
+            .as_ref()
+            .and_then(|resolve| resolve(parent_session_id))
     }
 
     pub fn store(&self) -> &TaskRecordStore {
@@ -581,6 +596,7 @@ impl TaskManager {
             &spec.plan,
             &self.inner.cwd,
             self.inner.store.state_dir(),
+            self.traceparent_for(&spec.start.parent_session_id),
         );
         record.spawn_spec = Some(TaskSpawnSpec::V1(build_spawn_spec_v1(&managed)));
         Ok((record, managed))
@@ -1793,8 +1809,16 @@ impl Inner {
         let isolation_cwd = prepared
             .as_ref()
             .map_or_else(|| self.cwd.clone(), |(_, _, spec)| spec.merged_dir.clone());
-        let managed_spec =
-            build_managed_spec(&renamed, spec, plan, &isolation_cwd, self.store.state_dir());
+        let managed_spec = build_managed_spec(
+            &renamed,
+            spec,
+            plan,
+            &isolation_cwd,
+            self.store.state_dir(),
+            self.traceparent_for
+                .as_ref()
+                .and_then(|resolve| resolve(&spec.parent_session_id)),
+        );
         let spawn_spec = match &prepared {
             Some((_, _, isolation_spec)) => SpawnSpecV1 {
                 isolation: Some(isolation_spec.clone()),
