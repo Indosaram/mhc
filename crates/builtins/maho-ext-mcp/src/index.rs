@@ -265,13 +265,15 @@ pub fn register_mcp_lifecycle_with_tool_search(
             })
         }),
     );
-    // Upstream `before_agent_start` only awaits the in-flight attach
-    // (`whenAttachSettled`) and injects instructions; it does NOT re-register.
+    // Prompt preparation reuses the in-flight attach, then reads skill declarations on real
+    // turns (never previews) before composing the known MCP instructions.
     let before = service.clone();
+    let before_events = publish_events.clone();
     api.on(
         EventKind::BeforeAgentStart,
         Arc::new(move |event, _| {
             let service = before.clone();
+            let events = before_events.clone();
             Box::pin(async move {
                 let ExtensionEvent::BeforeAgentStart(event) = event else {
                     return Ok(EventResult::None);
@@ -283,7 +285,35 @@ pub fn register_mcp_lifecycle_with_tool_search(
                         crate::startup_race::MCP_ATTACH_SETTLE_TIMEOUT_MS,
                     ))
                     .await;
-                let service = service.lock().await;
+                let mut service = service.lock().await;
+                if !event.preview && !event.system_prompt_options.skills.is_empty() {
+                    let skills = event.system_prompt_options.skills.iter().map(|skill| crate::skills::SkillLike {
+                        name: skill.name.clone(),
+                        file_path: skill.file_path.clone().into(),
+                        base_dir: skill.base_dir.clone().into(),
+                        scope: Some(match skill.source_info.scope {
+                            maho_ext_api::SourceScope::Project => "project",
+                            _ => "user",
+                        }.into()),
+                        provenance: skill.provenance.as_ref().map(|provenance| crate::skills::SkillProvenance {
+                            kind: provenance.kind.clone(),
+                            selected_root: provenance.selected_root.clone().into(),
+                            project_root: provenance.project_root.clone().map(Into::into),
+                        }),
+                        allowed_set: skill.allowed_set.as_ref().map(|allowed| crate::skills::SkillAllowedSet {
+                            roots: allowed.roots.iter().map(|path| std::path::PathBuf::from(path.as_str())).collect(),
+                            files: allowed.files.iter().map(|path| std::path::PathBuf::from(path.as_str())).collect(),
+                            digest: allowed.digest.clone(),
+                        }),
+                    }).collect::<Vec<_>>();
+                    let declarations = crate::skills::parse_skill_mcp_declarations(&skills);
+                    let mut warnings = declarations.warnings.clone();
+                    if !declarations.servers.is_empty() {
+                        warnings.extend(service.attach_skill_mcp_servers(&declarations).await
+                            .map_err(|error| ExtensionFailure::new(error.to_string()))?);
+                    }
+                    publish_skill_warnings(&events, &warnings);
+                }
                 let block =
                     crate::instructions::refresh_mcp_instructions_for_session(&service).await;
                 Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult {
@@ -299,6 +329,19 @@ pub fn register_mcp_lifecycle_with_tool_search(
     );
     service
 }
+fn publish_skill_warnings(events: &maho_ext_api::EventBus, warnings: &[String]) {
+    for warning in warnings {
+        if !warning.starts_with("Project MCP server") {
+            maho_ext_api::diagnostic(warning);
+        }
+        if warning.starts_with("Blocked skill link") {
+            events.emit("security_notice", &serde_json::json!({
+                "category": "skill-link-blocked", "message": warning,
+            }));
+        }
+    }
+}
+
 /// Publish a session-owned MCP wire-status snapshot on the bound extension runner bus, matching
 /// the pinned `onWireStatusChanged` producer. Native payload; no JSON round-trip.
 pub fn publish_wire_status(
@@ -337,5 +380,27 @@ impl McpExtension {
 impl maho_ext_api::Extension for McpExtension {
     fn register(&self, api: &mut ExtensionApi) {
         let _ = self.register_with_service(api);
+    }
+}
+
+
+#[cfg(test)]
+mod security_notice_tests {
+    use super::*;
+
+    #[test]
+    fn blocked_skill_warnings_publish_only_security_diagnostics() {
+        let events = maho_ext_api::EventBus::default();
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = captured.clone();
+        let _subscription = events.on("security_notice", Arc::new(move |value| {
+            sink.lock().unwrap().push(value.clone());
+        }));
+        publish_skill_warnings(&events, &[
+            "ordinary warning".into(), "Blocked skill link fixture".into(),
+        ]);
+        assert_eq!(*captured.lock().unwrap(), vec![serde_json::json!({
+            "category":"skill-link-blocked", "message":"Blocked skill link fixture",
+        })]);
     }
 }

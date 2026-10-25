@@ -130,6 +130,7 @@ impl SecurityNoticeSnapshot {
         }
     }
     pub fn dispose(&mut self) {
+        self.notices.clear();
         self.listeners
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
