@@ -677,11 +677,19 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (run, worktree, policy) = reflection_fixture(root.path());
         let mut input = reflection_input(root.path(), &run, &worktree, &policy);
-        assert_eq!(prepare_reflection_spawn(reflection_input(root.path(), &run, &worktree, &policy)).unwrap().memory_root, None);
+        assert_eq!(
+            prepare_reflection_spawn(reflection_input(root.path(), &run, &worktree, &policy))
+                .unwrap()
+                .memory_root,
+            None
+        );
         input.memory_root = Some(root.path().join("memory"));
         input.max_concurrent_runs = Some(3);
         let args = prepare_reflection_spawn(input).unwrap();
-        assert_eq!(args.memory_root.as_deref(), Some(root.path().join("memory").as_path()));
+        assert_eq!(
+            args.memory_root.as_deref(),
+            Some(root.path().join("memory").as_path())
+        );
         assert_eq!(args.max_concurrent_runs, Some(3));
     }
     #[test]
