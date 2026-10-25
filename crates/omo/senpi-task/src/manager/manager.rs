@@ -2251,6 +2251,10 @@ impl TaskManager {
         if lock(&self.inner.concurrency).lease_state(task_id, epoch) == Some("held") {
             return Ok(());
         }
+        let allocation = allocation.or(record.queued_admission.as_ref());
+        if allocation.is_some_and(|saved| saved.run_epoch != epoch || saved.task_id != task_id) {
+            return Err("stale resume allocation".into());
+        }
         let (wake, received) = channel();
         let attempt = {
             let mut state = lock(&self.inner.state);
@@ -2264,9 +2268,6 @@ impl TaskManager {
             }
             attempt
         };
-        let allocation = allocation
-            .or(record.queued_admission.as_ref())
-            .filter(|saved| saved.run_epoch == epoch && saved.task_id == task_id);
         let model = allocation.map_or(record.model.as_str(), |saved| saved.model.as_str());
         let mut concurrency = lock(&self.inner.concurrency);
         concurrency.withdraw(model, task_id, epoch);
