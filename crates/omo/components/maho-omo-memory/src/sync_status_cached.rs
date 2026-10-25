@@ -152,13 +152,17 @@ mod tests {
 
     #[test]
     fn the_first_failure_is_announced_once_and_a_repeat_is_silent() {
-        let notifier = SyncStatusNotifier::new(reader(failing("auth", "Token expired.", "Run /login.")));
+        let notifier =
+            SyncStatusNotifier::new(reader(failing("auth", "Token expired.", "Run /login.")));
         let ui = RefCell::new(Ui::default());
         notifier.changed(Path::new("/repo"), Some(&ui));
         notifier.changed(Path::new("/repo"), Some(&ui));
         let notices = &ui.borrow().0;
         assert_eq!(notices.len(), 1);
-        assert_eq!(notices[0].0, "Memory sync is blocked. Token expired. Run /login.");
+        assert_eq!(
+            notices[0].0,
+            "Memory sync is blocked. Token expired. Run /login."
+        );
         assert_eq!(notices[0].1, "warning");
     }
 
@@ -166,9 +170,8 @@ mod tests {
     fn a_changed_failure_kind_speaks_again_and_a_recovery_says_so_once() {
         let status = Arc::new(Mutex::new(failing("auth", "Token expired.", "Run /login.")));
         let seen = status.clone();
-        let notifier = SyncStatusNotifier::new(Arc::new(move |_: &Path| {
-            seen.lock().unwrap().clone()
-        }));
+        let notifier =
+            SyncStatusNotifier::new(Arc::new(move |_: &Path| seen.lock().unwrap().clone()));
         let ui = RefCell::new(Ui::default());
         notifier.changed(Path::new("/repo"), Some(&ui));
         *status.lock().unwrap() = failing("network", "Host unreachable.", "Check your connection.");
@@ -198,7 +201,8 @@ mod tests {
 
     #[test]
     fn an_inactive_repository_feeds_the_notifier_without_touching_the_footer() {
-        let notifier = SyncStatusNotifier::new(reader(failing("auth", "Token expired.", "Run /login.")));
+        let notifier =
+            SyncStatusNotifier::new(reader(failing("auth", "Token expired.", "Run /login.")));
         let ui = RefCell::new(Ui::default());
         let footer = std::cell::Cell::new(0);
         let rpc = std::cell::Cell::new(0);
@@ -233,5 +237,95 @@ mod tests {
         .unwrap();
         assert!(active.borrow().0.is_empty());
         assert_eq!(footer.get(), 1);
+    }
+}
+
+#[cfg(test)]
+mod rpc_tests {
+    use super::*;
+    #[test]
+    fn sync_rpc_preserves_failure_details_and_machine_consumed_fields() {
+        use memory_core::sync::engine::{
+            EngineStatus,
+            failure::{SyncFailure as EngineFailure, SyncFailureKind},
+        };
+        let value = rpc_status(&crate::sync_runner::SyncRepoStatus::Engine(
+            EngineStatus::Failing {
+                failure: EngineFailure {
+                    kind: SyncFailureKind::StrandedLock,
+                    paths: vec!["/repo/.git/index.lock".into()],
+                    reason: "locked".into(),
+                    action: "unlock".into(),
+                },
+                since: 0,
+                attempts: 3,
+            },
+        ));
+        assert_eq!(
+            value,
+            serde_json::json!({"state":"failing","failure":{"kind":"stranded_lock","reason":"locked","action":"unlock","sinceISO":"1970-01-01T00:00:00.000Z","attempts":3,"paths":["/repo/.git/index.lock"]}})
+        );
+        assert_eq!(
+            rpc_status(&crate::sync_runner::SyncRepoStatus::Engine(
+                EngineStatus::Synced {
+                    at: 0,
+                    updated_while_offline: 0
+                }
+            )),
+            serde_json::json!({"state":"synced","lastSyncedAtISO":"1970-01-01T00:00:00.000Z"})
+        );
+    }
+}
+
+pub fn report(status: crate::sync_runner::SyncRepoStatus) -> SyncStatusReport {
+    match status {
+        crate::sync_runner::SyncRepoStatus::Engine(
+            memory_core::sync::engine::EngineStatus::Failing { failure, .. },
+        ) => SyncStatusReport::Failing(SyncFailure {
+            kind: failure_kind(failure.kind).into(),
+            reason: failure.reason,
+            action: failure.action,
+        }),
+        other => SyncStatusReport::Status(other),
+    }
+}
+pub fn failure_kind(kind: memory_core::sync::engine::failure::SyncFailureKind) -> &'static str {
+    use memory_core::sync::engine::failure::SyncFailureKind::*;
+    match kind {
+        StrandedLock => "stranded_lock",
+        AuthExpired => "auth_expired",
+        Offline => "offline",
+        Unknown => "unknown",
+    }
+}
+pub fn rpc_status(status: &crate::sync_runner::SyncRepoStatus) -> serde_json::Value {
+    use memory_core::sync::engine::EngineStatus;
+    let iso = |time| {
+        chrono::DateTime::from_timestamp_millis(time)
+            .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+    };
+    match status {
+        crate::sync_runner::SyncRepoStatus::Unavailable { .. } => {
+            serde_json::json!({"state":"unavailable"})
+        }
+        crate::sync_runner::SyncRepoStatus::Engine(state) => match state {
+            EngineStatus::NeverSynced => serde_json::json!({"state":"never_synced"}),
+            EngineStatus::Synced { at, .. } => {
+                serde_json::json!({"state":"synced","lastSyncedAtISO":iso(*at)})
+            }
+            EngineStatus::Paused { .. } => serde_json::json!({"state":"paused"}),
+            EngineStatus::Failing {
+                failure,
+                since,
+                attempts,
+            } => {
+                let mut value = serde_json::json!({"state":"failing","failure":{"kind":failure_kind(failure.kind),"reason":failure.reason,"action":failure.action,"sinceISO":iso(*since),"attempts":attempts}});
+                if failure.kind == memory_core::sync::engine::failure::SyncFailureKind::StrandedLock
+                {
+                    value["failure"]["paths"] = serde_json::json!(failure.paths);
+                }
+                value
+            }
+        },
     }
 }

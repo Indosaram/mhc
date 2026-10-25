@@ -497,6 +497,73 @@ impl MemoryWiring {
         wiring.try_lock().map_err(|error|format!("memory wiring locked during registration: {error}"))?.reflection_live.register_rpc(api,std::sync::Arc::new(move||->std::collections::BTreeMap<String,crate::context::MemoryIdentityContext>{
             rpc_component.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().filter(|(_,state)|state.enabled).filter_map(|(session,state)|state.context.clone().map(|context|(session.clone(),context))).collect()
         }),std::sync::Arc::new(move||rpc_now() as i64),Some(apply_facts)).map_err(|error|error.to_string())?;
+        let state = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<
+            std::path::PathBuf,
+            crate::sync_runner::SyncRepoStatus,
+        >::new()));
+        {
+            let source = state.clone();
+            let read: crate::sync_status_cached::SyncStatusReader =
+                std::sync::Arc::new(move |repo| {
+                    source
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get(repo)
+                        .cloned()
+                        .map(crate::sync_status_cached::report)
+                });
+            let mut locked = wiring
+                .try_lock()
+                .map_err(|_| "memory wiring busy during sync registration")?;
+            locked.set_sync_status(Some(read));
+            let source = state.clone();
+            locked
+                .reflection_live
+                .rpc
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .sync_status = Some(std::sync::Arc::new(move |repo| {
+                source
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(repo)
+                    .cloned()
+            }));
+        }
+        if let Some(runner) = component.sync_runner() {
+            let wiring = wiring.clone();
+            let now = options.now.clone();
+            let warn = options.warn.clone();
+            let (changes, received) = std::sync::mpsc::channel::<std::path::PathBuf>();
+            std::thread::Builder::new()
+                .name("memory-sync-surface".into())
+                .spawn(move || {
+                    while let Ok(repo) = received.recv() {
+                        if let Err(error) = wiring
+                            .blocking_lock()
+                            .on_sync_status_changed(&repo, now() as i64)
+                        {
+                            warn(&error);
+                        }
+                    }
+                })
+                .map_err(|error| error.to_string())?;
+            runner.on_change(std::sync::Arc::new(move |repo, status| {
+                {
+                    let mut state = state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if let Some(status) = status {
+                        state.insert(repo.clone(), status);
+                    } else {
+                        state.remove(&repo);
+                    }
+                }
+                if changes.send(repo).is_err() {
+                    eprintln!("memory sync surface receiver closed");
+                }
+            }));
+        }
         Ok(true)
     }
     #[allow(clippy::too_many_arguments)]
@@ -625,7 +692,10 @@ impl MemoryWiring {
         self.reflection_live.sync_rpc(&api, now)
     }
     /// Installs the sync-status reader the footer, the notices and [`Self::on_sync_status_changed`] read.
-    pub fn set_sync_status(&mut self, sync_status: Option<crate::sync_status_cached::SyncStatusReader>) {
+    pub fn set_sync_status(
+        &mut self,
+        sync_status: Option<crate::sync_status_cached::SyncStatusReader>,
+    ) {
         self.seams.sync_status = sync_status.clone();
         self.reflection_live.set_sync_status(sync_status);
     }
@@ -664,7 +734,9 @@ impl MemoryWiring {
                 repo,
                 is_active_repo: active_repo,
                 notifier: notifier.as_deref(),
-                ui: notice.as_ref().map(|notice| notice as &dyn crate::sync_status_cached::SyncNoticeUi),
+                ui: notice
+                    .as_ref()
+                    .map(|notice| notice as &dyn crate::sync_status_cached::SyncNoticeUi),
                 apply: &mut apply,
             },
         )
@@ -697,8 +769,8 @@ impl MemoryWiring {
             true
         };
         let reconcile = || reconcile_runs.as_ref().expect("checked reconcile seam")(identity);
-        let recovery = crate::reflection_stale_active::recover_stale_reflection_holder(
-            crate::reflection_stale_active::StaleHolderRecoveryInput {
+        let recovery = crate::reflection_stale_active_sync::recover_stale_reflection_holder(
+            crate::reflection_stale_active_sync::StaleHolderRecoveryInput {
                 reflection_dir: &identity.identity_paths.reflection,
                 reconcile: &reconcile,
                 seams: None,
