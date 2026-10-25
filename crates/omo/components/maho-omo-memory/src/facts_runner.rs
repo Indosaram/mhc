@@ -639,11 +639,11 @@ impl FactsExtractorRunner {
         };
         let model_candidates: Vec<_> = std::iter::once(first).chain(fallbacks).collect();
 
-        let cancel_state = input
+        let signal = input
             .signal
-            .as_ref()
-            .map(memory_core::facts::queue::FactsAbortSignal::flag)
-            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+            .clone()
+            .unwrap_or_default();
+        let cancel_state = signal.flag();
 
         let payload_path = dir.join("facts-payload.json");
         if let Err(err) = std::fs::write(&payload_path, input.payload.render()) {
@@ -725,13 +725,14 @@ impl FactsExtractorRunner {
             custom_tools,
             tool_allowlist,
             hard_deadline_at: input.hard_deadline_at,
-            signal: input.signal.clone(),
+            signal: Some(signal.clone()),
             cancel_state: cancel_state.clone(),
         };
 
         let session_result = match spawner.spawn(spawn_input).await {
             Ok(res) => res,
             Err(err) => {
+                signal.abort();
                 cancel_state.store(true, Ordering::Release);
                 record_tool.deactivate();
                 if let Some(at) = &agreement_tool {
