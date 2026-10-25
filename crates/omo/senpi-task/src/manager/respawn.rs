@@ -251,6 +251,19 @@ fn rpc_spec(
 ) -> RpcRunnerSpec {
     let trusted = trusted.unwrap_or_default();
     RpcRunnerSpec {
+        fallback_models: record.fallback_models.as_ref().map(|models| {
+            models
+                .iter()
+                .map(|model| {
+                    let base = format!("{}/{}", model.provider, model.model_id);
+                    model
+                        .reasoning
+                        .as_ref()
+                        .or(model.variant.as_ref())
+                        .map_or(base.clone(), |reasoning| format!("{base}:{reasoning}"))
+                })
+                .collect()
+        }),
         task_id: record.task_id.clone(),
         cwd,
         state_dir,

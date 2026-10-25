@@ -86,6 +86,7 @@ struct HandleState {
     workpool_identity: Option<crate::manager::child_handle::WorkpoolChildIdentity>,
     abort_calls: usize,
     dispose_calls: usize,
+    durable_listeners: Vec<Arc<dyn Fn(&str) + Send + Sync>>,
 }
 
 pub(crate) struct FakeHandle {
@@ -189,6 +190,13 @@ impl FakeHandle {
         lock(&self.state).abort_calls
     }
 
+    pub fn emit_durable_id(&self, id: &str) {
+        let listeners = lock(&self.state).durable_listeners.clone();
+        for listener in listeners {
+            listener(id);
+        }
+    }
+
     pub fn dispose_calls(&self) -> usize {
         lock(&self.state).dispose_calls
     }
@@ -227,6 +235,13 @@ impl DetachWatcher {
 }
 
 impl ManagedChildHandle for FakeHandle {
+    fn on_durable_session_id(
+        &self,
+        listener: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> Option<Unsubscribe> {
+        lock(&self.state).durable_listeners.push(listener);
+        Some(Box::new(|| {}))
+    }
     fn task_id(&self) -> &str {
         &self.task_id
     }

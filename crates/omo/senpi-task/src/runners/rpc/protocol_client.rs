@@ -266,6 +266,34 @@ impl RpcProtocolClient {
 }
 
 impl RpcClientPort for RpcProtocolClient {
+    fn on_durable_session_id(
+        &self,
+        listener: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> Option<Unsubscribe> {
+        Some(self.on_event(Arc::new(move |event| {
+            if event["type"] == "session_id" || event["type"] == "session_replaced" {
+                if let Some(id) = event
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                {
+                    listener(id);
+                }
+            }
+        })))
+    }
+    fn publish_task_status(&self, status: crate::state::TaskStatus) -> Result<(), RpcClientError> {
+        if self.shared.lock().exit.is_some() {
+            return Ok(());
+        }
+        let response = self
+            .send(json!({"type":"set_session_context", "patch":{"task_status":status.as_str()}}))?;
+        if response["success"] == true {
+            Ok(())
+        } else {
+            Err(command_error(&response, "set_session_context").into())
+        }
+    }
     fn pid(&self) -> Option<u32> {
         self.child.pid()
     }

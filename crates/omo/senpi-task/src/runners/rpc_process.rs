@@ -28,6 +28,7 @@ pub type BuildSpawn = Arc<dyn Fn(&RpcRunnerSpec) -> RpcSpawnDescriptor + Send + 
 
 #[derive(Clone, Default)]
 pub struct RpcProcessRunnerOptions {
+    pub exclude_models: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
     pub spawn_child: Option<SpawnChild>,
     pub build_spawn: Option<BuildSpawn>,
     pub heartbeat_interval_ms: Option<u64>,
@@ -38,6 +39,7 @@ pub struct RpcProcessRunnerOptions {
 }
 
 pub struct RpcProcessRunner {
+    exclude_models: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
     pending_teardowns: Mutex<Vec<JoinHandle<()>>>,
     spawn_child: SpawnChild,
     build_spawn: BuildSpawn,
@@ -51,6 +53,7 @@ pub struct RpcProcessRunner {
 impl RpcProcessRunner {
     pub fn new(options: RpcProcessRunnerOptions) -> Self {
         Self {
+            exclude_models: options.exclude_models,
             pending_teardowns: Mutex::new(Vec::new()),
             spawn_child: options.spawn_child.unwrap_or_else(|| {
                 Arc::new(|descriptor| Arc::new(RpcChildProcess::spawn(descriptor)))
@@ -94,6 +97,14 @@ impl RpcProcessRunner {
     /// Failed non-resume starts discard their child in a tracked background teardown.
     pub fn start(&self, spec_input: &RpcRunnerSpec) -> Result<Arc<RpcChildHandle>, RunnerFailure> {
         let mut spec = spec_input.clone();
+        if let Some(resolve) = &self.exclude_models {
+            if let Some(chain) = &spec.fallback_models {
+                spec.fallback_models = Some(crate::manager::runner::without_excluded_selectors(
+                    chain,
+                    &resolve(),
+                ));
+            }
+        }
         if spec.extensions.is_none() && !self.inherited_extensions.is_empty() {
             spec.extensions = Some(self.inherited_extensions.clone());
         }
@@ -113,16 +124,28 @@ impl RpcProcessRunner {
             heartbeat_interval_ms: self.heartbeat_interval_ms,
             now: Arc::clone(&self.now),
         });
-        let started = match &spec.resume_session_path {
-            None => handle
-                .start_initial_prompt(&spec.prompt)
-                .map(|()| None)
-                .map_err(|error| (RunnerFailureKind::ChildPromptFailed, error.to_string())),
-            Some(path) => client
-                .switch_session(path)
-                .map(|result| Some((path.clone(), result)))
-                .map_err(|error| (RunnerFailureKind::SessionUnavailable, error.to_string())),
+        let configured = match (&spec.model, &spec.fallback_models) {
+            (Some(model), Some(chain)) if !chain.is_empty() => {
+                match client.send(json!({"type":"set_retry_fallback","retryFallback":{"modelFallback":true,"fallbackChains":{(model):chain}}})) {
+                    Ok(response) if response["success"] == true => {},
+                    result => utils::logger::log("senpi-task child fallback chain unavailable; retaining manager fallback", Some(&json!({"taskId":spec.task_id,"result":format!("{result:?}")}))),
+                }
+                Ok::<(), RpcClientError>(())
+            }
+            _ => Ok(()),
         };
+        let started = configured
+            .map_err(|error| (RunnerFailureKind::ChildPromptFailed, error.to_string()))
+            .and_then(|()| match &spec.resume_session_path {
+                None => handle
+                    .start_initial_prompt(&spec.prompt)
+                    .map(|()| None)
+                    .map_err(|error| (RunnerFailureKind::ChildPromptFailed, error.to_string())),
+                Some(path) => client
+                    .switch_session(path)
+                    .map(|result| Some((path.clone(), result)))
+                    .map_err(|error| (RunnerFailureKind::SessionUnavailable, error.to_string())),
+            });
         let resume = match started {
             Ok(resume) => resume,
             Err((kind, message)) => {
