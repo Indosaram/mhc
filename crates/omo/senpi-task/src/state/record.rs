@@ -15,6 +15,7 @@ pub fn create_task_record(
     let timestamp = iso_timestamp_now();
     let task_id = create_task_id(now_ms)?;
     let TaskRecordInput {
+        parent_model,
         name,
         task_summary,
         description,
@@ -96,7 +97,7 @@ pub fn create_task_record(
         runner_kind,
         host_session,
         cancel_requested: None,
-        parent_model: None,
+        parent_model,
         parent_model_fallback: None,
         fallback_closing_child: None,
         start_queued: None,
