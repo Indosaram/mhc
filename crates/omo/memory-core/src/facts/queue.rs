@@ -23,7 +23,7 @@ use crate::support::time::{format_rfc3339_millis, now_millis};
 use super::schema::{
     FACTS_QUEUE_VERSION, FactsConsumedRecord, FactsConsumedWatermark, FactsCursor, FactsQueueEntry,
     FactsQueueLayout, FactsQueueRange, facts_queue_paths, initial_cursor,
-    parse_consumed, parse_cursor, parse_queue_entry,
+    parse_consumed, parse_cursor, parse_queue_entry, parse_queue_header,
 };
 
 const LOCK_WAIT_MS: u64 = 2000;
@@ -500,8 +500,8 @@ impl FactsQueue {
         Ok(())
     }
 
-    /// Lists valid queue files; without `with_entries` each payload is dropped right after
-    /// validation so at most one file's transcript is resident at a time.
+    /// Lists valid queue files; without `with_entries` the header and transcript entries are
+    /// streamed via a visitor so transcripts are not materialized into memory.
     fn list_pending_unlocked(
         &self,
         with_entries: bool,
@@ -531,16 +531,26 @@ impl FactsQueue {
                 continue;
             }
             let file_path = self.layout.queue_dir.join(&name);
-            let raw = match fs::read_to_string(&file_path) {
-                Ok(r) => r,
-                Err(_) => continue,
+            let parsed = if with_entries {
+                let raw = match fs::read_to_string(&file_path) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+                match parse_queue_entry(&raw) {
+                    Some(parsed) => parsed,
+                    None => continue,
+                }
+            } else {
+                let file = match fs::File::open(&file_path) {
+                    Ok(f) => f,
+                    Err(_) => continue,
+                };
+                let reader = io::BufReader::new(file);
+                match parse_queue_header(reader) {
+                    Some(parsed) => parsed,
+                    None => continue,
+                }
             };
-            let Some(mut parsed) = parse_queue_entry(&raw) else {
-                continue;
-            };
-            if !with_entries {
-                parsed.entries = Vec::new();
-            }
             entries.push(PendingEntryWithFile {
                 entry: parsed,
                 file_path,
