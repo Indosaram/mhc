@@ -123,6 +123,7 @@ struct State {
     resume_attempts: HashMap<String, (u64, Sender<()>)>,
     next_resume_attempt: u64,
     initial_turns: HashMap<String, crate::manager::child_handle::ExactTurnOutcome>,
+    failed_turns: HashMap<String, Arc<Mutex<(Option<String>, Vec<String>)>>>,
     resume_receipts: HashMap<(String, i64, String), bool>,
     tracking_generations: HashMap<String, u64>,
     queued_launches: HashMap<String, LaunchContext>,
@@ -3674,6 +3675,9 @@ impl Inner {
         let fallback_id = task_id.to_string();
         let failed: Arc<Mutex<(Option<String>, Vec<String>)>> =
             Arc::new(Mutex::new((None, Vec::new())));
+        lock(&self.state)
+            .failed_turns
+            .insert(task_id.into(), Arc::clone(&failed));
         let fallback = handle.subscribe(Arc::new(move |event| {
             if event.event_type == "message_start" {
                 *lock(&failed) = (None, Vec::new());
@@ -3729,42 +3733,30 @@ impl Inner {
             }
             let facts = lock(&failed);
             let detail = facts.0.as_deref().or(event.last_error.as_deref());
-            let lower = detail.unwrap_or_default().to_lowercase();
-            let reason = if lower.contains("quota")
-                || lower.contains("limit")
-                || event.reason.as_deref() == Some("billing")
-            {
-                crate::state::ParentModelFallbackReason::UsageLimit
-            } else if lower.contains("401")
-                || lower.contains("unauthorized")
-                || lower.contains("api key")
-            {
-                crate::state::ParentModelFallbackReason::NotSignedIn
-            } else if event.reason.as_deref() == Some("refusal") {
-                crate::state::ParentModelFallbackReason::Refused
-            } else if event.reason.as_deref() == Some("transient") {
-                crate::state::ParentModelFallbackReason::Unavailable
+            let classified = crate::manager::parent_model_fallback::reason_of_failure(
+                detail.unwrap_or_default(),
+                record
+                    .resolved_model
+                    .as_ref()
+                    .map(|model| model.model_id.as_str()),
+            );
+            let reason = if classified != crate::state::ParentModelFallbackReason::Error {
+                classified
             } else {
-                crate::state::ParentModelFallbackReason::Error
+                match event.reason.as_deref() {
+                    Some("billing") => crate::state::ParentModelFallbackReason::UsageLimit,
+                    Some("refusal") => crate::state::ParentModelFallbackReason::Refused,
+                    Some("transient") => crate::state::ParentModelFallbackReason::Unavailable,
+                    _ => crate::state::ParentModelFallbackReason::Error,
+                }
             };
-            record.parent_model_fallback = Some(crate::state::ParentModelFallback {
-                from_model: event.from.clone().unwrap_or(record.model.clone()),
+            record.parent_model_fallback = Some(crate::manager::parent_model_fallback::build(
+                event.from.clone().unwrap_or(record.model.clone()),
                 reason,
-                at: chrono::Utc::now().to_rfc3339(),
-                detail: detail
-                    .and_then(|s| s.lines().map(str::trim).find(|s| !s.is_empty()))
-                    .map(|s| s.chars().take(200).collect()),
-                resets: detail.and_then(|s| {
-                    regex::Regex::new(r"(?i)\bresets?\s+([^.;\n]+)")
-                        .expect("reset pattern")
-                        .captures(s)
-                        .and_then(|c| {
-                            c.get(1)
-                                .map(|m| m.as_str().trim().trim_end_matches(')').to_string())
-                        })
-                }),
-                interrupted_tools: (!facts.1.is_empty()).then(|| facts.1.clone()),
-            });
+                detail,
+                &facts.1,
+                chrono::Utc::now().to_rfc3339(),
+            ));
             if let Err(error) = fallback_store.replace(&record) {
                 log(
                     "senpi-task parent fallback fact persistence failed",
@@ -3903,30 +3895,29 @@ impl Inner {
         attempts.push(next_model.clone());
         let mut notification = record.notification.clone();
         notification.run_epoch += 1;
+        let failed = lock(&self.state).failed_turns.get(&input.task_id).cloned();
+        let facts = failed.as_ref().map(|facts| lock(facts));
+        let message = facts
+            .as_ref()
+            .and_then(|facts| facts.0.as_deref())
+            .unwrap_or(&input.failure.message);
+        let tools = facts.as_ref().map_or(&[][..], |facts| facts.1.as_slice());
         let parent_note = (record.parent_model.as_deref() == Some(next_model.display.as_str()))
-            .then(|| crate::state::ParentModelFallback {
-                from_model: record.model.clone(),
-                reason: if input.failure.message.to_lowercase().contains("quota")
-                    || input.failure.message.to_lowercase().contains("limit")
-                {
-                    crate::state::ParentModelFallbackReason::UsageLimit
-                } else {
-                    crate::state::ParentModelFallbackReason::NotSignedIn
-                },
-                at: input.timestamp.clone(),
-                detail: Some(
-                    input
-                        .failure
-                        .message
-                        .lines()
-                        .next()
-                        .unwrap_or_default()
-                        .chars()
-                        .take(320)
-                        .collect(),
-                ),
-                resets: None,
-                interrupted_tools: None,
+            .then(|| {
+                let reason = crate::manager::parent_model_fallback::reason_of_failure(
+                    message,
+                    record
+                        .resolved_model
+                        .as_ref()
+                        .map(|model| model.model_id.as_str()),
+                );
+                crate::manager::parent_model_fallback::build(
+                    record.model.clone(),
+                    reason,
+                    Some(message),
+                    tools,
+                    input.timestamp.clone(),
+                )
             });
         let next_record = TaskRecord {
             parent_model_fallback: parent_note.or(record.parent_model_fallback.clone()),
