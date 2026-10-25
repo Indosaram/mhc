@@ -46,6 +46,9 @@ pub trait RpcClientPort: Send + Sync {
     fn pid(&self) -> Option<u32>;
     /// Send one command and block until its correlated response arrives.
     fn send(&self, command: Value) -> Result<Value, RpcClientError>;
+    fn send_task_parent(&self, command: Value) -> Result<Value, RpcClientError> {
+        self.send(command)
+    }
     fn on_event(&self, listener: RpcEventListener) -> Unsubscribe;
     /// Fires once when the child is gone; a listener added afterwards fires immediately.
     fn on_exit(&self, listener: RpcExitListener) -> Unsubscribe;
@@ -408,11 +411,12 @@ fn finalize(shared: &ClientShared, exit: ChildExitInput) {
             ),
         },
     };
-    for (_, sender) in pending {
-        let _ = sender.send(Err(failure.clone()));
-    }
+    // Publish exit facts before waking command waiters so startup classification sees stderr.
     for listener in listeners {
         listener(&exit);
+    }
+    for (_, sender) in pending {
+        let _ = sender.send(Err(failure.clone()));
     }
 }
 
