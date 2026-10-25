@@ -14801,14 +14801,21 @@ impl AgentSession {
         }
         let weak = Arc::downgrade(&self.inner);
         self.agent
-            .set_before_tool_call(Some(Arc::new(move |context, _| {
+            .set_before_tool_call(Some(Arc::new(move |context, signal| {
                 let weak = weak.clone();
                 Box::pin(async move {
                     let inner = weak.upgrade()?;
                     let session = AgentSession { inner };
                     session
-                        .wait_for_tool_barrier(&context.tool_call.name, None)
+                        .wait_for_tool_barrier(&context.tool_call.name, signal.as_ref())
                         .await;
+                    if signal.as_ref().is_some_and(|signal| signal.aborted()) {
+                        return Some(maho_agent::types::BeforeToolCallResult {
+                            block: true,
+                            reason: Some("Tool call aborted before execution".into()),
+                            ..Default::default()
+                        });
+                    }
                     let original = context.args.clone();
                     session
                         .preflight_tool_call(&context.tool_call, context.args)
@@ -15622,6 +15629,28 @@ impl AgentSession {
         };
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(event))
             .await;
+        if let Some(file) = self
+            .with_session_manager(|manager| manager.session_file().map(std::path::PathBuf::from))
+        {
+            let session = self.clone();
+            if let Err(error_message) = crate::session_move::extension_state::restore_moved_state(
+                &file,
+                move |delivery| async move {
+                    session
+                        .emit_session_move(
+                            delivery.move_id,
+                            delivery.dir,
+                            Some(delivery.redelivered),
+                        )
+                        .await
+                        .map(|()| true)
+                },
+            )
+            .await
+            {
+                self.emit(AgentSessionEvent::ContinuationError { error_message });
+            }
+        }
         self.with_work_obligations(|registry| registry.retire_restored_sources());
         if let Err(error_message) = self.with_work_obligations(|registry| registry.flush()) {
             self.emit(AgentSessionEvent::ContinuationError { error_message });
