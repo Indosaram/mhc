@@ -48,6 +48,7 @@ fn zero_usage() -> Usage {
             cache_write: 0.0,
             total: 0.0,
         },
+        ..Default::default()
     }
 }
 

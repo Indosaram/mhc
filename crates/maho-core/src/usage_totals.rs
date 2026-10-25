@@ -25,12 +25,16 @@ pub fn add_usage_to_totals(totals: &mut UsageTotals, usage: &Usage) {
     totals.cache_read += usage.cache_read as i64;
     totals.cache_write += usage.cache_write as i64;
     totals.cost += usage.cost.total;
+    if usage.cost_unknown == Some(true) {
+        totals.cost_unknown = true;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UsageCostBreakdownEntry {
     pub key: String,
     pub cost: f64,
+    pub cost_unknown: bool,
     pub tokens: i64,
 }
 
@@ -42,28 +46,49 @@ fn usage_from(value: &Value) -> Option<Usage> {
 pub fn get_usage_cost_breakdown(entries: &[Value]) -> Vec<UsageCostBreakdownEntry> {
     let mut totals_by_key: BTreeMap<String, UsageTotals> = BTreeMap::new();
     for entry in entries {
-        let entry_type = entry.get("type").and_then(Value::as_str).unwrap_or_default();
+        let entry_type = entry
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let (key, usage) = match entry_type {
             "message" => {
                 let message = entry.get("message");
-                match message.and_then(|message| message.get("role")).and_then(Value::as_str) {
+                match message
+                    .and_then(|message| message.get("role"))
+                    .and_then(Value::as_str)
+                {
                     Some("assistant") => {
-                        let provider = message.and_then(|m| m.get("provider")).and_then(Value::as_str).unwrap_or_default();
+                        let provider = message
+                            .and_then(|m| m.get("provider"))
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
                         let model = message
                             .and_then(|m| m.get("responseModel"))
                             .and_then(Value::as_str)
-                            .or_else(|| message.and_then(|m| m.get("model")).and_then(Value::as_str))
+                            .or_else(|| {
+                                message.and_then(|m| m.get("model")).and_then(Value::as_str)
+                            })
                             .unwrap_or_default();
-                        (Some(format!("{provider}/{model}")), message.and_then(usage_from))
+                        (
+                            Some(format!("{provider}/{model}")),
+                            message.and_then(usage_from),
+                        )
                     }
-                    Some("toolResult") => (Some("Tools/summaries".to_owned()), message.and_then(usage_from)),
+                    Some("toolResult") => (
+                        Some("Tools/summaries".to_owned()),
+                        message.and_then(usage_from),
+                    ),
                     _ => (None, None),
                 }
             }
-            "branch_summary" | "compaction" => (Some("Tools/summaries".to_owned()), usage_from(entry)),
+            "branch_summary" | "compaction" => {
+                (Some("Tools/summaries".to_owned()), usage_from(entry))
+            }
             _ => (None, None),
         };
-        let (Some(key), Some(usage)) = (key, usage) else { continue };
+        let (Some(key), Some(usage)) = (key, usage) else {
+            continue;
+        };
         add_usage_to_totals(totals_by_key.entry(key).or_default(), &usage);
     }
 
@@ -72,11 +97,16 @@ pub fn get_usage_cost_breakdown(entries: &[Value]) -> Vec<UsageCostBreakdownEntr
         .map(|(key, totals)| UsageCostBreakdownEntry {
             key,
             cost: totals.cost,
+            cost_unknown: totals.cost_unknown,
             tokens: totals.input + totals.output + totals.cache_read + totals.cache_write,
         })
         .filter(|entry| entry.cost > 0.0 || entry.tokens > 0)
         .collect();
-    breakdown.sort_by(|a, b| b.cost.partial_cmp(&a.cost).unwrap_or(std::cmp::Ordering::Equal));
+    breakdown.sort_by(|a, b| {
+        b.cost
+            .partial_cmp(&a.cost)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     breakdown
 }
 
@@ -123,7 +153,9 @@ mod tests {
 
     #[test]
     fn zero_usage_entries_are_dropped() {
-        let entries = vec![json!({ "type": "message", "message": { "role": "assistant", "provider": "p", "model": "m", "usage": usage(0, 0, 0.0) } })];
+        let entries = vec![
+            json!({ "type": "message", "message": { "role": "assistant", "provider": "p", "model": "m", "usage": usage(0, 0, 0.0) } }),
+        ];
         assert!(get_usage_cost_breakdown(&entries).is_empty());
     }
 }

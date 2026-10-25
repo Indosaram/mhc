@@ -1558,6 +1558,7 @@ fn parse_chunk_usage(raw_usage: &Value, model: &Model) -> Usage {
         reasoning,
         total_tokens: input + output_tokens + cache_read_tokens + cache_write_tokens,
         cost: Default::default(),
+        ..Default::default()
     };
     calculate_cost(model, &mut usage);
     usage

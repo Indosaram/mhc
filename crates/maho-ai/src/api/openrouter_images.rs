@@ -106,6 +106,7 @@ pub fn parse_usage(raw_usage: &Value, model: &ImagesModel) -> Usage {
         reasoning: None,
         total_tokens: input + output + cache_read_tokens + cache_write_tokens,
         cost: UsageCost::default(),
+        ..Default::default()
     };
     usage.cost.input = (model.cost.input / 1_000_000.0) * input as f64;
     usage.cost.output = (model.cost.output / 1_000_000.0) * output as f64;

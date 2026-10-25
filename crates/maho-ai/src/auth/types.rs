@@ -356,6 +356,11 @@ pub trait ApiKeyAuth: Send + Sync {
         false
     }
 
+    /// A login may leave the key blank: the provider needs none or its resolve falls back to ambient key.
+    fn key_optional(&self) -> bool {
+        false
+    }
+
     async fn login(
         &self,
         _interaction: &ProviderAuthInteraction,
