@@ -53,7 +53,7 @@ fn args(values: &[&str]) -> Vec<String> { values.iter().map(|value| (*value).to_
     let parsed = parse_package_command(&args(&["update", "self", "--extensions"])).unwrap();
     assert!(parsed.conflicting_options.is_none());
     assert_eq!(parsed.update_target, Some(UpdateTarget::All));
-    assert!(parse_package_command(&args(&["update"])).unwrap().show_extensions_skipped_note);
+    assert_eq!(parse_package_command(&args(&["update"])).unwrap().update_target, Some(UpdateTarget::SelfOnly));
 }
 #[test] fn update_conflicts_keep_first_error_and_models_target() {
     let parsed = parse_package_command(&args(&["update", "--all", "--models", "--self", "--force"])).unwrap();

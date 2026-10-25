@@ -101,7 +101,6 @@ pub struct PackageCommandOptions {
     pub source: Option<String>,
     pub local: bool,
     pub update_target: Option<UpdateTarget>,
-    pub show_extensions_skipped_note: bool,
     pub force: bool,
     /// `mhc update --allow-unsigned`: install a release that predates signatures.
     pub allow_unsigned: bool,
@@ -129,7 +128,6 @@ fn parse_package_command_for_app(args: &[String], app_name: &str) -> Option<Pack
         source: None,
         local: false,
         update_target: None,
-        show_extensions_skipped_note: false,
         force: false,
         allow_unsigned: false,
         omo_local_update_worker: false,
@@ -265,7 +263,6 @@ fn parse_package_command_for_app(args: &[String], app_name: &str) -> Option<Pack
         } else if extensions_flag {
             UpdateTarget::Extensions { source: None }
         } else {
-            parsed.show_extensions_skipped_note = true;
             UpdateTarget::SelfOnly
         });
     }
@@ -442,12 +439,6 @@ pub async fn run_package_command(
     if options.command == PackageCommand::Update
         && matches!(options.update_target, None | Some(UpdateTarget::SelfOnly))
     {
-        if options.show_extensions_skipped_note {
-            maho_core::output_guard::maho_write_stdout(&format!(
-                "Extensions are skipped. Run {} update --extensions to update extensions.\n",
-                maho_core::config::app_name(),
-            ));
-        }
         return run_self_update(maho_core::brand::brand_profile().update.as_ref(), options.allow_unsigned).await;
     }
     if options.command == PackageCommand::Update
@@ -618,12 +609,6 @@ pub async fn execute_package_command(
                         .into(),
                 );
             }
-            if options.show_extensions_skipped_note {
-                maho_core::output_guard::maho_write_stdout(&format!(
-                    "Extensions are skipped. Run {} update --extensions to update extensions.\n",
-                    maho_core::config::app_name(),
-                ));
-            }
             match options
                 .update_target
                 .as_ref()
@@ -640,13 +625,16 @@ pub async fn execute_package_command(
                     )
                 }
                 UpdateTarget::All => {
-                    manager
-                        .update(None)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    maho_core::output_guard::maho_write_stdout("Updated packages\n");
-                    return run_self_update(maho_core::brand::brand_profile().update.as_ref(), options.allow_unsigned)
-                        .await;
+                    // The application update goes first so a failing resource package cannot block it.
+                    run_self_update(maho_core::brand::brand_profile().update.as_ref(), options.allow_unsigned)
+                        .await?;
+                    manager.update(None).await.map_err(|error| {
+                        format!(
+                            "{} was updated, but updating packages failed: {error}",
+                            maho_core::config::app_name()
+                        )
+                    })?;
+                    "Updated packages\n".into()
                 }
                 UpdateTarget::SelfOnly => {
                     return run_self_update(maho_core::brand::brand_profile().update.as_ref(), options.allow_unsigned)
