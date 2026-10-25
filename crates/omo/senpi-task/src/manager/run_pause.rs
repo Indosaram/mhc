@@ -28,9 +28,9 @@ pub struct EngineInheritReceipt {
 pub use crate::pause::ports::{EngineHoldInputResult, ObservedHold};
 
 /// A resumed child's turn: the id the engine opened, which settles with that turn's outcome.
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskResumedTurn {
     pub turn_id: String,
+    pub outcome: crate::manager::child_handle::ExactTurnOutcome,
 }
 
 /// The input a paused child holds for the resumed run.
@@ -41,10 +41,14 @@ pub struct HeldTaskInput {
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResumeTurnResult {
-    Resumed { turn_id: String },
-    OtherHoldLive { child_seq: Option<u64> },
+    Resumed {
+        turn_id: String,
+        outcome: crate::manager::child_handle::ExactTurnOutcome,
+    },
+    OtherHoldLive {
+        child_seq: Option<u64>,
+    },
 }
 
 /// `RunPauseAdmissionHeld`: the run's Resume was superseded by a hold.
@@ -420,7 +424,7 @@ impl TaskRunPause {
                 self.park(task_id, record.notification.run_epoch);
                 ResumeTaskResult::OtherHoldLive { child_seq }
             }
-            ResumeTurnResult::Resumed { turn_id } => {
+            ResumeTurnResult::Resumed { turn_id, outcome } => {
                 self.intents.clear(task_id);
                 if !self
                     .ports
@@ -438,6 +442,7 @@ impl TaskRunPause {
                     record.notification.run_epoch,
                     TaskResumedTurn {
                         turn_id: turn_id.clone(),
+                        outcome,
                     },
                 );
                 ResumeTaskResult::Resumed { turn_id }
@@ -512,7 +517,7 @@ impl TaskRunPause {
             ResumeTurnResult::OtherHoldLive { child_seq } => {
                 Ok(LostResumeResult::OtherHoldLive { child_seq })
             }
-            ResumeTurnResult::Resumed { turn_id } => {
+            ResumeTurnResult::Resumed { turn_id, outcome } => {
                 self.ports.track(
                     task_id,
                     handle,
@@ -520,6 +525,7 @@ impl TaskRunPause {
                     record.notification.run_epoch,
                     TaskResumedTurn {
                         turn_id: turn_id.clone(),
+                        outcome,
                     },
                 );
                 Ok(LostResumeResult::Resumed { turn_id })
