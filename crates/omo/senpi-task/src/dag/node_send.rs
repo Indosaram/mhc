@@ -377,7 +377,7 @@ fn revived_failure(status: TaskStatus, message: Option<&str>) -> (DagNodeErrorCo
             DagNodeErrorCode::TaskCancelled,
             message.unwrap_or("task was cancelled").into(),
         ),
-        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Completed => (
+        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused | TaskStatus::Completed => (
             DagNodeErrorCode::TaskError,
             "task in a non-terminal-failure status".into(),
         ),
