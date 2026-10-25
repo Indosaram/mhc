@@ -3,11 +3,11 @@ use serde_json::{Map, Value};
 use crate::shared::{DagOwnerKind, DagTaskOwner};
 use crate::state::{
     BackgroundMode, CancelRequest, DeliverAs, EffectiveModelRecord, FallbackClosingChild,
-    HostSessionIdentity, IsolationRecord, PendingSteeringEntry,
-    RESIDENCY_STATES, RESOLVED_MODEL_SOURCES, RecordedRunPause, ResidencyState,
-    ResolvedModelRecord, ResolvedModelSource, ReviveDeliveryUncertainty, RunnerKind, SpawnSpecV1,
-    StartQueued, SuspensionReason, TASK_STATUSES, TaskAwaitingInput, TaskIsolationSpec,
-    TaskNotification, TaskRecord, TaskRunStats, TaskSpawnSpec, TaskStatus, parse_task_id,
+    HostSessionIdentity, IsolationRecord, PendingSteeringEntry, RESIDENCY_STATES,
+    RESOLVED_MODEL_SOURCES, RecordedRunPause, ResidencyState, ResolvedModelRecord,
+    ResolvedModelSource, ReviveDeliveryUncertainty, RunnerKind, SpawnSpecV1, StartQueued,
+    SuspensionReason, TASK_STATUSES, TaskAwaitingInput, TaskIsolationSpec, TaskNotification,
+    TaskRecord, TaskRunStats, TaskSpawnSpec, TaskStatus, parse_task_id,
 };
 
 type Object = Map<String, Value>;
@@ -94,7 +94,8 @@ pub fn parse_task_record(
         started_at,
         terminal_at,
         notification: read_notification(record)?,
-        run_start_epoch: read_optional_integer(record, "run_start_epoch")?.unwrap_or(crate::state::LEGACY_RUN_START_EPOCH),
+        run_start_epoch: read_optional_integer(record, "run_start_epoch")?
+            .unwrap_or(crate::state::LEGACY_RUN_START_EPOCH),
         team_run_id: read_optional_string(record, "team_run_id")?,
         team_name: read_optional_string(record, "team_name")?,
         team_member_name: read_optional_string(record, "team_member_name")?,
@@ -139,11 +140,18 @@ pub fn parse_task_record(
         host_session,
         cancel_requested,
         parent_model: read_optional_string(record, "parent_model")?,
-        parent_model_fallback: super::parent_model_fallback_parse::parse_optional_parent_model_fallback(value),
+        parent_model_fallback:
+            super::parent_model_fallback_parse::parse_optional_parent_model_fallback(value),
         fallback_closing_child: parse_optional_closing_child(record)?,
         start_queued: parse_optional_start_queued(record)?,
         revive_delivery_uncertain: parse_optional_revive_delivery_uncertainty(record)?,
         prior_runs_cost_usd: read_optional_prior_runs_cost(record)?,
+        queued_admission: record
+            .get("queued_admission")
+            .map(|value| {
+                serde_json::from_value(value.clone()).map_err(|_| "invalid queued_admission")
+            })
+            .transpose()?,
         run_pause: parse_optional_run_pause(record)?,
         resumed_run_epoch: read_optional_number(record, "resumed_run_epoch")?,
         burnt_epoch: read_optional_number(record, "burnt_epoch")?,
