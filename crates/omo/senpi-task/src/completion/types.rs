@@ -122,7 +122,11 @@ pub struct ParentNotifierMessage {
 
 /// State of one delivery attempt, independent of queue acceptance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeliveryState { Pending, Delivered, Failed }
+pub enum DeliveryState {
+    Pending,
+    Delivered,
+    Failed,
+}
 
 type DeliveryCallback = Box<dyn FnOnce(Result<(), HostError>) + Send>;
 
@@ -134,7 +138,12 @@ pub struct DeliveryCallbacks {
 
 impl DeliveryCallbacks {
     pub fn new(callback: impl FnOnce(Result<(), HostError>) + Send + 'static) -> Self {
-        Self { inner: Arc::new(Mutex::new((DeliveryState::Pending, Some(Box::new(callback))))) }
+        Self {
+            inner: Arc::new(Mutex::new((
+                DeliveryState::Pending,
+                Some(Box::new(callback)),
+            ))),
+        }
     }
     pub fn state(&self) -> DeliveryState {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner).0
@@ -159,7 +168,11 @@ impl DeliveryCallbacks {
 /// Acceptance is not delivery. Implementors settle callbacks only after the actual send resolves.
 /// A synchronous rejection returns Err without settling; the caller owns that rejection.
 pub trait ParentNotifier: Send + Sync {
-    fn enqueue_with_callbacks(&self, message: &ParentNotifierMessage, callbacks: DeliveryCallbacks) -> Result<(), HostError>;
+    fn enqueue_with_callbacks(
+        &self,
+        message: &ParentNotifierMessage,
+        callbacks: DeliveryCallbacks,
+    ) -> Result<(), HostError>;
     fn enqueue(&self, message: &ParentNotifierMessage) -> Result<(), HostError> {
         self.enqueue_with_callbacks(message, DeliveryCallbacks::new(|_| {}))
     }

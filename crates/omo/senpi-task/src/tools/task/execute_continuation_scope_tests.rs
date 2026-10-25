@@ -161,6 +161,7 @@ fn make_manager(dir: &tempfile::TempDir) -> (TaskManager, Arc<FakeRunner>) {
 
 fn ctx_for(session_id: &str) -> TaskToolContext {
     TaskToolContext {
+        model: None,
         cwd: "/work/project".to_string(),
         session_id: session_id.to_string(),
         get_prompt_cache_safe_wait_seconds: None,
@@ -172,9 +173,7 @@ fn tool_deps() -> TaskToolDeps {
         start: None,
         omo_config: Default::default(),
         agents: Default::default(),
-        load_skills: Some(Arc::new(|_: &[String], _: &str| {
-            SkillResolution::default()
-        })),
+        load_skills: Some(Arc::new(|_: &[String], _: &str| SkillResolution::default())),
         resolve_ancestry: None,
     }
 }
@@ -205,10 +204,22 @@ fn given_a_real_manager_when_the_task_tool_executes_in_two_sessions_then_both_ca
     );
 
     let first = execute
-        .execute("spawn-A", &params("own work"), None, None, &ctx_for("session-A"))
+        .execute(
+            "spawn-A",
+            &params("own work"),
+            None,
+            None,
+            &ctx_for("session-A"),
+        )
         .expect("first spawn");
     let second = execute
-        .execute("spawn-B", &params("more work"), None, None, &ctx_for("session-B"))
+        .execute(
+            "spawn-B",
+            &params("more work"),
+            None,
+            None,
+            &ctx_for("session-B"),
+        )
         .expect("second spawn");
 
     assert_eq!(first.details.mode, TaskToolMode::Spawn);
