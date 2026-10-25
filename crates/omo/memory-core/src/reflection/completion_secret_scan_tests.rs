@@ -305,7 +305,7 @@ fn given_a_gitlink_when_scanned_then_it_is_refused_on_its_file_type_without_echo
             "--add",
             "--cacheinfo",
             "160000",
-            &head,
+            head.as_str(),
             "reference/token=abc123456",
         ],
     );

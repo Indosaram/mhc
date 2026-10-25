@@ -272,7 +272,7 @@ fn given_a_recorded_drop_when_the_tip_is_read_back_then_the_entries_round_trip_v
 #[test]
 fn given_a_tip_without_recorded_drops_when_read_back_then_nothing_is_reported() {
     let fixture = fixture(&[("reference/keep.md", GOOD)]);
-    write_files(&fixture.dir, &[("reference/keep.md", GOOD.replace("body", "edited"))]);
+    write_files(&fixture.dir, &[("reference/keep.md", GOOD.replace("body", "edited").as_str())]);
     let tip = commit_all(fixture.exec.as_ref(), &fixture.dir, "edit");
 
     let read_back = read_dropped_trailers(fixture.exec.as_ref(), &fixture.dir, &fixture.base, &tip)
