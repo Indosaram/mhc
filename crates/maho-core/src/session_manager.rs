@@ -860,6 +860,7 @@ pub struct SessionManager {
     /// The mirror's last `full_entry_count - verbatim_from_count` entries are the history's own tail, in order.
     verbatim_from_count: usize,
     history_reductions: crate::session_history_reduce::HistoryReductions,
+    last_write_error: Option<String>,
 }
 
 impl SessionManager {
@@ -888,6 +889,7 @@ impl SessionManager {
             },
         );
         let manager = Self {
+            last_write_error: None,
             session_id: String::new(),
             session_file: None,
             session_dir: normalize_path(session_dir, &PathInputOptions::default()),
@@ -1649,6 +1651,7 @@ impl SessionManager {
             content.push('\n');
         }
         if let Err(error) = std::fs::write(&session_file, content) {
+            self.last_write_error = Some(error.to_string());
             crate::hidden_stdout_log::append_debug_note(&format!(
                 "cannot rewrite session {session_file}: {error}"
             ));
@@ -1691,6 +1694,7 @@ impl SessionManager {
         });
         if has_assistant {
             self.rewrite_file();
+            if let Some(error) = self.last_write_error.take() { return Err(std::io::Error::other(error)); }
             self.flushed = true;
         }
         Ok(())
@@ -1742,13 +1746,17 @@ impl SessionManager {
         // senpi's appendFileSync throws to the appending caller; the append_* surface here returns
         // the entry rather than a Result, so a failed write is reported instead of dropped.
         self.file_entries.push(entry);
+        self.last_write_error = None;
         if let Err(error) = self.persist_entry(self.file_entries.len() - 1) {
+            self.last_write_error = Some(error.to_string());
             crate::output_guard::maho_write_stderr(&format!(
                 "Failed to persist session entry to {}: {error}\n",
                 self.session_file.as_deref().unwrap_or_default()
             ));
         }
     }
+
+    pub fn take_write_error(&mut self) -> Option<String> { self.last_write_error.take() }
 
     pub fn append_entry_raw(&mut self, entry: Value) {
         self.append_entry(entry);
