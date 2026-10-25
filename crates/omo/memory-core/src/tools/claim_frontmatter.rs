@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::memfs::frontmatter::{
+use serde::{Deserialize, Serialize};
+
+use super::memfs::{
     FrontmatterError, MemoryFrontmatter, ParsedMemoryFile, parse_memory_file, render_memory_file,
 };
 use crate::memfs::frontmatter_entries::{look_alike_frontmatter_keys, normalized_frontmatter_key};
@@ -13,17 +15,57 @@ pub const PROVENANCE_STRIPPED_TRAILER: &str = "Omo-Provenance-Stripped";
 
 const LEGACY_USER_PREFIX: &str = "user said ";
 
-/// Claim receipt representing provenance authority.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Only the harness may supply this receipt; note contents never establish a claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "lowercase", deny_unknown_fields)]
 pub enum ClaimReceipt {
     User {
+        #[serde(rename = "userQuote")]
         user_quote: String,
         approves: String,
     },
     Agent {
+        #[serde(default, skip_serializing_if = "is_false")]
         downgraded: bool,
     },
     Inferred,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn single_line(text: &str) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.encode_utf16().count() > 300 {
+        format!(
+            "{}...",
+            String::from_utf16_lossy(&line.encode_utf16().take(300).collect::<Vec<_>>())
+        )
+    } else {
+        line
+    }
+}
+
+pub fn claim_receipt_trailers(receipt: &ClaimReceipt) -> Vec<String> {
+    match receipt {
+        ClaimReceipt::User {
+            user_quote,
+            approves,
+        } => vec![
+            "Omo-Claim-Source: user".into(),
+            format!("Omo-User-Quote: {}", single_line(user_quote)),
+            format!("Omo-Claim-Approves: {approves}"),
+        ],
+        ClaimReceipt::Agent { downgraded } => {
+            let mut result = vec!["Omo-Claim-Source: agent".into()];
+            if *downgraded {
+                result.push("Omo-Claim-Downgraded: unverified-user-quote".into());
+            }
+            result
+        }
+        ClaimReceipt::Inferred => vec!["Omo-Claim-Source: inferred".into()],
+    }
 }
 
 /// Render a claim receipt into its frontmatter text description.
@@ -33,7 +75,7 @@ pub fn render_claim_receipt(receipt: &ClaimReceipt) -> String {
             user_quote,
             approves,
         } => {
-            let quote = user_quote.replace(['\r', '\n'], " ").trim().to_string();
+            let quote = single_line(user_quote);
             format!("user replied \"{quote}\" to proposal {approves}; a record, not the user's approval")
         }
         ClaimReceipt::Agent { downgraded: true } => {
@@ -98,8 +140,13 @@ pub fn restamp_content(
     claim: Option<&ClaimReceipt>,
 ) -> Result<String, FrontmatterError> {
     let parsed = parse_memory_file(next)?;
-    let prev_parsed = previous.and_then(|p| parse_memory_file(p).ok());
-    let stamped = stamp_receipt(prev_parsed.as_ref(), &parsed.frontmatter, &parsed.body, claim);
+    let prev_parsed = previous.map(parse_memory_file).transpose()?;
+    let stamped = stamp_receipt(
+        prev_parsed.as_ref(),
+        &parsed.frontmatter,
+        &parsed.body,
+        claim,
+    );
     let raw_look_alike = !look_alike_frontmatter_keys(next, PROVENANCE_FRONTMATTER_KEY).is_empty();
     let unchanged = !raw_look_alike && stamped.extra == parsed.frontmatter.extra;
     if unchanged {
@@ -142,7 +189,10 @@ pub fn has_legacy_user_header(content: Option<&str>) -> bool {
 
 /// Read the string provenance header value if present.
 pub fn read_header(frontmatter: &MemoryFrontmatter) -> Option<String> {
-    let raw = frontmatter.extra.as_ref()?.get(PROVENANCE_FRONTMATTER_KEY)?;
+    let raw = frontmatter
+        .extra
+        .as_ref()?
+        .get(PROVENANCE_FRONTMATTER_KEY)?;
     if let Ok(serde_json::Value::String(s)) = serde_json::from_str(raw) {
         Some(s)
     } else {
@@ -209,3 +259,7 @@ fn claim_header(prior: Option<&str>, rendered: &str) -> String {
         MIXED_PROVENANCE.to_string()
     }
 }
+
+#[cfg(test)]
+#[path = "claim_frontmatter_tests.rs"]
+mod tests;

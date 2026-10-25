@@ -5,21 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::support::paths::normalize;
 
-/// Frontmatter metadata parsed from a memory markdown file.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct MemoryFrontmatter {
-    pub description: String,
-    pub read_only: Option<String>,
-    pub kind: Option<String>,
-    pub aliases: Option<Vec<String>>,
-}
-
-/// Parsed memory file containing structured frontmatter and markdown body text.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParsedMemoryFile {
-    pub frontmatter: MemoryFrontmatter,
-    pub body: String,
-}
+pub use crate::memfs::frontmatter::{MemoryFrontmatter, ParsedMemoryFile};
 
 /// Error returned when frontmatter is missing, malformed, or missing required fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,127 +33,36 @@ impl std::error::Error for MemoryPathError {}
 
 /// Parses YAML frontmatter and body from markdown content.
 pub fn parse_memory_file(content: &str) -> Result<ParsedMemoryFile, FrontmatterError> {
-    let normalized = content.replace("\r\n", "\n");
-    if !normalized.starts_with("---\n") {
-        return Err(FrontmatterError(
-            "frontmatter: target file is missing required frontmatter".to_string(),
-        ));
-    }
-
-    let rest = &normalized[4..];
-    let Some(end_idx) = rest.find("\n---\n").or_else(|| {
-        if rest.ends_with("\n---") {
-            Some(rest.len() - 4)
-        } else {
-            None
-        }
-    }) else {
-        return Err(FrontmatterError(
-            "frontmatter: target file is missing required frontmatter".to_string(),
-        ));
-    };
-
-    let frontmatter_text = &rest[..end_idx];
-    let body_start = if rest[end_idx..].starts_with("\n---\n") {
-        end_idx + 5
-    } else {
-        end_idx + 4
-    };
-    let body = rest[body_start..].to_string();
-
-    let mut description: Option<String> = None;
-    let mut read_only: Option<String> = None;
-    let mut kind: Option<String> = None;
-    let mut aliases: Option<Vec<String>> = None;
-
-    for line in frontmatter_text.lines() {
-        let Some((key, val)) = line.split_once(':') else {
-            continue;
-        };
-        let key = key.trim();
-        let val = val.trim();
-
-        if key == "description" {
-            description = Some(val.to_string());
-        } else if key == "read_only" {
-            read_only = Some(val.to_string());
-        } else if key == "kind" {
-            kind = Some(val.to_string());
-        } else if key == "aliases" {
-            if !val.starts_with('[') {
-                return Err(FrontmatterError(format!(
-                    "frontmatter: 'aliases' must be a JSON array of non-empty strings (line: {line})"
-                )));
-            }
-            let parsed: Vec<String> = serde_json::from_str(val).map_err(|_| {
-                FrontmatterError(format!(
-                    "frontmatter: 'aliases' is not valid JSON (line: {line})"
-                ))
-            })?;
-            if parsed.iter().any(|s| s.trim().is_empty()) {
-                return Err(FrontmatterError(format!(
-                    "frontmatter: 'aliases' array must contain only non-empty strings (line: {line})"
-                )));
-            }
-            aliases = Some(parsed);
-        }
-    }
-
-    let desc = description
-        .filter(|d| !d.trim().is_empty())
-        .ok_or_else(|| {
-            FrontmatterError(
-                "frontmatter: target file frontmatter is missing 'description'".to_string(),
-            )
-        })?;
-
+    let parsed = crate::memfs::frontmatter::parse_memory_file(content)
+        .map_err(|e| FrontmatterError(e.message))?;
     Ok(ParsedMemoryFile {
         frontmatter: MemoryFrontmatter {
-            description: desc,
-            read_only,
-            kind,
-            aliases,
+            description: parsed.frontmatter.description,
+            read_only: parsed.frontmatter.read_only,
+            kind: parsed.frontmatter.kind,
+            aliases: parsed.frontmatter.aliases,
+            extra: parsed.frontmatter.extra,
         },
-        body,
+        body: parsed.body,
     })
 }
 
-/// Renders a memory file from frontmatter and body with sanitized single-line description.
+/// Render through the shared parser so every writer preserves the same metadata.
 pub fn render_memory_file(
     frontmatter: &MemoryFrontmatter,
     body: &str,
 ) -> Result<String, FrontmatterError> {
-    let desc = frontmatter.description.trim();
-    if desc.is_empty() {
-        return Err(FrontmatterError(
-            "frontmatter: 'description' must not be empty".to_string(),
-        ));
-    }
-
-    let sanitized_desc = desc.replace(['\r', '\n'], " ");
-    let mut lines = vec![
-        "---".to_string(),
-        format!("description: {}", sanitized_desc.trim()),
-    ];
-
-    if let Some(ro) = &frontmatter.read_only {
-        lines.push(format!("read_only: {ro}"));
-    }
-    if let Some(k) = &frontmatter.kind {
-        lines.push(format!("kind: {}", k.replace(['\r', '\n'], " ").trim()));
-    }
-    if let Some(a) = &frontmatter.aliases {
-        let json = serde_json::to_string(a).unwrap_or_else(|_| "[]".to_string());
-        lines.push(format!("aliases: {json}"));
-    }
-    lines.push("---".to_string());
-
-    let header = lines.join("\n");
-    if body.is_empty() {
-        Ok(format!("{header}\n"))
-    } else {
-        Ok(format!("{header}\n{body}"))
-    }
+    crate::memfs::frontmatter::render_memory_file(
+        &crate::memfs::frontmatter::MemoryFrontmatter {
+            description: frontmatter.description.clone(),
+            read_only: frontmatter.read_only.clone(),
+            kind: frontmatter.kind.clone(),
+            aliases: frontmatter.aliases.clone(),
+            extra: frontmatter.extra.clone(),
+        },
+        body,
+    )
+    .map_err(|e| FrontmatterError(e.message))
 }
 
 /// Options controlling memory path confinement checks.

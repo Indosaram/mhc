@@ -203,6 +203,7 @@ fn test_commits_omo_trailers_when_provenance_is_present() {
             provenance: Some(MemoryToolProvenanceInput {
                 session_id: "session-1".to_string(),
                 user_turns: 3,
+                claim: None,
             }),
             ..Default::default()
         },
@@ -275,7 +276,10 @@ fn test_delete_directory_reports_each_tracked_file() {
     let (_temp, repo) = fixture();
     let author = test_author();
 
-    for (path, text) in [("system/persona.md", "persona"), ("system/other.md", "other")] {
+    for (path, text) in [
+        ("system/persona.md", "persona"),
+        ("system/other.md", "other"),
+    ] {
         run_memory_tool(
             &repo,
             &author,
