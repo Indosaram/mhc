@@ -5,12 +5,14 @@ use std::collections::HashSet;
 use crate::facts::person_routing::normalize_observation_text;
 use crate::support::sha256::sha256_hex;
 
+use super::events::parse_agreement_event_line;
 use super::types::{AgreementAuthor, AgreementItem, AgreementScope, AgreementStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgreementsLedgerParse {
     pub items: Vec<AgreementItem>,
     pub diagnostics: Vec<String>,
+    pub receipts: Vec<String>,
     pub unparsed: Vec<String>,
 }
 
@@ -74,10 +76,17 @@ pub fn parse_agreements_ledger(body: &str) -> AgreementsLedgerParse {
     let mut items: Vec<AgreementItem> = Vec::new();
     let mut diagnostics = Vec::new();
     let mut unparsed = Vec::new();
+    let mut receipts = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for (index, raw) in body.split('\n').enumerate() {
         let line = raw.trim();
         if line.is_empty() {
+            continue;
+        }
+        if let Some(receipt) = parse_agreement_event_line(line) {
+            if !receipts.contains(&receipt) {
+                receipts.push(receipt);
+            }
             continue;
         }
         let parsed = split_line(line).filter(|found| !found.text.trim().is_empty());
@@ -111,6 +120,7 @@ pub fn parse_agreements_ledger(body: &str) -> AgreementsLedgerParse {
     AgreementsLedgerParse {
         items,
         diagnostics,
+        receipts,
         unparsed,
     }
 }
