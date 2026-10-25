@@ -372,6 +372,31 @@ fn spawn_and_capture(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
+    let activity = super::git_activity_lock::hold_git_activity_shared(&options.cwd)?;
+    #[cfg(unix)]
+    if let Some(ref hold) = activity {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let fd = hold.0.as_raw_fd();
+        // SAFETY: only async-signal-safe descriptor operations run between fork and exec.
+        #[allow(unsafe_code)]
+        unsafe {
+            cmd.pre_exec(move || {
+                if fd != 3 && libc::dup2(fd, 3) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::fcntl(3, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
     let mut child = cmd.spawn()?;
 
     let mut stdout_handle = child.stdout.take();
@@ -380,28 +405,53 @@ fn spawn_and_capture(
     let (out_tx, out_rx) = mpsc::channel();
     let (err_tx, err_rx) = mpsc::channel();
 
+    let stdout_buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stderr_buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let out_buffer = Arc::clone(&stdout_buffer);
+    let err_buffer = Arc::clone(&stderr_buffer);
     let out_thread = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
         if let Some(mut stream) = stdout_handle.take() {
-            let _ = stream.read_to_end(&mut bytes);
+            let mut chunk = [0; 8192];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(size) => out_buffer
+                        .lock()
+                        .expect("stdout buffer")
+                        .extend_from_slice(&chunk[..size]),
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
         }
-        let _ = out_tx.send(bytes);
+        let _ = out_tx.send(());
     });
 
     let err_thread = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
         if let Some(mut stream) = stderr_handle.take() {
-            let _ = stream.read_to_end(&mut bytes);
+            let mut chunk = [0; 8192];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(size) => err_buffer
+                        .lock()
+                        .expect("stderr buffer")
+                        .extend_from_slice(&chunk[..size]),
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
         }
-        let _ = err_tx.send(bytes);
+        let _ = err_tx.send(());
     });
 
     // Write stdin from its own thread after the readers are running so a child that fills its
     // stdout pipe before draining stdin (e.g. `cat-file --batch`) cannot deadlock us.
+    let (stdin_tx, stdin_rx) = mpsc::channel();
     let stdin_thread = match (options.stdin.clone(), child.stdin.take()) {
         (Some(stdin_bytes), Some(mut stdin)) => Some(std::thread::spawn(move || {
-            let _ = stdin.write_all(&stdin_bytes);
-            let _ = stdin.flush();
+            let result = stdin.write_all(&stdin_bytes).and_then(|()| stdin.flush());
+            let _ = stdin_tx.send(result);
         })),
         _ => None,
     };
@@ -417,11 +467,23 @@ fn spawn_and_capture(
                 Some(status) => break status,
                 None => {
                     if Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        if let Some(handle) = stdin_thread {
-                            let _ = handle.join();
+                        #[cfg(unix)]
+                        {
+                            // SAFETY: child.id() is the live child owned by this function.
+                            #[allow(unsafe_code)]
+                            unsafe {
+                                libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+                            }
+                            let grace = Instant::now() + Duration::from_secs(10);
+                            while child.try_wait()?.is_none() && Instant::now() < grace {
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
                         }
+                        if child.try_wait()?.is_none() {
+                            child.kill()?;
+                        }
+                        child.wait()?;
+                        drop(stdin_thread);
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::TimedOut,
                             format!("git {} timed out after {timeout_ms}ms", argv.join(" ")),
@@ -434,14 +496,29 @@ fn spawn_and_capture(
         }
     };
 
-    if let Some(handle) = stdin_thread {
-        let _ = handle.join();
-    }
-    let _ = out_thread.join();
-    let _ = err_thread.join();
+    // EOF events have a common bound: descendants may inherit the pipes indefinitely.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let stdin_error = if stdin_thread.is_some() {
+        match stdin_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(Err(error)) if error.kind() != std::io::ErrorKind::BrokenPipe => {
+                Some(error.to_string())
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let _ = out_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+    let _ = err_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+    let stdout_bytes = stdout_buffer.lock().expect("stdout buffer").clone();
+    let stderr_bytes = stderr_buffer.lock().expect("stderr buffer").clone();
+    drop(out_thread);
+    drop(err_thread);
 
-    let stdout_bytes = out_rx.recv().unwrap_or_default();
-    let stderr_bytes = err_rx.recv().unwrap_or_default();
+    let mut stderr_bytes = stderr_bytes;
+    if let Some(error) = stdin_error {
+        stderr_bytes.extend_from_slice(format!("\nstdin: {error}").as_bytes());
+    }
 
     Ok((status.code().unwrap_or(1), stdout_bytes, stderr_bytes))
 }
