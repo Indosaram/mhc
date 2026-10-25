@@ -83,3 +83,43 @@ mod tests {
         assert_eq!(note.interrupted_tools.unwrap(), vec!["write"]);
     }
 }
+
+#[cfg(test)]
+mod upstream_cases {
+    use super::*;
+    #[test]
+    fn reset_and_selector_matrix() {
+        for (message, expected) in [
+            ("(resets 3:20am)", Some("3:20am")),
+            ("resets in 2 hours; retry", Some("in 2 hours")),
+            ("reset at 3pm (Asia/Seoul)", Some("at 3pm (Asia/Seoul)")),
+            ("resets )", None),
+            ("no reset", None),
+        ] {
+            assert_eq!(
+                build(
+                    "p/m".into(),
+                    ParentModelFallbackReason::Error,
+                    Some(message),
+                    &[],
+                    "now".into()
+                )
+                .resets
+                .as_deref(),
+                expected
+            );
+        }
+        assert_eq!(base_selector("account:one/model:high"), "account:one/model");
+        let detail = build(
+            "p/m".into(),
+            ParentModelFallbackReason::Error,
+            Some(&"😀".repeat(110)),
+            &[],
+            "now".into(),
+        )
+        .detail
+        .unwrap();
+        assert!(detail.encode_utf16().count() <= 200);
+        assert!(detail.ends_with('…'));
+    }
+}
