@@ -280,6 +280,19 @@ pub fn create_rpc_managed_runner<R: RpcRunnerLike + 'static>(runner: R) -> Arc<d
 /// spec onto the child's command line.
 pub fn to_rpc_spec(spec: &ManagedStartSpec) -> RpcRunnerSpec {
     RpcRunnerSpec {
+        fallback_models: spec.fallback_models.as_ref().map(|models| {
+            models
+                .iter()
+                .map(|model| {
+                    let base = format!("{}/{}", model.provider, model.model_id);
+                    model
+                        .reasoning
+                        .as_ref()
+                        .or(model.variant.as_ref())
+                        .map_or(base.clone(), |reasoning| format!("{base}:{reasoning}"))
+                })
+                .collect()
+        }),
         traceparent: spec.traceparent.clone(),
         task_id: spec.task_id.clone(),
         cwd: spec.cwd.clone(),
