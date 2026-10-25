@@ -14,6 +14,8 @@ fn failure(error: impl std::fmt::Display) -> HostError {
         message: error.to_string(),
     }
 }
+pub type TurnState = Arc<(Mutex<(u64, Option<RunnerOutcome>)>, Condvar)>;
+
 pub struct LiveClient {
     pub client: Arc<maho_rpc::rpc_client::RpcClient>,
     pub runtime: tokio::runtime::Handle,
@@ -24,8 +26,8 @@ impl LiveClient {
     pub fn new(
         client: Arc<maho_rpc::rpc_client::RpcClient>,
         runtime: tokio::runtime::Handle,
+        turn: TurnState,
     ) -> Arc<Self> {
-        let turn = Arc::new((Mutex::new((0, None)), Condvar::new()));
         let observed = turn.clone();
         let subscription = client.on_event(Arc::new(move |event| {
             let mut state = observed.0.lock().unwrap();

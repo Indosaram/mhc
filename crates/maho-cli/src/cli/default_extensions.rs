@@ -784,7 +784,7 @@ impl Extension for Task {
                     // omo.json `exclude_models` reaches every in-process and process child from here.
                     exclude_models: config["exclude_models"].as_array().map(|patterns| patterns.iter().filter_map(|pattern| pattern.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
                 });
-                let host_assembly = super::task_host::HostAssembly { runtime: executor.clone(), agent_dir: ctx.agent_dir.clone(), parent: parent.weak_accessor() };
+                let host_assembly = super::task_host::HostAssembly { turns: Default::default(), runtime: executor.clone(), agent_dir: ctx.agent_dir.clone(), parent: parent.weak_accessor() };
                 runners.process = super::task_host::select_runner(host_assembly, &config, runners.process);
                 let registry: Arc<dyn senpi_task::host::SenpiModelRegistry> = Arc::new(Registry(ctx.model_registry.clone()));
                 let engine = {
