@@ -56,10 +56,13 @@ fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     }
     #[cfg(windows)]
     {
+        // Volume serial and file index are unstable in std; creation and last-write
+        // FILETIMEs plus size identify a replaced entry on the stable API.
         use std::os::windows::fs::MetadataExt;
         b.is_file()
-            && a.volume_serial_number() == b.volume_serial_number()
-            && a.file_index() == b.file_index()
+            && a.file_size() == b.file_size()
+            && a.creation_time() == b.creation_time()
+            && a.last_write_time() == b.last_write_time()
     }
     #[cfg(not(any(unix, windows)))]
     {

@@ -397,6 +397,9 @@ fn spawn_and_capture(
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
     }
+    // The shared activity hold must outlive spawn; only Unix also hands it to the child.
+    #[cfg(not(unix))]
+    let _ = &activity;
     let mut child = cmd.spawn()?;
 
     let mut stdout_handle = child.stdout.take();
