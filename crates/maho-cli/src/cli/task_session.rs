@@ -1312,12 +1312,20 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
                                 },
                             )
                             .await;
-                        if let Err(error) = result {
-                            let _ =
-                                prompt_failed.try_send(senpi_task::runners::RunnerOutcome::error(
-                                    senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
-                                    error,
-                                ));
+                        match result {
+                            Err(error) => {
+                                let _ = prompt_failed.try_send(
+                                    senpi_task::runners::RunnerOutcome::error(
+                                        senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
+                                        error,
+                                    ),
+                                );
+                            }
+                            Ok(maho_core::agent_session::PromptDisposition::Handled) => {
+                                let _ = prompt_failed
+                                    .try_send(senpi_task::runners::RunnerOutcome::completed(""));
+                            }
+                            _ => {}
                         }
                         let _ = admitted.try_send(());
                     });
