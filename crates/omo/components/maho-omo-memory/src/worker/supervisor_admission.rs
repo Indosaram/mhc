@@ -8,14 +8,14 @@
 use std::path::{Path, PathBuf};
 
 use memory_core::identity::layout::resolve_memory_root;
-use memory_core::locks::{ReflectionRunLease, ReflectionRunLeaseOptions, acquire_reflection_run_lease};
+use memory_core::locks::{
+    ReflectionRunLease, ReflectionRunLeaseOptions, acquire_reflection_run_lease,
+};
 
 use super::run_artifacts::{
     RunLaunchManifest, read_run_json, update_run_ledger, write_run_json_atomic,
 };
-use super::supervisor_process_identity::{
-    get_supervisor_process_start, read_supervisor_clock_now,
-};
+use super::supervisor_process_identity::{get_supervisor_process_start, read_supervisor_clock_now};
 
 fn wall_now() -> f64 {
     chrono::Utc::now().timestamp_millis() as f64
@@ -50,7 +50,8 @@ pub fn admit_supervisor_with_clock(
 ) -> Result<SupervisorAdmission, String> {
     let launch_path = run_dir.join("launch.json");
     let ledger_path = run_dir.join("ledger.json");
-    let initial: RunLaunchManifest = read_run_json(&launch_path).map_err(|error| error.to_string())?;
+    let initial: RunLaunchManifest =
+        read_run_json(&launch_path).map_err(|error| error.to_string())?;
     let queued_at = initial.queued_at.unwrap_or_else(now);
     update_run_ledger(
         &ledger_path,
@@ -102,7 +103,10 @@ pub fn admit_supervisor_with_clock(
             ]),
         )
         .map_err(|error| error.to_string())?;
-        Ok(SupervisorAdmission { manifest, lease })
+        Ok(SupervisorAdmission {
+            manifest,
+            lease: lease.clone(),
+        })
     })();
     if admitted.is_err() {
         lease.release();
@@ -176,9 +180,8 @@ mod tests {
         // from inside that read proves the order without waiting on a second process.
         let observed = std::cell::RefCell::new(None);
         let admission = admit_supervisor_with_clock(root.path(), &|| {
-            *observed.borrow_mut() = Some(
-                read_run_json::<serde_json::Value>(&root.path().join("ledger.json")).unwrap(),
-            );
+            *observed.borrow_mut() =
+                Some(read_run_json::<serde_json::Value>(&root.path().join("ledger.json")).unwrap());
             2_000.0
         })
         .unwrap();
@@ -219,10 +222,9 @@ mod tests {
             1,
         )
         .unwrap();
-        let record = memory_core::locks::parse_lock_record(
-            &std::fs::read_to_string(&lock_path).unwrap(),
-        )
-        .unwrap();
+        let record =
+            memory_core::locks::parse_lock_record(&std::fs::read_to_string(&lock_path).unwrap())
+                .unwrap();
         assert_eq!(record.pid, std::process::id());
         assert!(admission.lease.release());
     }
