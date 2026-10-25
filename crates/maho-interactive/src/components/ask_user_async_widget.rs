@@ -12,8 +12,8 @@ use crate::theme::{Theme, ThemeColor};
 use super::ask_user_answer_key::{ask_user_answer_key_hint, key_text};
 use super::ask_user_countdown::AskUserCountdown;
 use super::ask_user_question_state::{
-    format_countdown_label, QuestionAnswer, QuestionDraft, QuestionRequest, QuestionResponse,
-    QuestionStatus,
+    QuestionAnswer, QuestionDraft, QuestionRequest, QuestionResponse, QuestionStatus,
+    format_countdown_label,
 };
 
 pub const ASK_USER_WIDGET_KEY: &str = "ask-user";
@@ -27,7 +27,10 @@ fn has_answer(answer: Option<&QuestionAnswer>) -> bool {
     if !answer.selected.is_empty() {
         return true;
     }
-    answer.text.as_ref().is_some_and(|text| !text.trim().is_empty())
+    answer
+        .text
+        .as_ref()
+        .is_some_and(|text| !text.trim().is_empty())
 }
 
 pub fn unanswered_ids(request: &QuestionRequest, draft: &QuestionDraft) -> Vec<String> {
@@ -51,6 +54,7 @@ pub fn build_comment_response(
         comment: Some(comment.to_string()),
         unanswered: unanswered_ids(request, draft),
         auto_resolved_after_ms: None,
+        cancel_origin: None,
     }
 }
 
@@ -71,11 +75,15 @@ pub fn build_timed_out_response(
         comment,
         unanswered: unanswered_ids(request, draft),
         auto_resolved_after_ms: Some(auto_resolved_after_ms),
+        cancel_origin: None,
     }
 }
 
 /// senpi's `cancelled()` in `showAsyncQuestion`: the draft's answers with every unanswered id.
-pub fn build_cancelled_response(request: &QuestionRequest, draft: &QuestionDraft) -> QuestionResponse {
+pub fn build_cancelled_response(
+    request: &QuestionRequest,
+    draft: &QuestionDraft,
+) -> QuestionResponse {
     QuestionResponse {
         status: QuestionStatus::Cancelled,
         answers: draft.answers.clone(),
@@ -83,6 +91,25 @@ pub fn build_cancelled_response(request: &QuestionRequest, draft: &QuestionDraft
         comment: None,
         unanswered: unanswered_ids(request, draft),
         auto_resolved_after_ms: None,
+        cancel_origin: Some("user".to_string()),
+    }
+}
+
+pub fn selection_bypass_hint(term_program: &str) -> &'static str {
+    selection_bypass_hint_for_platform(term_program, std::env::consts::OS)
+}
+
+pub fn selection_bypass_hint_for_platform(term_program: &str, platform: &str) -> &'static str {
+    if term_program == "iTerm.app" {
+        "option+drag"
+    } else if term_program == "Apple_Terminal" {
+        "cmd+r (toggle mouse reporting)"
+    } else if term_program == "vscode" && platform == "darwin" {
+        "option+drag (with terminal.integrated.macOptionClickForcesSelection)"
+    } else if term_program == "tmux" {
+        "shift+drag (option+drag on iTerm2)"
+    } else {
+        "shift+drag"
     }
 }
 
@@ -143,13 +170,22 @@ pub fn render_options_line(
     if remaining > 0 {
         parts.push(theme.fg(
             ThemeColor::Muted,
-            &format!("+{remaining} more question{}", if remaining == 1 { "" } else { "s" }),
+            &format!(
+                "+{remaining} more question{}",
+                if remaining == 1 { "" } else { "s" }
+            ),
         ));
     }
-    format!("{INDENT}{}", parts.join(&theme.fg(ThemeColor::Muted, " · ")))
+    format!(
+        "{INDENT}{}",
+        parts.join(&theme.fg(ThemeColor::Muted, " · "))
+    )
 }
 
-pub fn render_answer_hint(theme: &Theme, env: &std::collections::HashMap<String, String>) -> String {
+pub fn render_answer_hint(
+    theme: &Theme,
+    env: &std::collections::HashMap<String, String>,
+) -> String {
     let shortcut = ask_user_answer_key_hint(env);
     let keys = if shortcut.is_empty() {
         "enter".to_string()
@@ -157,7 +193,11 @@ pub fn render_answer_hint(theme: &Theme, env: &std::collections::HashMap<String,
         format!("enter or {shortcut}")
     };
     [
-        format!("{}{}", theme.fg(ThemeColor::Dim, &keys), theme.fg(ThemeColor::Muted, " to answer")),
+        format!(
+            "{}{}",
+            theme.fg(ThemeColor::Dim, &keys),
+            theme.fg(ThemeColor::Muted, " to answer")
+        ),
         theme.fg(ThemeColor::Dim, "/answer"),
         theme.fg(ThemeColor::Muted, "or just type your reply"),
     ]
@@ -237,7 +277,11 @@ impl AskUserAsyncWidget {
         };
         if options.timeout_ms > 0 || widget.get_deadline_at_ms.is_some() {
             let external = widget.get_deadline_at_ms.as_ref().map(|f| f());
-            widget.countdown = Some(AskUserCountdown::new(options.timeout_ms, options.now_ms, external));
+            widget.countdown = Some(AskUserCountdown::new(
+                options.timeout_ms,
+                options.now_ms,
+                external,
+            ));
         }
         widget.tick(options.now_ms);
         widget
@@ -321,7 +365,12 @@ impl Component for AskUserAsyncWidget {
             &mut hits,
             &mut lines,
             width,
-            &render_status_line(&theme, pending.len(), &self.countdown_label, self.pending_count),
+            &render_status_line(
+                &theme,
+                pending.len(),
+                &self.countdown_label,
+                self.pending_count,
+            ),
             WidgetAction::Expand,
         );
         if let Some(shown) = shown {
@@ -347,7 +396,10 @@ impl Component for AskUserAsyncWidget {
             labels.push("own answer…".to_string());
             let mut line = String::new();
             for (index, label) in labels.iter().enumerate() {
-                let button = format!("[ {} ]", truncate_to_width(label, width.saturating_sub(4), "…", false));
+                let button = format!(
+                    "[ {} ]",
+                    truncate_to_width(label, width.saturating_sub(4), "…", false)
+                );
                 if !line.is_empty() && visible_width(&line) + 2 + visible_width(&button) > width {
                     lines.push(line);
                     line = String::new();
@@ -404,24 +456,25 @@ impl Component for AskUserAsyncWidget {
             );
         }
         if self.mouse_capture_active {
-            let term_program = self.env.get("TERM_PROGRAM").map(String::as_str).unwrap_or("");
-            let bypass = if ["iTerm.app", "Apple_Terminal"].contains(&term_program) {
-                "option+drag"
-            } else {
-                "shift+drag"
-            };
+            let term_program = self
+                .env
+                .get("TERM_PROGRAM")
+                .map(String::as_str)
+                .unwrap_or("");
+            let bypass = selection_bypass_hint(term_program);
             lines.extend(
                 Text::with_padding(
-                    theme.fg(ThemeColor::Muted, &format!("click an option · {bypass} to select text")),
+                    theme.fg(
+                        ThemeColor::Muted,
+                        &format!("click an option · {bypass} to select text"),
+                    ),
                     0,
                     0,
                 )
                 .render(width),
             );
         }
-        lines.extend(
-            Text::with_padding(render_answer_hint(&theme, &self.env), 0, 0).render(width),
-        );
+        lines.extend(Text::with_padding(render_answer_hint(&theme, &self.env), 0, 0).render(width));
         self.hits = hits;
         lines
     }
@@ -458,5 +511,42 @@ impl Component for AskUserAsyncWidget {
         if let Some(countdown) = &mut self.countdown {
             countdown.dispose();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_bypass_hints_match_terminal_and_platform() {
+        assert_eq!(
+            selection_bypass_hint_for_platform("Apple_Terminal", "darwin"),
+            "cmd+r (toggle mouse reporting)"
+        );
+        assert_eq!(
+            selection_bypass_hint_for_platform("iTerm.app", "darwin"),
+            "option+drag"
+        );
+        assert_eq!(
+            selection_bypass_hint_for_platform("vscode", "darwin"),
+            "option+drag (with terminal.integrated.macOptionClickForcesSelection)"
+        );
+        assert_eq!(
+            selection_bypass_hint_for_platform("vscode", "linux"),
+            "shift+drag"
+        );
+        assert_eq!(
+            selection_bypass_hint_for_platform("tmux", "linux"),
+            "shift+drag (option+drag on iTerm2)"
+        );
+        assert_eq!(
+            selection_bypass_hint_for_platform("alacritty", "linux"),
+            "shift+drag"
+        );
+        assert_eq!(
+            selection_bypass_hint_for_platform("", "linux"),
+            "shift+drag"
+        );
     }
 }

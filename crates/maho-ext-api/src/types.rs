@@ -1827,14 +1827,84 @@ pub struct QuestionAnswer {
     pub selected: Vec<String>,
     pub text: Option<String>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuestionCancelOrigin {
+    User,
+    UiFailure,
+    TurnAbort,
+    SessionClosed,
+    AskUserDisabled,
+}
+
+impl QuestionCancelOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::UiFailure => "ui_failure",
+            Self::TurnAbort => "turn_abort",
+            Self::SessionClosed => "session_closed",
+            Self::AskUserDisabled => "ask_user_disabled",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuestionResolvedBy {
+    LocalUi,
+    RpcConnection,
+    ControlEndpoint,
+}
+
+impl QuestionResolvedBy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalUi => "local_ui",
+            Self::RpcConnection => "rpc_connection",
+            Self::ControlEndpoint => "control_endpoint",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct QuestionResponse {
     pub status: QuestionStatus,
     pub answers: BTreeMap<String, QuestionAnswer>,
     pub comment: Option<String>,
     pub unanswered: Vec<String>,
     pub auto_resolved_after_ms: Option<u64>,
+    pub cancel_origin: Option<QuestionCancelOrigin>,
+    pub resolved_by: Option<QuestionResolvedBy>,
 }
+
+pub const CANCELLED_BY_USER: &str = "The user cancelled the question after answering part of it.";
+pub const CANCELLED_AFTER_ANSWERS: &str =
+    "The question was cancelled after part of it was answered.";
+
+pub fn is_cancelled_with_answers_line(line: &str) -> bool {
+    line == CANCELLED_BY_USER || line == CANCELLED_AFTER_ANSWERS
+}
+
+pub fn shows_partial_answers(response: &QuestionResponse) -> bool {
+    if response.status != QuestionStatus::Cancelled {
+        return false;
+    }
+    if !matches!(
+        response.cancel_origin,
+        Some(QuestionCancelOrigin::User | QuestionCancelOrigin::UiFailure)
+    ) {
+        return false;
+    }
+    response.answers.values().any(|answer| {
+        !answer.selected.is_empty()
+            || answer
+                .text
+                .as_ref()
+                .is_some_and(|text| !text.trim().is_empty())
+    })
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct QuestionDraft {
     pub answers: Option<BTreeMap<String, QuestionAnswer>>,
@@ -1912,6 +1982,7 @@ pub trait ExtensionUiActions: Send + Sync {
     fn set_theme(&self, theme: ThemeSelection) -> SetThemeResult;
     fn get_tools_expanded(&self) -> bool;
     fn set_tools_expanded(&self, expanded: bool);
+    fn set_subagent_cost(&self, _cost_usd: Option<f64>) {}
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotificationType {
@@ -1945,6 +2016,9 @@ pub trait ReadonlyFooterDataProvider {
     fn get_git_branch(&self) -> Option<String>;
     fn get_extension_statuses(&self) -> BTreeMap<String, String>;
     fn get_available_provider_count(&self) -> usize;
+    fn get_subagent_cost(&self) -> Option<f64> {
+        None
+    }
     fn on_branch_change(&self, callback: Arc<dyn Fn() + Send + Sync>) -> UiUnsubscribe;
 }
 pub type TuiComponentFactory =
@@ -2077,6 +2151,8 @@ pub trait ExtensionUi: Send + Sync {
                         .map(|question| question.id)
                         .collect(),
                     auto_resolved_after_ms: None,
+                    cancel_origin: None,
+                    resolved_by: None,
                 })
             }),
         }
@@ -6846,6 +6922,23 @@ pub enum AgentSessionEvent {
     BashExecutionUpdate {
         id: Option<String>,
         delta: String,
+    },
+    SessionPaused {
+        pause_seq: u64,
+        kind: String,
+        at: String,
+        notice_count: usize,
+        persisted: bool,
+    },
+    SessionResumed {
+        pause_seq: u64,
+        cause: String,
+        at: String,
+    },
+    SessionNotice {
+        notice_ids: Vec<String>,
+        notice_count: usize,
+        disposition: String,
     },
 }
 #[derive(Clone, Debug)]
