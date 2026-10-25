@@ -197,6 +197,7 @@ async fn start_engine(
     let log_logger = cfg.logger.clone();
     let log_identity = identity.clone();
     let opened = (cfg.open)(OpenDeviceSyncOptions {
+        on_status_change: None,
         repo_dir: paths.repo.clone(),
         state_dir: paths.runtime.join("sync-device"),
         locks_dir: paths.locks.clone(),
@@ -718,6 +719,7 @@ mod tests {
         // The lease file is gone: the same repo can be opened again.
         let never = Rc::new(Never);
         let reopened = open_device_sync(OpenDeviceSyncOptions {
+            on_status_change: None,
             repo_dir: paths.repo.clone(),
             state_dir: paths.runtime.join("sync-device"),
             locks_dir: paths.locks.clone(),

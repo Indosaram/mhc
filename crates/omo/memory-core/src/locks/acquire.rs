@@ -363,7 +363,15 @@ fn recover_dead_owner(
             return Ok(false);
         }
         match std::fs::remove_file(lock_path) {
-            Ok(()) => Ok(true),
+            Ok(()) => {
+                if let Some(previous) = current.record.filter(is_lock_owner_proven_dead) {
+                    PROVEN_DEAD_TAKEOVERS
+                        .lock()
+                        .expect("takeover proof lock")
+                        .insert(lock_path.to_owned(), (contender.nonce.clone(), previous));
+                }
+                Ok(true)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
             Err(e) => Err(e),
         }
@@ -582,3 +590,16 @@ where
 #[cfg(test)]
 #[path = "acquire_tests.rs"]
 mod tests;
+
+// Bound to the contender nonce, so releasing and reacquiring never reuses a dead-owner proof.
+static PROVEN_DEAD_TAKEOVERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, (String, LockRecord)>>,
+> = std::sync::LazyLock::new(Default::default);
+pub fn proven_dead_takeover_for(path: &Path, nonce: &str) -> Option<LockRecord> {
+    PROVEN_DEAD_TAKEOVERS
+        .lock()
+        .expect("takeover proof lock")
+        .get(path)
+        .filter(|(held, _)| held == nonce)
+        .map(|(_, owner)| owner.clone())
+}
