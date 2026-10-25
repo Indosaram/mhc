@@ -41,6 +41,9 @@ pub trait ManagedChildHandle: Send + Sync {
         None
     }
     fn steer(&self, text: &str) -> Result<(), HostError>;
+    fn start_initial_turn(&self, _text: &str) -> Option<crate::pause::ports::ResumedChildTurn> {
+        None
+    }
     fn follow_up(&self, text: &str) -> Result<(), HostError>;
     fn rebind_workpool_identity(
         &self,
