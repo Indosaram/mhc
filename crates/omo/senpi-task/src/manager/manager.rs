@@ -2562,6 +2562,30 @@ impl TaskManager {
         record: &TaskRecord,
         resume_session_path: Option<&Path>,
     ) -> RespawnResult {
+        let ticket = match self.inner.admission_barrier.enter(
+            &record.root_session_id,
+            crate::pause::admission_barrier::AdmissionParticipant {
+                key: record.task_id.clone(),
+                run_ref: crate::pause::ports::RunRef::task(&record.task_id),
+            },
+            None,
+        ) {
+            crate::pause::admission_barrier::AdmissionEntry::Entered { ticket } => ticket,
+            crate::pause::admission_barrier::AdmissionEntry::Held { .. } => {
+                return RespawnResult::Failed {
+                    disposition: crate::lifecycle::port::RespawnDisposition::Retryable,
+                    code: crate::lifecycle::port::RespawnFailureCode::RunPaused,
+                    reason: "run_paused".into(),
+                };
+            }
+        };
+        struct TicketGuard(crate::pause::admission_barrier::AdmissionTicket);
+        impl Drop for TicketGuard {
+            fn drop(&mut self) {
+                self.0.leave();
+            }
+        }
+        let _ticket_guard = TicketGuard(ticket.clone());
         if self
             .inner
             .try_load(&record.task_id)
@@ -2582,6 +2606,13 @@ impl TaskManager {
         // point before the child runs: a stop, a kill or another owner that landed while the revival
         // was preparing refuses the launch here (TS `beforeLaunch`).
         let before_launch = || -> Result<(), RespawnResult> {
+            if ticket.check() != crate::pause::admission_barrier::AdmissionCheck::Allowed {
+                return Err(RespawnResult::Failed {
+                    disposition: crate::lifecycle::port::RespawnDisposition::Retryable,
+                    code: crate::lifecycle::port::RespawnFailureCode::RunPaused,
+                    reason: "run_paused".into(),
+                });
+            }
             if self
                 .inner
                 .try_load(&record.task_id)
