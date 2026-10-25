@@ -36,6 +36,7 @@ maho-omo-side-panel = { path = "../components/maho-omo-side-panel" }
 maho-omo-lsp = { path = "../components/maho-omo-lsp" }
 maho-omo-skill-pointers = { path = "../components/maho-omo-skill-pointers" }
 maho-omo-question-gates = { path = "../components/maho-omo-question-gates" }
+maho-omo-claim-receipt = { path = "../components/maho-omo-claim-receipt" }
 maho-omo-memory = { path = "../components/maho-omo-memory" }
 maho-memory-core = { path = "../memory-core" }
 maho-omo-onboarding = { path = "../components/maho-omo-onboarding" }
