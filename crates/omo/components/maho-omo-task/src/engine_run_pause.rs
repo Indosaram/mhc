@@ -578,6 +578,13 @@ impl ManagerRunPausePorts {
 }
 
 impl senpi_task::manager::run_pause::TaskRunPausePorts for ManagerRunPausePorts {
+    fn begin_native_pause(&self, task_id: &str, epoch: i64) {
+        self.manager.begin_native_pause(task_id, epoch);
+    }
+    fn finish_native_pause(&self, task_id: &str, epoch: i64, accepted: bool) -> Result<(), String> {
+        self.manager.finish_native_pause(task_id, epoch, accepted)
+    }
+
     fn store(&self) -> &senpi_task::store::TaskRecordStore {
         &self.store
     }
