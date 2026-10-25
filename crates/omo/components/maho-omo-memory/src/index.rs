@@ -132,7 +132,18 @@ impl MemoryComponent {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
                 crate::sync_runner::create_sync_runner(crate::sync_runner::SyncRunnerOptions {
                     logger: Arc::new(WarnLogger(hooks.warn.clone())),
-                    resolve_session: None,
+                    resolve_session: {
+                        let source = crate::device_session::account_source::create_cli_account_source(None, &self.options.env, None).map_err(ExtensionFailure::new)?;
+                        let pins = PathBuf::from(self.options.env.get("HOME").cloned().unwrap_or_else(maho_core::config::home_dir)).join(".omo/sync-device");
+                        let resolver = crate::device_session::resolver::create_device_session_resolver(source, pins, Arc::new(crate::device_session::account_session::open_account_session));
+                        let project_dir = self.options.cwd.clone();
+                        let profile = self.settings()?.get("agent").and_then(serde_json::Value::as_str).map(str::to_owned);
+                        Some(Arc::new(move |mut request: crate::device_session::resolver::SyncSessionRequest| {
+                            request.space.profile = profile.clone();
+                            request.space.project_dir = project_dir.clone();
+                            resolver(request)
+                        }) as crate::sync_runner::SyncSessionResolver)
+                    },
                     open: None,
                     close_wait: None,
                 }),
@@ -213,7 +224,7 @@ impl MemoryComponent {
                 let run_token=format!("{:x}-{}-{}",((this.options.now)() as u64).max(1),std::process::id(),memory_core::support::random::random_uuid().replace('-',""));
                 let run_paths=crate::transient_identity::resolve_identity_run_paths(&adopted.id,adopted.paths.clone(),&memory_root,one_shot,Some(&run_token));
                 let binding=create_memory_binding(&adopted.id,&run_paths.paths.repo.to_string_lossy(),(this.options.now)());let value=serde_json::json!({"identity":binding.identity,"repoPathHash":binding.repo_path_hash,"boundAt":binding.bound_at});
-                let bound=MemoryIdentityContext::new(adopted.id,run_paths.paths,binding).with_durable_root(run_paths.durable_root);
+                let bound=MemoryIdentityContext::new(adopted.id,run_paths.paths,binding).with_durable_root(run_paths.durable_root).with_project_scope(crate::context::ProjectScope { memory_root, auto_identity: settings["auto_identity"].as_str().unwrap_or("project").to_owned() });
                 let state=sessions.get_mut(id).ok_or("Inserted memory session is missing")?;state.context=Some(bound.clone());this.supervisor.acquire();state.sync_repo=Some(bound.identity_paths.repo.clone());let sync_enabled=settings["sync"]["enabled"]==true;drop(sessions);
                 handle.append_entry(MEMORY_BINDING_CUSTOM_TYPE,Some(value)).map_err(|error|error.to_string())?;
                 Ok::<_,String>(Some((id.to_owned(),bound,sync_enabled)))

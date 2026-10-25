@@ -1,5 +1,20 @@
 use std::{collections::BTreeMap, path::Path};
 
+pub fn run_memory_hook(args: &[String], cwd: &Path) -> i32 {
+    memory_core::memfs::memory_hook::run_memory_hook(args, cwd)
+}
+
+pub fn install_memory_hooks(repo: &Path) -> std::io::Result<Vec<memory_core::memfs::hooks::InstalledHook>> {
+    let mut executable = std::env::current_exe()?;
+    if executable.file_stem().and_then(|name| name.to_str()) != Some("mhc") {
+        if let Some(parent) = executable.parent() { executable = parent.parent().unwrap_or(parent).join(if cfg!(windows) { "mhc.exe" } else { "mhc" }); }
+    }
+    let path = executable.to_string_lossy().into_owned();
+    memory_core::memfs::hooks::install_hooks_with_options(repo, &memory_core::memfs::hooks::InstallHooksOptions {
+        checker: Some(memory_core::memfs::hooks::MemoryHookChecker { exec_path: path, script: String::new() }),
+    })
+}
+
 pub fn defined_environment(env: &BTreeMap<String, Option<String>>) -> BTreeMap<String, String> {
     env.iter().filter_map(|(key, value)| value.as_ref().map(|value| (key.clone(), value.clone()))).collect()
 }

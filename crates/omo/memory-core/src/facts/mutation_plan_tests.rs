@@ -9,10 +9,12 @@ use crate::facts::mutation_plan::{
 fn sample_records() -> Vec<FactsExtractionRecord> {
     vec![
         FactsExtractionRecord::Project {
+            receipt: None,
             text: "Uses Bun.".to_string(),
             date: "2026-08-10".to_string(),
         },
         FactsExtractionRecord::Project {
+            receipt: None,
             text: "Uses Rust.".to_string(),
             date: "2026-08-11".to_string(),
         },

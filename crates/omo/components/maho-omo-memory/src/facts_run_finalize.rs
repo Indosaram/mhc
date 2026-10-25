@@ -96,9 +96,12 @@ pub fn finalize_claimed_facts_run(
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
                 Err(error) => return Err(error.to_string()),
             };
-            parse_agreement_records_jsonl(&raw)
-                .map_err(|error| error.to_string())
-                .map(|agreements| (records, agreements))
+            let agreements = parse_agreement_records_jsonl(&raw).map_err(|error| error.to_string())?;
+            for (index, agreement) in agreements.iter().enumerate() {
+                memory_core::agreements::validate_agreement_source(agreement, &payload, index)
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok((records, agreements))
         });
     let (records, agreements) = match parsed {
         Ok(parsed) => parsed,

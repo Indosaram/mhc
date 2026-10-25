@@ -45,19 +45,20 @@ pub type DeviceNameLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 pub struct DeviceSyncSession {
     pub session: SyncSession,
     pub device_name: Option<DeviceNameLookup>,
+    pub on_ended: Option<Rc<dyn Fn(Box<dyn Fn()>)>>,
 }
 
 /// Resolves the account session for an identity. Called on the engine thread, so the returned
 /// future and the session (which holds `Rc` ports) never cross threads.
 pub type SyncSessionResolver =
-    Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = Option<DeviceSyncSession>>>> + Send + Sync>;
+    Arc<dyn Fn(crate::device_session::resolver::SyncSessionRequest) -> Pin<Box<dyn Future<Output = Result<crate::device_session::resolver::SyncSessionResolution, String>>>> + Send + Sync>;
 /// Opens a device engine (on the engine thread); the default is `open_device_sync`.
 pub type SyncOpen =
     Arc<dyn Fn(OpenDeviceSyncOptions) -> EngineResult<Option<DeviceSync>> + Send + Sync>;
 
 /// No device sign-in or device keys exist on this client: the runner stays idle.
 pub fn no_account_session() -> SyncSessionResolver {
-    Arc::new(|_| Box::pin(async { None }))
+    Arc::new(|_| Box::pin(async { Ok(crate::device_session::resolver::SyncSessionResolution::SignedOut) }))
 }
 
 pub trait SyncRunnerLogger: Send + Sync {
@@ -174,7 +175,15 @@ async fn start_engine(
     identity: String,
     paths: MemoryIdentityPaths,
 ) -> Outcome {
-    let session = (cfg.resolve)(identity.clone()).await;
+    use crate::device_session::resolver::{SyncSessionRequest, SyncSessionSpace, SyncSessionResolution};
+    let request = SyncSessionRequest { identity: identity.clone(), paths: paths.clone(), space: SyncSessionSpace { profile: None, project_dir: paths.repo.clone() } };
+    let resolved = (cfg.resolve)(request).await;
+    let session = match resolved {
+        Ok(SyncSessionResolution::Open(session)) => Some(DeviceSyncSession { session: session.session, device_name: session.device_name, on_ended: Some(Rc::new(move |notify| session.ended.borrow_mut().push(notify))) }),
+        Ok(SyncSessionResolution::SignedOut) => None,
+        Ok(SyncSessionResolution::Idle(reason)) => { cfg.logger.info(&format!("sync idle: {reason:?}"), &identity); return Outcome::Idle; }
+        Err(error) => { cfg.logger.error(&error, &identity, "sync-session-failed"); return Outcome::Idle; }
+    };
     if let Some(lookup) = session.as_ref().and_then(|s| s.device_name.clone()) {
         cfg.names
             .lock()
@@ -194,6 +203,7 @@ async fn start_engine(
         );
         return Outcome::Unavailable(reason);
     }
+    let on_ended = session.on_ended.clone();
     let log_logger = cfg.logger.clone();
     let log_identity = identity.clone();
     let opened = (cfg.open)(OpenDeviceSyncOptions {
@@ -225,6 +235,10 @@ async fn start_engine(
         }
         Ok(Some(device)) => Rc::new(device),
     };
+    if let Some(on_ended) = on_ended {
+        let device = device.clone();
+        on_ended(Box::new(move || { let device = device.clone(); tokio::task::spawn_local(async move { if let Err(error) = device.close().await { eprintln!("memory sync close failed: {error}"); } }); }));
+    }
     device.engine.start();
     // The watch callback runs on a notify thread; hand each change to a local task that owns the
     // (non-Send) device handle. Dropping the watcher drops the sender and ends that task.
@@ -607,6 +621,7 @@ mod tests {
                 verifier: never.clone(),
                 sealer: never,
             },
+            on_ended: None,
             device_name: Some(Arc::new(|principal| {
                 (principal == "p1").then(|| "Laptop".to_owned())
             })),
@@ -614,7 +629,10 @@ mod tests {
     }
 
     fn offline_resolver() -> SyncSessionResolver {
-        Arc::new(|_| Box::pin(async { Some(offline_session()) }))
+        Arc::new(|_| Box::pin(async {
+            let session = offline_session();
+            Ok(crate::device_session::resolver::SyncSessionResolution::Open(crate::device_session::resolver::ResolvedDeviceSession { device_name: session.device_name, session: session.session, ended: Rc::new(RefCell::new(Vec::new())) }))
+        }))
     }
 
     fn runner(

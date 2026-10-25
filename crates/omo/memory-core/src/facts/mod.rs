@@ -1,5 +1,6 @@
 //! Facts queue, failure management, extraction payload, and person routing.
 
+pub mod agreement_recovery;
 pub mod agreements_target;
 pub mod assets;
 pub mod extraction;
