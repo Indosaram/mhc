@@ -41,4 +41,4 @@ The following are out of scope:
 mhc includes several capabilities that interact directly with the host machine or external providers. Intentional design choices, safety defaults, and divergences from upstream are documented in [docs/divergences.md](docs/divergences.md):
 
 - **Consent-gated providers:** Providers that impersonate first-party clients (such as Claude Code or Cursor) or perform multi-account rotation require explicit, recorded user consent prior to execution.
-- **Opt-in sandbox:** Command execution tools operate under a guarded path-checking approval model by default; users can opt into OS-level write confinement (`bashSandbox`) on supported platforms (Linux and macOS) for defense-in-depth isolation.
+- **Opt-in sandbox:** Command execution tools can run under the opt-in `guarded` path-checking approval preset (the default is `full-access`, as upstream); users can also opt into OS-level write confinement (`bashSandbox`) on supported platforms (Linux and macOS) for defense-in-depth isolation.

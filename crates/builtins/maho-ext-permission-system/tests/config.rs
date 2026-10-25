@@ -4,10 +4,11 @@ fn rule(permission:&str,pattern:&str,action:Action)->Rule{Rule{permission:permis
 #[test]
 fn edit_tools(){assert_eq!(EDIT_TOOLS,["edit","write","apply_patch","multiedit"]);}
 #[test]
-fn preset_default_is_guarded(){
-    assert_eq!(DEFAULT_PERMISSION_PRESET,PermissionPresetName::Guarded);
+fn preset_default_is_full_access(){assert_eq!(DEFAULT_PERMISSION_PRESET,PermissionPresetName::FullAccess);assert_eq!(rules_for_preset(DEFAULT_PERMISSION_PRESET),vec![rule("*","*",Action::Allow)]);}
+#[test]
+fn preset_guarded(){
     let context=PresetContext{agent_dir:"/home/u/.mhc/agent".into(),temp_dir:"/tmp".into()};
-    assert_eq!(rules_for_preset_in(DEFAULT_PERMISSION_PRESET,&context),vec![
+    assert_eq!(rules_for_preset_in(PermissionPresetName::Guarded,&context),vec![
         rule("*","*",Action::Allow),rule("external_directory","*",Action::Ask),
         rule("external_directory","/home/u/.mhc/agent/sessions/*",Action::Allow),
         rule("external_directory","/home/u/.mhc/agent/cache/*",Action::Allow),

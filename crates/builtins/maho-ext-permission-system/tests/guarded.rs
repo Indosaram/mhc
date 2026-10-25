@@ -64,7 +64,7 @@ fn read_of_auth_json_with_cwd_equal_to_agent_dir_is_refused_headlessly_through_t
     let registry = maho_ext_permission_system::parsers::create_builtin_parser_registry_in(agent.path());
     let requests = registry.parse("read", &serde_json::json!({ "path": "auth.json" }), (agent.path(), home));
     let credential = requests.iter().find(|request| request.permission == "credential_file").expect("credential_file request for auth.json");
-    let rules = rules_for_preset_in(maho_ext_permission_system::config::DEFAULT_PERMISSION_PRESET, &PresetContext { agent_dir: agent.path().into(), temp_dir: "/tmp".into() });
+    let rules = rules_for_preset_in(PermissionPresetName::Guarded, &PresetContext { agent_dir: agent.path().into(), temp_dir: "/tmp".into() });
     let outcome = handle_no_ui(&request("credential_file", &credential.patterns[0]), (&rules, &[]), &PermissionEventEmitter::default()).expect("emit").expect("rejection");
     assert_eq!(outcome.reply, Reply::Reject);
     // The same file is not a credential under a different session agent dir.
