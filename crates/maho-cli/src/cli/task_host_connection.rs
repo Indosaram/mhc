@@ -117,6 +117,12 @@ impl HostRpcClient for LiveClient {
         self.turn.1.notify_all();
     }
     fn command(&self, command: Value) -> Result<(), HostError> {
+        if matches!(
+            command["type"].as_str(),
+            Some("prompt" | "followUp" | "steer")
+        ) {
+            self.turn.0.lock().unwrap().1 = None;
+        }
         let client = self.client.clone();
         self.call(async move {
             match command["type"].as_str().unwrap_or_default() {
