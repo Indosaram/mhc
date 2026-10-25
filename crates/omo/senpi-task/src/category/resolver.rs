@@ -245,7 +245,7 @@ fn available_category_names(
 }
 
 /// `omoConfig.exclude_models`, when the config declares any.
-fn exclude_model_patterns(config: &Value) -> Option<Vec<String>> {
+pub(crate) fn exclude_model_patterns(config: &Value) -> Option<Vec<String>> {
     let patterns: Vec<String> = config
         .get("exclude_models")?
         .as_array()?
@@ -355,7 +355,9 @@ pub fn builtin_category_chain_candidates(
     category_name: &str,
     registry: &dyn SenpiModelRegistry,
 ) -> Result<Vec<ModelChainCandidate>, HostError> {
-    let Some(chain) = category_fallback_chain(&omo_config_core::canonical_category_name(category_name)) else {
+    let Some(chain) =
+        category_fallback_chain(&omo_config_core::canonical_category_name(category_name))
+    else {
         return Ok(Vec::new());
     };
     let available: BTreeSet<String> = parse_available_models(&registry.get_available()?)

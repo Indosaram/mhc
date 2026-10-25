@@ -186,6 +186,7 @@ fn given_every_result_detail_kind_when_rendering_compact_rows_then_rows_are_exha
     let details = vec![
         TaskOutputDetails::Status {
             snapshot: TaskSnapshot {
+                parent_model_fallback: None,
                 status: running(),
                 ..snapshot()
             },

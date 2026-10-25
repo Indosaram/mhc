@@ -17,7 +17,7 @@ pub fn create_task_child_planner(config: Value, agents: Vec<(String, AgentDefini
                 let mut error = PlanResolutionError::new(PlanResolutionCode::UnknownTarget, format!("Target \"{name}\" not found.")); error.available_agents = Some(available_agents.clone()); return Err(Box::new(error));
             }
             let registry = if explicit.is_some() { None } else { resolve_registry() };
-            match resolve_agent(name, &agents, registry.as_deref(), &ResolveAgentOptions { model_override: explicit.map(str::to_owned), ..ResolveAgentOptions::default() }) {
+            match resolve_agent(name, &agents, registry.as_deref(), &ResolveAgentOptions { omo_config: Some(config.clone()), model_override: explicit.map(str::to_owned), ..ResolveAgentOptions::default() }) {
                 AgentResolutionResult::Resolved(resolution) => {
                     let variant = resolution.resolved_model.as_ref().and_then(|model| model.reasoning.clone().or(model.reasoning_effort.clone()).or(model.variant.clone()));
                     let resolved_model = resolution.resolved_model.clone().or_else(|| explicit.and_then(explicit_model_metadata));

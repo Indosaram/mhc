@@ -50,6 +50,10 @@ struct CompletionPayload {
     duration_ms: i64,
     tokens: Option<u64>,
     run_stats: Option<senpi_task::state::TaskRunStats>,
+    #[serde(rename = "runRef")]
+    run_ref: Option<senpi_task::completion::RunRef>,
+    parent_model: Option<String>,
+    parent_model_fallback: Option<senpi_task::completion::ParentModelFallback>,
     final_response: String,
     final_response_file: Option<String>,
     continuation_hint: String,
@@ -76,7 +80,8 @@ impl CompletionPayload {
     fn decode(self) -> Option<CompletionDetails> {
         let value = self;
         Some(CompletionDetails {
-            task_id: value.task_id, name: value.name,
+            task_id: value.task_id, name: value.name, run_ref: value.run_ref,
+            parent_model: value.parent_model, parent_model_fallback: value.parent_model_fallback,
             status: senpi_task::state::TaskStatus::parse(&value.status)?,
             category: value.category, agent_type: value.agent_type, model: value.model,
             requested_model: match value.requested_model { Some(model) => Some(model.decode()?), None => None },
