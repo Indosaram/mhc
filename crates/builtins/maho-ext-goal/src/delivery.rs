@@ -14,7 +14,7 @@ pub struct GoalDelivery {
     reference: crate::accounting_hooks::GoalStoreReference,
     now: Arc<dyn Fn() -> f64 + Send + Sync>,
     api: Arc<ExtensionApi>,
-    pending: AtomicBool,
+    pending: Arc<AtomicBool>,
     admission: tokio::sync::Mutex<()>,
     timer: tokio::sync::Mutex<crate::monitor_timer::GoalContinuationTimer>,
     wait: tokio::sync::Mutex<crate::wait_ticker::GoalWaitTicker>,
@@ -41,7 +41,7 @@ impl GoalDelivery {
                 api.events.clone(),
                 api.runtime.clone(),
             )),
-            pending: AtomicBool::new(false),
+            pending: Arc::new(AtomicBool::new(false)),
             admission: Default::default(),
             timer: Default::default(),
             wait: tokio::sync::Mutex::new(crate::wait_ticker::GoalWaitTicker::new(
@@ -451,6 +451,13 @@ impl GoalDelivery {
                     abort_source: *abort_source,
                     will_retry: will_retry.unwrap_or(false),
                 };
+                if ended.aborted
+                    && ended.abort_source == Some(maho_ext_api::AbortSource::User)
+                    && crate::stop_pause::stop_hold_live(ctx)
+                    && let Some(goal) = goal.filter(|goal| goal.status == GoalStatus::Paused)
+                {
+                    crate::stop_pause::mark_stop_paused(&self.api, &goal.id)?;
+                }
                 if crate::agent_end_continuation::goal_agent_end_route(goal, &ended)
                     == crate::agent_end_continuation::GoalAgentEndRoute::AgentEnd
                     && should_queue_goal_continuation_after_agent_end(
@@ -529,14 +536,14 @@ impl GoalDelivery {
                         goal,
                         self.pending.load(Ordering::Acquire),
                         &sources,
-                        true,
+                        ctx.todo_turn_end_backstop_enabled()?,
                     )?;
                 let input = crate::turn_end_liveness_report::collect_turn_end_liveness_input(
                     ctx,
                     &ended,
                     goal,
                     Some(&outcome),
-                    false,
+                    crate::turn_end_liveness_report::deadline_stop_pending(ctx),
                     self.pending.load(Ordering::Acquire),
                     &self.runtime.monitor.lock().map_err(failure)?,
                     (self.now)() as i64,
@@ -550,7 +557,7 @@ impl GoalDelivery {
                 let reference = self.reference.clone();
                 let context = ctx.clone();
                 let monitor = self.runtime.monitor.clone();
-                let pending = self.pending.load(Ordering::Acquire);
+                let pending = self.pending.clone();
                 let now = self.now.clone();
                 let ended_live = ended.clone();
                 let outcome_live = outcome.clone();
@@ -572,8 +579,8 @@ impl GoalDelivery {
                                 &ended_live,
                                 goal.as_ref(),
                                 Some(&outcome_live),
-                                false,
-                                pending,
+                                crate::turn_end_liveness_report::deadline_stop_pending(&context),
+                                pending.load(Ordering::Acquire),
                                 &monitor,
                                 now() as i64,
                             ) {

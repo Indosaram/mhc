@@ -1848,6 +1848,12 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             }
         }
     }
+    fn has_queued_person_input(&self) -> bool {
+        self.session().is_ok_and(|session| lock(&session.user_input_sources).iter().any(|(_,source)| *source != InputSource::Extension))
+    }
+    fn todo_turn_end_backstop_enabled(&self) -> bool {
+        self.session().is_ok_and(|session| session.with_settings_manager(|manager| manager.get_value("todo").and_then(|todo|todo.get("turnEndBackstop")).and_then(serde_json::Value::as_bool).unwrap_or(true)))
+    }
     fn has_pending_messages(&self) -> bool {
         self.session()
             .is_ok_and(|session| session.pending_message_count() > 0)

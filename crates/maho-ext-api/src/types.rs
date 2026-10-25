@@ -1666,6 +1666,13 @@ pub trait ExtensionContextActions: Send + Sync {
     }
     fn abort(&self, source: Option<AbortSource>);
     fn has_pending_messages(&self) -> bool;
+    /// Person input releases holds; extension-originated messages do not.
+    fn has_queued_person_input(&self) -> bool {
+        false
+    }
+    fn todo_turn_end_backstop_enabled(&self) -> bool {
+        true
+    }
     fn request_reload(&self) -> ExtensionFuture<'_, ()>;
     fn is_compacting(&self) -> bool;
     fn check_reload_veto(&self) -> ExtensionFuture<'_, ReloadVetoDecision>;
@@ -2417,6 +2424,12 @@ impl ExtensionContext {
     pub fn abort(&self, source: Option<AbortSource>) -> Result<(), ExtensionFailure> {
         self.actions()?.abort(source);
         Ok(())
+    }
+    pub fn has_queued_person_input(&self) -> Result<bool, ExtensionFailure> {
+        Ok(self.actions()?.has_queued_person_input())
+    }
+    pub fn todo_turn_end_backstop_enabled(&self) -> Result<bool, ExtensionFailure> {
+        Ok(self.actions()?.todo_turn_end_backstop_enabled())
     }
     pub fn has_pending_messages(&self) -> Result<bool, ExtensionFailure> {
         Ok(self.actions()?.has_pending_messages())

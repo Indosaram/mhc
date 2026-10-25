@@ -55,3 +55,28 @@ impl GoalLifecycleCollector {
             .take();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn replacement_reads_live_facts_and_retirement_removes_owners() {
+        let owner = GoalLifecycleCollector::default();
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let capture = count.clone();
+        owner.on_goal_lifecycle_change(Arc::new(move |_| {
+            capture.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        owner.register_goal_lifecycle_collector(Arc::new(|| GoalLifecycleFacts {
+            goal: None,
+            input: None,
+        }));
+        assert!(owner.collect_goal_lifecycle_facts().is_some());
+        owner.goal_lifecycle_changed(None);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        owner.retire();
+        assert!(owner.collect_goal_lifecycle_facts().is_none());
+        owner.goal_lifecycle_changed(None);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+}

@@ -86,3 +86,110 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    struct History(Mutex<Vec<SessionEntry>>);
+    impl maho_ext_api::ToolSessionManager for History {
+        fn session_id(&self) -> &str {
+            "s"
+        }
+        fn session_file(&self) -> Option<&std::path::Path> {
+            None
+        }
+    }
+    impl maho_ext_api::SessionManager for History {
+        fn get_entries(&self) -> Vec<SessionEntry> {
+            self.0.lock().unwrap().clone()
+        }
+        fn get_branch(&self) -> Vec<SessionEntry> {
+            self.get_entries()
+        }
+        fn get_leaf_id(&self) -> Option<String> {
+            None
+        }
+        fn get_session_name(&self) -> Option<String> {
+            None
+        }
+    }
+    fn entry(kind: &str, data: serde_json::Value) -> SessionEntry {
+        SessionEntry {
+            id: String::new(),
+            parent_id: None,
+            timestamp: String::new(),
+            kind: kind.into(),
+            data,
+        }
+    }
+    #[tokio::test]
+    async fn stop_pauses_then_release_resumes_only_stop_marked_goal() {
+        let directory = tempfile::tempdir().unwrap();
+        let reference = crate::types::GoalStoreRef {
+            base_dir: directory.path().into(),
+            thread_id: "s".into(),
+        };
+        let stored = reference.clone();
+        let runtime =
+            crate::runtime::GoalRuntime::new(Arc::new(move |_| stored.clone()), Arc::new(|| 0.0));
+        let goal = crate::store::create_goal(&reference, "work", None, 0)
+            .await
+            .unwrap();
+        let history = Arc::new(History(Mutex::new(vec![entry(
+            "custom",
+            serde_json::json!({"customType":"session-hold","data":{"op":"add","kind":"session_hold","key":"stop"}}),
+        )])));
+        let mut ctx = crate::test_context::context();
+        ctx.has_ui = false;
+        ctx.session_manager = history.clone();
+        let paused = runtime
+            .event(&maho_ext_api::ExtensionEvent::SessionAbort, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(paused.status, crate::types::GoalStatus::Paused);
+        history.0.lock().unwrap().push(entry(
+            "custom",
+            serde_json::json!({"customType":GOAL_STOP_PAUSED_ENTRY,"data":{"goalId":goal.id}}),
+        ));
+        history.0.lock().unwrap().push(entry("custom",serde_json::json!({"customType":"session-hold","data":{"op":"release","keys":["stop"]}})));
+        let resumed = runtime
+            .event(
+                &maho_ext_api::ExtensionEvent::HeldWakesReleased {
+                    sources: Default::default(),
+                },
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resumed.status, crate::types::GoalStatus::Active);
+        crate::store::update_goal(
+            &reference,
+            &crate::types::GoalUpdate {
+                status: Some(crate::types::GoalStatus::Paused),
+                ..Default::default()
+            },
+            crate::types::GoalUpdateSource::User,
+            1,
+        )
+        .await
+        .unwrap();
+        history.0.lock().unwrap().push(entry(
+            "custom",
+            serde_json::json!({"customType":GOAL_STOP_RESUMED_ENTRY,"data":{"goalId":goal.id}}),
+        ));
+        let explicit = runtime
+            .event(
+                &maho_ext_api::ExtensionEvent::HeldWakesReleased {
+                    sources: Default::default(),
+                },
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(explicit.status, crate::types::GoalStatus::Paused);
+    }
+}

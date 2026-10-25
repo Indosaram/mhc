@@ -5,6 +5,24 @@ use crate::{
 };
 use maho_core::agent_abort_provenance::AgentEndEvent;
 use maho_ext_api::{ExtensionApi, ExtensionContext, ExtensionFailure};
+pub fn deadline_stop_pending(ctx: &ExtensionContext) -> bool {
+    for entry in ctx.session_manager.get_branch().iter().rev() {
+        if entry.kind == "message" && entry.data["message"]["role"] == "user" {
+            return false;
+        }
+        if entry.kind == "custom" && entry.data["customType"] == "deadline-stop" {
+            let data = &entry.data["data"];
+            if matches!(data["kind"].as_str(), Some("inactivity" | "max_runtime"))
+                && ["limitMs", "elapsedMs", "at"]
+                    .iter()
+                    .all(|key| data[*key].as_f64().is_some_and(f64::is_finite))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
 pub fn collect_turn_end_liveness_input(
     ctx: &ExtensionContext,
     event: &AgentEndEvent,
@@ -43,7 +61,11 @@ pub fn collect_turn_end_liveness_input(
         expectations.push(WakeExpectation::RecoveryStaged);
     }
     if ctx.has_pending_messages()? {
-        expectations.push(WakeExpectation::PendingMessages);
+        expectations.push(if ctx.has_queued_person_input()? {
+            WakeExpectation::UserInputQueued
+        } else {
+            WakeExpectation::PendingMessages
+        });
     }
     if crate::todo_owed_backstop::called_ask_user(&event.messages)
         || crate::todo_owed_backstop::ends_with_question(
@@ -58,7 +80,7 @@ pub fn collect_turn_end_liveness_input(
         .next()
         .or_else(|| engine_held.then(|| "unattended".into()));
     Ok(TurnEndLivenessInput {
-        is_child_session: false,
+        is_child_session: ctx.session_manager.fork_provenance().is_some(),
         mode: ctx.mode,
         ended_by: classify_turn_end(event),
         ledger_hold,

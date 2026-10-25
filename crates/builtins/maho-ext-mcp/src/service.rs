@@ -369,7 +369,10 @@ impl McpService {
                 warnings.push(format!("MCP server '{name}' from skill {} collides with the {} config; system config wins.",decl.source_path.display(),existing.source));
                 continue;
             }
-            let resolved = if decl.source_path.starts_with(&cwd) {
+            let resolved = if decl
+                .source_path
+                .starts_with(crate::project_skill_policy::skill_project_root(&cwd))
+            {
                 crate::project_skill_policy::prepare_project_skill_server(
                     name,
                     decl,
@@ -377,7 +380,7 @@ impl McpService {
                     &agent_dir,
                     self.project_trusted,
                     &self.session_env,
-                    self.elicitation_ui.as_deref(),
+                    self.elicitation_ui.clone(),
                 )
                 .await?
             } else {

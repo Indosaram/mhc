@@ -236,11 +236,15 @@ impl ServerConnection {
         self: &Arc<Self>,
         generation: u64,
     ) -> Result<Arc<McpClient>, McpError> {
-        let materialized = crate::project_skill_policy::get_project_mcp_authority(&self.config)
-            .map(|authority| {
-                crate::project_stdio_transport::ProjectStdioTransport::new(authority).start()
-            })
-            .transpose()?;
+        let materialized =
+            match crate::project_skill_policy::get_project_mcp_authority(&self.config) {
+                Some(authority) => Some(
+                    crate::project_stdio_transport::ProjectStdioTransport::new(authority)
+                        .start()
+                        .await?,
+                ),
+                None => None,
+            };
         let (config, env) = materialized
             .as_ref()
             .map_or((&self.config, self.env.as_ref()), |materialized| {

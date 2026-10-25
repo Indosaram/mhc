@@ -313,12 +313,35 @@ impl GoalRuntime {
                         &reference,
                         messages,
                         *aborted == Some(true)
-                            && *abort_source == Some(maho_ext_api::AbortSource::User),
+                            && *abort_source == Some(maho_ext_api::AbortSource::User)
+                            && !crate::stop_pause::stop_hold_live(context),
                         now,
                         seconds,
                     )
                     .await
                     .map_err(failure)?;
+                if *aborted == Some(true)
+                    && *abort_source == Some(maho_ext_api::AbortSource::User)
+                    && crate::stop_pause::stop_hold_live(context)
+                    && goal
+                        .as_ref()
+                        .is_some_and(|goal| goal.status == GoalStatus::Active)
+                {
+                    goal = Some(
+                        crate::store::update_goal(
+                            &reference,
+                            &GoalUpdate {
+                                status: Some(GoalStatus::Paused),
+                                ..Default::default()
+                            },
+                            GoalUpdateSource::User,
+                            seconds,
+                        )
+                        .await
+                        .map_err(failure)?,
+                    );
+                    state.accounting.clear();
+                }
                 let ended = maho_core::agent_abort_provenance::AgentEndEvent {
                     messages: messages.clone(),
                     aborted: aborted.unwrap_or(false),

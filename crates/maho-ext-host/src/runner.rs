@@ -464,6 +464,8 @@ impl ExtensionContextActions for ContextSessionManager {
         self.active();
         self.actions.engine_turns_held()
     }
+    fn has_queued_person_input(&self) -> bool {self.active();self.actions.has_queued_person_input()}
+    fn todo_turn_end_backstop_enabled(&self) -> bool {self.active();self.actions.todo_turn_end_backstop_enabled()}
     fn note_held_wake(&self, source: &str) {
         self.active();
         self.actions.note_held_wake(source);
