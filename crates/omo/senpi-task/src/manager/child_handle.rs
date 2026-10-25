@@ -28,6 +28,9 @@ pub trait ManagedChildHandle: Send + Sync {
         None
     }
     fn task_id(&self) -> &str;
+    fn run_pause(&self) -> Option<&dyn crate::pause::native_child_pause::NativeRunPause> {
+        None
+    }
     fn session_id(&self) -> Option<String>;
     fn pid(&self) -> Option<i64>;
     fn spawn_spec(&self) -> Option<RpcSpawnSpec> {
