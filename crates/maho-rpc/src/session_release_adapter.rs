@@ -145,6 +145,20 @@ impl ReleasableSession for AgentSessionRelease {
             .map_err(|error| error.to_string())
     }
 
+    async fn prepare_move_state(&self, move_id: &str) -> Result<Option<String>, String> {
+        let Some(file) = self.session.session_file() else {
+            return Ok(None);
+        };
+        let (attempt, dir) = maho_core::session_move::extension_state::prepare_outgoing_state(
+            std::path::Path::new(&file),
+            move_id,
+        )?;
+        self.session.emit_extension_event(
+            "session_move_export",
+            &serde_json::json!({"moveId":move_id,"dir":dir}),
+        );
+        Ok(Some(attempt))
+    }
     fn append_custom_entry(&self, custom_type: &str, data: Value) -> Result<(), ReleaseWriteError> {
         let (file, persisted, flushed) = self.session.with_session_manager(|manager| {
             (
