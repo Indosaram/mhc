@@ -23,7 +23,7 @@ use maho_ext_llama::llama;
 pub const GLOBAL_DEFAULT_EXTENSION_IDS: [&str; 4] = ["diff", "files", "prompt-url-widget", "tps"];
 
 /// Pinned `builtinExtensions` id order (`core/extensions/builtin/index.ts`).
-pub const BUILTIN_EXTENSION_IDS: [&str; 44] = [
+pub const BUILTIN_EXTENSION_IDS: [&str; 45] = [
     "loop-guard",
     "hooks",
     "permission-system",
@@ -42,6 +42,7 @@ pub const BUILTIN_EXTENSION_IDS: [&str; 44] = [
     "reasoning",
     "model-fallback",
     "recommended-models",
+    "relocate-session",
     "bash-timeout",
     "terminal",
     "tool-pair-guard",
@@ -119,6 +120,7 @@ fn model_fallback() -> Box<dyn Extension> {
         }),
     })
 }
+fn relocate_session() -> Box<dyn Extension> {Box::new(maho_ext_relocate_session::RelocateSession)}
 fn recommended_models() -> Box<dyn Extension> {
     Box::new(maho_ext_recommended_models::RecommendedModels)
 }
@@ -215,7 +217,7 @@ fn config_reload() -> Box<dyn Extension> {
 }
 
 /// Linked builtin factories, in the pinned `builtinExtensions` relative order.
-static BUILTIN_FACTORIES: [NativeExtension; 26] = [
+static BUILTIN_FACTORIES: [NativeExtension; 27] = [
     NativeExtension {
         id: "loop-guard",
         crate_name: "maho-ext-loop-guard",
@@ -261,6 +263,7 @@ static BUILTIN_FACTORIES: [NativeExtension; 26] = [
         crate_name: "maho-ext-model-fallback",
         factory: model_fallback,
     },
+    NativeExtension {id:"relocate-session",crate_name:"maho-ext-relocate-session",factory:relocate_session},
     NativeExtension {
         id: "recommended-models",
         crate_name: "maho-ext-recommended-models",

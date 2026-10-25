@@ -2063,6 +2063,7 @@ impl ExtensionRunner {
                             current.system_prompt = prompt.clone();
                         }
                         combined.system_prompt = Some(prompt);
+                        combined.system_prompt_parts = next.system_prompt_parts;
                     }
                 }
                 Ok(_) => {}

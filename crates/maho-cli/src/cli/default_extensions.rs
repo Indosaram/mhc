@@ -423,6 +423,7 @@ pub fn factories_with_mcp_registry(
             #[cfg(windows)]
             factory("memory-report", super::memory_report_registry::MemoryReportCommand),
             factory("recommended-models", maho_ext_recommended_models::RecommendedModels),
+            factory("relocate-session", maho_ext_relocate_session::RelocateSession),
             factory("permission-system", maho_ext_permission_system::PermissionSystem),
             factory("gpt-apply-patch", maho_ext_gpt_apply_patch::index::ApplyPatchExtension),
             factory("tool-search", ToolSearch { mcp_native_enabled: Arc::new(move || tool_search_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|gate| gate.enabled())), service: tool_search_slot }),

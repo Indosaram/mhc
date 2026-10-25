@@ -1,14 +1,22 @@
 use crate::settings::{PromptPresetName, parse_prompt_preset};
 use maho_core::dynamic_prompt::build::BuildDynamicSystemPromptOptions;
-pub struct ResolvedPromptPreset { pub name: PromptPresetName, pub prompt: String }
+pub struct ResolvedPromptPreset { pub name: PromptPresetName, pub prompt: String, pub parts: Vec<maho_ext_api::DynamicSystemPromptPart> }
 pub fn resolve_preset(model: ModelMetadata<'_>, setting: PromptPresetName, mut options: BuildDynamicSystemPromptOptions<'_>) -> Option<ResolvedPromptPreset> {
  let name = resolve_preset_name(model, setting)?;
  options.tuning_section = None;
  options.core_prompt = None;
  options.workstation_dialect = None;
+ let captured = std::cell::RefCell::new(Vec::new());
+ let on_parts = options.on_parts;
+ let observer = |parts: &[maho_ext_api::DynamicSystemPromptPart]| {
+  *captured.borrow_mut() = parts.to_vec();
+  if let Some(on_parts) = on_parts { on_parts(parts); }
+ };
+ let options = BuildDynamicSystemPromptOptions { on_parts: Some(&observer), ..options };
  let prompt = match name {
-  PromptPresetName::Auto => return None,
+  PromptPresetName::Auto => unreachable!("auto presets do not render"),
   PromptPresetName::ClaudeFable5 => crate::claude_fable_5::build_claude_fable5_prompt(options),
+  PromptPresetName::ClaudeFable55 => crate::claude_fable_5_5::build_claude_fable55_prompt(options),
   PromptPresetName::ClaudeFable51 => crate::claude_fable_5_1::build_claude_fable51_prompt(options),
   PromptPresetName::ClaudeOpus55 => crate::claude_opus_5_5::build_claude_opus55_prompt(options),
   PromptPresetName::ClaudeSonnet55 => crate::claude_sonnet_5_5::build_claude_sonnet55_prompt(options),
@@ -40,7 +48,9 @@ pub fn resolve_preset(model: ModelMetadata<'_>, setting: PromptPresetName, mut o
   PromptPresetName::Gpt56 => crate::gpt_5_6::build_gpt56_prompt(options),
   PromptPresetName::Gpt6Astra => crate::gpt_6_astra::build_gpt6_astra_prompt(options),
  };
- Some(ResolvedPromptPreset { name, prompt })
+ let mut parts = captured.into_inner();
+ for part in &mut parts {if part.name!="project_context" || part.source.as_deref().is_none_or(|source|source=="dynamic-prompt"){part.source=Some(format!("prompt-preset:{}",name.as_str()));}}
+ Some(ResolvedPromptPreset { name, prompt, parts })
 }
 #[derive(Clone, Copy)]
 pub struct ModelMetadata<'a> { pub id: &'a str, pub provider: &'a str, pub name: Option<&'a str>, pub prompt_preset: Option<&'a str> }
@@ -73,6 +83,7 @@ pub fn resolve_preset_name(model: ModelMetadata<'_>, setting: PromptPresetName) 
  if model_signal(model, &[r"(?:^|[/@._-])kimi-k2(?:[._-]|p)8(?:$|[/@._:-])"]) || id == "kimi-for-coding" || model.name.is_some_and(|name| normalized(name) == "kimi-for-coding") { return Some(PromptPresetName::KimiK28); }
  if model_signal(model, &[r"(?:^|[/@._-])kimi-k2(?:[._-]|p)7(?:$|[/@._:-])"]) || id == "kimi-for-coding-highspeed" || model.name.is_some_and(|name| normalized(name) == "kimi-for-coding-highspeed") { return Some(PromptPresetName::KimiK27); }
  if model_signal(model, &[r"(?:^|[/@._-])kimi-k2(?:[._-]|p)6(?:$|[/@._:-])"]) { return Some(PromptPresetName::KimiK26); }
+ if model_signal(model, &[r"(?:^|[/@:._-])(?:fable|mythos)-5[.-]5(?:$|[/@:._-])"]) { return Some(PromptPresetName::ClaudeFable55); }
  if ["fable-5-1","fable-5.1","mythos-5-1","mythos-5.1"].iter().any(|marker| id.contains(marker)) { return Some(PromptPresetName::ClaudeFable51); }
  if ["fable-5","mythos-5"].iter().any(|marker| id.contains(marker)) { return Some(PromptPresetName::ClaudeFable5); }
  if ["opus-5-5","opus-5.5"].iter().any(|marker| id.contains(marker)) { return Some(PromptPresetName::ClaudeOpus55); }

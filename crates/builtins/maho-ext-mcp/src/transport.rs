@@ -1,3 +1,12 @@
+pub struct ProjectMcpMaterialization {pub config:crate::config_schema::McpServerConfig,pub env:std::collections::BTreeMap<String,String>}
+pub fn register_project_policy(config_hash:String,resolver:ProjectPolicyResolver) {
+    PROJECT_POLICIES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(config_hash,resolver);
+}
+pub fn project_policy(config_hash:&str)->Option<ProjectPolicyResolver> {
+    PROJECT_POLICIES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(config_hash).cloned()
+}
+static PROJECT_POLICIES:std::sync::LazyLock<std::sync::Mutex<std::collections::BTreeMap<String,ProjectPolicyResolver>>>=std::sync::LazyLock::new(Default::default);
+pub type ProjectPolicyResolver=std::sync::Arc<dyn Fn()->std::pin::Pin<Box<dyn std::future::Future<Output=Result<ProjectMcpMaterialization,crate::errors::McpError>>+Send>>+Send+Sync>;
 use std::collections::BTreeMap;
 use std::{sync::{Arc,Mutex},time::Duration};
 use crate::{log::McpLogger,transport_sdk::McpClient};
@@ -23,6 +32,7 @@ pub fn create_mcp_transport_spec(server:&str,config:&McpServerConfig,env:Option<
     Ok(McpTransportSpec::Http {url,headers})
 }
 pub struct McpTransportConnection {
+    pub project_policy:bool,pub resolve_project_policy:Option<ProjectPolicyResolver>,
     pub server_name:String,pub spec:McpTransportSpec,pub connect_timeout:Duration,
     logger:Arc<Mutex<McpLogger>>,client:tokio::sync::OnceCell<Arc<McpClient>>,
     pub auth:Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>,
@@ -36,17 +46,25 @@ pub struct McpTransportConnection {
 pub fn create_mcp_transport(server:&str,config:&McpServerConfig,env:Option<&BTreeMap<String,String>>,logger:Arc<Mutex<McpLogger>>)->Result<McpTransportConnection,McpError> {
     let spec=create_mcp_transport_spec(server,config,env)?;
     let timeout=config.connect_timeout_ms.unwrap_or(15000.0);
-    Ok(McpTransportConnection {server_name:server.into(),spec,connect_timeout:Duration::from_secs_f64(timeout.max(0.0)/1000.0),logger,client:tokio::sync::OnceCell::new(),auth:None,step_up:None,elicitation_ui:None,server_requests:Mutex::new(None),shutdown:tokio::sync::Mutex::new(false)})
+    Ok(McpTransportConnection {project_policy:false,resolve_project_policy:None,server_name:server.into(),spec,connect_timeout:Duration::from_secs_f64(timeout.max(0.0)/1000.0),logger,client:tokio::sync::OnceCell::new(),auth:None,step_up:None,elicitation_ui:None,server_requests:Mutex::new(None),shutdown:tokio::sync::Mutex::new(false)})
 }
 impl McpTransportConnection {
+    pub async fn resolve_before_start(&self)->Result<McpTransportSpec,McpError> {
+        if let Some(resolve)=&self.resolve_project_policy {
+            let current=resolve().await?;
+            let mut spec=create_mcp_transport_spec(&self.server_name,&current.config,Some(&current.env))?;
+            if let McpTransportSpec::Stdio{env,..}=&mut spec {*env=current.env;env.extend(current.config.env.unwrap_or_default());}
+            Ok(spec)
+        }else{Ok(self.spec.clone())}
+    }
     pub async fn materialize(&self)->Result<Arc<McpClient>,McpError> {
         self.client.get_or_try_init(||async {
-            let mut spec=self.spec.clone();
+            let mut spec=self.resolve_before_start().await?;
             if let (McpTransportSpec::Stdio {env,..},Some(auth))=(&mut spec,&self.auth)
                 && let Some(tokens)=auth.ensure_fresh().await.map_err(|error|McpError::new(McpErrorKind::Auth,error.to_string()))? {
                 env.insert("OAUTH_ACCESS_TOKEN".into(),tokens.access_token);
             }
-            let client=McpClient::materialize(&self.server_name,&spec,self.logger.clone()).await?;
+            let client=McpClient::materialize_with_policy(&self.server_name,&spec,self.logger.clone(),self.project_policy).await?;
             if let Some(auth)=&self.auth {client.set_auth(auth.clone()).await;}
             if let Some(step_up)=&self.step_up {client.set_step_up(step_up.clone()).await;}
             *self.server_requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(client.install_elicitation(self.elicitation_ui.clone()));
