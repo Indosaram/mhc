@@ -241,7 +241,11 @@ mod tests {
     #[test]
     fn expands_home_prefixes() {
         assert_eq!(expand_home_path("~", "/home/u"), "/home/u");
-        assert_eq!(expand_home_path("~/code", "/home/u"), "/home/u/code");
+        // Expansion resolves the joined path, so on Windows the POSIX fixture gains the cwd's drive.
+        assert_eq!(
+            expand_home_path("~/code", "/home/u"),
+            resolve_path("/home/u/code")
+        );
         assert_eq!(expand_home_path("/abs", "/home/u"), "/abs");
     }
 
@@ -260,6 +264,12 @@ mod tests {
         );
     }
 
+    /// Candidates reach the rules resolved (`resolve_recorded_path`); on Windows that gives the
+    /// POSIX fixtures the cwd's drive, exactly as the rules' own roots get it.
+    fn excluded(rules: &ProjectPathRules, path: &str) -> bool {
+        rules.is_excluded_project_path(&resolve_path(path))
+    }
+
     #[test]
     fn excludes_roots_scratch_and_worktrees() {
         let rules = rules("linux");
@@ -275,16 +285,16 @@ mod tests {
             "/x/.omo-app/worktrees/y",
             "/x/.t3/worktrees/y",
         ] {
-            assert!(rules.is_excluded_project_path(path), "{path}");
+            assert!(excluded(&rules, path), "{path}");
         }
-        assert!(!rules.is_excluded_project_path("/home/u/code/app"));
-        assert!(!rules.is_excluded_project_path("/home/u/Downloadsx"));
+        assert!(!excluded(&rules, "/home/u/code/app"));
+        assert!(!excluded(&rules, "/home/u/Downloadsx"));
     }
 
     #[test]
     fn win32_prefix_matching_is_case_folded() {
-        assert!(rules("win32").is_excluded_project_path("/HOME/U/downloads/x"));
-        assert!(!rules("linux").is_excluded_project_path("/HOME/U/downloads/x"));
+        assert!(excluded(&rules("win32"), "/HOME/U/downloads/x"));
+        assert!(!excluded(&rules("linux"), "/HOME/U/downloads/x"));
     }
 
     #[test]
@@ -292,7 +302,7 @@ mod tests {
         let rules = rules("linux");
         assert_eq!(
             rules.resolve_recorded_path(" ~/p/../q "),
-            Some("/home/u/q".to_owned())
+            Some(resolve_path("/home/u/q"))
         );
         assert_eq!(rules.resolve_recorded_path("relative/dir"), None);
         assert_eq!(rules.resolve_recorded_path("  "), None);
