@@ -57,7 +57,7 @@ impl TodoOwedBackstop {
             state.ask.as_ref(),
         );
         let open = crate::todo_gate::open_todo_task_contents(&branch);
-        let suppression = if ctx.session_manager.fork_provenance().is_some() {
+        let suppression = if ctx.session_manager.is_child_session() {
             Some("subagent")
         } else if matches!(
             ctx.mode,

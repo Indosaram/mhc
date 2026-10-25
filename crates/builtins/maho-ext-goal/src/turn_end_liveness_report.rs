@@ -83,7 +83,7 @@ pub fn collect_turn_end_liveness_input(
         .next()
         .map(str::to_owned);
     Ok(TurnEndLivenessInput {
-        is_child_session: ctx.session_manager.fork_provenance().is_some(),
+        is_child_session: ctx.session_manager.is_child_session(),
         mode: ctx.mode,
         ended_by: classify_turn_end(event),
         ledger_hold,
