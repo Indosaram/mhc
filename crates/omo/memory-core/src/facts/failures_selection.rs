@@ -81,7 +81,9 @@ pub fn select_launchable(
             };
             if let Some(reason) = reason {
                 skipped.insert(key, reason);
-                blocked = true;
+                if reason != FactsSkipReason::Parked {
+                    blocked = true;
+                }
             }
         }
     }

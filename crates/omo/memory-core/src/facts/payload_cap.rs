@@ -31,7 +31,11 @@ pub struct FactsPrimaryHuman {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FactsPayloadEnvelope {
     pub version: u32,
-    #[serde(rename = "agreementEventVersion", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "agreementEventVersion",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub agreement_event_version: Option<u32>,
     pub identity: String,
     pub today: String,
@@ -63,7 +67,11 @@ impl FactsPayloadEnvelope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FactsPayload {
     pub version: u32,
-    #[serde(rename = "agreementEventVersion", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "agreementEventVersion",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub agreement_event_version: Option<u32>,
     pub identity: String,
     pub today: String,
@@ -103,7 +111,11 @@ pub struct CappedFactsBatch {
 
 /// Serialize payload to formatted, newline-terminated JSON text.
 pub fn serialize_facts_payload(payload: &FactsPayload) -> String {
-    let mut rendered = serde_json::to_string_pretty(payload).unwrap_or_default();
+    let mut payload = payload.clone();
+    for entry in &mut payload.entries {
+        entry.lead = None;
+    }
+    let mut rendered = serde_json::to_string_pretty(&payload).unwrap_or_default();
     rendered.push('\n');
     rendered
 }
@@ -201,55 +213,11 @@ where
     }
 }
 
-/// Borrowed payload view that serializes byte-identically to [`FactsPayload`].
-#[derive(Serialize)]
-struct FactsPayloadView<'a> {
-    version: u32,
-    #[serde(rename = "agreementEventVersion", skip_serializing_if = "Option::is_none")]
-    agreement_event_version: Option<u32>,
-    identity: &'a str,
-    today: &'a str,
-    #[serde(rename = "knownPeople")]
-    known_people: &'a [FactsKnownPerson],
-    #[serde(rename = "primaryHuman")]
-    primary_human: &'a FactsPrimaryHuman,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    agreements: Option<&'a [crate::agreements::FactsKnownAgreement]>,
-    entries: &'a [&'a FactsQueueEntry],
-}
-
-/// Byte counter used to measure serialized output without buffering it.
-struct ByteCounter(usize);
-
-impl std::io::Write for ByteCounter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0 += buf.len();
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-/// Same result as [`measure_facts_payload_bytes`] for `envelope` plus `entries`, without cloning.
+/// Cap sizing uses the same serializer as the on-disk payload writer.
 fn measure_entries_bytes(envelope: &FactsPayloadEnvelope, entries: &[&FactsQueueEntry]) -> usize {
-    let view = FactsPayloadView {
-        version: envelope.version,
-        agreement_event_version: envelope.agreement_event_version,
-        identity: &envelope.identity,
-        today: &envelope.today,
-        known_people: &envelope.known_people,
-        primary_human: &envelope.primary_human,
-        agreements: envelope.agreements.as_deref(),
-        entries,
-    };
-    let mut counter = ByteCounter(0);
-    match serde_json::to_writer_pretty(&mut counter, &view) {
-        Ok(()) => counter.0 + 1,
-        // Mirrors `serialize_facts_payload`, which renders a failure as an empty string plus newline.
-        Err(_) => 1,
-    }
+    measure_facts_payload_bytes(
+        &envelope.to_payload(entries.iter().map(|entry| (**entry).clone()).collect()),
+    )
 }
 
 /// Payload size after appending one entry, given its single-entry payload size.

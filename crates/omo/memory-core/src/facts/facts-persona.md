@@ -17,7 +17,7 @@ Every fact names its `source`, judged by each payload entry's `kind`:
 
 Write the text the way its source supports it: "The assistant suggested removing X", never "The user decided to remove X" for an assistant suggestion.
 
-Use `scope: "person"` only for an explicit proper name, a known alias from the payload, or a second-person reference resolved to the primary human. Label every fact about the primary human with the exact name `Human`, or with the first entry of `primaryHuman.aliases` (the human card's display name) when it is present; never invent a different name for them. Keep every resolved person fact on that scope. If and only if a person mention cannot be resolved, use `scope: "project"` and prefix its text with `person-unresolved: `.
+Use `scope: "person"` only for an explicit proper name, a known alias from the payload, or a second-person reference resolved to the primary human. Keep every resolved person fact on that scope. If and only if a person mention cannot be resolved, use `scope: "project"` and prefix its text with `person-unresolved: `.
 
 Use absolute dates. Resolve relative dates against `today` in the payload. Omit ephemera, guesses, plans not adopted, transient task state, and facts already contradicted in the same transcript. Keep each record self-contained and preserve the stated meaning without adding inference.
 
