@@ -229,7 +229,19 @@ fn with_provider_exclude_path(path: String, handler: ExtensionHandler) -> Extens
     Arc::new(move |event, context| {
         let handler = handler.clone();
         let path = path.clone();
-        Box::pin(PROVIDER_EXCLUDE_PATH.scope(Some(path), handler(event, context)))
+        let mut future = Box::pin(PROVIDER_EXCLUDE_PATH.scope(Some(path), handler(event, context)));
+        // A handler still running across a session replacement touches its now-stale ctx, which
+        // panics with an `ExtensionFailure` (senpi throws the same error). Surface it as that
+        // handler's error instead of unwinding through the UI runtime and aborting the process.
+        Box::pin(std::future::poll_fn(move |cx| {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| future.as_mut().poll(cx))) {
+                Ok(poll) => poll,
+                Err(payload) => match payload.downcast::<ExtensionFailure>() {
+                    Ok(failure) => std::task::Poll::Ready(Err(*failure)),
+                    Err(payload) => std::panic::resume_unwind(payload),
+                },
+            }
+        }))
     })
 }
 struct ContextSessionManager {

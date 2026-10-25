@@ -422,6 +422,31 @@ async fn failing_handler_is_isolated_and_reported() {
     );
 }
 #[tokio::test]
+async fn stale_context_panic_is_reported_as_handler_error() {
+    let stale: ExtensionHandler = Arc::new(|_, _| {
+        Box::pin(async { std::panic::panic_any(ExtensionFailure::new("stale ctx")) })
+    });
+    let mut runner = runner(vec![
+        extension("/ext/stale", EventKind::BeforeAgentStart, stale),
+        extension("good", EventKind::BeforeAgentStart, prompt("\ngood")),
+    ]);
+    let merged = runner
+        .emit_before_agent_start(before())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(merged.system_prompt.as_deref(), Some("base\ngood"));
+    assert_eq!(runner.errors.len(), 1);
+    assert_eq!(runner.errors[0].error, "stale ctx");
+}
+#[tokio::test]
+async fn non_extension_failure_panic_still_unwinds() {
+    let broken: ExtensionHandler = Arc::new(|_, _| Box::pin(async { panic!("bug") }));
+    let mut runner = runner(vec![extension("/ext/broken", EventKind::BeforeAgentStart, broken)]);
+    let result = tokio::spawn(async move { runner.emit_before_agent_start(before()).await.map(|_| ()) }).await;
+    assert!(result.unwrap_err().is_panic());
+}
+#[tokio::test]
 async fn before_agent_start_no_changes_returns_none() {
     assert!(
         runner(vec![extension(
