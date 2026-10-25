@@ -1,23 +1,39 @@
 # senpi-67 implementation report
 
-Target: senpi 2026.10.23-1. Branch: p5147/senpi-67.
+Target: senpi f2354d9705d37636825b7ccd60ee8f40bf0123ba (2026.10.23-1).
+Branch: p5147/senpi-67. No Cargo commands executed.
 
-## Unit status
+## Implemented units
 
-1. Session lifecycle ledger and facts: **INCOMPLETE**. Rust implementations: lifecycle_ledger.rs, lifecycle_record.rs, lifecycle_attention.rs, lifecycle_children.rs, lifecycle_delivery.rs, lifecycle_edit_leaf.rs, lifecycle_goal.rs, lifecycle_history.rs, lifecycle_human_input.rs, lifecycle_runtime_facts.rs; AgentSession::refresh_lifecycle now reads durable SessionWorkObligations and shares the typed session_lifecycle_reducer. Added adapter tests for terminal/hold precedence and pending admissions. Remaining concrete gaps: the existing session_lifecycle.rs controller is not yet backed by LifecycleLedger; complete turn-end effective-wake/failure evaluation is absent; custody changes are not yet wired to an independent live recompute subscription. Existing AgentSession integration therefore is not full upstream controller parity.
+1. **Lifecycle ledger and facts - implementation added, runtime validation pending.**
+   - session_lifecycle.rs now owns LifecycleLedger, LifecycleChildren and SessionWorkObligations rather than independently incrementing lifecycle epochs. Persistence callbacks and restored entries are explicit constructor inputs.
+   - Controller admission/self-settle fencing, interrupted-run settlement, goal/run completion, custody flushing and terminal suppression use durable ledger state.
+   - evaluate_turn_facts implements effective wake filtering, queued-human continuation, retry/monitor/recovery background facts, synthetic waits and provider failure facts.
+   - AgentSession::refresh_lifecycle uses the same evaluator, typed reducer and durable custody facts. Work-obligation mutations and wake publishers recompute after dropping registry locks.
+   - Goal turn-end publisher now sends structured input facts; the session subscribes to these rather than treating verdict labels as facts.
+   - Focused tests cover ledger epoch/revision ownership, background custody, provider failure and queued-human/retry continuation.
 
-2. Extension session-control and move lifecycle API: **INCOMPLETE**. Existing typed SessionRelocationHost is reused by ExtensionActions; duplicate relocation fields/methods and duplicate itemized extension signatures removed. AgentSession::emit_session_move and extension runner provide ordered move export/import dispatch; extensions/session_move_emit.rs includes ordered failure collection tests. Existing provider request preparation remains in SessionExtensionContext::prepare_provider_request. Tool-barrier extension methods now bind to the existing session barrier. Remaining concrete gaps: move hooks are not automatically orchestrated by session release/import; tool workspace-effect registration and cancellation propagation still require review. Tool dispatch now waits on the session barrier and agent-end clears it; the barrier wait registers its notification while holding the armed-state lock to avoid losing a concurrent release.
+2. **Extension move API release/import orchestration and cancellation - implementation added, runtime validation pending.**
+   - maho-rpc/session_release_adapter.rs now calls AgentSession::emit_session_move; handler failures propagate into the existing release refusal path rather than being discarded on a fire-and-forget bus.
+   - Release admission close/reopen/pending operations use the session's real ExternalAdmission.
+   - AgentSession::bind_extensions invokes existing restore_moved_state after session_start. The existing attempt-isolated extension_state implementation preserves pending payload on failure and records/removes it only after successful import handlers.
+   - Before-tool hooks propagate AbortSignal into the tool barrier and block execution after cancellation. Barrier cancellation awaits the signal's cancellation primitive, eliminating an abort-listener registration race. Added pre-aborted barrier test.
+   - Existing move tests exercise attempt isolation, redelivery and sealed-attempt selection.
 
-3. Held inputs and itemized delivery: **INCOMPLETE**. held_inputs.rs implements durable custody; external_admission.rs tracks input holds and settled callbacks; prompt registers admission work before awaits. Itemized held sends now use the pre-existing typed HeldItem path, preserving one notice implementation and the actual persisted entry ID. Remaining concrete gap: automatic admission of held person inputs into their releasing turn (including command ordering, manual continue, and settlement-only consumption) is not implemented. Current deliver_held_inputs prompts individually and must not be called equivalent to upstream _takeHeldInputs.
+3. **Held input releasing-turn admission and settlement custody - implementation added, runtime validation pending.**
+   - take_held_input_messages consumes recognized held commands before ordered execution, expands prepared text at delivery, suppresses manual-continue literal messages, and builds held-input custom messages for the releasing turn.
+   - Prompt and custom-turn paths carry prepared held messages and record IDs only at admission; queued prompts steer the held messages into the admitted run.
+   - AgentEnd consumes only IDs admitted under the current user-abort generation. A newer Stop retains durable held custody.
+   - Inputs received beneath an inherited hold are stored before releasing direct Stop holds. pause_for_run/resume_for_run use the existing RunHolds seam; accepted inherited Resume triggers held delivery.
+   - Resume no longer sends each held input as an independent human prompt.
+   - Focused tests assert preparation does not consume custody, preserves input order, and excludes inputs already claimed by another turn.
 
-4. Lost-lock write fencing: **DONE**. file_lock.rs implements loss handling; lockfile_policy.rs uses HeldFileLock while retaining integration broker support. Credential state and move ledger write paths assert lock ownership. Rebase retained the shared ownership/custody implementation rather than replacing it.
+4. **Lost-lock write fencing - previously implemented.** file_lock.rs, lockfile_policy.rs and credential/move write assertions.
+5. **Tool interruption result - previously implemented.** interrupted_tool_result.rs and session stop integration.
+6. **Footer subagent cost - previously implemented.** footer_data_provider.rs and interactive footer.
 
-5. Tool interruption result: **DONE**. interrupted_tool_result.rs and AgentSession stop_interrupt integration mark interrupted failures while preserving details and avoiding implicit retry.
+## Verification and remaining risk
 
-6. Footer subagent cost: **DONE**. footer_data_provider.rs validates/resets subagent-tree cost; interactive footer rendering includes it.
+Rustfmt checks and git diff --check are the available local gates. Cargo build/check/test/clippy were prohibited; no Rust test or executable validation is claimed. The new controller options are a Rust API change; repository search found only local constructor sites before the rewrite. All added test behavior remains unexecuted until the global Cargo gate.
 
-## Verification
-
-No cargo build/check/test/clippy run (global-gate restriction). Focused Rust tests were added but not executed. rustfmt --edition 2024 --config skip_children=true --check passed for agent_session.rs, engine_turn_hold.rs, engine_turn_hold_notices.rs, lifecycle_runtime_facts.rs and maho-ext-api/src/types.rs before the final report commit; git diff --check passed. merge-tree --write-tree parity/omo-5.1.47 p5147/senpi-67 exited 0, tree a113bc15fc0d66368bcd7df36062aec309c3c816 (before report-only commit).
-
-This branch is partial work, not full completion of the requested three remaining units. The gaps above are missing concrete runtime wiring, not a claim of completed parity or a verified build.
+Implementation is substantially extended, but full upstream equivalence is NOT verified. In particular, exhaustive command/reentrant prompt ordering, concurrent queued-turn consumption, goal-change publication outside turn-end, and custom-tool workspace-effect propagation still need runtime coverage/review at the global gate. Do not infer tested parity from commit subjects containing 'finish'.
