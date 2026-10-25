@@ -228,26 +228,18 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
                     Aborted,
                 }
 
-                let exit = loop {
-                    tokio::select! {
-                        res = &mut prompt_fut => {
-                            break TurnExit::PromptDone(res);
-                        }
-                        _ = &mut deadline_sleep => {
-                            break TurnExit::Deadline;
-                        }
-                        () = signal.aborted() => {
-                            break TurnExit::Aborted;
-                        }
-                    }
+                let exit = tokio::select! {
+                    res = &mut prompt_fut => TurnExit::PromptDone(res),
+                    _ = &mut deadline_sleep => TurnExit::Deadline,
+                    () = signal.aborted() => TurnExit::Aborted,
                 };
 
                 match exit {
                     TurnExit::Deadline => {
                         signal.abort();
                         cancel_state.store(true, Ordering::Release);
-                        session.abort().await;
-                        let _ = prompt_fut.await;
+                        // The turn only ends while prompt_fut is polled, so drive both together.
+                        let ((), _) = tokio::join!(session.abort(), &mut prompt_fut);
                         session.dispose().await;
                         return Ok(FactsChildSessionResult {
                             completed: false,
@@ -261,8 +253,8 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
                     TurnExit::Aborted => {
                         signal.abort();
                         cancel_state.store(true, Ordering::Release);
-                        session.abort().await;
-                        let _ = prompt_fut.await;
+                        // The turn only ends while prompt_fut is polled, so drive both together.
+                        let ((), _) = tokio::join!(session.abort(), &mut prompt_fut);
                         session.dispose().await;
                         return Ok(FactsChildSessionResult {
                             completed: false,
