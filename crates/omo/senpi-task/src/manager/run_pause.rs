@@ -25,16 +25,11 @@ pub struct EngineInheritReceipt {
     pub child_seq: u64,
 }
 
-/// What a child's engine reports about this parent's run hold right now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ObservedHold {
-    pub held: bool,
-    pub child_seq: u64,
-}
+pub use crate::pause::ports::{EngineHoldInputResult, ObservedHold};
 
 /// A resumed child's turn: the id the engine opened, which settles with that turn's outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResumedChildTurn {
+pub struct TaskResumedTurn {
     pub turn_id: String,
 }
 
@@ -44,20 +39,6 @@ pub struct HeldTaskInput {
     pub input_id: String,
     pub revision: u64,
     pub text: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EngineHoldInputResult {
-    Held {
-        entry_id: String,
-        duplicate: bool,
-    },
-    AlreadyDelivered {
-        revision: u64,
-    },
-    InputIdConflict {
-        held_revision: u64,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,7 +53,7 @@ pub enum ResumeTurnResult {
 pub struct RunPauseAdmissionHeld;
 
 /// The child engine's own pause controls (senpi#3811). A child on an older engine exposes none.
-pub trait ChildPausePort: Send + Sync {
+pub trait TaskChildPausePort: Send + Sync {
     /// `None` is the engine's `refused: "wrong_parent"` answer.
     fn pause_for_run(
         &self,
@@ -145,7 +126,7 @@ pub trait TaskRunPausePorts: Send + Sync {
     /// Milliseconds since the epoch, as the store's timestamps are spelled.
     fn now(&self) -> i64;
     fn live_handle(&self, task_id: &str) -> Option<Arc<dyn ManagedChildHandle>>;
-    fn child(&self) -> Option<Arc<dyn ChildPausePort>>;
+    fn child(&self) -> Option<Arc<dyn TaskChildPausePort>>;
     fn barrier(&self) -> Option<AdmissionBarrier>;
     /// Record the run's owner on the task record so a restarted host re-holds it under the same run.
     fn remember_owner(&self, task_id: &str, owner: &RunPauseOwner) -> Result<(), StoreError>;
@@ -155,17 +136,14 @@ pub trait TaskRunPausePorts: Send + Sync {
     /// `transition({ type: "unpause" })`; `false` when the record changed under the caller.
     fn apply_unpause(&self, task_id: &str, timestamp: &str) -> bool;
     /// Rebuild a paused child whose host is gone; it starts no turn.
-    fn restore(
-        &self,
-        record: &TaskRecord,
-    ) -> Option<Result<Arc<dyn ManagedChildHandle>, String>>;
+    fn restore(&self, record: &TaskRecord) -> Option<Result<Arc<dyn ManagedChildHandle>, String>>;
     fn track(
         &self,
         task_id: &str,
         handle: Arc<dyn ManagedChildHandle>,
         model: &str,
         epoch: i64,
-        turn: ResumedChildTurn,
+        turn: TaskResumedTurn,
     );
     /// A revive transition for an idle resident child joining a pause.
     fn revive(&self, record: &TaskRecord, timestamp: String) -> TaskRecord;
@@ -280,7 +258,7 @@ impl TaskRunPause {
         }
     }
 
-    fn child_port(&self) -> Result<Arc<dyn ChildPausePort>, String> {
+    fn child_port(&self) -> Result<Arc<dyn TaskChildPausePort>, String> {
         self.ports
             .child()
             .ok_or_else(|| "child pause port is not installed".to_string())
@@ -398,10 +376,9 @@ impl TaskRunPause {
         lock(&self.attempts).insert(task_id.to_string(), request.resume_id.clone());
         let mut cutoff = request.child_seq_cutoff;
         if handle.is_none() {
-            let restored = self
-                .ports
-                .restore(&record)
-                .ok_or_else(|| format!("paused child {task_id} has no live handle and no restore port"))??;
+            let restored = self.ports.restore(&record).ok_or_else(|| {
+                format!("paused child {task_id} has no live handle and no restore port")
+            })??;
             let ack = port
                 .pause_for_run(&restored, &request.owner)?
                 .ok_or_else(|| format!("restored child {task_id} is held by another parent"))?;
@@ -418,7 +395,10 @@ impl TaskRunPause {
             self.park(task_id, record.notification.run_epoch);
             return Err(RunPauseAdmissionHeld.to_string());
         }
-        if !self.capacity.acquire(task_id, record.notification.run_epoch) {
+        if !self
+            .capacity
+            .acquire(task_id, record.notification.run_epoch)
+        {
             return Err(RunPauseAdmissionHeld.to_string());
         }
         let result = port.resume_turn(
@@ -442,7 +422,10 @@ impl TaskRunPause {
             }
             ResumeTurnResult::Resumed { turn_id } => {
                 self.intents.clear(task_id);
-                if !self.ports.apply_unpause(task_id, &now_iso(self.ports.now())) {
+                if !self
+                    .ports
+                    .apply_unpause(task_id, &now_iso(self.ports.now()))
+                {
                     return Err("paused child changed while resuming".to_string());
                 }
                 lock(&self.owners).remove(task_id);
@@ -453,14 +436,17 @@ impl TaskRunPause {
                     handle,
                     &record.model,
                     record.notification.run_epoch,
-                    ResumedChildTurn {
+                    TaskResumedTurn {
                         turn_id: turn_id.clone(),
                     },
                 );
                 ResumeTaskResult::Resumed { turn_id }
             }
         };
-        lock(&self.resumed).insert(task_id.to_string(), (request.resume_id.clone(), outcome.clone()));
+        lock(&self.resumed).insert(
+            task_id.to_string(),
+            (request.resume_id.clone(), outcome.clone()),
+        );
         if let Some(ticket) = &ticket {
             ticket.leave();
         }
@@ -468,11 +454,13 @@ impl TaskRunPause {
     }
 
     /// `observeTaskHold`: what the child's engine reports about this parent's hold.
-    pub fn observe_task_hold(&self, task_id: &str, parent_session_id: &str) -> Option<ObservedHold> {
+    pub fn observe_task_hold(
+        &self,
+        task_id: &str,
+        parent_session_id: &str,
+    ) -> Option<ObservedHold> {
         let handle = self.ports.live_handle(task_id)?;
-        self.ports
-            .child()?
-            .observe_hold(&handle, parent_session_id)
+        self.ports.child()?.observe_hold(&handle, parent_session_id)
     }
 
     /// `resumeLostTask`: release a child the run recorded as lost but whose engine still holds it.
@@ -530,7 +518,7 @@ impl TaskRunPause {
                     handle,
                     &record.model,
                     record.notification.run_epoch,
-                    ResumedChildTurn {
+                    TaskResumedTurn {
                         turn_id: turn_id.clone(),
                     },
                 );
@@ -560,10 +548,9 @@ impl TaskRunPause {
             .ok_or_else(|| format!("paused child {task_id} has no recorded run owner"))?;
         let handle = match self.ports.live_handle(task_id) {
             Some(handle) => handle,
-            None => self
-                .ports
-                .restore(&record)
-                .ok_or_else(|| format!("paused child {task_id} has no live handle and no restore port"))??,
+            None => self.ports.restore(&record).ok_or_else(|| {
+                format!("paused child {task_id} has no live handle and no restore port")
+            })??,
         };
         port.hold_input(&handle, input, &owner)
     }
@@ -596,13 +583,17 @@ impl TaskRunPause {
         let timestamp = now_iso(self.ports.now());
         let revived = self.ports.revive(&record, timestamp.clone());
         if revived.status != record.status {
-            return Err(format!("idle child {task_id} changed while joining the pause"));
+            return Err(format!(
+                "idle child {task_id} changed while joining the pause"
+            ));
         }
         if let Err(error) = self.ports.store().replace(&revived) {
             return Err(error.to_string());
         }
         if !self.ports.apply_pause(task_id, &timestamp) {
-            return Err(format!("idle child {task_id} changed while joining the pause"));
+            return Err(format!(
+                "idle child {task_id} changed while joining the pause"
+            ));
         }
         self.remember(task_id, owner)?;
         Ok(ack)
@@ -622,11 +613,7 @@ impl TaskRunPause {
         lock(&self.resumed).remove(task_id);
     }
 
-    pub fn settlement(
-        &self,
-        task_id: &str,
-        epoch: i64,
-    ) -> tokio::sync::oneshot::Receiver<()> {
+    pub fn settlement(&self, task_id: &str, epoch: i64) -> tokio::sync::oneshot::Receiver<()> {
         self.intents.settlement(task_id, epoch)
     }
 }

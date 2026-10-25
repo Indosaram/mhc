@@ -20,8 +20,7 @@ use crate::dag::scheduler::{DagNodeControlError, DagNodeControlErrorCode, DagSch
 use crate::dag::store::DagStoreError;
 use crate::dag::types::{DagNodeId, DagRunId};
 use crate::pause::guidance::{
-    Guidance, GuidanceChange, GuidanceDraft, GuidanceError, GuidanceScope, add_guidance,
-    change_guidance,
+    Guidance, GuidanceError, GuidanceScope, add_guidance, change_guidance,
 };
 use crate::steering::{CancelOptions, CancelOutcome};
 
@@ -158,18 +157,18 @@ pub fn require_user_paused(
 }
 
 fn guidance_failure(error: GuidanceError, run_id: &DagRunId) -> DagNodeControlError {
-    match error.code() {
-        crate::pause::guidance::GuidanceErrorCode::NotFound => DagNodeControlError::new(
+    match error {
+        crate::pause::guidance::GuidanceError::NotFound => DagNodeControlError::new(
             DagNodeControlErrorCode::GuidanceNotFound,
             "Guidance does not exist.",
         )
         .with_run_id(run_id.clone()),
-        crate::pause::guidance::GuidanceErrorCode::Frozen => DagNodeControlError::new(
+        crate::pause::guidance::GuidanceError::Frozen => DagNodeControlError::new(
             DagNodeControlErrorCode::GuidanceFrozen,
             "Dispatched guidance cannot be changed.",
         )
         .with_run_id(run_id.clone()),
-        crate::pause::guidance::GuidanceErrorCode::DuplicateId => DagNodeControlError::new(
+        crate::pause::guidance::GuidanceError::DuplicateId => DagNodeControlError::new(
             DagNodeControlErrorCode::InvalidArguments,
             "Guidance ids must be unique.",
         )
@@ -177,7 +176,10 @@ fn guidance_failure(error: GuidanceError, run_id: &DagRunId) -> DagNodeControlEr
     }
 }
 
-fn journal_guidance(options: &DagSchedulerOptions, record: DagRunRecordV1) -> Result<Arc<DagJournal<DagRunRecordV1>>, DagNodeControlError> {
+fn journal_guidance(
+    options: &DagSchedulerOptions,
+    record: DagRunRecordV1,
+) -> Result<Arc<DagJournal<DagRunRecordV1>>, DagNodeControlError> {
     control_journal(options, record, std::collections::BTreeMap::new()).map_err(|error| {
         DagNodeControlError::new(DagNodeControlErrorCode::InvalidArguments, error.to_string())
     })
@@ -207,7 +209,11 @@ pub fn guide_paused_dag(
         .with_run_id(run_id.clone())
         .with_node_ids(vec![node_id.clone()]));
     }
-    let draft = GuidanceDraft {
+    let draft = Guidance {
+        revision: 0,
+        state: crate::pause::guidance::GuidanceState::Draft,
+        edited_at: None,
+        deliveries: vec![],
         id: uuid_like(run_id, state.guidance.len()),
         scope: match &node_id {
             None => GuidanceScope::Run,
@@ -219,8 +225,14 @@ pub fn guide_paused_dag(
         created_at: now_iso(options),
     };
     let created_id = draft.id.clone();
-    state.guidance = add_guidance(&state.guidance, draft)
-        .map_err(|error| guidance_failure(error, run_id))?;
+    state.guidance = add_guidance(
+        &state.guidance,
+        draft.id,
+        draft.scope,
+        draft.text,
+        draft.created_at,
+    )
+    .map_err(|error| guidance_failure(error, run_id))?;
     pauses.write(run_id, &state).map_err(|error| {
         DagNodeControlError::new(DagNodeControlErrorCode::InvalidArguments, error.to_string())
             .with_run_id(run_id.clone())
@@ -278,16 +290,8 @@ fn change_paused_guidance(
             .with_run_id(run_id.clone())
     })?;
     require_user_paused(state.pause.as_ref(), run_id)?;
-    state.guidance = change_guidance(
-        &state.guidance,
-        &GuidanceChange {
-            id: id.clone(),
-            text,
-            remove,
-            edited_at: now_iso(options),
-        },
-    )
-    .map_err(|error| guidance_failure(error, run_id))?;
+    state.guidance = change_guidance(&state.guidance, &id, text, remove, now_iso(options))
+        .map_err(|error| guidance_failure(error, run_id))?;
     pauses.write(run_id, &state).map_err(|error| {
         DagNodeControlError::new(DagNodeControlErrorCode::InvalidArguments, error.to_string())
             .with_run_id(run_id.clone())
@@ -308,7 +312,11 @@ fn change_paused_guidance(
 
 /// The inherited-hold close port: a cancelled child's hold is closed only once the child ended.
 pub trait PausedNodeHoldPort: Send + Sync {
-    fn close_hold(&self, task_id: &str, cause: PausedNodeCancelCause) -> Result<(), DagNodeControlError>;
+    fn close_hold(
+        &self,
+        task_id: &str,
+        cause: PausedNodeCancelCause,
+    ) -> Result<(), DagNodeControlError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -453,7 +461,10 @@ mod tests {
     fn a_pause_state_round_trips_through_the_run_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
         let pauses = DagPauseStore::new(dir.path().join("runs"));
-        assert_eq!(pauses.read(&run_id()).expect("absent"), DagPauseState::default());
+        assert_eq!(
+            pauses.read(&run_id()).expect("absent"),
+            DagPauseState::default()
+        );
         let state = DagPauseState {
             pause: Some(DagRunPause {
                 reason: DagRunPauseReason::UserStop,

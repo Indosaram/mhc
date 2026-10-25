@@ -138,7 +138,11 @@ impl TaskComponent {
     }
 
     /// Wire the custody the bridge restores before the reconcile and applies on a Resume.
-    pub fn set_pause_custody(&self, api: &mut ExtensionApi, custody: crate::event_bridge::TaskPauseCustody) {
+    pub fn set_pause_custody(
+        &self,
+        api: &mut ExtensionApi,
+        custody: crate::event_bridge::TaskPauseCustody,
+    ) {
         custody.register(api);
         *self
             .pause_custody
@@ -265,7 +269,9 @@ impl TaskComponent {
         )
         .map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
         // The on-demand memory report's task section: registered once, read only when requested.
-        if let Err(error) = crate::memory_reporter::register_task_memory_reporter(api, engine.memory.clone()) {
+        if let Err(error) =
+            crate::memory_reporter::register_task_memory_reporter(api, engine.memory.clone())
+        {
             maho_ext_api::diagnostic(&format!("task memory reporter unavailable: {error}"));
         }
         let dag_status_timers = status_timers;
@@ -312,7 +318,9 @@ impl TaskComponent {
         component.set_pause_custody(
             api,
             crate::event_bridge::TaskPauseCustody {
-                bridge: Arc::new(crate::run_pause_bridge::EngineRunPauseBridge::new(component.engine.pause.clone())),
+                bridge: Arc::new(crate::run_pause_bridge::EngineRunPauseBridge::new(
+                    component.engine.pause.clone(),
+                )),
                 session_id: custody_session,
             },
         );

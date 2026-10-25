@@ -8,20 +8,7 @@
 use senpi_task::pause::ports::{RunRef, RunRefKind};
 use serde_json::Value;
 
-/// One hold a native engine reports: its kind, its key, and the optional data it carries.
-#[derive(Debug, Clone, PartialEq)]
-pub struct EngineHoldEntry {
-    pub kind: String,
-    pub key: String,
-    pub data: Option<Value>,
-}
-
-/// `EnginePauseState`: the native projection the engine's own context exposes.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct EnginePauseState {
-    pub pause_seq: u64,
-    pub holds: Vec<EngineHoldEntry>,
-}
+pub use senpi_task::pause::ports::{EngineHold as EngineHoldEntry, EnginePauseState};
 
 /// One RPC pause record (`RpcPauseState.records`): the same hold, as a child's engine serializes it.
 #[derive(Debug, Clone, PartialEq)]
@@ -88,7 +75,12 @@ pub fn read_engine_run_hold(state: &EngineHoldState) -> EngineRunHold {
                 if entry.kind != "run_fence" {
                     continue;
                 }
-                if let Some(candidate) = entry.data.as_ref().and_then(|data| data.get("runRef")).and_then(is_run_ref) {
+                if let Some(candidate) = entry
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("runRef"))
+                    .and_then(is_run_ref)
+                {
                     push_unique(&mut refs, candidate);
                 }
             }
@@ -183,7 +175,10 @@ mod tests {
         });
         let hold = read_engine_run_hold(&state);
         assert!(!hold.stopped);
-        assert_eq!(hold.run_refs, vec![RunRef::new(RunRefKind::Workpool, "pool")]);
+        assert_eq!(
+            hold.run_refs,
+            vec![RunRef::new(RunRefKind::Workpool, "pool")]
+        );
     }
 
     #[test]
