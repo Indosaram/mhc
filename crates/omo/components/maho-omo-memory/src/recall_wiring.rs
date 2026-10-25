@@ -151,6 +151,7 @@ impl MemoryRecallWiring {
             coordinator: options.coordinator.clone(),
             send_message: options.send_message.clone(),
             append_entry: options.append_entry.clone(),
+            resolve_source: None,
             warn: options.warn.clone(),
         });
         Arc::new(Self {

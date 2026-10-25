@@ -356,7 +356,7 @@ fn given_a_held_nudge_when_shutdown_runs_then_delivery_is_retracted_only_after_t
     let coordinator = Arc::clone(harness.coordinator.as_ref().unwrap());
     *coordinator.sidecar.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&sidecar));
 
-    harness.wiring.delivery().accept(SESSION, &harness.context, &[RecallNudge { path: "held.md".to_string(), hint: "held".to_string() }]);
+    harness.wiring.delivery().accept(SESSION, &harness.context, &[RecallNudge { path: "held.md".to_string(), hint: "held".to_string(), source: None }]);
     assert_eq!(coordinator.enqueued.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(), 1, "the nudge is held on the coordinator");
 
     harness.wiring.on_session_shutdown(SESSION);
