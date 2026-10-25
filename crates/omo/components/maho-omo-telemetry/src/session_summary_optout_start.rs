@@ -12,8 +12,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use telemetry_core::{TelemetryDiagnosticEvent, TelemetryDiagnostics, TelemetryError};
-
 use crate::session_summary_liveness::PidProbe;
 use crate::session_summary_purge::{purge_unconsented_queue, summary_dir};
 use crate::session_summary_recovery::purge_opted_out_storage;
@@ -25,24 +23,9 @@ pub struct StartOptOutPurgeInput {
     /// True when this process's own persisted setting is off: unreadable summary files are deleted too.
     pub persisted_opt_out: bool,
     pub is_pid_alive: Option<PidProbe>,
-    pub diagnostics: Option<TelemetryDiagnostics>,
 }
 
-pub async fn start_opt_out_purge(input: StartOptOutPurgeInput) {
-    let report = |error: TelemetryError| {
-        let Some(diagnostics) = &input.diagnostics else {
-            return;
-        };
-        diagnostics(&telemetry_core::TelemetryDiagnosticInput {
-            event: TelemetryDiagnosticEvent::TelemetryActivityStateWriteFailed,
-            source: "omo-native-component".into(),
-            error: Some(error),
-            error_kind: Some(telemetry_core::TelemetryDiagnosticErrorKind::Error),
-            entry_kind: None,
-            error_code: None,
-            count: None,
-        });
-    };
+pub fn start_opt_out_purge(input: StartOptOutPurgeInput) {
     purge_unconsented_queue(
         &input.state_dir,
         input.is_scope_consented.as_ref(),
@@ -51,16 +34,11 @@ pub async fn start_opt_out_purge(input: StartOptOutPurgeInput) {
     if !has_liveness_leftovers(&input.state_dir) {
         return;
     }
-    let is_scope_consented = Arc::clone(&input.is_scope_consented);
-    let is_pid_alive = input.is_pid_alive.clone();
-    let state_dir = input.state_dir.clone();
-    let outcome = tokio::task::spawn_blocking(move || {
-        purge_opted_out_storage(&state_dir, is_scope_consented, is_pid_alive);
-    })
-    .await;
-    if let Err(error) = outcome {
-        report(TelemetryError::new(error.to_string()));
-    }
+    purge_opted_out_storage(
+        &input.state_dir,
+        Arc::clone(&input.is_scope_consented),
+        input.is_pid_alive.clone(),
+    );
 }
 
 pub fn has_liveness_leftovers(state_dir: &std::path::Path) -> bool {
@@ -93,8 +71,8 @@ mod tests {
         .unwrap();
     }
 
-    #[tokio::test]
-    async fn registration_purge_deletes_other_projects_windows() {
+    #[test]
+    fn registration_purge_deletes_other_projects_windows() {
         let dir = tempfile::tempdir().unwrap();
         queue_record(dir.path(), "other.json", "/other");
         queue_record(dir.path(), "mine.json", "/mine");
@@ -103,16 +81,14 @@ mod tests {
             is_scope_consented: consented_to("/mine"),
             persisted_opt_out: false,
             is_pid_alive: None,
-            diagnostics: None,
-        })
-        .await;
+        });
         let mut names = crate::session_summary_files::list_names(&summary_dir(dir.path()));
         names.sort();
-        assert_eq!(names, vec!["mine.json"]);
+        assert_eq!(names, vec!["mine.json".to_string()]);
     }
 
-    #[tokio::test]
-    async fn liveness_leftovers_are_cleaned_only_when_they_exist() {
+    #[test]
+    fn liveness_leftovers_are_cleaned_only_when_they_exist() {
         let dir = tempfile::tempdir().unwrap();
         assert!(!has_liveness_leftovers(dir.path()));
         std::fs::create_dir_all(pending_dir(dir.path())).unwrap();
@@ -123,23 +99,19 @@ mod tests {
             is_scope_consented: consented_to("/mine"),
             persisted_opt_out: true,
             is_pid_alive: Some(Arc::new(|_| false)),
-            diagnostics: None,
-        })
-        .await;
+        });
         assert!(crate::session_summary_files::list_names(&pending_dir(dir.path())).is_empty());
     }
 
-    #[tokio::test]
-    async fn a_quiet_directory_purges_without_touching_anything() {
+    #[test]
+    fn a_quiet_directory_purges_without_touching_anything() {
         let dir = tempfile::tempdir().unwrap();
         start_opt_out_purge(StartOptOutPurgeInput {
             state_dir: dir.path().to_path_buf(),
             is_scope_consented: consented_to("/mine"),
             persisted_opt_out: true,
             is_pid_alive: None,
-            diagnostics: None,
-        })
-        .await;
+        });
         assert!(!summary_dir(dir.path()).exists());
     }
 }
