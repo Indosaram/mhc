@@ -85,6 +85,7 @@ pub fn excluded_model_pattern<'a>(model: &str, patterns: &'a [String]) -> Option
     None
 }
 
+/// `excluded-models.ts` `isExcludedModel`: whether any pattern keeps `model` out of a registry view.
 pub fn is_excluded_model(model: &str, patterns: &[String]) -> bool {
     excluded_model_pattern(model, patterns).is_some()
 }

@@ -32,10 +32,12 @@ pub mod run_finalization_git;
 pub mod run_finalization_settlement;
 pub mod run_finalization;
 pub mod spawn_supervisor_support;
+pub mod ledger_deadline_reader;
 pub mod run_sentinel;
 pub mod run_outcome_publication;
 pub mod supervisor_process_identity;
 pub mod memory_run_supervisor;
+pub mod supervisor_admission;
 #[cfg(test)]
 pub mod memory_run_supervisor_ic8_process_groups;
 #[cfg(test)]

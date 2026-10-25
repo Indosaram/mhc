@@ -10,6 +10,8 @@ pub struct ReflectionExecutionInput<'a>{
     pub route:Option<&'a super::fork_cost::MemoryLaunchRoute>,
     pub sandbox:Option<&'a dyn Fn(super::spawn_types::ReflectionSpawnArgs)->Result<super::spawn_types::ReflectionSpawnArgs,String>>,
     pub hard_deadline_at:f64,pub options:ReflectionChildOptions<'a>,pub finalization:&'a RunFinalizationContext<'a>,
+    /// The explicit machine-wide memory root the runner was configured with; omitted means the layout's own.
+    pub memory_root:Option<&'a Path>,
 }
 
 pub async fn execute_reflection_run(
@@ -23,11 +25,20 @@ pub async fn execute_reflection_run(
     let ReflectionModelResolution::Resolved{model,thinking,fallbacks,category,..}=input.resolution else{return finalize_execution_failure(&input,Some(&worktree),MemoryModelAttemptError::Launch("reflection child launch requires a resolved model".into()),terminal_gate);};
     let launched=std::cell::RefCell::new(Some(append_launched));
     let worktree_ref=&worktree;let input_ref=&input;
+    // Queue time is excluded from the budget, but a fallback attempt never gets a fresh one: each later attempt
+    // re-reads the durable admitted deadline the supervisor published.
+    let run_dir=input.identity.paths.reflection.join("runs").join(&input.run.run_id);
+    let hard_deadline=std::cell::Cell::new(input.hard_deadline_at);
     let result=super::memory_launch_preflight::resolve_and_preflight_memory_launch_typed(cache,super::memory_launch_preflight::MemoryLaunchPreflightInput{first:ReflectionModelCandidate{model:model.clone(),thinking:thinking.clone(), load_extensions: None },rest:fallbacks,launch:input.launch,env:input.env,env_flag:"SENPI_MEMORY_REFLECTION",config_sources:input.sources,surface_name:"reflection",now_ms:input.options.launched_at},warn,|candidate,attempt,next_attempt|{
         let launched=&launched;
+        let hard_deadline=&hard_deadline;
+        let run_dir=&run_dir;
         async move{
+            if attempt > 1 {
+                hard_deadline.set(reread_admitted_deadline(run_dir)?);
+            }
             let fork=input_ref.route.is_some_and(|route|route.route==super::fork_cost::Route::Fork);
-            let args=super::reflection_spawn_input::prepare_reflection_candidate_spawn(super::reflection_spawn_input::ReflectionCandidateSpawnInput{parent_session_file:input_ref.parent_session_file.filter(|_|fork),parent_cwd:input_ref.parent_cwd.filter(|_|fork),run:input_ref.run,worktree:worktree_ref,merge_policy:input_ref.merge_policy,category,candidate:&candidate,attempt:u32::try_from(attempt).map_err(|error|error.to_string())?,hard_deadline_at:input_ref.hard_deadline_at,next_attempt,config:input_ref.config,identity:input_ref.identity,env:input_ref.env.clone(),launch:input_ref.launch.clone(),now_ms:input_ref.options.launched_at as f64}).map_err(|error|error.to_string())?;
+            let args=super::reflection_spawn_input::prepare_reflection_candidate_spawn(super::reflection_spawn_input::ReflectionCandidateSpawnInput{parent_session_file:input_ref.parent_session_file.filter(|_|fork),parent_cwd:input_ref.parent_cwd.filter(|_|fork),run:input_ref.run,worktree:worktree_ref,merge_policy:input_ref.merge_policy,category,candidate:&candidate,attempt:u32::try_from(attempt).map_err(|error|error.to_string())?,hard_deadline_at:hard_deadline.get(),memory_root:input_ref.memory_root,next_attempt,config:input_ref.config,identity:input_ref.identity,env:input_ref.env.clone(),launch:input_ref.launch.clone(),now_ms:input_ref.options.launched_at as f64}).map_err(|error|error.to_string())?;
             if let Some(append)=launched.borrow_mut().take(){append()?;}
             let args=match input_ref.sandbox{Some(sandbox)=>sandbox(args)?,None=>args};
             super::spawn_supervisor::run_reflection_child(&args,ReflectionChildOptions{termination_grace_ms:input_ref.options.termination_grace_ms,max_output_bytes:input_ref.options.max_output_bytes,supervisor_command:input_ref.options.supervisor_command,supervisor_args:input_ref.options.supervisor_args,launched_at:input_ref.options.launched_at}).await
@@ -37,6 +48,17 @@ pub async fn execute_reflection_run(
     let run_dir=input.identity.paths.reflection.join("runs").join(&input.run.run_id);
     let ledger=super::reservation_run_ledger::parse_reservation_run_ledger(super::run_artifacts::read_run_json(&run_dir.join("ledger.json")).map_err(|error|error.to_string())?).map_err(|error|error.to_string())?;
     super::runner_finalization_result::require_finalized_result(super::run_finalization::finalize_recorded_outcome(input.finalization,&run_dir,&ledger)?).map(|result|ReflectionExecutionResult::Finalized(Box::new(result)))
+}
+
+/// The durable admitted deadline a fallback attempt must reuse (`runner-execution.ts` attempt closure): the
+/// supervisor rebased it by the queue duration, so the attempt chain shares one budget without the queue time.
+pub(crate) fn reread_admitted_deadline(run_dir: &Path) -> Result<f64, String> {
+    let ledger = super::reservation_run_ledger::parse_reservation_run_ledger(
+        super::run_artifacts::read_run_json(&run_dir.join("ledger.json"))
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(ledger.value()["hardDeadlineAt"].as_f64().unwrap_or(f64::NAN))
 }
 
 fn finalize_execution_failure(
@@ -57,6 +79,23 @@ fn finalize_execution_failure(
 #[cfg(all(test,unix))]
 mod tests{
     use super::*;
+    fn admitted_ledger(root:&Path,hard_deadline_at:f64){
+        super::super::run_artifacts::write_run_json_atomic(&root.join("ledger.json"),&serde_json::json!({"version":1,"runId":"run","kind":"reflection","trigger":"manual","startedAt":"now","hardDeadlineAt":hard_deadline_at,"terminationGraceMs":1000,"deadlineAt":hard_deadline_at+1000.0,"mergePolicy":"auto","worktreeDir":"missing","worktreeBranch":"memory/run","baseSha":"sha","gitFilePath":"missing/.git","gitFileSnapshot":"gitdir: missing","commonConfigPath":"config","commonConfigSnapshot":null}),0o600).unwrap();
+    }
+    #[test]
+    fn a_fallback_attempt_reuses_the_admitted_deadline_instead_of_the_pre_queue_one(){
+        let root=tempfile::tempdir().unwrap();
+        admitted_ledger(root.path(),30_000.0);
+        // The launcher's pre-queue budget was 10_000; the supervisor rebased it to 30_000.
+        assert_eq!(reread_admitted_deadline(root.path()),Ok(30_000.0));
+    }
+    #[test]
+    fn a_missing_or_torn_ledger_cannot_grant_a_fresh_budget(){
+        let root=tempfile::tempdir().unwrap();
+        assert!(reread_admitted_deadline(root.path()).is_err());
+        std::fs::write(root.path().join("ledger.json"),"{torn").unwrap();
+        assert!(reread_admitted_deadline(root.path()).is_err());
+    }
     struct Inactive;
     impl super::super::runner_types::ReflectionReservationPort for Inactive{
         fn read_state(&self)->Result<memory_core::reflection::ReservationState,String>{Ok(Default::default())}
@@ -69,7 +108,7 @@ mod tests{
         let supervisor_args=vec!["-c".into(),"printf '%s' '{\"version\":1,\"runId\":\"run\",\"attempt\":1,\"finishedAt\":\"now\",\"childExit\":{\"code\":0,\"signal\":null},\"timedOut\":false}' > \"$0/outcome.json\"; rm \"$0/launch.json\"".into()];
         let receipts=crate::receipts_port::DefaultReceiptsPort;let warn=|_:&str,_:&std::collections::BTreeMap<String,String>|{};
         let context=RunFinalizationContext{identity:&identity,reservation:&Inactive,launch:None,now_ms:&||0,receipts:Some(&receipts),warn:Some(&warn)};let launched=std::cell::Cell::new(0);
-        let result=execute_reflection_run(&mut ModelPreflight::default(),ReflectionExecutionInput{run:&run,resolution:&resolution,identity:&identity,config:&config,env:&env,sources:&[],launch:&launch,parent_session_file:None,parent_cwd:None,route:None,merge_policy:"auto",sandbox:None,hard_deadline_at:chrono::Utc::now().timestamp_millis() as f64+60000.0,options:ReflectionChildOptions{termination_grace_ms:100.0,max_output_bytes:1024,supervisor_command:Path::new("/bin/sh"),supervisor_args:&supervisor_args,launched_at:0},finalization:&context},|repo,run|{
+        let result=execute_reflection_run(&mut ModelPreflight::default(),ReflectionExecutionInput{run:&run,resolution:&resolution,identity:&identity,config:&config,env:&env,sources:&[],launch:&launch,parent_session_file:None,parent_cwd:None,route:None,merge_policy:"auto",sandbox:None,hard_deadline_at:chrono::Utc::now().timestamp_millis() as f64+60000.0,options:ReflectionChildOptions{termination_grace_ms:100.0,max_output_bytes:1024,supervisor_command:Path::new("/bin/sh"),supervisor_args:&supervisor_args,launched_at:0},finalization:&context,memory_root:None},|repo,run|{
             let exec=memory_core::git::exec::create_git_exec(Default::default());memory_core::reflection::create_reflection_worktree(repo,&run.run_id,&identity.paths.worktrees,exec.as_ref(),None).map_err(|error|error.to_string())
         },||{launched.set(launched.get()+1);Ok(())},|error|panic!("{error}"),|operation|operation()).await.unwrap();
         let ReflectionExecutionResult::Finalized(result)=result else{panic!("must finalize")};assert_eq!(result.outcome,"no_changes");assert_eq!(launched.get(),1);assert!(identity.paths.reflection.join("runs/run/final.json").exists());

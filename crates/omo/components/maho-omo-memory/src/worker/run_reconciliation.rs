@@ -37,13 +37,18 @@ pub async fn reconcile_run(context:&RunFinalizationContext<'_>,dir:&Path,ledger:
     let launching=|ledger:&ReservationRunLedger|ledger.value()["launching"]==true&&(context.now_ms)() as f64<=ledger.value()["hardDeadlineAt"].as_f64().unwrap_or(f64::NAN);
     if launching(&ledger){return Ok(None);}
     let classify=|ledger:&ReservationRunLedger,pid:&str,start:&str|recovery.classify(ledger.value()[pid].as_u64(),ledger.value().get(start).map(serde_json::Value::as_str));
+    let queued=|ledger:&ReservationRunLedger|ledger.value()["queued"]==true;
     let supervisor=classify(&ledger,"pid","processStart");
+    // A supervisor that is still waiting for machine admission is not late: its deadlines only start once admitted.
+    if queued(&ledger)&&matches!(supervisor,RunProcessVerdict::Alive|RunProcessVerdict::Unknown){return Ok(None);}
     let ledger=if matches!(supervisor,RunProcessVerdict::Alive|RunProcessVerdict::Unknown) {
         recovery.wait_outcome(&outcome,ledger.value()["deadlineAt"].as_f64().ok_or("Missing deadlineAt")?).await?;
         let refreshed=parse_reservation_run_ledger(read_run_json(&dir.join("ledger.json")).map_err(|error|error.to_string())?).map_err(|error|error.to_string())?;
         if matching(&outcome,&refreshed)?{return super::run_finalization::finalize_recorded_outcome(context,dir,&refreshed);}
         if launching(&refreshed){return Ok(None);}
-        match classify(&refreshed,"pid","processStart") {
+        let fresh_supervisor=classify(&refreshed,"pid","processStart");
+        if queued(&refreshed)&&matches!(fresh_supervisor,RunProcessVerdict::Alive|RunProcessVerdict::Unknown){return Ok(None);}
+        match fresh_supervisor {
             RunProcessVerdict::Unknown|RunProcessVerdict::Absent=>return recovery.abandon(dir,&refreshed),
             RunProcessVerdict::Alive=>return Ok(None),
             RunProcessVerdict::Dead=>refreshed,
@@ -239,5 +244,41 @@ mod tests {
         let context=RunFinalizationContext{identity:&identity,reservation:&Reservation,launch:None,now_ms:&||0,receipts:Some(&receipts),warn:Some(&warn)};
         let recovery=Recovery{verdicts:std::cell::RefCell::new([RunProcessVerdict::Unknown,RunProcessVerdict::Unknown].into()),calls:Default::default()};
         reconcile_run(&context,root.path(),ledger(root.path()),&recovery).await.unwrap();assert_eq!(*recovery.calls.borrow(),["outcome:105","abandon"]);
+    }
+    fn queued_ledger(root:&Path,process_start:Option<&str>)->ReservationRunLedger {
+        let value=serde_json::json!({"version":1,"runId":"run","kind":"reflection","trigger":"manual","startedAt":"now","hardDeadlineAt":100,"terminationGraceMs":5,"deadlineAt":105,"mergePolicy":"auto","worktreeDir":"missing","worktreeBranch":"memory/run","baseSha":"sha","gitFilePath":"missing/.git","gitFileSnapshot":"gitdir: missing","commonConfigPath":"config","commonConfigSnapshot":null,"queued":true,"launching":false,"pid":42,"processStart":process_start,"childPid":43,"childProcessStart":"child"});
+        super::super::run_artifacts::write_run_json_atomic(&root.join("ledger.json"),&value,0o600).unwrap();
+        parse_reservation_run_ledger(value).unwrap()
+    }
+    #[tokio::test]
+    async fn a_queued_live_supervisor_survives_its_old_deadline() {
+        let root=tempfile::tempdir().unwrap();
+        let identity=memory_core::identity::resolve::MemoryIdentity{id:"agent".into(),safe_slug:"agent".into(),paths:memory_core::identity::layout::build_identity_paths(root.path(),"agent")};
+        let receipts=crate::receipts_port::DefaultReceiptsPort;let warn=|_:&str,_:&std::collections::BTreeMap<String,String>|{};
+        let context=RunFinalizationContext{identity:&identity,reservation:&Reservation,launch:None,now_ms:&||90_000,receipts:Some(&receipts),warn:Some(&warn)};
+        let recovery=Recovery{verdicts:std::cell::RefCell::new([RunProcessVerdict::Alive].into()),calls:Default::default()};
+        assert!(reconcile_run(&context,root.path(),queued_ledger(root.path(),Some("supervisor-start")),&recovery).await.unwrap().is_none());
+        assert!(recovery.calls.borrow().is_empty());
+        assert!(!root.path().join("abandoned.json").exists()&&!root.path().join("quarantined.json").exists()&&!root.path().join("final.json").exists());
+    }
+    #[tokio::test]
+    async fn a_queued_supervisor_with_unknown_liveness_is_left_alone() {
+        let root=tempfile::tempdir().unwrap();
+        let identity=memory_core::identity::resolve::MemoryIdentity{id:"agent".into(),safe_slug:"agent".into(),paths:memory_core::identity::layout::build_identity_paths(root.path(),"agent")};
+        let receipts=crate::receipts_port::DefaultReceiptsPort;let warn=|_:&str,_:&std::collections::BTreeMap<String,String>|{};
+        let context=RunFinalizationContext{identity:&identity,reservation:&Reservation,launch:None,now_ms:&||90_000,receipts:Some(&receipts),warn:Some(&warn)};
+        let recovery=Recovery{verdicts:std::cell::RefCell::new([RunProcessVerdict::Unknown].into()),calls:Default::default()};
+        assert!(reconcile_run(&context,root.path(),queued_ledger(root.path(),None),&recovery).await.unwrap().is_none());
+        assert!(recovery.calls.borrow().is_empty());
+    }
+    #[tokio::test]
+    async fn a_queued_supervisor_proven_dead_still_settles_as_failed() {
+        let root=tempfile::tempdir().unwrap();
+        let identity=memory_core::identity::resolve::MemoryIdentity{id:"agent".into(),safe_slug:"agent".into(),paths:memory_core::identity::layout::build_identity_paths(root.path(),"agent")};
+        let receipts=crate::receipts_port::DefaultReceiptsPort;let warn=|_:&str,_:&std::collections::BTreeMap<String,String>|{};
+        let context=RunFinalizationContext{identity:&identity,reservation:&Reservation,launch:None,now_ms:&||99_000,receipts:Some(&receipts),warn:Some(&warn)};
+        let recovery=Recovery{verdicts:std::cell::RefCell::new([RunProcessVerdict::Dead,RunProcessVerdict::Absent].into()),calls:Default::default()};
+        assert!(reconcile_run(&context,root.path(),queued_ledger(root.path(),Some("supervisor-start")),&recovery).await.unwrap().is_none());
+        assert_eq!(*recovery.calls.borrow(),["fail:false"]);
     }
 }

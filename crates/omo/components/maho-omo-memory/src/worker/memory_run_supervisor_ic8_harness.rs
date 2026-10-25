@@ -23,7 +23,9 @@ impl Ic8Harness {
         write_run_json_atomic(&path.join("launch.json"), &RunLaunchManifest {
             version: 1, run_id: "run-ic8".into(), attempt: 1, next_attempt: None, kind: RunKind::Reflection,
             command: self.executable.to_string_lossy().into_owned(), args, cwd: path.to_string_lossy().into_owned(), env,
-            hard_deadline_at: 2000.0, termination_grace_ms: 1000.0, max_output_bytes: 65_536,
+            hard_deadline_at: 2000.0, queued_at: None,
+            memory_root: Some(path.join("memory-root").to_string_lossy().into_owned()), max_concurrent_runs: None,
+            termination_grace_ms: 1000.0, max_output_bytes: 65_536,
             stdout_path: path.join("child-stdout.log").to_string_lossy().into_owned(), stderr_path: path.join("child-stderr.log").to_string_lossy().into_owned(),
         }, 0o600).map_err(|error| error.to_string())?;
         self.roots.push(root);

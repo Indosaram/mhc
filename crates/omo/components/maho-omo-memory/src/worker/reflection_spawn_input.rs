@@ -6,7 +6,7 @@ pub struct ReflectionCandidateSpawnInput<'a> {
     pub parent_session_file: Option<&'a Path>, pub parent_cwd: Option<&'a Path>,
     pub run: &'a ReservedRun, pub worktree: &'a ReflectionWorktree,
     pub merge_policy: &'a str, pub category: &'a str, pub candidate: &'a ReflectionModelCandidate,
-    pub attempt: u32, pub hard_deadline_at: f64, pub next_attempt: Option<RunAttempt>,
+    pub attempt: u32, pub hard_deadline_at: f64, pub memory_root: Option<&'a Path>, pub next_attempt: Option<RunAttempt>,
     pub config: &'a serde_json::Value, pub identity: &'a MemoryIdentity,
     pub env: BTreeMap<String, String>, pub launch: Launcher, pub now_ms: f64,
 }
@@ -27,7 +27,10 @@ pub fn prepare_reflection_candidate_spawn(input: ReflectionCandidateSpawnInput<'
     if let Some(root) = env.get("OMO_MEMORY_ADMISSION_ROOT").cloned() {
         env.insert(memory_core::identity::layout::MEMORY_ROOT_ENV_VAR.into(), root);
     }
-    let prepared = PrepareReflectionSpawnInput { parent_session_file: input.parent_session_file, parent_cwd: input.parent_cwd, run: input.run, worktree: input.worktree, reflection_sessions_dir: &sessions, category: input.category, model: &input.candidate.model, thinking: input.candidate.thinking.as_deref(), load_extensions: input.candidate.load_extensions, attempt: Some(input.attempt), hard_deadline_at: Some(input.hard_deadline_at), next_attempt: input.next_attempt, env, merge_policy: input.merge_policy, skills_usage_source: &skills, memory_usage_source: &memory, dream_state_source: &state, people_policy: &policy, system_token_budget: Some(budget), system_token_target: Some(budget*4/5), launch: input.launch, now_ms: input.now_ms };
+    // A candidate carries the explicit root when the runner has one; otherwise the layout's own root two levels up.
+    let memory_root = input.memory_root.map(Path::to_path_buf).or_else(|| input.identity.paths.root.parent().and_then(Path::parent).map(Path::to_path_buf));
+    let max_concurrent_runs = input.config["memory"]["reflection"]["max_concurrent_runs"].as_u64().and_then(|value|usize::try_from(value).ok()).unwrap_or(1);
+    let prepared = PrepareReflectionSpawnInput { parent_session_file: input.parent_session_file, parent_cwd: input.parent_cwd, run: input.run, worktree: input.worktree, reflection_sessions_dir: &sessions, category: input.category, model: &input.candidate.model, thinking: input.candidate.thinking.as_deref(), load_extensions: input.candidate.load_extensions, attempt: Some(input.attempt), hard_deadline_at: Some(input.hard_deadline_at), memory_root, max_concurrent_runs: Some(max_concurrent_runs), next_attempt: input.next_attempt, env, merge_policy: input.merge_policy, skills_usage_source: &skills, memory_usage_source: &memory, dream_state_source: &state, people_policy: &policy, system_token_budget: Some(budget), system_token_target: Some(budget*4/5), launch: input.launch, now_ms: input.now_ms };
     if fork { prepare_reflection_fork_spawn(prepared) } else { prepare_reflection_spawn(prepared) }
 }
 
@@ -44,8 +47,11 @@ mod tests {
         std::fs::write(identity.paths.runtime.join("skills-usage.json"), "{\"foo\":1}").unwrap();
         let candidate = ReflectionModelCandidate { model:"provider/model".into(), thinking:Some("low".into()) , load_extensions: None };
         let config = serde_json::json!({"memory":{"people":{"enabled":true,"max_entries":80,"max_entry_chars":300},"agents":{"agent":{"people":{"enabled":false,"max_entries":3}}}}});
-        let result = prepare_reflection_candidate_spawn(ReflectionCandidateSpawnInput { parent_session_file:None, parent_cwd:None, run:&run, worktree:&worktree, merge_policy:"auto", category:"quick", candidate:&candidate, attempt:2, hard_deadline_at:5000.0, next_attempt:None, config:&config, identity:&identity, env:Default::default(), launch:Launcher { command:"mhc".into(), prefix_args:vec![] }, now_ms:0.0 }).unwrap();
+        let result = prepare_reflection_candidate_spawn(ReflectionCandidateSpawnInput { parent_session_file:None, parent_cwd:None, run:&run, worktree:&worktree, merge_policy:"auto", category:"quick", candidate:&candidate, attempt:2, hard_deadline_at:5000.0, memory_root:None, next_attempt:None, config:&config, identity:&identity, env:Default::default(), launch:Launcher { command:"mhc".into(), prefix_args:vec![] }, now_ms:0.0 }).unwrap();
         assert_eq!(result.attempt, 2); assert_eq!(result.hard_deadline_at, 5000.0); assert_eq!(result.model, "provider/model");
+        // The layout's root is `<memoryRoot>/agents/<slug>`, so two levels up is the machine-wide root.
+        assert_eq!(result.memory_root.as_deref(), Some(root.path()));
+        assert_eq!(result.max_concurrent_runs, Some(1));
         assert_eq!(std::fs::read_to_string(result.paths.skills_usage.unwrap()).unwrap(), "{\"foo\":1}");
         assert_eq!(result.system_token_budget, Some(30_000));
         assert_eq!(result.system_token_target, Some(24_000));

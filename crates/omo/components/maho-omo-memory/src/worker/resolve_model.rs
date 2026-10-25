@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use serde_json::Value;
-use senpi_task::{category::{CategoryResolutionResult, ResolveCategoryOptions, builtin_category_chain_candidates, resolve_category}, host::{HostError, SenpiModelRegistry}};
+use senpi_task::{category::{CategoryResolutionResult, ResolveCategoryOptions, builtin_category_chain_candidates, resolve_category}, host::{HostError, SenpiModelRegistry}, model_exclusion::{is_excluded_model, without_excluded_models}};
 use super::{memory_model_attempts::ReflectionModelCandidate, model_cost::{LaunchChoice, ReflectionLaunchCandidate, ReflectionLaunchInput, choose_reflection_launch_model}, registry_fallback::{read_model_pricing, select_registry_fallback_models}};
 
 pub struct ReflectionSessionModel { pub provider: String, pub id: String, pub thinking: Option<String> }
@@ -31,8 +31,19 @@ fn beyond_category(category: &str, registry: Option<&dyn SenpiModelRegistry>, se
     Ok(Some(ReflectionModelResolution::Resolved { category: category.into(), model: decision.model, thinking: normalize_thinking(decision.thinking.as_deref()), source: Some(if inherit { "session_inherit" } else { "registry_fallback" }), fallbacks: if inherit { vec![] } else { candidates.into_iter().skip(1).map(|candidate| ReflectionModelCandidate { model: candidate.model, thinking: None , load_extensions: None }).collect() } }))
 }
 
-pub fn resolve_reflection_model(category: &str, config: &Value, registry: Option<&dyn SenpiModelRegistry>, session: Option<&ReflectionSessionModel>) -> Result<ReflectionModelResolution, HostError> {
+pub fn resolve_reflection_model(category: &str, config: &Value, live_registry: Option<&dyn SenpiModelRegistry>, session: Option<&ReflectionSessionModel>) -> Result<ReflectionModelResolution, HostError> {
     let unavailable = |cause, attempted_chain, missing_providers| ReflectionModelResolution::CategoryUnavailable { category: category.into(), cause, attempted_chain, missing_providers };
+    // exclude_models reaches every rung below: the category chain, a pin, the builtin rungs appended after it
+    // and the beyond-category ladder all read this one filtered view.
+    let excluded_patterns: Vec<String> = config.get("exclude_models").and_then(Value::as_array).map(|patterns| patterns.iter().filter_map(|entry| entry.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+    // An excluded inherited session model is dropped before any ladder runs, even when no live registry exists.
+    if let Some(excluded) = session
+        && is_excluded_model(&format!("{}/{}", excluded.provider, excluded.id), &excluded_patterns)
+    {
+        return resolve_reflection_model(category, config, live_registry, None);
+    }
+    let filtered = live_registry.map(|registry| without_excluded_models(registry, Some(excluded_patterns.as_slice())));
+    let registry = filtered.as_ref().map(|registry| registry as &dyn SenpiModelRegistry);
     let Some(registry) = registry else { return Ok(beyond_category(category, None, session)?.unwrap_or_else(|| unavailable("no_registry", None, None))); };
     let resolution = resolve_category(category, config, registry, &ResolveCategoryOptions::default())?;
     if let CategoryResolutionResult::Resolved { category: resolved_category, spec, .. } = resolution {
@@ -121,4 +132,28 @@ mod tests {
     #[test] fn empty_registry_reports_attempted_chain() { assert!(matches!(resolve_reflection_model("quick", &json!({}), Some(&Registry { available: json!([]), catalog: vec![] }), None).unwrap(), ReflectionModelResolution::CategoryUnavailable { attempted_chain: Some(chain), .. } if !chain.is_empty())); }
     #[test] fn canonical_stale_chain_preserves_fallbacks() { let catalog = vec![json!({"provider":"extension-only","id":"primary"}), json!({"provider":"omo-mock","id":"mock-1"})]; let registry = Registry { available: json!([]), catalog }; let result = resolve_reflection_model("quick", &json!({"categories":{"quick":{"models":[{"model":"extension-only/primary","reasoning":"off"},{"model":"omo-mock/mock-1","reasoning":"minimal"}]}}}), Some(&registry), None).unwrap(); assert!(matches!(result, ReflectionModelResolution::Resolved { model, thinking: Some(thinking), fallbacks, .. } if model == "extension-only/primary" && thinking == "off" && fallbacks.len() == 1 && fallbacks[0].thinking.as_deref() == Some("minimal"))); }
     #[test] fn legacy_stale_chain_preserves_fallbacks() { let catalog = vec![json!({"provider":"extension-only","id":"primary"}), json!({"provider":"omo-mock","id":"mock-1"})]; let registry = Registry { available: json!([]), catalog }; let result = resolve_reflection_model("quick", &json!({"categories":{"quick":{"model":"extension-only/primary","reasoning":"off","fallback_models":[{"model":"omo-mock/mock-1","reasoning":"minimal"}]}}}), Some(&registry), None).unwrap(); assert!(matches!(result, ReflectionModelResolution::Resolved { fallbacks, .. } if fallbacks.len() == 1 && fallbacks[0].thinking.as_deref() == Some("minimal"))); }
+    #[test] fn excluded_builtin_rung_is_skipped_after_a_user_pin_outside_the_chain() {
+        let catalog = vec![json!({"provider":"omo-mock","id":"mock-1"}), json!({"provider":"deepseek","id":"deepseek-v4-flash"})];
+        let registry = Registry { available: Value::Array(catalog.clone()), catalog };
+        let result = resolve_reflection_model("quick", &json!({"categories":{"quick":{"model":"omo-mock/mock-1"}},"exclude_models":["deepseek/*"]}), Some(&registry), None).unwrap();
+        assert!(matches!(result, ReflectionModelResolution::Resolved { model, fallbacks, .. } if model == "omo-mock/mock-1" && fallbacks.iter().all(|fallback| fallback.model != "deepseek/deepseek-v4-flash")));
+    }
+    #[test] fn an_excluded_pin_is_not_revived_from_a_stale_catalog() {
+        let catalog = vec![json!({"provider":"omo-mock","id":"mock-1"})];
+        let registry = Registry { available: json!([]), catalog };
+        let result = resolve_reflection_model("quick", &json!({"categories":{"quick":{"model":"omo-mock/mock-1"}},"exclude_models":["omo-mock/mock-1"]}), Some(&registry), None).unwrap();
+        assert!(!matches!(result, ReflectionModelResolution::Resolved { ref model, .. } if model == "omo-mock/mock-1"));
+    }
+    #[test] fn an_excluded_inherited_session_model_never_resolves_even_without_a_registry() {
+        let session = ReflectionSessionModel { provider: "live".into(), id: "model".into(), thinking: Some("low".into()) };
+        let result = resolve_reflection_model("quick", &json!({"exclude_models":["live/*"]}), None, Some(&session)).unwrap();
+        assert!(matches!(result, ReflectionModelResolution::CategoryUnavailable { cause: "no_registry", .. }));
+    }
+    #[test] fn an_excluded_session_model_does_not_win_the_beyond_category_ladder() {
+        let catalog = vec![json!({"provider":"google","id":"gemini-3.6-flash","cost":{"input":0.3},"contextWindow":1000000}), json!({"provider":"google","id":"gemini-3.1-pro","cost":{"input":2},"contextWindow":1000000})];
+        let registry = Registry { available: Value::Array(catalog.clone()), catalog };
+        let session = ReflectionSessionModel { provider: "google".into(), id: "gemini-3.1-pro".into(), thinking: None };
+        let result = resolve_reflection_model("quick", &json!({"exclude_models":["google/gemini-3.1-pro"]}), Some(&registry), Some(&session)).unwrap();
+        assert!(!matches!(result, ReflectionModelResolution::Resolved { ref model, .. } if model == "google/gemini-3.1-pro"));
+    }
 }
