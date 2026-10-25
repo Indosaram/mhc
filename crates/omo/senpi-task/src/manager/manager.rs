@@ -3246,6 +3246,7 @@ impl Inner {
             }
             lock(&tracker).accept(event);
         }));
+        let epoch = self.try_load(task_id).map(|record| record.run_start_epoch);
         let owner = Arc::downgrade(handle);
         let manager = self.this.clone();
         let id = task_id.to_string();
