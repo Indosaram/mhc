@@ -270,6 +270,7 @@ struct Inner {
     steering: SteeringEngine,
     isolation: IsolationWiring,
     pauses_pending: PendingStops,
+    resume_capacity: Mutex<()>,
     parked: Mutex<HashMap<String, crate::manager::concurrency::ParkedLease>>,
     stops_pending: PendingStops,
     residency: ResidencySignal,
@@ -500,6 +501,7 @@ impl TaskManager {
                 steering: SteeringEngine::new(port),
                 isolation,
                 pauses_pending: PendingStops::default(),
+                resume_capacity: Mutex::new(()),
                 parked: Mutex::default(),
                 stops_pending: PendingStops::default(),
                 residency: ResidencySignal::default(),
@@ -2227,16 +2229,21 @@ impl TaskManager {
         if record.notification.run_epoch != epoch {
             return Err("stale resume epoch".into());
         }
+        let allocation = allocation.or(record.queued_admission.as_ref());
+        if allocation.is_some_and(|saved| saved.run_epoch != epoch || saved.task_id != task_id) {
+            return Err("stale resume allocation".into());
+        }
         let lease = lock(&self.inner.parked).get(task_id).cloned();
         if let Some(lease) = lease {
+            if lease.run_epoch != epoch {
+                return Err("stale parked resume epoch".into());
+            }
             let resumed = lock(&self.inner.concurrency).unpark(&lease);
             let grants = lock(&self.inner.concurrency).drain();
             for grant in grants {
                 spawn_grant(grant);
             }
-            resumed
-                .recv_timeout(Duration::from_secs(30))
-                .map_err(|error| error.to_string())?;
+            resumed.recv().map_err(|error| error.to_string())?;
             if lock(&self.inner.concurrency).lease_state(task_id, epoch) != Some("held") {
                 return Err("resume suspended".into());
             }
@@ -2252,10 +2259,7 @@ impl TaskManager {
         if lock(&self.inner.concurrency).lease_state(task_id, epoch) == Some("held") {
             return Ok(());
         }
-        let allocation = allocation.or(record.queued_admission.as_ref());
-        if allocation.is_some_and(|saved| saved.run_epoch != epoch || saved.task_id != task_id) {
-            return Err("stale resume allocation".into());
-        }
+        let capacity = lock(&self.inner.resume_capacity);
         let (wake, received) = channel();
         let attempt = {
             let mut state = lock(&self.inner.state);
@@ -2288,10 +2292,12 @@ impl TaskManager {
         }
         let grants = concurrency.drain();
         drop(concurrency);
+        drop(capacity);
         for grant in grants {
             spawn_grant(grant);
         }
-        let waited = received.recv_timeout(Duration::from_secs(30));
+        let waited = received.recv();
+        let _capacity = lock(&self.inner.resume_capacity);
         let current = lock(&self.inner.state)
             .resume_attempts
             .get(task_id)
@@ -2322,6 +2328,7 @@ impl TaskManager {
     }
 
     pub fn begin_native_pause(&self, task_id: &str, epoch: i64) {
+        let _capacity = lock(&self.inner.resume_capacity);
         self.inner.pauses_pending.request(task_id, epoch);
         if let Some(record) = self.inner.try_load(task_id) {
             if let Some(admission) =
