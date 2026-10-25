@@ -2105,7 +2105,19 @@ impl TaskManager {
         }
     }
 
-    pub fn acquire_resume_capacity(&self, task_id: &str, epoch: i64) -> Result<(), String> {
+    pub fn acquire_resume_capacity(
+        &self,
+        task_id: &str,
+        epoch: i64,
+        allocation: Option<&crate::manager::concurrency::QueuedTaskAdmission>,
+    ) -> Result<(), String> {
+        let record = self
+            .inner
+            .try_load(task_id)
+            .ok_or("task record unavailable")?;
+        if record.notification.run_epoch != epoch {
+            return Err("stale resume epoch".into());
+        }
         let lease = lock(&self.inner.parked).get(task_id).cloned();
         if let Some(lease) = lease {
             let resumed = lock(&self.inner.concurrency).unpark(&lease);
@@ -2119,24 +2131,71 @@ impl TaskManager {
             if lock(&self.inner.concurrency).lease_state(task_id, epoch) != Some("held") {
                 return Err("resume suspended".into());
             }
-            lock(&self.inner.parked).remove(task_id);
-            return Ok(());
-        }
-        let record = self
-            .inner
-            .try_load(task_id)
-            .ok_or("task record unavailable")?;
-        if lock(&self.inner.concurrency).try_acquire(&record.model, task_id, epoch) {
+            let mut parked = lock(&self.inner.parked);
+            if parked
+                .get(task_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &lease))
+            {
+                parked.remove(task_id);
+            }
             return Ok(());
         }
         if lock(&self.inner.concurrency).lease_state(task_id, epoch) == Some("held") {
             return Ok(());
         }
-        Err("resume capacity unavailable".into())
+        let (wake, received) = channel();
+        let attempt = {
+            let mut state = lock(&self.inner.state);
+            state.next_resume_attempt += 1;
+            let attempt = state.next_resume_attempt;
+            if let Some((_, previous)) = state
+                .resume_attempts
+                .insert(task_id.into(), (attempt, wake.clone()))
+            {
+                let _ = previous.send(());
+            }
+            attempt
+        };
+        let model = allocation.map_or(record.model.as_str(), |saved| saved.model.as_str());
+        let mut concurrency = lock(&self.inner.concurrency);
+        let grant: Grant = Box::new(move || {
+            let _ = wake.send(());
+        });
+        match allocation {
+            Some(saved) => {
+                let mut saved = saved.clone();
+                saved.task_id = task_id.into();
+                saved.run_epoch = epoch;
+                concurrency.requeue(saved, grant);
+            }
+            None => {
+                concurrency.enqueue_epoch(model, task_id, epoch, grant);
+            }
+        }
+        let grants = concurrency.drain();
+        drop(concurrency);
+        for grant in grants {
+            spawn_grant(grant);
+        }
+        let waited = received.recv_timeout(Duration::from_secs(30));
+        let current = lock(&self.inner.state)
+            .resume_attempts
+            .get(task_id)
+            .map(|(current, _)| *current);
+        let held = lock(&self.inner.concurrency).lease_state(task_id, epoch) == Some("held");
+        if current != Some(attempt) || waited.is_err() || !held {
+            lock(&self.inner.concurrency).withdraw(model, task_id, epoch);
+            return Err("resume suspended".into());
+        }
+        lock(&self.inner.state).resume_attempts.remove(task_id);
+        Ok(())
     }
 
     pub fn begin_native_pause(&self, task_id: &str, epoch: i64) {
         self.inner.pauses_pending.request(task_id, epoch);
+        if let Some(record) = self.inner.try_load(task_id) {
+            lock(&self.inner.concurrency).withdraw(&record.model, task_id, epoch);
+        }
         if let Some(lease) = lock(&self.inner.parked).get(task_id).cloned() {
             lock(&self.inner.concurrency).suspend_unpark(&lease);
         }

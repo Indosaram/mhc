@@ -431,6 +431,52 @@ impl TaskConcurrency {
 mod custody_tests {
     use super::*;
     #[test]
+    fn cold_resume_requeues_saved_lane_sequence_and_withdraws_exact_epoch() {
+        let mut concurrency = TaskConcurrency::new(TaskConcurrencyConfig {
+            default_concurrency: Some(1),
+            ..Default::default()
+        });
+        assert!(concurrency.try_acquire("p/model", "busy", 1));
+        let saved = QueuedTaskAdmission {
+            model: "p/model".into(),
+            lane_key: "p/model".into(),
+            task_id: "resumed".into(),
+            run_epoch: 9,
+            sequence: 0,
+        };
+        let (send, receive) = mpsc::channel();
+        concurrency.requeue(
+            saved.clone(),
+            Box::new(move || {
+                send.send(()).unwrap();
+            }),
+        );
+        assert!(concurrency.withdraw("p/model", "resumed", 8).is_none());
+        assert_eq!(
+            concurrency.withdraw("p/model", "resumed", 9),
+            Some(saved.clone())
+        );
+        assert!(receive.recv().is_err());
+        let (send, receive) = mpsc::channel();
+        concurrency.requeue(
+            saved.clone(),
+            Box::new(move || {
+                send.send(()).unwrap();
+            }),
+        );
+        for grant in concurrency.release_lease("busy", 1) {
+            grant();
+        }
+        receive
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(
+            concurrency.admission("resumed", 9),
+            Some((saved, AdmissionPhase::PostGrant))
+        );
+    }
+
+    #[test]
     fn withdrawn_admissions_restore_original_fifo_and_epoch() {
         let mut c = TaskConcurrency::new(TaskConcurrencyConfig {
             default_concurrency: Some(1),

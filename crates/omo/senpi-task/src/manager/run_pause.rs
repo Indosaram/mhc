@@ -96,6 +96,7 @@ pub struct ResumeTurnRequest {
 /// A paused child that is being resumed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResumeTaskRequest {
+    pub allocation: Option<super::concurrency::QueuedTaskAdmission>,
     pub owner: RunPauseOwner,
     pub resume_credential: Option<ResumeCredential>,
     pub resume_id: String,
@@ -126,7 +127,12 @@ pub enum LostResumeResult {
 
 /// The effects a task run pause needs from the composition.
 pub trait TaskRunPausePorts: Send + Sync {
-    fn acquire_resume_capacity(&self, _task_id: &str, _epoch: i64) -> Result<(), String> {
+    fn acquire_resume_capacity(
+        &self,
+        _task_id: &str,
+        _epoch: i64,
+        _allocation: Option<&super::concurrency::QueuedTaskAdmission>,
+    ) -> Result<(), String> {
         Ok(())
     }
     fn park_capacity(&self, _task_id: &str, _epoch: i64) {}
@@ -423,8 +429,11 @@ impl TaskRunPause {
         {
             return Err(RunPauseAdmissionHeld.to_string());
         }
-        self.ports
-            .acquire_resume_capacity(task_id, record.notification.run_epoch)?;
+        self.ports.acquire_resume_capacity(
+            task_id,
+            record.notification.run_epoch,
+            request.allocation.as_ref(),
+        )?;
         let result = port.resume_turn(
             &handle,
             &ResumeTurnRequest {
@@ -510,6 +519,7 @@ impl TaskRunPause {
                 match self.resume_paused_task(
                     task_id,
                     &ResumeTaskRequest {
+                        allocation: None,
                         owner: request.owner.clone(),
                         resume_credential: request.resume_credential.clone(),
                         resume_id: request.resume_id.clone(),
