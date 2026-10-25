@@ -9,10 +9,12 @@ use crate::facts::mutation_plan::{
 fn sample_records() -> Vec<FactsExtractionRecord> {
     vec![
         FactsExtractionRecord::Project {
+            receipt: None,
             text: "Uses Bun.".to_string(),
             date: "2026-08-10".to_string(),
         },
         FactsExtractionRecord::Project {
+            receipt: None,
             text: "Uses Rust.".to_string(),
             date: "2026-08-11".to_string(),
         },
@@ -126,6 +128,7 @@ fn test_facts_records_hash_is_stable_without_agreements_and_changes_with_them() 
     // given
     let records = sample_records();
     let agreements = vec![AgreementExtractionRecord::New {
+        source: None,
         applies: AgreementScope::Global,
         text: "Run tests".to_string(),
         date: "2026-08-10".to_string(),

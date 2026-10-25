@@ -330,6 +330,7 @@ mod tests {
 
     fn project(text: &str) -> FactsExtractionRecord {
         FactsExtractionRecord::Project {
+            receipt: None,
             text: text.into(),
             date: "2026-10-22".into(),
         }
@@ -372,6 +373,7 @@ mod tests {
     #[test]
     fn candidates_are_listed_with_their_subject_and_session_count() {
         let person = FactsExtractionRecord::Person {
+            receipt: None,
             person: FactsPersonReference {
                 name: "Ada".into(),
                 aliases: vec![],

@@ -13,6 +13,7 @@ pub struct AgreementsMutation {
     pub items: Vec<AgreementItem>,
     pub newly_flagged: Vec<String>,
     pub events: Vec<AgreementEvent>,
+    pub receipts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +38,22 @@ pub fn apply_agreement_records(
     records: &[AgreementExtractionRecord],
     policy: &AgreementsPolicy,
 ) -> AgreementsMutation {
+    apply_agreement_records_with_receipts(existing, records, policy, &[])
+}
+
+pub fn apply_agreement_records_with_receipts(
+    existing: &[AgreementItem],
+    records: &[AgreementExtractionRecord],
+    policy: &AgreementsPolicy,
+    prior_receipts: &[String],
+) -> AgreementsMutation {
+    use crate::agreements::events::{agreement_event_key, legacy_agreement_events};
+    let mut receipts = if prior_receipts.is_empty() {
+        legacy_agreement_events(existing)
+    } else {
+        prior_receipts.to_vec()
+    };
+    let mut known: HashSet<String> = receipts.iter().cloned().collect();
     let mut items: Vec<AgreementItem> = existing.to_vec();
     let committed: HashSet<String> = existing.iter().map(|item| item.id.clone()).collect();
     let mut flagged: Vec<String> = Vec::new();
@@ -77,22 +94,32 @@ pub fn apply_agreement_records(
 
     for record in records {
         match record {
-            AgreementExtractionRecord::Reaffirm { id, date, text } => {
+            AgreementExtractionRecord::Reaffirm { id, date, text, .. } => {
                 match items.iter().position(|item| item.id == *id) {
                     None => events.push(AgreementEvent::StaleReaffirm {
                         date: date.clone(),
                         id: id.clone(),
                     }),
-                    Some(at) => bump(&mut items, &mut flagged, at, date, text.as_deref()),
+                    Some(at) => {
+                        if claim(&mut known, &mut receipts, id, record) {
+                            bump(&mut items, &mut flagged, at, date, text.as_deref());
+                        }
+                    }
                 }
             }
             AgreementExtractionRecord::New {
                 applies,
                 text,
                 date,
+                ..
             } => {
                 if let Some(at) = find_agreement(&items, text) {
-                    bump(&mut items, &mut flagged, at, date, None);
+                    if claim(&mut known, &mut receipts, &items[at].id, record) {
+                        bump(&mut items, &mut flagged, at, date, None);
+                    }
+                    continue;
+                }
+                if known.contains(&agreement_event_key(&agreement_id(text), record)) {
                     continue;
                 }
                 let status = if 1 >= policy.needs_human_threshold {
@@ -133,6 +160,7 @@ pub fn apply_agreement_records(
                 if status == AgreementStatus::NeedsHuman && !flagged.contains(&created.id) {
                     flagged.push(created.id.clone());
                 }
+                claim(&mut known, &mut receipts, &created.id, record);
                 items.push(created);
             }
         }
@@ -141,6 +169,7 @@ pub fn apply_agreement_records(
         items: sort_agreements(&items),
         newly_flagged: flagged,
         events,
+        receipts,
     }
 }
 
@@ -246,3 +275,30 @@ fn find_agreement(items: &[AgreementItem], text: &str) -> Option<usize> {
 #[cfg(test)]
 #[path = "mutate_tests.rs"]
 mod tests;
+
+fn claim(
+    known: &mut HashSet<String>,
+    receipts: &mut Vec<String>,
+    id: &str,
+    record: &AgreementExtractionRecord,
+) -> bool {
+    use crate::agreements::events::agreement_event_key;
+    let mut ids = vec![id.to_string()];
+    if let AgreementExtractionRecord::New { text, .. } = record {
+        let text_id = agreement_id(text);
+        if !ids.contains(&text_id) {
+            ids.push(text_id);
+        }
+    }
+    let keys: Vec<_> = ids
+        .iter()
+        .map(|id| agreement_event_key(id, record))
+        .collect();
+    let duplicate = keys.iter().any(|key| known.contains(key));
+    for key in keys {
+        if known.insert(key.clone()) {
+            receipts.push(key);
+        }
+    }
+    !duplicate
+}

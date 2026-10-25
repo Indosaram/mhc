@@ -1,17 +1,22 @@
 //! Facts queue, failure management, extraction payload, and person routing.
 
+pub mod agreement_recovery;
 pub mod agreements_target;
 pub mod assets;
+pub mod display;
 pub mod extraction;
 pub mod failures_backoff;
 pub mod failures_schema;
 pub mod failures_selection;
 pub mod failures_store;
 pub mod mutation_plan;
+pub mod parked;
 pub mod payload_cap;
 pub mod person_index;
 pub mod person_routing;
 pub mod queue;
+pub mod queue_lead;
+pub mod queue_scan;
 pub mod recovery;
 pub mod recovery_mutation;
 pub mod recovery_ownership;
@@ -54,5 +59,6 @@ pub use recovery::{
 pub use schema::{
     FACTS_QUEUE_VERSION, FactsConsumedRecord, FactsConsumedWatermark, FactsCursor, FactsQueueEntry,
     FactsQueueLayout, FactsQueueRange, canonical_position, facts_queue_paths, initial_cursor,
-    parse_consumed, parse_cursor, parse_queue_entry, queue_timestamp,
+    parse_consumed, parse_cursor, parse_queue_entry, queue_conversation_hash, queue_entry_suffix,
+    queue_timestamp,
 };

@@ -701,6 +701,7 @@ async fn test_model_turn_error_stop_reason_fails_and_does_not_consume_queue() {
     // Create a mock queue entry and write it to the queue directory
     let queue_entry = memory_core::facts::FactsQueueEntry {
         version: memory_core::facts::FACTS_QUEUE_VERSION,
+        lead: None,
         identity: "agent".into(),
         session_id: "test-session".into(),
         conversation_id: "test-conv".into(),

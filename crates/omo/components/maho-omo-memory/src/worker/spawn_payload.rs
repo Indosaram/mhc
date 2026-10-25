@@ -884,6 +884,7 @@ mod tests {
     }
     fn payload() -> FactsPayload {
         FactsPayload {
+            agreement_event_version: None,
             version: 1,
             identity: "agent".into(),
             today: "2026-10-02".into(),

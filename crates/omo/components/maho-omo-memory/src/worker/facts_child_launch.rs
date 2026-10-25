@@ -113,6 +113,7 @@ mod tests {
     async fn native_model_chain_prepares_payload_and_records_matching_supervisor_outcome() {
         let root = tempfile::tempdir().unwrap();
         let payload = FactsPayload {
+            agreement_event_version: None,
             version: 1,
             identity: "agent".into(),
             today: "2026-10-02".into(),

@@ -61,7 +61,17 @@ pub fn render_agreements_file(
             (file.frontmatter, unparsed)
         }
     };
-    let body = serialize_agreements_ledger(items, &unparsed);
+    let mut body = serialize_agreements_ledger(items, &unparsed);
+    let receipts = existing
+        .and_then(|content| parse_memory_file(content).ok())
+        .map(|parsed| parse_agreements_ledger(&parsed.body).receipts)
+        .unwrap_or_default();
+    for line in super::events::serialize_agreement_events(&receipts) {
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        body.push_str(&line);
+    }
     if body.is_empty() {
         render_memory_file(&frontmatter, "")
     } else {

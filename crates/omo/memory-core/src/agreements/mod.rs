@@ -1,5 +1,6 @@
 //! Working-agreement ledger: per-person `system/agreements.md` with violation counts.
 
+pub mod events;
 pub mod format;
 pub mod guard;
 pub mod ledger_file;

@@ -12,6 +12,7 @@ pub struct AgreementsLedgerParse {
     pub items: Vec<AgreementItem>,
     pub diagnostics: Vec<String>,
     pub unparsed: Vec<String>,
+    pub receipts: Vec<String>,
 }
 
 pub fn normalize_agreement_text(text: &str) -> String {
@@ -74,10 +75,17 @@ pub fn parse_agreements_ledger(body: &str) -> AgreementsLedgerParse {
     let mut items: Vec<AgreementItem> = Vec::new();
     let mut diagnostics = Vec::new();
     let mut unparsed = Vec::new();
+    let mut receipts = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for (index, raw) in body.split('\n').enumerate() {
         let line = raw.trim();
         if line.is_empty() {
+            continue;
+        }
+        if let Some(receipt) = super::events::parse_agreement_event_line(line) {
+            if !receipts.contains(&receipt) {
+                receipts.push(receipt);
+            }
             continue;
         }
         let parsed = split_line(line).filter(|found| !found.text.trim().is_empty());
@@ -112,6 +120,7 @@ pub fn parse_agreements_ledger(body: &str) -> AgreementsLedgerParse {
         items,
         diagnostics,
         unparsed,
+        receipts,
     }
 }
 
