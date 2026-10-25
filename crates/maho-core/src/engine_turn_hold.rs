@@ -36,7 +36,13 @@ impl HoldKind {
     }
 
     fn parse(value: &str) -> Option<Self> {
-        match value { "unattended" => Some(Self::Unattended), "session_hold" => Some(Self::SessionHold), "run_fence" => Some(Self::RunFence), "inherited_hold" => Some(Self::InheritedHold), _ => None }
+        match value {
+            "unattended" => Some(Self::Unattended),
+            "session_hold" => Some(Self::SessionHold),
+            "run_fence" => Some(Self::RunFence),
+            "inherited_hold" => Some(Self::InheritedHold),
+            _ => None,
+        }
     }
 }
 
