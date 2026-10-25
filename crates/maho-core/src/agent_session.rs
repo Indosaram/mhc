@@ -3975,7 +3975,14 @@ impl AgentSession {
                 retry_fallback: tokio::sync::Mutex::new(None),
                 work_barrier: Arc::new(crate::session_work_barrier::SessionWorkBarrier::new()),
                 relocation_host: Mutex::new(None),
-                tool_barrier: crate::session_work_barrier::ToolBarrier::new(|_| {}),
+                tool_barrier: crate::session_work_barrier::ToolBarrier::new({
+                    let session_cell = session_cell.clone();
+                    move |spec| {
+                        if let Some(inner) = session_cell.get().and_then(std::sync::Weak::upgrade) {
+                            AgentSession { inner }.emit_extension_event("tool_barrier_expired", &json!({"type":"tool_barrier_expired","id":spec.id,"deadlineMs":spec.deadline_ms}));
+                        }
+                    }
+                }),
                 tool_workspace_effects: Mutex::new(BTreeMap::from_iter([
                     (
                         "find".to_owned(),
@@ -5601,7 +5608,7 @@ impl AgentSession {
                 .iter()
                 .any(|h| h.kind == crate::engine_turn_hold::HoldKind::InheritedHold)
         {
-            let mut input = json!({"inputId":format!("prompt-{}",uuid::Uuid::new_v4()),"revision":0,"text":text});
+            let mut input = json!({"inputId":options.client_message_id.clone().unwrap_or_else(||format!("prompt-{}",uuid::Uuid::new_v4())),"revision":0,"text":text});
             if let Some(images) = &options.images {
                 if !images.is_empty() {
                     input["images"] = serde_json::to_value(images).map_err(|e| e.to_string())?;
@@ -15200,6 +15207,11 @@ impl AgentSession {
                 Box::pin(async move {
                     let inner = weak.upgrade()?;
                     let session = AgentSession { inner };
+                    if let Some(id) = session.tool_barrier.id() {
+                        if session.get_tool_workspace_effect(&context.tool_call.name) != crate::session_work_barrier::ToolWorkspaceEffect::Read {
+                            session.emit_extension_event("tool_barrier_waiting", &json!({"type":"tool_barrier_waiting","id":id,"toolCallId":context.tool_call.id,"toolName":context.tool_call.name}));
+                        }
+                    }
                     session
                         .wait_for_tool_barrier(&context.tool_call.name, signal.as_ref())
                         .await;
