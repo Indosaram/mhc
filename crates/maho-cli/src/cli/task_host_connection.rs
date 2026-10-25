@@ -106,6 +106,14 @@ impl LiveClient {
     }
 }
 impl HostRpcClient for LiveClient {
+    fn get_available_models(
+        &self,
+    ) -> Result<Vec<senpi_task::runners::pinned_model_equivalence::CatalogModelIdentity>, HostError>
+    {
+        let client = self.client.clone();
+        let value = self.call(async move { client.get_available_models().await })?;
+        serde_json::from_value(value.get("models").cloned().unwrap_or(value)).map_err(failure)
+    }
     fn wait_for_outcome(&self) -> Option<RunnerOutcome> {
         Some(self.outcome())
     }

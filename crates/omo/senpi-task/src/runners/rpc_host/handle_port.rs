@@ -32,6 +32,14 @@ pub trait HostSessionPort: Send + Sync {
     fn native_pause(&self) -> Option<Arc<dyn crate::pause::native_child_pause::NativeRunPause>> {
         None
     }
+    fn get_available_models(
+        &self,
+    ) -> Result<Vec<crate::runners::pinned_model_equivalence::CatalogModelIdentity>, HostError>
+    {
+        Err(HostError {
+            message: "host model catalog unsupported".into(),
+        })
+    }
     fn send(&self, command: Value) -> Result<(), HostError>;
     fn get_state(&self) -> Result<Value, HostError>;
     fn on_event(&self, listener: ManagedChildListener) -> Unsubscribe;

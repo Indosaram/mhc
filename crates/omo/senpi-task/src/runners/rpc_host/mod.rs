@@ -104,9 +104,14 @@ impl RpcHostRunner {
                 crate::runners::pinned_model_equivalence::CatalogModelIdentity::new(provider, id)
             });
         let opened = open_session::open_task_host_session(client.clone(), opened, pin.as_ref())?;
+        let attached = opened.attached;
         let handle =
             handle::create_host_session_handle(spec.task_id.clone(), client, opened, outcome);
-        self.opener.start_initial_prompt(handle, &spec.prompt)
+        if attached {
+            Ok(handle)
+        } else {
+            self.opener.start_initial_prompt(handle, &spec.prompt)
+        }
     }
 
     pub fn settle_teardowns(&self) -> Result<(), HostError> {

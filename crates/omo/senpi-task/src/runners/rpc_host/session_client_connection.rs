@@ -82,6 +82,12 @@ mod tests {
 }
 
 impl super::handle_port::HostSessionPort for SessionClientConnection {
+    fn get_available_models(
+        &self,
+    ) -> Result<Vec<crate::runners::pinned_model_equivalence::CatalogModelIdentity>, HostError>
+    {
+        self.client.get_available_models()
+    }
     fn wait_for_outcome(&self) -> Option<crate::runners::RunnerOutcome> {
         self.client.wait_for_outcome()
     }
