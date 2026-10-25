@@ -23,7 +23,21 @@ tokio::task_local! {
     static EXTENSION_COMPACTION_PREPARATION: maho_ext_api::CompactionPreparationDetails;
     static NESTED_TOOL_SCOPE: (String, Arc<Mutex<crate::session_record::NestedCallRecorder>>, Arc<AtomicU64>);
     static NESTED_TOOL_QUEUE_HELD: bool;
+    static HELD_COMMAND_SESSION: String;
 }
+struct HeldInputReservation {
+    session: AgentSession,
+    ids: Vec<String>,
+}
+impl Drop for HeldInputReservation {
+    fn drop(&mut self) {
+        let mut reserved = lock(&self.session.reserved_held_inputs);
+        for id in &self.ids {
+            reserved.remove(id);
+        }
+    }
+}
+
 struct ExtensionEventSignalSubscription {
     signal: maho_ai::utils::abort::AbortSignal,
     listener: maho_ai::utils::abort::ListenerId,
@@ -336,6 +350,9 @@ impl std::error::Error for ExecuteToolError {}
 
 #[derive(Clone, Default)]
 pub struct PromptOptions {
+    pub tool_barrier: Option<crate::session_work_barrier::ToolBarrierSpec>,
+    pub client_message_id: Option<String>,
+    pub observed_pause_seq: Option<u64>,
     pub expand_prompt_templates: Option<bool>,
     pub images: Option<Vec<ImageContent>>,
     pub streaming_behavior: Option<StreamingBehavior>,
@@ -935,6 +952,9 @@ pub struct AgentSessionInner {
     external_admission: crate::external_admission::ExternalAdmission,
     held_inputs: Mutex<crate::held_inputs::HeldInputs>,
     delivered_held_inputs: Mutex<Vec<(String, u64)>>,
+    held_preparation: tokio::sync::Mutex<()>,
+    reserved_held_inputs: Mutex<BTreeSet<String>>,
+    observed_held_inputs: Mutex<BTreeSet<String>>,
     stop_interrupt: Mutex<Option<Value>>,
     lifecycle_human_pending: std::sync::atomic::AtomicBool,
     lifecycle_goal: Mutex<Option<Value>>,
@@ -2815,8 +2835,9 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
     fn arm_tool_barrier(&self, spec: Value) -> Result<(), maho_ext_api::ExtensionFailure> {
         let spec = serde_json::from_value(spec)
             .map_err(|e| maho_ext_api::ExtensionFailure::new(e.to_string()))?;
-        self.session()?.arm_tool_barrier(spec);
-        Ok(())
+        self.session()?
+            .arm_tool_barrier(spec)
+            .map_err(maho_ext_api::ExtensionFailure::new)
     }
     fn release_tool_barrier(&self, id: &str) -> Result<bool, maho_ext_api::ExtensionFailure> {
         Ok(self.session()?.release_tool_barrier(id))
@@ -3922,6 +3943,9 @@ impl AgentSession {
                 lifecycle: Mutex::new(lifecycle),
                 held_inputs: Mutex::new(held_inputs),
                 delivered_held_inputs: Mutex::new(Vec::new()),
+                held_preparation: tokio::sync::Mutex::new(()),
+                reserved_held_inputs: Mutex::new(BTreeSet::new()),
+                observed_held_inputs: Mutex::new(BTreeSet::new()),
                 external_admission: Default::default(),
                 stop_interrupt: Mutex::new(None),
                 lifecycle_human_pending: std::sync::atomic::AtomicBool::new(false),
@@ -4216,6 +4240,13 @@ impl AgentSession {
         }
         if let AgentEvent::MessageStart { message } = &event {
             if let Ok(value) = session_message_to_value(message) {
+                if let Some(id) = value
+                    .pointer("/details/heldInputId")
+                    .and_then(Value::as_str)
+                {
+                    lock(&self.observed_held_inputs).insert(id.to_owned());
+                }
+
                 let run_id = lock(&self.lifecycle).run_id.clone();
                 let result = self.with_session_manager_mut(|manager| {
                     let entries = manager.entries();
@@ -4415,12 +4446,20 @@ impl AgentSession {
             self.with_work_obligations(|registry| registry.settle_run(&lock(&self.custody_run_id)));
             self.external_admission.observe_run_settled();
             let generation = self.user_abort_generation.load(Ordering::SeqCst);
-            let claimed = std::mem::take(&mut *lock(&self.delivered_held_inputs));
-            let ids = claimed
-                .into_iter()
-                .filter(|(_, admitted)| *admitted == generation)
-                .map(|(id, _)| id)
-                .collect::<Vec<_>>();
+            let observed = std::mem::take(&mut *lock(&self.observed_held_inputs));
+            let mut claimed = lock(&self.delivered_held_inputs);
+            let mut ids = Vec::new();
+            claimed.retain(|(id, admitted)| {
+                if observed.contains(id) {
+                    if *admitted == generation {
+                        ids.push(id.clone());
+                    }
+                    false
+                } else {
+                    true
+                }
+            });
+            drop(claimed);
             if let Err(error_message) = self.consume_held_inputs(&ids) {
                 self.emit(AgentSessionEvent::ContinuationError { error_message });
             }
@@ -4443,7 +4482,9 @@ impl AgentSession {
                     json!({"endedBy":ended_by,"willRetry":boundary.will_retry,"expectations":[]}),
                 );
             }
-            self.clear_tool_barrier();
+            if !boundary.will_retry {
+                self.clear_tool_barrier();
+            }
             self.refresh_lifecycle();
             // senpi mutates the live agent_end event on a late User join (agent-abort-provenance.ts
             // `join`), so subscribers see the settled owner, not the snapshot taken at begin.
@@ -5061,6 +5102,13 @@ impl AgentSession {
 
     /// Held commands leave custody before invocation; commands run once, in input order.
     async fn take_held_input_messages(&self) -> Result<(Vec<AgentMessage>, Vec<String>), String> {
+        if HELD_COMMAND_SESSION
+            .try_with(|id| id == &self.session_id())
+            .unwrap_or(false)
+        {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let _preparation = self.held_preparation.lock().await;
         let pending = self.held_inputs();
         let mut commands = Vec::new();
         for input in &pending {
@@ -5088,9 +5136,10 @@ impl AgentSession {
                 .collect::<Vec<_>>(),
         )?;
         for input in commands {
-            if let Err(error) = Box::pin(
+            if let Err(error) = Box::pin(HELD_COMMAND_SESSION.scope(
+                self.session_id(),
                 self.try_execute_extension_command(input["text"].as_str().expect("held command")),
-            )
+            ))
             .await
             {
                 self.session_logger.warn(
@@ -5110,7 +5159,7 @@ impl AgentSession {
             .collect::<Vec<_>>();
         for input in self.held_inputs() {
             let id = input["inputId"].as_str().expect("input id").to_owned();
-            if claimed.contains(&id) {
+            if claimed.contains(&id) || lock(&self.reserved_held_inputs).contains(&id) {
                 continue;
             }
             ids.push(id);
@@ -5136,8 +5185,22 @@ impl AgentSession {
             } else {
                 json!(text)
             };
-            messages.push(session_message_from_value(json!({"role":"custom","customType":crate::held_inputs::HELD_INPUT_ENTRY,"content":content,"display":true,"timestamp":maho_ai::utils::diagnostics::now_ms()}))?);
+            messages.push(session_message_from_value(json!({"role":"custom","customType":crate::held_inputs::HELD_INPUT_ENTRY,"content":content,"display":true,"details":{"heldInputId":input["inputId"]},"timestamp":maho_ai::utils::diagnostics::now_ms()}))?);
         }
+        let held_message_ids = messages
+            .iter()
+            .filter_map(|m| {
+                session_message_to_value(m).ok().and_then(|v| {
+                    v.pointer("/details/heldInputId")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+            })
+            .collect::<BTreeSet<_>>();
+        for id in ids.iter().filter(|id| !held_message_ids.contains(*id)) {
+            messages.push(session_message_from_value(json!({"role":"custom","customType":"held-input-continue","content":"","display":false,"details":{"heldInputId":id},"timestamp":maho_ai::utils::diagnostics::now_ms()}))?);
+        }
+        lock(&self.reserved_held_inputs).extend(ids.iter().cloned());
         Ok((messages, ids))
     }
 
@@ -5557,6 +5620,10 @@ impl AgentSession {
         }
         // Preparation runs before prompt admission locks; a held command may itself submit input.
         let (held_messages, held_ids) = Box::pin(self.take_held_input_messages()).await?;
+        let _held_reservation = HeldInputReservation {
+            session: self.clone(),
+            ids: held_ids.clone(),
+        };
         options.held_messages = held_messages;
         options.held_input_ids = held_ids;
 
@@ -6239,6 +6306,7 @@ impl AgentSession {
                 return Err(error);
             }
         };
+        let prepared_images = images.clone();
         let user_message = make_user_message(&text, images);
         self.remember_input_source(
             &user_message,
@@ -6260,6 +6328,44 @@ impl AgentSession {
             .await;
             return Err(error);
         }
+        if options.observed_pause_seq.is_some_and(|observed| {
+            self.holds().iter().any(|h| {
+                h.kind != crate::engine_turn_hold::HoldKind::Unattended
+                    && lock(&self.engine_turn_hold).current_pause_seq() > observed
+            })
+        }) || (options
+            .input_origin
+            .unwrap_or_else(|| input_origin_of(options.source))
+            == InputOrigin::Person
+            && self.holds().iter().any(|h| {
+                matches!(
+                    h.kind,
+                    crate::engine_turn_hold::HoldKind::RunFence
+                        | crate::engine_turn_hold::HoldKind::InheritedHold
+                )
+            }))
+        {
+            let mut held = json!({"inputId":options.client_message_id.clone().unwrap_or_else(||format!("prompt-{}",uuid::Uuid::new_v4())),"revision":0,"text":text});
+            if let Some(images) = prepared_images {
+                if !images.is_empty() {
+                    held["images"] = serde_json::to_value(images).map_err(|e| e.to_string())?;
+                }
+            }
+            self.hold_input(held)?;
+            self.state()
+                .pending_next_turn_messages
+                .splice(0..0, consumed);
+            *disposition_reported = true;
+            if let Some(admitted) = &options.prompt_admitted {
+                admitted(PromptDisposition::Handled);
+            }
+            self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
+                input_id,
+                disposition: maho_ext_api::InputDisposition::Handled,
+            })
+            .await;
+            return Ok(PromptDisposition::Handled);
+        }
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
             input_id,
             disposition: maho_ext_api::InputDisposition::Started,
@@ -6278,6 +6384,9 @@ impl AgentSession {
                 .cloned()
                 .map(|id| (id, generation)),
         );
+        if let Some(spec) = options.tool_barrier.clone() {
+            self.arm_tool_barrier(spec)?;
+        }
         lock(&self.transcript_write_failures).start_run();
         if let Some(kept) = lock(&self.transcript_write_failures).take_refused_out(&self.messages())
         {
@@ -8284,6 +8393,9 @@ impl AgentSession {
                 && self.agent.has_queued_messages();
             // A concurrent prompt already owns the agent: a benign takeover (senpi "taken-over").
             if !allows_queued_continuation || self.agent.signal().is_some() {
+                if self.agent.signal().is_none() {
+                    self.clear_tool_barrier();
+                }
                 return Ok(());
             }
             Box::pin(self.agent.continue_with_queued_messages(Default::default())).await;
@@ -15912,20 +16024,30 @@ impl AgentSession {
             .with_session_manager(|manager| manager.session_file().map(std::path::PathBuf::from))
         {
             let session = self.clone();
-            if let Err(error_message) = crate::session_move::extension_state::restore_moved_state(
-                &file,
-                move |delivery| async move {
-                    session
-                        .emit_session_move(
-                            delivery.move_id,
-                            delivery.dir,
-                            Some(delivery.redelivered),
-                        )
-                        .await
-                        .map(|()| true)
-                },
-            )
-            .await
+            if let Err(error_message) =
+                crate::session_move::extension_state::restore_moved_state_with_mark(
+                    &file,
+                    move |delivery| async move {
+                        session
+                            .emit_session_move(
+                                delivery.move_id,
+                                delivery.dir,
+                                Some(delivery.redelivered),
+                            )
+                            .await
+                            .map(|()| true)
+                    },
+                    |data| {
+                        self.with_session_manager_mut(|manager| {
+                            manager.append_custom(
+                                crate::session_move::extension_state::MOVED_STATE_RESTORED,
+                                Some(data),
+                            );
+                            manager.take_write_error().map_or(Ok(()), Err)
+                        })
+                    },
+                )
+                .await
             {
                 self.emit(AgentSessionEvent::ContinuationError { error_message });
             }
@@ -17071,6 +17193,10 @@ impl AgentSession {
         released: Option<ReleasedWakeAdmit>,
     ) -> Result<bool, String> {
         let (held_messages, held_ids) = Box::pin(self.take_held_input_messages()).await?;
+        let _held_reservation = HeldInputReservation {
+            session: self.clone(),
+            ids: held_ids.clone(),
+        };
         let _admission = self.prompt_admission.lock().await;
         let _work = self.work_barrier.begin();
         let app_message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(
@@ -18742,8 +18868,16 @@ impl AgentSession {
     }
 
     // Session tool barrier (senpi tool-barrier.ts)
-    pub fn arm_tool_barrier(&self, spec: crate::session_work_barrier::ToolBarrierSpec) {
+    pub fn arm_tool_barrier(
+        &self,
+        spec: crate::session_work_barrier::ToolBarrierSpec,
+    ) -> Result<(), String> {
+        let value = serde_json::to_value(&spec).map_err(|e| e.to_string())?;
+        if let Some(error) = crate::session_work_barrier::tool_barrier_spec_error(&value) {
+            return Err(error);
+        }
         self.tool_barrier.arm(spec);
+        Ok(())
     }
 
     pub fn release_tool_barrier(&self, id: &str) -> bool {
@@ -18758,6 +18892,14 @@ impl AgentSession {
         &self,
         tool_name: &str,
     ) -> crate::session_work_barrier::ToolWorkspaceEffect {
+        if let Some(effect) = self
+            .state()
+            .tool_definitions
+            .get(tool_name)
+            .and_then(|entry| entry.definition.workspace_effect)
+        {
+            return effect;
+        }
         lock(&self.tool_workspace_effects)
             .get(tool_name)
             .copied()
