@@ -21,7 +21,7 @@ pub const ENDPOINT_LIST_TIMEOUT_MS: u64 = 10_000;
 pub const TUI_REQUEST_TIMEOUT_MS: u64 = 1_500;
 /// How long one `host status --all` enumeration is reused before the engine is asked again.
 pub const HOST_ENDPOINTS_CACHE_TTL_MS: i64 = 5_000;
-pub const HOST_STATUS_ALL_ARGS: [&str; 6] = ["host", "status", "--all", "--include-workers", "--json"];
+pub const HOST_STATUS_ALL_ARGS: [&str; 5] = ["host", "status", "--all", "--include-workers", "--json"];
 
 /// The commands any terminal control endpoint answers, an older one included.
 pub const LEGACY_TUI_COMMANDS: [&str; 5] = ["list_sessions", "get_messages", "get_state", "get_protocol_info", "release_session"];
@@ -241,7 +241,8 @@ impl LiveThreadSurface {
     /// The routing id of a host session, looked up in that host's own listing when the endpoint has none.
     fn routing_id_of(&self, endpoint: &GatewayEndpointRef) -> BoxFuture<Result<Option<String>, String>> {
         if let Some(routing_id) = &endpoint.routing_id {
-            return Box::pin(async move { Ok(Some(routing_id.clone())) });
+            let routing_id = routing_id.clone();
+            return Box::pin(async move { Ok(Some(routing_id)) });
         }
         let socket = endpoint.socket.clone();
         let durable_id = endpoint.durable_session_id.clone();
@@ -440,7 +441,8 @@ impl SurfaceHandle {
 
     fn routing_id_of(&self, endpoint: &GatewayEndpointRef) -> BoxFuture<Result<Option<String>, String>> {
         if let Some(routing_id) = &endpoint.routing_id {
-            return Box::pin(async move { Ok(Some(routing_id.clone())) });
+            let routing_id = routing_id.clone();
+            return Box::pin(async move { Ok(Some(routing_id)) });
         }
         let socket = endpoint.socket.clone();
         let durable_id = endpoint.durable_session_id.clone();

@@ -497,6 +497,8 @@ impl TaskDagEngine {
                 lock(&reattach_subscriptions).insert(key, unsubscribe);
             })),
             ancestry: scheduling.ancestry,
+            paused_children: None,
+            resume_credential: None,
             node_spawn_policy: scheduling.node_spawn_policy.clone(),
         }));
         let lease_watch =
@@ -633,10 +635,7 @@ impl TaskDagEngine {
                                 &run.to_string(),
                                 parent,
                                 seq,
-                                Some(senpi_task::dag::types::ResumeCredential {
-                                    pause_seq: credential.pause_seq,
-                                    resume_id: credential.resume_id.clone(),
-                                }),
+                                Some(credential.clone()),
                             )? {
                             senpi_task::dag::recovery::InstallResumedRunResult::Installed(
                                 installed,
@@ -700,7 +699,7 @@ impl TaskDagEngine {
 
     /// The runtime's `cancelNode` capability: end one held node's child while the run stays paused.
     fn cancel_node_capability(&self) -> Option<crate::dag_tool::DagCancelNode> {
-        let options = Arc::downgrade(&self.this);
+        let options = lock(&self.this).clone();
         let pauses = self.pause_store();
         let holds = crate::dag_paused_cancel::ended_child_closure(self.task_manager.clone());
         Some(Arc::new(move |run_id: &str, node_id: &str| {
@@ -726,7 +725,7 @@ impl TaskDagEngine {
 
     /// The runtime's `guide` capability: validated add/edit/remove on a user-stopped run.
     fn guide_capability(&self) -> Option<crate::dag_tool::DagGuide> {
-        let options = Arc::downgrade(&self.this);
+        let options = lock(&self.this).clone();
         let pauses = self.pause_store();
         Some(Arc::new(
             move |run_id: &str,
@@ -815,6 +814,7 @@ impl TaskDagEngine {
             subscriber_ring: Some(self.settings.subscriber_ring),
             pre_attached_tasks: None,
             schedule_retry: None,
+            resume_credential: None,
             now: None,
         }
     }
@@ -1043,7 +1043,7 @@ impl TaskDagEngine {
         self.clear_admission_latch(run);
         lock(&self.schedulers).remove(run);
         let reentry = senpi_task::dag::node_retry::reenter_dag_run(self.scheduler_options(amended))
-            .map_err(|error| crate::dag_tool::DagToolExecutionError::Manager(error.into()))?;
+            .map_err(crate::dag_tool::DagToolExecutionError::Control)?;
         self.adopt_reentry(run, reentry);
         Ok(self.manager.snapshot(&run.to_owned(), &session)?)
     }

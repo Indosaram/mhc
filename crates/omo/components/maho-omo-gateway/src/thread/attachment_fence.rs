@@ -97,7 +97,7 @@ pub async fn fenced_command(
     command: Value,
     capabilities: &BTreeSet<String>,
     durable_session_id: Option<&str>,
-    send: &dyn Fn() -> BoxFuture<Result<Value, String>>,
+    send: &(dyn Fn() -> BoxFuture<Result<Value, String>> + Send + Sync),
 ) -> Result<FenceOutcome, String> {
     let Some(object) = command.as_object() else {
         return Ok(FenceOutcome::Ran(send().await?));

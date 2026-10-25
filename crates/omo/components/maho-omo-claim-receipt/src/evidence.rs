@@ -304,8 +304,7 @@ impl TimelineBuilder {
                     &PendingCheck { kinds, command },
                     judge_structured(is_error, &text),
                 );
-            }
-            if lookup && kinds.is_empty() {
+            } else if lookup {
                 self.lookup(is_error, &text, index as f64, entry_id);
             }
         }

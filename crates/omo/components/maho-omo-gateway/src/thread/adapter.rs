@@ -220,7 +220,7 @@ impl GatewayEndpointPort {
     /// reach a receiver before COMMIT.
     pub fn inert() -> Self {
         Self {
-            wake: Arc::new(|_, _| Box::pin(async { Err("an extension enqueue cannot contact a live endpoint".to_owned()) })),
+            wake: Arc::new(|_, _| Box::pin(async { GatewayWakeReply { admitted: Vec::new(), unroutable: Some("extension_transaction".into()) } })),
             release_session: None,
             classify_liveness: None,
             respond_ui: None,
@@ -344,7 +344,8 @@ mod tests {
             ("d".to_owned(), GatewayAdmissionKind::Queued),
         ];
         let result = to_session_control_drain_result(&admitted);
-        let ids: Vec<&str> = result.admitted.unwrap_or_default().iter().map(|entry| entry.delivery_id.as_str()).collect();
+        let admitted = result.admitted.unwrap_or_default();
+        let ids: Vec<&str> = admitted.iter().map(|entry| entry.delivery_id.as_str()).collect();
         assert_eq!(ids, vec!["a", "d"]);
     }
 

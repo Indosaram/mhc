@@ -72,7 +72,7 @@ impl DagWake {
     }
     pub fn on_dag_event(&mut self, run: DagWakeRun<'_>, event: &DagRunEventPayload) {
         match event {
-            DagRunEventPayload::RunPaused { reason } => {
+            DagRunEventPayload::RunPaused { reason, .. } => {
                 let state = (self.parent_state)();
                 let reason = reason.as_deref();
                 let mut details = json!({"runId":run.run_id,"name":run.name,"status":"paused","runRef":dag_run_ref(run.run_id)});
@@ -87,6 +87,7 @@ impl DagWake {
             }
             DagRunEventPayload::RunFailed { error, counts } => {
                 let code = match error.code {
+                    senpi_task::dag::types::DagNodeErrorCode::LostWhilePaused => "lost_while_paused",
                     senpi_task::dag::types::DagNodeErrorCode::PlanUnresolved => "plan_unresolved",
                     senpi_task::dag::types::DagNodeErrorCode::DepthDenied => "depth_denied",
                     senpi_task::dag::types::DagNodeErrorCode::StartFailed => "start_failed",

@@ -491,6 +491,7 @@ impl AgentSessionRuntime {
                 id: None,
                 parent_session: Some(parent_session),
                 forked_from_leaf_id: None,
+                spawned_by: None,
             }
         });
         let manager = self.session.with_session_manager(|current| {

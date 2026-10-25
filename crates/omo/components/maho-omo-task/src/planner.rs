@@ -50,7 +50,7 @@ pub fn create_task_child_planner_with_tiers(
         let excluded = excluded.clone();
         Arc::new(move |plan: ResolvedChildPlan| {
             let live = resolve_registry();
-            let fast = inherit_parent_fast_mode(plan.clone(), live.as_deref().map(|registry| registry.as_ref() as &dyn SenpiModelRegistry), resolve_parent_service_tier().as_deref());
+            let fast = inherit_parent_fast_mode(plan.clone(), live.as_deref(), resolve_parent_service_tier().as_deref());
             if is_excluded_model(&fast.model, &excluded) { plan } else { fast }
         })
     };
@@ -65,7 +65,7 @@ pub fn create_task_child_planner_with_tiers(
             if let Some(pin) = explicit {
                 // An explicit override is parsed ONCE against the live registry and refused typed.
                 let live = resolve_registry();
-                match resolve_explicit_pin(pin, live.as_deref().map(|registry| registry.as_ref() as &dyn SenpiModelRegistry), resolve_default_route.as_ref(), Some(&excluded)) {
+                match resolve_explicit_pin(pin, live.as_deref(), resolve_default_route.as_ref(), Some(&excluded)) {
                     ExplicitPinResolution::Resolved { canonical, metadata, thinking_level } => {
                         match resolve_agent(name, &agents, None, &ResolveAgentOptions { model_override: Some(pin.to_string()), ..ResolveAgentOptions::default() }) {
                             AgentResolutionResult::Resolved(resolution) => {
@@ -94,7 +94,7 @@ pub fn create_task_child_planner_with_tiers(
         }
         if let Some(pin) = spec.model.as_deref().filter(|model| !model.is_empty()) {
             let live = resolve_registry();
-            return match resolve_explicit_pin(pin, live.as_deref().map(|registry| registry.as_ref() as &dyn SenpiModelRegistry), resolve_default_route.as_ref(), Some(&excluded)) {
+            return match resolve_explicit_pin(pin, live.as_deref(), resolve_default_route.as_ref(), Some(&excluded)) {
                 ExplicitPinResolution::Resolved { canonical, metadata, thinking_level } => Ok(ResolvedChildPlan { model: canonical, resolved_model: Some(metadata), variant: thinking_level, ..ResolvedChildPlan::default() }),
                 ExplicitPinResolution::Error(error) => Err(Box::new(pin_failure(error, &available_agents))),
             };

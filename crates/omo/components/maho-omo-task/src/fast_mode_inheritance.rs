@@ -95,7 +95,7 @@ pub fn inherit_parent_fast_mode(
         resolved_model: resolved_model.or(Some(ResolvedModelRecord::new(
             ResolvedModelSource::Explicit,
             &base.provider,
-            format!("{}{FAST_MODEL_SUFFIX}", base.id),
+            &format!("{}{FAST_MODEL_SUFFIX}", base.id),
         ))),
         ..plan
     }

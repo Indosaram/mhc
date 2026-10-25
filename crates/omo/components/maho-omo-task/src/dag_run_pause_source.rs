@@ -86,7 +86,7 @@ impl DagRunPauseSource {
                     senpi_task::pause::guidance::GuidanceScope::Run => None,
                     senpi_task::pause::guidance::GuidanceScope::Node { node_id } => Some(node_id),
                 } {
-                    Some(node_id) => node.id == node_id,
+                    Some(node_id) => &node.id == node_id,
                     None => node.state != senpi_task::dag::types::DagNodeState::Completed,
                 }
             })

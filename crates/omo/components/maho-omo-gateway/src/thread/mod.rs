@@ -33,6 +33,7 @@ pub mod store;
 pub mod store_api;
 pub mod store_extension_facade;
 pub mod store_extension_ops;
+pub use store_extension_session_ops as extension_session_ops;
 pub mod store_extension_session_ops;
 pub mod store_extensions;
 pub mod store_ops;

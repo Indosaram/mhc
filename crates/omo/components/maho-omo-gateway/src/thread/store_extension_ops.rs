@@ -27,11 +27,11 @@ pub struct Registered {
     pub module: BTreeMap<String, StoreExtensionOperation>,
 }
 
-fn refusal(code: StoreExtensionRefusalCode, message: impl Into<String>) -> StoreExtensionResult<Value> {
+fn refusal<T>(code: StoreExtensionRefusalCode, message: impl Into<String>) -> StoreExtensionResult<T> {
     StoreExtensionResult::refused(code, message)
 }
 
-fn from_error(error: StoreError) -> StoreExtensionResult<Value> {
+fn from_error<T>(error: StoreError) -> StoreExtensionResult<T> {
     let message = error.message();
     if error.is_lock_wait_exceeded() {
         return refusal(StoreExtensionRefusalCode::GatewayLockWaitExceeded, message);
@@ -166,8 +166,8 @@ impl StoreExtensions {
     /// The public channel (connectors, the CLI, the SDK): a session-callable op is never reachable here.
     pub fn call(&self, ctx: &StoreContext, registry: &ExtensionModuleRegistry, name: &str, op: &str, args: &Value, now: i64) -> StoreExtensionResult<Value> {
         let own = self.registered.get(name);
-        let persisted = read_descriptor(ctx, name);
-        if declared_op_names(own.map(|registered| &registered.descriptor)).contains(op) || declared_op_names(persisted.as_ref().map(|descriptor| &descriptor.named(name))).contains(op) {
+        let persisted = read_descriptor(ctx, name).map(|descriptor| descriptor.named(name));
+        if declared_op_names(own.map(|registered| &registered.descriptor)).contains(op) || declared_op_names(persisted.as_ref()).contains(op) {
             return refusal(
                 StoreExtensionRefusalCode::CallerNotAllowed,
                 format!("{name}.{op} is session-callable: only the session's own tool reaches it, with the caller the engine resolved."),
@@ -212,7 +212,7 @@ impl StoreExtensions {
         };
         let version = match self.ensure(ctx, descriptor, now) {
             StoreExtensionResult::Ok { value } => value,
-            refused => return refused,
+            StoreExtensionResult::Refused { code, message } => return StoreExtensionResult::Refused { code, message },
         };
         let mut value: Option<Value> = None;
         let outcome = transaction(ctx, "extension_call", || {
@@ -260,9 +260,9 @@ mod tests {
         module.insert(
             "core".to_owned(),
             Arc::new(|tx: &crate::thread::store_extensions::StoreExtensionTransaction, args: Value| {
-                tx.exec("CREATE TABLE IF NOT EXISTS alpha_notes (id INTEGER PRIMARY KEY, note TEXT)", &[]).map_err(|error| crate::thread::store_extensions::StoreExtensionError::failed(error))?;
+                (tx.exec)("CREATE TABLE IF NOT EXISTS alpha_notes (id INTEGER PRIMARY KEY, note TEXT)", &[]).map_err(|error| crate::thread::store_extensions::StoreExtensionError::failed(error))?;
                 let note = args.get("note").and_then(Value::as_str).unwrap_or_default().to_owned();
-                tx.exec("INSERT INTO alpha_notes (note) VALUES (?)", &[json!(note)]).map_err(|error| crate::thread::store_extensions::StoreExtensionError::failed(error))?;
+                (tx.exec)("INSERT INTO alpha_notes (note) VALUES (?)", &[json!(note)]).map_err(|error| crate::thread::store_extensions::StoreExtensionError::failed(error))?;
                 Ok(json!({ "ok": true }))
             }),
         );

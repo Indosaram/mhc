@@ -385,7 +385,7 @@ mod tests {
             ctx.exec(statement).expect("migration step");
         }
         let registration = descriptor("alpha", vec![tool_entry("open")]);
-        assert_eq!(persist_descriptor(&ctx, &registration, 1, None), Ok(None));
+        assert_eq!(persist_descriptor(&ctx, &registration, 1, None).expect("persist"), None);
         let listed = list_session_ops(&ctx);
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].registered_name, "ext_alpha_open");

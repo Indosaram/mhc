@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use maho_omo_config_core::LoadOmoConfigOptions;
+use omo_config_core::LoadOmoConfigOptions;
 use maho_omo_config_resolution::load_senpi_omo_config;
 
 use super::provenance_resolver::ProvenanceWorkspace;

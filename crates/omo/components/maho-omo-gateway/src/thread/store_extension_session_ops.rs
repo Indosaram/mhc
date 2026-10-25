@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn a_status_phase_runs_the_declared_status_op() {
         let ctx = context();
-        let mut seen_op = String::new();
+        let seen_op = std::cell::RefCell::new(String::new());
         let request = SessionCallRequest {
             name: "alpha".into(),
             op: "open_request".into(),
@@ -257,11 +257,11 @@ mod tests {
             now: 1,
         };
         let reply = session_call(&ctx, &entry(), Some("alpha"), &request, &|op, _| {
-            seen_op = op.to_owned();
+            *seen_op.borrow_mut() = op.to_owned();
             StoreExtensionResult::ok(serde_json::json!({ "status": "opened" }))
         });
         assert!(reply.result.is_ok());
-        assert_eq!(seen_op, "status");
+        assert_eq!(*seen_op.borrow(), "status");
         assert!(reply.await_wait.is_none());
     }
 

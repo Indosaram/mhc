@@ -54,7 +54,7 @@ pub fn render_team_member_liveness(details: Option<&TeamMemberLivenessDetails<'_
 #[derive(Deserialize)]
 struct CompletionPayload {
     /// The run this completion belongs to; absent for a plain task child.
-    #[serde(default)]
+    #[serde(default, rename = "runRef", alias = "run_ref")]
     run_ref: Option<senpi_task::pause::ports::RunRef>,
     task_id: String,
     name: String,
@@ -68,8 +68,6 @@ struct CompletionPayload {
     duration_ms: i64,
     tokens: Option<u64>,
     run_stats: Option<senpi_task::state::TaskRunStats>,
-    #[serde(rename = "runRef")]
-    run_ref: Option<senpi_task::completion::RunRef>,
     parent_model: Option<String>,
     parent_model_fallback: Option<senpi_task::completion::ParentModelFallback>,
     final_response: String,

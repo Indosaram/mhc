@@ -1296,7 +1296,7 @@ pub fn recover_delivery(ctx: &StoreContext, now: i64, principal: &str, idempoten
     })
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DeliveryView {
     pub row: DeliveryRow,
     pub queue_position: i64,
