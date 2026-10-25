@@ -345,3 +345,34 @@ async fn the_env_prefix_section_rides_the_skill_content_after_the_frontmatter() 
     assert!(text.contains("GIT_MASTER=1 git add -A ."));
     assert!(text.contains("\necho done"));
 }
+
+#[tokio::test]
+async fn original_result_with_attribution_is_not_appended_twice() {
+    let api = with_settings(GitMasterSettings {
+        commit_footer: GitMasterCommitFooter::Builtin,
+        include_co_authored_by: true,
+        git_env_prefix: "GIT_MASTER=1".into(),
+    });
+    let mut event = read_result(SKILL_PATH, false);
+    if let ExtensionEvent::ToolResult(event) = &mut event {
+        event.content.push(ToolContent::text(
+            "<commit_attribution>existing</commit_attribution>",
+        ));
+    }
+    let EventResult::ToolResult(result) = dispatch(&api, &mut event).await else {
+        panic!("expected rewritten skill");
+    };
+    let content = result.content.expect("content");
+    assert_eq!(content.len(), 2);
+    assert_eq!(
+        content
+            .iter()
+            .filter_map(|item| match item {
+                ToolContent::Text { text, .. } =>
+                    Some(text.matches("<commit_attribution>").count()),
+                _ => None,
+            })
+            .sum::<usize>(),
+        1
+    );
+}
