@@ -314,7 +314,7 @@ pub async fn create_agent_session(
         .current_branch()
         .iter()
         .any(|entry| entry["type"] == "thinking_level_change");
-    let configured_thinking = model
+    let model_thinking = model
         .as_ref()
         .and_then(|model| {
             settings
@@ -322,13 +322,10 @@ pub async fn create_agent_session(
                 .and_then(|levels| levels.get(format!("{}/{}", model.provider, model.id)))
                 .and_then(serde_json::Value::as_str)
                 .and_then(ModelThinkingLevel::parse)
-        })
-        .or_else(|| {
-            settings
-                .get_string("defaultThinkingLevel")
-                .as_deref()
-                .and_then(ModelThinkingLevel::parse)
         });
+    let configured_thinking = model_thinking;
+    let explicit_thinking = options.thinking_level.is_some() || options.thinking_selection.is_some();
+    let mut thinking_level_source = if explicit_thinking { "explicit" } else if has_thinking_entry { "session" } else if model_thinking.is_some() { "global" } else if model.as_ref().and_then(|m| m.default_thinking_level).is_some() { "model-default" } else { "default" };
     let requested_thinking = options
         .thinking_level
         .map(ModelThinkingLevel::from)
@@ -344,6 +341,8 @@ pub async fn create_agent_session(
                 .flatten()
         })
         .or(configured_thinking)
+        .or_else(|| model.as_ref().and_then(|m| m.default_thinking_level).map(ModelThinkingLevel::from))
+        .or_else(|| settings.get_string("defaultThinkingLevel").as_deref().and_then(ModelThinkingLevel::parse))
         .or(Some(ModelThinkingLevel::Medium));
     // senpi sdk.ts:360-365: without a model the level is "off" (`clamp_thinking_level_to_model(_, None)`).
     let thinking_level = match requested_thinking {
@@ -354,6 +353,7 @@ pub async fn create_agent_session(
         ),
         None => clamp_thinking_level_to_model(None, model.as_ref()),
     };
+    if requested_thinking != Some(thinking_level) && thinking_level_source != "default" { thinking_level_source = "clamped"; }
     let mut thinking_selection = options
         .thinking_selection
         .take()
@@ -473,11 +473,13 @@ pub async fn create_agent_session(
         manager.append_model_change(&model.provider, &model.id, None, None);
     }
     if context.messages.is_empty() || !has_thinking_entry {
-        manager.append_thinking_level_change(
+        manager.append_thinking_level_change_with_context(
             thinking_level.as_str(),
             thinking_selection.as_ref().map(|selection| {
                 serde_json::to_value(selection).expect("thinking selection serializes")
             }),
+            Some(thinking_level_source),
+            model.as_ref(),
         );
     }
     let resumed = !context.messages.is_empty();

@@ -573,6 +573,7 @@ struct AgentSessionState {
     /// senpi `_browserEngine` (`connected` / `builtin` / `none`).
     browser_engine: Option<String>,
     wake_sources: WakeSourceTracker,
+    security_notices: crate::security_notices::SecurityNoticeSnapshot,
     shown_high_reasoning_warning_keys: BTreeSet<String>,
     extension_mode: ExtensionMode,
     extension_ui_context: Option<Arc<dyn ExtensionUi>>,
@@ -595,6 +596,7 @@ struct AgentSessionState {
     steering_messages: Vec<String>,
     follow_up_messages: Vec<String>,
     queued_input_order: Vec<QueuedInput>,
+    queued_input_ages: crate::queued_input_age::QueuedInputAges,
     next_queued_input_order: u64,
     post_compaction_deferred_steering_messages: Vec<AgentMessage>,
     post_compaction_deferred_follow_up_messages: Vec<AgentMessage>,
@@ -962,6 +964,7 @@ pub struct AgentSessionInner {
     /// in place; the next reader or run re-materializes them through `runtime_messages()`.
     runtime_messages_tokenized: std::sync::atomic::AtomicBool,
     wake_source_subscription: Mutex<Option<maho_ext_api::BusSubscription>>,
+    lifecycle_fact_subscriptions: Mutex<Vec<maho_ext_api::BusSubscription>>,
     /// Forwards the bound runner's `senpi:extension-rpc-event` channel onto the session bus, so a
     /// connection subscribed once keeps receiving across runner recreation (senpi `onRpcEvent`).
     extension_rpc_event_forward: Mutex<Option<maho_ext_api::BusSubscription>>,
@@ -3659,6 +3662,7 @@ impl AgentSession {
             prompt_surface: None,
             browser_engine: None,
             wake_sources: WakeSourceTracker::default(),
+            security_notices: Default::default(),
             shown_high_reasoning_warning_keys: BTreeSet::new(),
             extension_mode: ExtensionMode::Print,
             extension_ui_context: None,
@@ -3680,6 +3684,7 @@ impl AgentSession {
             steering_messages: Vec::new(),
             follow_up_messages: Vec::new(),
             queued_input_order: Vec::new(),
+            queued_input_ages: Default::default(),
             next_queued_input_order: 0,
             post_compaction_deferred_steering_messages: Vec::new(),
             post_compaction_deferred_follow_up_messages: Vec::new(),
@@ -3785,6 +3790,7 @@ impl AgentSession {
                 agent_run_active: std::sync::atomic::AtomicBool::new(false),
                 runtime_messages_tokenized: std::sync::atomic::AtomicBool::new(false),
                 wake_source_subscription: Mutex::new(None),
+                lifecycle_fact_subscriptions: Mutex::new(Vec::new()),
                 extension_rpc_event_forward: Mutex::new(None),
                 settings_source_subscription: Mutex::new(None),
                 before_session_invalidate: Mutex::new(None),
@@ -3953,6 +3959,7 @@ impl AgentSession {
             match &mut event {
                 AgentEvent::AgentStart => {
                     *lock(&self.custody_run_id) = uuid::Uuid::new_v4().to_string();
+                    state.queued_input_ages.note_run_started();
                     state.required_compaction_turn_error = None;
                     state.turn_index = 0;
                     state.message_replacements.clear();
@@ -4147,6 +4154,10 @@ impl AgentSession {
                 .map_or((boundary.aborted, boundary.abort_source), |event| {
                     (event.aborted, event.abort_source)
                 });
+            if !aborted && !boundary.will_retry && !boundary.messages.iter().filter_map(AgentMessage::as_assistant).any(|message| matches!(message.stop_reason, StopReason::Error | StopReason::Aborted)) {
+                let outlived = { let mut state = self.state(); let ids = state.queued_input_order.iter().map(|input| input.enqueue_order.to_string()).collect::<Vec<_>>(); state.queued_input_ages.take_outlived(&ids, chrono::Utc::now().timestamp_millis()) };
+                for input in outlived { self.emit_extension_event("queued_input_outlived", &serde_json::json!({"queuedId":input.queued_id,"ageMs":input.age_ms})); }
+            }
             self.emit(AgentSessionEvent::AgentEnd {
                 messages: boundary.messages.clone(),
                 aborted,
@@ -4411,6 +4422,7 @@ impl AgentSession {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as u64);
         let event = HumanInputAdmittedEvent { kind, at };
+        self.event_bus.emit("human_input_admitted", &serde_json::json!({"at":at,"kind":format!("{kind:?}")}));
         let listeners: Vec<HumanInputListener> = self
             .human_input_listeners
             .lock()
@@ -4818,12 +4830,65 @@ impl AgentSession {
         lock(&self.engine_turn_hold).is_held()
     }
 
+    pub fn wake_source_counts(&self) -> crate::session_activity::ActiveCounts { self.state().wake_sources.active_counts() }
     pub fn paused_notice_count(&self) -> usize {
         lock(&self.engine_turn_hold).notice_count()
     }
 
     pub fn holds(&self) -> Vec<crate::engine_turn_hold::SessionHold> {
         lock(&self.engine_turn_hold).holds()
+    }
+    pub async fn prompt_size_prefix_request(&self, signal: maho_ai::utils::abort::AbortSignal) -> crate::prompt_cache_prefix_request::PromptCachePrefixResult {
+        use crate::prompt_cache_prefix_request::{PromptCachePrefixRequest, PromptCachePrefixResult};
+        let work = async {
+            self.wait_for_idle().await;
+            let mut guard = self.extension_runner.lock().await;
+            let paths = guard.as_ref().map_or_else(Vec::new, |runner| runner.extension_paths());
+            let names = crate::prompt_size_extension_names::prompt_size_extension_names(&paths, |_| None);
+            let unsafe_paths = guard.as_ref().map_or_else(Vec::new, |runner| runner.preview_unsafe_before_agent_start_paths());
+            if !unsafe_paths.is_empty() { return PromptCachePrefixResult::Skipped(format!("before_agent_start handlers not registered previewSafe: {}",unsafe_paths.join(", "))); }
+            let mut accounting = None; let mut system_prompt = String::new();
+            for _ in 0..2 {
+                let base = self.state().base_system_prompt.clone();
+                let skill_count = self.state().skills.iter().filter(|skill| !skill.disable_model_invocation).count();
+                let current = std::sync::Mutex::new(crate::prompt_size_report::PromptSizeAccounting::new(&base, skill_count, &[], names.clone()));
+                system_prompt = base.clone();
+                if let Some(runner) = guard.as_mut() {
+                    let observe = |path: &str, before: &str, after: &str, parts: Option<&[maho_ext_api::DynamicSystemPromptPart]>| {
+                        let parts = parts.map(|parts| parts.iter().map(|part| crate::prompt_size_report::DynamicSystemPromptPart { name: part.name.clone(), source: part.source.clone(), text: part.text.clone() }).collect::<Vec<_>>());
+                        current.lock().unwrap_or_else(std::sync::PoisonError::into_inner).observe(path,before,after,parts.as_deref());
+                    };
+                    let event = maho_ext_api::BeforeAgentStartEvent { prompt:String::new(), trigger:"prompt".into(), preview:true, images:None, system_prompt:base.clone(), system_prompt_options:self.extension_system_prompt_options() };
+                    match runner.emit_before_agent_start_observed(event,Some(&observe)).await { Ok(Some(result)) => { if let Some(prompt) = result.system_prompt { system_prompt = prompt; } }, Ok(None) => {}, Err(error) => return PromptCachePrefixResult::Skipped(error.message) }
+                }
+                accounting = Some(current.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner));
+                if self.state().base_system_prompt == base { break; }
+            }
+            let third_party = guard.as_ref().map_or_else(Vec::new, |runner| runner.third_party_session_start_paths());
+            let state = self.agent.state();
+            let tools = state.declared_tools.clone().unwrap_or_else(|| state.tools().to_vec()).into_iter().map(|tool| tool.tool).collect::<Vec<_>>();
+            let report = accounting.map(|accounting| accounting.report(&tools));
+            let options = serde_json::json!({"thinkingLevel":self.thinking_level(),"thinkingSelection":self.thinking_selection(),"sessionId":self.session_id(),"serviceTier":self.service_tier()});
+            PromptCachePrefixResult::Ready(PromptCachePrefixRequest { model:self.model(), system_prompt, tools, options, size_report:report, startup_notes:Some(crate::prompt_size_startup::prompt_size_startup_notes(&third_party,&names,None,false)) })
+        };
+        tokio::select! { biased; () = signal.cancelled() => crate::prompt_cache_prefix_request::PromptCachePrefixResult::Skipped("prefix build cancelled".into()), result = work => result }
+    }
+    pub async fn start_run_resume_turn(&self, ports: Arc<dyn crate::run_resume_turn::RunResumePorts>) -> crate::run_resume_turn::RunResumeTurn {
+        crate::run_resume_turn::start_run_resume_turn(ports).await
+    }
+    pub fn bind_lifecycle(&self, host: Arc<dyn crate::lifecycle_session_binding::LifecycleBindingHost>) -> crate::lifecycle_session_binding::LifecycleSessionBinding {
+        crate::lifecycle_session_binding::LifecycleSessionBinding::new(Arc::new(self.clone()), host)
+    }
+    /// Connection owners retain this attachment only for handshakes advertising grant_select.
+    pub fn attach_mcp_grant_presentation(&self, select: crate::mcp_grant_presentations::Select) -> crate::mcp_grant_presentations::McpGrantAttachment {
+        crate::mcp_grant_presentations::attach_mcp_grant_presentation(&self.session_id(), select)
+    }
+    pub async fn select_mcp_grant(&self, title: String, signal: Option<maho_ai::utils::abort::AbortSignal>) -> bool {
+        crate::mcp_grant_presentations::select_mcp_grant(crate::mcp_grant_presentations::get_mcp_grant_presentation(Some(&self.session_id())), title, signal).await
+    }
+    pub fn with_run_holds<T>(&self, f: impl FnOnce(&mut crate::run_holds::RunHolds<'_>) -> T) -> T {
+        let mut ledger = lock(&self.engine_turn_hold);
+        f(&mut crate::run_holds::RunHolds::new(&mut ledger))
     }
 
     async fn prompt_with_readiness(
@@ -9979,6 +10044,8 @@ impl AgentSession {
         diagnostics: Vec<crate::diagnostics::ResourceDiagnostic>,
     ) {
         let mut state = self.state();
+        let security_diagnostics = diagnostics.iter().filter(|diagnostic| diagnostic.message.starts_with("Blocked skill link")).map(|diagnostic| serde_json::json!({"category":"skill-link-blocked","message":diagnostic.message,"path":diagnostic.path})).collect::<Vec<_>>();
+        state.security_notices.set_resources(&security_diagnostics);
         state.prompt_templates = templates;
         state.skills = skills;
         state.skill_diagnostics = diagnostics;
@@ -13693,6 +13760,12 @@ impl AgentSession {
                 }
             }),
         ));
+        lock(&self.lifecycle_fact_subscriptions).clear();
+        for channel in ["wake_source_state", "goal_store_changed", "goal_continuation_timer_state", "security_notice"] {
+            let weak = Arc::downgrade(&self.inner);
+            let subscription = runner.events.on(channel, Arc::new(move |data| { if let Some(inner) = weak.upgrade() { let session = AgentSession { inner }; if channel == "security_notice" { session.state().security_notices.accept(data); } session.event_bus.emit(channel,data); } }));
+            lock(&self.lifecycle_fact_subscriptions).push(subscription);
+        }
         let weak = Arc::downgrade(&self.inner);
         *lock(&self.wake_source_subscription) = Some(runner.events.on(
             "wake_source_state",
@@ -15048,7 +15121,12 @@ impl AgentSession {
     /// Routed to the bound runner's bus (the pinned `resourceLoader` bus extension handlers
     /// subscribe to) as well as the session-private bus, falling back to the private bus alone
     /// when no runner is bound.
+    pub fn security_notice_state(&self) -> crate::security_notices::SecurityNoticeState { self.state().security_notices.snapshot() }
+    pub fn set_resource_security_notices(&self, diagnostics: &[Value]) { self.state().security_notices.set_resources(diagnostics); }
+    pub fn subscribe_security_notices(&self, listener: Arc<dyn Fn(crate::security_notices::SecurityNoticeState) + Send + Sync>) -> crate::security_notices::SecurityNoticeSubscription { self.state().security_notices.subscribe(listener) }
+
     pub fn emit_extension_event(&self, channel: &str, data: &Value) {
+        if channel == "security_notice" { self.state().security_notices.accept(data); }
         self.event_bus.emit(channel, data);
         if let Some(events) = self.state().extension_events.clone() {
             events.emit(channel, data);
@@ -15387,7 +15465,7 @@ impl AgentSession {
         {
             let source = crate::engine_turn_hold::engine_wake_source(&message.custom_type);
             let mut hold = lock(&self.engine_turn_hold);
-            if hold.holds_source(&source) {
+            if hold.holds_source(&source) || crate::run_holds::RunHolds::new(&mut hold).holds_wake(message.details.as_ref().unwrap_or(&Value::Null)) {
                 let noted = serde_json::to_value(&message)
                     .map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                 hold.note(&source, Some(noted));
@@ -16246,6 +16324,9 @@ impl AgentSession {
         self.abort_bash();
         self.agent.abort(None);
         lock(&self.wake_source_subscription).take();
+        lock(&self.lifecycle_fact_subscriptions).clear();
+        self.state().security_notices.dispose();
+        crate::mcp_grant_presentations::clear_mcp_grant_presentations(&self.session_id());
         lock(&self.extension_rpc_event_forward).take();
         lock(&self.settings_source_subscription).take();
         lock(&self.agent_subscription).take();
@@ -16329,6 +16410,7 @@ impl AgentSession {
             state.next_queued_input_order
         });
         state.next_queued_input_order = state.next_queued_input_order.max(order);
+        state.queued_input_ages.note_queued(&order.to_string(), chrono::Utc::now().timestamp_millis());
         state.queued_input_order.push(QueuedInput {
             text: text.to_owned(),
             mode,
@@ -17153,7 +17235,7 @@ impl AgentSession {
                 .as_ref()
                 .and_then(|selection| serde_json::to_value(selection).ok());
             self.with_session_manager_mut(|manager| {
-                manager.append_thinking_level_change(effective.as_str(), selection_value);
+                manager.append_thinking_level_change_with_context(effective.as_str(), selection_value, Some("explicit"), Some(&model));
             });
             if changing
                 && model.id == "gpt-6-astra"
