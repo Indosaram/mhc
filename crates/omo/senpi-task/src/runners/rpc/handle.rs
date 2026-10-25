@@ -44,6 +44,8 @@ struct HandleState {
     final_text: Option<String>,
     turn_baseline: Option<String>,
     turn_outcome: Option<RunnerOutcome>,
+    turn_generation: u64,
+    settled_turns: std::collections::HashMap<u64, RunnerOutcome>,
     terminal_assistant_message: Option<RpcTerminalAssistantMessage>,
     /// The raw terminal assistant `message_end` payload of the current turn.
     terminal_wire_message: Option<Value>,
@@ -70,6 +72,8 @@ impl HandleShared {
         if state.turn_outcome.is_some() {
             return;
         }
+        let generation = state.turn_generation;
+        state.settled_turns.insert(generation, settled.clone());
         state.turn_outcome = Some(settled);
         state.reached_idle = true;
         self.changed.notify_all();
@@ -78,6 +82,7 @@ impl HandleShared {
     fn on_event(&self, event: &Value) {
         let mut state = self.lock();
         if event["type"] == "agent_start" && state.turn_outcome.is_some() && state.exit.is_none() {
+            state.turn_generation += 1;
             state.reached_idle = false;
             state.turn_outcome = None;
             state.terminal_assistant_message = None;
@@ -202,6 +207,10 @@ impl RpcChildHandle {
 
     pub fn run_pause(&self) -> RpcRunPause {
         let shared = Arc::clone(&self.shared);
+        let expected_turn = {
+            let state = shared.lock();
+            state.turn_generation + u64::from(state.turn_outcome.is_some())
+        };
         RpcRunPause {
             task_id: self.task_id.clone(),
             control: Arc::clone(&self.control),
@@ -209,7 +218,7 @@ impl RpcChildHandle {
             current_outcome: Arc::new(move || {
                 let mut state = shared.lock();
                 loop {
-                    if let Some(outcome) = &state.turn_outcome {
+                    if let Some(outcome) = state.settled_turns.get(&expected_turn) {
                         return outcome.clone();
                     }
                     if let Some(exit) = &state.exit {
@@ -277,6 +286,9 @@ impl RpcChildHandle {
         }
         if state.reached_idle || state.turn_outcome.is_some() {
             state.reached_idle = false;
+            if state.turn_outcome.is_some() {
+                state.turn_generation += 1;
+            }
             state.turn_outcome = None;
         }
         state.terminal_assistant_message = None;
