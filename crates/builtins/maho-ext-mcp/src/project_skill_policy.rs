@@ -681,4 +681,36 @@ mod tests {
         drop(cloned);
         assert!(weak.upgrade().is_none());
     }
+    #[tokio::test]
+    async fn policy_materialization_emits_withheld_metadata_and_empty_removal() {
+        let root = tempfile::tempdir().unwrap();
+        let skill = root.path().join("SKILL.md");
+        std::fs::write(&skill, "---\nname: fixture\n---\nbody").unwrap();
+        std::fs::write(root.path().join("mcp.json"), serde_json::json!({
+            "probe": {"command":"server", "args":["${SECNOTICE_TEST_NAME}"]},
+            "empty": {"command":"server"},
+        }).to_string()).unwrap();
+        let declarations = crate::skills::parse_skill_mcp_declarations(&[crate::skills::SkillLike {
+            name: "fixture".into(), file_path: skill, base_dir: root.path().into(),
+            scope: Some("project".into()), ..Default::default()
+        }]);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        for name in ["probe", "empty"] {
+            let sink = events.clone();
+            let _server = prepare_project_skill_server_with_notices(
+                name, &declarations.servers[name], root.path(), root.path(), false,
+                &BTreeMap::new(), None, Arc::new(Default::default()),
+                Some(Arc::new(move |event| sink.lock().unwrap().push(event))),
+            ).await.unwrap();
+        }
+        let events = events.lock().unwrap();
+        let withheld = events.iter().find(|event| event["remove"] == false).unwrap();
+        assert_eq!(withheld["category"], "mcp-env-withheld");
+        assert!(withheld["path"].is_string());
+        let removed = events.iter().find(|event| event["remove"] == true).unwrap();
+        assert_eq!(removed["category"], "mcp-env-withheld");
+        assert!(removed["path"].is_string());
+        assert_eq!(removed["message"], "");
+    }
+
 }
