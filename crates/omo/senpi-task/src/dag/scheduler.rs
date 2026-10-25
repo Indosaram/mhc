@@ -1735,7 +1735,10 @@ fn fold_task_outcome(
     node_id: &DagNodeId,
     task: TaskRecord,
 ) -> Result<(), crate::dag::store::DagStoreError> {
-    if matches!(task.status, TaskStatus::Pending | TaskStatus::Running) {
+    if matches!(
+        task.status,
+        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused
+    ) {
         return fail_node(
             context,
             node_id,

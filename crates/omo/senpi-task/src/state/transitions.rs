@@ -25,13 +25,25 @@ pub fn messageability_with_runner(
         }
         ResidencyState::RpcDetached => {
             if runner_kind == Some(super::types::RunnerKind::HostSession)
-                && host_session.is_some() && daemon_reachable
-                && matches!(status, TaskStatus::Running | TaskStatus::Completed | TaskStatus::Error | TaskStatus::Interrupted) {
+                && host_session.is_some()
+                && daemon_reachable
+                && matches!(
+                    status,
+                    TaskStatus::Running
+                        | TaskStatus::Completed
+                        | TaskStatus::Error
+                        | TaskStatus::Interrupted
+                )
+            {
                 return Messageability::Revive;
             }
             if execution_mode == Some("process")
                 && runner_kind != Some(super::types::RunnerKind::HostSession)
-                && matches!(status, TaskStatus::Completed | TaskStatus::Error | TaskStatus::Interrupted) {
+                && matches!(
+                    status,
+                    TaskStatus::Completed | TaskStatus::Error | TaskStatus::Interrupted
+                )
+            {
                 return Messageability::Revive;
             }
             return Messageability::NotContinuable;
@@ -40,12 +52,15 @@ pub fn messageability_with_runner(
     }
     let resident = residency_state == ResidencyState::Resident;
     match status {
-        TaskStatus::Pending | TaskStatus::Running if resident => Messageability::Steer,
+        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused if resident => {
+            Messageability::Steer
+        }
         TaskStatus::Completed | TaskStatus::Error | TaskStatus::Interrupted if resident => {
             Messageability::Revive
         }
         TaskStatus::Pending
         | TaskStatus::Running
+        | TaskStatus::Paused
         | TaskStatus::Completed
         | TaskStatus::Error
         | TaskStatus::Interrupted
