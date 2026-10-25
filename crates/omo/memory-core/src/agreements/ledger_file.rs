@@ -82,6 +82,7 @@ pub fn render_agreements_file_with_receipts(
                 read_only: None,
                 kind: None,
                 aliases: None,
+                extra: None,
             },
             Vec::new(),
         ),

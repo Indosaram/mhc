@@ -182,6 +182,7 @@ pub fn render_facts_note(
                     read_only: None,
                     kind: None,
                     aliases: None,
+                    extra: None,
                 },
                 String::new(),
             )
