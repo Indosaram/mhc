@@ -19,11 +19,14 @@ pub fn create_ledger_deadline_reader(
     let mut last_read: Option<f64> = None;
     move || {
         if let Ok(current) = read_run_json::<serde_json::Value>(&ledger_path) {
-            last_read = if current["queued"] == true {
-                None
-            } else {
-                current["deadlineAt"].as_f64().map(|deadline| deadline + margin_ms)
-            };
+            if current["queued"] == true {
+                last_read = None;
+            } else if let Some(deadline) = current["deadlineAt"]
+                .as_f64()
+                .filter(|deadline| deadline.is_finite())
+            {
+                last_read = Some(deadline + margin_ms);
+            }
         }
         last_read
     }
@@ -35,24 +38,47 @@ mod tests {
     use std::cell::RefCell;
 
     fn write(run_dir: &Path, value: serde_json::Value) {
-        super::super::run_artifacts::write_run_json_atomic(&run_dir.join("ledger.json"), &value, 0o600)
-            .unwrap();
+        super::super::run_artifacts::write_run_json_atomic(
+            &run_dir.join("ledger.json"),
+            &value,
+            0o600,
+        )
+        .unwrap();
     }
 
     #[test]
     fn a_queued_run_has_no_deadline_and_an_admitted_one_adds_the_margin() {
         let root = tempfile::tempdir().unwrap();
-        write(root.path(), serde_json::json!({"version":1,"queued":true,"deadlineAt":100.0}));
+        write(
+            root.path(),
+            serde_json::json!({"version":1,"queued":true,"deadlineAt":100.0}),
+        );
         let mut read = create_ledger_deadline_reader(root.path(), 5.0);
         assert_eq!(read(), None);
-        write(root.path(), serde_json::json!({"version":1,"queued":false,"deadlineAt":100.0}));
+        write(
+            root.path(),
+            serde_json::json!({"version":1,"queued":false,"deadlineAt":100.0}),
+        );
+        assert_eq!(read(), Some(105.0));
+    }
+
+    #[test]
+    fn a_successful_but_invalid_ledger_read_preserves_the_last_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        write(root.path(), serde_json::json!({"deadlineAt":100.0}));
+        let mut read = create_ledger_deadline_reader(root.path(), 5.0);
+        assert_eq!(read(), Some(105.0));
+        write(root.path(), serde_json::json!({"deadlineAt":"invalid"}));
         assert_eq!(read(), Some(105.0));
     }
 
     #[test]
     fn a_failed_read_keeps_the_last_good_deadline() {
         let root = tempfile::tempdir().unwrap();
-        write(root.path(), serde_json::json!({"version":1,"deadlineAt":100.0}));
+        write(
+            root.path(),
+            serde_json::json!({"version":1,"deadlineAt":100.0}),
+        );
         let mut read = create_ledger_deadline_reader(root.path(), 5.0);
         assert_eq!(read(), Some(105.0));
         std::fs::write(root.path().join("ledger.json"), "{torn").unwrap();
@@ -64,7 +90,10 @@ mod tests {
     #[test]
     fn the_reader_is_usable_from_a_shared_callback() {
         let root = tempfile::tempdir().unwrap();
-        write(root.path(), serde_json::json!({"version":1,"deadlineAt":7.0}));
+        write(
+            root.path(),
+            serde_json::json!({"version":1,"deadlineAt":7.0}),
+        );
         let read = RefCell::new(create_ledger_deadline_reader(root.path(), 1.0));
         assert_eq!((read.borrow_mut())(), Some(8.0));
     }
