@@ -157,14 +157,26 @@ fn native_project_user_and_package_locations_resolve_in_request_order() {
     let home_dir = scratch(&mut roots);
     let agent_dir = scratch(&mut roots);
     let package_dir = scratch(&mut roots);
-    write_skill(&cwd.join(".senpi").join("skills"), "project-local", "PROJECT LOCAL");
+    write_skill(
+        &cwd.join(".senpi").join("skills"),
+        "project-local",
+        "PROJECT LOCAL",
+    );
     write_skill(
         &project_root.join(".agents").join("skills"),
         "project-agent",
         "PROJECT AGENT",
     );
-    write_skill(&cwd.join(".pi").join("skills"), "legacy-project", "LEGACY PROJECT");
-    write_skill(&agent_dir.join("skills"), "canonical-agent", "CANONICAL AGENT");
+    write_skill(
+        &cwd.join(".pi").join("skills"),
+        "legacy-project",
+        "LEGACY PROJECT",
+    );
+    write_skill(
+        &agent_dir.join("skills"),
+        "canonical-agent",
+        "CANONICAL AGENT",
+    );
     write_skill(
         &home_dir.join(".agents").join("skills"),
         "global-agent",
@@ -228,13 +240,16 @@ fn direct_markdown_skill_injects_only_body_and_location() {
         "<skill name=\"direct\" location=\"{}\">",
         skill_path.display()
     )));
-    assert!(
-        resolution
-            .prepend
-            .contains(&format!("References are relative to {}.", skills_dir.display()))
-    );
+    assert!(resolution.prepend.contains(&format!(
+        "References are relative to {}.",
+        skills_dir.display()
+    )));
     assert!(resolution.prepend.contains("DIRECT BODY"));
-    assert!(!resolution.prepend.contains("description: Direct root skill"));
+    assert!(
+        !resolution
+            .prepend
+            .contains("description: Direct root skill")
+    );
 }
 
 #[test]
@@ -286,6 +301,144 @@ fn indirect_skill_names_discover_each_existing_directory_once() {
     assert_eq!(resolution.missing, names(&["missing-one", "missing-two"]));
     assert_eq!(
         scans.lock().expect("scans lock").clone(),
-        vec![project_skills, agent_skills, global_skills, package_skills]
+        vec![agent_skills, global_skills, package_skills]
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn project_links_are_rejected_by_lexical_name_but_user_links_are_allowed() {
+    use std::os::unix::fs::symlink;
+    let project = tempfile::tempdir().expect("project");
+    let home = tempfile::tempdir().expect("home");
+    let outside = tempfile::tempdir().expect("outside");
+    fs::create_dir(project.path().join(".git")).expect("git");
+    let project_skills = project.path().join(".senpi/skills");
+    fs::create_dir_all(&project_skills).expect("skills");
+    let external = write_skill(outside.path(), "escape", "outside");
+    symlink(
+        external.parent().expect("parent"),
+        project_skills.join("escape"),
+    )
+    .expect("link");
+    let loader = create_fs_skill_loader(FsSkillLoaderOptions {
+        home_dir: Some(home.path().to_path_buf()),
+        ..Default::default()
+    });
+    let resolution = loader(&names(&["escape", "unrelated"]), as_str(project.path()));
+    assert_eq!(resolution.missing, names(&["unrelated"]));
+    assert_eq!(
+        resolution.rejected.as_ref().expect("rejected")[0].name,
+        "escape"
+    );
+    assert!(resolution.resolved.is_empty());
+    let user = home.path().join(".agents/skills");
+    fs::create_dir_all(&user).expect("user");
+    symlink(external.parent().expect("parent"), user.join("escape")).expect("user link");
+    let resolved = loader(&names(&["escape"]), as_str(project.path()));
+    assert_eq!(resolved.resolved, names(&["escape"]));
+    assert!(resolved.rejected.expect("rejected").is_empty());
+}
+
+#[test]
+fn root_skill_stops_discovery_and_direct_reference_lookup() {
+    let project = tempfile::tempdir().expect("project");
+    let home = tempfile::tempdir().expect("home");
+    fs::create_dir(project.path().join(".git")).expect("git");
+    let dir = project.path().join(".senpi/skills");
+    fs::create_dir_all(&dir).expect("skills");
+    fs::write(dir.join("SKILL.md"), "---\nname: root\n---\nroot body").expect("root skill");
+    write_skill(&dir, "reference", "not a skill");
+    fs::write(dir.join("README.md"), "not a skill").expect("readme");
+    let loader = create_fs_skill_loader(FsSkillLoaderOptions {
+        home_dir: Some(home.path().to_path_buf()),
+        ..Default::default()
+    });
+    let result = loader(
+        &names(&["root", "reference", "readme"]),
+        as_str(project.path()),
+    );
+    assert_eq!(result.resolved, names(&["root"]));
+    assert_eq!(result.missing, names(&["reference", "readme"]));
+}
+
+#[cfg(unix)]
+#[test]
+fn checked_scan_preserves_original_io_error_separately_from_blocked_links() {
+    use super::checked_project_skills::{SkillReadError, read_project_skills};
+    use std::os::unix::fs::symlink;
+    let project = tempfile::tempdir().expect("project");
+    let skills = project.path().join("skills");
+    fs::create_dir(&skills).expect("skills");
+    symlink(project.path().join("absent"), skills.join("broken")).expect("dangling link");
+    let scan = read_project_skills(&skills, project.path(), &[]);
+    assert!(scan.blocked.is_empty());
+    assert!(
+        matches!(&scan.errors[0], SkillReadError::Io { error, .. } if error.kind() == std::io::ErrorKind::NotFound)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn escaping_folder_file_and_root_links_are_checked_before_read() {
+    use std::os::unix::fs::symlink;
+    for kind in ["folder", "file", "root"] {
+        let project = tempfile::tempdir().expect("project");
+        let home = tempfile::tempdir().expect("home");
+        let outside = tempfile::tempdir().expect("outside");
+        fs::create_dir(project.path().join(".git")).expect("git");
+        let dir = project.path().join(".senpi/skills");
+        fs::create_dir_all(dir.parent().expect("parent")).expect("parent");
+        let external = write_skill(outside.path(), "escape", "external");
+        match kind {
+            "root" => symlink(outside.path(), &dir).expect("root link"),
+            "folder" => {
+                fs::create_dir(&dir).expect("skills");
+                symlink(external.parent().expect("parent"), dir.join("escape"))
+                    .expect("folder link");
+            }
+            _ => {
+                fs::create_dir_all(dir.join("escape")).expect("skill");
+                symlink(&external, dir.join("escape/SKILL.md")).expect("file link");
+            }
+        }
+        let loader = create_fs_skill_loader(FsSkillLoaderOptions {
+            home_dir: Some(home.path().to_path_buf()),
+            ..Default::default()
+        });
+        let result = loader(&names(&["escape"]), as_str(project.path()));
+        assert!(result.resolved.is_empty(), "{kind}");
+        assert!(result.missing.is_empty(), "{kind}");
+        assert_eq!(
+            result.rejected.expect("rejections")[0].name,
+            "escape",
+            "{kind}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn nested_repository_links_are_allowed_cycles_stop_and_blocked_aliases_are_not_attributed() {
+    use std::os::unix::fs::symlink;
+    let project = tempfile::tempdir().expect("project");
+    let home = tempfile::tempdir().expect("home");
+    let outside = tempfile::tempdir().expect("outside");
+    fs::create_dir(project.path().join(".git")).expect("git");
+    let cwd = project.path().join("packages/app");
+    let dir = cwd.join(".senpi/skills");
+    fs::create_dir_all(&dir).expect("skills");
+    let shared = write_skill(&project.path().join("shared"), "inside", "internal");
+    symlink(shared.parent().expect("parent"), dir.join("inside")).expect("internal link");
+    symlink(&dir, dir.join("cycle")).expect("cycle");
+    let escaped = write_skill(outside.path(), "alias", "external");
+    symlink(escaped.parent().expect("parent"), dir.join("lexical")).expect("escape link");
+    let loader = create_fs_skill_loader(FsSkillLoaderOptions {
+        home_dir: Some(home.path().to_path_buf()),
+        ..Default::default()
+    });
+    let result = loader(&names(&["inside", "alias", "lexical"]), as_str(&cwd));
+    assert_eq!(result.resolved, names(&["inside"]));
+    assert_eq!(result.missing, names(&["alias"]));
+    assert_eq!(result.rejected.expect("rejected")[0].name, "lexical");
 }

@@ -204,6 +204,12 @@ pub fn fold_send_outcome(
                 settled: Some(settled),
             })
         }
+        SendOutcome::Held { .. } => Err(control_error(
+            DagNodeControlErrorCode::NodeNotContinuable,
+            "Message is held until the run resumes".into(),
+            &run_id,
+            &node_id,
+        )),
         SendOutcome::NotFound { .. } => Err(control_error(
             DagNodeControlErrorCode::NodeNotFound,
             format!("dag node \"{node_id}\" points at task {task_id}, which no longer exists"),

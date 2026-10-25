@@ -48,6 +48,11 @@ pub fn to_continue_result(outcome: SendOutcome) -> ContinueResult {
             status: TaskStatus::Running,
             delivered: ContinueDelivery::Revive,
         },
+        SendOutcome::Held { task_id, .. } => ContinueResult::Continued {
+            task_id,
+            status: TaskStatus::Paused,
+            delivered: ContinueDelivery::FollowUp,
+        },
         SendOutcome::Queued { task_id, .. } => ContinueResult::Continued {
             task_id,
             status: TaskStatus::Pending,

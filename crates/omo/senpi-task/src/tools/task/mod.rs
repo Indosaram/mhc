@@ -7,6 +7,7 @@ pub mod call_renderer;
 pub mod categories;
 #[cfg(test)]
 mod categories_tests;
+pub mod checked_project_skills;
 pub mod description;
 #[cfg(test)]
 mod description_plan_gated_tests;
@@ -51,6 +52,10 @@ mod gated_categories_tests;
 mod integration_tests;
 pub mod invocation_gate;
 #[cfg(test)]
+mod kernel_tools_default_config_tests;
+#[cfg(test)]
+mod kernel_tools_tests;
+#[cfg(test)]
 mod model_visibility_tests;
 #[cfg(test)]
 mod momus_policy_integration_tests;
@@ -74,10 +79,6 @@ pub mod start_presentation;
 mod start_presentation_tests;
 #[cfg(test)]
 mod task_tool_fakes;
-#[cfg(test)]
-mod kernel_tools_default_config_tests;
-#[cfg(test)]
-mod kernel_tools_tests;
 pub mod tool;
 #[cfg(test)]
 mod tool_tests;

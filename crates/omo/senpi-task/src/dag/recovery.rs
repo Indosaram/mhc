@@ -937,6 +937,10 @@ fn start_failure(result: &OwnedStartResult) -> (DagNodeErrorCode, String) {
             DagNodeErrorCode::StartFailed,
             format!("DAG task owner conflicts with existing task {task_id}"),
         ),
+        OwnedStartResult::NotStarted(StartResult::Held(_)) => (
+            DagNodeErrorCode::StartFailed,
+            "Task admission is held until the run resumes".into(),
+        ),
         OwnedStartResult::NotStarted(StartResult::DepthDenied { reason, .. }) => {
             (DagNodeErrorCode::DepthDenied, reason.clone())
         }

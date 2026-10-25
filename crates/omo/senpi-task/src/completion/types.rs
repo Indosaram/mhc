@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::host::HostError;
 use crate::state::{ResolvedModelRecord, TaskRecord, TaskRunStats, TaskStatus};
@@ -38,7 +38,7 @@ pub use crate::pause::ports::{RunRef, RunRefKind};
 
 /// Why a category child ended up on its parent session's model (`state/record-types.ts`
 /// `PARENT_MODEL_FALLBACK_REASONS`): every rung of its category chain failed first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParentModelFallbackReason {
     UsageLimit,
@@ -50,7 +50,7 @@ pub enum ParentModelFallbackReason {
 
 /// Derived on read, never persisted: `switching` while the handoff is in flight, `unconfirmed`
 /// once the task ended without a child ever being observed on the parent's model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParentModelFallbackPhase {
     Switching,
@@ -59,7 +59,7 @@ pub enum ParentModelFallbackPhase {
 
 /// The parent-model handoff record carried on a task record (`state/record-types.ts`
 /// `ParentModelFallback`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParentModelFallback {
     pub from_model: String,
     pub reason: ParentModelFallbackReason,
@@ -122,7 +122,11 @@ pub struct ParentNotifierMessage {
 
 /// State of one delivery attempt, independent of queue acceptance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeliveryState { Pending, Delivered, Failed }
+pub enum DeliveryState {
+    Pending,
+    Delivered,
+    Failed,
+}
 
 type DeliveryCallback = Box<dyn FnOnce(Result<(), HostError>) + Send>;
 
@@ -134,7 +138,12 @@ pub struct DeliveryCallbacks {
 
 impl DeliveryCallbacks {
     pub fn new(callback: impl FnOnce(Result<(), HostError>) + Send + 'static) -> Self {
-        Self { inner: Arc::new(Mutex::new((DeliveryState::Pending, Some(Box::new(callback))))) }
+        Self {
+            inner: Arc::new(Mutex::new((
+                DeliveryState::Pending,
+                Some(Box::new(callback)),
+            ))),
+        }
     }
     pub fn state(&self) -> DeliveryState {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner).0
@@ -159,7 +168,11 @@ impl DeliveryCallbacks {
 /// Acceptance is not delivery. Implementors settle callbacks only after the actual send resolves.
 /// A synchronous rejection returns Err without settling; the caller owns that rejection.
 pub trait ParentNotifier: Send + Sync {
-    fn enqueue_with_callbacks(&self, message: &ParentNotifierMessage, callbacks: DeliveryCallbacks) -> Result<(), HostError>;
+    fn enqueue_with_callbacks(
+        &self,
+        message: &ParentNotifierMessage,
+        callbacks: DeliveryCallbacks,
+    ) -> Result<(), HostError>;
     fn enqueue(&self, message: &ParentNotifierMessage) -> Result<(), HostError> {
         self.enqueue_with_callbacks(message, DeliveryCallbacks::new(|_| {}))
     }
