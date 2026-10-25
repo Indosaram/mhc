@@ -206,6 +206,8 @@ struct FactsPayloadView<'a> {
     known_people: &'a [FactsKnownPerson],
     #[serde(rename = "primaryHuman")]
     primary_human: &'a FactsPrimaryHuman,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agreements: Option<&'a [crate::agreements::FactsKnownAgreement]>,
     entries: &'a [&'a FactsQueueEntry],
 }
 
@@ -231,6 +233,7 @@ fn measure_entries_bytes(envelope: &FactsPayloadEnvelope, entries: &[&FactsQueue
         today: &envelope.today,
         known_people: &envelope.known_people,
         primary_human: &envelope.primary_human,
+        agreements: envelope.agreements.as_deref(),
         entries,
     };
     let mut counter = ByteCounter(0);
