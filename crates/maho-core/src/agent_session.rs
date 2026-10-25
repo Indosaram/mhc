@@ -6001,6 +6001,10 @@ impl AgentSession {
         lock(&self.engine_turn_hold).notice_count()
     }
 
+    pub fn pause_seq(&self) -> u64 {
+        lock(&self.engine_turn_hold).current_pause_seq()
+    }
+
     pub fn run_paused(&self) -> bool {
         lock(&self.engine_turn_hold)
             .holds()

@@ -98,6 +98,18 @@ impl HostTransport for CliHostTransport {
             .unwrap_or(false)
     }
 
+    fn live_session_paths_with_agent_dir(
+        &self,
+        socket: &str,
+        agent_dir: Option<&Path>,
+    ) -> Result<Vec<String>, String> {
+        let socket = socket.to_owned();
+        let agent_dir = agent_dir.map(ToOwned::to_owned);
+        self.block_on(async move {
+            live_session_paths_with_agent_dir(&socket, agent_dir.as_deref()).await
+        })?
+    }
+
     fn live_session_paths(&self, socket: &str) -> Result<Vec<String>, String> {
         let socket = socket.to_owned();
         match self.block_on(async move { live_session_paths(&socket).await }) {
@@ -145,6 +157,23 @@ async fn daemon_reachable(socket: &str) -> bool {
 /// ERROR, never an empty list: "could not ask" must stay distinguishable from "holds nothing"
 /// (omo#9450).
 async fn live_session_paths(socket: &str) -> Result<Vec<String>, String> {
+    live_session_paths_with_agent_dir(socket, None).await
+}
+async fn live_session_paths_with_agent_dir(
+    socket: &str,
+    agent_dir: Option<&Path>,
+) -> Result<Vec<String>, String> {
+    #[cfg(unix)]
+    let reply = maho_rpc::host_probe::ask_host_authenticated(
+        socket,
+        &serde_json::json!({ "type": "list_sessions", "include_workers": true }),
+        LIST_TIMEOUT_MS,
+        agent_dir,
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    .and_then(|reply| reply.get("data").cloned());
+    #[cfg(not(unix))]
     let reply = maho_rpc::host_probe::request_on_socket(
         socket,
         &serde_json::json!({ "type": "list_sessions", "include_workers": true }),

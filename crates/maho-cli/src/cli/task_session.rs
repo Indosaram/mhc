@@ -479,6 +479,21 @@ where
 }
 
 impl ChildSession for NativeChild {
+    fn priority_pairing_registry(
+        &self,
+    ) -> Option<&dyn senpi_task::runners::pinned_model_equivalence::PriorityPairingRegistry> {
+        Some(self)
+    }
+    fn model(&self) -> Option<senpi_task::runners::pinned_model_equivalence::ModelIdentity> {
+        let session = self.ensure_session().ok()?;
+        let model = session.model();
+        Some(
+            senpi_task::runners::pinned_model_equivalence::ModelIdentity::new(
+                model.provider,
+                model.id,
+            ),
+        )
+    }
     fn run_pause(&self) -> Option<&dyn senpi_task::pause::native_child_pause::NativeRunPause> {
         Some(self)
     }
@@ -1158,6 +1173,40 @@ mod tests {
             "child"
         );
         assert!(!parent_cwd.join("child-only.txt").exists());
+    }
+}
+
+impl senpi_task::runners::pinned_model_equivalence::PriorityPairingRegistry for NativeChild {
+    fn get_service_tier(
+        &self,
+        identity: &senpi_task::runners::pinned_model_equivalence::ModelIdentity,
+    ) -> Option<String> {
+        let session = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .session
+            .clone()?;
+        let registry = session.model_registry();
+        let model = registry.find(&identity.provider, &identity.id)?;
+        registry
+            .get_service_tier(&model)
+            .and_then(|tier| serde_json::to_value(tier).ok())
+            .and_then(|value| value.as_str().map(str::to_string))
+    }
+    fn get_upstream_model_id(
+        &self,
+        identity: &senpi_task::runners::pinned_model_equivalence::ModelIdentity,
+    ) -> Option<String> {
+        let session = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .session
+            .clone()?;
+        let registry = session.model_registry();
+        let model = registry.find(&identity.provider, &identity.id)?;
+        registry.get_upstream_model_id(&model)
     }
 }
 
