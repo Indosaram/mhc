@@ -418,9 +418,23 @@ impl RpcChildHandle {
 }
 
 impl ManagedChildHandle for RpcChildHandle {
-    fn run_pause(&self) -> Option<Box<dyn crate::runners::rpc::native_run_pause::NativeRunPause>> {
-        Some(Box::new(RpcChildHandle::run_pause(self)))
+    fn run_pause(&self) -> Option<&dyn crate::pause::native_child_pause::NativeRunPause> {
+        self.client.run_pause()
     }
+    fn publish_task_status(&self, status: crate::state::TaskStatus) -> Result<(), HostError> {
+        self.client
+            .publish_task_status(status)
+            .map_err(|error| HostError {
+                message: error.to_string(),
+            })
+    }
+    fn on_durable_session_id(
+        &self,
+        listener: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> Option<Unsubscribe> {
+        self.client.on_durable_session_id(listener)
+    }
+
     fn on_self_resumed(&self, listener: Arc<dyn Fn() + Send + Sync>) -> Option<Unsubscribe> {
         Some(RpcChildHandle::on_self_resumed(self, listener))
     }
@@ -626,7 +640,10 @@ pub fn managed_event(event: &Value) -> ManagedChildEvent {
             None
         }
     };
-    let is_message = matches!(event_type.as_str(), "message_start" | "message_end");
+    let is_message = matches!(
+        event_type.as_str(),
+        "message_start" | "message_update" | "message_end"
+    );
     let is_tool_start = event_type == "tool_execution_start";
     let is_tool_end = event_type == "tool_execution_end";
     ManagedChildEvent {
@@ -637,6 +654,10 @@ pub fn managed_event(event: &Value) -> ManagedChildEvent {
         input: value_for("input", is_tool_start),
         result: value_for("result", is_tool_end),
         is_error: event.get("isError").and_then(Value::as_bool),
+        source: string("source"),
+        model: value_for("model", event_type == "model_changed"),
+        thinking_level: string("thinkingLevel"),
+        effect_id: string("effectId"),
         to: string("to"),
         from: string("from"),
         chain_key: string("chainKey"),

@@ -40,6 +40,11 @@ pub fn respawn_managed_task(input: &RespawnInput<'_>) -> RespawnResult {
     // caller-supplied path (TS manager-respawn.ts `hostSessionResumePath(record) ?? input.sessionPath`).
     let recorded_path = host_session_resume_path(input.record).map(std::path::PathBuf::from);
     match recorded_path.as_deref().or(input.session_path) {
+        None if input.record.status == crate::state::TaskStatus::Paused => failure(
+            RespawnDisposition::Unrecoverable,
+            RespawnFailureCode::SessionUnavailable,
+            "paused transcript is unavailable; prompt replay is forbidden",
+        ),
         None => respawn_fresh(input),
         Some(path) if input.record.execution_mode == "in-process" => {
             respawn_in_process(input, path)
@@ -267,7 +272,10 @@ fn continue_interrupted_turn(
     session_path: &Path,
     handle: &dyn ManagedChildHandle,
 ) -> Result<(), crate::host::HostError> {
-    if !is_terminal_record(record) && session_tail_needs_continuation(session_path) {
+    if record.status != crate::state::TaskStatus::Paused
+        && !is_terminal_record(record)
+        && session_tail_needs_continuation(session_path)
+    {
         handle.follow_up(CONTINUATION_MESSAGE)?;
     }
     Ok(())
