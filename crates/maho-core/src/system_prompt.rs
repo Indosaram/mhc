@@ -191,6 +191,8 @@ mod tests {
             source_info: create_synthetic_source_info(&file_path, SyntheticSourceInfoOptions { source: "local".to_string(), ..Default::default() }),
             file_path,
             disable_model_invocation: false,
+            provenance: None,
+            allowed_set: None,
         }
     }
 

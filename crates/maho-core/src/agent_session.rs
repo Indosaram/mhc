@@ -11,7 +11,7 @@
 //! Ported in slices S1..S8; the `agent-session.ts` ledger row in `parity.d/21.md` records what is
 //! still outstanding.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -861,6 +861,10 @@ pub struct AgentSessionInner {
         Option<crate::retry_fallback::controller::RetryFallbackController<SessionFallbackDeps>>,
     >,
     work_barrier: Arc<crate::session_work_barrier::SessionWorkBarrier>,
+    relocation_host: Mutex<Option<Arc<dyn crate::session_relocation::SessionRelocationHost>>>,
+    tool_barrier: crate::session_work_barrier::ToolBarrier,
+    tool_workspace_effects: Mutex<BTreeMap<String, crate::session_work_barrier::ToolWorkspaceEffect>>,
+    session_thinking_memory: Mutex<crate::session_thinking_memory::SessionThinkingMemory>,
     settling_with_background_work: std::sync::atomic::AtomicBool,
     /// senpi `_isAgentRunActive`: set right before the agent run starts, cleared when it settles.
     agent_run_active: std::sync::atomic::AtomicBool,
@@ -3672,6 +3676,16 @@ impl AgentSession {
                 binding_readiness: Mutex::new(None),
                 retry_fallback: tokio::sync::Mutex::new(None),
                 work_barrier: Arc::new(crate::session_work_barrier::SessionWorkBarrier::new()),
+                relocation_host: Mutex::new(None),
+                tool_barrier: crate::session_work_barrier::ToolBarrier::new(|_| {}),
+                tool_workspace_effects: Mutex::new(BTreeMap::from_iter([
+                    ("find".to_owned(), crate::session_work_barrier::ToolWorkspaceEffect::Read),
+                    ("glob".to_owned(), crate::session_work_barrier::ToolWorkspaceEffect::Read),
+                    ("grep".to_owned(), crate::session_work_barrier::ToolWorkspaceEffect::Read),
+                    ("ls".to_owned(), crate::session_work_barrier::ToolWorkspaceEffect::Read),
+                    ("read".to_owned(), crate::session_work_barrier::ToolWorkspaceEffect::Read),
+                ])),
+                session_thinking_memory: Mutex::new(crate::session_thinking_memory::SessionThinkingMemory::new()),
                 settling_with_background_work: std::sync::atomic::AtomicBool::new(false),
                 agent_run_active: std::sync::atomic::AtomicBool::new(false),
                 runtime_messages_tokenized: std::sync::atomic::AtomicBool::new(false),
@@ -17042,6 +17056,17 @@ impl AgentSession {
             selection = Some(explicit_thinking_selection(level));
         }
         if requested.is_none() {
+            if let Some(level_str) = self.get_session_model_thinking_level(&model.provider, &model.id) {
+                if let Some(level) = ModelThinkingLevel::ALL
+                    .into_iter()
+                    .find(|candidate| candidate.as_str() == level_str)
+                {
+                    requested = Some(level);
+                    selection = Some(explicit_thinking_selection(level));
+                }
+            }
+        }
+        if requested.is_none() {
             let remembered = self.with_settings_manager(|manager| {
                 manager
                     .get_value("modelThinkingLevels")
@@ -17082,6 +17107,101 @@ impl AgentSession {
             level,
             selection.map(|selection| ThinkingSelection { level, ..selection }),
         )
+    }
+
+    // Relocation API (senpi session-relocation.ts, session-control-actions.ts)
+    pub fn set_relocation_host(
+        &self,
+        host: Option<Arc<dyn crate::session_relocation::SessionRelocationHost>>,
+    ) {
+        *lock(&self.relocation_host) = host;
+    }
+
+    pub fn relocation_offered(&self) -> bool {
+        lock(&self.relocation_host)
+            .as_ref()
+            .map(|h| h.offered())
+            .unwrap_or(false)
+    }
+
+    pub async fn relocation_targets(&self) -> crate::session_relocation::RelocationTargetsResult {
+        let host = lock(&self.relocation_host).clone();
+        match host {
+            Some(host) => host.targets().await,
+            None => crate::session_relocation::relocation_not_offered_targets(),
+        }
+    }
+
+    pub async fn request_relocation(
+        &self,
+        request: crate::session_relocation::RelocationRequest,
+    ) -> crate::session_relocation::RelocationRequestResult {
+        let host = lock(&self.relocation_host).clone();
+        match host {
+            Some(host) => host.request(request).await,
+            None => crate::session_relocation::relocation_not_offered_request(),
+        }
+    }
+
+    // Session tool barrier (senpi tool-barrier.ts)
+    pub fn arm_tool_barrier(&self, spec: crate::session_work_barrier::ToolBarrierSpec) {
+        self.tool_barrier.arm(spec);
+    }
+
+    pub fn release_tool_barrier(&self, id: &str) -> bool {
+        self.tool_barrier.release(id)
+    }
+
+    pub fn clear_tool_barrier(&self) {
+        self.tool_barrier.clear();
+    }
+
+    pub fn get_tool_workspace_effect(&self, tool_name: &str) -> crate::session_work_barrier::ToolWorkspaceEffect {
+        lock(&self.tool_workspace_effects)
+            .get(tool_name)
+            .copied()
+            .unwrap_or(crate::session_work_barrier::ToolWorkspaceEffect::Write)
+    }
+
+    pub fn register_tool_workspace_effect(
+        &self,
+        tool_name: impl Into<String>,
+        effect: crate::session_work_barrier::ToolWorkspaceEffect,
+    ) {
+        lock(&self.tool_workspace_effects).insert(tool_name.into(), effect);
+    }
+
+    pub async fn wait_for_tool_barrier(
+        &self,
+        tool_name: &str,
+        signal: Option<&maho_ai::utils::abort::AbortSignal>,
+    ) -> Option<String> {
+        if self.get_tool_workspace_effect(tool_name) == crate::session_work_barrier::ToolWorkspaceEffect::Read {
+            return None;
+        }
+        self.tool_barrier.wait(signal).await
+    }
+
+    // Per-session model thinking memory (senpi session-thinking-memory.ts)
+    pub fn get_session_model_thinking_levels(&self) -> HashMap<String, String> {
+        let (branch, leaf_id) = self.with_session_manager(|manager| {
+            (manager.current_branch(), manager.leaf_id().map(str::to_owned))
+        });
+        let mut memory = lock(&self.session_thinking_memory);
+        memory.levels(&branch, leaf_id.as_deref())
+    }
+
+    pub fn get_session_model_thinking_level(&self, provider: &str, model_id: &str) -> Option<String> {
+        let (branch, leaf_id) = self.with_session_manager(|manager| {
+            (manager.current_branch(), manager.leaf_id().map(str::to_owned))
+        });
+        let mut memory = lock(&self.session_thinking_memory);
+        memory.level_for(&branch, leaf_id.as_deref(), provider, model_id)
+    }
+
+    // Stop resume directive (senpi stop-resume-directive.ts)
+    pub fn stop_resume_directive(&self) -> crate::stop_resume_directive::StopResumeDirective {
+        crate::stop_resume_directive::stop_resume_directive()
     }
 }
 
@@ -30079,6 +30199,8 @@ mod tests {
                 crate::source_info::SyntheticSourceInfoOptions::default(),
             ),
             disable_model_invocation: true,
+            provenance: None,
+            allowed_set: None,
         });
         let commands = session.get_commands();
         assert_eq!(
@@ -30130,6 +30252,8 @@ mod tests {
                 Default::default(),
             ),
             disable_model_invocation: true,
+            provenance: None,
+            allowed_set: None,
         });
         let (_, _, skills) = session.command_groups();
         assert_eq!(
@@ -30168,6 +30292,8 @@ mod tests {
                     Default::default(),
                 ),
                 disable_model_invocation: false,
+                provenance: None,
+                allowed_set: None,
             }],
             vec![crate::diagnostics::ResourceDiagnostic {
                 category: None,
@@ -30204,6 +30330,8 @@ mod tests {
                     file_path: path.to_string_lossy().into_owned(),
                     base_dir: dir.path().to_string_lossy().into_owned(),
                     disable_model_invocation: false,
+                    provenance: None,
+                    allowed_set: None,
                     source_info: crate::source_info::create_synthetic_source_info(
                         &path.to_string_lossy(),
                         Default::default(),
