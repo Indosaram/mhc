@@ -15,6 +15,8 @@ pub struct ProjectMcpMaterialization {
     pub granted_names: Vec<String>,
 }
 pub struct ProjectMcpAuthority {
+    pub notices: Arc<crate::policy_notices::PolicyNotices>,
+    pub notice_event: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
     pub identity: String,
     pub store_path: PathBuf,
     pub policy_digest: String,
@@ -295,17 +297,18 @@ impl ProjectMcpAuthority {
             &self.ambient,
         )
         .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
-        if !policy.withheld.is_empty()
-            && let Some(ui) = &self.ui
-        {
-            ui.notify(
-                &format!(
-                    "Project MCP server {} is starting without: {}",
-                    self.name,
-                    policy.withheld.join(", ")
-                ),
-                maho_ext_api::NotificationType::Info,
-            );
+        let (event, warning) = self.notices.notice(
+            &self.identity,
+            &self.name,
+            &self.skill_name,
+            self.trusted,
+            &policy.withheld,
+        );
+        if let Some(emit) = &self.notice_event {
+            emit(event);
+        }
+        if let Some(warning) = warning {
+            maho_ext_api::diagnostic(&warning);
         }
         let wire = serde_json::from_value(policy.declaration)
             .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
@@ -340,6 +343,30 @@ pub async fn prepare_project_skill_server(
     explicit: &BTreeMap<String, String>,
     ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
 ) -> Result<ResolvedMcpServer, McpError> {
+    prepare_project_skill_server_with_notices(
+        name,
+        original,
+        cwd,
+        agent_dir,
+        trusted,
+        explicit,
+        ui,
+        Arc::default(),
+        None,
+    )
+    .await
+}
+pub async fn prepare_project_skill_server_with_notices(
+    name: &str,
+    original: &crate::skills::SkillServerDecl,
+    cwd: &Path,
+    agent_dir: &Path,
+    trusted: bool,
+    explicit: &BTreeMap<String, String>,
+    ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+    notices: Arc<crate::policy_notices::PolicyNotices>,
+    notice_event: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
+) -> Result<ResolvedMcpServer, McpError> {
     let original = &current_registration(name, original)?;
     let project_root = original
         .provenance
@@ -361,6 +388,21 @@ pub async fn prepare_project_skill_server(
         &ambient,
     )
     .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
+    if !shared_decision && !policy.withheld.is_empty() {
+        let (event, warning) = notices.notice(
+            &identity,
+            name,
+            &original.skill_name,
+            trusted,
+            &policy.withheld,
+        );
+        if let Some(emit) = &notice_event {
+            emit(event);
+        }
+        if let Some(warning) = warning {
+            maho_ext_api::diagnostic(&warning);
+        }
+    }
     if !shared_decision
         && !policy.withheld.is_empty()
         && let Some(ui) = &ui
@@ -414,8 +456,16 @@ pub async fn prepare_project_skill_server(
     let latest = current_registration(name, original)?;
     if identity_for_roots(name, &latest.source_path, &latest.raw, &project_root, cwd)? != identity {
         drop(_decision);
-        return Box::pin(prepare_project_skill_server(
-            name, &latest, cwd, agent_dir, trusted, explicit, ui,
+        return Box::pin(prepare_project_skill_server_with_notices(
+            name,
+            &latest,
+            cwd,
+            agent_dir,
+            trusted,
+            explicit,
+            ui,
+            notices,
+            notice_event,
         ))
         .await;
     }
@@ -428,6 +478,8 @@ pub async fn prepare_project_skill_server(
         granted_names: vec![],
     };
     let mut authority = ProjectMcpAuthority {
+        notices,
+        notice_event,
         identity,
         store_path,
         policy_digest: declaration_digest(
