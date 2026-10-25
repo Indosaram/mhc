@@ -795,7 +795,7 @@ impl Extension for Task {
                             cwd: ctx.cwd.clone(), config: config.clone(), runners, actions: actions.clone(), coordinator: Some(coordinator.clone()),
                             resolve_registry: Arc::new(move || Some(registry.clone())),
                             host_transport: Some(super::host_transport::create_cli_host_transport_with_agent_dir(executor.clone(), Some(ctx.agent_dir.clone()))),
-                        }, Some(maho_omo_task::engine_runners::build_rpc_respawn_runner(process)));
+                        }, Some(Arc::new(super::task_host::HostRespawn { assembly: host_assembly.clone(), settings: config.clone(), fallback: maho_omo_task::engine_runners::build_rpc_respawn_runner(process) })));
                         *slot = Some((ctx.cwd.clone(), config, engine));
                     }
                     let Some((_, _, engine)) = slot.as_ref() else { return Err(ExtensionFailure::new("task engine slot empty after composition")); };
