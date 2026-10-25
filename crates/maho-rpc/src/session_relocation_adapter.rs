@@ -9,16 +9,41 @@ pub struct SessionRelocationAdapter {
 }
 #[async_trait::async_trait]
 impl maho_core::session_relocation::SessionRelocationHost for SessionRelocationAdapter {
-    fn offered(&self)->bool{(self.offerer)().is_some()}
-    async fn targets(&self)->maho_core::session_relocation::RelocationTargetsResult{
-        let connection=(self.offerer)();
-        let result=self.relocation.targets(connection.as_deref(),|record|{if let Some(id)=&connection{(self.send)(id,record);}}).await;
+    fn offered(&self) -> bool {
+        (self.offerer)().is_some()
+    }
+    async fn targets(&self) -> maho_core::session_relocation::RelocationTargetsResult {
+        let connection = (self.offerer)();
+        let result = self
+            .relocation
+            .targets(connection.as_deref(), |record| {
+                if let Some(id) = &connection {
+                    (self.send)(id, record);
+                }
+            })
+            .await;
         serde_json::from_value(result).expect("validated relocation targets")
     }
-    async fn request(&self,request:maho_core::session_relocation::RelocationRequest)->maho_core::session_relocation::RelocationRequestResult{
-        let connection=(self.offerer)();
-        let saved=(self.session)().is_some_and(|session|session.session_file().is_some());
-        let result=self.relocation.request(&request.target,&request.reason,connection.as_deref(),saved,|record|{if let Some(id)=&connection{(self.send)(id,record);}}).await;
+    async fn request(
+        &self,
+        request: maho_core::session_relocation::RelocationRequest,
+    ) -> maho_core::session_relocation::RelocationRequestResult {
+        let connection = (self.offerer)();
+        let saved = (self.session)().is_some_and(|session| session.session_file().is_some());
+        let result = self
+            .relocation
+            .request(
+                &request.target,
+                &request.reason,
+                connection.as_deref(),
+                saved,
+                |record| {
+                    if let Some(id) = &connection {
+                        (self.send)(id, record);
+                    }
+                },
+            )
+            .await;
         serde_json::from_value(result).expect("validated relocation request")
     }
 }
