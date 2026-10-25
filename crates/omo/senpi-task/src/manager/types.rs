@@ -82,9 +82,6 @@ pub trait ManagedRunner: Send + Sync {
     fn resume(&self, _spec: &ManagedStartSpec, _session_path: &str) -> Option<ManagedRunnerResult> {
         None
     }
-    /// Awaited by every wrapper before it reports a child gone: a runner that tears down its own
-    /// children settles them here, and a wrapper must forward the call or the teardown is skipped.
-    fn settle_teardowns(&self) {}
 }
 
 #[derive(Clone)]
@@ -118,7 +115,6 @@ pub struct ManagerStartSpec {
     pub category: Option<String>,
     pub subagent_type: Option<String>,
     pub execution_mode: Option<ExecutionMode>,
-    pub parent_model: Option<String>,
     pub model: Option<String>,
     pub name: Option<String>,
     pub description: Option<String>,
@@ -142,8 +138,6 @@ pub struct ManagerStartSpec {
     pub merge: Option<IsolationMergeMode>,
     /// Per-spawn apply flag (TS spec.apply).
     pub apply: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resume_credential: Option<crate::dag::types::ResumeCredential>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -43,6 +43,18 @@ pub enum RpcClientError {
 
 /// The client surface the RPC handle programs against (a fake implements it in tests).
 pub trait RpcClientPort: Send + Sync {
+    fn run_pause(&self) -> Option<&dyn crate::pause::native_child_pause::NativeRunPause> {
+        None
+    }
+    fn publish_task_status(&self, _status: crate::state::TaskStatus) -> Result<(), RpcClientError> {
+        Ok(())
+    }
+    fn on_durable_session_id(
+        &self,
+        _listener: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> Option<Unsubscribe> {
+        None
+    }
     fn pid(&self) -> Option<u32>;
     /// Send one command and block until its correlated response arrives.
     fn send(&self, command: Value) -> Result<Value, RpcClientError>;

@@ -230,7 +230,11 @@ pub fn build_child_args(spec: &RpcRunnerSpec) -> Vec<String> {
     if let Some(level) = as_senpi_thinking_level(reasoning) {
         args.extend(["--thinking".to_string(), level.as_str().to_string()]);
     }
-    if let Some(preset) = spec.permission_preset.as_deref().filter(|preset| !preset.is_empty()) {
+    if let Some(preset) = spec
+        .permission_preset
+        .as_deref()
+        .filter(|preset| !preset.is_empty())
+    {
         args.extend(["--permission-preset".to_string(), preset.to_string()]);
     }
     args
@@ -269,6 +273,13 @@ fn build_child_profile(
     }
     if let Some(member_env) = &spec.member_env {
         env.extend(member_env.clone());
+    }
+    env.remove("OMO_SENPI_TASK_TRACEPARENT");
+    if let Some(traceparent) = &spec.traceparent {
+        env.insert(
+            "OMO_SENPI_TASK_TRACEPARENT".to_string(),
+            traceparent.clone(),
+        );
     }
     env.insert(
         SESSION_DIR_ENV.to_string(),

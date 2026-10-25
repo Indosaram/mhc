@@ -70,6 +70,10 @@ impl SendInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SendOutcome {
+    Held {
+        task_id: String,
+        run_epoch: i64,
+    },
     Stale {
         task_id: String,
         run_epoch: i64,
