@@ -227,10 +227,35 @@ pub fn observe(
     listener: std::sync::Arc<dyn Fn(GrantObservation) + Send + Sync>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        use notify::Watcher;
         let mut observer = GrantObserver::default();
+        // Watch the directory, not the inode: the store is atomically replaced.
+        let (changes, mut changed) = tokio::sync::mpsc::unbounded_channel();
+        let mut watcher =
+            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                if let Err(error) = &event {
+                    maho_ext_api::diagnostic(&format!("MCP grants watcher failed: {error}"));
+                }
+                let _ = changes.send(());
+            })
+            .map_err(|error| {
+                maho_ext_api::diagnostic(&format!("MCP grants watcher unavailable: {error}"))
+            })
+            .ok();
+        if let Some(watcher) = &mut watcher {
+            if let Err(error) = watcher.watch(
+                path.parent().unwrap_or(Path::new(".")),
+                notify::RecursiveMode::NonRecursive,
+            ) {
+                maho_ext_api::diagnostic(&format!("MCP grants directory watch failed: {error}"));
+            }
+        }
         let mut timer = tokio::time::interval(std::time::Duration::from_secs(5));
         loop {
-            timer.tick().await;
+            tokio::select! {
+                _ = timer.tick() => {},
+                Some(()) = changed.recv() => {},
+            }
             if let Some(observation) = observer.reconcile(&path) {
                 listener(observation);
             }

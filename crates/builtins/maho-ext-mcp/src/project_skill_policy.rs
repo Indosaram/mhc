@@ -21,6 +21,11 @@ pub struct ProjectMcpAuthority {
     pub provenance_digest: String,
     pub initial: ProjectMcpMaterialization,
     name: String,
+    project_root: PathBuf,
+    provenance: Option<crate::skills::SkillProvenance>,
+    allowed_set: Option<crate::skills::SkillAllowedSet>,
+    skill_path: PathBuf,
+    skill_name: String,
     source_path: PathBuf,
     raw: serde_json::Value,
     cwd: PathBuf,
@@ -31,31 +36,53 @@ pub struct ProjectMcpAuthority {
     first: std::sync::atomic::AtomicBool,
     started_names: Mutex<Vec<String>>,
 }
-fn decisions() -> &'static Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>> {
-    static DECISIONS: std::sync::OnceLock<Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>> =
-        std::sync::OnceLock::new();
+fn decisions() -> &'static Mutex<BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>> {
+    static DECISIONS: std::sync::OnceLock<
+        Mutex<BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
     DECISIONS.get_or_init(Default::default)
 }
 fn decision_lock(path: &Path, identity: &str) -> Arc<tokio::sync::Mutex<()>> {
-    decisions()
+    let mut decisions = decisions()
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .entry(format!("{}\0{identity}", path.display()))
-        .or_default()
-        .clone()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    decisions.retain(|_, pending| pending.strong_count() > 0);
+    let key = format!("{}\0{identity}", path.display());
+    if let Some(pending) = decisions.get(&key).and_then(std::sync::Weak::upgrade) {
+        return pending;
+    }
+    let pending = Arc::new(tokio::sync::Mutex::new(()));
+    decisions.insert(key, Arc::downgrade(&pending));
+    pending
 }
-fn policies() -> &'static Mutex<BTreeMap<String, Arc<ProjectMcpAuthority>>> {
-    static POLICIES: std::sync::OnceLock<Mutex<BTreeMap<String, Arc<ProjectMcpAuthority>>>> =
-        std::sync::OnceLock::new();
-    POLICIES.get_or_init(Default::default)
+/// Contemporaneous callers share completion, including a denied decision.
+async fn join_decision(
+    decision: Arc<tokio::sync::Mutex<()>>,
+) -> (tokio::sync::OwnedMutexGuard<()>, bool) {
+    match decision.clone().try_lock_owned() {
+        Ok(guard) => (guard, false),
+        Err(_) => (decision.lock_owned().await, true),
+    }
+}
+#[derive(Clone)]
+pub struct ProjectPolicyHandle(pub Arc<ProjectMcpAuthority>);
+impl std::fmt::Debug for ProjectPolicyHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ProjectPolicy")
+            .field(&self.0.identity)
+            .finish()
+    }
+}
+impl PartialEq for ProjectPolicyHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 pub fn get_project_mcp_authority(config: &McpServerConfig) -> Option<Arc<ProjectMcpAuthority>> {
-    let digest = crate::config::hash_config(config).ok()?;
-    policies()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&digest)
-        .cloned()
+    config
+        .project_authority
+        .as_ref()
+        .map(|handle| handle.0.clone())
 }
 pub fn effective_grant_names(snapshot: &GrantSnapshot, identity: &str) -> Vec<String> {
     snapshot
@@ -96,10 +123,11 @@ pub fn skill_project_root(cwd: &Path) -> PathBuf {
     }
     cwd.into()
 }
-fn identity_for(
+fn identity_for_roots(
     name: &str,
     source: &Path,
     raw: &serde_json::Value,
+    project_root: &Path,
     cwd: &Path,
 ) -> Result<String, McpError> {
     let canonical = |path: &Path| {
@@ -107,8 +135,33 @@ fn identity_for(
             .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))
     };
     Ok(declaration_digest(
-        &serde_json::json!({"sourcePath":canonical(source)?,"sourceKind":if source.file_name().is_some_and(|name|name=="mcp.json"){"sidecar"}else{"frontmatter"},"projectRoot":canonical(&skill_project_root(cwd))?,"serverName":name,"raw":raw,"cwdBase":canonical(cwd)?}),
+        &serde_json::json!({"sourcePath":canonical(source)?,"sourceKind":if source.file_name().is_some_and(|name|name=="mcp.json"){"sidecar"}else{"frontmatter"},"projectRoot":canonical(project_root)?,"serverName":name,"raw":raw,"cwdBase":canonical(cwd)?}),
     ))
+}
+fn current_registration(
+    name: &str,
+    original: &crate::skills::SkillServerDecl,
+) -> Result<crate::skills::SkillServerDecl, McpError> {
+    crate::skills::parse_skill_mcp_declarations(&[crate::skills::SkillLike {
+        name: original.skill_name.clone(),
+        file_path: original.skill_path.clone(),
+        base_dir: original
+            .skill_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .into(),
+        scope: original.scope.clone(),
+        provenance: original.provenance.clone(),
+        allowed_set: original.allowed_set.clone(),
+    }])
+    .servers
+    .remove(name)
+    .ok_or_else(|| {
+        McpError::new(
+            McpErrorKind::Connect,
+            "Project MCP declaration is no longer available; reload its skills",
+        )
+    })
 }
 impl ProjectMcpAuthority {
     pub fn started_grant_names(&self) -> Vec<String> {
@@ -118,15 +171,36 @@ impl ProjectMcpAuthority {
             .clone()
     }
     pub async fn resolve(&self) -> Result<ProjectMcpMaterialization, McpError> {
-        let latest = current_raw(&self.name, &self.source_path)?;
-        if identity_for(&self.name, &self.source_path, &latest, &self.cwd)? != self.identity {
+        let registration = current_registration(
+            &self.name,
+            &crate::skills::SkillServerDecl {
+                skill_name: self.skill_name.clone(),
+                scope: Some("project".into()),
+                provenance: self.provenance.clone(),
+                allowed_set: self.allowed_set.clone(),
+                skill_path: self.skill_path.clone(),
+                raw: self.raw.clone(),
+                source_path: self.source_path.clone(),
+                include_tools_by_skill: BTreeMap::new(),
+            },
+        )?;
+        let latest = registration.raw;
+        if registration.source_path != self.source_path
+            || identity_for_roots(
+                &self.name,
+                &self.source_path,
+                &latest,
+                &self.project_root,
+                &self.cwd,
+            )? != self.identity
+        {
             return Err(McpError::new(
                 McpErrorKind::Connect,
                 "Project MCP declaration changed; reload its skills",
             ));
         }
         let decision = decision_lock(&self.store_path, &self.identity);
-        let _decision = decision.lock().await;
+        let (_decision, shared_decision) = join_decision(decision).await;
         let mut names = effective_grant_names(&read(&self.store_path), &self.identity);
         if !self.first.swap(false, std::sync::atomic::Ordering::AcqRel) {
             let policy = crate::project_env::project_mcp_environment(
@@ -137,7 +211,8 @@ impl ProjectMcpAuthority {
                 &self.ambient,
             )
             .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
-            if !policy.withheld.is_empty()
+            if !shared_decision
+                && !policy.withheld.is_empty()
                 && let Some(ui) = &self.ui
             {
                 let choices = vec!["Allow".into(), "Deny".into()];
@@ -155,10 +230,11 @@ impl ProjectMcpAuthority {
                     .as_deref()
                     == Some("Allow")
                 {
-                    if identity_for(
+                    if identity_for_roots(
                         &self.name,
                         &self.source_path,
                         &current_raw(&self.name, &self.source_path)?,
+                        &self.project_root,
                         &self.cwd,
                     )? != self.identity
                     {
@@ -202,12 +278,26 @@ impl ProjectMcpAuthority {
             &self.ambient,
         )
         .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
+        if !policy.withheld.is_empty()
+            && let Some(ui) = &self.ui
+        {
+            ui.notify(
+                &format!(
+                    "Project MCP server {} is starting without: {}",
+                    self.name,
+                    policy.withheld.join(", ")
+                ),
+                maho_ext_api::NotificationType::Info,
+            );
+        }
         let wire = serde_json::from_value(policy.declaration)
             .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
         let mut server =
             crate::config::resolve_skill_mcp_server(&self.name, wire, &self.source_path)
                 .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
         let mut config = server.config.take().expect("normalized server");
+        config.direct_tools = Some(crate::config_schema::DirectTools::Patterns(Vec::new()));
+        config.exposure = Some(crate::config_schema::Exposure::Search);
         config.env = Some(BTreeMap::new());
         if config.transport == Some(crate::config_schema::Transport::Stdio) {
             config.cwd = Some(
@@ -233,12 +323,18 @@ pub async fn prepare_project_skill_server(
     explicit: &BTreeMap<String, String>,
     ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
 ) -> Result<ResolvedMcpServer, McpError> {
-    let raw = current_raw(name, &original.source_path)?;
-    let identity = identity_for(name, &original.source_path, &raw, cwd)?;
+    let original = &current_registration(name, original)?;
+    let project_root = original
+        .provenance
+        .as_ref()
+        .and_then(|provenance| provenance.project_root.clone())
+        .unwrap_or_else(|| skill_project_root(cwd));
+    let raw = original.raw.clone();
+    let identity = identity_for_roots(name, &original.source_path, &raw, &project_root, cwd)?;
     let store_path = resolve_grants_store_path(Some(agent_dir));
     let ambient = std::env::vars().collect();
     let decision = decision_lock(&store_path, &identity);
-    let _decision = decision.lock().await;
+    let (_decision, shared_decision) = join_decision(decision).await;
     let mut names = effective_grant_names(&read(&store_path), &identity);
     let policy = crate::project_env::project_mcp_environment(
         &raw,
@@ -248,14 +344,16 @@ pub async fn prepare_project_skill_server(
         &ambient,
     )
     .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
-    if !policy.withheld.is_empty()
+    if !shared_decision
+        && !policy.withheld.is_empty()
         && let Some(ui) = &ui
     {
         let choices = vec!["Allow".into(), "Deny".into()];
         if ui
             .select(
                 &format!(
-                    "Project MCP server {name} wants: {}",
+                    "Project MCP server {name} (skill {}) wants: {}",
+                    original.skill_name,
                     policy.withheld.join(", ")
                 ),
                 &choices,
@@ -264,10 +362,11 @@ pub async fn prepare_project_skill_server(
             .await
             .as_deref()
             == Some("Allow")
-            && identity_for(
+            && identity_for_roots(
                 name,
                 &original.source_path,
                 &current_raw(name, &original.source_path)?,
+                &project_root,
                 cwd,
             )? == identity
         {
@@ -281,7 +380,7 @@ pub async fn prepare_project_skill_server(
                 &store_path,
                 &identity,
                 GrantLabel {
-                    project: cwd.display().to_string(),
+                    project: project_root.display().to_string(),
                     skill,
                     server: name.into(),
                 },
@@ -294,6 +393,14 @@ pub async fn prepare_project_skill_server(
                 ),
             }
         }
+    }
+    let latest = current_registration(name, original)?;
+    if identity_for_roots(name, &latest.source_path, &latest.raw, &project_root, cwd)? != identity {
+        drop(_decision);
+        return Box::pin(prepare_project_skill_server(
+            name, &latest, cwd, agent_dir, trusted, explicit, ui,
+        ))
+        .await;
     }
     let placeholder = ProjectMcpMaterialization {
         config: crate::config::normalize_server(
@@ -309,9 +416,16 @@ pub async fn prepare_project_skill_server(
         policy_digest: declaration_digest(
             &serde_json::json!({"names":names,"generation":read(&resolve_grants_store_path(Some(agent_dir))).generation}),
         ),
-        provenance_digest: declaration_digest(&serde_json::json!({"source":original.source_path})),
+        provenance_digest: declaration_digest(
+            &serde_json::json!({"provenance":original.provenance,"allowedSet":original.allowed_set.as_ref().map(|set| &set.digest)}),
+        ),
         initial: placeholder,
         name: name.into(),
+        project_root,
+        provenance: original.provenance.clone(),
+        allowed_set: original.allowed_set.clone(),
+        skill_path: original.skill_path.clone(),
+        skill_name: original.skill_name.clone(),
         source_path: original.source_path.clone(),
         raw,
         cwd: cwd.into(),
@@ -324,12 +438,6 @@ pub async fn prepare_project_skill_server(
     };
     authority.initial = authority.materialize(&names)?;
     let mut config = authority.initial.config.clone();
-    // Keep policy identity in the private connection config so identical commands from
-    // separate declarations cannot accidentally share authorization. resolve() strips it.
-    config.env.get_or_insert_with(BTreeMap::new).insert(
-        "__MHC_PROJECT_POLICY_IDENTITY".into(),
-        authority.identity.clone(),
-    );
     let hash = crate::config::hash_config(&config)
         .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
     let server = ResolvedMcpServer {
@@ -345,11 +453,104 @@ pub async fn prepare_project_skill_server(
         config_hash: Some(declaration_digest(
             &serde_json::json!({"config":hash,"identity":authority.identity,"policy":authority.policy_digest,"provenance":authority.provenance_digest}),
         )),
-        config: Some(config),
+        config: {
+            config.project_authority = Some(ProjectPolicyHandle(Arc::new(authority)));
+            Some(config)
+        },
     };
-    policies()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(hash, Arc::new(authority));
     Ok(server)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn concurrent_denial_shares_completion_and_later_attempt_can_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grants.json");
+        let pending = decision_lock(&path, "identity");
+        let (guard, shared) = join_decision(pending).await;
+        assert!(!shared);
+        let next = decision_lock(&path, "identity");
+        let mut joined = Box::pin(join_decision(next));
+        assert!(futures::poll!(joined.as_mut()).is_pending());
+        drop(guard);
+        let (joined_guard, shared) = joined.await;
+        assert!(shared);
+        drop(joined_guard);
+        let (_, shared) = join_decision(decision_lock(&path, "identity")).await;
+        assert!(!shared);
+    }
+    #[test]
+    fn project_root_is_independent_of_cwd_and_raw_edits_change_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("nested");
+        std::fs::create_dir(&cwd).unwrap();
+        let source = root.path().join("mcp.json");
+        std::fs::write(&source, "{}").unwrap();
+        let raw = serde_json::json!({"command":"server"});
+        let identity = identity_for_roots("probe", &source, &raw, root.path(), &cwd).unwrap();
+        assert_eq!(
+            identity,
+            declaration_digest(&serde_json::json!({
+                "sourcePath": std::fs::canonicalize(&source).unwrap(), "sourceKind":"sidecar",
+                "projectRoot": std::fs::canonicalize(root.path()).unwrap(), "serverName":"probe",
+                "raw":raw, "cwdBase":std::fs::canonicalize(&cwd).unwrap()
+            }))
+        );
+        assert_ne!(
+            identity,
+            identity_for_roots(
+                "probe",
+                &source,
+                &serde_json::json!({"command":"changed"}),
+                root.path(),
+                &cwd
+            )
+            .unwrap()
+        );
+    }
+    #[tokio::test]
+    async fn config_clones_own_policy_and_last_drop_retires_it() {
+        let root = tempfile::tempdir().unwrap();
+        let skill = root.path().join("SKILL.md");
+        std::fs::write(
+            &skill,
+            "---\nname: fixture\nmcp:\n  probe:\n    command: server\n---\n",
+        )
+        .unwrap();
+        let declarations =
+            crate::skills::parse_skill_mcp_declarations(&[crate::skills::SkillLike {
+                name: "fixture".into(),
+                file_path: skill,
+                base_dir: root.path().into(),
+                scope: Some("project".into()),
+                ..Default::default()
+            }]);
+        let server = prepare_project_skill_server(
+            "probe",
+            &declarations.servers["probe"],
+            root.path(),
+            root.path(),
+            true,
+            &BTreeMap::new(),
+            None,
+        )
+        .await
+        .unwrap();
+        let config = server.config.as_ref().unwrap();
+        let policy = get_project_mcp_authority(config).unwrap();
+        let weak = Arc::downgrade(&policy);
+        let cloned = config.clone();
+        assert!(
+            !serde_json::to_string(config)
+                .unwrap()
+                .contains("project_authority")
+        );
+        drop(policy);
+        drop(server);
+        assert!(weak.upgrade().is_some());
+        drop(cloned);
+        assert!(weak.upgrade().is_none());
+    }
 }

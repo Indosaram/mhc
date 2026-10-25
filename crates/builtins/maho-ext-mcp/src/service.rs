@@ -370,9 +370,11 @@ impl McpService {
                 continue;
             }
             let resolved = if decl
-                .source_path
-                .starts_with(crate::project_skill_policy::skill_project_root(&cwd))
-            {
+                .provenance
+                .as_ref()
+                .map_or(decl.scope.as_deref() == Some("project"), |provenance| {
+                    provenance.kind != "user"
+                }) {
                 crate::project_skill_policy::prepare_project_skill_server(
                     name,
                     decl,

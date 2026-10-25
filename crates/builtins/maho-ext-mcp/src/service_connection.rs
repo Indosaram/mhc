@@ -156,20 +156,31 @@ fn create_session_connection(
         let path = authority.store_path.clone();
         let identity = authority.identity.clone();
 
+        let (sender, mut changes) = tokio::sync::mpsc::unbounded_channel();
+        let watcher = crate::env_grants_store::observe(
+            path,
+            Arc::new(move |observation| {
+                let _ = sender.send(observation);
+            }),
+        );
+        struct AbortWatcher(tokio::task::JoinHandle<()>);
+        impl Drop for AbortWatcher {
+            fn drop(&mut self) {
+                self.0.abort();
+            }
+        }
+        let watcher = AbortWatcher(watcher);
         let task = tokio::spawn(async move {
-            let mut observer = crate::env_grants_store::GrantObserver::default();
-            let mut timer = tokio::time::interval(std::time::Duration::from_secs(5));
-            loop {
-                timer.tick().await;
+            let _watcher = watcher;
+            while let Some(observation) = changes.recv().await {
                 let Some(connection) = weak.upgrade() else {
                     return;
                 };
-                if let Some(observation) = observer.reconcile(&path)
-                    && (observation.conservative
-                        || crate::project_skill_policy::effective_grant_names(
-                            &observation.snapshot,
-                            &identity,
-                        ) != authority.started_grant_names())
+                if observation.conservative
+                    || crate::project_skill_policy::effective_grant_names(
+                        &observation.snapshot,
+                        &identity,
+                    ) != authority.started_grant_names()
                 {
                     if let Err(error) = connection.bump_generation().await {
                         maho_ext_api::diagnostic(&format!(
