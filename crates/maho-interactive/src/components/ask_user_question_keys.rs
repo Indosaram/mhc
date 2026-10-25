@@ -11,10 +11,13 @@ use super::ask_user_question::AskUserQuestionComponent;
 use super::ask_user_question_state::{QuestionFocus, QuestionStatus};
 
 fn is_printable(data: &str) -> bool {
-    data.encode_utf16().count() == 1 && data >= " " && data != "\x7f"
+    data.starts_with("\x1b[200~")
+        || (!data.is_empty() && !data.chars().any(char::is_control))
 }
 
 pub fn handle_ask_user_key_input(component: &mut AskUserQuestionComponent, data: &str) {
+    let printable = maho_tui::keys::decode_printable_key(data);
+    let data = printable.as_deref().unwrap_or(data);
     let kb = get_keybindings();
     if matches_key(data, "ctrl+c") {
         component.finish(QuestionStatus::Cancelled, None);

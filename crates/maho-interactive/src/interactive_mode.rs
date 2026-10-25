@@ -2818,7 +2818,7 @@ impl InteractiveMode {
             async_question_widget: None,
             question_reply: Rc::new(RefCell::new(None)),
             questions: Default::default(),
-            question_actions: Rc::new(RefCell::new(std::collections::VecDeque::new())),
+            question_actions,
             question_result: Rc::new(RefCell::new(None)),
             blocking_question: false,
             armin_animations: Vec::new(),
@@ -4817,11 +4817,15 @@ impl InteractiveMode {
         if self.reload_box.is_some() {
             return;
         }
-        if self.async_question_widget.is_some() {
+        if self.async_question_widget.is_some()
+            && self.question.is_none()
+            && self.share.is_none()
+            && self.ui_dialog.is_none()
+            && self.login_dialog.is_none()
+            && self.rename_input.is_none()
+        {
             let keys = self.keybindings();
-            if self.ui_dialog.is_none()
-                && self.rename_input.is_none()
-                && crate::components::ask_user_answer_key::matches_ask_user_answer_key(
+            if crate::components::ask_user_answer_key::matches_ask_user_answer_key(
                     data,
                     &maho_core::keybindings::host_platform(),
                     &keys,
@@ -4830,30 +4834,38 @@ impl InteractiveMode {
                 self.expand_shown_question(None);
                 return;
             }
-            if keys.matches(data, "app.question.next") && self.questions.cycle() {
-                self.refresh_async_question_widget();
-                return;
-            }
-            if let Some(digit) = single_digit(data) {
-                let option = usize::try_from(digit).unwrap_or(1) - 1;
-                if let Some(index) = self.shown_unanswered_index()
-                    && self.shown_question_has_option(index, option)
-                {
-                    self.expand_shown_question(Some(index));
-                    if let Some(question) = &mut self.question {
-                        question.handle_input(data);
-                    }
-                    self.settle_questions();
+            let editor_empty = self.custom_editor.as_ref().map_or_else(
+                || self.editor.editor.get_text().is_empty(),
+                |editor| editor.get_text().is_empty(),
+            );
+            if editor_empty && !self.editor.editor.is_showing_autocomplete() {
+                if keys.matches(data, "app.question.next") && self.questions.cycle() {
+                    self.refresh_async_question_widget();
                     return;
                 }
-            }
-            if data.chars().count() == 1
-                && data.chars().next().is_some_and(|character| {
-                    !character.is_control() && !matches!(character, '/' | '!')
-                })
-            {
-                let shown = self.questions.shown_id().map(str::to_owned);
-                self.questions.set_composer_reply(shown.as_deref());
+                if let Some(digit) = single_digit(data) {
+                    let option = usize::try_from(digit).unwrap_or(1) - 1;
+                    if let Some(index) = self.shown_unanswered_index()
+                        && self.shown_question_has_option(index, option)
+                    {
+                        self.expand_shown_question(Some(index));
+                        if let Some(question) = &mut self.question {
+                            question.handle_input(data);
+                        }
+                        self.settle_questions();
+                        return;
+                    }
+                }
+                let printable = maho_tui::keys::decode_printable_key(data);
+                let printable = printable.as_deref().unwrap_or(data);
+                if data.starts_with("\x1b[200~")
+                    || (!printable.is_empty()
+                        && !printable.chars().any(char::is_control)
+                        && !printable.starts_with(['/', '!']))
+                {
+                    let shown = self.questions.shown_id().map(str::to_owned);
+                    self.questions.set_composer_reply(shown.as_deref());
+                }
             }
         }
         if self.questions.surface == crate::question_registry::QuestionSurface::Expanded
@@ -12146,6 +12158,18 @@ impl InteractiveMode {
                 if reply.is_closed() {
                     return;
                 }
+                if self.question_reply.borrow().is_some()
+                    || (request.wait_for_answer
+                        && options.deliver != maho_ext_api::QuestionDelivery::UserMessage
+                        && !self.questions.is_empty())
+                {
+                    self.queued_questions.push_back(UiRequest::Question {
+                        request,
+                        options,
+                        reply,
+                    });
+                    return;
+                }
                 use crate::components::ask_user_question_state as state;
                 let convert = |request: maho_ext_api::QuestionRequest| state::QuestionRequest {
                     request_id: request.request_id,
@@ -12175,14 +12199,6 @@ impl InteractiveMode {
                 {
                     let request = convert(request);
                     self.show_async_question(request, options, reply);
-                    return;
-                }
-                if self.question_reply.borrow().is_some() {
-                    self.queued_questions.push_back(UiRequest::Question {
-                        request,
-                        options,
-                        reply,
-                    });
                     return;
                 }
                 let request = convert(request);
