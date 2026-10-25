@@ -254,16 +254,47 @@ pub async fn ask_host_authenticated(
     timeout_ms: u64,
     agent_dir: Option<&std::path::Path>,
 ) -> Result<Option<Value>, crate::socket_auth::RpcIdentityError> {
+    use crate::socket_auth;
+    let (mut socket, info) =
+        match authenticated_host_socket(endpoint, request, timeout_ms, agent_dir).await {
+            Ok(connection) => connection,
+            Err(error) => {
+                return match error.downcast::<crate::socket_auth::RpcIdentityError>() {
+                    Ok(error) => Err(*error),
+                    Err(_) => Ok(None),
+                };
+            }
+        };
+    if request["type"] == "get_protocol_info" {
+        return Ok(Some(info));
+    }
+    let answer = match socket.request(request.clone()).await {
+        Ok(answer) => answer,
+        Err(_) => return Ok(None),
+    };
+    if answer["success"] == false
+        && (answer["errorCode"] == "auth_required" || answer["error"] == "auth_required")
+    {
+        return Err(socket_auth::auth_required_error(endpoint));
+    }
+    Ok(Some(answer))
+}
+
+#[cfg(unix)]
+pub async fn authenticated_host_socket(
+    endpoint: &str,
+    request: &Value,
+    timeout_ms: u64,
+    agent_dir: Option<&std::path::Path>,
+) -> Result<(crate::socket_client::RpcSocket, Value), Box<dyn std::error::Error + Send + Sync>> {
     use crate::{socket_auth, socket_client::RpcSocket};
     let mut socket =
         match RpcSocket::connect(endpoint, std::time::Duration::from_millis(timeout_ms)).await {
             Ok(socket) => socket,
-            Err(_) => return Ok(None),
+            Err(error) => return Err(error.into()),
         };
     let mut random = [0u8; 32];
-    if getrandom::fill(&mut random).is_err() {
-        return Ok(None);
-    }
+    getrandom::fill(&mut random).map_err(|error| std::io::Error::other(error.to_string()))?;
     let nonce = hex::encode(random);
     let mut command = if request["type"] == "get_protocol_info" {
         request.clone()
@@ -273,7 +304,7 @@ pub async fn ask_host_authenticated(
     command["auth"] = serde_json::json!({"client_nonce":nonce});
     let info = match socket.request(command).await {
         Ok(info) => info,
-        Err(_) => return Ok(None),
+        Err(error) => return Err(error.into()),
     };
     if let Some(auth) = info.get("data").and_then(|data| data.get("auth")) {
         let launch = auth["launch_id"]
@@ -294,11 +325,11 @@ pub async fn ask_host_authenticated(
                         .bytes()
                         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
             }) {
-                return Err(socket_auth::RpcIdentityError {
+                return Err(Box::new(socket_auth::RpcIdentityError {
                     code: "host_identity_unproven",
                     location: endpoint.into(),
                     detail: format!("invalid {field}"),
-                });
+                }));
             }
         }
         let root = std::env::var("SENPI_RPC_KEY_ROOT")
@@ -343,14 +374,14 @@ pub async fn ask_host_authenticated(
                 .await
             {
                 Ok(answer) => answer,
-                Err(_) => return Ok(None),
+                Err(error) => return Err(error.into()),
             };
             if answer["success"] != true {
-                return Err(socket_auth::RpcIdentityError {
+                return Err(Box::new(socket_auth::RpcIdentityError {
                     code: "auth_failed",
                     location: endpoint.into(),
                     detail: "client proof refused".into(),
-                });
+                }));
             }
         } else {
             static GRACE_ROOTS: std::sync::OnceLock<
@@ -369,17 +400,5 @@ pub async fn ask_host_authenticated(
             }
         }
     }
-    if request["type"] == "get_protocol_info" {
-        return Ok(Some(info));
-    }
-    let answer = match socket.request(request.clone()).await {
-        Ok(answer) => answer,
-        Err(_) => return Ok(None),
-    };
-    if answer["success"] == false
-        && (answer["errorCode"] == "auth_required" || answer["error"] == "auth_required")
-    {
-        return Err(socket_auth::auth_required_error(endpoint));
-    }
-    Ok(Some(answer))
+    Ok((socket, info))
 }
