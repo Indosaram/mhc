@@ -41,10 +41,12 @@ pub fn lifecycle_state(
         } else {
             SessionRole::Root
         },
-        terminal: terminal.and_then(|v| serde_json::from_value(serde_json::json!(v)).ok()),
+        terminal: terminal.map(|v| {
+            serde_json::from_value(serde_json::json!(v)).expect("validated child terminal")
+        }),
         holds: holds
             .iter()
-            .filter_map(|v| serde_json::from_value(v.clone()).ok())
+            .map(|v| serde_json::from_value(v.clone()).expect("validated lifecycle hold"))
             .collect(),
         waits: serde_json::from_value(waits.clone()).expect("validated lifecycle waits"),
         running,
@@ -61,4 +63,39 @@ pub fn lifecycle_state(
         .as_str()
         .expect("state string")
         .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn typed_adapter_preserves_terminal_and_hold_precedence() {
+        let waits = json!({"children":0,"background":[],"human":[]});
+        let holds = vec![json!({"kind":"session_hold","since":"now"})];
+        assert_eq!(
+            lifecycle_state("root", None, &holds, &waits, false, false),
+            "paused"
+        );
+        assert_eq!(
+            lifecycle_state("child", Some("completed"), &[], &waits, true, false),
+            "done"
+        );
+        assert_eq!(
+            lifecycle_state("child", Some("interrupted"), &holds, &waits, false, true),
+            "paused"
+        );
+    }
+    #[test]
+    fn pending_admission_keeps_root_running() {
+        let waits = json!({"children":0,"background":[],"human":[]});
+        assert_eq!(
+            lifecycle_state("root", None, &[], &waits, true, false),
+            "running"
+        );
+        assert_eq!(
+            lifecycle_state("root", None, &[], &waits, false, false),
+            "done"
+        );
+    }
 }
