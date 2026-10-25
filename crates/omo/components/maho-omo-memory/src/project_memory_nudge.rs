@@ -297,6 +297,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn touched_projects_grant_only_notes_and_shutdown_revokes_sources() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("project-repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let paths = memory_core::identity::layout::build_identity_paths(root.path(), "bound");
+        let context = MemoryIdentityContext::new(
+            "bound".into(),
+            paths,
+            crate::binding::MemorySessionBinding {
+                identity: "bound".into(),
+                repo_path_hash: "hash".into(),
+                bound_at: 0.0,
+            },
+        );
+        let resolved = context.clone();
+        let scope = ProjectMemoryScope::new(
+            Arc::new(move |_| Some(resolved.clone())),
+            Arc::new(ProjectMemorySwitches::default),
+        );
+        scope.record_touch(
+            "session",
+            root.path().to_owned(),
+            "child".into(),
+            repo.clone(),
+            Some("src/main.rs".into()),
+        );
+        assert_eq!(
+            scope.source_for("session", "@project/child/notes/a.md"),
+            Some(repo.join("notes/a.md").to_string_lossy().into_owned())
+        );
+        assert!(
+            crate::project_memory_grants::is_granted_project_memory_read(
+                &context,
+                &repo.join("notes/a.md")
+            )
+        );
+        assert!(
+            !crate::project_memory_grants::is_granted_project_memory_read(
+                &context,
+                &repo.join("system/persona.md")
+            )
+        );
+        assert!(
+            scope
+                .source_for("session", "@project/child/../secret")
+                .is_none()
+        );
+        scope.on_session_shutdown("session");
+        assert!(
+            scope
+                .source_for("session", "@project/child/notes/a.md")
+                .is_none()
+        );
+        assert!(
+            !crate::project_memory_grants::is_granted_project_memory_read(
+                &context,
+                &repo.join("notes/a.md")
+            )
+        );
+    }
+
+    #[test]
     fn test_format_project_memory_nudge() {
         let notes = vec![RecallDocument {
             path: "reference/deploy.md".to_string(),

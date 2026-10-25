@@ -1245,6 +1245,7 @@ impl MemoryRuntime {
                         route: route.as_ref(),
                         sandbox: Some(&sandbox),
                         deadline_ms: None,
+                        memory_root: None,
                         child: worker::spawn_supervisor::ReflectionChildOptions {
                             termination_grace_ms: 5_000.0,
                             max_output_bytes: 64 * 1024,
