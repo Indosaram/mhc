@@ -101,6 +101,10 @@ impl senpi_task::team::runtime_types::TeamRuntimeManagerPort for TeamManager {
                 status: task.status,
                 resolved_model: task.resolved_model,
             }),
+            StartResult::Held(_) => TeamStartResult::Rejected {
+                kind: "held".into(),
+                reason: "Task admission is held until the run resumes.".into(),
+            },
             StartResult::DepthDenied { reason, .. } => TeamStartResult::Rejected {
                 kind: "depth_denied".into(),
                 reason,
@@ -332,9 +336,8 @@ pub fn mount_team_runtime(
     Ok(())
 }
 
-type ReopenChildSession = Arc<
-    dyn Fn() -> Result<Arc<maho_core::agent_session::AgentSession>, HostError> + Send + Sync,
->;
+type ReopenChildSession =
+    Arc<dyn Fn() -> Result<Arc<maho_core::agent_session::AgentSession>, HostError> + Send + Sync>;
 
 struct NativeChildState {
     session: Option<Arc<maho_core::agent_session::AgentSession>>,

@@ -1957,6 +1957,10 @@ fn owner_of(record: &DagRunRecordV1, node_id: &DagNodeId) -> DagTaskOwner {
 
 fn start_failure(result: &StartResult) -> (DagNodeErrorCode, String) {
     match result {
+        StartResult::Held(_) => (
+            DagNodeErrorCode::StartFailed,
+            "Task admission is held until the run resumes".into(),
+        ),
         StartResult::DepthDenied { reason, .. } => (DagNodeErrorCode::DepthDenied, reason.clone()),
         StartResult::PlanUnresolved(error) => {
             (DagNodeErrorCode::PlanUnresolved, error.message.clone())

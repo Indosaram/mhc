@@ -36,9 +36,16 @@ pub struct LoadedSkill {
     pub location: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillRejection {
+    pub name: String,
+    pub reason: String,
+}
+
 /// v1 load_skills contract: a ready-to-prepend block plus which names resolved vs went missing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SkillResolution {
+    pub rejected: Option<Vec<SkillRejection>>,
     pub prepend: String,
     pub resolved: Vec<String>,
     pub missing: Vec<String>,
@@ -50,6 +57,8 @@ pub type SkillLoader = dyn Fn(&[String], &str) -> SkillResolution + Send + Sync;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskSkillSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejected: Option<Vec<SkillRejection>>,
     pub requested: Vec<String>,
     pub resolved: Vec<String>,
     pub missing: Vec<String>,
@@ -91,6 +100,8 @@ pub enum TaskToolMode {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TaskToolDetails {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pause_seq: Option<u64>,
     pub task_id: String,
     pub status: String,
     pub mode: TaskToolMode,

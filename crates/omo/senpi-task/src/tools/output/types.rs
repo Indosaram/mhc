@@ -124,6 +124,12 @@ pub struct TaskSnapshot {
     pub suspended: Option<SuspendedDetails>,
     pub execution_mode: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_model_fallback: Option<crate::completion::ParentModelFallback>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_model: Option<crate::state::EffectiveModelRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_model: Option<ResolvedModelRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
