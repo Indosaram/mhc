@@ -4592,10 +4592,6 @@ impl Inner {
                 runner: None,
             },
         );
-        let unsubscribe = self.subscribe_child_facts(&handle, &fresh.task_id);
-        if let Some(live) = lock(&self.state).live.get_mut(&fresh.task_id) {
-            live.unsubscribe = Some(unsubscribe);
-        }
         self.attach_child_subscribers(&fresh.task_id, &handle);
         // Stamp the child's own identity onto the clone so a sweep can tell a live child from a dead host.
         self.isolation.stamp(&fresh.task_id, handle.as_ref());
@@ -4624,10 +4620,15 @@ impl Inner {
                 pid,
                 ..fresh.clone()
             };
-            return match self.store.replace(&updated) {
+            let result = match self.store.replace(&updated) {
                 Ok(()) => ReattachResult::Ok,
-                Err(error) => self.reattach_failed(&fresh.task_id, &handle, &error),
+                Err(error) => return self.reattach_failed(&fresh.task_id, &handle, &error),
             };
+            let unsubscribe = self.subscribe_child_facts(&handle, &fresh.task_id);
+            if let Some(live) = lock(&self.state).live.get_mut(&fresh.task_id) {
+                live.unsubscribe = Some(unsubscribe);
+            }
+            return result;
         }
         let mut notification = fresh.notification.clone();
         notification.run_epoch += 1;
@@ -4645,6 +4646,10 @@ impl Inner {
         };
         if let Err(error) = self.store.replace(&reattached) {
             return self.reattach_failed(&fresh.task_id, &handle, &error);
+        }
+        let unsubscribe = self.subscribe_child_facts(&handle, &reattached.task_id);
+        if let Some(live) = lock(&self.state).live.get_mut(&reattached.task_id) {
+            live.unsubscribe = Some(unsubscribe);
         }
         lock(&self.concurrency).try_acquire(&reattached.model, &reattached.task_id, epoch);
         track_outcome(
