@@ -54,12 +54,7 @@ pub struct BuildDynamicSystemPromptOptions<'a> {
     pub surface: PromptSurface,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DynamicSystemPromptPart {
-    pub name: String,
-    pub source: Option<String>,
-    pub text: String,
-}
+pub use maho_ext_api::DynamicSystemPromptPart;
 
 fn part(name: &str, source: &str, text: String) -> DynamicSystemPromptPart {
     DynamicSystemPromptPart { name: name.to_owned(), source: Some(source.to_owned()), text }
