@@ -36,6 +36,21 @@ impl Component for RenderedMode {
     fn invalidate(&mut self) {}
 }
 
+/// Waker for parked actions: records that a parked future made progress so the main loop keeps
+/// polling it within the frame instead of waiting a full frame per await.
+#[derive(Default)]
+struct ParkedWake {
+    woken: std::sync::atomic::AtomicBool,
+}
+impl std::task::Wake for ParkedWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.woken.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// Poll both native-renderer snapshot futures once. `None` when either is not ready: the runner
 /// lock is not free, so the frame keeps the installed snapshot instead of awaiting it.
 fn native_snapshots_if_lock_free<T, U>(
@@ -373,6 +388,8 @@ pub async fn run(
         if let Some(text) = initial.initial_message { mode.enqueue_initial_message(&text, initial.initial_images); }
         for text in &parsed.messages { mode.enqueue_submission(text, None); }
         let clock = std::time::Instant::now();
+        let parked_wake = std::sync::Arc::new(ParkedWake::default());
+        let parked_waker = std::task::Waker::from(parked_wake.clone());
         let mut installed_native_renderers = Vec::new();
         let mut installed_renderer_revision: Option<(u64, u64)> = None;
         // senpi `applyTerminalTitle` / `setProgress`: written only when the value changes.
@@ -573,8 +590,20 @@ pub async fn run(
             }
             // First poll of a turn started this iteration, and any action parked so this frame
             // could paint, run only after paint. Input is read next (`terminal.pump`).
-            mode.poll_after_paint(std::task::Waker::noop());
-            match terminal.pump(screen.base().min_render_interval_ms()) {
+            parked_wake.woken.store(false, std::sync::atomic::Ordering::SeqCst);
+            mode.poll_after_paint(&parked_waker);
+            // Parked work (`/new`, `/resume`, `/fork`, reload) is a chain of awaits; re-polling it
+            // once per frame cost one frame of stdin wait per await. Keep advancing it while its
+            // waker fires (the runtime's timers and IO run at each yield), up to one frame of
+            // budget, then paint and read input.
+            let frame_ms = screen.base().min_render_interval_ms();
+            let budget = std::time::Instant::now() + std::time::Duration::from_millis(frame_ms);
+            while mode.has_parked_actions() && std::time::Instant::now() < budget {
+                tokio::task::yield_now().await;
+                if !parked_wake.woken.swap(false, std::sync::atomic::Ordering::SeqCst) { break; }
+                mode.poll_turn_with(&parked_waker);
+            }
+            match terminal.pump(frame_ms) {
                 Ok(()) => {}
                 // The terminal closed without a SIGHUP reaching this process (the PTY master went
                 // away): shut down like the hangup signal instead of polling a dead stdin forever.
