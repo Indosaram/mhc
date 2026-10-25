@@ -64,7 +64,9 @@ pub struct KibitzerAcceptedSlot {
 impl KibitzerAcceptedSlot {
     /// An empty slot for one bound session.
     pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self { current: Mutex::new(Arc::new(Mutex::new(Vec::new()))) })
+        Arc::new(Self {
+            current: Mutex::new(Arc::new(Mutex::new(Vec::new()))),
+        })
     }
 
     /// The stable current-slot getter: the list the CURRENT wake records into. A retained tool closure
@@ -76,7 +78,8 @@ impl KibitzerAcceptedSlot {
     /// Admission of a NEW turn: replace the current wake's list with a fresh empty one. A handle taken
     /// before the swap still owns the list it was taken from, so an active turn's snapshot is distinct.
     pub fn reset(&self) {
-        *self.current.lock().unwrap_or_else(PoisonError::into_inner) = Arc::new(Mutex::new(Vec::new()));
+        *self.current.lock().unwrap_or_else(PoisonError::into_inner) =
+            Arc::new(Mutex::new(Vec::new()));
     }
 }
 
@@ -99,7 +102,10 @@ struct SessionBudgetSlot {
 impl SessionBudgetSlot {
     fn new(limit: usize, terminal: bool) -> Arc<Self> {
         let budget: Arc<dyn KibitzerToolBudget> = WakeToolBudget::new(limit);
-        Arc::new(Self { current: Mutex::new(budget), terminal })
+        Arc::new(Self {
+            current: Mutex::new(budget),
+            terminal,
+        })
     }
 }
 
@@ -141,6 +147,7 @@ pub struct KibitzerSessionResources {
     pub accepted: Arc<KibitzerAcceptedSlot>,
     /// The member-owned recall corpus cache: one per session, so a `memory` search and read of the same
     /// session share the loaded corpus and a HEAD move refreshes it once.
+    pub project_scope: Arc<Mutex<Option<Arc<crate::project_memory_nudge::ProjectMemoryScope>>>>,
     pub corpus_cache: Arc<Mutex<RecallCorpusCache>>,
     /// `memory.recall.max_items` bound to this child: the child factory sets it from the spawn input
     /// before the tools are built, and the nudge tool reads it per call. It is `0` until then.
@@ -171,7 +178,10 @@ impl KibitzerSessionResources {
             surfaced: Arc::new(Mutex::new(BTreeSet::new())),
             searched: Arc::new(Mutex::new(BTreeSet::new())),
             accepted: KibitzerAcceptedSlot::new(),
-            corpus_cache: Arc::new(Mutex::new(RecallCorpusCache::new(RecallCorpusCacheOptions::default()))),
+            project_scope: Arc::new(Mutex::new(None)),
+            corpus_cache: Arc::new(Mutex::new(RecallCorpusCache::new(
+                RecallCorpusCacheOptions::default(),
+            ))),
             max_items: Arc::new(AtomicUsize::new(0)),
             detached,
         }
@@ -214,7 +224,9 @@ pub struct KibitzerSessionResourceRegistry {
 impl KibitzerSessionResourceRegistry {
     /// An empty registry for one recall wiring.
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { state: Mutex::new(RegistryState::default()) })
+        Arc::new(Self {
+            state: Mutex::new(RegistryState::default()),
+        })
     }
 
     /// The ONE getter, shared by the child factory and the runner: two calls for one live session
@@ -237,7 +249,9 @@ impl KibitzerSessionResourceRegistry {
             return KibitzerSessionResources::detached();
         }
         let resources = KibitzerSessionResources::new();
-        state.sessions.insert(session_id.to_string(), resources.clone());
+        state
+            .sessions
+            .insert(session_id.to_string(), resources.clone());
         resources
     }
 

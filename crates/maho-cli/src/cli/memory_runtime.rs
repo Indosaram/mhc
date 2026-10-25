@@ -312,6 +312,31 @@ impl MemoryRuntime {
                         .ok_or("reflection reservation rejected")?;
                     if result.status == "active" {
                         this.launch(worker, result.run.clone(), true)?;
+                    } else if result.status == "pending" {
+                        let runtime = this.clone();
+                        let recovery_worker = worker.clone();
+                        let receipt = maho_omo_memory::wiring_static::recover_pending_reflection(
+                            &identity.identity_paths.reflection,
+                            result.run.run_id.clone(),
+                            &move || {
+                                let runtime = runtime.clone();
+                                let worker = recovery_worker.clone();
+                                std::thread::spawn(move || {
+                                    tokio::runtime::Builder::new_current_thread()
+                                        .enable_all()
+                                        .build()
+                                        .map_err(|error| error.to_string())?
+                                        .block_on(runtime.reconcile_worker(&worker))
+                                })
+                                .join()
+                                .map_err(|_| {
+                                    "manual reflection reconciliation panicked".to_string()
+                                })?
+                            },
+                        );
+                        if let Some(notice) = receipt.stuck {
+                            return Err(notice);
+                        }
                     }
                     Ok(maho_omo_memory::commands::types::ReflectionRequestReceipt {
                         disposition: if result.status == "active" { maho_omo_memory::commands::types::ReflectionDisposition::Reserved } else { maho_omo_memory::commands::types::ReflectionDisposition::Pending },
@@ -419,7 +444,7 @@ impl MemoryRuntime {
             write_sessions: Mutex::new(BTreeMap::new()),
             nudge: Arc::new(Mutex::new(Default::default())),
             health_notices: Mutex::new(BTreeSet::new()),
-            prompt: Arc::new(Default::default()),
+            prompt: Arc::new(maho_omo_memory::prompt::MemoryPromptHandler::persistent()),
             static_options: Mutex::new(None),
         }))
     }
@@ -644,9 +669,11 @@ impl MemoryRuntime {
                 .map_err(|error| error.to_string())
             })),
             warn: self.host.warn.clone(),
-            spawner: Some(crate::cli::facts_child::CliFactsChildSpawner::from_agent_dir(
-                self.host.agent_dir.to_string_lossy().into_owned(),
-            )),
+            spawner: Some(
+                crate::cli::facts_child::CliFactsChildSpawner::from_agent_dir(
+                    self.host.agent_dir.to_string_lossy().into_owned(),
+                ),
+            ),
         };
         let this = self.clone();
         Ok(MemoryRuntimeWiring::native_facts_options(
@@ -837,7 +864,7 @@ impl MemoryRuntime {
         });
         let this = self.clone();
         let refresh = Arc::new(
-            move |identity: &MemoryIdentityContext, context: &ExtensionContext| {
+            move |identity: &MemoryIdentityContext, context: &ExtensionContext, _sync: Option<&maho_omo_memory::sync_status_surface::SyncStatusReader>| {
                 this.refresh_status(identity, context, StatusRefresh::Footer)
             },
         );
@@ -912,6 +939,7 @@ impl MemoryRuntime {
                 resolve_session: writes,
                 on_memory_write: on_write,
                 refresh_status: refresh,
+                sync_status: None,
             },
             skills_usage: maho_omo_memory::skills_usage_wiring::SkillsUsageOptions {
                 resolve_context: skills,
@@ -975,6 +1003,7 @@ impl MemoryRuntime {
                 now_ms: memory_core::support::time::now_millis(),
                 show_footer: context.has_ui,
                 check_advisory: mode == StatusRefresh::Initial,
+                sync_status: None,
                 session_id: Some(context.session_manager.session_id()),
             },
         )
