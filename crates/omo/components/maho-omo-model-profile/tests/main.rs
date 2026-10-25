@@ -5,8 +5,14 @@
 pub mod builtin_profiles;
 #[path = "chain_provider_ids.rs"]
 pub mod chain_provider_ids;
+#[path = "custom_providers.rs"]
+pub mod custom_providers;
+#[path = "describe.rs"]
+pub mod describe;
 #[path = "index.rs"]
 pub mod index;
+#[path = "models_json.rs"]
+pub mod models_json;
 #[path = "request_auth.rs"]
 pub mod request_auth;
 #[path = "resolve.rs"]

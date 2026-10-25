@@ -21,6 +21,6 @@ maho-ext-api = { path = "../../../maho-ext-api" }
 maho-tui = { path = "../../../maho-tui" }
 omo-config-core = { package = "maho-omo-config-core", path = "../../omo-config-core" }
 memory-core = { package = "maho-memory-core", path = "../../memory-core" }
-reqwest = { workspace = true, features = ["json", "rustls-tls"] }
-base64.workspace = true
+maho-omo-agent-home = { path = "../maho-omo-agent-home" }
 
+base64.workspace = true

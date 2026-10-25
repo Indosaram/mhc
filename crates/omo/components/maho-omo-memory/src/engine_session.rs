@@ -16,7 +16,8 @@ pub fn prepare_memory_engine_session(identity:&str,paths:&MemoryIdentityPaths,op
     crate::context::ensure_identity_runtime_dirs(paths).map_err(|error|MemoryToolError::new(error.to_string()))?;
     let repo=GitMemoryRepo::open(&paths.repo,identity).map_err(|error|MemoryToolError::new(error.to_string()))?;
     let lock=MemoryWriterLock{identity:identity.into(),path:memory_writer_lock_path(&paths.locks),wait_timeout_ms:options.lock_wait_timeout_ms.unwrap_or(5000),retry_delay_ms:options.lock_retry_delay_ms};
-    if !paths.repo.join(".git").exists(){lock.run("memory-write",||{if !paths.repo.join(".git").exists(){repo.init(InitializeGitRepoOptions{seed_files:memory_core::seeds::seeds::build_default_seed_files().into_iter().map(|seed|GitSeedFile{relative_path:seed.relative_path,content:seed.content}).collect(),install_hooks:Some(Arc::new(|dir|memory_core::memfs::install_hooks(dir).map(|_|()).map_err(GitError::Io))),..Default::default()})?;}Ok::<_,GitError>(())})?;}
+    if !paths.repo.join(".git").exists(){lock.run("memory-write",||{if !paths.repo.join(".git").exists(){repo.init(InitializeGitRepoOptions{seed_files:memory_core::seeds::seeds::build_default_seed_files().into_iter().map(|seed|GitSeedFile{relative_path:seed.relative_path,content:seed.content}).collect(),install_hooks:Some(Arc::new(|dir|crate::worker::spawn_supervisor_support::install_memory_hooks(dir).map(|_|()).map_err(GitError::Io))),..Default::default()})?;}Ok::<_,GitError>(())})?;}
+    crate::worker::spawn_supervisor_support::install_memory_hooks(&paths.repo).map_err(|error|MemoryToolError::new(error.to_string()))?;
     Ok(MemoryEngineSession{repo,lock,author:GitCommitAuthor{agent_id:identity.into(),author_name:identity.into(),author_email:None}})
 }
 #[cfg(test)]

@@ -17,6 +17,8 @@ pub struct LockRecord {
     pub purpose: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_activity_lock: Option<bool>,
 }
 
 /// Optional configuration for creating a lock record.
@@ -98,6 +100,8 @@ pub fn parse_lock_record(content: &str) -> Option<LockRecord> {
         created_at: created_at.to_string(),
         purpose: purpose.to_string(),
         run_id,
+        git_activity_lock: (obj.get("git_activity_lock") == Some(&serde_json::Value::Bool(true)))
+            .then_some(true),
     })
 }
 
@@ -125,6 +129,7 @@ pub fn create_lock_record(
         created_at,
         purpose: purpose.to_string(),
         run_id: options.run_id,
+        git_activity_lock: super::os_file_lock::os_file_lock_available().then_some(true),
     })
 }
 

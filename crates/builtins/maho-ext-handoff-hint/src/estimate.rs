@@ -16,7 +16,7 @@ pub struct HandoffEstimate {
 /// else plain input. Uses the model's own cost card, tiers included.
 fn cold_prompt_usd(model: &Model, tokens: u64, at_ms: i64) -> f64 {
     let writes = cost_card_at(&model.cost, at_ms).cache_write > 0.0;
-    let mut usage = Usage {
+    let mut usage = Usage { context_usage: None,
         input: if writes { 0 } else { tokens },
         cache_write: if writes { tokens } else { 0 },
         total_tokens: tokens,

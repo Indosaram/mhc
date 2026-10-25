@@ -114,6 +114,11 @@ fn record_for(input: &DagDefinition) -> DagRunRecordV1 {
         amend_history: None,
         lease_holder_pid: None,
         previous_lease_holder_pid: None,
+        guidance: None,
+        retry_on_resume: None,
+        cancel_requested_nodes: None,
+        paused_child_acks: None,
+        pause: None,
     }
 }
 
@@ -152,6 +157,7 @@ fn fixture(input: DagDefinition, concurrency: usize) -> Fixture {
         pre_attached_tasks: None,
         schedule_retry: None,
         now: None,
+        resume_credential: None,
     })
     .expect("scheduler");
     Fixture {
@@ -760,6 +766,7 @@ fn scheduler_dispatch_resolves_the_configured_execution_mode() {
         pre_attached_tasks: None,
         schedule_retry: None,
         now: None,
+        resume_credential: None,
     })
     .unwrap();
     scheduler.set_task_port(Arc::clone(&manager) as Arc<dyn TestTaskPort>);
@@ -1071,6 +1078,7 @@ fn given_preattached_task_then_it_settles_without_new_start() {
         pre_attached_tasks: Some([(String::from("attached"), task_id)].into()),
         schedule_retry: None,
         now: None,
+        resume_credential: None,
     })
     .unwrap();
     scheduler.set_task_port(Arc::clone(&manager) as Arc<dyn TestTaskPort>);
@@ -1153,6 +1161,7 @@ fn given_spawn_policy_denies_agent_node_then_no_task_is_started_and_node_fails()
         pre_attached_tasks: None,
         schedule_retry: None,
         now: None,
+        resume_credential: None,
     })
     .unwrap();
     let result = scheduler.run().unwrap();
@@ -1443,6 +1452,7 @@ fn configured_subscriber_ring_overflows_at_its_bound() {
         pre_attached_tasks: None,
         schedule_retry: None,
         now: None,
+        resume_credential: None,
     })
     .unwrap();
     let manager = FakeTaskManager::new(FakeOptions {

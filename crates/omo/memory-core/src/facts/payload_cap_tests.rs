@@ -13,6 +13,7 @@ fn test_envelope() -> FactsPayloadEnvelope {
     FactsPayloadEnvelope {
         agreement_event_version: None,
         version: 1,
+            agreement_event_version: Some(1),
         identity: "facts-agent".to_string(),
         today: "2026-08-16".to_string(),
         known_people: Vec::new(),

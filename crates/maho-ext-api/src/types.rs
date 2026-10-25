@@ -612,6 +612,7 @@ pub struct ProviderModelConfig {
 }
 #[derive(Clone, Default)]
 pub struct ProviderConfig {
+    pub owns_account_selection: bool,
     pub ambient_auth: Option<Arc<dyn maho_ai::auth::types::ApiKeyAuth>>,
     pub images: BTreeMap<String, Arc<dyn maho_ai::types::ProviderImages>>,
     pub classifiers: BTreeMap<String, Arc<dyn maho_ai::types::ProviderClassifier>>,
@@ -849,7 +850,12 @@ pub enum EventKind {
     SessionCompact,
     SessionCompactFailed,
     SessionShutdown,
+    SessionMoveExport,
+    SessionMoveImport,
     SessionAbort,
+    SessionMoveExport,
+    SessionMoveImport,
+    SessionHoldChanged,
     SessionExtensionsRemoved,
     SessionBeforeTree,
     SessionTree,
@@ -886,7 +892,7 @@ pub enum EventKind {
     HeldWakesReleased,
 }
 impl EventKind {
-    pub const ALL: [Self; 48] = [
+    pub const ALL: [Self; 53] = [
         Self::ProjectTrust,
         Self::ResourcesDiscover,
         Self::SessionStart,
@@ -900,7 +906,12 @@ impl EventKind {
         Self::SessionCompact,
         Self::SessionCompactFailed,
         Self::SessionShutdown,
+        Self::SessionMoveExport,
+        Self::SessionMoveImport,
         Self::SessionAbort,
+        Self::SessionMoveExport,
+        Self::SessionMoveImport,
+        Self::SessionHoldChanged,
         Self::SessionExtensionsRemoved,
         Self::SessionBeforeTree,
         Self::SessionTree,
@@ -950,8 +961,13 @@ impl EventKind {
             Self::SessionBeforeCompact => "session_before_compact",
             Self::SessionCompact => "session_compact",
             Self::SessionCompactFailed => "session_compact_failed",
+            Self::SessionMoveExport => "session_move_export",
+            Self::SessionMoveImport => "session_move_import",
             Self::SessionShutdown => "session_shutdown",
             Self::SessionAbort => "session_abort",
+            Self::SessionMoveExport => "session_move_export",
+            Self::SessionMoveImport => "session_move_import",
+            Self::SessionHoldChanged => "session_hold_changed",
             Self::SessionExtensionsRemoved => "session_extensions_removed",
             Self::SessionBeforeTree => "session_before_tree",
             Self::SessionTree => "session_tree",
@@ -1383,6 +1399,9 @@ pub trait SessionManager: ToolSessionManager {
     }
     fn get_leaf_id(&self) -> Option<String>;
     fn get_session_name(&self) -> Option<String>;
+    fn is_child_session(&self) -> bool {
+        self.fork_provenance().is_some()
+    }
     fn fork_provenance(&self) -> Option<ForkProvenance> {
         None
     }
@@ -1632,6 +1651,18 @@ pub trait ExtensionContextActions: Send + Sync {
     }
     /// Records a wake that was held rather than delivered.
     fn note_held_wake(&self, _source: &str) {}
+    fn get_pause_state(&self) -> JsonValue {
+        serde_json::json!({"pauseSeq": 0, "holds": []})
+    }
+    fn fence_run(&self, _run_ref: JsonValue) -> Result<(), ExtensionFailure> {
+        Err(ExtensionFailure::new("Run fencing is unavailable"))
+    }
+    fn supports_release_run_fence(&self) -> bool {
+        false
+    }
+    fn release_run_fence(&self, _run_ref: JsonValue) -> Result<(), ExtensionFailure> {
+        Err(ExtensionFailure::new("Run fence release is unavailable"))
+    }
     /// Runs a registered child module; `None` when no session backs this context.
     fn offload(
         &self,
@@ -1655,6 +1686,13 @@ pub trait ExtensionContextActions: Send + Sync {
     }
     fn abort(&self, source: Option<AbortSource>);
     fn has_pending_messages(&self) -> bool;
+    /// Person input releases holds; extension-originated messages do not.
+    fn has_queued_person_input(&self) -> bool {
+        false
+    }
+    fn todo_turn_end_backstop_enabled(&self) -> bool {
+        true
+    }
     fn request_reload(&self) -> ExtensionFuture<'_, ()>;
     fn is_compacting(&self) -> bool;
     fn check_reload_veto(&self) -> ExtensionFuture<'_, ReloadVetoDecision>;
@@ -1952,6 +1990,11 @@ pub struct CustomUiOptions {
     pub overlay_options: Option<JsonValue>,
 }
 pub trait ExtensionUi: Send + Sync {
+    /// Optional footer capability; unsupported engines must not trigger a tree scan.
+    fn supports_subagent_cost(&self) -> bool {
+        false
+    }
+    fn set_subagent_cost(&self, _cost: Option<f64>) {}
     fn actions(&self) -> Option<&dyn ExtensionUiActions> {
         None
     }
@@ -2155,6 +2198,7 @@ pub trait ExtensionUi: Send + Sync {
     ) -> UiFuture<'a, Option<String>>;
     fn notify(&self, message: &str, kind: NotificationType);
     fn set_status(&self, key: &str, text: Option<&str>);
+    fn set_subagent_cost(&self, _cost_usd: Option<f64>) {}
     fn set_widget(
         &self,
         key: &str,
@@ -2303,6 +2347,15 @@ impl ExtensionContext {
             None => false,
         })
     }
+    pub fn get_pause_state(&self) -> Result<JsonValue, ExtensionFailure> {
+        Ok(self.actions()?.get_pause_state())
+    }
+    pub fn fence_run(&self, run_ref: JsonValue) -> Result<(), ExtensionFailure> {
+        self.actions()?.fence_run(run_ref)
+    }
+    pub fn release_run_fence(&self, run_ref: JsonValue) -> Result<(), ExtensionFailure> {
+        self.actions()?.release_run_fence(run_ref)
+    }
     pub fn note_held_wake(&self, source: &str) -> Result<(), ExtensionFailure> {
         if let Some(actions) = self.session_manager.extension_context_actions() {
             actions.assert_active()?;
@@ -2399,6 +2452,12 @@ impl ExtensionContext {
     pub fn abort(&self, source: Option<AbortSource>) -> Result<(), ExtensionFailure> {
         self.actions()?.abort(source);
         Ok(())
+    }
+    pub fn has_queued_person_input(&self) -> Result<bool, ExtensionFailure> {
+        Ok(self.actions()?.has_queued_person_input())
+    }
+    pub fn todo_turn_end_backstop_enabled(&self) -> Result<bool, ExtensionFailure> {
+        Ok(self.actions()?.todo_turn_end_backstop_enabled())
     }
     pub fn has_pending_messages(&self) -> Result<bool, ExtensionFailure> {
         Ok(self.actions()?.has_pending_messages())
@@ -2676,13 +2735,21 @@ pub struct BeforeAgentStartEvent {
     pub system_prompt: String,
     pub system_prompt_options: BuildSystemPromptOptions,
 }
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DynamicSystemPromptPart {
+    pub name: String,
+    pub source: Option<String>,
+    pub text: String,
+}
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BeforeAgentStartEventResult {
+    pub system_prompt_parts: Option<Vec<DynamicSystemPromptPart>>,
     pub message: Option<CustomMessage>,
     pub system_prompt: Option<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BeforeAgentStartCombinedResult {
+    pub system_prompt_parts: Option<Vec<DynamicSystemPromptPart>>,
     pub messages: Vec<CustomMessage>,
     pub system_prompt: Option<String>,
 }
@@ -2933,6 +3000,17 @@ pub enum SessionCompactEvent {
 /// payloads whose upstream contracts are open records or owned by a subsequent session port.
 #[derive(Clone, Debug)]
 pub enum ExtensionEvent {
+    SessionMoveExport {
+        move_id: String,
+        dir: String,
+        signal: AbortSignal,
+    },
+    SessionMoveImport {
+        move_id: String,
+        dir: String,
+        redelivered: bool,
+        signal: AbortSignal,
+    },
     ProjectTrust {
         cwd: PathBuf,
     },
@@ -2963,6 +3041,22 @@ pub enum ExtensionEvent {
     },
     SessionShutdown(SessionShutdownEvent),
     SessionAbort,
+    SessionMoveExport {
+        move_id: String,
+        dir: PathBuf,
+        signal: AbortSignal,
+    },
+    SessionMoveImport {
+        move_id: String,
+        dir: PathBuf,
+        redelivered: bool,
+        signal: AbortSignal,
+    },
+    SessionHoldChanged {
+        change: String,
+        pause_seq: u64,
+        holds: Vec<JsonValue>,
+    },
     SessionExtensionsRemoved {
         reason: SessionReason,
         removed: Vec<ExtensionIdentity>,
@@ -3102,6 +3196,8 @@ pub enum ExtensionEvent {
 impl ExtensionEvent {
     pub const fn kind(&self) -> EventKind {
         match self {
+            Self::SessionMoveExport { .. } => EventKind::SessionMoveExport,
+            Self::SessionMoveImport { .. } => EventKind::SessionMoveImport,
             Self::ProjectTrust { .. } => EventKind::ProjectTrust,
             Self::ResourcesDiscover(_) => EventKind::ResourcesDiscover,
             Self::SessionStart(_) => EventKind::SessionStart,
@@ -3116,6 +3212,9 @@ impl ExtensionEvent {
             Self::SessionCompactFailed { .. } => EventKind::SessionCompactFailed,
             Self::SessionShutdown(_) => EventKind::SessionShutdown,
             Self::SessionAbort => EventKind::SessionAbort,
+            Self::SessionMoveExport { .. } => EventKind::SessionMoveExport,
+            Self::SessionMoveImport { .. } => EventKind::SessionMoveImport,
+            Self::SessionHoldChanged { .. } => EventKind::SessionHoldChanged,
             Self::SessionExtensionsRemoved { .. } => EventKind::SessionExtensionsRemoved,
             Self::SessionBeforeTree { .. } => EventKind::SessionBeforeTree,
             Self::SessionTree { .. } => EventKind::SessionTree,
@@ -3863,7 +3962,57 @@ pub enum UserMessageContent {
     Text(String),
     Blocks(Vec<ToolContent>),
 }
+#[derive(Clone, Debug)]
+pub struct SendMessageItem {
+    pub item_id: String,
+    pub producer: String,
+    pub run_ref: Option<JsonValue>,
+    pub content: Option<Vec<ToolContent>>,
+    pub details: Option<JsonValue>,
+}
+#[derive(Clone, Debug)]
+pub struct SendMessageReceipt {
+    pub item_id: String,
+    pub disposition: String,
+    pub notice_id: Option<String>,
+    pub entry_id: String,
+}
+
 pub trait ExtensionActions: Send + Sync {
+    fn lifecycle(&self) -> Result<Arc<dyn crate::LifecycleApi>, ExtensionFailure> {
+        Err(ExtensionFailure::new(
+            "Extension lifecycle is not bound to a session",
+        ))
+    }
+    fn send_itemized_message(
+        &self,
+        message: CustomMessage,
+        options: SendMessageOptions,
+        _items: Vec<SendMessageItem>,
+    ) -> ExtensionFuture<'_, Option<Vec<SendMessageReceipt>>> {
+        Box::pin(async move {
+            self.send_message(message, options)?;
+            Ok(None)
+        })
+    }
+    fn arm_tool_barrier(&self, _spec: JsonValue) -> Result<(), ExtensionFailure> {
+        Err(ExtensionFailure::new(
+            "This runtime has no tool barrier (senpi#3717).",
+        ))
+    }
+    fn release_tool_barrier(&self, _id: &str) -> Result<bool, ExtensionFailure> {
+        Ok(false)
+    }
+    fn relocation_offered(&self) -> Result<bool, ExtensionFailure> {
+        Ok(false)
+    }
+    fn relocation_targets(&self) -> ExtensionFuture<'_, JsonValue> {
+        Box::pin(async { Err(ExtensionFailure::new("Session relocation is not bound")) })
+    }
+    fn request_relocation(&self, _request: JsonValue) -> ExtensionFuture<'_, JsonValue> {
+        Box::pin(async { Err(ExtensionFailure::new("Session relocation is not bound")) })
+    }
+
     fn send_message(
         &self,
         message: CustomMessage,
@@ -3977,7 +4126,72 @@ pub struct ExecResult {
 
 /// Additive session actions keep the original ExtensionActions implementors source-compatible.
 /// Hosts bind these separately; an unbound capability fails explicitly, never silently succeeds.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelocationTarget {
+    pub name: String,
+    pub online: bool,
+    pub capacity: Option<String>,
+    pub about_to_sleep: Option<bool>,
+}
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "status", rename_all = "lowercase")]
+pub enum RelocationTargetsResult {
+    Listed { targets: Vec<RelocationTarget> },
+    Unavailable { reason: String, detail: String },
+    Refused { reason: String, detail: String },
+}
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "status", rename_all = "lowercase")]
+pub enum RelocationRequestResult {
+    Scheduled {
+        target: String,
+        #[serde(rename = "moveId")]
+        move_id: String,
+    },
+    Unavailable {
+        reason: String,
+        detail: String,
+    },
+    Refused {
+        reason: String,
+        detail: String,
+    },
+}
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RelocationRequest {
+    pub target: String,
+    pub reason: String,
+}
 pub trait ExtensionSessionActions: Send + Sync {
+    fn relocation_offered(&self) -> bool {
+        false
+    }
+    fn relocation_targets(
+        &self,
+        _signal: AbortSignal,
+    ) -> ExtensionFuture<'_, RelocationTargetsResult> {
+        Box::pin(async {
+            Ok(RelocationTargetsResult::Unavailable {
+                reason: "not_offered".into(),
+                detail: "no app connected to this session offers moving it to another computer"
+                    .into(),
+            })
+        })
+    }
+    fn request_relocation(
+        &self,
+        _request: RelocationRequest,
+        _signal: AbortSignal,
+    ) -> ExtensionFuture<'_, RelocationRequestResult> {
+        Box::pin(async {
+            Ok(RelocationRequestResult::Unavailable {
+                reason: "not_offered".into(),
+                detail: "no app connected to this session offers moving it to another computer"
+                    .into(),
+            })
+        })
+    }
     fn set_session_name(&self, name: &str) -> Result<(), ExtensionFailure>;
     fn get_session_name(&self) -> Result<Option<String>, ExtensionFailure>;
     fn set_label(&self, entry_id: &str, label: Option<&str>) -> Result<(), ExtensionFailure>;
@@ -6182,6 +6396,39 @@ impl ExtensionApi {
                     self.registered.filesystem_policies.clone(),
                 );
         }
+    }
+    pub fn lifecycle(&self) -> crate::LazyLifecycleApi {
+        let runtime = self.runtime.clone();
+        crate::create_lifecycle_api(move || runtime.actions()?.lifecycle())
+    }
+    pub async fn send_itemized_message(
+        &self,
+        message: CustomMessage,
+        options: SendMessageOptions,
+        items: Vec<SendMessageItem>,
+    ) -> Result<Option<Vec<SendMessageReceipt>>, ExtensionFailure> {
+        self.runtime
+            .actions()?
+            .send_itemized_message(message, options, items)
+            .await
+    }
+    pub fn arm_tool_barrier(&self, spec: JsonValue) -> Result<(), ExtensionFailure> {
+        self.runtime.actions()?.arm_tool_barrier(spec)
+    }
+    pub fn release_tool_barrier(&self, id: &str) -> Result<bool, ExtensionFailure> {
+        self.runtime.actions()?.release_tool_barrier(id)
+    }
+    pub fn relocation_offered(&self) -> Result<bool, ExtensionFailure> {
+        self.runtime.actions()?.relocation_offered()
+    }
+    pub async fn relocation_targets(&self) -> Result<JsonValue, ExtensionFailure> {
+        self.runtime.actions()?.relocation_targets().await
+    }
+    pub async fn request_relocation(
+        &self,
+        request: JsonValue,
+    ) -> Result<JsonValue, ExtensionFailure> {
+        self.runtime.actions()?.request_relocation(request).await
     }
     pub fn send_message(
         &self,

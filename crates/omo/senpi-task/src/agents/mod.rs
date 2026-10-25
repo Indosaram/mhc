@@ -6,6 +6,7 @@ mod loader;
 mod policy;
 mod resolve;
 mod schema;
+mod task_agents;
 mod tools;
 mod types;
 
@@ -26,6 +27,7 @@ pub use resolve::{
     AgentExecutionMode, AgentPersona, AgentResolutionResult, ResolveAgentOptions, ResolvedAgent,
     resolve_agent,
 };
+pub use task_agents::resolve_task_agents;
 pub use tools::{normalize_tool_rules, resolve_tool_rule};
 pub use types::{
     AgentDefinition, AgentLoaderDiagnostic, AgentLoaderDiagnosticKind, AgentModelCandidate,

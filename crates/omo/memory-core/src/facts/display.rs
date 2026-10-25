@@ -61,7 +61,10 @@ pub fn render_claim_receipt(receipt: &ClaimReceipt) -> String {
 pub fn fact_display_text(record: &FactsExtractionRecord) -> String {
     let text = strip_receipt_suffix(record.text());
     match record.receipt() {
-        Some(receipt) => format!("{text} (source: {})", render_claim_receipt(receipt)),
+        Some(value) => match parse_claim_receipt(value) {
+            Some(receipt) => format!("{text} (source: {})", render_claim_receipt(&receipt)),
+            None => text,
+        },
         None => text,
     }
 }
@@ -75,50 +78,12 @@ pub fn strip_receipt_suffix(content: &str) -> String {
         .to_string()
 }
 
-/// Preserve a live provenance header on an edit, downgrading recorded user words to mixed.
-/// Frontmatter in the current Rust model has no extra-field bag, so stamp the rendered header.
 pub fn stamp_receipt(previous: Option<&str>, rendered: String) -> String {
-    let Some(prior) = previous.and_then(read_header) else {
-        return rendered;
-    };
-    if prior.starts_with("user said ") {
-        return rendered;
-    }
-    let header = if prior.starts_with("user replied ") {
-        "mixed: parts of this note are not the user's recorded words"
-    } else {
-        &prior
-    };
-    let line = format!(
-        "provenance: {}\n",
-        serde_json::to_string(header).expect("string serialization")
-    );
-    if let Some(at) = rendered[4..].find("\n---") {
-        let at = at + 5;
-        format!("{}{}{}", &rendered[..at], line, &rendered[at..])
-    } else {
-        rendered
-    }
+    crate::tools::claim_frontmatter::restamp_content(previous, &rendered, None)
+        .expect("rendered memory frontmatter")
 }
-
-pub fn read_header(content: &str) -> Option<String> {
-    let rest = content
-        .strip_prefix("---\n")
-        .or_else(|| content.strip_prefix("---\r\n"))?;
-    for line in rest.lines().take_while(|line| *line != "---") {
-        if let Some(raw) = line.strip_prefix("provenance:") {
-            let raw = raw.trim();
-            return Some(serde_json::from_str::<String>(raw).unwrap_or_else(|_| raw.to_string()));
-        }
-    }
-    None
-}
-
 pub fn stripped_legacy_user_header(before: Option<&str>, after: &str) -> bool {
-    before
-        .and_then(read_header)
-        .is_some_and(|h| h.starts_with("user said "))
-        && !read_header(after).is_some_and(|h| h.starts_with("user said "))
+    crate::tools::claim_frontmatter::stripped_legacy_user_header(before, after)
 }
 
 #[cfg(test)]

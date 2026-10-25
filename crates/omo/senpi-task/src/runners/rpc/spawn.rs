@@ -230,7 +230,11 @@ pub fn build_child_args(spec: &RpcRunnerSpec) -> Vec<String> {
     if let Some(level) = as_senpi_thinking_level(reasoning) {
         args.extend(["--thinking".to_string(), level.as_str().to_string()]);
     }
-    if let Some(preset) = spec.permission_preset.as_deref().filter(|preset| !preset.is_empty()) {
+    if let Some(preset) = spec
+        .permission_preset
+        .as_deref()
+        .filter(|preset| !preset.is_empty())
+    {
         args.extend(["--permission-preset".to_string(), preset.to_string()]);
     }
     args
@@ -259,6 +263,8 @@ fn push_extensions(args: &mut Vec<String>, extensions: &[String]) {
 
 /// The env/extension preamble shared by the real child and the catalog probe: member identity is
 /// stripped before explicit `member_env` applies, and the session dir is always ours.
+pub const TRACEPARENT_ENV: &str = "OMO_SENPI_TASK_TRACEPARENT";
+
 fn build_child_profile(
     spec: &RpcRunnerSpec,
     runtime: &RpcSpawnRuntime,
@@ -269,6 +275,10 @@ fn build_child_profile(
     }
     if let Some(member_env) = &spec.member_env {
         env.extend(member_env.clone());
+    }
+    env.remove(TRACEPARENT_ENV);
+    if let Some(traceparent) = &spec.traceparent {
+        env.insert(TRACEPARENT_ENV.to_string(), traceparent.clone());
     }
     env.insert(
         SESSION_DIR_ENV.to_string(),

@@ -67,3 +67,36 @@ use crate::support;
 #[test] fn truncated_unrelated_block_does_not_arm_plan_from_body() { let tracker=SkillInvocationTracker::new().expect("tracker"); tracker.input("a","<skill name=\"review-work\">Pairs with ulw-plan. make a plan first",InputSource::Interactive); let state=tracker.state_for("a"); assert!(state.has_invoked("review-work")); assert!(!state.has_invoked("ulw-plan")); assert!(!state.has_user_requested("ulw-plan")); }
 #[test] fn windows_plan_path_normalizes_and_failed_touch_is_not_counted() { let tracker=SkillInvocationTracker::new().expect("tracker"); let input=json!({"path":"C:\\repo\\.omo\\plans\\a.md"}); tracker.tool_result("a","write",&input,true); assert!(!tracker.state_for("a").has_plan_artifact()); tracker.tool_result("a","write",&input,false); assert_eq!(tracker.state_for("a").plan_artifact_references()[0].path,"C:/repo/.omo/plans/a.md"); }
 #[test] fn planning_noun_without_request_does_not_arm_gate() { let tracker=SkillInvocationTracker::new().expect("tracker"); tracker.input("a","승인은 계획 작성까지만 허가",InputSource::Interactive); assert!(!tracker.state_for("a").has_user_requested("ulw-plan")); }
+
+fn persisted(data: serde_json::Value) -> maho_ext_api::SessionEntry { maho_ext_api::SessionEntry { id: "entry".into(), parent_id: None, timestamp: String::new(), kind: "message".into(), data } }
+#[test] fn replay_trusts_only_entry_level_human_sources() {
+    for source in [json!(null), json!("extension"), json!("forged"), json!("Interactive")] {
+        let tracker = SkillInvocationTracker::new().unwrap();
+        tracker.replay("replay-trust", &[persisted(json!({"inputSource":source,"message":{"role":"user","inputSource":"interactive","content":"/skill:ulw-plan"}}))]);
+        assert!(!tracker.state_for("replay-trust").has_user_requested("ulw-plan"));
+    }
+    for source in ["interactive", "rpc"] {
+        let tracker = SkillInvocationTracker::new().unwrap();
+        tracker.replay("replay-human", &[persisted(json!({"inputSource":source,"message":{"role":"user","content":[{"type":"text","text":"make a plan first"}]}}))]);
+        assert!(tracker.state_for("replay-human").has_user_requested("ulw-plan"));
+    }
+}
+#[test] fn replay_pairs_successful_tools_and_rebuilds_touches_idempotently() {
+    let tracker = SkillInvocationTracker::new().unwrap();
+    tracker.input("replay-tools", "/skill:ulw-plan", InputSource::Interactive);
+    let entries = vec![
+        persisted(json!({"message":{"role":"assistant","content":[{"type":"toolCall","id":"read","name":"read","arguments":{"path":"/repo/skills/ulw-execute/SKILL.md"}},{"type":"toolCall","id":"plan","name":"write","arguments":{"path":".omo/plans/a.md"}}]}})),
+        persisted(json!({"message":{"role":"toolResult","toolCallId":"read","isError":false}})),
+        persisted(json!({"message":{"role":"toolResult","toolCallId":"plan","isError":false}})),
+        persisted(json!({"message":{"role":"toolResult","toolCallId":"missing","isError":false}})),
+    ];
+    for _ in 0..2 {
+        tracker.replay("replay-tools", &entries);
+        let state = tracker.state_for("replay-tools");
+        assert!(state.has_user_requested("ulw-plan")); assert!(state.has_invoked("ulw-execute"));
+        assert_eq!(state.plan_artifact_references()[0].count, 1);
+    }
+    let failed = SkillInvocationTracker::new().unwrap();
+    failed.replay("failed-replay", &[entries[0].clone(), persisted(json!({"message":{"role":"toolResult","toolCallId":"plan","isError":true}}))]);
+    assert!(!failed.state_for("failed-replay").has_plan_artifact());
+}

@@ -131,7 +131,7 @@ impl Extension for ImageGen {
                             auth::ImageGenAuthResolution::Configured { .. }
                         )
                     {
-                        return Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult {
+                        return Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt_parts: None,
                             message: None,
                             system_prompt: Some(format!(
                                 "{}\n{}",

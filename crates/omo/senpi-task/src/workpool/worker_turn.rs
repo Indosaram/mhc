@@ -150,7 +150,7 @@ pub fn begin_worker_turn(
         let mut next = pool.clone();
         for item in &mut next.items {
             if belongs_to_turn(item, turn) && item.status == WorkpoolItemStatus::Assigned {
-                item.delivery = Some(WorkpoolDelivery { phase: WorkpoolDeliveryPhase::Dispatching, message_sha256: Some(digest.clone()) });
+                item.delivery = Some(WorkpoolDelivery { phase: WorkpoolDeliveryPhase::Dispatching, message_sha256: Some(digest.clone()), entry_ids: Some(entries.iter().map(|entry| entry.id.clone()).collect()) });
             }
         }
         captured = Some(WorkerTurnPrompt { entries, message });
@@ -165,8 +165,21 @@ pub fn acknowledge_worker_turn(
     turn: &WorkerTurn,
     entries: &[PendingSteeringEntry],
 ) -> Result<(), WorkpoolError> {
-    if !entries.is_empty() {
-        let ids: std::collections::BTreeSet<_> = entries.iter().map(|entry| entry.id.as_str()).collect();
+    acknowledge_worker_turn_with_entries(pools, tasks, turn, Some(entries))
+}
+
+pub fn acknowledge_worker_turn_with_entries(
+    pools: &WorkpoolStore, tasks: &TaskRecordStore, turn: &WorkerTurn,
+    entries: Option<&[PendingSteeringEntry]>,
+) -> Result<(), WorkpoolError> {
+    let ids: std::collections::BTreeSet<String> = if let Some(entries) = entries {
+        entries.iter().map(|entry| entry.id.clone()).collect()
+    } else {
+        pools.load(&turn.0)?.items.iter().find(|item| belongs_to_turn(item, turn))
+            .and_then(|item| item.delivery.as_ref()).and_then(|delivery| delivery.entry_ids.clone())
+            .unwrap_or_default().into_iter().collect()
+    };
+    if !ids.is_empty() {
         tasks
             .mutate(&turn.2, |record| {
                 if record.notification.run_epoch != i64::from(turn.3) {
@@ -197,6 +210,7 @@ pub fn acknowledge_worker_turn(
                 item.delivery = Some(WorkpoolDelivery {
                     phase: WorkpoolDeliveryPhase::Acknowledged,
                     message_sha256: item.delivery.as_ref().and_then(|delivery| delivery.message_sha256.clone()),
+                    entry_ids: item.delivery.as_ref().and_then(|delivery| delivery.entry_ids.clone()),
                 });
             }
         }
@@ -236,7 +250,7 @@ mod tests {
             let mut next = pool.clone();
             next.items.push(WorkpoolItem { item_id: "assignment".into(), key: "key".into(), input: json!({"value":7}), status: WorkpoolItemStatus::Assigned,
                 binding: Some(WorkpoolBinding { task_id: task.task_id.clone(), run_epoch: 0, generation: pool.generation }),
-                delivery: Some(WorkpoolDelivery { phase: WorkpoolDeliveryPhase::Queued, message_sha256: None }), data: None, error: None, yield_sha256: None });
+                delivery: Some(WorkpoolDelivery { phase: WorkpoolDeliveryPhase::Queued, message_sha256: None, entry_ids: None }), data: None, error: None, yield_sha256: None });
             next
         }).expect("assignment");
         append_assigned_messages(&pools, &tasks, &turn).expect("append");
@@ -256,7 +270,9 @@ mod tests {
             next.pending_steering.as_mut().expect("queue").push(PendingSteeringEntry::new("later".into(), "later input".into(), DeliverAs::FollowUp));
             next
         }).expect("later entry");
-        acknowledge_worker_turn(&pools, &tasks, &turn, &captured.entries).expect("ack");
+        acknowledge_worker_turn_with_entries(&pools, &tasks, &turn, Some(&[])).expect("empty explicit ack");
+        assert_eq!(tasks.load(&task.task_id).expect("task").expect("task").pending_steering.as_ref().expect("queue").len(), 2);
+        acknowledge_worker_turn_with_entries(&pools, &tasks, &turn, None).expect("durable fallback ack");
         let remaining = tasks.load(&task.task_id).expect("load").expect("task").pending_steering.expect("remaining");
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id, "later");
@@ -270,7 +286,7 @@ mod tests {
         }).expect("advance epoch");
         pools.mutate(&pool.pool_id, |pool| {
             let mut next = pool.clone();
-            next.items[0].delivery = Some(WorkpoolDelivery { phase: WorkpoolDeliveryPhase::Queued, message_sha256: None });
+            next.items[0].delivery = Some(WorkpoolDelivery { phase: WorkpoolDeliveryPhase::Queued, message_sha256: None, entry_ids: None });
             next
         }).expect("queue old assignment");
         let error = append_assigned_messages(&pools, &tasks, &turn).expect_err("old epoch fenced");

@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use super::fakes::{HarnessOptions, base_spec, default_manager, make_manager, named, started};
-use crate::manager::types::{ManagerStartSpec, ResidencyDeniedCause, SpawnAdmission, StartResult, TaskManagerOptions};
+use crate::manager::types::{
+    ManagerStartSpec, ResidencyDeniedCause, SpawnAdmission, StartResult, TaskManagerOptions,
+};
 
 fn background(spec: ManagerStartSpec, run_in_background: bool) -> ManagerStartSpec {
     ManagerStartSpec {
@@ -25,15 +27,29 @@ fn with_admission(admission: SpawnAdmission) -> super::fakes::Harness {
 fn admission_bookkeeping_error_is_not_a_retryable_capacity_denial() {
     let harness = make_manager(HarnessOptions {
         customize: Some(Box::new(|options| {
-            options.fallible_admit = Some(Arc::new(|_| Err(crate::host::HostError { message: "approval store unavailable".into() })));
+            options.fallible_admit = Some(Arc::new(|_| {
+                Err(crate::host::HostError {
+                    message: "approval store unavailable".into(),
+                })
+            }));
         })),
         ..HarnessOptions::default()
     });
     let result = harness.manager.start(&base_spec());
-    let StartResult::StartFailed(failure) = result else { panic!("expected launch failure"); };
-    assert_eq!(failure.error_message, "host call failed: approval store unavailable");
+    let StartResult::StartFailed(failure) = result else {
+        panic!("expected launch failure");
+    };
+    assert_eq!(
+        failure.error_message,
+        "host call failed: approval store unavailable"
+    );
     assert_eq!(harness.in_process.started_count(), 0);
-    assert!(harness.manager.list(&crate::manager::types::ListScope::All).is_empty());
+    assert!(
+        harness
+            .manager
+            .list(&crate::manager::types::ListScope::All)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -88,7 +104,9 @@ fn given_admit_gate_that_rejects_when_starting_then_residency_denied_and_never_l
         panic!("expected residency_denied, got {result:?}");
     };
     assert!(reason.contains("cap reached"), "{reason}");
-    assert!(matches!(cause, ResidencyDeniedCause::Residents { max_children: None, residents } if residents.is_empty()));
+    assert!(
+        matches!(cause, ResidencyDeniedCause::Residents { max_children: None, residents } if residents.is_empty())
+    );
     assert_eq!(harness.in_process.started_count(), 0);
 }
 
@@ -103,7 +121,9 @@ fn given_residency_denial_when_manager_start_returns_then_cap_and_resident_summa
     let StartResult::ResidencyDenied { cause, .. } = second else {
         panic!("expected residency denial, got {second:?}");
     };
-    assert!(matches!(cause, ResidencyDeniedCause::Residents { max_children: Some(MaxChildren::Number(1)), residents } if residents.len() == 1 && residents[0].task_id == first.task_id));
+    assert!(
+        matches!(cause, ResidencyDeniedCause::Residents { max_children: Some(MaxChildren::Number(1)), residents } if residents.len() == 1 && residents[0].task_id == first.task_id)
+    );
 }
 
 #[test]
@@ -111,17 +131,29 @@ fn given_contended_admission_lease_when_manager_starts_then_denial_cause_is_leas
     // TS `withResidentStart`: the admission lease guards only an admission-gated start.
     let harness = with_admission(SpawnAdmission::Admitted);
     let held = crate::lifecycle::admission_lease::acquire_session_admission_lease(
-        harness.manager.state_dir(), &base_spec().parent_session_id, crate::lifecycle::admission_lease::AdmissionLeaseTimingOverrides {
-            acquire_timeout_ms: Some(0), ..Default::default()
+        harness.manager.state_dir(),
+        &base_spec().parent_session_id,
+        crate::lifecycle::admission_lease::AdmissionLeaseTimingOverrides {
+            acquire_timeout_ms: Some(0),
+            ..Default::default()
         },
-    ).expect("acquire lease");
+    )
+    .expect("acquire lease");
     let held = match held {
         crate::lifecycle::admission_lease::AcquireAdmissionLeaseResult::Acquired(lease) => lease,
-        crate::lifecycle::admission_lease::AcquireAdmissionLeaseResult::Contended => panic!("initial lease must acquire"),
+        crate::lifecycle::admission_lease::AcquireAdmissionLeaseResult::Contended => {
+            panic!("initial lease must acquire")
+        }
     };
     let result = harness.manager.start(&background(base_spec(), true));
     held.release();
-    assert!(matches!(result, StartResult::ResidencyDenied { cause: ResidencyDeniedCause::Lease, .. }));
+    assert!(matches!(
+        result,
+        StartResult::ResidencyDenied {
+            cause: ResidencyDeniedCause::Lease,
+            ..
+        }
+    ));
     assert_eq!(harness.in_process.started_count(), 0);
 }
 

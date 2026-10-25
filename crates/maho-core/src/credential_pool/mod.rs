@@ -11,4 +11,5 @@ pub mod reset_time;
 pub mod rotation_events;
 pub mod rotation_stream;
 pub mod slots;
+pub mod state_file;
 pub mod state_store;

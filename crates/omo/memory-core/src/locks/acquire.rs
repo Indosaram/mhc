@@ -328,6 +328,7 @@ fn recover_dead_owner(
         created_at: crate::support::time::now_iso(),
         purpose: format!("{}:recovery", contender.purpose),
         run_id: contender.run_id.clone(),
+        git_activity_lock: contender.git_activity_lock,
     };
 
     for attempt in 0..2 {
@@ -362,7 +363,15 @@ fn recover_dead_owner(
             return Ok(false);
         }
         match std::fs::remove_file(lock_path) {
-            Ok(()) => Ok(true),
+            Ok(()) => {
+                if let Some(previous) = current.record.filter(is_lock_owner_proven_dead) {
+                    PROVEN_DEAD_TAKEOVERS
+                        .lock()
+                        .expect("takeover proof lock")
+                        .insert(lock_path.to_owned(), (contender.nonce.clone(), previous));
+                }
+                Ok(true)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
             Err(e) => Err(e),
         }
@@ -408,6 +417,7 @@ fn acquire_lock_with_clock(
         );
     }
 
+    let mut previous = None;
     let mut first_attempt = true;
     loop {
         if options.cancellation.map(|f| f()).unwrap_or(false) {
@@ -419,6 +429,13 @@ fn acquire_lock_with_clock(
         let skip_publish = !first_attempt && lock_path.exists();
         first_attempt = false;
         if !skip_publish && publish_exclusive(lock_path, record)? {
+            if let Some(previous) = previous.take() {
+                super::proven_dead_takeovers::remember_proven_dead_takeover(
+                    lock_path,
+                    &record.nonce,
+                    previous,
+                );
+            }
             return Ok(());
         }
 
@@ -426,12 +443,16 @@ fn acquire_lock_with_clock(
             return Err(AcquireLockError::Aborted);
         }
 
+        // A failed publish may have encountered a different acquisition after the recovered
+        // owner. Never carry an earlier takeover's proof across that intervening owner.
+        previous = None;
         let owner = match read_owner(lock_path)? {
             Some(o) => o,
             None => continue,
         };
 
         if recover_dead_owner(lock_path, &owner, record, now())? {
+            previous = owner.record.filter(is_lock_owner_proven_dead);
             continue;
         }
 
@@ -490,6 +511,7 @@ pub fn release_lock<N: LockNonce + ?Sized>(
     lock_path: &Path,
     nonce_source: &N,
 ) -> Result<bool, std::io::Error> {
+    super::proven_dead_takeovers::forget_proven_dead_takeover(lock_path, nonce_source.nonce());
     let owner = match read_owner(lock_path)? {
         Some(o) => o,
         None => return Ok(false),
@@ -568,3 +590,16 @@ where
 #[cfg(test)]
 #[path = "acquire_tests.rs"]
 mod tests;
+
+// Bound to the contender nonce, so releasing and reacquiring never reuses a dead-owner proof.
+static PROVEN_DEAD_TAKEOVERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, (String, LockRecord)>>,
+> = std::sync::LazyLock::new(Default::default);
+pub fn proven_dead_takeover_for(path: &Path, nonce: &str) -> Option<LockRecord> {
+    PROVEN_DEAD_TAKEOVERS
+        .lock()
+        .expect("takeover proof lock")
+        .get(path)
+        .filter(|(held, _)| held == nonce)
+        .map(|(_, owner)| owner.clone())
+}

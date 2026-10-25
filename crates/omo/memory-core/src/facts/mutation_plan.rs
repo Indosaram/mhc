@@ -188,6 +188,7 @@ pub fn render_facts_note(
                     read_only: None,
                     kind: None,
                     aliases: None,
+                    extra: None,
                 },
                 String::new(),
             )
@@ -210,6 +211,15 @@ pub fn render_facts_note(
         ));
     }
     let body = format!("{existing_body}{prefix}{bullets}\n");
+    let previous = std::fs::read_to_string(&file_path)
+        .ok()
+        .and_then(|value| parse_memory_file(&value).ok());
+    let frontmatter = crate::tools::claim_frontmatter::stamp_receipt(
+        previous.as_ref(),
+        &frontmatter,
+        &body,
+        None,
+    );
     let rendered = render_memory_file(&frontmatter, &body)?;
     Ok(super::display::stamp_receipt(
         std::fs::read_to_string(&file_path).ok().as_deref(),

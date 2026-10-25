@@ -34,6 +34,7 @@ pub fn theme_from_extension(theme: &maho_ext_api::Theme, mode: crate::theme::Col
 }
 
 pub enum UiRequest {
+    SubagentCost(Option<f64>),
     WidgetFrame,
     SideColumn(Option<ExtensionSideColumn>),
     Select { title: String, options: Vec<String>, timeout_ms: Option<u64>, reply: tokio::sync::oneshot::Sender<Option<String>> },
@@ -163,6 +164,11 @@ impl InteractiveExtensionUi {
 }
 
 impl ExtensionUi for InteractiveExtensionUi {
+    fn supports_subagent_cost(&self) -> bool { true }
+    fn set_subagent_cost(&self, cost: Option<f64>) {
+        let text = cost.filter(|cost| cost.is_finite() && *cost > 0.0).map(|cost| format!("subagents ${cost:.4}"));
+        self.set_status("subagent-cost", text.as_deref());
+    }
     fn actions(&self) -> Option<&dyn ExtensionUiActions> { Some(self) }
     fn factories(&self) -> Option<&dyn ExtensionUiFactories> { Some(self) }
     fn question(&self, request: QuestionRequest, options: QuestionOptions) -> ExtensionFuture<'_, QuestionResponse> {
@@ -221,6 +227,7 @@ impl ExtensionUi for InteractiveExtensionUi {
         self.sender.send(UiRequest::SideColumn(column)).map_err(|_| ExtensionFailure::new("Interactive UI request channel is closed"))
     }
     fn notify(&self, message: &str, kind: NotificationType) { self.send(UiRequest::Notify(message.into(), kind)); }
+    fn set_subagent_cost(&self, cost_usd: Option<f64>) { self.send(UiRequest::SubagentCost(cost_usd)); }
     fn set_status(&self, key: &str, text: Option<&str>) {
         let mut statuses = self.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(text) = text { statuses.insert(key.into(), text.into()); } else { statuses.remove(key); }

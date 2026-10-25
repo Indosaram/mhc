@@ -21,7 +21,7 @@ base64.workspace = true
 flate2.workspace = true
 pkcs8 = "=0.10.2"
 ryu-js = "=1.0.3"
-tokio = { workspace = true, features = ["rt", "time"] }
+tokio = { workspace = true, features = ["rt", "time", "sync"] }
 zeroize = "=1.8.2"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }

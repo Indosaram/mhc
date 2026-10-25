@@ -274,3 +274,36 @@ fn stripped_header_paths(
     }
     Ok(stripped)
 }
+
+pub struct AgreementRecoveryInput<'a> {
+    pub batch: &'a super::extraction::FactsBatch,
+    pub policy: &'a crate::agreements::AgreementsPolicy,
+    pub publish: &'a mut dyn FnMut(&FactsApplyRecovery) -> Result<(), String>,
+}
+pub fn apply_facts_recovery_with_agreements(
+    repo: &GitMemoryRepo,
+    recovery: &FactsApplyRecovery,
+    count: usize,
+    author: &GitCommitAuthor,
+    input: Option<AgreementRecoveryInput<'_>>,
+) -> Result<FactsRecoveryResult, FactsRecoveryError> {
+    match input {
+        None => apply_facts_recovery(repo, recovery, count, author),
+        Some(input) => {
+            let mut publish = |next: &FactsApplyRecovery| {
+                (input.publish)(next).map_err(FactsRecoveryError::Invalid)
+            };
+            apply_facts_recovery_with_input(
+                repo,
+                recovery,
+                count,
+                author,
+                Some(super::agreement_recovery::AgreementRecoveryInput {
+                    batch: input.batch,
+                    agreements_policy: Some(input.policy),
+                    publish_recovery: Some(&mut publish),
+                }),
+            )
+        }
+    }
+}

@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::git::{GitError, GitMemoryRepo};
 use crate::memfs::{FrontmatterError, MemoryFrontmatter, parse_memory_file, render_memory_file};
 
+use super::events::{legacy_agreement_events, serialize_agreement_events};
 use super::format::{parse_agreements_ledger, serialize_agreements_ledger};
 use super::types::{AGREEMENTS_DESCRIPTION, AGREEMENTS_PATH, AgreementItem, FactsKnownAgreement};
 
@@ -45,14 +46,43 @@ pub fn render_agreements_file(
     existing: Option<&str>,
     items: &[AgreementItem],
 ) -> Result<String, FrontmatterError> {
+    render_agreements_file_with_receipts(existing, items, None)
+}
+
+pub fn render_agreements_file_with_receipts(
+    existing: Option<&str>,
+    items: &[AgreementItem],
+    receipts: Option<&[String]>,
+) -> Result<String, FrontmatterError> {
     let parsed = existing.map(parse_memory_file).transpose()?;
-    let (frontmatter, unparsed) = match parsed {
+    let ledger = parsed
+        .as_ref()
+        .map(|file| parse_agreements_ledger(&file.body));
+    let prior = ledger
+        .as_ref()
+        .map(|ledger| ledger.receipts.clone())
+        .unwrap_or_default();
+    let kept = receipts.map(<[String]>::to_vec).unwrap_or_else(|| {
+        if prior.is_empty() {
+            legacy_agreement_events(
+                ledger
+                    .as_ref()
+                    .map(|ledger| ledger.items.as_slice())
+                    .unwrap_or(&[]),
+            )
+        } else {
+            prior
+        }
+    });
+    let previous_body = parsed.as_ref().map(|file| file.body.clone());
+    let (frontmatter, mut unparsed) = match parsed {
         None => (
             MemoryFrontmatter {
                 description: AGREEMENTS_DESCRIPTION.to_string(),
                 read_only: None,
                 kind: None,
                 aliases: None,
+                extra: None,
             },
             Vec::new(),
         ),
@@ -61,21 +91,39 @@ pub fn render_agreements_file(
             (file.frontmatter, unparsed)
         }
     };
-    let mut body = serialize_agreements_ledger(items, &unparsed);
-    let receipts = existing
-        .and_then(|content| parse_memory_file(content).ok())
-        .map(|parsed| parse_agreements_ledger(&parsed.body).receipts)
-        .unwrap_or_default();
-    for line in super::events::serialize_agreement_events(&receipts) {
-        if !body.is_empty() {
-            body.push('\n');
-        }
-        body.push_str(&line);
-    }
-    if body.is_empty() {
-        render_memory_file(&frontmatter, "")
+    unparsed.extend(serialize_agreement_events(&kept));
+    let serialized = serialize_agreements_ledger(items, &unparsed);
+    let body = if serialized.is_empty() {
+        String::new()
     } else {
-        render_memory_file(&frontmatter, &format!("{body}\n"))
+        format!("{serialized}\n")
+    };
+    let rendered = render_memory_file(&frontmatter, &body)?;
+    // The shared frontmatter model predates extra fields. Preserve and stamp the provenance
+    // header here without widening that model for unrelated writers.
+    let header = existing
+        .and_then(|content| {
+            content
+                .lines()
+                .skip(1)
+                .take_while(|line| *line != "---")
+                .filter_map(|line| line.split_once(':'))
+                .find_map(|(key, value)| (key.trim() == "provenance").then(|| value.trim()))
+        })
+        .map(crate::memfs::decode_scalar_source);
+    match header.filter(|header| !header.starts_with("user said ")) {
+        None => Ok(rendered),
+        Some(header) => {
+            let header = if previous_body.as_deref() != Some(body.as_str())
+                && header.starts_with("user replied ")
+            {
+                "mixed: parts of this note are not the user's recorded words".to_string()
+            } else {
+                header
+            };
+            let encoded = serde_json::Value::String(header).to_string();
+            Ok(rendered.replacen("---\n", &format!("---\nprovenance: {encoded}\n"), 1))
+        }
     }
 }
 

@@ -107,6 +107,7 @@ mod tests {
         let envelope = FactsPayloadEnvelope {
             agreement_event_version: None,
             version: 1,
+            agreement_event_version: Some(1),
             identity: "agent".into(),
             today: "2026-08-10".into(),
             known_people: vec![],
@@ -148,6 +149,7 @@ mod tests {
         let envelope = FactsPayloadEnvelope {
             agreement_event_version: None,
             version: 1,
+            agreement_event_version: Some(1),
             identity: "agent".into(),
             today: "2026-08-10".into(),
             known_people: vec![],

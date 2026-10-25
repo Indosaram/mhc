@@ -204,6 +204,7 @@ fn run_once(fixture: &Fixture, definition: DagDefinition) -> DagRunId {
         subscriber_ring: None,
         now: None,
         schedule_retry: None,
+        resume_credential: None,
     })
     .unwrap();
     scheduler.run().unwrap();

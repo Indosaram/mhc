@@ -7,7 +7,7 @@ fn context(root: &std::path::Path) -> MemoryIdentityContext {
     MemoryIdentityContext::new("agent".into(), build_identity_paths(root, "agent"), crate::binding::MemorySessionBinding { identity: "agent".into(), repo_path_hash: "hash".into(), bound_at: 0.0 })
 }
 
-fn nudge(path: &str, hint: &str) -> RecallNudge { RecallNudge { path: path.into(), hint: hint.into() } }
+fn nudge(path: &str, hint: &str) -> RecallNudge { RecallNudge { path: path.into(), hint: hint.into(), source: None } }
 
 struct RealPending(memory_core::recall::PendingNudges);
 impl KibitzerPendingPort for RealPending {
@@ -57,6 +57,7 @@ fn delivery(root: &std::path::Path, coordinator: Option<Arc<dyn KibitzerIdleCoor
         coordinator,
         send_message: Arc::new(move |message| { sent.sent.lock().unwrap().push(message.content); Ok(()) }),
         append_entry: Arc::new(move |_kind, data| { entries.entries.lock().unwrap().push(data); }),
+        resolve_source: None,
         warn: Arc::new(move |message| { warns.warns.lock().unwrap().push(message.to_string()); }),
     });
     *recorder.reenter.lock().unwrap() = Some(Arc::clone(&delivery));
@@ -145,6 +146,7 @@ fn given_two_steers_overlapping_when_the_first_is_mid_dispatch_then_only_one_mes
             Ok(())
         }),
         append_entry: Arc::new(|_kind, _data| {}),
+        resolve_source: None,
         warn: Arc::new(|_| {}),
     });
     *reenter.lock().unwrap() = Some(Arc::clone(&delivery));
@@ -318,4 +320,35 @@ fn given_a_coordinator_that_flushes_synchronously_when_accepting_then_no_phantom
     let drained: Vec<String> = delivery.drain_for_prompt("s1").into_iter().map(|nudge| nudge.path).collect();
     assert_eq!(drained, vec!["b.md".to_string()]);
     assert_eq!(recorder.removed.lock().unwrap().clone(), vec!["kibitzer:a.md".to_string(), "kibitzer:b.md".to_string()]);
+}
+
+#[test]
+fn given_resolve_source_when_accepting_then_source_is_recorded_on_nudge() {
+    let root = tempfile::tempdir().unwrap();
+    let context = context(root.path());
+    let ledger_dir = root.path().join("ledger");
+    let pending_dir = root.path().join("pending");
+    let delivery = KibitzerDelivery::new(KibitzerDeliveryOptions {
+        ledger_for: Arc::new(move |_| RecallLedger::new(ledger_dir.clone())),
+        pending_for: Arc::new(move |_| Arc::new(RealPending(memory_core::recall::PendingNudges::new(pending_dir.clone()))) as Arc<dyn KibitzerPendingPort>),
+        coordinator: None,
+        send_message: Arc::new(|_| Ok(())),
+        append_entry: Arc::new(|_, _| {}),
+        resolve_source: Some(Arc::new(|_session_id, path| {
+            if path == "@project/p1/a.md" {
+                Some("/real/path/a.md".to_string())
+            } else {
+                None
+            }
+        })),
+        warn: Arc::new(|_| {}),
+    });
+
+    delivery.accept("s1", &context, &[nudge("@project/p1/a.md", "hint"), nudge("b.md", "hint")]);
+    let drained = delivery.drain_for_prompt("s1");
+    assert_eq!(drained.len(), 2);
+    let resolved = drained.iter().find(|n| n.path == "@project/p1/a.md").unwrap();
+    assert_eq!(resolved.source.as_deref(), Some("/real/path/a.md"));
+    let normal = drained.iter().find(|n| n.path == "b.md").unwrap();
+    assert_eq!(normal.source, None);
 }

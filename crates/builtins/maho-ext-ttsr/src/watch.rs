@@ -20,8 +20,18 @@ impl StreamWatcher {
 }
 #[cfg(test)] mod tests {
     use super::*;
-    #[test] fn leak_and_collapse_tracks_are_isolated() { let mut watcher=StreamWatcher::new(TtsrManager::new(Default::default()),&[]); watcher.handle_delta(TtsrStreamSource::Text,"a","<s> <s>",1,None); let quiet=watcher.handle_delta(TtsrStreamSource::Text,"b","<s>",1,None); let loud=watcher.handle_delta(TtsrStreamSource::Text,"a"," <s>",1,None); assert!(quiet.resolution.is_none()); assert_eq!(loud.resolution.unwrap().owner,DetectionOwner::ControlTokenLeak); }
-    #[test] fn disabled_detectors_do_not_fire() { let mut watcher=StreamWatcher::new(TtsrManager::new(Default::default()),&[COLLAPSE_RULE_NAME.into(),CONTROL_LEAK_RULE_NAME.into()]); let result=watcher.handle_delta(TtsrStreamSource::Text,"a",&format!("<s> <s> <s>{}","!".repeat(300)),1,None); assert!(result.resolution.is_none()); }
-    #[test] fn reset_clears_latched_detection() { let mut watcher=StreamWatcher::new(TtsrManager::new(Default::default()),&[]); let first=watcher.handle_delta(TtsrStreamSource::Text,"a","<s> <s> <s>",1,None); assert!(first.resolution.is_some()); watcher.reset(); let result=watcher.handle_delta(TtsrStreamSource::Text,"a","normal",2,None); assert!(result.resolution.is_none()); }
+    #[test] fn leak_and_collapse_tracks_are_isolated() { let mut watcher=StreamWatcher::new(TtsrManager::new(Default::default()),&[]); watcher.handle_delta(TtsrStreamSource::Text,"a","<bos> <bos>",1,None); let quiet=watcher.handle_delta(TtsrStreamSource::Text,"b","<bos>",1,None); let loud=watcher.handle_delta(TtsrStreamSource::Text,"a"," <bos>",1,None); assert!(quiet.resolution.is_none()); assert_eq!(loud.resolution.unwrap().owner,DetectionOwner::ControlTokenLeak); }
+    #[test] fn disabled_detectors_do_not_fire() { let mut watcher=StreamWatcher::new(TtsrManager::new(Default::default()),&[COLLAPSE_RULE_NAME.into(),CONTROL_LEAK_RULE_NAME.into()]); let result=watcher.handle_delta(TtsrStreamSource::Text,"a",&format!("<bos> <bos> <bos>{}","!".repeat(300)),1,None); assert!(result.resolution.is_none()); }
+    #[test] fn reset_clears_latched_detection() { let mut watcher=StreamWatcher::new(TtsrManager::new(Default::default()),&[]); let first=watcher.handle_delta(TtsrStreamSource::Text,"a","<bos> <bos> <bos>",1,None); assert!(first.resolution.is_some()); watcher.reset(); let result=watcher.handle_delta(TtsrStreamSource::Text,"a","normal",2,None); assert!(result.resolution.is_none()); }
     #[test] fn adjacent_collapse_corroborates_control_leak() { let mut watcher=StreamWatcher::new(TtsrManager::new(Default::default()),&[]); let result=watcher.handle_delta(TtsrStreamSource::Text,"a",&format!("<|close|>{}","!".repeat(300)),1,None); assert_eq!(result.resolution.unwrap().owner,DetectionOwner::ControlTokenLeak); }
+    fn feed_tool(watcher:&mut StreamWatcher,stream_key:&str,text:&str)->bool { let mut fired=false; for chunk in text.as_bytes().chunks(7) { let delta=std::str::from_utf8(chunk).unwrap(); if watcher.handle_delta(TtsrStreamSource::Tool,stream_key,delta,1,Some("show_html_page")).resolution.is_some() { fired=true; } } fired }
+    #[test] fn tool_arguments_never_latch_the_leak_detector() {
+        let mut watcher=StreamWatcher::new(TtsrManager::new(Default::default()),&[]);
+        assert!(!feed_tool(&mut watcher,"show_html_page:1","{\"title\":\"t\",\"html\":\"<!doctype html><body><div><div><div><div>x</div></div></div></div></body>\"}"));
+        assert!(!feed_tool(&mut watcher,"show_html_page:2","{\"html\":\"<s><s><s><s>old</s></s></s></s>\"}"));
+    }
+    #[test] fn tool_arguments_still_latch_chat_template_controls() {
+        let mut watcher=StreamWatcher::new(TtsrManager::new(Default::default()),&[]);
+        assert!(feed_tool(&mut watcher,"write:1",&format!("{{\"path\":\"a.txt\",\"content\":\"done {}\"}}","<|im_end|>".repeat(6))));
+    }
 }

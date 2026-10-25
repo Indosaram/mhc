@@ -61,6 +61,21 @@ pub(crate) fn base_record(task_id: &str, parent_session_id: &str) -> TaskRecord 
         runner_kind: None,
         host_session: None,
         cancel_requested: None,
+        parent_model: None,
+        parent_model_fallback: None,
+        fallback_closing_child: None,
+        start_queued: None,
+        revive_delivery_uncertain: None,
+        prior_runs_cost_usd: None,
+        queued_admission: None,
+        run_pause: None,
+        resumed_run_epoch: None,
+        burnt_epoch: None,
+        fallback_handoff_epoch: None,
+        revival_deferred_reason: None,
+        recovery_deadline_at: None,
+        residency_claim: None,
+        terminal_at: None,
     }
 }
 

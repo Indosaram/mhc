@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn source_metadata_copies_every_field() {
-        let metadata = PathMetadata {
+        let metadata = PathMetadata { skill_provenance: None,
             source: "auto".to_string(),
             scope: SourceScope::Project,
             origin: SourceOrigin::Package,

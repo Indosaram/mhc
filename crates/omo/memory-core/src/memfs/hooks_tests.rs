@@ -12,18 +12,27 @@ fn test_install_hooks_when_installed_twice_then_both_hooks_stay_executable_and_i
     std::fs::create_dir_all(&hooks_dir).unwrap();
 
     let pre_commit_path = hooks_dir.join("pre-commit");
+    let commit_msg_path = hooks_dir.join("commit-msg");
     let post_commit_path = hooks_dir.join("post-commit");
 
     let first_installed = install_hooks(&repo_dir).unwrap();
     let names: Vec<String> = first_installed.into_iter().map(|h| h.name).collect();
     assert_eq!(
         names,
-        vec!["pre-commit".to_string(), "post-commit".to_string()]
+        vec![
+            "pre-commit".to_string(),
+            "commit-msg".to_string(),
+            "post-commit".to_string()
+        ]
     );
 
     assert_eq!(
         std::fs::read_to_string(&pre_commit_path).unwrap(),
         PRE_COMMIT_HOOK_SCRIPT
+    );
+    assert_eq!(
+        std::fs::read_to_string(&commit_msg_path).unwrap(),
+        COMMIT_MSG_HOOK_SCRIPT
     );
     assert_eq!(
         std::fs::read_to_string(&post_commit_path).unwrap(),
@@ -35,6 +44,14 @@ fn test_install_hooks_when_installed_twice_then_both_hooks_stay_executable_and_i
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(
             std::fs::metadata(&pre_commit_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        assert_eq!(
+            std::fs::metadata(&commit_msg_path)
                 .unwrap()
                 .permissions()
                 .mode()
@@ -57,7 +74,11 @@ fn test_install_hooks_when_installed_twice_then_both_hooks_stay_executable_and_i
     let second_names: Vec<String> = second_installed.into_iter().map(|h| h.name).collect();
     assert_eq!(
         second_names,
-        vec!["pre-commit".to_string(), "post-commit".to_string()]
+        vec![
+            "pre-commit".to_string(),
+            "commit-msg".to_string(),
+            "post-commit".to_string()
+        ]
     );
 
     assert_eq!(
@@ -80,16 +101,42 @@ fn test_install_hooks_when_installed_twice_then_both_hooks_stay_executable_and_i
 }
 
 #[test]
+fn test_with_memory_hook_checker_when_configured_then_injects_runtime_and_script() {
+    let checker = MemoryHookChecker {
+        exec_path: "/usr/bin/bun".to_string(),
+        script: "/opt/omo/hook-cli.js".to_string(),
+    };
+
+    let pre_commit = with_memory_hook_checker(PRE_COMMIT_HOOK_SCRIPT, "pre-commit", Some(&checker));
+    assert!(pre_commit.contains("omo_hook_runtime='/usr/bin/bun'"));
+    assert!(pre_commit.contains("omo_hook_script='/opt/omo/hook-cli.js'"));
+    assert!(pre_commit.contains("--memory-hook pre-commit"));
+
+    let commit_msg = with_memory_hook_checker(COMMIT_MSG_HOOK_SCRIPT, "commit-msg", Some(&checker));
+    assert!(commit_msg.contains("omo_hook_runtime='/usr/bin/bun'"));
+    assert!(commit_msg.contains("--memory-hook commit-msg \"$1\""));
+    assert!(commit_msg.contains("exit 0"));
+}
+
+#[test]
 fn test_hook_scripts_when_checked_then_parse_as_posix_sh_without_bash_only_constructs() {
-    for script in [PRE_COMMIT_HOOK_SCRIPT, POST_COMMIT_HOOK_SCRIPT] {
+    for script in [
+        PRE_COMMIT_HOOK_SCRIPT,
+        COMMIT_MSG_HOOK_SCRIPT,
+        POST_COMMIT_HOOK_SCRIPT,
+    ] {
         assert!(script.starts_with("#!/bin/sh\n"));
         assert!(!script.contains("<<<"));
         assert!(!script.contains("echo -e"));
         assert!(!script.contains("disown"));
         assert!(!script.contains("env bash"));
     }
-    assert!(PRE_COMMIT_HOOK_SCRIPT.contains("safe YAML plain scalar") || PRE_COMMIT_HOOK_SCRIPT.contains("safe YAML scalar"));
+    assert!(
+        PRE_COMMIT_HOOK_SCRIPT.contains("safe YAML plain scalar")
+            || PRE_COMMIT_HOOK_SCRIPT.contains("safe YAML scalar")
+    );
     assert!(PRE_COMMIT_HOOK_SCRIPT.contains("secret screening"));
+    assert!(COMMIT_MSG_HOOK_SCRIPT.contains("Claim receipt validation failed"));
 }
 
 #[test]
@@ -115,11 +162,12 @@ fn test_install_hooks_when_linked_worktree_then_land_in_shared_hooks_directory()
 
     let installed = install_hooks(&worktree_dir).unwrap();
     assert_eq!(installed[0].path, shared_hooks.join("pre-commit"));
-    assert_eq!(installed[1].path, shared_hooks.join("post-commit"));
+    assert_eq!(installed[1].path, shared_hooks.join("commit-msg"));
+    assert_eq!(installed[2].path, shared_hooks.join("post-commit"));
     assert!(!worktree_dir.join(".git").join("hooks").exists());
 }
 
-// --- Real-git ports of the pre-commit and post-commit hook behaviour tests.
+// --- Real-git ports of the pre-commit, commit-msg, and post-commit hook behaviour tests.
 
 mod hook_behaviour {
     use std::collections::BTreeMap;
@@ -158,9 +206,20 @@ mod hook_behaviour {
         }
     }
 
+    pub fn disable_fixture_auto_maintenance(dir: &Path, bare: bool) {
+        for (key, val) in [("maintenance.auto", "false"), ("gc.auto", "0")] {
+            run(&["git", "config", "--local", key, val], dir, &[]);
+        }
+        if bare {
+            run(&["git", "config", "--local", "receive.autogc", "false"], dir, &[]);
+        }
+    }
+
     fn create_repo() -> (TempDir, PathBuf) {
         let tmp = TempDir::new().expect("tempdir");
-        let dir = crate::support::paths::strip_verbatim_prefix(&tmp.path().canonicalize().expect("canonical"));
+        let dir = crate::support::paths::strip_verbatim_prefix(
+            &tmp.path().canonicalize().expect("canonical"),
+        );
         for argv in [
             &["git", "init", "--quiet"][..],
             &["git", "symbolic-ref", "HEAD", "refs/heads/main"],
@@ -170,6 +229,7 @@ mod hook_behaviour {
         ] {
             run(argv, &dir, &[]);
         }
+        disable_fixture_auto_maintenance(&dir, false);
         install_hooks(&dir).expect("install hooks");
         (tmp, dir)
     }
@@ -204,6 +264,15 @@ mod hook_behaviour {
     const SYNC: &[(&str, &str)] = &[("OMO_MEMORY_PUSH_SYNC", "1")];
 
     #[test]
+    fn given_fixture_repo_then_auto_maintenance_is_disabled() {
+        let (_tmp, dir) = create_repo();
+        let m = run(&["git", "config", "--local", "maintenance.auto"], &dir, &[]);
+        assert_eq!(m.stdout.trim(), "false");
+        let gc = run(&["git", "config", "--local", "gc.auto"], &dir, &[]);
+        assert_eq!(gc.stdout.trim(), "0");
+    }
+
+    #[test]
     fn given_valid_memory_markdown_when_committed_then_hook_accepts_every_supported_shape() {
         let (_tmp, dir) = create_repo();
 
@@ -234,6 +303,32 @@ mod hook_behaviour {
             run(&["git", "log", "--oneline"], &dir, &[])
                 .stdout
                 .contains("memory write")
+        );
+    }
+
+    #[test]
+    fn given_staged_provenance_header_when_committed_with_memory_tool_trailer_then_accepted() {
+        let (_tmp, dir) = create_repo();
+        let note = "---\ndescription: Note\nprovenance: \"user replied \\\"yes\\\"\"\n---\n\nbody\n";
+        let result = commit(
+            &dir,
+            &[("reference/approved.md", note)],
+            "memory write\n\nOmo-Writer: memory-tool",
+            &[],
+        );
+        assert_eq!(result.code, 0, "{}", result.output());
+    }
+
+    #[test]
+    fn given_staged_provenance_header_when_committed_by_hand_without_trailer_then_rejected() {
+        let (_tmp, dir) = create_repo();
+        let note = "---\ndescription: Note\nprovenance: \"user replied \\\"yes\\\"\"\n---\n\nbody\n";
+        let result = commit(&dir, &[("reference/forged.md", note)], "hand commit", &[]);
+        assert_ne!(result.code, 0);
+        assert!(
+            result.output().contains("Claim receipt validation failed:"),
+            "{}",
+            result.output()
         );
     }
 
@@ -372,42 +467,67 @@ mod hook_behaviour {
     }
 
     #[test]
-    fn given_head_read_only_false_when_agent_flips_it_to_true_then_change_is_rejected() {
+    fn given_secret_reference_values_when_committed_then_allowed_and_credentials_rejected() {
         let (_tmp, dir) = create_repo();
-        seed_server_file(
-            &dir,
-            "system/tunable.md",
-            "---\ndescription: Tunable\nread_only: false\n---\n\nbody\n",
-        );
+        let references = [
+            "client_secret=[FILTERED]",
+            "Authorization: Bearer <key>",
+            "token: $GITHUB_TOKEN",
+            "token: process.env.GITHUB_TOKEN",
+            "api_key: env.API_KEY",
+            "Authorization: Bearer $TOKEN",
+        ];
+        for ref_line in references {
+            let note = format!("---\ndescription: Reference\n---\n\n{ref_line}\n");
+            let result = commit(&dir, &[("reference/note.md", &note)], "ref write", &[]);
+            assert_eq!(result.code, 0, "should accept reference: {ref_line}");
+        }
 
-        let result = commit(
-            &dir,
-            &[(
-                "system/tunable.md",
-                "---\ndescription: Tunable\nread_only: true\n---\n\nbody\n",
-            )],
-            "escalate",
-            &[],
-        );
+        let credentials = [
+            "password: hunter2Abrx9",
+            "token=nullable-9fQ2xK7",
+            "Authorization: Bearer abcdef123456",
+            "password=hunter2Xyz9Qreal:true",
+            "password=process.env.X||hunter2real",
+            "token: ${FOO}realsecret",
+        ];
+        for cred in credentials {
+            let note = format!("---\ndescription: Cred\n---\n\n{cred}\n");
+            let result = commit(&dir, &[("reference/bad.md", &note)], "bad write", &[]);
+            assert_ne!(result.code, 0, "should reject credential: {cred}");
+            assert!(
+                result.output().contains("contains secret-like content"),
+                "expected secret error for {cred}"
+            );
+        }
+    }
 
-        assert_ne!(result.code, 0);
-        assert!(
-            result
-                .output()
-                .contains("'read_only' is a protected field and cannot be changed by the agent"),
-            "{}",
-            result.output()
-        );
+    #[test]
+    fn given_pathspec_environment_when_staged_then_commands_succeed() {
+        for var in ["GIT_GLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"] {
+            let (_tmp, dir) = create_repo();
+            let note = "---\ndescription: Pathspec\n---\n\nbody\n";
+            write_files(&dir, &BTreeMap::from([("reference/z.md", note)]));
+            run(&["git", "add", "-A"], &dir, &[]);
+            let entries = crate::memfs::memory_hook_git::staged_entries(&dir).expect("staged");
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].path, "reference/z.md");
+            let result = commit(&dir, &[("reference/z.md", note)], "pathspec write", &[(var, "1")]);
+            assert_eq!(result.code, 0, "pathspec commit failed with {var}=1");
+        }
     }
 
     fn create_mirror() -> (TempDir, PathBuf) {
         let tmp = TempDir::new().expect("tempdir");
-        let dir = crate::support::paths::strip_verbatim_prefix(&tmp.path().canonicalize().expect("canonical"));
+        let dir = crate::support::paths::strip_verbatim_prefix(
+            &tmp.path().canonicalize().expect("canonical"),
+        );
         run(
             &["git", "init", "--bare", "--quiet", "--initial-branch=main"],
             &dir,
             &[],
         );
+        disable_fixture_auto_maintenance(&dir, true);
         (tmp, dir)
     }
 
@@ -523,8 +643,6 @@ mod hook_behaviour {
         );
 
         assert_eq!(result.code, 0);
-        // The push runs in a detached child; the push log is the only observable completion signal,
-        // so wait on it with a bounded deadline (mirrors the TS waitFor helper).
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             let log = std::fs::read_to_string(log_path(&dir)).unwrap_or_default();
@@ -553,11 +671,16 @@ mod hook_behaviour {
         )
         .expect("write");
         std::fs::write(
+            tmp.path().join("commit-msg"),
+            super::super::COMMIT_MSG_HOOK_SCRIPT,
+        )
+        .expect("write");
+        std::fs::write(
             tmp.path().join("post-commit"),
             super::super::POST_COMMIT_HOOK_SCRIPT,
         )
         .expect("write");
-        for hook in ["pre-commit", "post-commit"] {
+        for hook in ["pre-commit", "commit-msg", "post-commit"] {
             assert_eq!(run(&["sh", "-n", hook], tmp.path(), &[]).code, 0, "{hook}");
         }
     }

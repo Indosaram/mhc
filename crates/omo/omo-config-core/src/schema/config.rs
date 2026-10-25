@@ -11,7 +11,6 @@ use crate::schema::computer::{
 use crate::schema::format_on_mutation::{
     omo_format_on_mutation_layer_schema, omo_format_on_mutation_schema,
 };
-use crate::schema::gateway::omo_gateway_section_schema;
 use crate::schema::git_master::{
     omo_git_master_settings_layer_schema, omo_git_master_settings_schema,
 };
@@ -20,6 +19,7 @@ use crate::schema::model_catalog::{omo_model_catalog_layer_schema, omo_model_cat
 use crate::schema::model_profile::{
     omo_model_profiles_layer_schema, omo_model_profiles_schema,
 };
+use crate::schema::provenance::omo_provenance_settings_schema;
 use crate::schema::task::{omo_task_settings_layer_schema, omo_task_settings_schema};
 use crate::schema::side_panel::{omo_side_panel_settings_layer_schema, omo_side_panel_settings_schema};
 use crate::schema::team::{omo_teams_config_layer_schema, omo_teams_config_schema};
@@ -41,11 +41,18 @@ pub fn omo_disabled_skills_schema() -> Node {
     array(string())
 }
 
+/// Models no category, agent, model profile or task pin may run. An entry is `provider/model` or a
+/// bare model id (any provider), `*` matches any run of characters, case-insensitively. Like
+/// `disabled_skills`, every layer's list is unioned (`collect_excluded_models`).
+pub fn omo_excluded_models_schema() -> Node {
+    array(string())
+}
+
 pub fn omo_typed_harness_config_schema() -> Node {
     strict_object(vec![
+        optional("provenance", omo_provenance_settings_schema()),
         optional("side_panel", omo_side_panel_settings_layer_schema()),
         optional("formatOnMutation", omo_format_on_mutation_layer_schema()),
-        optional("gateway", omo_gateway_section_schema()),
         optional("categories", omo_categories_config_schema()),
         optional("agents", omo_agents_config_schema()),
         optional("git_master", omo_git_master_settings_layer_schema()),
@@ -58,11 +65,13 @@ pub fn omo_typed_harness_config_schema() -> Node {
         optional("telemetry", omo_telemetry_settings_layer_schema()),
         optional("computer", omo_computer_settings_layer_schema()),
         optional("disabled_skills", omo_disabled_skills_schema()),
+        optional("exclude_models", omo_excluded_models_schema()),
     ])
 }
 
 pub fn omo_config_profile_schema() -> Node {
     strict_object(vec![
+        optional("provenance", omo_provenance_settings_schema()),
         optional("side_panel", omo_side_panel_settings_layer_schema()),
         optional("formatOnMutation", omo_format_on_mutation_layer_schema()),
         optional("categories", omo_categories_config_schema()),
@@ -77,6 +86,7 @@ pub fn omo_config_profile_schema() -> Node {
         optional("telemetry", omo_telemetry_settings_layer_schema()),
         optional("computer", omo_computer_settings_layer_schema()),
         optional("disabled_skills", omo_disabled_skills_schema()),
+        optional("exclude_models", omo_excluded_models_schema()),
         optional("[opencode]", omo_open_code_harness_config_schema()),
         optional("[native]", omo_typed_harness_config_schema()),
         optional("[senpi]", omo_typed_harness_config_schema()),
@@ -86,9 +96,9 @@ pub fn omo_config_profile_schema() -> Node {
 
 pub fn omo_config_schema() -> Node {
     strict_object(vec![
+        optional("provenance", omo_provenance_settings_schema()),
         optional("side_panel", omo_side_panel_settings_schema()),
         optional("formatOnMutation", omo_format_on_mutation_schema()),
-        optional("gateway", omo_gateway_section_schema()),
         optional("$schema", string()),
         optional("categories", omo_categories_config_schema()),
         optional("agents", omo_agents_config_schema()),
@@ -102,6 +112,7 @@ pub fn omo_config_schema() -> Node {
         optional("telemetry", omo_telemetry_settings_schema()),
         optional("computer", omo_computer_settings_schema()),
         optional("disabled_skills", omo_disabled_skills_schema()),
+        optional("exclude_models", omo_excluded_models_schema()),
         optional("[opencode]", omo_open_code_harness_config_schema()),
         optional("[native]", omo_typed_harness_config_schema()),
         optional("[senpi]", omo_typed_harness_config_schema()),
@@ -118,9 +129,9 @@ pub fn omo_config_schema() -> Node {
 
 pub fn omo_config_layer_schema() -> Node {
     strict_object(vec![
+        optional("provenance", omo_provenance_settings_schema()),
         optional("side_panel", omo_side_panel_settings_layer_schema()),
         optional("formatOnMutation", omo_format_on_mutation_layer_schema()),
-        optional("gateway", omo_gateway_section_schema()),
         optional("$schema", string()),
         optional("categories", omo_categories_config_schema()),
         optional("agents", omo_agents_config_schema()),
@@ -134,6 +145,7 @@ pub fn omo_config_layer_schema() -> Node {
         optional("telemetry", omo_telemetry_settings_layer_schema()),
         optional("computer", omo_computer_settings_layer_schema()),
         optional("disabled_skills", omo_disabled_skills_schema()),
+        optional("exclude_models", omo_excluded_models_schema()),
         optional("[opencode]", omo_open_code_harness_config_schema()),
         optional("[native]", omo_typed_harness_config_schema()),
         optional("[senpi]", omo_typed_harness_config_schema()),

@@ -1,14 +1,18 @@
 //! Renders the agreements ledger a facts batch would leave behind.
-use super::mutation_plan::MutationPlanError;
-use crate::agreements::events::{parse_agreement_event_line, serialize_agreement_events};
+
+use std::path::Path;
+
 use crate::agreements::{
     AgreementEvent, AgreementExtractionRecord, AgreementsPolicy, agreement_items_of,
-    read_agreements_worktree, render_agreements_file,
+    apply_agreement_records_with_receipts, parse_agreements_ledger, read_agreements_worktree,
+    render_agreements_file_with_receipts,
 };
-use std::path::Path;
+
+use super::mutation_plan::MutationPlanError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgreementsTarget {
+    /// The rendered ledger, or `None` when the records leave it byte-identical (stale reaffirms, refusals).
     pub content: Option<String>,
     pub events: Vec<AgreementEvent>,
 }
@@ -27,30 +31,19 @@ pub fn render_agreements_content(
     records: &[AgreementExtractionRecord],
     policy: &AgreementsPolicy,
 ) -> Result<AgreementsTarget, MutationPlanError> {
-    let prior: Vec<String> = existing
-        .into_iter()
-        .flat_map(str::lines)
-        .filter_map(parse_agreement_event_line)
-        .collect();
-    let mutation = crate::agreements::mutate::apply_agreement_records_with_receipts(
+    let prior = existing
+        .map(crate::memfs::parse_memory_file)
+        .transpose()?
+        .map(|file| parse_agreements_ledger(&file.body).receipts)
+        .unwrap_or_default();
+    let mutation = apply_agreement_records_with_receipts(
         &agreement_items_of(existing),
         records,
         policy,
         &prior,
     );
-    // Receipt comments are parsed separately from the opaque ledger lines and serialized once.
-    let clean = existing.map(|text| {
-        text.split_inclusive('\n')
-            .filter(|line| {
-                parse_agreement_event_line(line.trim_end_matches(['\n', '\r'])).is_none()
-            })
-            .collect::<String>()
-    });
-    let mut content = render_agreements_file(clean.as_deref(), &mutation.items)?;
-    for line in serialize_agreement_events(&mutation.receipts) {
-        content.push_str(&line);
-        content.push('\n');
-    }
+    let content =
+        render_agreements_file_with_receipts(existing, &mutation.items, Some(&mutation.receipts))?;
     Ok(AgreementsTarget {
         content: (existing != Some(content.as_str())).then_some(content),
         events: mutation.events,
@@ -85,10 +78,10 @@ mod tests {
 #[cfg(test)]
 mod replay_tests {
     use super::*;
-    use crate::agreements::{AgreementScope, types::AgreementSource};
+    use crate::agreements::{AgreementScope, types::AgreementSourceEvent};
     #[test]
     fn same_source_is_idempotent_across_date_changes_and_drop() {
-        let source = AgreementSource {
+        let source = AgreementSourceEvent {
             session_id: "s".into(),
             message_id: "m".into(),
         };

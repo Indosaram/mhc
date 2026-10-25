@@ -112,6 +112,7 @@ fn frontmatter(
         read_only: None,
         kind: kind.map(str::to_string),
         aliases: aliases.map(|a| a.iter().map(|s| (*s).to_string()).collect()),
+        extra: None,
     }
 }
 
@@ -903,10 +904,13 @@ fn receipts_survive_note_and_observation_application_and_strip_legacy_headers() 
     let record = FactsExtractionRecord::Project {
         text: "Keep plugin X".into(),
         date: "2026-10-18".into(),
-        receipt: Some(ClaimReceipt::User {
-            user_quote: "yes".into(),
-            approves: "0123456789abcdef".into(),
-        }),
+        receipt: Some(
+            serde_json::to_value(ClaimReceipt::User {
+                user_quote: "yes".into(),
+                approves: "0123456789abcdef".into(),
+            })
+            .unwrap(),
+        ),
     };
     let batch = FactsBatch {
         batch_id: "11111111-1111-4111-8111-111111111111".into(),
@@ -953,7 +957,7 @@ fn receipts_survive_note_and_observation_application_and_strip_legacy_headers() 
             },
             text: text.into(),
             date: "2026-10-18".into(),
-            receipt: Some(receipt),
+            receipt: Some(serde_json::to_value(receipt).unwrap()),
         };
         apply_facts_batch(
             &repo,

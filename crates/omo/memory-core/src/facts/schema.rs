@@ -286,6 +286,7 @@ pub fn parse_queue_entry(raw: &str) -> Option<FactsQueueEntry> {
     }
 
     Some(FactsQueueEntry {
+        lead: val.get("lead").map(|lead| serde_json::from_value(lead.clone())).transpose().ok()?,
         version: FACTS_QUEUE_VERSION,
         identity,
         session_id,
@@ -482,6 +483,7 @@ impl<'de> serde::de::Visitor<'de> for QueueHeaderVisitor {
         };
 
         Ok(FactsQueueEntry {
+            lead: None,
             version,
             identity,
             session_id,

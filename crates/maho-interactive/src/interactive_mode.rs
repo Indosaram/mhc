@@ -11796,6 +11796,7 @@ impl InteractiveMode {
     /// editor, autocomplete wrappers, the extension and active-tool terminal titles, and the working
     /// indicator state. Statuses and terminal-input listeners were cleared by the hook itself.
     fn reset_extension_ui(&mut self) {
+        self.footer_data.clear_extension_statuses();
         use crate::interactive_extension_ui::UiRequest;
         self.handle_ui_request(UiRequest::SideColumn(None));
         self.footer = None;
@@ -11860,6 +11861,7 @@ impl InteractiveMode {
                 self.side_column = column;
                 self.editor_host.request_render();
             }
+            UiRequest::SubagentCost(cost) => { self.footer_data.set_subagent_cost(cost); self.editor_host.request_render(); },
             UiRequest::WidgetFrame => self.editor_host.request_render(),
             UiRequest::ResetExtensionUi => self.reset_extension_ui(),
             UiRequest::WidgetFactory(key, factory, options) => {
@@ -13070,6 +13072,7 @@ impl InteractiveMode {
             cache_read: cache_read as f64,
             cache_write: cache_write as f64,
             cost,
+            subagent_cost: self.footer_data.subagent_cost(),
             latest_cache_hit_rate,
             context_window: model.context_window as f64,
             context_percent: usage.and_then(|usage| usage.percent),
@@ -14060,6 +14063,7 @@ fn get_built_in_command_conflict_diagnostics(
             .map(|command| command.name)
             .collect();
     commands.iter().filter(|command| builtin_names.contains(command.command.name.as_str())).map(|command| maho_core::diagnostics::ResourceDiagnostic {
+        category: None,
         diagnostic_type: maho_core::diagnostics::ResourceDiagnosticType::Warning,
         message: if command.invocation_name == command.command.name {
             format!("Extension command '/{}' conflicts with built-in interactive command. Skipping in autocomplete.", command.command.name)

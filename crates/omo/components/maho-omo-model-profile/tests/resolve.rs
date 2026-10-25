@@ -1,5 +1,6 @@
 
 use maho_ext_api::JsonValue;
+use maho_omo_model_profile::custom_providers::DeclaredModelProvider;
 use maho_omo_model_profile::resolve::{
     ModelProfileResolution, ModelProfileSource, ModelProfileSummary, ResolveModelProfileInput,
     resolve_model_profile,
@@ -23,12 +24,32 @@ const SOL_61: &str = "chatgpt-subscription/gpt-6.1-sol";
 const ASTRA: &str = "chatgpt-subscription/gpt-6-astra";
 
 fn resolve(active: &str, available: &[&str], profiles: Option<JsonValue>) -> ModelProfileResolution {
+    resolve_with_custom(active, available, profiles, &[])
+}
+
+fn resolve_with_custom(
+    active: &str,
+    available: &[&str],
+    profiles: Option<JsonValue>,
+    custom_providers: &[DeclaredModelProvider],
+) -> ModelProfileResolution {
     let owned: Vec<String> = available.iter().map(|selector| (*selector).to_owned()).collect();
     resolve_model_profile(&ResolveModelProfileInput {
         profiles: profiles.as_ref(),
         active,
         available_models: &owned,
+        custom_providers: Some(custom_providers),
     })
+}
+
+fn declared(entries: &[(&str, &[&str])]) -> Vec<DeclaredModelProvider> {
+    entries
+        .iter()
+        .map(|(provider, model_ids)| DeclaredModelProvider {
+            provider: (*provider).to_owned(),
+            model_ids: model_ids.iter().map(|id| (*id).to_owned()).collect(),
+        })
+        .collect()
 }
 
 struct Resolved<'a> {
@@ -79,6 +100,7 @@ fn expected_resolved(
         profile: ModelProfileSummary {
             id: profile.to_owned(),
             display_name: display_name.to_owned(),
+            caution: None,
             source,
             family: None,
             tier: None,
@@ -126,6 +148,7 @@ fn reports_a_pin_the_registry_cannot_serve_as_unavailable() {
             profile: ModelProfileSummary {
                 id: OPUS.to_owned(),
                 display_name: OPUS.to_owned(),
+                caution: None,
                 source: ModelProfileSource::Pin,
                 family: None,
                 tier: None,
@@ -410,7 +433,8 @@ fn keeps_geeky_normal_family_tier_when_a_user_replaces_the_chain_with_an_openai_
     );
     let profile = profile_of(&result);
     assert_eq!(profile.id, "geeky-normal");
-    assert_eq!(profile.display_name, "Geeky · Normal");
+    assert_eq!(profile.display_name, "Obsessive · Normal");
+    assert_eq!(profile.caution.as_deref(), Some("NOT RECOMMENDED FOR WRITING OR EVERYDAY WORK."));
     assert_eq!(profile.source, ModelProfileSource::User);
     assert_eq!(profile.family.map(|family| family.as_str()), Some("geeky"));
     assert_eq!(profile.tier.map(|tier| tier.as_str()), Some("normal"));
@@ -456,4 +480,129 @@ fn a_pin_is_not_probed_for_auth_and_keeps_the_users_explicit_choice() {
 fn a_profile_whose_registry_serves_nothing_reports_the_whole_chain() {
     let result = resolve("geeky-heavy", &["example/nothing"], None);
     assert_eq!(chain_of(&result), ["chatgpt-subscription/gpt-6-astra".to_owned()]);
+}
+
+// --- builtin chain routing through a models.json declaration (#10485, #9146) ---
+
+/// The Opus id as the builtin table spells it: a custom-provider case must prove the ROUTING, not
+/// restate a model id, so the id always comes from the table under test.
+fn opus_id() -> &'static str {
+    OPUS.split_once('/').expect("provider/model selector").1
+}
+
+fn obsessive_caution() -> &'static str {
+    "NOT RECOMMENDED FOR WRITING OR EVERYDAY WORK."
+}
+
+#[test]
+fn resolves_daily_normal_to_a_custom_models_json_provider_that_is_the_only_one_serving_its_opus_id() {
+    let proxy = format!("my-claude-proxy/{}", opus_id());
+    let result = resolve_with_custom(
+        "daily-normal",
+        &[proxy.as_str()],
+        None,
+        &declared(&[("my-claude-proxy", &[opus_id()])]),
+    );
+    let resolved = resolved(&result);
+    assert_eq!(resolved.provider, "my-claude-proxy");
+    assert_eq!(resolved.model_id, opus_id());
+    assert_eq!(resolved.reasoning, Some("medium"));
+}
+
+#[test]
+fn keeps_a_listed_builtin_provider_ahead_of_a_custom_provider_serving_the_same_id() {
+    let proxy = format!("my-claude-proxy/{}", opus_id());
+    let result = resolve_with_custom(
+        "daily-normal",
+        &[proxy.as_str(), OPUS_SUBSCRIPTION],
+        None,
+        &declared(&[("my-claude-proxy", &[opus_id()])]),
+    );
+    let resolved = resolved(&result);
+    assert_eq!(resolved.provider, "anthropic-subscription");
+    assert_eq!(resolved.model_id, opus_id());
+}
+
+#[test]
+fn picks_the_first_declared_custom_provider_when_two_serve_the_rungs_id() {
+    let proxy_b = format!("proxy-b/{}", opus_id());
+    let proxy_a = format!("proxy-a/{}", opus_id());
+    let result = resolve_with_custom(
+        "daily-normal",
+        &[proxy_b.as_str(), proxy_a.as_str()],
+        None,
+        &declared(&[("proxy-a", &[opus_id()]), ("proxy-b", &[opus_id()])]),
+    );
+    let resolved = resolved(&result);
+    assert_eq!(resolved.provider, "proxy-a");
+    assert_eq!(resolved.model_id, opus_id());
+}
+
+#[test]
+fn still_skips_a_gateways_vendor_prefixed_copy_and_an_undeclared_provider_serving_the_bare_id() {
+    let prefixed = format!("opengateway/anthropic/{}", opus_id());
+    let bare = format!("openrouter/{}", opus_id());
+    let result = resolve_with_custom(
+        "daily-normal",
+        &[prefixed.as_str(), bare.as_str()],
+        None,
+        &declared(&[("opengateway", &[opus_id()])]),
+    );
+    assert!(matches!(result, ModelProfileResolution::Unavailable { .. }));
+}
+
+#[test]
+fn a_gateway_extended_with_an_unrelated_model_never_serves_a_builtin_rung_id_it_did_not_declare() {
+    let gateway = format!("openrouter/{}", opus_id());
+    let finetune = "openrouter/my-finetune";
+    let result = resolve_with_custom(
+        "daily-normal",
+        &[gateway.as_str(), finetune],
+        None,
+        &declared(&[("openrouter", &["my-finetune"])]),
+    );
+    assert!(matches!(result, ModelProfileResolution::Unavailable { .. }));
+}
+
+#[test]
+fn the_same_gateway_declaring_the_rung_id_itself_serves_the_lane() {
+    let gateway = format!("openrouter/{}", opus_id());
+    let result = resolve_with_custom(
+        "daily-normal",
+        &[gateway.as_str()],
+        None,
+        &declared(&[("openrouter", &[opus_id()])]),
+    );
+    let resolved = resolved(&result);
+    assert_eq!(resolved.provider, "openrouter");
+    assert_eq!(resolved.model_id, opus_id());
+}
+
+#[test]
+fn carries_the_obsessive_caution_onto_the_resolved_profile_and_an_overlay_inherits_or_replaces_it() {
+    let builtin = resolve("geeky-normal", &[ASTRA], None);
+    assert_eq!(profile_of(&builtin).caution.as_deref(), Some(obsessive_caution()));
+
+    let inherited = resolve(
+        "geeky-normal",
+        &[ASTRA],
+        Some(json!({"geeky-normal": {"models": [ASTRA]}})),
+    );
+    assert_eq!(profile_of(&inherited).caution.as_deref(), Some(obsessive_caution()));
+
+    let replaced = resolve(
+        "geeky-normal",
+        &[ASTRA],
+        Some(json!({"geeky-normal": {"caution": "Handle with care.", "models": [ASTRA]}})),
+    );
+    assert_eq!(profile_of(&replaced).caution.as_deref(), Some("Handle with care."));
+}
+
+#[test]
+fn resolves_geeky_normal_to_gpt_6_astra_medium_when_the_subscription_serves_it_beside_the_sol_tiers() {
+    let result = resolve("geeky-normal", &[ASTRA, SOL_61, SOL_56], None);
+    let resolved = resolved(&result);
+    assert_eq!(resolved.provider, "chatgpt-subscription");
+    assert_eq!(resolved.model_id, "gpt-6-astra");
+    assert_eq!(resolved.reasoning, Some("medium"));
 }

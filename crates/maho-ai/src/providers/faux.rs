@@ -156,6 +156,7 @@ pub fn faux_assistant_message(
 ) -> AssistantMessage {
     AssistantMessage {
         error_cause: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,
@@ -413,7 +414,7 @@ fn with_usage_estimate(
     }
 
     AssistantMessage {
-        usage: Usage {
+        usage: Usage { context_usage: None,
             input,
             output: output_tokens,
             cache_read,
@@ -422,6 +423,7 @@ fn with_usage_estimate(
             reasoning: None,
             total_tokens: input + output_tokens + cache_read + cache_write,
             cost: UsageCost::default(),
+            ..Default::default()
         },
         ..message
     }
@@ -482,6 +484,7 @@ fn clone_message(
 fn create_deferred_message(model: &Model, handle: &DeferredHandle) -> AssistantMessage {
     AssistantMessage {
         error_cause: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,
@@ -515,6 +518,7 @@ fn create_error_message(
 ) -> AssistantMessage {
     AssistantMessage {
         error_cause: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,

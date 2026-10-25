@@ -57,6 +57,8 @@ pub mod oauth_transport_hardening;
 pub mod output_guard;
 #[path = "policy_cache.rs"]
 pub mod policy_cache;
+#[path = "project_policy_races.rs"]
+pub mod project_policy_races;
 #[path = "prompts.rs"]
 pub mod prompts;
 #[path = "proxy.rs"]

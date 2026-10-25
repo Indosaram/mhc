@@ -83,7 +83,7 @@ async fn loaded_thread_cwd_uses_its_live_session_skills_and_falls_back_only_when
         eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: None, base_tools_override: None,
         session_start_event: None, auto_title_sessions: Some(false),
     }).unwrap();
-    let skill = maho_core::skills::Skill { name: "session-only".into(), description: "Per-session snapshot".into(), file_path: "/custom/session-only/SKILL.md".into(), base_dir: "/custom".into(), disable_model_invocation: false, source_info: SourceInfo { scope: SourceScope::User, ..Default::default() } };
+    let skill = maho_core::skills::Skill { name: "session-only".into(), description: "Per-session snapshot".into(), file_path: "/custom/session-only/SKILL.md".into(), base_dir: "/custom".into(), disable_model_invocation: false, provenance: None, allowed_set: None, source_info: SourceInfo { scope: SourceScope::User, ..Default::default() } };
     session.set_prompt_resources_with_diagnostics(Vec::new(), vec![skill], Vec::new());
     let threads = Arc::new(ThreadRegistry::new(agent.display().to_string(), None, None));
     threads.register_session(session, thread_cwd.clone(), None).await;

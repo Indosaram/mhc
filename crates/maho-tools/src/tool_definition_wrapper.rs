@@ -21,12 +21,12 @@ fn into_agent_result(result: ToolResult) -> AgentToolResult {
                 }
             })
             .collect(),
+        terminate: result.details.as_ref().and_then(|details| details.get("terminate")).and_then(serde_json::Value::as_bool),
         details: result.details.unwrap_or(serde_json::Value::Null),
         structured_content: result.structured_content,
         usage: None,
         nested_calls: None,
         added_tool_names: None,
-        terminate: None,
         is_error: result.is_error,
     }
 }

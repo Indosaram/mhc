@@ -1776,6 +1776,8 @@ fn native_autocomplete_offers_skill_commands_only_while_enable_skill_commands_is
                 Default::default(),
             ),
             disable_model_invocation: false,
+            provenance: None,
+            allowed_set: None,
         }],
     );
     mode.handle_ui_request(
