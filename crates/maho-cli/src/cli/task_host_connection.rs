@@ -14,12 +14,19 @@ fn failure(error: impl std::fmt::Display) -> HostError {
         message: error.to_string(),
     }
 }
-pub type TurnState = Arc<(Mutex<(u64, Option<RunnerOutcome>)>, Condvar)>;
+#[derive(Default)]
+pub struct TurnData {
+    generation: u64,
+    outcome: Option<RunnerOutcome>,
+    next_watch: u64,
+    watches: std::collections::BTreeMap<u64, (bool, std::sync::mpsc::SyncSender<RunnerOutcome>)>,
+}
+pub type TurnState = Arc<(Mutex<TurnData>, Condvar)>;
 
 pub struct LiveClient {
     pub client: Arc<maho_rpc::rpc_client::RpcClient>,
     pub runtime: tokio::runtime::Handle,
-    turn: Arc<(Mutex<(u64, Option<RunnerOutcome>)>, Condvar)>,
+    turn: TurnState,
     subscription: Mutex<Option<maho_rpc::rpc_client::RpcClientUnsubscribe>>,
 }
 impl LiveClient {
@@ -32,13 +39,24 @@ impl LiveClient {
         let subscription = client.on_event(Arc::new(move |event| {
             let mut state = observed.0.lock().unwrap();
             if event["type"] == "agent_start" {
-                state.0 += 1;
-                state.1 = None;
+                state.generation += 1;
+                state.outcome = None;
+                for (started, _) in state.watches.values_mut() {
+                    *started = true;
+                }
             }
             if event["type"] == "agent_end" && event["willRetry"] != true {
-                state.1 = Some(senpi_task::runners::rpc::turn_outcome::agent_end_outcome(
-                    event, None, None,
-                ));
+                let outcome =
+                    senpi_task::runners::rpc::turn_outcome::agent_end_outcome(event, None, None);
+                state.outcome = Some(outcome.clone());
+                state.watches.retain(|_, (started, tx)| {
+                    if *started {
+                        let _ = tx.try_send(outcome.clone());
+                        false
+                    } else {
+                        true
+                    }
+                });
                 observed.1.notify_all();
             }
         }));
@@ -63,31 +81,23 @@ impl LiveClient {
     }
     pub fn outcome(&self) -> RunnerOutcome {
         let mut state = self.turn.0.lock().unwrap();
-        while state.1.is_none() {
+        while state.outcome.is_none() {
             state = self.turn.1.wait(state).unwrap();
         }
-        state.1.clone().unwrap()
+        state.outcome.clone().unwrap()
     }
     pub fn watch(
         self: &Arc<Self>,
     ) -> senpi_task::runners::in_process::native_run_pause::EngineTurnWatch {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        let started = std::sync::atomic::AtomicBool::new(false);
-        let subscription = self.client.on_event(Arc::new(move |event| {
-            if event["type"] == "agent_start" {
-                started.store(true, std::sync::atomic::Ordering::Release);
-            }
-            if started.load(std::sync::atomic::Ordering::Acquire)
-                && event["type"] == "agent_end"
-                && event["willRetry"] != true
-            {
-                let _ = tx.try_send(senpi_task::runners::rpc::turn_outcome::agent_end_outcome(
-                    event, None, None,
-                ));
-            }
-        }));
-        let subscription = Arc::new(Mutex::new(Some(subscription)));
-        let cancel = subscription.clone();
+        let token = {
+            let mut state = self.turn.0.lock().unwrap();
+            state.next_watch += 1;
+            let token = state.next_watch;
+            state.watches.insert(token, (false, tx));
+            token
+        };
+        let cancel = self.turn.clone();
         senpi_task::runners::in_process::native_run_pause::EngineTurnWatch {
             outcome: Box::new(move || {
                 let outcome = rx.recv().unwrap_or_else(|_| {
@@ -96,11 +106,10 @@ impl LiveClient {
                         "host turn observer closed",
                     )
                 });
-                subscription.lock().unwrap().take();
                 outcome
             }),
             cancel: Box::new(move || {
-                cancel.lock().unwrap().take();
+                cancel.0.lock().unwrap().watches.remove(&token);
             }),
         }
     }
@@ -118,10 +127,13 @@ impl HostRpcClient for LiveClient {
         Some(self.outcome())
     }
     fn transport_lost(&self, message: String) {
-        self.turn.0.lock().unwrap().1 = Some(RunnerOutcome::error(
-            RunnerFailureKind::ChildTurnFailed,
-            message,
-        ));
+        let mut state = self.turn.0.lock().unwrap();
+        let outcome = RunnerOutcome::error(RunnerFailureKind::ChildTurnFailed, message);
+        state.outcome = Some(outcome.clone());
+        for (_, (_, tx)) in std::mem::take(&mut state.watches) {
+            let _ = tx.try_send(outcome.clone());
+        }
+        drop(state);
         self.turn.1.notify_all();
     }
     fn command(&self, command: Value) -> Result<(), HostError> {
@@ -129,7 +141,7 @@ impl HostRpcClient for LiveClient {
             command["type"].as_str(),
             Some("prompt" | "followUp" | "steer")
         ) {
-            self.turn.0.lock().unwrap().1 = None;
+            self.turn.0.lock().unwrap().outcome = None;
         }
         let client = self.client.clone();
         self.call(async move {

@@ -195,7 +195,10 @@ impl HostAssembly {
             .unwrap()
             .entry(path.clone())
             .or_insert_with(|| {
-                Arc::new((std::sync::Mutex::new((0, None)), std::sync::Condvar::new()))
+                Arc::new((
+                    std::sync::Mutex::new(connection::TurnData::default()),
+                    std::sync::Condvar::new(),
+                ))
             })
             .clone();
         let spec = spec.clone();
@@ -207,10 +210,18 @@ impl HostAssembly {
                 let (socket_client,info)=maho_rpc::host_probe::authenticated_host_socket(&socket,&json!({"type":"get_protocol_info","observe":true}),30_000,Some(&agent_dir)).await.map_err(error)?;
                 let client=Arc::new(maho_rpc::rpc_client::RpcClient::from_stream(socket_client.into_stream().map_err(error)?,Default::default()));
                 let live=connection::LiveClient::new(client.clone(),runtime.clone(),turn);
+                let mut spec=spec.clone();
+                if let Some(reference)=spec.model.as_deref() {
+                    let decorators=maho_omo_task::planner_explicit_pin::split_model_decorators(reference);
+                    spec.model=Some(decorators.base);spec.reasoning=spec.reasoning.or(spec.variant.clone()).or(decorators.thinking_level);
+                }
                 let mut request=json!({"sessionPath":path,"cwd":spec.cwd,"kind":context.kind,"context":context.context,"retainOnDisconnect":true,"autoTitle":false});
                 if let Some(reference)=spec.model.as_deref() {
                     let (provider,id)=reference.split_once('/').ok_or_else(||error("model_unavailable: noncanonical host model pin"))?;
                     request["provider"]=provider.into();request["modelId"]=id.into();
+                }
+                if let (Some(model),Some(chain))=(&spec.model,&spec.fallback_models) {
+                    if !chain.is_empty(){request["retryFallback"]=json!({"modelFallback":true,"fallbackChains":{model:chain}});}
                 }
                 if let Some(reasoning)=spec.reasoning.as_ref().or(spec.variant.as_ref()){request["thinkingLevel"]=reasoning.clone().into();}
                 let opened=match client.open_session(request).await {Ok(opened)=>opened,Err(cause)=>{client.stop().await;return Err(error(cause));}};

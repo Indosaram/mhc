@@ -78,9 +78,14 @@ impl HostSessionHandle {
                 return;
             };
             if event.event_type == "agent_start" {
-                if let Err(error) = handle.teardown.publish_running() {
-                    eprintln!("host running publication failed: {error}");
-                }
+                let status_handle = Arc::downgrade(&handle);
+                std::thread::spawn(move || {
+                    if let Some(handle) = status_handle.upgrade() {
+                        if let Err(error) = handle.teardown.publish_running() {
+                            eprintln!("host running publication failed: {error}");
+                        }
+                    }
+                });
                 let was_settled = handle
                     .settled
                     .swap(false, std::sync::atomic::Ordering::AcqRel);
