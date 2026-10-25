@@ -258,6 +258,7 @@ struct Inner {
     admission_barrier: crate::pause::admission_barrier::AdmissionBarrier,
     child_pause: Arc<dyn crate::pause::ports::ChildPausePort>,
     held_callback: Option<crate::manager::start_admission::HeldCallback>,
+    host_transport: Option<Arc<dyn crate::lifecycle::HostTransport>>,
     host_status_publication: Mutex<()>,
     launches_changed: std::sync::Condvar,
     trusted_respawn_launch: Option<crate::manager::types::TrustedRespawnLaunchResolver>,
@@ -482,6 +483,7 @@ impl TaskManager {
                 fallible_admit: options.fallible_admit,
                 traceparent_for: options.traceparent_for,
                 held_callback: options.on_held_admission,
+                host_transport: options.host_transport,
                 host_status_publication: Mutex::new(()),
                 launches_changed: std::sync::Condvar::new(),
                 admission_barrier: options.admission_barrier.unwrap_or_default(),
@@ -4359,6 +4361,19 @@ impl Inner {
                     let status = inner
                         .try_load(&task_id)
                         .map_or(status, |record| record.status);
+                    if let Some(identity) = inner
+                        .try_load(&task_id)
+                        .and_then(|record| record.host_session)
+                    {
+                        if let Some(transport) = &inner.host_transport {
+                            if let Err(error) = transport.publish_task_status(&identity, status) {
+                                utils::logger::log(
+                                    "senpi-task daemon status publication failed",
+                                    Some(&json!({"taskId":task_id,"error":error})),
+                                );
+                            }
+                        }
+                    }
                     if let Err(error) = handle.publish_task_status(status) {
                         log(
                             "senpi-task host task status publication failed",
