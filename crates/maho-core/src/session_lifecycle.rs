@@ -217,14 +217,18 @@ impl SessionLifecycleController {
         let shared = self.goal_service.snapshot();
         if let Some(id) = shared.completed_goal_id.as_deref() {
             let append = self.options.append.clone();
-            self.ledger.mark_goal_completed(id, |r|append(r));
+            self.ledger.mark_goal_completed(id, |r| append(r));
         }
         if let Some(goal) = shared.goal {
             let mut value = json!({"id":goal.id,"status":goal.status});
-            if goal.continuation_stopped { value["continuationStoppedAt"] = json!(true); }
+            if goal.continuation_stopped {
+                value["continuationStoppedAt"] = json!(true);
+            }
             self.goal = Some(value);
         }
-        if shared.input.is_some() { self.liveness = shared.input; }
+        if shared.input.is_some() {
+            self.liveness = shared.input;
+        }
 
         if !self.obligations.persisted() {
             self.ledger.custody_write_failed();
