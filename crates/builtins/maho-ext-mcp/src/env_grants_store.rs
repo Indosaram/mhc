@@ -265,6 +265,76 @@ pub fn observe(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn directory_watch_observes_atomic_replacement_without_waiting_for_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grants.json");
+        let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
+        let task = observe(
+            path.clone(),
+            std::sync::Arc::new(move |value| {
+                send.send(value).unwrap();
+            }),
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), receive.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let identity = declaration_digest(&serde_json::json!({"watch":true}));
+        add_grant(
+            &path,
+            &identity,
+            GrantLabel {
+                project: "p".into(),
+                skill: "s".into(),
+                server: "m".into(),
+            },
+            &["TOKEN".into()],
+        )
+        .unwrap();
+        let observation = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let value = receive.recv().await.unwrap();
+                if value.snapshot.generation == 1 {
+                    break value;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(observation.snapshot.grants[&identity].names, ["TOKEN"]);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+    }
+    #[test]
+    fn observer_reconciles_generation_gaps_resets_and_invalid_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grants.json");
+        let identity = declaration_digest(&serde_json::json!({"test":true}));
+        let label = GrantLabel {
+            project: "p".into(),
+            skill: "s".into(),
+            server: "m".into(),
+        };
+        let mut observer = GrantObserver::default();
+        assert!(!observer.reconcile(&path).unwrap().conservative);
+        assert!(observer.reconcile(&path).is_none());
+        add_grant(&path, &identity, label.clone(), &["A".into()]).unwrap();
+        assert!(!observer.reconcile(&path).unwrap().conservative);
+        add_grant(&path, &identity, label.clone(), &["B".into()]).unwrap();
+        add_grant(&path, &identity, label, &["C".into()]).unwrap();
+        assert!(observer.reconcile(&path).unwrap().conservative);
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&GrantSnapshot::default()).unwrap(),
+        )
+        .unwrap();
+        assert!(observer.reconcile(&path).unwrap().conservative);
+        std::fs::write(&path, "invalid").unwrap();
+        let invalid = observer.reconcile(&path).unwrap();
+        assert!(invalid.conservative);
+        assert!(invalid.snapshot.grants.is_empty());
+    }
     #[test]
     fn digest_sorts_objects_not_arrays() {
         assert_eq!(
