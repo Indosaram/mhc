@@ -27,6 +27,7 @@ maho-omo-git-master = { path = "../components/maho-omo-git-master" }
 maho-omo-feedback = { path = "../components/maho-omo-feedback" }
 maho-omo-builtin-mcps = { path = "../components/maho-omo-builtin-mcps" }
 maho-omo-browser-bridge = { path = "../components/maho-omo-browser-bridge" }
+maho-omo-desktop-toolkit = { path = "../components/maho-omo-desktop-toolkit" }
 maho-omo-x-search = { path = "../components/maho-omo-x-search" }
 maho-omo-gateway = { path = "../components/maho-omo-gateway" }
 maho-omo-config-watch = { path = "../components/maho-omo-config-watch" }

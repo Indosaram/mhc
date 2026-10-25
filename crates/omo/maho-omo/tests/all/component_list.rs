@@ -36,7 +36,7 @@ fn the_registration_order_is_the_full_upstream_list() {
         let components = omo_components(slot("task"), slot("memory"), &options);
         let names: Vec<&str> = components.iter().map(|component| component.name).collect();
         assert_eq!(names, omo_component_names());
-        assert_eq!(names.len(), 28);
+        assert_eq!(names.len(), 29);
         assert!(!names.contains(&"native-badge"));
         assert_eq!(names[6], "onboarding-scan");
         assert_eq!(names[7], "side-panel");
@@ -44,11 +44,12 @@ fn the_registration_order_is_the_full_upstream_list() {
         assert_eq!(names[20], "x-search");
         assert_eq!(names[21], "feedback");
         assert_eq!(names[22], "browser-bridge");
-        assert_eq!(names[23], "lsp");
-        assert_eq!(names[24], "task");
-        assert_eq!(names[25], "memory");
-        assert_eq!(names[26], "gateway");
-        assert_eq!(names[27], "config-watch");
+        assert_eq!(names[23], "desktop-toolkit");
+        assert_eq!(names[24], "lsp");
+        assert_eq!(names[25], "task");
+        assert_eq!(names[26], "memory");
+        assert_eq!(names[27], "gateway");
+        assert_eq!(names[28], "config-watch");
     }
 }
 
@@ -76,7 +77,7 @@ fn every_registered_component_has_a_distinct_name() {
     let mut names: Vec<&str> = components.iter().map(|component| component.name).collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 28);
+    assert_eq!(names.len(), 29);
 }
 
 /// `documented-commands.test.ts` case 3: bare skills must be rewritten before other input handlers.

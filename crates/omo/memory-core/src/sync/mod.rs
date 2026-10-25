@@ -32,3 +32,6 @@ pub use redact::{
     SECRET_PATTERN_SOURCES, SecretMatch, SecretPatternClass, contains_secret_like_material,
     redact_secret_like_material, redact_url, scan_secret_like_material,
 };
+
+pub mod pin_dir;
+pub use pin_dir::sync_pin_dir;
