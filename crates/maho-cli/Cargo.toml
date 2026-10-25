@@ -7,6 +7,8 @@ license = "MIT"
 autotests = false
 
 [dependencies]
+chrono = { workspace = true, features = ["clock"] }
+uuid = { workspace = true, features = ["v4"] }
 maho-chord = { path = "../maho-chord" }
 maho-ai = { path = "../maho-ai" }
 maho-agent = { path = "../maho-agent" }

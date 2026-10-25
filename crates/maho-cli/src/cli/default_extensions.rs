@@ -778,12 +778,14 @@ impl Extension for Task {
                 let config = super::task_runners::resolved_omo_config(&ctx.cwd, &environment);
                 // pin `engine-runners.ts:62`: the in-process cap derives from the resolved `task.max_depth` (default 1, as `engine.rs`).
                 let max_depth = config["task"]["max_depth"].as_u64().and_then(|depth| u32::try_from(depth).ok()).unwrap_or(1);
-                let runners = maho_omo_task::engine_runners::build_task_runners(maho_omo_task::engine_runners::TaskRunnerBuildOptions {
+                let mut runners = maho_omo_task::engine_runners::build_task_runners(maho_omo_task::engine_runners::TaskRunnerBuildOptions {
                     shared_parent_tools: Vec::new(), get_shared_parent_tools: Some(super::task_runners::live_parent_tools(weak, executor.clone())), max_depth,
                     create_session: super::task_session::factory_with_workpool_events(executor.clone(), parent.weak_accessor(), Some(workpool_events.clone())), parent_registry, rpc_options: process.clone(),
                     // omo.json `exclude_models` reaches every in-process and process child from here.
                     exclude_models: config["exclude_models"].as_array().map(|patterns| patterns.iter().filter_map(|pattern| pattern.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
                 });
+                let host_assembly = super::task_host::HostAssembly { runtime: executor.clone(), agent_dir: ctx.agent_dir.clone(), parent: parent.weak_accessor() };
+                runners.process = super::task_host::select_runner(host_assembly, &config, runners.process);
                 let registry: Arc<dyn senpi_task::host::SenpiModelRegistry> = Arc::new(Registry(ctx.model_registry.clone()));
                 let engine = {
                     let mut slot = engine_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

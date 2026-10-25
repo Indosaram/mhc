@@ -15,6 +15,10 @@ impl RpcSocket {
             deadline,
         })
     }
+    /// Transfer an authenticated, pre-session connection to the persistent mux.
+    pub fn into_stream(self) -> tokio::net::UnixStream {
+        self.reader.into_inner()
+    }
     pub async fn request(
         &mut self,
         mut command: serde_json::Value,
