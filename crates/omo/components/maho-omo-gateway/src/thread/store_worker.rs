@@ -14,7 +14,7 @@ use super::store_extensions::{SessionCaller, StoreExtensionRegistration};
 use super::types::{ClaimRequest, EnqueueRequest, GatewayStoreConfig, RecordOutcomeRequest, ReconcileRequest, RefusalReason};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "method", rename_all = "snake_case")]
 pub enum WorkerRequest {
     Init { config: GatewayStoreConfig, now: i64 },
     Enqueue { request: EnqueueRequest },

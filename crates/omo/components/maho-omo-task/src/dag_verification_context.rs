@@ -119,7 +119,7 @@ pub fn verification_directive(
     scopes: &[DagVerificationScope],
     receiver_model: Option<&str>,
 ) -> &'static str {
-    let astra = maho_model_core::is_gpt6_astra_model(receiver_model);
+    let astra = model_core::is_gpt6_astra_model(receiver_model);
     match scopes.first() {
         Some(DagVerificationScope::Run) if astra => ASTRA_DAG_RUN_VERIFICATION_DIRECTIVE,
         Some(_) if astra => ASTRA_DAG_VERIFICATION_DIRECTIVE,

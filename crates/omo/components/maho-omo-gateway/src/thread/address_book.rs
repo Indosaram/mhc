@@ -243,7 +243,7 @@ pub fn assemble_address_book(hosts: &[AddressBookHost], disk_sessions: &[DiskSes
             let created_at = session.created_at.clone().or_else(|| disk.map(|disk| disk.created_at.clone())).unwrap_or_else(|| assembled_at.to_owned());
             let updated_at = session.updated_at.clone().or_else(|| disk.and_then(|disk| disk.updated_at.clone()));
             let name = session.name.clone().or_else(|| disk.and_then(|disk| disk.name.clone()));
-            let disk_title = disk.and_then(|disk| thread_title(disk.name.as_deref(), disk.first_user_text.as_deref()));
+            let disk_title = disk.and_then(|disk| disk.title.clone().or_else(|| thread_title(disk.name.as_deref(), None)));
             let kind = host.endpoint_kind.unwrap_or(GatewayEndpointKind::RpcHost);
             by_durable_id.insert(
                 durable_id.clone(),
@@ -382,6 +382,7 @@ pub fn find_disk_sessions(sessions_dir: &Path, address: &str, all_scope: bool, w
         .into_iter()
         .filter(|directory| prefixes.is_empty() || prefixes.iter().any(|prefix| directory.starts_with(prefix)))
         .flat_map(|directory| {
+            let wanted = wanted.clone();
             session_files(&sessions_dir.join(&directory)).into_iter().filter_map(move |file| {
                 let session = read_disk_session(&file, None)?;
                 let name = session.name.as_deref()?;

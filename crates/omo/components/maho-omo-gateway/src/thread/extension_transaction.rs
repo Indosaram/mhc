@@ -77,18 +77,18 @@ fn run_joined<T>(guard: &Guard, owner: &str, body: impl FnOnce() -> Result<T, St
 }
 
 /// Builds the helpers of one op's transaction; `finish` marks the transaction ended.
-pub struct ExtensionTransaction {
-    pub tx: StoreExtensionTransaction,
+pub struct ExtensionTransaction<'a> {
+    pub tx: StoreExtensionTransaction<'a>,
     guard: Arc<Guard>,
 }
 
-impl ExtensionTransaction {
+impl ExtensionTransaction<'_> {
     pub fn finish(&self) {
         self.guard.active.store(false, Ordering::SeqCst);
     }
 }
 
-pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_provenance: Option<SenderProvenance>) -> ExtensionTransaction {
+pub fn extension_transaction<'a>(ctx: &'a StoreContext, name: &str, now: i64, sender_provenance: Option<SenderProvenance>) -> ExtensionTransaction<'a> {
     let guard = Arc::new(Guard { active: AtomicBool::new(true), running: AtomicUsize::new(0) });
     let owner = name.to_owned();
 
@@ -117,7 +117,7 @@ pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_pr
             let order = order_by.map(|order| format!(" ORDER BY {order}")).unwrap_or_default();
             let sql = format!("{statement}{order}");
             ctx.all(&sql, &values_to_params(params)).map_err(|error| error.message())
-        }) as Arc<dyn Fn(&[String], &str, &[Value], Option<&str>) -> Result<Vec<SqlRow>, String> + Send + Sync>
+        }) as Arc<dyn Fn(&[String], &str, &[Value], Option<&str>) -> Result<Vec<SqlRow>, String> + 'a>
     };
     let one = {
         let sql_guard = sql_guard.clone();
@@ -128,7 +128,7 @@ pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_pr
                 single_extension_statement(column).map_err(|error| error.message)?;
             }
             ctx.one(statement, &values_to_params(params)).map_err(|error| error.message())
-        }) as Arc<dyn Fn(&[String], &str, &[Value]) -> Result<Option<SqlRow>, String> + Send + Sync>
+        }) as Arc<dyn Fn(&[String], &str, &[Value]) -> Result<Option<SqlRow>, String> + 'a>
     };
     let exec = {
         let sql_guard = sql_guard.clone();
@@ -136,7 +136,7 @@ pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_pr
             sql_guard().map_err(|error| error.message)?;
             single_extension_statement(statement).map_err(|error| error.message)?;
             ctx.run(statement, &values_to_params(params)).map_err(|error| error.message())
-        }) as Arc<dyn Fn(&str, &[Value]) -> Result<usize, String> + Send + Sync>
+        }) as Arc<dyn Fn(&str, &[Value]) -> Result<usize, String> + 'a>
     };
 
     // Every helper joins the op's transaction through the same guard: in flight from the call until it
@@ -198,7 +198,7 @@ pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_pr
                 }
             });
             serde_json::from_value::<GatewayDeliveryResult>(value?).map_err(|error| error.to_string())
-        }) as Arc<dyn Fn(ExtensionEnqueueRequest) -> Result<GatewayDeliveryResult, String> + Send + Sync>
+        }) as Arc<dyn Fn(ExtensionEnqueueRequest) -> Result<GatewayDeliveryResult, String> + 'a>
     };
 
     let outbox_ack = {
@@ -214,8 +214,8 @@ pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_pr
                     store_relay_ops::RelayOutcome::Refused { message, .. } => Err(message),
                 }
             });
-            serde_json::from_value::<ExtensionAckReply>(value?).map_err(|error| error.to_string())
-        }) as Arc<dyn Fn(ExtensionAckRequest) -> Result<ExtensionAckReply, String> + Send + Sync>
+            value
+        }) as Arc<dyn Fn(ExtensionAckRequest) -> Result<ExtensionAckReply, String> + 'a>
     };
 
     let bind = {
@@ -229,8 +229,8 @@ pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_pr
                     store_relay_ops::RelayOutcome::Refused { message, .. } => Err(message),
                 }
             });
-            serde_json::from_value::<ExtensionBindReply>(value?).map_err(|error| error.to_string())
-        }) as Arc<dyn Fn(ExtensionBindRequest) -> Result<ExtensionBindReply, String> + Send + Sync>
+            value
+        }) as Arc<dyn Fn(ExtensionBindRequest) -> Result<ExtensionBindReply, String> + 'a>
     };
 
     let unbind = {
@@ -247,8 +247,8 @@ pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_pr
                     store_relay_ops::RelayOutcome::Refused { message, .. } => Err(message),
                 }
             });
-            serde_json::from_value::<ExtensionUnbindReply>(value?).map_err(|error| error.to_string())
-        }) as Arc<dyn Fn(ExtensionUnbindRequest) -> Result<ExtensionUnbindReply, String> + Send + Sync>
+            value
+        }) as Arc<dyn Fn(ExtensionUnbindRequest) -> Result<ExtensionUnbindReply, String> + 'a>
     };
 
     let rebind = {
@@ -261,8 +261,8 @@ pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_pr
                     store_relay_ops::RelayOutcome::Refused { message, .. } => Err(message),
                 }
             });
-            serde_json::from_value::<ExtensionRebindReply>(value?).map_err(|error| error.to_string())
-        }) as Arc<dyn Fn(ExtensionRebindRequest) -> Result<ExtensionRebindReply, String> + Send + Sync>
+            value
+        }) as Arc<dyn Fn(ExtensionRebindRequest) -> Result<ExtensionRebindReply, String> + 'a>
     };
 
     let binding_for = {
@@ -271,7 +271,7 @@ pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_pr
         Arc::new(move |lookup: ExtensionBindingLookup| -> Result<Option<Value>, String> {
             let value = run_joined(&guard, &owner, || store_relay_ops::binding_for(ctx, &lookup).map(|binding| binding.map(|binding| serde_json::to_value(binding).unwrap_or(Value::Null))).map_err(|error| error.message()))?;
             Ok(value)
-        }) as Arc<dyn Fn(ExtensionBindingLookup) -> Result<Option<Value>, String> + Send + Sync>
+        }) as Arc<dyn Fn(ExtensionBindingLookup) -> Result<Option<Value>, String> + 'a>
     };
 
     let bindings_for_session = {
@@ -285,7 +285,7 @@ pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_pr
                 let bindings = store_relay_ops::bindings_for_session(ctx, session_durable_id, now).map_err(|error| error.message())?;
                 Ok(bindings.into_iter().map(|binding| serde_json::to_value(binding).unwrap_or(Value::Null)).collect())
             })
-        }) as Arc<dyn Fn(&str) -> Result<Vec<Value>, String> + Send + Sync>
+        }) as Arc<dyn Fn(&str) -> Result<Vec<Value>, String> + 'a>
     };
 
     let outbox_pending = {
@@ -298,7 +298,7 @@ pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_pr
                     store_relay_ops::RelayOutcome::Refused { message, .. } => Err(message),
                 }
             })
-        }) as Arc<dyn Fn(ExtensionOutboxRequest) -> Result<Value, String> + Send + Sync>
+        }) as Arc<dyn Fn(ExtensionOutboxRequest) -> Result<Value, String> + 'a>
     };
 
     ExtensionTransaction {

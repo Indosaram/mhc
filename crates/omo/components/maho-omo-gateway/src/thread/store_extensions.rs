@@ -175,18 +175,18 @@ pub struct SessionCaller {
 
 /// The transaction helpers an extension op may call, all inside its own transaction.
 #[derive(Clone)]
-pub struct StoreExtensionTransaction {
-    pub all: Arc<dyn Fn(&[String], &str, &[Value], Option<&str>) -> Result<Vec<SqlRow>, String> + Send + Sync>,
-    pub one: Arc<dyn Fn(&[String], &str, &[Value]) -> Result<Option<SqlRow>, String> + Send + Sync>,
-    pub exec: Arc<dyn Fn(&str, &[Value]) -> Result<usize, String> + Send + Sync>,
-    pub enqueue: Arc<dyn Fn(ExtensionEnqueueRequest) -> Result<GatewayDeliveryResult, String> + Send + Sync>,
-    pub outbox_ack: Arc<dyn Fn(ExtensionAckRequest) -> Result<ExtensionAckReply, String> + Send + Sync>,
-    pub bind: Arc<dyn Fn(ExtensionBindRequest) -> Result<ExtensionBindReply, String> + Send + Sync>,
-    pub unbind: Arc<dyn Fn(ExtensionUnbindRequest) -> Result<ExtensionUnbindReply, String> + Send + Sync>,
-    pub rebind: Arc<dyn Fn(ExtensionRebindRequest) -> Result<ExtensionRebindReply, String> + Send + Sync>,
-    pub binding_for: Arc<dyn Fn(ExtensionBindingLookup) -> Result<Option<Value>, String> + Send + Sync>,
-    pub bindings_for_session: Arc<dyn Fn(&str) -> Result<Vec<Value>, String> + Send + Sync>,
-    pub outbox_pending: Arc<dyn Fn(ExtensionOutboxRequest) -> Result<Value, String> + Send + Sync>,
+pub struct StoreExtensionTransaction<'a> {
+    pub all: Arc<dyn Fn(&[String], &str, &[Value], Option<&str>) -> Result<Vec<SqlRow>, String> + 'a>,
+    pub one: Arc<dyn Fn(&[String], &str, &[Value]) -> Result<Option<SqlRow>, String> + 'a>,
+    pub exec: Arc<dyn Fn(&str, &[Value]) -> Result<usize, String> + 'a>,
+    pub enqueue: Arc<dyn Fn(ExtensionEnqueueRequest) -> Result<GatewayDeliveryResult, String> + 'a>,
+    pub outbox_ack: Arc<dyn Fn(ExtensionAckRequest) -> Result<ExtensionAckReply, String> + 'a>,
+    pub bind: Arc<dyn Fn(ExtensionBindRequest) -> Result<ExtensionBindReply, String> + 'a>,
+    pub unbind: Arc<dyn Fn(ExtensionUnbindRequest) -> Result<ExtensionUnbindReply, String> + 'a>,
+    pub rebind: Arc<dyn Fn(ExtensionRebindRequest) -> Result<ExtensionRebindReply, String> + 'a>,
+    pub binding_for: Arc<dyn Fn(ExtensionBindingLookup) -> Result<Option<Value>, String> + 'a>,
+    pub bindings_for_session: Arc<dyn Fn(&str) -> Result<Vec<Value>, String> + 'a>,
+    pub outbox_pending: Arc<dyn Fn(ExtensionOutboxRequest) -> Result<Value, String> + 'a>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

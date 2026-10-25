@@ -270,8 +270,8 @@ pub async fn start_foreground_server<R: ServerStartup>(directory: &Path, request
 pub(super) async fn bounded_report<F: Future<Output = Result<(), String>>>(report: F, timeout: Duration) {
     match tokio::time::timeout(timeout, report).await {
         Ok(Ok(())) => {},
-        Ok(Err(error)) => crate::output_guard::maho_write_stderr(&format!("Worker ownership-loss report failed: {error}\n")),
-        Err(_) => crate::output_guard::maho_write_stderr("Worker ownership-loss report timed out\n"),
+        Ok(Err(error)) => { crate::output_guard::maho_write_stderr(&format!("Worker ownership-loss report failed: {error}\n")); },
+        Err(_) => { crate::output_guard::maho_write_stderr("Worker ownership-loss report timed out\n"); },
     }
 }
 

@@ -72,7 +72,7 @@ use maho_ext_api::{
     ToolInfo, normalize_tool_exposure,
 };
 use maho_ext_host::ExtensionRunner;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::event_bus::{EventBus, EventHandler, EventSubscription};
 
@@ -834,11 +834,10 @@ pub fn message_fingerprint(message: Option<&AgentMessage>) -> String {
         },
         AgentMessage::Custom(c) => match c {
             maho_agent::types::CustomAgentMessage::Custom(custom) => {
-                if let Some(text) = custom.content.as_str() {
-                    size = text.len();
-                } else if let Some(arr) = custom.content.as_array() {
-                    size = arr.len();
-                }
+                size = match &custom.content {
+                    maho_agent::harness::messages::CustomMessageContent::Text(text) => text.len(),
+                    maho_agent::harness::messages::CustomMessageContent::Blocks(blocks) => blocks.len(),
+                };
             }
             _ => {}
         },
@@ -3776,7 +3775,7 @@ impl AgentSession {
                     return;
                 };
                 // No `AgentSessionEvent` variant exists for the hold events yet, so they ride the session bus.
-                let data = match event {
+                let data = match &event {
                     crate::engine_turn_hold::SessionHoldEvent::SessionNotice {
                         notice_ids,
                         notice_count,
@@ -3801,6 +3800,7 @@ impl AgentSession {
                 };
                 session.emit_extension_event(SESSION_HOLD_CHANNEL, &data);
                 let session_event = match &event {
+                    crate::engine_turn_hold::SessionHoldEvent::SessionNotice { .. } => return,
                     crate::engine_turn_hold::SessionHoldEvent::SessionPaused {
                         pause_seq,
                         kind,
@@ -5016,7 +5016,7 @@ impl AgentSession {
         } else {
             Err(failures
                 .into_iter()
-                .map(|(path, error)| format!("{path}: {error}"))
+                .map(|error| format!("{}: {}", error.extension_path, error.error))
                 .collect::<Vec<_>>()
                 .join("; "))
         }
@@ -5117,7 +5117,7 @@ impl AgentSession {
         });
         let terminal = own.as_ref().and_then(|r| r["terminal"].as_str());
         let failure = facts.failure.or_else(|| {
-            own.and_then(|r| {
+            own.as_ref().and_then(|r| {
                 let reason = match r["terminal"].as_str()? {
                     "error" => "task_error",
                     "lost" => "lost",
@@ -5245,7 +5245,7 @@ impl AgentSession {
             } else {
                 json!(text)
             };
-            messages.push(session_message_from_value(json!({"role":"custom","customType":crate::held_inputs::HELD_INPUT_ENTRY,"content":content,"display":true,"details":{"heldInputId":input["inputId"]},"timestamp":maho_ai::utils::diagnostics::now_ms()}))?);
+            messages.push(session_message_from_value(json!({"role":"custom","customType":crate::held_inputs::HELD_INPUT_ENTRY,"content":content,"display":true,"details":{"heldInputId":input["inputId"]},"timestamp":maho_ai::utils::diagnostics::now_ms()})).map_err(|error| error.to_string())?);
         }
         let held_message_ids = messages
             .iter()
@@ -5258,7 +5258,7 @@ impl AgentSession {
             })
             .collect::<BTreeSet<_>>();
         for id in ids.iter().filter(|id| !held_message_ids.contains(*id)) {
-            messages.push(session_message_from_value(json!({"role":"custom","customType":"held-input-continue","content":"","display":false,"details":{"heldInputId":id},"timestamp":maho_ai::utils::diagnostics::now_ms()}))?);
+            messages.push(session_message_from_value(json!({"role":"custom","customType":"held-input-continue","content":"","display":false,"details":{"heldInputId":id},"timestamp":maho_ai::utils::diagnostics::now_ms()})).map_err(|error| error.to_string())?);
         }
         lock(&self.reserved_held_inputs).extend(ids.iter().cloned());
         Ok((messages, ids))
@@ -5415,9 +5415,6 @@ impl AgentSession {
 
     /// Explicit user Resume; attachment alone must never call this. Reports the human input even when
     /// nothing is paused, then releases every held wake one at a time through full agent_end handling.
-    pub fn pause_seq(&self) -> u64 {
-        lock(&self.engine_turn_hold).current_pause_seq()
-    }
     pub fn paused_held_input_count(&self) -> usize {
         self.held_inputs().len()
     }

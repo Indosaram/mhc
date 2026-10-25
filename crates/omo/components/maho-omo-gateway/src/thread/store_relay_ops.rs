@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::store_ops::{SqlAccess, StoreContext, StoreError, parse_rfc3339_millis, rfc3339, row_i64, row_opt_i64, row_opt_str, row_str, transaction, v_i64, v_opt_str, v_str};
+use super::store_ops::{SqlAccess, StoreContext, StoreError, parse_rfc3339_millis, rfc3339, row_i64, row_opt_i64, row_opt_str, row_str, transaction, v_i64, v_opt_i64, v_opt_str, v_str};
 use super::types::{ExternalAuthor, StoreRefusal};
 
 pub const BINDING_SCHEMA_VERSION: i64 = 1;

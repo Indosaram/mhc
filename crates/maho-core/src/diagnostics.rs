@@ -33,13 +33,9 @@ pub struct ResourceDiagnostic {
     pub category: Option<String>,
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub category: Option<ResourceDiagnosticCategory>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collision: Option<ResourceCollision>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub category: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,7 +75,6 @@ mod tests {
             category: None,
             diagnostic_type: ResourceDiagnosticType::Collision,
             message: "collision".to_owned(),
-            category: None,
             path: None,
             collision: Some(collision),
         };

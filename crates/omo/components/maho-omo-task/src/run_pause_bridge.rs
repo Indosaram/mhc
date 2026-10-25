@@ -216,11 +216,8 @@ pub fn wire_run_pause_bridge(
 }
 
 /// The credential a resumed run presents; named here so the wiring and the bridge agree.
-pub fn resume_credential(pause_seq: u64, resume_id: &str) -> ResumeCredential {
-    ResumeCredential {
-        pause_seq,
-        resume_id: resume_id.to_string(),
-    }
+pub fn resume_credential(barrier: &senpi_task::pause::admission_barrier::AdmissionBarrier, parent: &str, pause_seq: u64, resume_id: &str) -> Result<ResumeCredential, senpi_task::pause::admission_barrier::AdmissionBarrierError> {
+    barrier.resume(parent, pause_seq, resume_id)
 }
 
 #[cfg(test)]

@@ -253,7 +253,7 @@ impl GatewayEngine {
                     return settle(result_from_row(&row, queue_position, None, false, true));
                 };
                 let reply = (self.options.endpoints.wake)(endpoint.clone(), vec![delivery_id.clone()]).await;
-                let reached = reply.as_ref().is_ok_and(|reply| reply.unroutable.is_none());
+                let reached = reply.unroutable.is_none();
                 match self.options.store.delivery_view(&delivery_id) {
                     Ok(Some(view)) => settle(result_from_row(&view.row, view.queue_position, Some(endpoint.kind), false, !reached)),
                     Ok(None) => fail("internal_error", format!("delivery {delivery_id} vanished after commit"), None),
@@ -279,7 +279,8 @@ pub fn envelope_of(row: &super::types::DeliveryRow) -> DeliveryEnvelope {
 
 /// `resolveFromEntries`: the address book's entries behind the engine's resolve seam.
 pub fn resolve_from_entries(entries: Arc<dyn Fn() -> Vec<GatewayAddressEntry> + Send + Sync>, caller_workspace_root: Arc<dyn Fn() -> String + Send + Sync>) -> GatewayResolve {
-    Arc::new(move |address: &str, all_scope: bool| {
+    Arc::new(move |address: &str, _all_scope: bool| {
+        let address = address.to_owned();
         let known = entries();
         let _ = caller_workspace_root();
         Box::pin(async move {
@@ -325,7 +326,7 @@ mod tests {
 
     #[test]
     fn a_steer_without_an_expected_turn_is_refused_before_resolution() {
-        let store: Arc<dyn super::store_api::GatewayStoreApi> = crate::thread::store::create_gateway_store(crate::thread::store::GatewayStoreOptions::new(std::env::temp_dir().join("maho-engine-test").to_string_lossy().into_owned())).expect("store");
+        let store: Arc<dyn crate::thread::store_api::GatewayStoreApi> = crate::thread::store::create_gateway_store(crate::thread::store::GatewayStoreOptions::new(std::env::temp_dir().join("maho-engine-test").to_string_lossy().into_owned())).expect("store");
         let engine = GatewayEngine::new(GatewayEngineOptions {
             sender_provenance: None,
             store,

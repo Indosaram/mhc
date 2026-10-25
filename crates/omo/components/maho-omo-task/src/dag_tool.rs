@@ -684,6 +684,7 @@ pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResul
                 Ok(snap) => snap,
                 Err(DagToolExecutionError::Manager(e)) => return Ok(manager_failure(e)),
                 Err(DagToolExecutionError::Control(e)) => return Ok(control_failure(e)),
+                Err(DagToolExecutionError::Guidance(e)) => return Ok(guidance_failure(e)),
                 Err(DagToolExecutionError::Tool(e)) => return Err(e),
             };
             let scope = selected.as_ref().map_or_else(
@@ -750,6 +751,7 @@ pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResul
                 Ok(outcome) => outcome,
                 Err(DagToolExecutionError::Manager(e)) => return Ok(manager_failure(e)),
                 Err(DagToolExecutionError::Control(e)) => return Ok(control_failure(e)),
+                Err(DagToolExecutionError::Guidance(e)) => return Ok(guidance_failure(e)),
                 Err(DagToolExecutionError::Tool(e)) => return Err(e),
             };
             let delivery_str = sent.delivery.as_str();
@@ -833,6 +835,7 @@ pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResul
                 Ok(snap) => snap,
                 Err(DagToolExecutionError::Manager(e)) => return Ok(manager_failure(e)),
                 Err(DagToolExecutionError::Control(e)) => return Ok(control_failure(e)),
+                Err(DagToolExecutionError::Guidance(e)) => return Ok(guidance_failure(e)),
                 Err(DagToolExecutionError::Tool(e)) => return Err(e),
             };
             Ok(tool_text(

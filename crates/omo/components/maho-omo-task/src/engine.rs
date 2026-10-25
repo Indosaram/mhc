@@ -287,7 +287,7 @@ pub fn compose_task_engine_with_clock(
         config: deps.config,
         agents,
         run_pause,
-        pause,
+        pause: Arc::new(pause),
         memory,
     }
 }

@@ -1139,7 +1139,8 @@ pub struct ScopedModel {
     pub thinking_level: Option<ThinkingLevel>,
     pub service_tier: Option<ServiceTier>,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ServiceTier {
     Auto,
     Flex,

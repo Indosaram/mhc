@@ -26,7 +26,7 @@ pub struct RetainedRegistration {
     pub registered_at: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ThreadCreationRecord {
     pub creator_durable_id: String,
     pub created_durable_id: String,

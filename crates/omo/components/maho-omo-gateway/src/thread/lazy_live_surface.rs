@@ -56,7 +56,7 @@ impl LazyLiveThreadSurface {
             wake: Arc::new(move |endpoint, ids| {
                 let handle = wake.clone();
                 Box::pin(async move {
-                    let surface = handle.surface()?;
+                    let surface = match handle.surface() { Ok(surface) => surface, Err(error) => return super::adapter::GatewayWakeReply { admitted: Vec::new(), unroutable: Some(error) } };
                     (surface.gateway().wake)(endpoint, ids).await
                 })
             }),
@@ -136,7 +136,7 @@ mod tests {
                 }
             }),
         );
-        assert_eq!(lazy.surface().expect_err("failed"), "host_unavailable:/run/host.sock");
+        assert_eq!(lazy.surface().err().expect("failed"), "host_unavailable:/run/host.sock");
         assert!(lazy.surface().is_err());
         assert_eq!(*attempts.lock().expect("attempts"), 2);
     }

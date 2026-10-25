@@ -189,8 +189,8 @@ impl GatewayThreadComponent {
                     for tool in admitted {
                         let execute = tool.execute.clone();
                         session_api.try_register_tool(ToolDefinition::new(
-                            tool.name,
-                            tool.description,
+                            &tool.name,
+                            &tool.description,
                             tool.parameters,
                             Arc::new(move |call| {
                                 let execute = execute.clone();

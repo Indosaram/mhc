@@ -383,6 +383,7 @@ impl TaskComponent {
                     component.status.observe_record(
                         &crate::store_mutation_observer::StoreMutation {
                             task_id: id.into(),
+                            previous_status: None,
                             record: record.cloned(),
                         },
                     );

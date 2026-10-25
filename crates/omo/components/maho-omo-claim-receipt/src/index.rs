@@ -185,10 +185,12 @@ impl Extension for ClaimReceiptComponent {
         );
 
         let settle_sessions = Arc::clone(&sessions);
+        let settle_surfaced = Arc::clone(&surfaced);
         api.on(
             EventKind::AgentBeforeSettle,
             Arc::new(move |event, ctx| {
                 let sessions = Arc::clone(&settle_sessions);
+                let surfaced = Arc::clone(&settle_surfaced);
                 Box::pin(async move {
                     let ExtensionEvent::AgentBeforeSettle {
                         entries, context, ..
