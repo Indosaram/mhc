@@ -21,16 +21,6 @@ pub const GIT_REFRESH_FLOOR_MS: u64 = 2_000;
 pub const MEMORY_REFRESH_FLOOR_MS: u64 = 5_000;
 pub const MEMORY_DETAIL_COLUMNS: usize = 48;
 pub const KIBITZER_WAKES_TAIL_BYTES: usize = 256 * 1024;
-pub const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
-pub const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 pub const CLAUDE_PROVIDERS: &[&str] = &["anthropic-subscription", "claude-sdk-oauth"];
 pub const CODEX_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai-codex"];
-pub const FIVE_HOUR_MS: u64 = 5 * 60 * 60 * 1_000;
-pub const WEEK_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
-pub const USAGE_TIMEOUT_MS: u64 = 10_000;
-pub const USAGE_CLAIM_MS: u64 = 30_000;
-pub const USAGE_MAX_BACKOFF_MS: u64 = 60 * 60 * 1_000;
-pub const USAGE_TTL_MS: UsageTtl = UsageTtl { claude: 300_000, codex: 150_000 };
 pub const MIN_ACCESS_TOKEN_LENGTH: usize = 40;
-#[derive(Clone, Copy, Debug)]
-pub struct UsageTtl { pub claude: u64, pub codex: u64 }
