@@ -31,6 +31,7 @@ pub fn order_idle_workers(workers: &[WorkpoolWorker]) -> Vec<WorkpoolWorker> {
 struct PendingRequest { pool_id: PoolId, worker_id: Option<String>, cancel: Option<Box<dyn FnOnce() + Send>> }
 
 struct DispatcherState {
+    holds: BTreeMap<PoolId, u64>,
     disposed: bool,
     credentials: BTreeMap<PoolId, ResumeCredential>,
     scheduled: BTreeSet<PoolId>,
@@ -52,10 +53,26 @@ pub struct WorkpoolDispatcher {
 impl WorkpoolDispatcher {
     pub fn new(store: WorkpoolStore, admission: Arc<dyn WorkpoolAdmission + Send + Sync>, emit: Emit, authorize: Authorize) -> Self {
         Self { store, admission, emit, authorize, state: Arc::new(Mutex::new(DispatcherState {
-            disposed: false, credentials: BTreeMap::new(), scheduled: BTreeSet::new(), pumping: BTreeSet::new(), pending: BTreeMap::new(), completions: BTreeMap::new(),
+            holds: BTreeMap::new(), credentials: BTreeMap::new(),
+            disposed: false, scheduled: BTreeSet::new(), pumping: BTreeSet::new(), pending: BTreeMap::new(), completions: BTreeMap::new(),
         })) }
     }
 
+    pub fn pause_for_run(&self, pool_id: &str, pause_seq: u64) {
+        { let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+          if state.holds.get(pool_id).is_some_and(|seq| *seq >= pause_seq) { return; }
+          state.holds.insert(pool_id.into(), pause_seq);
+          state.credentials.remove(pool_id);
+        }
+        self.cancel(pool_id);
+    }
+    pub fn resume_for_run(&self, pool_id: &str, pause_seq: u64, credential: crate::pause::admission_barrier::ResumeCredential) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.holds.get(pool_id).is_some_and(|seq| *seq != pause_seq) { return false; }
+        state.holds.remove(pool_id);
+        state.credentials.insert(pool_id.into(), credential);
+        true
+    }
     pub fn schedule(&self, pool_id: impl Into<PoolId>) {
         enqueue_schedule(self.store.clone(), Arc::clone(&self.admission), Arc::clone(&self.emit),
             Arc::clone(&self.authorize), Arc::clone(&self.state), pool_id.into());
@@ -126,6 +143,7 @@ impl WorkpoolDispatcher {
 
 fn pump(store: &WorkpoolStore, admission: &Arc<dyn WorkpoolAdmission + Send + Sync>, emit: &Emit, authorize: &Authorize,
     state: &Arc<Mutex<DispatcherState>>, pool_id: &str) -> Result<(), WorkpoolError> {
+    if state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).holds.contains_key(pool_id) { return Ok(()); }
     let pool = Arc::new(store.load(pool_id)?);
     if pool.hold.is_some() { return Ok(()); }
     if !matches!(pool.status, WorkpoolStatus::Open | WorkpoolStatus::Closing) { return Ok(()); }

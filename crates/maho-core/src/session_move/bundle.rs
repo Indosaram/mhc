@@ -1,5 +1,6 @@
 //! Port of senpi packages/coding-agent/src/core/session-move/bundle.ts.
 
+use std::io::Read;
 use std::path::{Component, Path};
 
 use serde::Serialize;
@@ -27,7 +28,17 @@ pub struct RepositoryIdentity {
     pub origin_url: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+pub const EXTENSION_STATE_PREFIX: &str = "state/";
+pub const KNOWN_PAYLOAD_KINDS: &[&str] = &["extension-state"];
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MovePayload {
+    pub kind: String,
+    pub files: Vec<BundleFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MoveManifest {
     pub format: u64,
     pub move_id: MoveId,
@@ -38,6 +49,7 @@ pub struct MoveManifest {
     pub session: BundleFile,
     pub sidecars: Vec<BundleFile>,
     pub dropped_user_messages: Vec<String>,
+    pub payloads: Vec<MovePayload>,
 }
 
 /// `MoveBundleInvalidError` (`code: "move_bundle_invalid"`).
@@ -69,7 +81,24 @@ impl std::fmt::Display for MoveBundleInvalidError {
 impl std::error::Error for MoveBundleInvalidError {}
 
 pub fn sha256_file(path: &Path) -> std::io::Result<String> {
-    Ok(hex::encode(Sha256::digest(std::fs::read(path)?)))
+    let mut file = std::fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0; 65536];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    Ok(hex::encode(hash.finalize()))
+}
+
+pub async fn sha256_file_async(path: &Path) -> std::io::Result<String> {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || sha256_file(&path))
+        .await
+        .map_err(std::io::Error::other)?
 }
 
 /// Both separators count: a bundle written on one OS is read on another.
@@ -196,6 +225,38 @@ fn string_field(manifest: &Value, key: &str) -> Result<String, MoveBundleInvalid
         .ok_or_else(|| MoveBundleInvalidError::new(format!("missing {key}")))
 }
 
+fn parse_payload(value: &Value) -> Result<MovePayload, MoveBundleInvalidError> {
+    let kind = value
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| MoveBundleInvalidError::new("a payload is malformed"))?;
+    let listed = value
+        .get("files")
+        .and_then(Value::as_array)
+        .ok_or_else(|| MoveBundleInvalidError::new("a payload is malformed"))?;
+    if !KNOWN_PAYLOAD_KINDS.contains(&kind) {
+        return Err(MoveBundleInvalidError::new(
+            "it carries a payload this version cannot import",
+        ));
+    }
+    let files = listed
+        .iter()
+        .map(parse_file)
+        .collect::<Result<Vec<_>, _>>()?;
+    for file in &files {
+        if !file.path.starts_with(EXTENSION_STATE_PREFIX) {
+            return Err(MoveBundleInvalidError::new(format!(
+                "an extension-state file is listed outside state/: {}",
+                file.path
+            )));
+        }
+    }
+    Ok(MovePayload {
+        kind: kind.to_owned(),
+        files,
+    })
+}
+
 pub fn read_manifest(bundle_dir: &Path) -> Result<MoveManifest, MoveBundleInvalidError> {
     let raw: Value = std::fs::read_to_string(bundle_dir.join(MANIFEST_FILE))
         .map_err(|error| error.to_string())
@@ -215,15 +276,17 @@ pub fn read_manifest(bundle_dir: &Path) -> Result<MoveManifest, MoveBundleInvali
     for key in ["moveId", "sessionId", "sessionFileName", "sourceCwd"] {
         string_field(&raw, key)?;
     }
-    if raw
+    let payloads = raw
         .get("payloads")
         .and_then(Value::as_array)
-        .is_some_and(|payloads| !payloads.is_empty())
-    {
-        return Err(MoveBundleInvalidError::new(
-            "it carries a payload this version cannot import",
-        ));
-    }
+        .map(|items| {
+            items
+                .iter()
+                .map(parse_payload)
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
     let mut dropped = Vec::new();
     if let Some(messages) = raw.get("droppedUserMessages").and_then(Value::as_array) {
         for message in messages {
@@ -251,6 +314,7 @@ pub fn read_manifest(bundle_dir: &Path) -> Result<MoveManifest, MoveBundleInvali
         session: parse_file(raw.get("session").unwrap_or(&Value::Null))?,
         sidecars,
         dropped_user_messages: dropped,
+        payloads,
     })
 }
 
@@ -258,7 +322,15 @@ pub fn verify_bundle(
     bundle_dir: &Path,
     manifest: &MoveManifest,
 ) -> Result<(), MoveBundleInvalidError> {
-    for file in std::iter::once(&manifest.session).chain(manifest.sidecars.iter()) {
+    for file in std::iter::once(&manifest.session)
+        .chain(manifest.sidecars.iter())
+        .chain(
+            manifest
+                .payloads
+                .iter()
+                .flat_map(|payload| payload.files.iter()),
+        )
+    {
         let actual = sha256_file(&bundle_dir.join(&file.path))
             .map_err(|_| MoveBundleInvalidError::new(format!("missing {}", file.path)))?;
         if actual != file.sha256 {
@@ -280,6 +352,18 @@ pub fn verify_bundle(
         ));
     }
     Ok(())
+}
+
+/// Keep bundle verification off the async executor while streaming large files.
+pub async fn verify_bundle_async(
+    bundle_dir: &Path,
+    manifest: &MoveManifest,
+) -> Result<(), MoveBundleInvalidError> {
+    let dir = bundle_dir.to_owned();
+    let manifest = manifest.clone();
+    tokio::task::spawn_blocking(move || verify_bundle(&dir, &manifest))
+        .await
+        .map_err(|error| MoveBundleInvalidError::new(error.to_string()))?
 }
 
 #[cfg(test)]

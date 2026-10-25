@@ -338,6 +338,12 @@ impl TaskComponent {
                 }
             },
         )));
+        let weak_cost = Arc::downgrade(&component);
+        component.engine.store.set_record_listener(Some(Arc::new(move |id, record| {
+            if let Some(component) = weak_cost.upgrade() {
+                component.status.observe_record(&crate::store_mutation_observer::StoreMutation { task_id: id.into(), record: record.cloned() });
+            }
+        })));
         let weak = Arc::downgrade(&component);
         let mutation_eval_handles = eval_handles.clone();
         component
@@ -1043,6 +1049,7 @@ impl TaskComponent {
             return;
         }
         self.set_team_routing(None);
+        self.engine.store.set_record_listener(None);
         self.engine.store.set_mutation_listener(None);
         self.engine.store.set_write_listener(None);
         if let Some(observer) = self

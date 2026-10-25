@@ -114,7 +114,8 @@ fn event_capture_options_preserve_valid_uuid_timestamp_and_reject_invalid_uuid()
         &props(json!({"reason": "startup"})),
         Some(&EventTelemetryCaptureOptions {
             uuid: Some("01234567-89ab-cdef-0123-456789abcdef".into()),
-            timestamp: Some(timestamp.clone()),
+            timestamp: Some(timestamp.parse().unwrap()),
+            ..Default::default()
         }),
     );
     client.capture_event_with_options(
@@ -123,6 +124,7 @@ fn event_capture_options_preserve_valid_uuid_timestamp_and_reject_invalid_uuid()
         Some(&EventTelemetryCaptureOptions {
             uuid: Some("not-a-uuid".into()),
             timestamp: None,
+            ..Default::default()
         }),
     );
 

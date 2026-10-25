@@ -114,10 +114,10 @@ pub struct WorkpoolRecord {
     pub version: u8, pub pool_id: PoolId, pub name: String, pub parent_session_id: String, pub root_session_id: String,
     pub generation: u32, pub revision: u32, pub mode: WorkpoolMode, pub agent: WorkpoolAgent, pub worker_spec: WorkpoolSpec,
     pub status: WorkpoolStatus, pub kernel_tool_names: Option<Vec<String>>, pub items: Vec<WorkpoolItem>, pub workers: Vec<WorkpoolWorker>,
-    pub aggregate: Option<WorkpoolAggregate>,
     pub hold: Option<WorkpoolHold>,
+    pub aggregate: Option<WorkpoolAggregate>,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkpoolHold { pub reason: WorkpoolHoldReason, #[serde(rename = "pauseSeq")] pub pause_seq: u64 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
