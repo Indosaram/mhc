@@ -1977,7 +1977,10 @@ impl RpcConnectionHandler {
         {
             let outcome = self.relocation.respond(frame, connection.unwrap_or("sole"));
             return crate::jsonl::serialize_json_line(
-                &crate::session_relocation_channel::answer_host_response(frame, Some(&mut |_| outcome)),
+                &crate::session_relocation_channel::answer_host_response(
+                    frame,
+                    Some(&mut |_| outcome),
+                ),
             )
             .map(Some);
         }
@@ -2085,7 +2088,9 @@ impl RpcConnectionHandler {
                         task_parent,
                     )),
                     "withdraw_held_input" => Some(if interactive {
-                        self.session.withdraw_held_input(value["inputId"].as_str().unwrap_or_default()).map(|withdrawn|serde_json::json!({"withdrawn":withdrawn}))
+                        self.session
+                            .withdraw_held_input(value["inputId"].as_str().unwrap_or_default())
+                            .map(|withdrawn| serde_json::json!({"withdrawn":withdrawn}))
                     } else {
                         Err("withdraw_held_input_requires_interactive_client".into())
                     }),
