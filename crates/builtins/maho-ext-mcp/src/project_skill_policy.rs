@@ -201,7 +201,7 @@ impl ProjectMcpAuthority {
         }
         let decision = decision_lock(&self.store_path, &self.identity);
         let (_decision, shared_decision) = join_decision(decision).await;
-        let mut names = effective_grant_names(&read(&self.store_path), &self.identity);
+        let names = effective_grant_names(&read(&self.store_path), &self.identity);
         if !self.first.swap(false, std::sync::atomic::Ordering::AcqRel) {
             let policy = crate::project_env::project_mcp_environment(
                 &self.raw,
@@ -247,13 +247,16 @@ impl ProjectMcpAuthority {
                         &self.store_path,
                         &self.identity,
                         GrantLabel {
-                            project: self.cwd.display().to_string(),
-                            skill: String::new(),
+                            project: self.project_root.display().to_string(),
+                            skill: self.skill_name.clone(),
                             server: self.name.clone(),
                         },
                         &policy.withheld,
                     ) {
-                        Ok(snapshot) => names = effective_grant_names(&snapshot, &self.identity),
+                        Ok(_) => ui.notify(
+                            &format!("Saved MCP environment grant for {}", self.name),
+                            maho_ext_api::NotificationType::Info,
+                        ),
                         Err(error) => ui.notify(
                             &format!("Could not save MCP environment grant: {error}"),
                             maho_ext_api::NotificationType::Error,
@@ -262,6 +265,20 @@ impl ProjectMcpAuthority {
                 }
             }
         }
+        if identity_for_roots(
+            &self.name,
+            &self.source_path,
+            &current_raw(&self.name, &self.source_path)?,
+            &self.project_root,
+            &self.cwd,
+        )? != self.identity
+        {
+            return Err(McpError::new(
+                McpErrorKind::Connect,
+                "Project MCP declaration changed; reload its skills",
+            ));
+        }
+        let names = effective_grant_names(&read(&self.store_path), &self.identity);
         let materialized = self.materialize(&names)?;
         *self
             .started_names
