@@ -98,12 +98,16 @@ fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), UnsupportedStr
             Some(variants) if !variants.is_empty() => variants.clone(),
             _ => return Err(UnsupportedStrictJsonSchemaError::new("anyOf must contain at least one schema")),
         };
-        for variant in &variants {
-            if is_structured_schema(variant) {
+        let mut strict_variants = Vec::with_capacity(variants.len());
+        for mut variant in variants {
+            if is_structured_schema(&variant) {
                 return Err(UnsupportedStrictJsonSchemaError::new("object and array unions are unsupported"));
             }
-            let mut variant = variant.clone();
             make_json_schema_node_strict(&mut variant)?;
+            strict_variants.push(variant);
+        }
+        if let Some(object) = schema.as_object_mut() {
+            object.insert("anyOf".to_owned(), Value::Array(strict_variants));
         }
     }
 
@@ -113,6 +117,9 @@ fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), UnsupportedStr
         }
         let mut items = items.clone();
         make_json_schema_node_strict(&mut items)?;
+        if let Some(object) = schema.as_object_mut() {
+            object.insert("items".to_owned(), items);
+        }
     }
 
     let is_object_schema = schema.get("type").and_then(Value::as_str) == Some("object");
@@ -358,4 +365,17 @@ pub fn create_grammar_tool_input_properties(
         }
     }
     Ok(properties)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::make_strict_json_schema;
+    use serde_json::json;
+
+    #[test]
+    fn strict_schema_rewrites_array_items_objects() {
+        let schema = json!({"type":"object","properties":{"edits":{"type":"array","items":{"type":"object","properties":{"oldText":{"type":"string"}},"required":["oldText"]}}},"required":["edits"]});
+        let strict = make_strict_json_schema(&schema).expect("schema is strict-compatible");
+        assert_eq!(strict["properties"]["edits"]["items"]["additionalProperties"], json!(false));
+    }
 }
