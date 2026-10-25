@@ -15,6 +15,7 @@ use std::{
 use tokio::sync::{broadcast, watch};
 type ConnectResult = Option<Result<Arc<McpClient>, McpError>>;
 struct ConnectionInner {
+    authorization: maho_ai::utils::abort::AbortController,
     state: ServerConnectionState,
     generation: u64,
     last_error: Option<McpError>,
@@ -55,6 +56,7 @@ impl ServerConnection {
             logger,
             inner: Mutex::new(ConnectionInner {
                 state,
+                authorization: maho_ai::utils::abort::AbortController::new(),
                 generation: 0,
                 last_error: None,
                 transport: None,
@@ -239,11 +241,17 @@ impl ServerConnection {
         self: &Arc<Self>,
         generation: u64,
     ) -> Result<Arc<McpClient>, McpError> {
+        let signal = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .authorization
+            .signal();
         let materialized =
             match crate::project_skill_policy::get_project_mcp_authority(&self.config) {
                 Some(authority) => Some(
                     crate::project_stdio_transport::ProjectStdioTransport::new(authority)
-                        .start()
+                        .start_with_signal(Some(signal))
                         .await?,
                 ),
                 None => None,
@@ -422,6 +430,8 @@ impl ServerConnection {
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inner.authorization.abort(None);
+            inner.authorization = maho_ai::utils::abort::AbortController::new();
             inner.generation += 1;
             inner.pending = None;
             if clear_error {

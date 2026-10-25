@@ -22,6 +22,7 @@ pub struct GoalDelivery {
     subscriptions: Mutex<Vec<maho_ext_api::BusSubscription>>,
     todo_backstop: Mutex<crate::todo_owed_backstop::TodoOwedBackstop>,
     pub lifecycle: Arc<crate::lifecycle_facts::GoalLifecycleCollector>,
+    neutral_lifecycle: Mutex<Option<Arc<maho_ext_api::goal_lifecycle::GoalLifecycleService>>>,
     last_facts: Arc<Mutex<Option<crate::lifecycle_facts::GoalLifecycleFacts>>>,
 }
 impl GoalDelivery {
@@ -58,6 +59,7 @@ impl GoalDelivery {
             subscriptions: Mutex::new(Vec::new()),
             todo_backstop: Default::default(),
             lifecycle: Default::default(),
+            neutral_lifecycle: Default::default(),
             last_facts: Default::default(),
         }
     }
@@ -372,6 +374,28 @@ impl GoalDelivery {
     ) -> Result<(), ExtensionFailure> {
         match event {
             ExtensionEvent::SessionStart(start) => {
+                let neutral = maho_ext_api::goal_lifecycle::goal_lifecycle_service(
+                    ctx.session_manager.session_id(),
+                );
+                let publish = neutral.clone();
+                self.lifecycle
+                    .on_goal_lifecycle_change(Arc::new(move |goal| {
+                        publish.transition(goal.map(|goal| {
+                            maho_ext_api::goal_lifecycle::LifecycleGoal {
+                                id: goal.id.clone(),
+                                status: match goal.status {
+                                    GoalStatus::Active => "active",
+                                    GoalStatus::Paused => "paused",
+                                    GoalStatus::Blocked => "blocked",
+                                    GoalStatus::Complete => "complete",
+                                }
+                                .into(),
+                                continuation_stopped: goal.continuation_stopped_at.is_some(),
+                            }
+                        }));
+                    }));
+                *self.neutral_lifecycle.lock().map_err(failure)? = Some(neutral);
+                self.lifecycle.goal_lifecycle_changed(goal);
                 crate::lifecycle_facts::bind_session_lifecycle(
                     &(self.reference)(ctx),
                     &self.lifecycle,
@@ -553,6 +577,9 @@ impl GoalDelivery {
                     (self.now)() as i64,
                 )?;
                 crate::turn_end_liveness_report::report_turn_end_liveness(&self.api, ctx, &input);
+                if let Some(service) = self.neutral_lifecycle.lock().map_err(failure)?.as_ref() {
+                    service.turn_end(serde_json::to_value(&input).map_err(failure)?);
+                }
                 *self.last_facts.lock().map_err(failure)? =
                     Some(crate::lifecycle_facts::GoalLifecycleFacts {
                         goal: goal.cloned(),
@@ -655,6 +682,7 @@ impl GoalDelivery {
             }
             ExtensionEvent::SessionShutdown(_) => {
                 self.lifecycle.retire();
+                self.neutral_lifecycle.lock().map_err(failure)?.take();
                 *self.last_facts.lock().map_err(failure)? = None;
                 self.pending.store(false, Ordering::Release);
                 self.subscriptions.lock().map_err(failure)?.clear();
@@ -701,6 +729,146 @@ mod tests {
         fn get_all_tools(&self) -> Result<Vec<maho_ext_api::ToolInfo>, ExtensionFailure> {
             Ok(Vec::new())
         }
+    }
+    #[tokio::test]
+    async fn backstop_real_branch_delivers_caps_and_resets_on_progress() {
+        use maho_ext_api::*;
+        struct Branch {
+            entries: Mutex<Vec<SessionEntry>>,
+            actions: Arc<dyn ExtensionContextActions>,
+        }
+        impl ToolSessionManager for Branch {
+            fn session_id(&self) -> &str {
+                "backstop"
+            }
+            fn session_file(&self) -> Option<&std::path::Path> {
+                None
+            }
+        }
+        impl SessionManager for Branch {
+            fn get_entries(&self) -> Vec<SessionEntry> {
+                self.entries.lock().unwrap().clone()
+            }
+            fn get_branch(&self) -> Vec<SessionEntry> {
+                self.get_entries()
+            }
+            fn get_leaf_id(&self) -> Option<String> {
+                None
+            }
+            fn get_session_name(&self) -> Option<String> {
+                None
+            }
+            fn extension_context_actions(&self) -> Option<&dyn ExtensionContextActions> {
+                Some(self.actions.as_ref())
+            }
+        }
+        let mut ctx = crate::test_context::context();
+        let session = crate::test_context::bind_session(&mut ctx);
+        let entry = |remaining: bool| SessionEntry {
+            id: "todo".into(),
+            parent_id: None,
+            timestamp: String::new(),
+            kind: "message".into(),
+            data: serde_json::json!({"message":{"role":"toolResult","toolName":"todo","details":{"op":"init","phases":[{"name":"Build","tasks":[{"content":"Write parser","status":if remaining {"in_progress"}else{"completed"}},{"content":"Wire parser","status":"pending"}]}],"storage":"memory"}}}),
+        };
+        let branch = Arc::new(Branch {
+            entries: Mutex::new(vec![entry(true)]),
+            actions: session.extension_context_actions(),
+        });
+        ctx.session_manager = branch.clone();
+        let capture = Arc::new(Capture(Mutex::new(Vec::new())));
+        let transport = ExtensionRuntime::default();
+        transport.bind(capture.clone());
+        let api = ExtensionApi::new(
+            LoadedExtension::new("goal", "/tmp".into(), Default::default()),
+            Default::default(),
+            Default::default(),
+            transport,
+        );
+        let event = maho_core::agent_abort_provenance::AgentEndEvent {
+            messages: vec![maho_agent::types::AgentMessage::Llm(
+                maho_ai::types::Message::Assistant(Box::new(
+                    maho_ai::providers::faux::faux_assistant_message(
+                        "Continuing parser work.",
+                        Default::default(),
+                    ),
+                )),
+            )],
+            aborted: false,
+            abort_source: None,
+            will_retry: false,
+        };
+        let mut backstop = crate::todo_owed_backstop::TodoOwedBackstop::default();
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &event, None, false, &["child".into()], true)
+                .unwrap(),
+            "waiting"
+        );
+        assert!(capture.0.lock().unwrap().is_empty());
+        for expected in ["delivered", "delivered", "capped", "cap"] {
+            assert_eq!(
+                backstop
+                    .after_agent_end(&api, &ctx, &event, None, false, &[], true)
+                    .unwrap(),
+                expected
+            );
+        }
+        assert_eq!(capture.0.lock().unwrap().len(), 2);
+        branch.entries.lock().unwrap()[0] = entry(false);
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &event, None, false, &[], true)
+                .unwrap(),
+            "delivered"
+        );
+        assert_eq!(capture.0.lock().unwrap().len(), 3);
+        backstop.reset_chain();
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &event, None, false, &[], false)
+                .unwrap(),
+            "disabled"
+        );
+        let mut aborted = event.clone();
+        aborted.aborted = true;
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &aborted, None, false, &[], true)
+                .unwrap(),
+            "not-clean"
+        );
+        let mut question = event.clone();
+        question.messages = vec![maho_agent::types::AgentMessage::Llm(
+            maho_ai::types::Message::Assistant(Box::new(
+                maho_ai::providers::faux::faux_assistant_message(
+                    "Which parser?",
+                    Default::default(),
+                ),
+            )),
+        )];
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &question, None, false, &[], true)
+                .unwrap(),
+            "question"
+        );
+        ctx.mode = ExtensionMode::Print;
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &event, None, false, &[], true)
+                .unwrap(),
+            "non-interactive"
+        );
+        ctx.mode = ExtensionMode::Tui;
+        branch.entries.lock().unwrap().clear();
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &event, None, false, &[], true)
+                .unwrap(),
+            "no-open-tasks"
+        );
+        session.dispose().await;
     }
     #[tokio::test]
     async fn concurrent_admission_delivers_once_and_records_before_followup() {
