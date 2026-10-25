@@ -256,6 +256,7 @@ struct Inner {
     admission_barrier: crate::pause::admission_barrier::AdmissionBarrier,
     child_pause: Arc<dyn crate::pause::ports::ChildPausePort>,
     held_callback: Option<crate::manager::start_admission::HeldCallback>,
+    host_status_publication: Mutex<()>,
     trusted_respawn_launch: Option<crate::manager::types::TrustedRespawnLaunchResolver>,
     host_pid: i64,
     rpc_respawn_runner: Arc<dyn RpcRespawnRunner>,
@@ -478,6 +479,7 @@ impl TaskManager {
                 fallible_admit: options.fallible_admit,
                 traceparent_for: options.traceparent_for,
                 held_callback: options.on_held_admission,
+                host_status_publication: Mutex::new(()),
                 admission_barrier: options.admission_barrier.unwrap_or_default(),
                 child_pause: options.child_pause_port.unwrap_or_else(|| {
                     Arc::new(crate::pause::native_child_pause::NativeChildPausePort)
@@ -3377,6 +3379,7 @@ impl Inner {
                 log("senpi-task self-resumed reopen failed", &resumed_id, &error);
                 return;
             }
+            let publication = lock(&inner.host_status_publication);
             if let Err(error) = handle.publish_task_status(TaskStatus::Running) {
                 log(
                     "senpi-task self-resumed running publication failed",
@@ -3384,6 +3387,7 @@ impl Inner {
                     &error,
                 );
             }
+            drop(publication);
             inner.reacquire_for_revive(&resumed_id, record.notification.run_epoch);
         }));
         Box::new(move || {
@@ -3747,9 +3751,12 @@ impl Inner {
                 let task_id = task_id.to_string();
                 let manager = self.this.clone();
                 std::thread::spawn(move || {
-                    let status = manager
-                        .upgrade()
-                        .and_then(|inner| inner.try_load(&task_id))
+                    let Some(inner) = manager.upgrade() else {
+                        return;
+                    };
+                    let _publication = lock(&inner.host_status_publication);
+                    let status = inner
+                        .try_load(&task_id)
                         .map_or(status, |record| record.status);
                     if let Err(error) = handle.publish_task_status(status) {
                         log(
