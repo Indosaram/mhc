@@ -2099,6 +2099,34 @@ impl ExtensionRunner {
         }
         Ok(result)
     }
+    /// Move handlers refuse sealing on any failure; every handler still runs in load order.
+    pub async fn emit_session_move(&mut self, event: ExtensionEvent) -> Result<Vec<(String, String)>, ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let kind = event.kind();
+        if let Some(resolve) = &self.shutdown_budget { (self.shutdown_warn_ms,self.shutdown_timeout_ms)=resolve(); }
+        let mut failures = Vec::new();
+        for (path, handler) in self.handlers(kind) {
+            let context = self.create_context_for_extension(Some(&path))?;
+            let mut current = event.clone();
+            let signal = AbortSignal::default();
+            match &mut current {
+                ExtensionEvent::SessionMoveExport { signal: local, .. }
+                | ExtensionEvent::SessionMoveImport { signal: local, .. } => *local = signal.clone(),
+                _ => return Err(ExtensionFailure::new("not a session move event")),
+            }
+            let task = tokio::spawn(async move { handler(&mut current, &context).await });
+            let result = if self.shutdown_timeout_ms == 0 { task.await.map_err(|e| e.to_string()).and_then(|r|r.map_err(|e|e.to_string())) }
+            else {
+                match tokio::time::timeout(Duration::from_millis(self.shutdown_timeout_ms), task).await {
+                    Ok(result) => result.map_err(|e|e.to_string()).and_then(|r|r.map_err(|e|e.to_string())),
+                    Err(_) => { signal.abort(); Err(format!("handler timed out after {}ms", self.shutdown_timeout_ms)) }
+                }
+            };
+            if let Err(error) = result { failures.push((path, error)); }
+        }
+        Ok(failures)
+    }
+
     async fn run_shutdown(
         &mut self,
         path: &str,
