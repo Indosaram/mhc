@@ -367,6 +367,12 @@ pub async fn run_eval_cell(
     };
     let steering_active = active.clone();
     let outer_kernel_tools = kernel_tools.clone();
+    let failed_execution = execution.clone();
+    let failed_manager = manager.clone();
+    let failed_cell = cell.clone();
+    let failed_options = options.clone();
+    let failed_cell_id = invocation.cell_id.clone();
+    let failed_language = invocation.input.language;
     let run_bound = async move {
         let _context_guard = context_guard;
         let operation = kernel.run(run_input);
@@ -594,15 +600,68 @@ pub async fn run_eval_cell(
                     .fail(&work_cell, error);
             }
         }
-        let _ = result_tx.send(final_result);
+        final_result
     };
-    tokio::spawn(async move {
+    let worker = tokio::spawn(async move {
         match outer_kernel_tools {
             Some(tools) => {
                 maho_ext_host::kernel_tools_context::with_kernel_tools(tools, run_bound).await
             }
             None => run_bound.await,
         }
+    });
+    // The supervisor outlives the foreground wait, including after a cell detaches.
+    // A panicking host tool must not strand the managed cell or its kernel queue.
+    tokio::spawn(async move {
+        let result = match worker.await {
+            Ok(result) => result,
+            Err(error) => {
+                let error = format!("Eval execution task failed: {error}");
+                failed_execution.cancel(AbortReason::new("Error", &error));
+                let pending = async {
+                    let handle = failed_execution.wait_interrupt_handle().await?;
+                    let retained = handle.state_retained.await.ok()?;
+                    Some((retained, handle.note))
+                };
+                let outcome = tokio::time::timeout(
+                    std::time::Duration::from_millis(super::interrupt_note::TIMEOUT_STATE_GRACE_MS),
+                    pending,
+                )
+                .await
+                .ok()
+                .flatten();
+                if let Some((retained, note)) = outcome {
+                    let mut cell = failed_cell.lock().expect("managed cell lock");
+                    cell.source.state_retained = Some(retained);
+                    cell.source.interrupt_note = note;
+                }
+                failed_execution.finish();
+                let detached = failed_cell.lock().expect("managed cell lock").was_detached;
+                failed_manager.lock().expect("cell manager lock").fail(&failed_cell, &error);
+                if let Some(callback) = &failed_options.on_cell_settled {
+                    let completed_at = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .expect("system clock")
+                        .as_secs_f64() * 1000.0;
+                    callback(super::eval_execution_event::build_eval_execution_event_payload(
+                        super::eval_execution_event::BuildEvalExecutionEventOptions {
+                            cell_id: &failed_cell_id,
+                            language: failed_language,
+                            started_at,
+                            completed_at,
+                            queued_ms: 0.0,
+                            detached,
+                            metrics: &[],
+                            tool_calls: &[],
+                            state_error: Some(&error),
+                            outcome: super::eval_execution_event::EvalExecutionSettleOutcome::Error(&error),
+                        },
+                    ));
+                }
+                Err(error)
+            }
+        };
+        let _ = result_tx.send(result);
     });
     let steering = invocation
         .steering_signal

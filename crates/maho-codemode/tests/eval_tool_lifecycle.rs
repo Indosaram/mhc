@@ -34,6 +34,65 @@ struct CapacityKernel {
     admitted: tokio::sync::mpsc::UnboundedSender<String>,
     pending: Mutex<HashMap<String,tokio::sync::oneshot::Sender<serde_json::Value>>>,
 }
+
+struct PanickingExecutor {
+    entered: tokio::sync::mpsc::UnboundedSender<()>,
+    release: Arc<tokio::sync::Notify>,
+}
+impl maho_codemode::bridges::output_bridge::OutputExecuteTool for PanickingExecutor {
+    fn execute_tool<'a>(&'a self, _: &'a str, _: serde_json::Value, _: maho_ext_api::ExecuteToolOptions) -> maho_ext_api::ExecuteToolFuture<'a> {
+        Box::pin(async move {
+            self.entered.send(()).expect("host entered");
+            self.release.notified().await;
+            panic!("host tool panic fixture");
+        })
+    }
+}
+
+#[tokio::test]
+async fn host_tool_panic_settles_cell_and_releases_kernel_queue() {
+    for detached in [false, true] {
+        let kernel=Arc::new(JavaScriptKernel::start(std::path::Path::new(env!("CARGO_MANIFEST_DIR")), "panic-lifecycle", 4, None).await.expect("kernel"));
+        let cells=Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default())));
+        let (entered,mut host_calls)=tokio::sync::mpsc::unbounded_channel();
+        let release=Arc::new(tokio::sync::Notify::new());
+        let (settled,mut settlements)=tokio::sync::mpsc::unbounded_channel();
+        let mut options=CreateEvalToolOptions::new(Arc::new(Manager(kernel.clone())),Arc::new(PanickingExecutor {entered,release:release.clone()}),cells.clone(),Arc::new(Images));
+        options.mode="tui".into();
+        options.on_cell_settled=Some(Arc::new(move |event| {settled.send(event).expect("settled receiver");}));
+        let options=Arc::new(options);
+        let tool=create_eval_tool(options.clone()).expect("eval tool");
+        let steering=maho_ext_api::AbortSignal::default();
+        let steering_signal=steering.clone();
+        let run=tokio::spawn(async move {
+            maho_codemode::tool::run_eval_cell::run_eval_cell(options,EvalCellInvocation {
+                cell_id:"panicking-cell".into(),
+                input:EvalToolInput {language:EvalLanguage::Js,code:"await tool.crash({})".into(),summary:"panic recovery".into(),action:None,timeout:None,on_timeout:Some(TimeoutBehavior::Detach),reset:None,isolate:None},
+                signal:maho_ai::utils::abort::AbortController::new().signal(),steering_signal:Some(steering_signal),on_update:None,context:None,model:None,mode:"tui".into(),owner_session_id:None,
+            }).await
+        });
+        tokio::time::timeout(Duration::from_secs(10),host_calls.recv()).await.expect("host started").expect("host event");
+        if detached {steering.abort();}
+        let mut run=Some(run);
+        if detached {
+            let result=tokio::time::timeout(Duration::from_secs(5),run.take().expect("run")).await.expect("detached").expect("join").expect("result");
+            assert_eq!(result.details["cells"][0]["status"],"detached");
+        }
+
+        release.notify_one();
+
+        tokio::time::timeout(Duration::from_secs(10),settlements.recv()).await.expect("settled").expect("settlement event");
+        if let Some(run)=run {
+            let error=run.await.expect("join").expect_err("panic returned as error");
+            assert!(error.to_string().contains("host tool panic fixture"));
+        }
+        assert_eq!(cells.lock().expect("cells").peek("panicking-cell").expect("snapshot").state,maho_codemode::tool::detached_cell_contract::EvalDetachedCellState::Failed);
+        assert!(cells.lock().expect("cells").live_cells(None,None).is_empty());
+        let next=tokio::time::timeout(Duration::from_secs(10),(tool.execute)(ToolCall {id:"after-panic",params:json!({"language":"js","code":"print(42)","summary":"queue recovered"}),signal:AbortSignal::default(),on_update:None,context:None})).await;
+        kernel.close().await.expect("close kernel");
+        assert_ne!(next.expect("next cell finishes").expect("next result").is_error,Some(true));
+    }
+}
 impl EvalKernel for CapacityKernel {
     fn run(&self,input:EvalKernelRunInput)->EvalKernelFuture<'_,serde_json::Value> {
         Box::pin(async move {
