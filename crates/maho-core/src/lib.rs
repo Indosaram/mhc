@@ -256,3 +256,7 @@ pub(crate) mod test_support {
         }
     }
 }
+
+pub mod transcript_write_failures;
+pub mod work_custody_record;
+pub mod work_obligations;
