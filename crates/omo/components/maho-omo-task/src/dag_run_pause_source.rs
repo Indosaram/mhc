@@ -8,9 +8,7 @@ use std::sync::Arc;
 
 use senpi_task::{
     dag::{
-        manager::DagRunRecordV1,
-        paused_controls::{DagPauseStore, DagRunPauseReason},
-        scheduler::DagSchedulerOptions,
+        manager::DagRunRecordV1, paused_controls::DagPauseStore, scheduler::DagSchedulerOptions,
         types::DagRunStatus,
     },
     pause::{
@@ -35,9 +33,17 @@ pub struct DagRunPauseSourcePorts {
     pub retire: Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
     pub prepare_resume: Arc<dyn Fn(&str) + Send + Sync>,
     /// `installResumedRun`: `Ok(true)` when a scheduler was installed.
-    pub install_resumed_run:
-        Arc<dyn Fn(&str, &str, u64, &ResumeCredential) -> Result<bool, String> + Send + Sync>,
-    pub adopt: Arc<dyn Fn(&str) + Send + Sync>,
+    pub install_resumed_run: Arc<
+        dyn Fn(
+                &str,
+                &str,
+                u64,
+                &ResumeCredential,
+            ) -> Result<senpi_task::dag::recovery::InstalledDagRun, String>
+            + Send
+            + Sync,
+    >,
+    pub adopt: Arc<dyn Fn(senpi_task::dag::recovery::InstalledDagRun) + Send + Sync>,
     pub cancel_run: Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
     pub deliver_guidance: Option<DagGuidanceDelivery>,
 }
@@ -102,24 +108,30 @@ impl DagRunPauseSource {
 struct SourceGuidancePorts<'a> {
     source: &'a DagRunPauseSource,
     record: DagRunRecordV1,
-    saved: std::sync::Mutex<Vec<Guidance>>,
 }
 
 impl GuidancePorts for SourceGuidancePorts<'_> {
     type Error = String;
     fn save(&mut self, records: &[Guidance]) -> Result<(), String> {
-        let mut state = self
-            .source
-            .ports
-            .pauses
-            .read(&self.record.run_id)
+        let journal = senpi_task::dag::node_control_context::control_journal(
+            &(self.source.ports.options)(&self.record),
+            self.record.clone(),
+            std::collections::BTreeMap::new(),
+        )
+        .map_err(|error| error.to_string())?;
+        for record in records {
+            let guidance = serde_json::from_value(
+                serde_json::to_value(record).map_err(|error| error.to_string())?,
+            )
             .map_err(|error| error.to_string())?;
-        state.guidance = records.to_vec();
-        self.source
-            .ports
-            .pauses
-            .write(&self.record.run_id, &state)
-            .map_err(|error| error.to_string())
+            let payload = if record.state == senpi_task::pause::guidance::GuidanceState::Delivered {
+                senpi_task::dag::types::DagRunEventPayload::GuidanceDelivered { guidance }
+            } else {
+                senpi_task::dag::types::DagRunEventPayload::GuidanceDispatching { guidance }
+            };
+            journal.append(payload).map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
     fn deliver(&mut self, task: &str, input: GuidanceInput) -> Result<Option<String>, String> {
         self.source
@@ -163,7 +175,7 @@ impl RunPauseSource for DagRunPauseSource {
             ) {
                 continue;
             }
-            let mut state = self.ports.pauses.read(&current.run_id).unwrap_or_default();
+            let state = self.ports.pauses.read(&current.run_id).unwrap_or_default();
             if state
                 .pause
                 .as_ref()
@@ -173,12 +185,25 @@ impl RunPauseSource for DagRunPauseSource {
             {
                 continue;
             }
-            // The durable user_stop lands beside the run, then the journal records it.
-            state.pause = Some(senpi_task::dag::paused_controls::DagRunPause {
-                reason: DagRunPauseReason::UserStop,
-                pause_seq: Some(pause_seq),
-            });
-            let _ = self.ports.pauses.write(&current.run_id, &state);
+            let options = (self.ports.options)(&current);
+            let journal = senpi_task::dag::node_control_context::control_journal(
+                &options,
+                current.clone(),
+                std::collections::BTreeMap::new(),
+            );
+            match journal.and_then(|journal| {
+                journal
+                    .append(senpi_task::dag::types::DagRunEventPayload::RunPaused {
+                        reason: Some("user_stop".into()),
+                        pause_seq: Some(pause_seq),
+                    })
+                    .map(|_| ())
+            }) {
+                Ok(()) => {}
+                Err(error) => {
+                    maho_ext_api::diagnostic(&format!("DAG Stop checkpoint failed: {error}"))
+                }
+            }
         }
     }
 
@@ -196,9 +221,8 @@ impl RunPauseSource for DagRunPauseSource {
                 let mut ports = SourceGuidancePorts {
                     source: self,
                     record: record.clone(),
-                    saved: std::sync::Mutex::new(Vec::new()),
                 };
-                if let Err(error) = dispatch_guidance(&state.guidance, &targets, &mut ports) {
+                if let Err(error) = dispatch_guidance(&[entry.clone()], &targets, &mut ports) {
                     eprintln!(
                         "[omo-task] dag guidance dispatch failed: run={} guidance={} error={error}",
                         record.run_id, entry.id
@@ -236,6 +260,7 @@ impl RunPauseSource for DagRunPauseSource {
                 }
                 AdmissionEntry::Entered { ticket } => ticket,
             };
+            (self.ports.prepare_resume)(&record.run_id);
             let installed = (self.ports.install_resumed_run)(
                 &record.run_id,
                 &record.parent_session_id,
@@ -243,16 +268,15 @@ impl RunPauseSource for DagRunPauseSource {
                 credential,
             );
             if ticket.check() != senpi_task::pause::admission_barrier::AdmissionCheck::Allowed {
+                if let Ok(installed) = installed {
+                    installed.scheduler.suspend();
+                    let _ = installed.settled.join();
+                }
                 ticket.leave();
                 return Err(senpi_task::manager::run_pause::RunPauseAdmissionHeld.to_string());
             }
-            (self.ports.prepare_resume)(&record.run_id);
             match installed {
-                Ok(true) => (self.ports.adopt)(&record.run_id),
-                Ok(false) => {
-                    ticket.leave();
-                    return Err("DAG installation refused: not_installed".into());
-                }
+                Ok(installed) => (self.ports.adopt)(installed),
                 Err(error) => {
                     ticket.leave();
                     return Err(format!("DAG installation refused: {error}"));

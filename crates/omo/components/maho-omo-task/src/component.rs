@@ -127,6 +127,7 @@ pub struct TaskComponent {
     dag: Mutex<Option<Arc<crate::dag_engine::TaskDagEngine>>>,
     /// `event-bridge.ts` pause custody: restored before the reconcile, applied on the host's Resume.
     pause_custody: Mutex<Option<crate::event_bridge::TaskPauseCustody>>,
+    pause_subscription: Mutex<Option<maho_ext_api::BusSubscription>>,
 }
 impl TaskComponent {
     /// `event-bridge.ts` pause custody: restored on session start, applied on the host's Resume edge.
@@ -143,7 +144,10 @@ impl TaskComponent {
         api: &mut ExtensionApi,
         custody: crate::event_bridge::TaskPauseCustody,
     ) {
-        custody.register(api);
+        *self
+            .pause_subscription
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(custody.register(api));
         *self
             .pause_custody
             .lock()
@@ -162,6 +166,37 @@ impl TaskComponent {
             .clone()
             .ok_or_else(|| maho_ext_api::ExtensionFailure::new("Task handle observer disposed"))?;
         let runtime = self.engine.runtime.clone();
+        let manager = self.engine.manager.clone();
+        self.engine
+            .pause
+            .register(Arc::new(self.engine.workpool_run_pause_source(
+                workpools.clone(),
+                manager.admission_barrier().clone(),
+                Arc::new(move |parent| {
+                    let records = manager
+                        .list(&senpi_task::manager::types::ListScope::All)
+                        .into_iter()
+                        .map(|entry| entry.record)
+                        .collect::<Vec<_>>();
+                    let mut sessions = vec![parent.to_string()];
+                    loop {
+                        let before = sessions.len();
+                        for record in &records {
+                            if sessions.contains(&record.parent_session_id) {
+                                if let Some(child) = &record.child_session_id {
+                                    if !sessions.contains(child) {
+                                        sessions.push(child.clone());
+                                    }
+                                }
+                            }
+                        }
+                        if sessions.len() == before {
+                            break;
+                        }
+                    }
+                    sessions
+                }),
+            )));
         api.provide_eval_handle_host(Arc::new(
             crate::eval_handle_host::NativeEvalHandleHost::with_shared_workpools(
                 self.engine.manager.clone(),
@@ -307,6 +342,7 @@ impl TaskComponent {
             before_suspend: Mutex::new(None),
             dag: Mutex::new(None),
             pause_custody: Mutex::new(None),
+            pause_subscription: Mutex::new(None),
         });
         let eval_handles = Arc::new(crate::eval_handle_host::TaskMutationObserver::default());
         *component
@@ -339,11 +375,19 @@ impl TaskComponent {
             },
         )));
         let weak_cost = Arc::downgrade(&component);
-        component.engine.store.set_record_listener(Some(Arc::new(move |id, record| {
-            if let Some(component) = weak_cost.upgrade() {
-                component.status.observe_record(&crate::store_mutation_observer::StoreMutation { task_id: id.into(), record: record.cloned() });
-            }
-        })));
+        component
+            .engine
+            .store
+            .set_record_listener(Some(Arc::new(move |id, record| {
+                if let Some(component) = weak_cost.upgrade() {
+                    component.status.observe_record(
+                        &crate::store_mutation_observer::StoreMutation {
+                            task_id: id.into(),
+                            record: record.cloned(),
+                        },
+                    );
+                }
+            })));
         let weak = Arc::downgrade(&component);
         let mutation_eval_handles = eval_handles.clone();
         component
