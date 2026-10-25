@@ -3568,12 +3568,36 @@ impl Inner {
             parent_model_fallback: note.or(record.parent_model_fallback.clone()),
             ..record.clone()
         };
-        if let Err(error) = self.store.replace(&updated) {
+        let mut committed = false;
+        let persisted = self
+            .store
+            .mutate(&record.task_id, &mut |fresh: &TaskRecord| {
+                if fresh.status != TaskStatus::Running
+                    || fresh.notification.run_epoch != record.notification.run_epoch
+                    || fresh.host_pid != record.host_pid
+                    || fresh.model != record.model
+                {
+                    return fresh.clone();
+                }
+                committed = true;
+                TaskRecord {
+                    model: updated.model.clone(),
+                    resolved_model: updated.resolved_model.clone(),
+                    fallback_models: updated.fallback_models.clone(),
+                    fallback_attempts: updated.fallback_attempts.clone(),
+                    parent_model_fallback: updated.parent_model_fallback.clone(),
+                    ..fresh.clone()
+                }
+            });
+        if let Err(error) = persisted {
             log(
                 "senpi-task start fallback persistence failed",
                 &record.task_id,
                 &error,
             );
+            return None;
+        }
+        if !committed {
             return None;
         }
         Some(LaunchContext {
