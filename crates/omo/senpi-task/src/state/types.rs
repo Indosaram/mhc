@@ -184,6 +184,7 @@ pub enum SuspensionReason {
     IdleEvicted,
     OwnHostUnreachable,
     RevivalDeferred,
+    SessionQuit,
     StoreIndexUnavailable,
 }
 
@@ -276,6 +277,31 @@ pub enum CostReportStatus {
     Invalid,
     Unavailable,
 }
+
+/// In-flight stats tagged with the start epoch of the run they describe.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiveRunStats {
+    #[serde(rename = "runStartEpoch")]
+    pub run_start_epoch: i64,
+    pub stats: TaskRunStats,
+}
+
+pub const COST_REPORT_STATUSES: [CostReportStatus; 4] = [
+    CostReportStatus::Reported,
+    CostReportStatus::Partial,
+    CostReportStatus::Unavailable,
+    CostReportStatus::Invalid,
+];
+
+pub use crate::completion::{ParentModelFallback, ParentModelFallbackPhase, ParentModelFallbackReason};
+
+pub const PARENT_MODEL_FALLBACK_REASONS: [ParentModelFallbackReason; 5] = [
+    ParentModelFallbackReason::UsageLimit,
+    ParentModelFallbackReason::NotSignedIn,
+    ParentModelFallbackReason::Unavailable,
+    ParentModelFallbackReason::Refused,
+    ParentModelFallbackReason::Error,
+];
 
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
@@ -429,7 +455,6 @@ pub struct PendingSteeringWorkpoolMetadata {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TaskRecordInput {
-    pub parent_model: Option<String>,
     pub name: Option<String>,
     pub task_summary: Option<String>,
     pub description: Option<String>,
@@ -444,6 +469,7 @@ pub struct TaskRecordInput {
     pub fallback_models: Option<Vec<ResolvedModelRecord>>,
     pub fallback_attempts: Option<Vec<ResolvedModelRecord>>,
     pub resolved_model: Option<ResolvedModelRecord>,
+    pub parent_model: Option<String>,
     pub tool_allow: Option<Vec<String>>,
     pub tool_deny: Option<Vec<String>>,
     pub notify_on_terminal: bool,
@@ -486,8 +512,10 @@ pub struct TaskRecord {
     pub updated_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_at: Option<String>,
     pub notification: TaskNotification,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "super::run_fence::is_legacy_run_start_epoch")]
     pub run_start_epoch: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_run_id: Option<String>,
@@ -596,29 +624,6 @@ pub struct TaskRecord {
     pub residency_claim: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ParentModelFallbackReason {
-    UsageLimit,
-    NotSignedIn,
-    Unavailable,
-    Refused,
-    Error,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ParentModelFallback {
-    pub from_model: String,
-    pub reason: ParentModelFallbackReason,
-    pub at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resets: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub interrupted_tools: Option<Vec<String>>,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FallbackClosingChild {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -674,6 +679,12 @@ pub struct CancelRequest {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskTransition {
+    Pause {
+        timestamp: String,
+    },
+    Unpause {
+        timestamp: String,
+    },
     Start {
         timestamp: String,
         pid: Option<i64>,
@@ -724,7 +735,9 @@ pub enum TaskTransition {
 impl TaskTransition {
     pub fn timestamp(&self) -> &str {
         match self {
-            Self::Start { timestamp, .. }
+            Self::Pause { timestamp }
+            | Self::Unpause { timestamp }
+            | Self::Start { timestamp, .. }
             | Self::Complete { timestamp, .. }
             | Self::Fail { timestamp, .. }
             | Self::Cancel { timestamp, .. }
