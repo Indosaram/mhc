@@ -52,7 +52,7 @@ fn model(
         default_thinking_level: None,
         thinking_level_map: levels,
         input: input.to_vec(),
-        cost: ModelCost {
+        cost: ModelCost { unknown: None,
             effective_rates: None,
             input: cost.0,
             output: cost.1,

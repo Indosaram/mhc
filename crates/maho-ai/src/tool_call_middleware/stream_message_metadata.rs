@@ -25,7 +25,9 @@ fn clone_legacy_message(source: &AssistantMessage, content: Vec<ContentBlock>) -
         response_id: source.response_id.clone(),
         provider_thinking_level: None,
         diagnostics: None,
-        usage: Usage { context_usage: source.usage.context_usage,
+        usage: Usage {
+            context_usage: source.usage.context_usage,
+            cost_unknown: source.usage.cost_unknown,
             input: source.usage.input,
             output: source.usage.output,
             cache_read: source.usage.cache_read,
@@ -42,6 +44,7 @@ fn clone_legacy_message(source: &AssistantMessage, content: Vec<ContentBlock>) -
         abort_source: None,
         raw_stop_reason: None,
         end_turn: None,
+        prompt_cache_breakpoint: None,
         timestamp: source.timestamp,
         failure_source: None,
         timing: None,
@@ -76,6 +79,7 @@ pub fn clone_message_with_content(
         abort_source: source.abort_source,
         raw_stop_reason: source.raw_stop_reason.clone(),
         end_turn: source.end_turn,
+        prompt_cache_breakpoint: source.prompt_cache_breakpoint,
         timestamp: source.timestamp,
         failure_source: None,
         timing: None,
@@ -126,7 +130,9 @@ mod tests {
     };
 
     fn usage(reasoning: Option<u64>) -> Usage {
-        Usage { context_usage: None,
+        Usage {
+            context_usage: None,
+            cost_unknown: None,
             input: 1,
             output: 2,
             cache_read: 3,
@@ -147,7 +153,6 @@ mod tests {
     fn message() -> AssistantMessage {
         AssistantMessage {
             error_cause: None,
-            prompt_cache_breakpoint: None,
             prompt_cache_diagnostics: None,
             thinking_level: None,
             provider_diagnostic: None,
@@ -167,6 +172,7 @@ mod tests {
             abort_source: None,
             raw_stop_reason: Some("stop".into()),
             end_turn: Some(true),
+            prompt_cache_breakpoint: Some(true),
             timestamp: 42,
             failure_source: None,
             timing: None,
@@ -175,13 +181,16 @@ mod tests {
 
     #[test]
     fn legacy_clone_drops_cache_write_1h_and_reasoning_and_extra_metadata() {
-        let source = message();
+        let mut source = message();
+        source.usage.cost_unknown = Some(true);
         let cloned = clone_assistant_message_metadata(&source, vec![], &[], false);
         assert_eq!(cloned.usage.cache_write_1h, None);
         assert_eq!(cloned.usage.reasoning, None);
+        assert_eq!(cloned.usage.cost_unknown, Some(true));
         assert_eq!(cloned.response_model, None);
         assert_eq!(cloned.provider_thinking_level, None);
         assert_eq!(cloned.diagnostics, None);
+        assert_eq!(cloned.prompt_cache_breakpoint, None);
         assert_eq!(cloned.response_id, source.response_id);
         assert_eq!(cloned.stop_reason, source.stop_reason);
     }

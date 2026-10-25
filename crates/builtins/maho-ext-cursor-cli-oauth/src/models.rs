@@ -130,7 +130,7 @@ fn normalize(raw: &[CursorCatalogRawEntry]) -> Vec<ProviderModelConfig> {
                 reasoning: entry.reasoning,
                 thinking_level_map: entry.thinking_level_map,
                 input: vec![InputModality::Text],
-                cost: ModelCost {
+                cost: ModelCost { unknown: None,
                     effective_rates: None,
                     input: 0.0,
                     output: 0.0,

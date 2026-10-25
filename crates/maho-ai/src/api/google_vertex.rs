@@ -1074,6 +1074,7 @@ fn handle_chunk(
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
             cost: Default::default(),
+            ..Default::default()
         };
         calculate_cost(model, &mut output.usage);
     }
