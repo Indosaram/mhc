@@ -1,6 +1,6 @@
 use std::fs;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;
@@ -375,4 +375,83 @@ fn claims_reclaim_only_stale_claims_and_release_is_owner_checked() {
     assert!(queue.claim(&pending, "worker-d").expect("owner retained").is_empty());
     queue.release_claim(&pending, "worker-c").expect("current owner release");
     assert_eq!(queue.claim(&pending, "worker-d").expect("reclaim released").len(), 1);
+}
+
+struct CountingWaker(AtomicUsize);
+
+impl std::task::Wake for CountingWaker {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn test_aborted_future_created_before_abort_resolves_after_abort() {
+    let signal = FactsAbortSignal::new();
+    let aborted_fut = signal.aborted();
+    let signal_clone = signal.clone();
+
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let _ = ready_tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(5), aborted_fut)
+            .await
+            .expect("future resolved within timeout")
+    });
+
+    ready_rx.await.expect("task spawned and registered");
+    signal_clone.abort();
+    task.await.expect("task completed cleanly");
+    assert!(signal.is_aborted());
+}
+
+#[test]
+fn test_aborted_future_with_manual_waker_woken_on_abort() {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll, Waker};
+
+    let signal = FactsAbortSignal::new();
+    let mut fut = signal.aborted();
+    let counter = Arc::new(CountingWaker(AtomicUsize::new(0)));
+    let waker = Waker::from(Arc::clone(&counter));
+    let mut cx = Context::from_waker(&waker);
+
+    assert_eq!(Pin::new(&mut fut).poll(&mut cx), Poll::Pending);
+    assert_eq!(counter.0.load(Ordering::SeqCst), 0);
+
+    signal.abort();
+    assert_eq!(counter.0.load(Ordering::SeqCst), 1);
+    assert_eq!(Pin::new(&mut fut).poll(&mut cx), Poll::Ready(()));
+}
+
+#[test]
+fn test_aborted_future_created_after_abort_is_immediately_ready() {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll, Waker};
+
+    let signal = FactsAbortSignal::new();
+    signal.abort();
+    assert!(signal.is_aborted());
+
+    let mut fut = signal.aborted();
+    let counter = Arc::new(CountingWaker(AtomicUsize::new(0)));
+    let waker = Waker::from(counter);
+    let mut cx = Context::from_waker(&waker);
+
+    assert_eq!(Pin::new(&mut fut).poll(&mut cx), Poll::Ready(()));
+}
+
+#[tokio::test]
+async fn test_aborted_future_created_after_abort_resolves_immediately_in_async() {
+    let signal = FactsAbortSignal::new();
+    signal.abort();
+    let aborted_fut = signal.aborted();
+    tokio::time::timeout(std::time::Duration::from_millis(100), aborted_fut)
+        .await
+        .expect("immediate resolution within bounded timeout");
 }

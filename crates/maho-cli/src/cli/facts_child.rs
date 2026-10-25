@@ -81,6 +81,8 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
             let mut last_error: Option<String> = None;
             let mut attempt_number = 0u32;
             let mut last_model: Option<String> = None;
+            let signal = input.signal.clone().unwrap_or_default();
+            let cancel_state = Arc::clone(&input.cancel_state);
 
             for (idx, candidate) in input.model_candidates.iter().enumerate() {
                 attempt_number = u32::try_from(idx + 1).unwrap_or(u32::MAX);
@@ -88,7 +90,8 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
 
                 let now_ms = memory_core::support::time::now_millis() as f64;
                 if now_ms >= input.hard_deadline_at {
-                    input.cancel_state.store(true, Ordering::Release);
+                    signal.abort();
+                    cancel_state.store(true, Ordering::Release);
                     return Ok(FactsChildSessionResult {
                         completed: false,
                         timed_out: true,
@@ -98,10 +101,11 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
                         model: last_model,
                     });
                 }
-                if input.signal.as_ref().is_some_and(|s| s.is_aborted())
-                    || input.cancel_state.load(Ordering::Acquire)
+                if signal.is_aborted()
+                    || cancel_state.load(Ordering::Acquire)
                 {
-                    input.cancel_state.store(true, Ordering::Release);
+                    signal.abort();
+                    cancel_state.store(true, Ordering::Release);
                     return Ok(FactsChildSessionResult {
                         completed: false,
                         timed_out: false,
@@ -209,8 +213,6 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
                 let remaining_ms = (input.hard_deadline_at
                     - memory_core::support::time::now_millis() as f64)
                     .max(1.0) as u64;
-                let cancel_state = Arc::clone(&input.cancel_state);
-                let signal = input.signal.clone();
 
                 let prompt_fut = session.prompt(
                     &input.prompt,
@@ -234,16 +236,15 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
                         _ = &mut deadline_sleep => {
                             break TurnExit::Deadline;
                         }
-                        _ = tokio::time::sleep(Duration::from_millis(15)) => {
-                            if signal.as_ref().is_some_and(|s| s.is_aborted()) || cancel_state.load(Ordering::Acquire) {
-                                break TurnExit::Aborted;
-                            }
+                        () = signal.aborted() => {
+                            break TurnExit::Aborted;
                         }
                     }
                 };
 
                 match exit {
                     TurnExit::Deadline => {
+                        signal.abort();
                         cancel_state.store(true, Ordering::Release);
                         session.abort().await;
                         let _ = prompt_fut.await;
@@ -258,6 +259,7 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
                         });
                     }
                     TurnExit::Aborted => {
+                        signal.abort();
                         cancel_state.store(true, Ordering::Release);
                         session.abort().await;
                         let _ = prompt_fut.await;
@@ -274,9 +276,10 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
                     TurnExit::PromptDone(prompt_res) => {
                         let messages = session.messages();
                         session.dispose().await;
-                        if signal.as_ref().is_some_and(|s| s.is_aborted())
+                        if signal.is_aborted()
                             || cancel_state.load(Ordering::Acquire)
                         {
+                            signal.abort();
                             cancel_state.store(true, Ordering::Release);
                             return Ok(FactsChildSessionResult {
                                 completed: false,
