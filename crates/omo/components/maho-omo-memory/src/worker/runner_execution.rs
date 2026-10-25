@@ -20,7 +20,8 @@ pub async fn execute_reflection_run(
     append_launched:impl FnOnce()->Result<(),String>,warn:impl FnOnce(&str),
     terminal_gate:impl FnOnce(&mut dyn FnMut()->Result<Option<super::run_finalization_types::ReservationRunResult>,String>)->Result<Option<super::run_finalization_types::ReservationRunResult>,String>,
 )->Result<ReflectionExecutionResult,String>{
-    let engine=crate::engine_session::prepare_memory_engine_session(&input.identity.id,&input.identity.paths,Default::default()).map_err(|error|error.to_string())?;
+    // A new repository's hooks run the engine's own staged-commit checker, not an external JS runtime.
+    let engine=crate::engine_session::prepare_memory_engine_session(&input.identity.id,&input.identity.paths,crate::engine_session::MemoryEngineSessionOptions{memory_hook_checker:Some(super::spawn_supervisor_support::memory_hook_checker()),..Default::default()}).map_err(|error|error.to_string())?;
     let worktree=match create(&engine.repo,input.run){Ok(worktree)=>worktree,Err(error)=>return finalize_execution_failure(&input,None,MemoryModelAttemptError::Launch(error),terminal_gate)};
     let ReflectionModelResolution::Resolved{model,thinking,fallbacks,category,..}=input.resolution else{return finalize_execution_failure(&input,Some(&worktree),MemoryModelAttemptError::Launch("reflection child launch requires a resolved model".into()),terminal_gate);};
     let launched=std::cell::RefCell::new(Some(append_launched));

@@ -259,6 +259,13 @@ pub async fn run_entry(
     args: &[String], executable: &Path, prefix: &[String],
     gate: impl FnOnce(&Path, &mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
 ) -> Result<(), String> {
+    if args.first().is_some_and(|arg| arg == "--memory-hook") {
+        // Runtime commit validation, not JS packaging: the installed git hooks run the engine's own
+        // executable, which validates the staged memory commit here and exits non-zero when it refuses.
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let code = memory_core::memfs::run_memory_hook(&args[1..], &cwd);
+        return if code == 0 { Ok(()) } else { Err(format!("memory hook {} refused the commit", args.get(1).map(String::as_str).unwrap_or("")) ) };
+    }
     if args.first().is_some_and(|arg| arg == "--child-bootstrap") {
         let directory = args.get(1).ok_or("run directory is required")?;
         return run_child_bootstrap(Path::new(directory)).await;

@@ -12,6 +12,8 @@ fn recover_unpublished_worktree_tip(context:&RunFinalizationContext<'_>,run_dir:
     let worktree=super::reservation_run_ledger::worktree_from_ledger(&context.identity.paths.repo,&context.identity.id,ledger).map_err(|error|error.to_string())?;
     if !worktree.dir.exists(){return Ok(false);}
     let base_sha=ledger.value()["baseSha"].as_str().ok_or("Missing baseSha")?;
+    // The recovered tip is a completed run's branch: repair description overruns before the gate reads it.
+    memory_core::reflection::preflight_reflection_descriptions(&worktree,base_sha,worktree.exec.as_ref(),context.warn);
     if !matches!(memory_core::reflection::validate_completion(&worktree,base_sha,worktree.exec.as_ref()),memory_core::reflection::CompletionValidation::Valid{..}){return Ok(false);}
     let attempt=ledger.value()["attempt"].as_u64().map(|attempt|u32::try_from(attempt).map_err(|error|error.to_string())).transpose()?;
     let outcome=RunOutcome{version:1,run_id:ledger.run_id().into(),attempt,finished_at:exit.finished_at,child_exit:super::run_artifacts::ChildExit{code:exit.code,signal:exit.signal},timed_out:false,recovered_from_worktree:Some(true)};
@@ -56,7 +58,7 @@ pub fn abandon_reservation_run(context:&RunFinalizationContext<'_>,run_dir:&Path
             super::run_terminal_precedence::AbandonmentDecision::Veto=>Ok(None),
             super::run_terminal_precedence::AbandonmentDecision::Finalize=> {
                 let child:RunOutcome=read_run_json(&run_dir.join("outcome.json")).map_err(|error|error.to_string())?;
-                let decision=with_recovery_marker(&child,resolve_finalization_decision(context.identity,run_dir,&precedence.ledger,&child)?);
+                let decision=with_recovery_marker(&child,resolve_finalization_decision(context.identity,run_dir,&precedence.ledger,&child,context.warn)?);
                 settle_reservation_run(context,run_dir,&precedence.ledger,decision).map(Some)
             },
             super::run_terminal_precedence::AbandonmentDecision::Abandon=> {
@@ -103,13 +105,13 @@ fn checkpoint_reservation_failure(context:&RunFinalizationContext<'_>,run_dir:&P
         if !override_outcome&&run_dir.join("outcome.json").exists() {
             let child:RunOutcome=read_run_json(&run_dir.join("outcome.json")).map_err(|error|error.to_string())?;
             if run_outcome_matches_ledger(attempt,&child) {
-                let decision=with_recovery_marker(&child,resolve_finalization_decision(context.identity,run_dir,&ledger,&child)?);
+                let decision=with_recovery_marker(&child,resolve_finalization_decision(context.identity,run_dir,&ledger,&child,context.warn)?);
                 return settle_reservation_run(context,run_dir,&ledger,decision).map(Some);
             }
         }
         if !override_outcome&&recover_worktree_tip&&recover_unpublished_worktree_tip(context,run_dir,&ledger)? {
             let child:RunOutcome=read_run_json(&run_dir.join("outcome.json")).map_err(|error|error.to_string())?;
-            let decision=with_recovery_marker(&child,resolve_finalization_decision(context.identity,run_dir,&ledger,&child)?);
+            let decision=with_recovery_marker(&child,resolve_finalization_decision(context.identity,run_dir,&ledger,&child,context.warn)?);
             return settle_reservation_run(context,run_dir,&ledger,decision).map(Some);
         }
         let mut fields=serde_json::Map::from_iter([("finalizeOutcome".into(),decision.outcome.clone().into())]);
@@ -131,7 +133,7 @@ pub fn finalize_recorded_outcome(context: &RunFinalizationContext<'_>, run_dir: 
         let outcome: RunOutcome = read_run_json(&run_dir.join("outcome.json")).map_err(|error| error.to_string())?;
         let attempt = ledger.value()["attempt"].as_u64().map(|value| u32::try_from(value).map_err(|error| error.to_string())).transpose()?;
         if !run_outcome_matches_ledger(attempt, &outcome) { return Err(format!("Run outcome attempt {} does not match {}", outcome.attempt.map_or("legacy".into(), |value| value.to_string()), attempt.map_or("legacy".into(), |value| value.to_string()))); }
-        let decision = with_recovery_marker(&outcome, resolve_finalization_decision(context.identity, run_dir, &ledger, &outcome)?);
+        let decision = with_recovery_marker(&outcome, resolve_finalization_decision(context.identity, run_dir, &ledger, &outcome, context.warn)?);
         settle_reservation_run(context, run_dir, &ledger, decision)
     })?;
     Ok(match claimed {
