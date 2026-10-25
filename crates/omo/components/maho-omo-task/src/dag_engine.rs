@@ -1005,10 +1005,11 @@ impl TaskDagEngine {
             })??;
         Ok(crate::dag_tool::DagToolSendOutcome {
             node_id: result.node_id,
-            task_id: Some(result.task_id),
-            guidance_id: None,
+            task_id: result.task_id,
+            guidance_id: result.guidance_id,
             effect_id: None,
             delivery: match result.delivery {
+                senpi_task::dag::node_send::DagNodeDeliveryResult::Guidance => crate::dag_tool::DagToolSendDelivery::Guidance,
                 senpi_task::dag::node_send::DagNodeDeliveryResult::Steer => {
                     crate::dag_tool::DagToolSendDelivery::Steer
                 }

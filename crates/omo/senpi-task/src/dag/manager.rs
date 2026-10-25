@@ -1279,7 +1279,7 @@ pub fn apply_run_pause(record: &DagRunRecordV1, event: &DagRunEvent) -> Option<D
                 status: DagRunStatus::Paused,
                 pause: Some(crate::dag::types::DagRunPause {
                     reason: "user_stop".to_string(),
-                    pause_seq: *pause_seq,
+                    pause_seq,
                 }),
                 updated_at: event.at.clone(),
                 nodes: record

@@ -57,7 +57,7 @@ fn every_payload() -> Vec<DagRunEventPayload> {
             edge_count: 0,
         },
         DagRunEventPayload::RunStarted { generation: 1 },
-        DagRunEventPayload::RunPaused { reason: None },
+        DagRunEventPayload::RunPaused { reason: None, pause_seq: None, },
         DagRunEventPayload::RunResumed { generation: 1 },
         DagRunEventPayload::RunCompleted { counts: counts() },
         DagRunEventPayload::RunFailed {
@@ -257,7 +257,7 @@ fn given_a_generation_when_run_started_then_spec_shaped_payload() {
 #[test]
 fn given_a_reason_when_run_paused_then_spec_shaped_payload() {
     let event = DagRunEventPayload::RunPaused {
-        reason: Some("session_shutdown".to_string()),
+        reason: Some("session_shutdown".to_string()), pause_seq: None,
     };
 
     assert_eq!(
@@ -269,7 +269,7 @@ fn given_a_reason_when_run_paused_then_spec_shaped_payload() {
 #[test]
 fn given_no_reason_when_run_paused_then_reason_omitted() {
     assert_eq!(
-        wire(&DagRunEventPayload::RunPaused { reason: None }),
+        wire(&DagRunEventPayload::RunPaused { reason: None, pause_seq: None, }),
         json!({ "type": "dag.run.paused" })
     );
 }

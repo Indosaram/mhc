@@ -32,66 +32,19 @@ impl WorkpoolEngine {
         Self { store, admission, dispatcher, attached_sessions: Default::default(), events: emit, aggregate_port: None }
     }
 
-    pub fn attach(&self, session_id: &str) -> Result<(), WorkpoolError> {
+    pub fn attach(&self, session_id: &str, credential: Option<crate::pause::admission_barrier::ResumeCredential>) -> Result<(), WorkpoolError> {
         let fresh = self.attached_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(session_id.into());
         for pool in self.store.list_result()?.into_iter().filter(|pool| pool.parent_session_id == session_id) {
             if fresh && pool.aggregate.is_some_and(|aggregate| aggregate.accepted == Some(true) && !aggregate.delivered) {
                 self.store.mutate(&pool.pool_id, |record| { let mut next = record.clone(); if let Some(aggregate) = &mut next.aggregate { aggregate.accepted = None; } next })?;
             }
-            if pool.hold.is_none() { self.dispatcher.attach(&pool.pool_id)?; }
+            if pool.hold.is_none() { self.dispatcher.attach_with_credential(&pool.pool_id, credential.clone())?; }
             self.flush_aggregate(&pool.pool_id)?;
         }
         Ok(())
     }
-    pub fn pause_for_run(&self, session_id: &str, pool_id: &str, pause_seq: u64) -> Result<(), WorkpoolError> {
-        let pool = self.store.load(pool_id)?;
-        if pool.parent_session_id != session_id { return Err(WorkpoolError::new(super::types::WorkpoolErrorCode::ScopeDenied, "Pool is not owned by this session")); }
-        if pool.status == super::types::WorkpoolStatus::Cancelled || pool.hold.is_some_and(|hold| hold.pause_seq >= pause_seq) { return Ok(()); }
-        self.store.mutate(pool_id, |record| {
-            let mut next = record.clone();
-            if next.status != super::types::WorkpoolStatus::Cancelled && !next.hold.is_some_and(|hold| hold.pause_seq >= pause_seq) {
-                next.hold = Some(super::types::WorkpoolHold { pause_seq, reason: super::types::WorkpoolHoldReason::UserStop });
-                for worker in &mut next.workers { if worker.status == super::types::WorkpoolWorkerStatus::Busy { worker.status = super::types::WorkpoolWorkerStatus::Paused; } }
-            }
-            next
-        })?;
-        self.dispatcher.pause_for_run(pool_id, pause_seq);
-        Ok(())
-    }
-    pub fn resume_for_run(&self, session_id: &str, pool_id: &str, pause_seq: u64, credential: crate::pause::admission_barrier::ResumeCredential) -> Result<bool, WorkpoolError> {
-        let pool = self.store.load(pool_id)?;
-        if pool.parent_session_id != session_id { return Err(WorkpoolError::new(super::types::WorkpoolErrorCode::ScopeDenied, "Pool is not owned by this session")); }
-        if pool.hold.is_some_and(|hold| hold.pause_seq != pause_seq) { return Ok(false); }
-        self.store.mutate(pool_id, |record| {
-            let mut next = record.clone();
-            if next.hold.is_some_and(|hold| hold.pause_seq == pause_seq) {
-                next.hold = None;
-                for worker in &mut next.workers {
-                    if worker.status != super::types::WorkpoolWorkerStatus::Paused { continue; }
-                    let task = self.admission.get(&worker.task_id);
-                    if task.as_ref().is_some_and(|task| task.status == crate::state::TaskStatus::Paused) { continue; }
-                    if task.as_ref().is_some_and(|task| task.status.is_terminal()) {
-                        worker.status = super::types::WorkpoolWorkerStatus::Idle;
-                        worker.completed_turns += 1;
-                        worker.idle_since = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or_default();
-                    } else { worker.status = super::types::WorkpoolWorkerStatus::Busy; }
-                }
-            }
-            next
-        })?;
-        if !self.dispatcher.resume_for_run(pool_id, pause_seq, credential) { return Ok(false); }
-        self.dispatcher.attach(&pool.pool_id)?;
-        Ok(true)
-    }
     pub fn recover(&self) -> Result<(), WorkpoolError> {
         self.dispatcher.attach_all()
-    }
-
-    pub fn attach(&self, parent_session_id: &str, credential: Option<crate::pause::admission_barrier::ResumeCredential>) -> Result<(), WorkpoolError> {
-        for pool in self.store.list_result()? {
-            if pool.parent_session_id == parent_session_id { self.dispatcher.attach_with_credential(&pool.pool_id, credential.clone())?; }
-        }
-        Ok(())
     }
 
     pub fn owned_task_ids(&self) -> Result<std::collections::BTreeSet<String>, WorkpoolError> {
@@ -385,11 +338,13 @@ mod tests {
         let root = tempfile::tempdir().expect("state");
         let mut engine = WorkpoolEngine::new(root.path(), std::sync::Arc::new(admission(false)));
         let pool = engine.create(&caller(), &input()).expect("pool");
-        engine.pause_for_run("parent", &pool.pool_id, 4).expect("pause");
+        engine.pause_for_run(&caller(), &pool.pool_id, 4).expect("pause");
         assert_eq!(engine.store.load(&pool.pool_id).expect("record").hold.expect("hold").pause_seq, 4);
-        let credential = crate::pause::admission_barrier::ResumeCredential { pause_seq: 4, resume_id: "resume".into() };
-        assert!(!engine.resume_for_run("parent", &pool.pool_id, 3, credential.clone()).expect("stale"));
-        assert!(engine.resume_for_run("parent", &pool.pool_id, 4, credential).expect("resume"));
+        let barrier = crate::pause::admission_barrier::AdmissionBarrier::new();
+        barrier.close("parent", 4);
+        let credential = barrier.resume("parent", 4, "resume").expect("credential");
+        assert_eq!(engine.resume_for_run(&caller(), &pool.pool_id, 3, Some(credential.clone())).expect("stale"), super::super::run_pause::ResumePoolResult::Stale);
+        assert_eq!(engine.resume_for_run(&caller(), &pool.pool_id, 4, Some(credential)).expect("resume"), super::super::run_pause::ResumePoolResult::Released);
         assert!(engine.store.load(&pool.pool_id).expect("record").hold.is_none());
     }
     #[tokio::test]
@@ -402,7 +357,7 @@ mod tests {
         let mut resumed = WorkpoolEngine::new(root.path(), std::sync::Arc::new(admission(false)));
         let deliveries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)); let count = deliveries.clone();
         resumed.set_aggregate_port(std::sync::Arc::new(move |_, receipts: super::super::aggregate::WorkpoolAggregateReceipts| { count.fetch_add(1, Ordering::SeqCst); (receipts.ack)(); Ok(()) }));
-        resumed.attach("parent").expect("attach"); resumed.attach("parent").expect("attach delivered");
+        resumed.attach("parent", None).expect("attach"); resumed.attach("parent", None).expect("attach delivered");
         assert_eq!(deliveries.load(Ordering::SeqCst), 1);
     }
     #[test]

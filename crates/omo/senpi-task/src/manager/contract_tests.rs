@@ -11,7 +11,7 @@ use super::start_admission::{
 use super::types::{
     ManagedRunner, ManagedRunners, ManagerStartSpec, ResolvedChildPlan, TaskManagerOptions,
 };
-use crate::pause::admission_barrier::{AdmissionBarrier, ResumeCredential};
+use crate::pause::admission_barrier::AdmissionBarrier;
 
 #[test]
 fn admitted_spec_preserves_runtime_scope_but_does_not_serialize_it() {
@@ -19,10 +19,11 @@ fn admitted_spec_preserves_runtime_scope_but_does_not_serialize_it() {
     let spec = ManagerStartSpec {
         parent_session_id: "parent".into(),
         parent_model: Some("provider/parent".into()),
-        resume_credential: Some(ResumeCredential {
-            pause_seq: 3,
-            resume_id: "resume".into(),
-        }),
+        resume_credential: {
+            let authority = AdmissionBarrier::new();
+            authority.close("parent", 3);
+            Some(authority.resume("parent", 3, "resume").unwrap())
+        },
         ..Default::default()
     };
     let mut initial = spec.clone();

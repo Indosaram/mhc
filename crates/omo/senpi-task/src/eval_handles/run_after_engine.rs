@@ -81,7 +81,16 @@ impl RunAfterEngine {
                 SEND_HOST_STATUS_DELIVERED_AFTER_END,
             ));
         }
-        Ok(task_snapshot(record, target))
+        Ok(task_snapshot(record, target, match record.status {
+            super::host::TaskStatus::Pending => "pending",
+            super::host::TaskStatus::Running => "running",
+            super::host::TaskStatus::Paused => "paused",
+            super::host::TaskStatus::Completed => "completed",
+            super::host::TaskStatus::Error => "error",
+            super::host::TaskStatus::Cancelled => "cancelled",
+            super::host::TaskStatus::Interrupted => "interrupted",
+            super::host::TaskStatus::Lost => "lost",
+        }))
     }
 
     /// The reply for a message only queued locally: it stays `queued` even when the run ended

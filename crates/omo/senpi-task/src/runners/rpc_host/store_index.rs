@@ -1,6 +1,6 @@
 //! Append-only task store admission (`rpc-host/store-index.ts`).
 use super::durable_json::{read_text_if_present, write_text_durably};
-use crate::store::{StoreError, record_lock::with_task_record_lock_options};
+use crate::store::{StoreError, with_task_record_lock_options};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,

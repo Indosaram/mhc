@@ -53,14 +53,14 @@ fn native(child: &dyn ManagedChildHandle) -> Result<&dyn NativeRunPause, NativeP
 }
 pub struct NativeChildPausePort;
 impl NativeChildPausePort {
-    fn pause_for_run(
+    pub fn pause_for_run(
         &self,
         child: &dyn ManagedChildHandle,
         owner: RunPauseOwner,
     ) -> Result<EngineInheritReceipt, NativePauseError> {
         native(child)?.pause_for_run(owner)
     }
-    fn resume_turn(
+    pub fn resume_turn(
         &self,
         child: &dyn ManagedChildHandle,
         request: ResumeTurnRequest,
@@ -76,7 +76,7 @@ impl NativeChildPausePort {
             NativeResumeResult::Turn(turn) => Ok(ResumeChildTurnResult::Resumed(turn)),
         }
     }
-    fn hold_input(
+    pub fn hold_input(
         &self,
         child: &dyn ManagedChildHandle,
         input: HoldInput,
@@ -84,7 +84,7 @@ impl NativeChildPausePort {
     ) -> Result<EngineHoldInputResult, NativePauseError> {
         native(child)?.hold_input(parent, input)
     }
-    fn observe_hold(
+    pub fn observe_hold(
         &self,
         child: &dyn ManagedChildHandle,
         parent: &str,

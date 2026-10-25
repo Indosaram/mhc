@@ -25,6 +25,7 @@ pub fn build(
     at: String,
 ) -> ParentModelFallback {
     ParentModelFallback {
+        phase: None,
         from_model,
         reason,
         at,

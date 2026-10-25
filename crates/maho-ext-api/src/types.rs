@@ -890,7 +890,7 @@ pub enum EventKind {
     HeldWakesReleased,
 }
 impl EventKind {
-    pub const ALL: [Self; 53] = [
+    pub const ALL: [Self; 51] = [
         Self::ProjectTrust,
         Self::ResourcesDiscover,
         Self::SessionStart,

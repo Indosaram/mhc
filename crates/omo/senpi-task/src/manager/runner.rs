@@ -416,7 +416,7 @@ mod parity_tests {
             ..Default::default()
         };
         assert_eq!(to_rpc_spec(&spec).traceparent, spec.traceparent);
-        let persisted = serde_json::to_value(crate::manager::helpers::build_spawn_spec_v1(&spec))
+        let persisted = serde_json::to_value(crate::state::TaskSpawnSpec::V1(crate::manager::helpers::build_spawn_spec_v1(&spec)))
             .expect("spawn spec");
         assert!(persisted.get("traceparent").is_none());
     }

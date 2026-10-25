@@ -275,6 +275,7 @@ fn pause_runs_for_shutdown(
         let journal = recovery_journal(context, observed.clone(), None);
         journal.append(DagRunEventPayload::RunPaused {
             reason: Some("session_shutdown".to_string()),
+            pause_seq: None,
         })?;
         let run_id = observed.record.run_id.clone();
         context.store.with_run_lock(
