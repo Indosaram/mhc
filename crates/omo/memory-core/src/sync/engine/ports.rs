@@ -253,6 +253,8 @@ pub trait SyncRepo {
     fn stage_tree(&self, paths: &[String]) -> EngineResult<String>;
     /// Commit exactly `paths` as `OmO Sync` with `message` (trailers included).
     fn commit(&self, paths: &[String], message: &str) -> EngineResult<String>;
+    /// Reconcile only committed paths in the shared index, including after crash recovery.
+    fn sync_index(&self, paths: &[String]) -> EngineResult<()>;
     /// True when a commit reachable from HEAD carries `Sync-Seq: <range>`.
     fn has_sync_commit(&self, range: &str) -> EngineResult<bool>;
 }
