@@ -54,6 +54,7 @@ mod api_tripwire {
             .map(|definition| (definition.name.clone(), definition.clone()))
             .collect();
         let options = ResolveAgentOptions {
+            omo_config: None,
             model_override: Some("openai/explicit".to_string()),
             ..ResolveAgentOptions::default()
         };

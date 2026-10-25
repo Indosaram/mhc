@@ -1563,6 +1563,7 @@ fn steering_port(
     let stop_settled = this.clone();
     let stats = this;
     SteeringPort {
+        send_while_run_held: None,
         store,
         live_handle: Arc::new(move |task_id| live.upgrade()?.live_handle(task_id)),
         dequeue_pending: Arc::new(move |task_id| {

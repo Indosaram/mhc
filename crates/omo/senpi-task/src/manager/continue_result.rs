@@ -10,6 +10,7 @@ pub enum ContinueDelivery {
     Steer,
     FollowUp,
     Revive,
+    Held,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,8 +29,17 @@ pub enum ContinueResult {
 
 pub fn to_continue_result(outcome: SendOutcome) -> ContinueResult {
     match outcome {
-        SendOutcome::Stale { task_id, reason, .. } => ContinueResult::NotContinuable {
-            task_id: Some(task_id), reason, suggestion: CONTINUE_SUGGESTION.into(),
+        SendOutcome::Held { task_id, .. } => ContinueResult::Continued {
+            task_id,
+            status: TaskStatus::Paused,
+            delivered: ContinueDelivery::Held,
+        },
+        SendOutcome::Stale {
+            task_id, reason, ..
+        } => ContinueResult::NotContinuable {
+            task_id: Some(task_id),
+            reason,
+            suggestion: CONTINUE_SUGGESTION.into(),
         },
         SendOutcome::Steered {
             task_id,
