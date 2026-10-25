@@ -55,6 +55,7 @@ mod api_tripwire {
             .collect();
         let options = ResolveAgentOptions {
             model_override: Some("openai/explicit".to_string()),
+            ..ResolveAgentOptions::default()
         };
 
         let result = resolve_agent("explore", &agents, None, &options);

@@ -1332,3 +1332,95 @@ fn streaming_parent_delivery_carries_trigger_turn_for_batched_steer() {
     );
     assert_eq!(parent.calls()[0].trigger_turn, Some(true));
 }
+
+// ---- completion/notification.ts `runRef` + `model_note:` ----
+
+#[test]
+fn run_ref_names_the_task_a_team_run_or_a_dag_run() {
+    let plain = completed_record();
+    assert_eq!(
+        details_of(&plain).run_ref,
+        Some(RunRef { kind: RunRefKind::Task, id: "st_deadbeef".to_string() })
+    );
+
+    let mut team = completed_record();
+    team.team_run_id = Some("team-run-1".to_string());
+    assert_eq!(
+        details_of(&team).run_ref,
+        Some(RunRef { kind: RunRefKind::Team, id: "team-run-1".to_string() })
+    );
+
+    let mut dag = completed_record();
+    dag.team_run_id = Some("team-run-1".to_string());
+    dag.owner = Some(crate::shared::DagTaskOwner {
+        kind: crate::shared::DagOwnerKind::Dag,
+        run_id: "dag-run-9".to_string(),
+        node_id: "plan".to_string(),
+        fingerprint: "fp".to_string(),
+    });
+    assert_eq!(
+        details_of(&dag).run_ref,
+        Some(RunRef { kind: RunRefKind::Dag, id: "dag-run-9".to_string() })
+    );
+}
+
+#[test]
+fn completion_details_serialize_the_run_ref_under_its_upstream_key() {
+    let value = serde_json::to_value(details_of(&completed_record())).expect("serialize");
+    assert_eq!(
+        value.get("runRef"),
+        Some(&serde_json::json!({ "kind": "task", "id": "st_deadbeef" }))
+    );
+    assert!(value.get("parent_model").is_none());
+    assert!(value.get("parent_model_fallback").is_none());
+}
+
+fn parent_fallback(
+    reason: ParentModelFallbackReason,
+    phase: Option<ParentModelFallbackPhase>,
+) -> ParentModelFallback {
+    ParentModelFallback {
+        from_model: "anthropic/fable".to_string(),
+        reason,
+        detail: None,
+        resets: None,
+        interrupted_tools: None,
+        at: "2026-07-06T01:00:00.000Z".to_string(),
+        phase,
+    }
+}
+
+#[test]
+fn completion_lines_add_the_model_note_above_the_result() {
+    let mut details = details_of(&completed_record());
+    details.parent_model = Some("openai/gpt-6-luna".to_string());
+    details.parent_model_fallback = Some(parent_fallback(ParentModelFallbackReason::UsageLimit, None));
+
+    let lines = completion_message_lines(&[details], None);
+    let note = lines
+        .iter()
+        .find(|line| line.starts_with("model_note:"))
+        .expect("model note line");
+    assert_eq!(
+        note,
+        "model_note:ran on the parent session's model openai/gpt-6-luna: anthropic/fable hit its usage limit"
+    );
+    let note_at = lines.iter().position(|line| line.starts_with("model_note:")).expect("index");
+    let result_at = lines.iter().position(|line| line.starts_with("result:\"")).expect("result");
+    assert!(note_at < result_at);
+}
+
+#[test]
+fn model_note_reports_the_switching_phase_and_interrupted_tools() {
+    let mut fallback = parent_fallback(ParentModelFallbackReason::Error, Some(ParentModelFallbackPhase::Switching));
+    fallback.detail = Some("overloaded".to_string());
+    fallback.resets = Some("01:00".to_string());
+    fallback.interrupted_tools = Some(vec!["bash".to_string()]);
+    assert_eq!(
+        describe_parent_model_fallback(Some(&fallback), None).as_deref(),
+        Some(
+            "switching to the parent session's model the parent session's model: anthropic/fable failed (resets 01:00) (overloaded); interrupted tool call not run: bash"
+        )
+    );
+    assert_eq!(describe_parent_model_fallback(None, None), None);
+}
