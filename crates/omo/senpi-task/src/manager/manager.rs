@@ -4054,6 +4054,16 @@ impl Inner {
                 return;
             }
             let publication = lock(&inner.host_status_publication);
+            if let (Some(transport), Some(identity)) =
+                (&inner.host_transport, record.host_session.as_ref())
+            {
+                if let Err(error) = transport.publish_task_status(identity, TaskStatus::Running) {
+                    utils::logger::log(
+                        "senpi-task daemon running publication failed",
+                        Some(&json!({"taskId":resumed_id,"error":error})),
+                    );
+                }
+            }
             if let Err(error) = handle.publish_task_status(TaskStatus::Running) {
                 log(
                     "senpi-task self-resumed running publication failed",
