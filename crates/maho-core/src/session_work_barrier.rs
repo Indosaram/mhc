@@ -23,7 +23,10 @@ pub struct SessionWorkGuard {
 
 impl SessionWorkBarrier {
     pub fn new() -> Self {
-        Self { active_work_depth: AtomicUsize::new(0), notify: Arc::new(Notify::new()) }
+        Self {
+            active_work_depth: AtomicUsize::new(0),
+            notify: Arc::new(Notify::new()),
+        }
     }
 
     pub fn has_active_work(&self) -> bool {
@@ -32,7 +35,10 @@ impl SessionWorkBarrier {
 
     pub fn begin(self: &Arc<Self>) -> SessionWorkGuard {
         self.active_work_depth.fetch_add(1, Ordering::SeqCst);
-        SessionWorkGuard { barrier: Arc::clone(self), finished: false }
+        SessionWorkGuard {
+            barrier: Arc::clone(self),
+            finished: false,
+        }
     }
 
     /// Waits until the event queue stops moving and no work is active. The first rounds re-sample
@@ -136,10 +142,20 @@ mod tests {
     #[test]
     fn tool_barrier_spec_validation() {
         assert!(tool_barrier_spec_error(&serde_json::json!({})).is_some());
-        assert!(tool_barrier_spec_error(&serde_json::json!({"id": "", "deadlineMs": 1000})).is_some());
-        assert!(tool_barrier_spec_error(&serde_json::json!({"id": "valid", "deadlineMs": 0})).is_some());
-        assert!(tool_barrier_spec_error(&serde_json::json!({"id": "valid", "deadlineMs": 700000})).is_some());
-        assert!(tool_barrier_spec_error(&serde_json::json!({"id": "valid", "deadlineMs": 1000})).is_none());
+        assert!(
+            tool_barrier_spec_error(&serde_json::json!({"id": "", "deadlineMs": 1000})).is_some()
+        );
+        assert!(
+            tool_barrier_spec_error(&serde_json::json!({"id": "valid", "deadlineMs": 0})).is_some()
+        );
+        assert!(
+            tool_barrier_spec_error(&serde_json::json!({"id": "valid", "deadlineMs": 700000}))
+                .is_some()
+        );
+        assert!(
+            tool_barrier_spec_error(&serde_json::json!({"id": "valid", "deadlineMs": 1000}))
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -236,7 +252,10 @@ impl ToolBarrier {
     }
 
     pub fn arm(&self, spec: ToolBarrierSpec) {
-        let mut guard = self.armed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self
+            .armed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(previous) = guard.take() {
             previous.timer_handle.abort();
             previous.notify.notify_waiters();
@@ -251,7 +270,9 @@ impl ToolBarrier {
         let timer_handle = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(spec_clone.deadline_ms)).await;
             let expired = {
-                let mut guard = armed_clone.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut guard = armed_clone
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if guard.as_ref().is_some_and(|a| a.spec.id == spec_clone.id) {
                     guard.take()
                 } else {
@@ -272,7 +293,10 @@ impl ToolBarrier {
     }
 
     pub fn release(&self, id: &str) -> bool {
-        let mut guard = self.armed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self
+            .armed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if guard.as_ref().is_some_and(|a| a.spec.id == id) {
             if let Some(armed) = guard.take() {
                 armed.timer_handle.abort();
@@ -284,18 +308,30 @@ impl ToolBarrier {
     }
 
     pub fn clear(&self) {
-        let mut guard = self.armed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self
+            .armed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(armed) = guard.take() {
             armed.timer_handle.abort();
             armed.notify.notify_waiters();
         }
     }
 
-    pub async fn wait(&self, signal: Option<&maho_ai::utils::abort::AbortSignal>) -> Option<String> {
-        let (id, notify) = {
-            let guard = self.armed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    pub async fn wait(
+        &self,
+        signal: Option<&maho_ai::utils::abort::AbortSignal>,
+    ) -> Option<String> {
+        // Register while the armed state is locked, before release can notify.
+        let (id, notified) = {
+            let guard = self
+                .armed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let armed = guard.as_ref()?;
-            (armed.spec.id.clone(), Arc::clone(&armed.notify))
+            let mut notified = Box::pin(Arc::clone(&armed.notify).notified_owned());
+            notified.as_mut().enable();
+            (armed.spec.id.clone(), notified)
         };
 
         if let Some(sig) = signal {
@@ -303,7 +339,7 @@ impl ToolBarrier {
                 return Some(id);
             }
             tokio::select! {
-                _ = notify.notified() => Some(id),
+                _ = notified => Some(id),
                 _ = async {
                     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
                     let _listener = sig.add_abort_listener(move |_| { let _ = tx.send(()); });
@@ -311,7 +347,7 @@ impl ToolBarrier {
                 } => Some(id),
             }
         } else {
-            notify.notified().await;
+            notified.await;
             Some(id)
         }
     }

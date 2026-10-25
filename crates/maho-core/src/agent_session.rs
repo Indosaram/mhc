@@ -4406,6 +4406,7 @@ impl AgentSession {
             self.with_work_obligations(|registry| registry.settle_run(&lock(&self.custody_run_id)));
             self.external_admission.observe_run_settled();
             lock(&self.lifecycle).run_active = false;
+            self.clear_tool_barrier();
             self.refresh_lifecycle();
             // senpi mutates the live agent_end event on a late User join (agent-abort-provenance.ts
             // `join`), so subscribers see the settled owner, not the snapshot taken at begin.
@@ -14805,6 +14806,9 @@ impl AgentSession {
                 Box::pin(async move {
                     let inner = weak.upgrade()?;
                     let session = AgentSession { inner };
+                    session
+                        .wait_for_tool_barrier(&context.tool_call.name, None)
+                        .await;
                     let original = context.args.clone();
                     session
                         .preflight_tool_call(&context.tool_call, context.args)
