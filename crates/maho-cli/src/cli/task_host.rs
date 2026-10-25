@@ -158,6 +158,7 @@ impl HostAssembly {
         ),
         HostError,
     > {
+        self.admit(spec.state_dir.clone())?;
         let turn = self
             .turns
             .lock()
