@@ -89,7 +89,12 @@ impl InProcessSessionContextProvider for ParentRegistrySessionContext {
         (self.exclude_models)()
     }
     fn validate_start(&self, spec: &ManagedStartSpec) -> Result<(), String> {
-        if let Some(model) = spec.model.as_deref() {
+        let selected = spec
+            .resolved_model
+            .as_ref()
+            .map(|model| format!("{}/{}", model.provider, model.model_id))
+            .or_else(|| spec.model.clone());
+        if let Some(model) = selected.as_deref() {
             if is_excluded_model(model, &(self.exclude_models)()) {
                 return Err(format!("model_unavailable: excluded model {model}"));
             }
