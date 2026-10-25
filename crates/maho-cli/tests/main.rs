@@ -41,6 +41,8 @@ pub mod duration;
 pub mod experimental_commands;
 #[path = "extension_registry.rs"]
 pub mod extension_registry;
+#[path = "facts_child.rs"]
+pub mod facts_child;
 #[path = "fast_mode.rs"]
 pub mod fast_mode;
 #[path = "file_processor.rs"]
