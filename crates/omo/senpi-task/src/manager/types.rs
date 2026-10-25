@@ -142,6 +142,8 @@ pub struct ManagerStartSpec {
     pub merge: Option<IsolationMergeMode>,
     /// Per-spawn apply flag (TS spec.apply).
     pub apply: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_credential: Option<crate::dag::types::ResumeCredential>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -290,6 +292,9 @@ pub enum OwnedStartResult {
         existing_fingerprint: String,
         requested_fingerprint: String,
     },
+    Held {
+        pause_seq: u64,
+    },
     NotStarted(StartResult),
 }
 
@@ -298,6 +303,7 @@ impl OwnedStartResult {
         match self {
             Self::Started { .. } => "started",
             Self::OwnerConflict { .. } => "owner_conflict",
+            Self::Held { .. } => "held",
             Self::NotStarted(result) => result.kind(),
         }
     }

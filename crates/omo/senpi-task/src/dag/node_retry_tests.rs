@@ -46,6 +46,7 @@ fn given_skipped_descendant_chain_when_ancestor_is_selected_then_dependents_rest
         nodes: compiled.nodes, edges: compiled.edges, waves: compiled.waves,
         critical_path: compiled.critical_path, bottlenecks: compiled.bottlenecks, diagnostics: compiled.diagnostics,
         amend_history: None, lease_holder_pid: None, previous_lease_holder_pid: None,
+        guidance: None, retry_on_resume: None, cancel_requested_nodes: None, paused_child_acks: None, pause: None,
     };
     let root = "broken".to_string();
     let dependent = DagNode {
@@ -87,5 +88,6 @@ fn retry_record() -> DagRunRecordV1 {
         nodes: compiled.nodes, edges: compiled.edges, waves: compiled.waves,
         critical_path: compiled.critical_path, bottlenecks: compiled.bottlenecks, diagnostics: compiled.diagnostics,
         amend_history: None, lease_holder_pid: None, previous_lease_holder_pid: None,
+        guidance: None, retry_on_resume: None, cancel_requested_nodes: None, paused_child_acks: None, pause: None,
     }
 }
