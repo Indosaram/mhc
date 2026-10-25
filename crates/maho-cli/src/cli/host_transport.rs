@@ -87,7 +87,7 @@ impl HostTransport for CliHostTransport {
             Ok(sessions
                 .iter()
                 .find(|session| session["sessionPath"].as_str() == Some(path.as_str()))
-                .and_then(|session| session["sessionId"].as_str())
+                .and_then(|session| session["durableSessionId"].as_str())
                 .map(str::to_owned))
         })?
     }
