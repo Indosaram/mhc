@@ -848,3 +848,74 @@ fn typed_start_failure_advances_category_without_consuming_parent_rung() {
     assert_eq!(record.model, "second/b");
     assert_eq!(record.fallback_models.unwrap()[0].display, "parent/c");
 }
+
+#[test]
+fn fresh_manager_reconstructs_withdrawn_first_launch_with_saved_custody() {
+    let original = make_manager(HarnessOptions {
+        config: Some(config(1, 1)),
+        ..Default::default()
+    });
+    let first = started(original.manager.start(&base_spec()));
+    let waiting = started(original.manager.start(&base_spec()));
+    let record = original.store.load(&waiting.task_id).unwrap().unwrap();
+    original
+        .manager
+        .admission_barrier()
+        .close(&record.root_session_id, 5);
+    original
+        .manager
+        .withdraw_admissions(&record.root_session_id);
+    assert!(
+        original
+            .store
+            .load(&waiting.task_id)
+            .unwrap()
+            .unwrap()
+            .queued_admission
+            .is_some()
+    );
+    drop(original.manager);
+    original
+        .store
+        .mutate(
+            &waiting.task_id,
+            &mut |record: &crate::state::TaskRecord| crate::state::TaskRecord {
+                host_pid: None,
+                ..record.clone()
+            },
+        )
+        .unwrap();
+    let runner = FakeRunner::new();
+    let options = crate::manager::types::TaskManagerOptions::new(
+        original.store.clone(),
+        crate::manager::types::ManagedRunners {
+            in_process: runner.clone(),
+            process: runner.clone(),
+        },
+        category_planner(&[]),
+        original.project.cwd(),
+    );
+    let restored = crate::manager::create_task_manager(options);
+    let record = original.store.load(&waiting.task_id).unwrap().unwrap();
+    restored
+        .admission_barrier()
+        .close(&record.root_session_id, 5);
+    let credential = restored
+        .admission_barrier()
+        .resume(&record.root_session_id, 5, "restart")
+        .unwrap();
+    restored
+        .resume_held_task(&waiting.task_id, &credential)
+        .unwrap();
+    let handle = runner.wait_handle(&waiting.task_id);
+    handle.settle(crate::runners::RunnerOutcome::completed("restored"));
+    assert_eq!(
+        restored
+            .wait_for(&waiting.task_id, None, Some(WAIT))
+            .unwrap()
+            .final_response
+            .as_deref(),
+        Some("restored")
+    );
+    assert_eq!(first.status, TaskStatus::Running);
+}
