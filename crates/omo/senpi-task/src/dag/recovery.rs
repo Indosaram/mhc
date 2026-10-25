@@ -564,7 +564,7 @@ fn reconcile_nodes(
 
         if matches!(
             current_task.status,
-            TaskStatus::Pending | TaskStatus::Running
+            TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused
         ) {
             if !started_here
                 && context
@@ -641,7 +641,10 @@ fn fold_task_outcome(
     pending_errors: &Arc<Mutex<BTreeMap<DagNodeId, DagNodeError>>>,
     pending_terminal_results: &Arc<Mutex<BTreeMap<DagNodeId, TaskRecord>>>,
 ) {
-    if matches!(task.status, TaskStatus::Pending | TaskStatus::Running) {
+    if matches!(
+        task.status,
+        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused
+    ) {
         fail_node(
             journal,
             node_id,

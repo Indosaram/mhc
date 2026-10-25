@@ -890,7 +890,7 @@ fn transitions_suspended_running_accepts_late_complete() {
 
 fn expected_messageability(status: TaskStatus, residency: ResidencyState) -> Messageability {
     match (status, residency) {
-        (TaskStatus::Pending | TaskStatus::Running, ResidencyState::Resident) => {
+        (TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused, ResidencyState::Resident) => {
             Messageability::Steer
         }
         (

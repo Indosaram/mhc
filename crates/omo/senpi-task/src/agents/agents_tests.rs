@@ -1095,6 +1095,7 @@ fn resolve_override_without_registry_filters_allowlist() {
         &agents,
         None,
         &ResolveAgentOptions {
+            omo_config: None,
             model_override: text("openai/explicit"),
             ..ResolveAgentOptions::default()
         },

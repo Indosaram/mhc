@@ -44,6 +44,7 @@ fn liveness_renderer_decodes_camel_case_details() {
 #[test]
 fn completion_renderer_decodes_envelope_and_renders_at_each_width() {
     let detail = senpi_task::completion::CompletionDetails {
+        run_ref: None, parent_model: None, parent_model_fallback: None,
         task_id: "st_test".into(), name: "worker".into(), status: senpi_task::state::TaskStatus::Completed,
         category: None, agent_type: None, model: "faux/faux-1".into(), requested_model: None,
         fallback_models: None, resolved_model: Some(senpi_task::state::ResolvedModelRecord::new(

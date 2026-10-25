@@ -116,6 +116,13 @@ pub fn fold_send_outcome(
     let node_id = node.id.clone();
     let run_id = record.run_id.clone();
     match outcome {
+        SendOutcome::Held { .. } => Ok(DagNodeSendResult {
+            node_id,
+            task_id: task_id.into(),
+            delivery: DagNodeDeliveryResult::Queued,
+            queue_position: None,
+            settled: None,
+        }),
         SendOutcome::Queued { queue_position, .. } => Ok(DagNodeSendResult {
             node_id,
             task_id: task_id.into(),
@@ -295,7 +302,10 @@ pub fn watch_revived_task(
             return Ok(());
         }
     };
-    if matches!(task.status, TaskStatus::Pending | TaskStatus::Running) {
+    if matches!(
+        task.status,
+        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused
+    ) {
         fail_revived_node(
             &options,
             &node_id,
