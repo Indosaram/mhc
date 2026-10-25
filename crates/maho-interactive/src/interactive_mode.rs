@@ -4821,10 +4821,9 @@ impl InteractiveMode {
             self.handle_editor_input(data);
             return;
         }
-        if self.shortcut_overlay {
-            self.shortcut_overlay = false;
-            return;
-        }
+        // senpi `hideShortcutOverlay` on the next editor change: the key that hides the overlay
+        // still reaches the editor.
+        self.shortcut_overlay = false;
         let keys = self.keybindings();
         if self
             .editor
@@ -4947,11 +4946,13 @@ impl InteractiveMode {
             ));
             return;
         }
-        if data == "?" && self.editor.editor.get_text().is_empty() {
-            self.shortcut_overlay = true;
-            return;
-        }
+        // senpi `shouldShowShortcutOverlay("", "?", "typed")`: the `?` is typed into the editor and
+        // the overlay shows beside it.
+        let show_overlay = data == "?" && self.editor.editor.get_text().is_empty();
         self.handle_editor_input(data);
+        if show_overlay && self.editor.editor.get_text() == "?" {
+            self.shortcut_overlay = true;
+        }
     }
 
     /// Pop the next queued editor submission (draining any pending tree copies first), paired with

@@ -277,6 +277,12 @@ pub async fn run(
         rendered.borrow_mut().0 = mode.render(usize::from(terminal.columns()));
     }
     screen.do_render(&mut terminal);
+    // An installed fd is found with a local PATH/bin stat, so `@` mentions work from the first
+    // keystroke; the background check below only re-installs the provider when it changes the path.
+    let local_fd_path = crate::utils::tools_manager::get_tool_path(crate::utils::tools_manager::Tool::Fd);
+    if local_fd_path.is_some() {
+        mode.set_fd_path(local_fd_path.clone());
+    }
     mode.rebuild_history();
     // senpi `init()` awaits `rebindCurrentSession()` with the editor already focused and its
     // event loop live, so keystrokes typed while extensions bind (the MCP startup race alone
@@ -330,19 +336,19 @@ pub async fn run(
     mode.initialize_startup_resources();
     mode.show_startup_model_warnings();
     // senpi: ensure fd and rg (download when missing, honouring offline mode) after the header is up;
-    // fd feeds the `@` file-mention search.
-    {
-        use crate::utils::tools_manager::{Tool, ToolStatus, ensure_tool};
-        let statuses = RefCell::new(Vec::<ToolStatus>::new());
+    // fd feeds the `@` file-mention search. A missing tool is downloaded over the network, so the
+    // check runs as a task and the input loop applies its result: keystrokes keep echoing while it
+    // runs (senpi's event loop serves stdin during the same await).
+    let mut managed_tools = Some(tokio::spawn(async {
+        use crate::utils::tools_manager::{Tool, ensure_tool};
+        let (mut fd_statuses, mut rg_statuses) = (Vec::new(), Vec::new());
         let (fd_path, _rg_path) = tokio::join!(
-            ensure_tool(Tool::Fd, |status| statuses.borrow_mut().push(status)),
-            ensure_tool(Tool::Rg, |status| statuses.borrow_mut().push(status)),
+            ensure_tool(Tool::Fd, |status| fd_statuses.push(status)),
+            ensure_tool(Tool::Rg, |status| rg_statuses.push(status)),
         );
-        for status in statuses.into_inner() {
-            mode.show_managed_tool_status(status.kind, &status.message);
-        }
-        mode.set_fd_path(fd_path);
-    }
+        fd_statuses.extend(rg_statuses);
+        (fd_path, fd_statuses)
+    }));
     mode.show_startup_warnings();
     if let Some(notice) = crate::legacy_pi_edits::legacy_pi_edit_startup_notice(
         std::path::Path::new(&session.agent_dir()),
@@ -401,6 +407,17 @@ pub async fn run(
                         mode.show_new_version_notification(&release.version, &action, &url);
                     }
                     StartupNotice::Warning(warning) => mode.show_warning(&warning),
+                }
+            }
+            if managed_tools.as_ref().is_some_and(tokio::task::JoinHandle::is_finished)
+                && let Some(task) = managed_tools.take()
+            {
+                match task.await {
+                    Ok((fd_path, statuses)) => {
+                        for status in statuses { mode.show_managed_tool_status(status.kind, &status.message); }
+                        if fd_path != local_fd_path { mode.set_fd_path(fd_path); }
+                    }
+                    Err(error) => mode.show_managed_tool_status("warning", &format!("Failed to check fd/rg: {error}")),
                 }
             }
             mode.drain_events();
