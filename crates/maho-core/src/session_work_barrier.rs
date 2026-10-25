@@ -182,18 +182,7 @@ mod tests {
 // ---------------------------------------------------------------------------
 
 /// What a tool can do to the workspace. Tools that do not declare it are treated as "write".
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ToolWorkspaceEffect {
-    Read,
-    Write,
-}
-
-impl Default for ToolWorkspaceEffect {
-    fn default() -> Self {
-        Self::Write
-    }
-}
+pub use maho_tools::definition::ToolWorkspaceEffect;
 
 pub const MAX_TOOL_BARRIER_ID_LENGTH: usize = 256;
 pub const MAX_TOOL_BARRIER_DEADLINE_MS: u64 = 600_000;
