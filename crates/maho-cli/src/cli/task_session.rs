@@ -1222,7 +1222,6 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
             .ensure_session()
             .map_err(|error| NativePauseError::Engine(error.to_string()))?;
         let turn_id = request.resume_id.clone();
-        let has_held_inputs = !session.held_inputs().is_empty();
         let (settled, outcome) = std::sync::mpsc::sync_channel(1);
         let prompt_failed = settled.clone();
         let turn_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1275,17 +1274,13 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
             };
             let _ = settled.try_send(result);
         }));
-        let resumed = session.clone();
-        let result = block_on_sync(self.executor.clone(), async move {
-            resumed
-                .resume_for_run(
-                    &request.owner.parent_session_id,
-                    request.owner.parent_pause_seq,
-                    request.child_seq_cutoff,
-                )
-                .await
-        })
-        .map_err(|error| NativePauseError::Engine(error.to_string()))?;
+        let result = session
+            .release_run_hold(
+                &request.owner.parent_session_id,
+                request.owner.parent_pause_seq,
+                request.child_seq_cutoff,
+            )
+            .map_err(NativePauseError::Engine)?;
         Ok(match result {
             maho_core::run_holds::ReleaseInheritedResult::WrongParent => {
                 NativeResumeResult::Refused(ResumeRefusal::WrongParent)
@@ -1302,7 +1297,7 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
             maho_core::run_holds::ReleaseInheritedResult::Released {
                 other_hold_live: false,
             } => {
-                if !has_held_inputs {
+                {
                     let (admitted, admission) = std::sync::mpsc::sync_channel(1);
                     self.executor.spawn(async move {
                         let signal = admitted.clone();

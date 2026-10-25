@@ -5254,6 +5254,18 @@ impl AgentSession {
         Ok(result)
     }
 
+    pub fn release_run_hold(
+        &self,
+        parent: &str,
+        pause_seq: u64,
+        child_seq_cutoff: u64,
+    ) -> Result<crate::run_holds::ReleaseInheritedResult, String> {
+        let result = crate::run_holds::RunHolds::new(&mut lock(&self.engine_turn_hold))
+            .release_inherited(parent, pause_seq, child_seq_cutoff)?;
+        self.refresh_lifecycle();
+        Ok(result)
+    }
+
     pub async fn resume_for_run(
         &self,
         parent: &str,
