@@ -14,9 +14,12 @@ path = "src/lib.rs"
 # Versions are pinned to the versions already present in this workspace's
 # Cargo.lock (seeded from the FORK's lock); do not `cargo add`.
 jiff.workspace = true
+hex.workspace = true
 libc.workspace = true
+regex.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
+sha2.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]

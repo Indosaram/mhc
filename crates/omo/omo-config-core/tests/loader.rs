@@ -2000,3 +2000,204 @@ fn project_paths_walk_stops_at_account_home_boundary_when_home_is_isolated() {
     );
     assert_eq!(paths, vec![project_config_path("/home/alice/work")]);
 }
+
+fn exclude_models_fixture(user: &str, project: &str) -> (tempfile::TempDir, String, String) {
+    let root = tempfile::tempdir().expect("tempdir");
+    let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
+    let home = format!("{root_path}/home");
+    let cwd = format!("{home}/work/project");
+    std::fs::create_dir_all(format!("{home}/.omo")).expect("omo dir");
+    std::fs::create_dir_all(format!("{cwd}/.omo")).expect("project omo dir");
+    write_file(&format!("{home}/.omo/omo.jsonc"), user);
+    write_file(&format!("{cwd}/.omo/omo.jsonc"), project);
+    (root, home, cwd)
+}
+
+fn excluded_models_of(config: &Map<String, Value>) -> Vec<String> {
+    let mut names: Vec<String> = config
+        .get("exclude_models")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+#[test]
+fn exclude_models_unions_the_user_project_and_harness_lists() {
+    let (_root, home, cwd) = exclude_models_fixture(
+        r#"{ "exclude_models": ["*"] }"#,
+        r#"{ "exclude_models": ["grok-4.7"], "[native]": { "exclude_models": ["openai/gpt-6.1-sol"] } }"#,
+    );
+
+    let result = load_senpi(&home, &cwd, None);
+
+    assert_eq!(result.diagnostics, Vec::new());
+    assert_eq!(
+        excluded_models_of(&result.config),
+        vec![
+            "*".to_string(),
+            "grok-4.7".to_string(),
+            "openai/gpt-6.1-sol".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn exclude_models_empty_project_list_cannot_reenable_a_user_exclusion() {
+    let (_root, home, cwd) = exclude_models_fixture(
+        r#"{ "exclude_models": ["*"] }"#,
+        r#"{ "exclude_models": [] }"#,
+    );
+
+    let result = load_senpi(&home, &cwd, None);
+
+    assert_eq!(excluded_models_of(&result.config), vec!["*".to_string()]);
+}
+
+/// Fixture keys for the retired sections; the digest test pins them to the loader's constants.
+const RETIRED_SECTIONS: [&str; 2] = ["dori", "gateway"];
+
+fn retired_section_digest(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(key.to_lowercase().as_bytes()))
+}
+
+#[test]
+fn retired_section_fixture_keys_are_the_loader_digests() {
+    let expected: BTreeSet<String> = RETIRED_SECTIONS
+        .iter()
+        .map(|key| retired_section_digest(key))
+        .collect();
+    let actual: BTreeSet<String> = omo_config_core::RETIRED_SECTION_DIGESTS
+        .iter()
+        .map(|digest| digest.to_string())
+        .collect();
+    assert_eq!(actual, expected);
+}
+
+fn retired_section_container(key: &str) -> Map<String, Value> {
+    let mut container = Map::new();
+    container.insert(key.to_string(), json!({ "arbitrary": { "enabled": true } }));
+    container
+}
+
+#[test]
+fn retired_sections_are_silently_ignored_in_every_config_container() {
+    for extension in ["json", "jsonc"] {
+        for key in RETIRED_SECTIONS {
+            let root = tempfile::tempdir().expect("tempdir");
+            let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
+            let home = format!("{root_path}/home");
+            let cwd = format!("{home}/project");
+            std::fs::create_dir_all(&cwd).expect("cwd");
+            std::fs::create_dir_all(format!("{home}/.omo")).expect("omo dir");
+            let path = format!("{home}/.omo/omo.{extension}");
+
+            let mut document = retired_section_container(key);
+            document.insert("disabled_skills".into(), json!(["kept"]));
+            let mut harness_block = retired_section_container(key);
+            harness_block.insert("task".into(), json!({ "default_concurrency": 3 }));
+            document.insert("[senpi]".into(), Value::Object(harness_block));
+            let mut profile = retired_section_container(key);
+            profile.insert("telemetry".into(), json!({ "enabled": false }));
+            let mut profile_harness = retired_section_container(key);
+            profile_harness.insert(
+                "categories".into(),
+                json!({ "quick": { "model": "test/model" } }),
+            );
+            profile.insert("[senpi]".into(), Value::Object(profile_harness));
+            document.insert(
+                "profiles".into(),
+                json!({ "work": Value::Object(profile) }),
+            );
+
+            let comment = if extension == "jsonc" {
+                "// preserved comment\n"
+            } else {
+                ""
+            };
+            let content = format!("{comment}{}\n", Value::Object(document));
+            write_file(&path, &content);
+
+            let result = load_senpi(&home, &cwd, Some("work"));
+
+            assert_eq!(
+                result
+                    .sources
+                    .iter()
+                    .filter(|source| source.loaded)
+                    .map(|source| source.path.clone())
+                    .collect::<Vec<_>>(),
+                vec![path.clone()],
+                "{extension} {key}: the file still loads"
+            );
+            for section_key in RETIRED_SECTIONS {
+                for diagnostic in &result.diagnostics {
+                    assert!(
+                        !diagnostic.message.contains(section_key),
+                        "{extension} {key}: {section_key} is never reported"
+                    );
+                    assert!(
+                        diagnostic
+                            .issue_paths
+                            .iter()
+                            .all(|issue_path| !issue_path.contains(section_key)),
+                        "{extension} {key}: {section_key} is never reported"
+                    );
+                }
+            }
+            assert_eq!(result.config["disabled_skills"], json!(["kept"]));
+            assert_eq!(result.config["task"]["default_concurrency"], json!(3));
+            assert_eq!(result.config["telemetry"]["enabled"], json!(false));
+            assert_eq!(
+                result.config["categories"]["quick"]["model"],
+                json!("test/model")
+            );
+            assert!(!result.config.contains_key(key), "{extension} {key}");
+            let layer = &result.layers[0].config;
+            assert!(!layer.as_object().expect("layer").contains_key(key));
+            assert!(
+                !layer["[native]"]
+                    .as_object()
+                    .expect("native block")
+                    .contains_key(key)
+            );
+            assert_eq!(
+                layer["profiles"],
+                json!({
+                    "work": {
+                        "telemetry": { "enabled": false },
+                        "[native]": { "categories": { "quick": { "model": "test/model" } } },
+                    }
+                })
+            );
+            assert_eq!(std::fs::read_to_string(&path).expect("reread"), content);
+        }
+    }
+}
+
+#[test]
+fn retired_section_names_survive_as_nested_application_keys() {
+    let (_root, home, cwd) = exclude_models_fixture(
+        r#"{ "legacy_migrations": { "gateway": { "enabled": true } }, "gateway": { "enabled": true } }"#,
+        r#"{ "categories": { "quick": { "tools": { "dori": true } } }, "dori": { "enabled": true } }"#,
+    );
+
+    let result = load_senpi(&home, &cwd, None);
+
+    assert_eq!(result.diagnostics, Vec::new());
+    assert!(result.config.get("gateway").is_none());
+    assert!(result.config.get("dori").is_none());
+    assert_eq!(
+        result.config["legacy_migrations"]["gateway"],
+        json!({ "enabled": true })
+    );
+    assert_eq!(result.config["categories"]["quick"]["tools"]["dori"], json!(true));
+}
