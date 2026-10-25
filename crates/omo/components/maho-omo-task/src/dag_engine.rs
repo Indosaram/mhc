@@ -543,6 +543,7 @@ impl TaskDagEngine {
             }),
         );
         *lock(&dag.stop_observing) = Some(stop);
+        dag.register_pause_source(engine);
         Ok(dag)
     }
 
@@ -559,6 +560,123 @@ impl TaskDagEngine {
         }
     }
 
+    fn register_pause_source(self: &Arc<Self>, engine: &TaskEngine) {
+        let records = Arc::downgrade(self);
+        let options = Arc::downgrade(self);
+        let retire = Arc::downgrade(self);
+        let prepare = Arc::downgrade(self);
+        let recovery = self.recovery.clone();
+        let adopt = Arc::downgrade(self);
+        let cancel = Arc::downgrade(self);
+        let tasks = engine.run_pause.clone();
+        engine.pause.register(Arc::new(
+            crate::dag_run_pause_source::DagRunPauseSource::new(Arc::new(
+                crate::dag_run_pause_source::DagRunPauseSourcePorts {
+                    barrier: engine.manager.admission_barrier().clone(),
+                    records: Arc::new(move |parent| {
+                        let Some(dag) = records.upgrade() else {
+                            return vec![];
+                        };
+                        match dag.manager.list(parent, None) {
+                            Ok(runs) => runs
+                                .into_iter()
+                                .filter_map(|run| dag.manager.record(&run.run_id, parent).ok())
+                                .collect(),
+                            Err(error) => {
+                                maho_ext_api::diagnostic(&format!(
+                                    "DAG pause listing failed: {error}"
+                                ));
+                                vec![]
+                            }
+                        }
+                    }),
+                    options: Arc::new(move |record| {
+                        options
+                            .upgrade()
+                            .expect("live DAG runtime")
+                            .scheduler_options(record.clone())
+                    }),
+                    pauses: self.pause_store(),
+                    retire: Arc::new(move |run| {
+                        let Some(dag) = retire.upgrade() else {
+                            return Ok(());
+                        };
+                        let owned = lock(&dag.schedulers).remove(run);
+                        if let Some(mut owned) = owned {
+                            owned.scheduler.suspend();
+                            if let Some(running) = owned.running.take() {
+                                running
+                                    .join()
+                                    .map_err(|_| "DAG scheduler panicked".to_string())?;
+                            }
+                        }
+                        Ok(())
+                    }),
+                    prepare_resume: Arc::new(move |run| {
+                        if let Some(dag) = prepare.upgrade() {
+                            lock(&dag.stopped_admissions).remove(run);
+                        }
+                    }),
+                    install_resumed_run: Arc::new(
+                        move |run, parent, seq, credential| match recovery
+                            .install_resumed_run_with_credential(
+                                &run.to_string(),
+                                parent,
+                                seq,
+                                Some(senpi_task::dag::types::ResumeCredential {
+                                    pause_seq: credential.pause_seq,
+                                    resume_id: credential.resume_id.clone(),
+                                }),
+                            )? {
+                            senpi_task::dag::recovery::InstallResumedRunResult::Installed(
+                                installed,
+                            ) => Ok(installed),
+                            senpi_task::dag::recovery::InstallResumedRunResult::Skipped(
+                                outcome,
+                            ) => Err(format!("{outcome:?}")),
+                        },
+                    ),
+                    adopt: Arc::new(move |installed| {
+                        if let Some(dag) = adopt.upgrade() {
+                            lock(&dag.schedulers).insert(
+                                installed.run_id.clone(),
+                                DagOwnedScheduler {
+                                    scheduler: installed.scheduler.clone(),
+                                    running: None,
+                                },
+                            );
+                            dag.spawn_running(installed.run_id, installed.scheduler, true);
+                        }
+                    }),
+                    cancel_run: Arc::new(move |run| {
+                        cancel
+                            .upgrade()
+                            .ok_or_else(|| "DAG runtime disposed".to_string())?
+                            .cancel(run, None)
+                    }),
+                    deliver_guidance: Some(Arc::new(move |task, input| {
+                        tasks
+                            .hold_task_input(
+                                task,
+                                &senpi_task::manager::run_pause::HeldTaskInput {
+                                    input_id: input.input_id.clone(),
+                                    revision: input.revision,
+                                    text: input.text.clone(),
+                                },
+                            )
+                            .map(|result| match result {
+                                senpi_task::pause::ports::EngineHoldInputResult::Held {
+                                    entry_id,
+                                    ..
+                                } => Some(entry_id),
+                                _ => None,
+                            })
+                    })),
+                },
+            )),
+        ));
+    }
+
     fn session_id(&self) -> Option<String> {
         lock(&self.runtime).session_id().map(str::to_owned)
     }
@@ -566,14 +684,12 @@ impl TaskDagEngine {
     /// The paused-run sidecar every paused control verb reads and writes.
     fn pause_store(&self) -> Arc<senpi_task::dag::paused_controls::DagPauseStore> {
         Arc::new(senpi_task::dag::paused_controls::DagPauseStore::from_store(
-            &self.store,
+            self.store.clone(),
         ))
     }
 
     /// The runtime's `cancelNode` capability: end one held node's child while the run stays paused.
-    fn cancel_node_capability(
-        &self,
-    ) -> Option<crate::dag_tool::DagCancelNode> {
+    fn cancel_node_capability(&self) -> Option<crate::dag_tool::DagCancelNode> {
         let options = Arc::downgrade(&self.this);
         let pauses = self.pause_store();
         let holds = crate::dag_paused_cancel::ended_child_closure(self.task_manager.clone());
@@ -587,7 +703,7 @@ impl TaskDagEngine {
                 ));
             };
             let context = dag.scheduler_options_for(run_id)?;
-            senpi_task::dag::paused_controls::cancel_paused_dag_node(
+            senpi_task::dag::paused_controls::cancel_paused_dag_node_with_store(
                 &context,
                 &run_id.to_string(),
                 &node_id.to_string(),
@@ -602,24 +718,27 @@ impl TaskDagEngine {
     fn guide_capability(&self) -> Option<crate::dag_tool::DagGuide> {
         let options = Arc::downgrade(&self.this);
         let pauses = self.pause_store();
-        Some(Arc::new(move |run_id: &str, command: senpi_task::dag::paused_controls::PausedDagGuideCommand| {
-            let Some(dag) = options.upgrade() else {
-                return Err(crate::dag_tool::DagToolExecutionError::Control(
-                    senpi_task::dag::scheduler::DagNodeControlError::new(
-                        senpi_task::dag::scheduler::DagNodeControlErrorCode::RunNotFound,
-                        format!("dag run \"{run_id}\" is no longer live in this session"),
-                    ),
-                ));
-            };
-            let context = dag.scheduler_options_for(run_id)?;
-            senpi_task::dag::paused_controls::apply_paused_dag_guidance(
-                &context,
-                &run_id.to_string(),
-                command,
-                pauses.as_ref(),
-            )
-            .map_err(crate::dag_tool::DagToolExecutionError::Control)
-        }))
+        Some(Arc::new(
+            move |run_id: &str,
+                  command: senpi_task::dag::paused_controls::PausedDagGuideCommand| {
+                let Some(dag) = options.upgrade() else {
+                    return Err(crate::dag_tool::DagToolExecutionError::Control(
+                        senpi_task::dag::scheduler::DagNodeControlError::new(
+                            senpi_task::dag::scheduler::DagNodeControlErrorCode::RunNotFound,
+                            format!("dag run \"{run_id}\" is no longer live in this session"),
+                        ),
+                    ));
+                };
+                let context = dag.scheduler_options_for(run_id)?;
+                senpi_task::dag::paused_controls::apply_paused_dag_guidance(
+                    &context,
+                    &run_id.to_string(),
+                    command,
+                    pauses.as_ref(),
+                )
+                .map_err(crate::dag_tool::DagToolExecutionError::Control)
+            },
+        ))
     }
 
     /// Why the run is paused right now, so the tool can refuse a model-driven `resume`.
@@ -631,8 +750,12 @@ impl TaskDagEngine {
                 .ok()
                 .and_then(|state| state.pause)
                 .map(|pause| match pause.reason {
-                    senpi_task::dag::paused_controls::DagRunPauseReason::UserStop => "user_stop".to_string(),
-                    senpi_task::dag::paused_controls::DagRunPauseReason::SessionShutdown => "session_shutdown".to_string(),
+                    senpi_task::dag::paused_controls::DagRunPauseReason::UserStop => {
+                        "user_stop".to_string()
+                    }
+                    senpi_task::dag::paused_controls::DagRunPauseReason::SessionShutdown => {
+                        "session_shutdown".to_string()
+                    }
                 })
         }))
     }
@@ -1050,7 +1173,9 @@ impl TaskDagEngine {
                 continue;
             }
             // PERF-DIVERGENCE(omo dag store wrapper): upstream rebuilds the listener list and durable listener for every run it visits; we build them lazily once per checkpoint, only when a run actually needs publishing. The listeners delivered to are the same.
-            let (listeners, on_event) = publish_ctx.get_or_insert_with(|| (lock(&self.run_listeners).clone(), self.durable_listener()));
+            let (listeners, on_event) = publish_ctx.get_or_insert_with(|| {
+                (lock(&self.run_listeners).clone(), self.durable_listener())
+            });
             let mut delivered: BTreeMap<DagRunId, u64> = lock(&self.delivered)
                 .get(&run)
                 .map(|seq| (run.clone(), *seq))

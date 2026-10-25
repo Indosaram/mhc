@@ -5,9 +5,8 @@
 //! scheduling. Both refuse unless the run is paused BY THE USER (`run_not_user_paused`), which is
 //! why the pause reason is persisted beside the run rather than inferred from its status alone.
 //!
-//! The Rust run record predates the guidance field, so the pause reason, the pause sequence, and the
-//! guidance records live in one sidecar file inside the run's directory
-//! (`<dag state dir>/runs/<run_id>.pause.json`). Nothing else in the checkpoint shape changes.
+//! Pause and guidance live in the run checkpoint, matching `DagRunRecordV1`. The control view below
+//! reads and updates that same checkpoint instead of maintaining a competing sidecar.
 
 use std::sync::Arc;
 
@@ -34,6 +33,7 @@ pub enum DagRunPauseReason {
 
 /// The pause a run carries (`DagRunRecordV1.pause`): who paused it, and at which sequence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DagRunPause {
     pub reason: DagRunPauseReason,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,29 +49,49 @@ pub struct DagPauseState {
     pub guidance: Vec<Guidance>,
 }
 
-/// The paused-run sidecar, keyed by run id inside the store's own `runs/` directory.
+/// The checkpoint-backed pause view. Pause and guidance have a single durable owner: the run
+/// checkpoint, shared with recovery, the scheduler, and the WAL reducer.
 pub struct DagPauseStore {
     runs: std::path::PathBuf,
+    store: Arc<crate::dag::store::DagFileStore>,
 }
 
 impl DagPauseStore {
     /// `runs_dir` is the DAG store's `runs/` directory: the same folder the run checkpoints live in.
     pub fn new(runs_dir: impl Into<std::path::PathBuf>) -> Self {
+        let runs = runs_dir.into();
+        let state_dir = runs
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("DAG runs directory has a state directory");
+        let config = crate::dag::store::DagStoreConfig {
+            project_dir: state_dir.to_path_buf(),
+            task: Some(crate::dag::store::DagStoreTaskConfig {
+                state_dir: Some(state_dir.to_path_buf()),
+                dag: None,
+            }),
+        };
+        let store = crate::dag::store::create_dag_file_store(&config, Default::default())
+            .expect("existing DAG store");
         Self {
-            runs: runs_dir.into(),
+            runs,
+            store: Arc::new(store),
         }
     }
 
-    /// The sidecar of the store this scheduler runs over.
-    pub fn from_store(store: &crate::dag::store::DagFileStore) -> Self {
-        Self::new(store.state_dir().join("runs"))
+    /// The checkpoint of the store this scheduler runs over.
+    pub fn from_store(store: Arc<crate::dag::store::DagFileStore>) -> Self {
+        Self {
+            runs: store.state_dir().join("runs"),
+            store,
+        }
     }
 
     fn path(&self, run_id: &DagRunId) -> std::path::PathBuf {
-        self.runs.join(format!("{run_id}.pause.json"))
+        self.runs.join(format!("{run_id}.json"))
     }
 
-    /// A run with no sidecar has no pause and no guidance: both are additive state.
+    /// Missing additive fields mean no pause and no guidance.
     pub fn read(&self, run_id: &DagRunId) -> Result<DagPauseState, DagStoreError> {
         let path = self.path(run_id);
         let text = match std::fs::read_to_string(&path) {
@@ -85,32 +105,35 @@ impl DagPauseStore {
                 )));
             }
         };
-        serde_json::from_str(&text).map_err(|error| {
+        let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
             DagStoreError::Message(format!(
-                "pause state for dag run \"{run_id}\" is malformed: {error}"
+                "pause checkpoint for dag run \"{run_id}\" is malformed: {error}"
             ))
-        })
+        })?;
+        let pause = value
+            .get("pause")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?;
+        let guidance = value
+            .get("guidance")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default();
+        Ok(DagPauseState { pause, guidance })
     }
 
     pub fn write(&self, run_id: &DagRunId, state: &DagPauseState) -> Result<(), DagStoreError> {
-        let path = self.path(run_id);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                DagStoreError::Message(format!(
-                    "pause state directory for dag run \"{run_id}\" is unwritable: {error}"
-                ))
-            })?;
-        }
-        let text = serde_json::to_string(state).map_err(|error| {
-            DagStoreError::Message(format!(
-                "pause state for dag run \"{run_id}\" is not serializable: {error}"
-            ))
-        })?;
-        std::fs::write(&path, text).map_err(|error| {
-            DagStoreError::Message(format!(
-                "pause state for dag run \"{run_id}\" is unwritable: {error}"
-            ))
-        })
+        let mut record = self
+            .store
+            .read_checkpoint::<serde_json::Value>(run_id)?
+            .ok_or_else(|| DagStoreError::Message(format!("unknown dag run \"{run_id}\"")))?;
+        record["pause"] = serde_json::to_value(&state.pause)?;
+        record["guidance"] = serde_json::to_value(&state.guidance)?;
+        self.store.write_checkpoint(run_id, &record)
     }
 }
 
@@ -233,11 +256,22 @@ pub fn guide_paused_dag(
         draft.created_at,
     )
     .map_err(|error| guidance_failure(error, run_id))?;
-    pauses.write(run_id, &state).map_err(|error| {
+    let created = state
+        .guidance
+        .iter()
+        .find(|entry| entry.id == created_id)
+        .expect("created guidance");
+    let guidance = serde_json::from_value(serde_json::to_value(created).map_err(|error| {
         DagNodeControlError::new(DagNodeControlErrorCode::InvalidArguments, error.to_string())
-            .with_run_id(run_id.clone())
+    })?)
+    .map_err(|error| {
+        DagNodeControlError::new(DagNodeControlErrorCode::InvalidArguments, error.to_string())
     })?;
-    let _ = journal_guidance(options, record)?;
+    journal_guidance(options, record)?
+        .append(crate::dag::types::DagRunEventPayload::GuidanceAdded { guidance })
+        .map_err(|error| {
+            DagNodeControlError::new(DagNodeControlErrorCode::InvalidArguments, error.to_string())
+        })?;
     state
         .guidance
         .into_iter()
@@ -292,11 +326,27 @@ fn change_paused_guidance(
     require_user_paused(state.pause.as_ref(), run_id)?;
     state.guidance = change_guidance(&state.guidance, &id, text, remove, now_iso(options))
         .map_err(|error| guidance_failure(error, run_id))?;
-    pauses.write(run_id, &state).map_err(|error| {
+    let changed = state
+        .guidance
+        .iter()
+        .find(|entry| entry.id == id)
+        .expect("changed guidance");
+    let guidance = serde_json::from_value(serde_json::to_value(changed).map_err(|error| {
         DagNodeControlError::new(DagNodeControlErrorCode::InvalidArguments, error.to_string())
-            .with_run_id(run_id.clone())
+    })?)
+    .map_err(|error| {
+        DagNodeControlError::new(DagNodeControlErrorCode::InvalidArguments, error.to_string())
     })?;
-    let _ = journal_guidance(options, record)?;
+    let payload = if remove {
+        crate::dag::types::DagRunEventPayload::GuidanceRemoved { guidance }
+    } else {
+        crate::dag::types::DagRunEventPayload::GuidanceEdited { guidance }
+    };
+    journal_guidance(options, record)?
+        .append(payload)
+        .map_err(|error| {
+            DagNodeControlError::new(DagNodeControlErrorCode::InvalidArguments, error.to_string())
+        })?;
     state
         .guidance
         .into_iter()
@@ -460,7 +510,26 @@ mod tests {
     #[test]
     fn a_pause_state_round_trips_through_the_run_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let pauses = DagPauseStore::new(dir.path().join("runs"));
+        let config = crate::dag::store::DagStoreConfig {
+            project_dir: dir.path().to_path_buf(),
+            task: Some(crate::dag::store::DagStoreTaskConfig {
+                state_dir: Some(dir.path().to_path_buf()),
+                dag: None,
+            }),
+        };
+        let store =
+            crate::dag::store::create_dag_file_store(&config, Default::default()).expect("store");
+        let store = Arc::new(store);
+        let pauses = DagPauseStore::from_store(store.clone());
+        store
+            .write_checkpoint(
+                &run_id(),
+                &serde_json::json!({
+                    "schemaVersion": 1, "runId": run_id(), "parentSessionId": "parent",
+                    "status": "running", "lastSeq": 0,
+                }),
+            )
+            .expect("checkpoint");
         assert_eq!(
             pauses.read(&run_id()).expect("absent"),
             DagPauseState::default()
@@ -474,6 +543,19 @@ mod tests {
         };
         pauses.write(&run_id(), &state).expect("write");
         assert_eq!(pauses.read(&run_id()).expect("read"), state);
+        let checkpoint = store
+            .read_checkpoint::<serde_json::Value>(&run_id())
+            .expect("checkpoint")
+            .expect("run");
+        assert_eq!(checkpoint["pause"]["reason"], "user_stop");
+        assert_eq!(checkpoint["pause"]["pauseSeq"], 4);
+        assert!(
+            !store
+                .state_dir()
+                .join("runs")
+                .join(format!("{}.pause.json", run_id()))
+                .exists()
+        );
     }
 }
 
@@ -497,7 +579,7 @@ pub fn cancel_paused_dag_node(
             Ok(())
         }
     }
-    let pauses = DagPauseStore::new(options.store.state_dir());
+    let pauses = DagPauseStore::from_store(options.store.clone());
     if let Some(record) = options
         .store
         .read_checkpoint::<DagRunRecordV1>(run_id)

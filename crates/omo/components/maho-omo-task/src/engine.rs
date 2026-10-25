@@ -70,7 +70,9 @@ impl TaskEngine {
     ) -> crate::workpool_run_pause_source::WorkpoolRunPauseSource {
         crate::workpool_run_pause_source::WorkpoolRunPauseSource {
             store: senpi_task::workpool::store::WorkpoolStore::new(self.store.state_dir()),
-            barrier, workpools, owned_sessions,
+            barrier,
+            workpools,
+            owned_sessions,
         }
     }
 }
@@ -269,6 +271,7 @@ pub fn compose_task_engine_with_clock(
         store.clone(),
         None,
         store.state_dir().to_path_buf(),
+        runtime.clone(),
     );
     let memory: Arc<dyn crate::memory_reporter::TaskMemorySource> = Arc::new(EngineMemorySource {
         manager: manager.clone(),
