@@ -340,11 +340,7 @@ impl ToolBarrier {
             }
             tokio::select! {
                 _ = notified => Some(id),
-                _ = async {
-                    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-                    let _listener = sig.add_abort_listener(move |_| { let _ = tx.send(()); });
-                    let _ = rx.await;
-                } => Some(id),
+                _ = sig.cancelled() => Some(id),
             }
         } else {
             notified.await;

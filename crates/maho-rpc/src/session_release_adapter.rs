@@ -59,14 +59,21 @@ impl ReleasableSession for AgentSessionRelease {
     }
 
     fn admission_pending(&self) -> Vec<String> {
-        Vec::new()
+        self.session.external_admission().list()["pending"]
+            .as_array()
+            .expect("pending admissions")
+            .iter()
+            .map(|v| v.as_str().expect("delivery id").to_owned())
+            .collect()
     }
 
-    fn admission_close(&self, _reason: &str) {
+    fn admission_close(&self, reason: &str) {
+        self.session.external_admission().close(reason.to_owned());
         self.admission_closed.store(true, Ordering::SeqCst);
     }
 
     fn admission_reopen(&self) {
+        self.session.external_admission().reopen();
         self.admission_closed.store(false, Ordering::SeqCst);
     }
 
@@ -177,10 +184,8 @@ impl ReleasableSession for AgentSessionRelease {
     /// subscribed to `session_move_export` writes its state while this runtime is still live. The Rust extension
     /// contract reports no handler failure, so a handler that cannot write fails the release only by its own report.
     async fn emit_session_move(&self, move_id: &str, dir: &str) -> Result<(), String> {
-        self.session.emit_extension_event(
-            crate::session_release::SESSION_MOVE_EXPORT_EVENT,
-            &serde_json::json!({"type": "session_move_export", "moveId": move_id, "dir": dir}),
-        );
-        Ok(())
+        self.session
+            .emit_session_move(move_id.to_owned(), dir.into(), None)
+            .await
     }
 }
