@@ -9,6 +9,7 @@ use crate::manager::runner::{
     InProcessSessionContext, InProcessSessionContextProvider, ResumeSessionContextResult,
 };
 use crate::manager::types::ManagedStartSpec;
+use crate::model_exclusion::is_excluded_model;
 use crate::runners::in_process::child_options::HostHandle;
 use crate::senpi::as_senpi_thinking_level;
 
@@ -43,23 +44,28 @@ pub fn find_model_reference<M>(
 /// The provider returned by [`create_parent_registry_session_context`].
 pub struct ParentRegistrySessionContext {
     resolve_registry: ParentModelRegistryResolver,
-    /// omo.json `exclude_models`: a child resolved on an excluded model is unavailable, not running.
-    exclude_models: Vec<String>,
+    exclude_models: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
 }
 
 /// `createParentRegistrySessionContext`.
 pub fn create_parent_registry_session_context(
     resolve_registry: ParentModelRegistryResolver,
 ) -> ParentRegistrySessionContext {
-    ParentRegistrySessionContext { resolve_registry, exclude_models: Vec::new() }
+    ParentRegistrySessionContext {
+        resolve_registry,
+        exclude_models: Arc::new(Vec::new),
+    }
 }
 
-/// `createParentRegistrySessionContext(resolve, projectTrusted, () => excludeModels)`.
-pub fn create_parent_registry_session_context_with_exclusions(
-    resolve_registry: ParentModelRegistryResolver,
-    exclude_models: Vec<String>,
-) -> ParentRegistrySessionContext {
-    ParentRegistrySessionContext { resolve_registry, exclude_models }
+impl ParentRegistrySessionContext {
+    /// Read exclusions at each launch/resume, not when the parent context is constructed.
+    pub fn with_exclude_models(
+        mut self,
+        resolver: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+    ) -> Self {
+        self.exclude_models = resolver;
+        self
+    }
 }
 
 fn registry_context(
@@ -78,25 +84,24 @@ fn registry_context(
     }
 }
 
-impl ParentRegistrySessionContext {
-    /// The `exclude_models` pattern that keeps this child's model out, if any.
-    fn excluded_pattern(&self, spec: &ManagedStartSpec) -> Option<&str> {
-        if self.exclude_models.is_empty() {
-            return None;
-        }
-        let key = spec.resolved_model.as_ref().map(|record| format!("{}/{}", record.provider, record.model_id))
-            .or_else(|| spec.model.clone())?;
-        crate::model_exclusion::excluded_model_pattern(&key, &self.exclude_models)
-    }
-}
-
 impl InProcessSessionContextProvider for ParentRegistrySessionContext {
-    fn provide(&self, spec: &ManagedStartSpec) -> InProcessSessionContext {
-        // An excluded model is neither available nor found: the child gets no model context at all,
-        // exactly as it would for a model whose provider has no login.
-        if self.excluded_pattern(spec).is_some() {
-            return InProcessSessionContext::default();
+    fn excluded_models(&self) -> Vec<String> {
+        (self.exclude_models)()
+    }
+    fn validate_start(&self, spec: &ManagedStartSpec) -> Result<(), String> {
+        let selected = spec
+            .resolved_model
+            .as_ref()
+            .map(|model| format!("{}/{}", model.provider, model.model_id))
+            .or_else(|| spec.model.clone());
+        if let Some(model) = selected.as_deref() {
+            if is_excluded_model(model, &(self.exclude_models)()) {
+                return Err(format!("model_unavailable: excluded model {model}"));
+            }
         }
+        Ok(())
+    }
+    fn provide(&self, spec: &ManagedStartSpec) -> InProcessSessionContext {
         let Some(registry) = (self.resolve_registry)() else {
             return InProcessSessionContext::default();
         };
@@ -110,16 +115,19 @@ impl InProcessSessionContextProvider for ParentRegistrySessionContext {
         &self,
         spec: &ManagedStartSpec,
     ) -> Option<ResumeSessionContextResult> {
-        // A resumed child on an excluded model fails closed with the pattern that kept it out.
-        if let Some(pattern) = self.excluded_pattern(spec) {
-            let key = spec
-                .resolved_model
-                .as_ref()
-                .map(|record| format!("{}/{}", record.provider, record.model_id))
-                .or_else(|| spec.model.clone())
-                .unwrap_or_default();
+        let patterns = (self.exclude_models)();
+        let reference = spec
+            .resolved_model
+            .as_ref()
+            .map(|m| format!("{}/{}", m.provider, m.model_id))
+            .or_else(|| spec.model.clone());
+        if reference
+            .as_deref()
+            .is_some_and(|model| is_excluded_model(model, &patterns))
+        {
             return Some(Err(format!(
-                "the resumed task model \"{key}\" is kept out by exclude_models in omo.json (\"{pattern}\")"
+                "model_unavailable: excluded model {}",
+                reference.unwrap_or_default()
             )));
         }
         Some(resolve_resume_context(&self.resolve_registry, spec))
@@ -148,4 +156,41 @@ pub fn resolve_resume_context(
             )
         })?;
     Ok(registry_context(registry, Some(model), spec))
+}
+
+#[cfg(test)]
+mod exclusion_tests {
+    use super::*;
+    #[test]
+    fn excluded_selected_model_never_reaches_registry() {
+        let context = create_parent_registry_session_context(Arc::new(|| {
+            panic!("excluded model reached registry")
+        }))
+        .with_exclude_models(Arc::new(|| vec!["blocked/*".into()]));
+        let spec = ManagedStartSpec {
+            model: Some("blocked/model".into()),
+            resolved_model: Some(crate::state::ResolvedModelRecord::new(
+                crate::state::ResolvedModelSource::Category,
+                "blocked",
+                "model",
+            )),
+            ..Default::default()
+        };
+        assert!(context.validate_start(&spec).is_err());
+        assert!(
+            context
+                .resolve_resume_context(&spec)
+                .expect("resolver")
+                .is_err()
+        );
+    }
+}
+
+/// Compatibility constructor with fixed exclusions.
+pub fn create_parent_registry_session_context_with_exclusions(
+    resolve_registry: ParentModelRegistryResolver,
+    exclude_models: Vec<String>,
+) -> ParentRegistrySessionContext {
+    create_parent_registry_session_context(resolve_registry)
+        .with_exclude_models(Arc::new(move || exclude_models.clone()))
 }

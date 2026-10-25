@@ -11,7 +11,10 @@ struct ResidencyWaiter {
 
 impl ResidencyWaiter {
     fn new() -> Self {
-        Self { fired: Mutex::new(false), changed: Condvar::new() }
+        Self {
+            fired: Mutex::new(false),
+            changed: Condvar::new(),
+        }
     }
 }
 
@@ -23,8 +26,11 @@ pub struct ResidencySignal {
 impl ResidencySignal {
     pub fn changed(&self, parent_session_id: &str) -> ResidencyChange {
         let mut waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
-        let waiter = Arc::clone(waiters.entry(parent_session_id.to_string())
-            .or_insert_with(|| Arc::new(ResidencyWaiter::new())));
+        let waiter = Arc::clone(
+            waiters
+                .entry(parent_session_id.to_string())
+                .or_insert_with(|| Arc::new(ResidencyWaiter::new())),
+        );
         ResidencyChange { waiter }
     }
 
@@ -50,22 +56,43 @@ pub struct ResidencyChange {
 
 impl ResidencyChange {
     pub fn wait(&self) {
-        let mut fired = self.waiter.fired.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut fired = self
+            .waiter
+            .fired
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         while !*fired {
-            fired = self.waiter.changed.wait(fired).unwrap_or_else(PoisonError::into_inner);
+            fired = self
+                .waiter
+                .changed
+                .wait(fired)
+                .unwrap_or_else(PoisonError::into_inner);
         }
     }
 
     pub fn wait_timeout(&self, timeout: Duration) -> bool {
-        let fired = self.waiter.fired.lock().unwrap_or_else(PoisonError::into_inner);
-        if *fired { return true; }
-        let (fired, _) = self.waiter.changed.wait_timeout_while(fired, timeout, |fired| !*fired)
+        let fired = self
+            .waiter
+            .fired
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *fired {
+            return true;
+        }
+        let (fired, _) = self
+            .waiter
+            .changed
+            .wait_timeout_while(fired, timeout, |fired| !*fired)
             .unwrap_or_else(PoisonError::into_inner);
         *fired
     }
 
     pub fn is_fired(&self) -> bool {
-        *self.waiter.fired.lock().unwrap_or_else(PoisonError::into_inner)
+        *self
+            .waiter
+            .fired
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
