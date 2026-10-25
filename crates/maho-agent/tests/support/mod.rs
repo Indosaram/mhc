@@ -59,7 +59,7 @@ pub fn test_model() -> Model {
         reasoning: false,
         thinking_level_map: None,
         input: vec![InputModality::Text],
-        cost: ModelCost {
+        cost: ModelCost { unknown: None,
             effective_rates: None,
             input: 0.0,
             output: 0.0,

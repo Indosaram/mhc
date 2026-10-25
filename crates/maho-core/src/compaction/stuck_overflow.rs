@@ -47,6 +47,7 @@ mod tests {
                 reasoning: None,
                 total_tokens: 200_000 + output,
                 cost: UsageCost::default(),
+                ..Default::default()
             },
             stop_reason,
             stop_details: None,

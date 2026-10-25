@@ -168,6 +168,8 @@ pub struct ExtensionBindings {
     pub on_error: Option<ExtensionErrorListener>,
     /// senpi `ExtensionBindings.shutdownHandler`: what `ctx.shutdown()` requests in this mode.
     pub shutdown_handler: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub sizes_only: bool,
+    pub prompt_size_inventory: Option<Arc<dyn crate::prompt_size_inventory::PromptSizeInventory>>,
 }
 
 /// Builds a session's first extension bindings right before `bind_extensions`, so a mode can
@@ -440,6 +442,7 @@ pub struct SessionStats {
     pub total_messages: usize,
     pub tokens: SessionStatsTokens,
     pub cost: f64,
+    pub cost_unknown: bool,
     pub context_usage: Option<ContextUsage>,
 }
 
@@ -670,6 +673,8 @@ struct AgentSessionState {
     superseded_compaction_log_attempt_ids: BTreeSet<String>,
     resume_compaction_requirement: Option<(serde_json::Value, String)>,
     resume_slice: Option<ResumeSliceState>,
+    sizes_only_startup: bool,
+    prompt_size_inventory: Option<Arc<dyn crate::prompt_size_inventory::PromptSizeInventory>>,
     disposed: bool,
     /// Memoized entry aggregate of `get_session_stats`, keyed on (session id, entry count, leaf id).
     session_stats_cache: Option<(
@@ -758,6 +763,90 @@ impl SessionStatsCounts {
     }
 }
 
+fn message_ticket(message: &AgentMessage) -> Option<String> {
+    match message {
+        AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(custom)) => {
+            custom.details.as_ref().and_then(|d| {
+                d.as_object()
+                    .and_then(|obj| obj.get("ticketId"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Changes whenever a message's content grows or its usage is filled in, without walking other messages.
+pub fn message_fingerprint(message: Option<&AgentMessage>) -> String {
+    let Some(message) = message else {
+        return String::new();
+    };
+    let mut size = 0usize;
+    match message {
+        AgentMessage::Llm(llm) => match llm {
+            maho_ai::types::Message::User(u) => match &u.content {
+                maho_ai::types::UserContent::Text(text) => size = text.len(),
+                maho_ai::types::UserContent::Blocks(blocks) => {
+                    for block in blocks {
+                        size += 1;
+                        match block {
+                            maho_ai::types::ContentBlock::Text(t) => size += t.text.len(),
+                            maho_ai::types::ContentBlock::Thinking(t) => size += t.thinking.len(),
+                            _ => {}
+                        }
+                    }
+                }
+            },
+            maho_ai::types::Message::Assistant(a) => {
+                for block in &a.content {
+                    size += 1;
+                    match block {
+                        maho_ai::types::ContentBlock::Text(t) => size += t.text.len(),
+                        maho_ai::types::ContentBlock::Thinking(t) => size += t.thinking.len(),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        },
+        AgentMessage::Custom(c) => match c {
+            maho_agent::types::CustomAgentMessage::Custom(custom) => {
+                if let Some(text) = custom.content.as_str() {
+                    size = text.len();
+                } else if let Some(arr) = custom.content.as_array() {
+                    size = arr.len();
+                }
+            }
+            _ => {}
+        },
+    }
+    let usage = match message {
+        AgentMessage::Llm(maho_ai::types::Message::Assistant(a)) => Some(&a.usage),
+        _ => None,
+    };
+    match usage {
+        Some(usage) => {
+            let (req_input, req_output, req_is_null) = match usage.context_usage {
+                Some(Some(ctx)) => (ctx.input.to_string(), ctx.output.to_string(), "false"),
+                Some(None) => ("undefined".to_string(), "undefined".to_string(), "true"),
+                None => ("undefined".to_string(), "undefined".to_string(), "false"),
+            };
+            format!(
+                "{}:{}:{}:{}:{}:{}:{}",
+                size,
+                usage.input,
+                usage.output,
+                usage.total_tokens,
+                req_input,
+                req_output,
+                req_is_null
+            )
+        }
+        None => format!("{size}::::undefined:undefined:false"),
+    }
+}
+
 #[derive(PartialEq)]
 struct ContextUsageCacheKey {
     session_id: String,
@@ -768,6 +857,7 @@ struct ContextUsageCacheKey {
     provider: String,
     model_id: String,
     context_window: u64,
+    last_fingerprint: String,
 }
 
 static RATE_LIMIT_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
@@ -1333,9 +1423,9 @@ impl maho_ext_api::SessionManager for ExtensionSessionManagerView {
             .and_then(|inner| AgentSession { inner }.session_name())
     }
     fn fork_provenance(&self) -> Option<maho_ext_api::ForkProvenance> {
-        self.session
-            .upgrade()
-            .and_then(|inner| AgentSession { inner }.with_session_manager(|manager| manager.fork_provenance()))
+        self.session.upgrade().and_then(|inner| {
+            AgentSession { inner }.with_session_manager(|manager| manager.fork_provenance())
+        })
     }
 }
 
@@ -3648,6 +3738,8 @@ impl AgentSession {
             superseded_compaction_log_attempt_ids: BTreeSet::new(),
             resume_compaction_requirement: None,
             resume_slice: None,
+            sizes_only_startup: false,
+            prompt_size_inventory: None,
             disposed: false,
         };
         let session = Self {
@@ -4747,6 +4839,19 @@ impl AgentSession {
                 return Err("Prompt cancelled".to_owned());
             }
         }
+        if self.state().sizes_only_startup {
+            if let Some(readiness) = readiness.take() {
+                let _ = readiness.send(());
+            }
+            self.queue_expanded_input(
+                text.to_owned(),
+                options.images,
+                StreamingBehavior::FollowUp,
+                None,
+                options.source,
+            );
+            return Ok(PromptDisposition::Handled);
+        }
         if text.starts_with('/') && self.try_execute_extension_command(text).await? {
             return Ok(PromptDisposition::Handled);
         }
@@ -5502,6 +5607,7 @@ impl AgentSession {
                 .await;
             self.emit(AgentSessionEvent::SessionAbort);
         }
+        self.release_queued_deliveries(&self.queued_delivery_tickets(), "aborted");
     }
 
     /// senpi `_maybeRestoreFallbackPrimary`: a failed revert clears the fallback state instead of
@@ -6622,6 +6728,65 @@ impl AgentSession {
         Ok(())
     }
 
+    fn requeue_at_original_place(&self, parked: &[AgentMessage], mode: StreamingBehavior) {
+        if parked.is_empty() {
+            return;
+        }
+        let get_text = |msg: &AgentMessage| -> Option<String> {
+            match msg {
+                AgentMessage::Llm(maho_ai::types::Message::User(u)) => match &u.content {
+                    maho_ai::types::UserContent::Text(t) => Some(t.clone()),
+                    maho_ai::types::UserContent::Blocks(b) => {
+                        b.iter().find_map(|block| match block {
+                            maho_ai::types::ContentBlock::Text(t) => Some(t.text.clone()),
+                            _ => None,
+                        })
+                    }
+                },
+                _ => None,
+            }
+        };
+        let order_of = |text: &str| -> u64 {
+            let state = self.state();
+            state
+                .queued_input_order
+                .iter()
+                .find(|input| input.mode == mode && input.text == text)
+                .map(|input| input.enqueue_order)
+                .unwrap_or(u64::MAX)
+        };
+        let oldest_parked = parked
+            .iter()
+            .filter_map(get_text)
+            .map(|t| order_of(&t))
+            .min()
+            .unwrap_or(u64::MAX);
+
+        let mut to_requeue = parked.to_vec();
+        let newer_texts: Vec<String> = {
+            let state = self.state();
+            state
+                .queued_input_order
+                .iter()
+                .filter(|input| input.mode == mode && input.enqueue_order > oldest_parked)
+                .map(|input| input.text.clone())
+                .collect()
+        };
+        for text in newer_texts {
+            let msg = make_user_message(&text, None);
+            if !parked.contains(&msg) && self.agent.remove_queued_message(&msg) {
+                to_requeue.push(msg);
+            }
+        }
+        to_requeue.sort_by_key(|msg| get_text(msg).map(|t| order_of(&t)).unwrap_or(u64::MAX));
+        for msg in to_requeue {
+            match mode {
+                StreamingBehavior::Steer => self.agent.steer(msg),
+                StreamingBehavior::FollowUp => self.agent.follow_up(msg),
+            }
+        }
+    }
+
     fn flush_post_compaction_deferred_messages(&self) -> bool {
         let (steering, follow_up) = {
             let mut state = self.state();
@@ -6631,12 +6796,8 @@ impl AgentSession {
             )
         };
         let has_deferred = !steering.is_empty() || !follow_up.is_empty();
-        for message in steering {
-            self.agent.steer(message);
-        }
-        for message in follow_up {
-            self.agent.follow_up(message);
-        }
+        self.requeue_at_original_place(&steering, StreamingBehavior::Steer);
+        self.requeue_at_original_place(&follow_up, StreamingBehavior::FollowUp);
         has_deferred
     }
 
@@ -14451,6 +14612,12 @@ impl AgentSession {
         };
         {
             let mut state = self.state();
+            state.sizes_only_startup = bindings.sizes_only;
+            state.prompt_size_inventory = if bindings.sizes_only {
+                bindings.prompt_size_inventory
+            } else {
+                None
+            };
             if let Some(ui) = bindings.ui_context {
                 state.extension_ui_context = Some(ui);
             }
@@ -15311,6 +15478,13 @@ impl AgentSession {
         let agent_message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(
             message.clone(),
         ));
+        if self.state().sizes_only_startup && options.trigger_turn {
+            if let Some(receipt) = receipt {
+                self.track_queued_custom_receipt(message, receipt);
+            }
+            self.state().pending_next_turn_messages.push(agent_message);
+            return Ok(());
+        }
         if options.deliver_as == Some(maho_ext_api::DeliverAs::NextTurn) {
             if let Some(receipt) = receipt {
                 self.track_queued_custom_receipt(message, receipt);
@@ -15374,7 +15548,8 @@ impl AgentSession {
                         {
                             session.settle_queued_custom_receipt(
                                 &message,
-                                Err("custom message turn ended without appending message".to_owned()),
+                                Err("custom message turn ended without appending message"
+                                    .to_owned()),
                             );
                         }
                     }
@@ -16106,6 +16281,16 @@ impl AgentSession {
         state.next_queued_input_order
     }
 
+    fn queued_delivery_tickets(&self) -> Vec<String> {
+        self.agent
+            .peek_queued_messages(true)
+            .iter()
+            .filter_map(message_ticket)
+            .collect()
+    }
+
+    fn release_queued_deliveries(&self, _tickets: &[String], _cause: &str) {}
+
     #[allow(dead_code)] // consumed by the steer/follow-up queue entry points in the queue slice
     fn record_queued_input(&self, text: &str, mode: StreamingBehavior, enqueue_order: Option<u64>) {
         let mut state = self.state();
@@ -16152,7 +16337,9 @@ impl AgentSession {
         }
         let mut ordered = ordered;
         ordered.sort_by_key(|input| input.enqueue_order);
+        let cleared_deliveries = self.queued_delivery_tickets();
         self.agent.clear_all_queues();
+        self.release_queued_deliveries(&cleared_deliveries, "cleared");
         self.audit_queued_custom_receipts("queued custom message cleared before delivery");
         self.emit_queue_update();
         ClearedQueue {
@@ -16466,6 +16653,7 @@ impl AgentSession {
                     as u64,
             },
             cost: totals.cost,
+            cost_unknown: totals.cost_unknown,
             context_usage: self.get_context_usage(),
         };
         self.state().session_stats_cache = Some((key, stats.clone(), totals));
@@ -16486,6 +16674,7 @@ impl AgentSession {
                 manager.leaf_id().map(str::to_owned),
             )
         });
+        let last_fingerprint = message_fingerprint(self.messages().last());
         let key = {
             let state = self.state();
             ContextUsageCacheKey {
@@ -16497,6 +16686,7 @@ impl AgentSession {
                 provider: model.provider,
                 model_id: model.id,
                 context_window,
+                last_fingerprint,
             }
         };
         let cached = self
@@ -21963,6 +22153,78 @@ mod tests {
         assert_eq!(stats.tokens.output, 5);
         assert_eq!(stats.tokens.total, 15);
         assert_eq!(stats.cost, 0.5);
+        assert!(!stats.cost_unknown);
+
+        session.append_session_entry(serde_json::json!({
+            "id": "a2", "type": "message", "timestamp": "2026-01-01T00:00:02.000Z",
+            "message": { "role": "assistant", "content": [{ "type": "text", "text": "unpriced" }], "api": "faux",
+                "provider": "faux", "model": "faux-unpriced", "stopReason": "stop", "timestamp": 2,
+                "usage": { "input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 2, "costUnknown": true,
+                    "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 } } }
+        }));
+        let stats = session.get_session_stats();
+        assert!(stats.cost_unknown);
+    }
+
+    #[test]
+    fn message_fingerprint_formats_correctly() {
+        let msg = AgentMessage::Llm(maho_ai::types::Message::User(maho_ai::types::UserMessage {
+            content: maho_ai::types::UserContent::Text("hello".to_owned()),
+            timestamp: 0,
+        }));
+        assert_eq!(
+            message_fingerprint(Some(&msg)),
+            "5::::undefined:undefined:false"
+        );
+
+        let mut asst = maho_ai::types::AssistantMessage {
+            content: vec![maho_ai::types::ContentBlock::text("answer")],
+            api: "a".into(),
+            provider: "p".into(),
+            model: "m".into(),
+            response_model: None,
+            response_id: None,
+            thinking_level: None,
+            provider_thinking_level: None,
+            diagnostics: None,
+            usage: maho_ai::types::Usage {
+                input: 10,
+                output: 20,
+                total_tokens: 30,
+                context_usage: Some(Some(maho_ai::types::ContextUsage {
+                    input: 15,
+                    output: 5,
+                })),
+                ..Default::default()
+            },
+            stop_reason: maho_ai::types::StopReason::Stop,
+            stop_details: None,
+            deferred: None,
+            error_message: None,
+            error_cause: None,
+            provider_diagnostic: None,
+            abort_source: None,
+            failure_source: None,
+            raw_stop_reason: None,
+            end_turn: None,
+            prompt_cache_diagnostics: None,
+            prompt_cache_breakpoint: None,
+            timing: None,
+            timestamp: 1,
+        };
+        let asst_msg =
+            AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(asst.clone())));
+        assert_eq!(
+            message_fingerprint(Some(&asst_msg)),
+            "7:10:20:30:15:5:false"
+        );
+
+        asst.usage.context_usage = Some(None);
+        let asst_null = AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(asst)));
+        assert_eq!(
+            message_fingerprint(Some(&asst_null)),
+            "7:10:20:30:undefined:undefined:true"
+        );
     }
 
     #[test]
@@ -25907,7 +26169,11 @@ mod tests {
                 .count(),
             1
         );
-        assert!(entries.iter().any(|entry| entry["message"]["role"] == "assistant"));
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry["message"]["role"] == "assistant")
+        );
         session.dispose().await;
     }
 
@@ -25960,7 +26226,9 @@ mod tests {
             &actions,
             maho_ext_api::CustomMessage {
                 custom_type: "omo-senpi:wake".to_owned(),
-                content: vec![maho_tools::definition::ToolContent::text("dropped settled wake")],
+                content: vec![maho_tools::definition::ToolContent::text(
+                    "dropped settled wake",
+                )],
                 display: false,
                 details: None,
             },
@@ -26006,7 +26274,9 @@ mod tests {
             &actions,
             maho_ext_api::CustomMessage {
                 custom_type: "omo-senpi:wake".to_owned(),
-                content: vec![maho_tools::definition::ToolContent::text("steered for later")],
+                content: vec![maho_tools::definition::ToolContent::text(
+                    "steered for later",
+                )],
                 display: false,
                 details: None,
             },
