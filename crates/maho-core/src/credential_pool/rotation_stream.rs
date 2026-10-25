@@ -613,7 +613,19 @@ impl crate::credential_pool::failover::FailoverHost for RotationHost {
     }
 
     fn rotation_consented(&self) -> bool {
-        crate::provider_consent::rotation_consented(&self.sources.provider_id)
+        // The gate reads the agent dir this runtime actually uses (the pool sidecar's directory),
+        // not the process-global one: a runtime built against another agent dir must see that
+        // dir's recorded consent, exactly like `consent_failure` does for credential resolution.
+        let agent_dir = std::path::Path::new(self.sources.repository.path())
+            .parent()
+            .map(|dir| dir.to_string_lossy().into_owned());
+        match agent_dir {
+            Some(dir) => crate::provider_consent::rotation_consented_in_agent_dir(
+                &dir,
+                &self.sources.provider_id,
+            ),
+            None => crate::provider_consent::rotation_consented(&self.sources.provider_id),
+        }
     }
 
     fn emit(&mut self, event: Self::Event) {
