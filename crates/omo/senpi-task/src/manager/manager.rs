@@ -3995,8 +3995,8 @@ impl Inner {
                     } else {
                         let mut facts = lock(&failed);
                         if matches!(message["stopReason"].as_str(), Some("error" | "aborted")) {
-                            let mut names = tools;
-                            for name in lock(&streamed).iter() {
+                            let mut names = Vec::new();
+                            for name in tools.iter().chain(lock(&streamed).iter()) {
                                 if !names.contains(name) {
                                     names.push(name.clone());
                                 }
