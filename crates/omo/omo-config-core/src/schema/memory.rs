@@ -20,6 +20,7 @@ fn default_reflection() -> Value {
         "merge": "auto",
         "category": "quick",
         "timeout_minutes": 15,
+        "max_concurrent_runs": 1,
         "sandbox": "auto",
     })
 }
@@ -101,6 +102,14 @@ fn default_compile_warn_tokens() -> Value {
     json!(30000)
 }
 
+fn default_auto_identity() -> Value {
+    json!("path")
+}
+
+fn default_project_scope() -> Value {
+    json!({ "nudge": true, "recall": true })
+}
+
 fn default_empty_object() -> Value {
     json!({})
 }
@@ -132,14 +141,30 @@ fn default_reflection_trigger_step_count() -> Value {
 }
 
 pub fn omo_memory_reflection_layer_schema() -> Node {
-    strict_object(vec![
+    strict_object(reflection_layer_fields())
+}
+
+fn reflection_layer_fields() -> Vec<Field> {
+    vec![
         optional_field("enabled", boolean()),
         optional_field("trigger", omo_memory_reflection_trigger_layer_schema()),
         optional_field("merge", enumeration(&["auto", "integration"])),
         optional_field("category", non_empty_string()),
         optional_field("timeout_minutes", positive_integer()),
+        optional_field("max_concurrent_runs", positive_integer()),
         optional_field("sandbox", enumeration(&["auto", "required", "off"])),
-    ])
+    ]
+}
+
+/// `OmoMemoryReflectionLayerSchema.omit({ max_concurrent_runs: true })`: a per-agent override may
+/// not raise its own supervisor concurrency, so the field is absent from this shape entirely.
+pub fn omo_memory_agent_reflection_schema() -> Node {
+    strict_object(
+        reflection_layer_fields()
+            .into_iter()
+            .filter(|field| field.key != "max_concurrent_runs")
+            .collect(),
+    )
 }
 
 pub fn omo_memory_reflection_schema() -> Node {
@@ -153,6 +178,7 @@ pub fn omo_memory_reflection_schema() -> Node {
         defaulted("merge", enumeration(&["auto", "integration"]), default_auto),
         defaulted("category", non_empty_string(), default_quick),
         defaulted("timeout_minutes", positive_integer(), || json!(15)),
+        defaulted("max_concurrent_runs", positive_integer(), || json!(1)),
         defaulted(
             "sandbox",
             enumeration(&["auto", "required", "off"]),
@@ -318,6 +344,24 @@ pub fn omo_memory_recall_schema() -> Node {
     ])
 }
 
+// ---------------------------------------------------------------------------
+// Project scope (#10044)
+// ---------------------------------------------------------------------------
+
+pub fn omo_memory_project_scope_schema() -> Node {
+    strict_object(vec![
+        defaulted("nudge", boolean(), default_true),
+        defaulted("recall", boolean(), default_true),
+    ])
+}
+
+pub fn omo_memory_project_scope_layer_schema() -> Node {
+    strict_object(vec![
+        optional("nudge", boolean()),
+        optional("recall", boolean()),
+    ])
+}
+
 pub fn omo_memory_projection_schema() -> Node {
     strict_object(vec![
         defaulted("max_entries_per_directory", nonnegative_integer(), || {
@@ -339,7 +383,7 @@ pub fn omo_memory_agent_overrides_schema() -> Node {
         optional("projection", omo_memory_projection_layer_schema()),
         optional_field("enabled", boolean()),
         optional_field("agent", non_empty_string()),
-        optional_field("reflection", omo_memory_reflection_layer_schema()),
+        optional_field("reflection", omo_memory_agent_reflection_schema()),
         optional_field("nudge", omo_memory_nudge_layer_schema()),
         optional_field("facts", omo_memory_facts_layer_schema()),
         optional_field("dream", omo_memory_dream_layer_schema()),
@@ -354,10 +398,21 @@ pub fn omo_memory_agent_overrides_schema() -> Node {
     ])
 }
 
+// How `agent: "auto"` derives the identity: "path" hashes the checkout path, "git" maps a linked
+// git worktree onto its main working tree so every worktree of one clone shares that memory.
+pub fn omo_memory_auto_identity_schema() -> Node {
+    enumeration(&["path", "git"])
+}
+
 pub fn omo_memory_settings_schema() -> Node {
     strict_object(vec![
         defaulted("enabled", boolean(), default_true),
         defaulted("agent", non_empty_string(), default_auto),
+        defaulted(
+            "auto_identity",
+            omo_memory_auto_identity_schema(),
+            default_auto_identity,
+        ),
         defaulted(
             "projection",
             omo_memory_projection_schema(),
@@ -387,6 +442,11 @@ pub fn omo_memory_settings_schema() -> Node {
         defaulted("search", omo_memory_search_schema(), default_search),
         defaulted("recall", omo_memory_recall_schema(), default_recall),
         defaulted(
+            "project_scope",
+            omo_memory_project_scope_schema(),
+            default_project_scope,
+        ),
+        defaulted(
             "compile_warn_tokens",
             positive_integer(),
             default_compile_warn_tokens,
@@ -403,6 +463,7 @@ pub fn omo_memory_settings_layer_schema() -> Node {
     strict_object(vec![
         optional_field("enabled", boolean()),
         optional_field("agent", non_empty_string()),
+        optional_field("auto_identity", omo_memory_auto_identity_schema()),
         optional("projection", omo_memory_projection_layer_schema()),
         optional_field("reflection", omo_memory_reflection_layer_schema()),
         optional_field("nudge", omo_memory_nudge_layer_schema()),
@@ -415,6 +476,10 @@ pub fn omo_memory_settings_layer_schema() -> Node {
         optional_field("sync", omo_memory_sync_layer_schema()),
         optional_field("search", omo_memory_search_layer_schema()),
         optional_field("recall", omo_memory_recall_layer_schema()),
+        optional(
+            "project_scope",
+            omo_memory_project_scope_layer_schema(),
+        ),
         optional_field("compile_warn_tokens", positive_integer()),
         optional_field("agents", record(omo_memory_agent_overrides_schema())),
     ])

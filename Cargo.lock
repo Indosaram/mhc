@@ -5057,10 +5057,13 @@ dependencies = [
 name = "maho-omo-config-core"
 version = "0.0.0"
 dependencies = [
+ "hex",
  "jiff",
  "libc",
+ "regex",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "uuid",
 ]

@@ -1,5 +1,7 @@
 use omo_config_core::internal::validate::safe_parse;
-use omo_config_core::{omo_config_schema, resolve_model_references};
+use omo_config_core::{
+    excluded_model_pattern, is_excluded_model, omo_config_schema, resolve_model_references,
+};
 use serde_json::{Value, json};
 
 fn view(value: Value) -> Value {
@@ -148,4 +150,77 @@ fn resolve_model_references_expands_profiles_and_reports_shadowing_and_splicing(
     assert!(result.diagnostics.iter().any(|item| item.path == "model_profiles.clash"));
     assert!(result.diagnostics.iter().any(|item| item.path == "agents.worker.models.0"));
     assert!(result.diagnostics.iter().any(|item| item.path == "categories.quick.models.0"));
+}
+
+fn pattern_list(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| (*value).to_string()).collect()
+}
+
+#[test]
+fn excluded_model_pattern_matches_a_bare_model_id_on_every_provider() {
+    let patterns = pattern_list(&["gpt-6.1-sol"]);
+
+    assert_eq!(
+        excluded_model_pattern("anthropic/gpt-6.1-sol", Some(&patterns)),
+        Some("gpt-6.1-sol".to_string())
+    );
+    assert_eq!(
+        excluded_model_pattern("github-copilot/gpt-6.1-sol", Some(&patterns)),
+        Some("gpt-6.1-sol".to_string())
+    );
+    assert!(!is_excluded_model("anthropic/claude", Some(&patterns)));
+}
+
+#[test]
+fn excluded_model_pattern_matches_a_provider_scoped_entry_on_that_provider_only() {
+    let patterns = pattern_list(&["opencode/"]);
+
+    assert!(is_excluded_model("opencode/", Some(&patterns)));
+    assert!(!is_excluded_model("anthropic/", Some(&patterns)));
+}
+
+#[test]
+fn excluded_model_pattern_matches_a_wildcard_case_insensitively() {
+    let patterns = pattern_list(&["CLAUDE*"]);
+
+    assert!(is_excluded_model("anthropic/claude", Some(&patterns)));
+    assert!(is_excluded_model("anthropic-subscription/claude", Some(&patterns)));
+    assert!(!is_excluded_model("anthropic/gpt-6.1-sol", Some(&patterns)));
+}
+
+#[test]
+fn excluded_model_pattern_matches_every_tail_of_a_nested_gateway_selector() {
+    let nested = "openrouter/anthropic/";
+
+    assert!(is_excluded_model(nested, Some(&pattern_list(&["*"]))));
+    assert!(is_excluded_model(nested, Some(&pattern_list(&["anthropic/"]))));
+    assert!(is_excluded_model(
+        nested,
+        Some(&pattern_list(&["openrouter/anthropic/"]))
+    ));
+    assert!(!is_excluded_model(nested, Some(&pattern_list(&["openrouter/"]))));
+    assert!(!is_excluded_model(nested, Some(&pattern_list(&["anthropic"]))));
+}
+
+#[test]
+fn excluded_model_pattern_treats_regex_syntax_as_literal_and_skips_blank_entries() {
+    let patterns = pattern_list(&["  ", "gpt-6.1-sol"]);
+
+    assert!(is_excluded_model("openai/gpt-6.1-sol", Some(&patterns)));
+    assert!(!is_excluded_model("openai/gpt-6x1-sol", Some(&patterns)));
+    assert!(!is_excluded_model("openai/gpt-6.1-sol", None));
+}
+
+#[test]
+fn excluded_model_pattern_returns_the_first_matching_entry_verbatim() {
+    let patterns = pattern_list(&["  ", " gpt-6.1-sol ", "gpt-*"]);
+
+    assert_eq!(
+        excluded_model_pattern("openai/gpt-6.1-sol", Some(&patterns)),
+        Some(" gpt-6.1-sol ".to_string())
+    );
+    assert_eq!(
+        excluded_model_pattern("openai/gpt-5", Some(&patterns)),
+        Some("gpt-*".to_string())
+    );
 }
