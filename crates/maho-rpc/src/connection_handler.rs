@@ -1437,6 +1437,8 @@ impl maho_ext_api::ExtensionUi for RpcExtensionUi {
                             .map(|question| question.id.clone())
                             .collect(),
                         auto_resolved_after_ms: Some(request.timeout_ms),
+                        cancel_origin: None,
+                        resolved_by: None,
                     })
                 }
             }
