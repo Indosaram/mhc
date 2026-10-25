@@ -1440,6 +1440,12 @@ fn convert_messages(
                     index += 1;
                     continue;
                 }
+                if assistant.prompt_cache_breakpoint == Some(true)
+                    && let Some(cache_control) = cache_control
+                    && let Some(block) = blocks.last_mut().and_then(Value::as_object_mut)
+                {
+                    block.insert("cache_control".into(), cache_control.clone());
+                }
                 let message_index = params.len();
                 if let Some(cache_control) = cache_control
                     && assistant.prompt_cache_breakpoint == Some(true)
