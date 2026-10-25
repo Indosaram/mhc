@@ -919,3 +919,47 @@ fn fresh_manager_reconstructs_withdrawn_first_launch_with_saved_custody() {
     );
     assert_eq!(first.status, TaskStatus::Running);
 }
+
+#[test]
+fn accepted_stop_and_immediate_exact_resume_ignore_the_old_abort() {
+    let harness = default_manager();
+    let task = started(harness.manager.start(&base_spec()));
+    let record = harness.store.load(&task.task_id).unwrap().unwrap();
+    let handle = harness.manager.get_resident_handle(&task.task_id).unwrap();
+    harness
+        .manager
+        .begin_native_pause(&task.task_id, record.notification.run_epoch);
+    harness
+        .manager
+        .finish_native_pause(&task.task_id, record.notification.run_epoch, true)
+        .unwrap();
+    harness
+        .store
+        .mutate(&task.task_id, &mut |fresh: &crate::state::TaskRecord| {
+            crate::state::TaskRecord {
+                status: TaskStatus::Running,
+                ..fresh.clone()
+            }
+        })
+        .unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    harness.manager.track_resumed_turn(
+        &task.task_id,
+        handle,
+        &record.model,
+        record.notification.run_epoch,
+        Box::new(move || receive.recv_timeout(WAIT).unwrap()),
+    );
+    harness
+        .in_process
+        .wait_handle(&task.task_id)
+        .settle(crate::runners::RunnerOutcome::Cancelled);
+    send.send(crate::runners::RunnerOutcome::completed("new turn"))
+        .unwrap();
+    let completed = harness
+        .manager
+        .wait_for(&task.task_id, None, Some(WAIT))
+        .unwrap();
+    assert_eq!(completed.status, TaskStatus::Completed);
+    assert_eq!(completed.final_response.as_deref(), Some("new turn"));
+}
