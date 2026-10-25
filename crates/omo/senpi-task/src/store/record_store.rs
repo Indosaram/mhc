@@ -18,6 +18,23 @@ use crate::state::{
 
 const TOMBSTONE_SUFFIX: &str = ".json.expunging";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskRecordStoreResidentFigures {
+    pub cached_records: usize,
+    pub cached_record_bytes: usize,
+    pub open_event_logs: usize,
+}
+
+/// Encode paused records additively so rollback readers retain a valid status.
+pub fn to_storable_task_record(record: &TaskRecord) -> Result<Value, serde_json::Error> {
+    let mut stored = serde_json::to_value(record)?;
+    if record.status == TaskStatus::Paused {
+        stored["status"] = Value::String("running".into());
+        stored["paused"] = Value::Bool(true);
+    }
+    Ok(stored)
+}
+
 /// The post-commit observer every manager/lifecycle clone shares.
 type MutationListener = std::sync::Arc<dyn Fn() + Send + Sync>;
 
@@ -54,9 +71,16 @@ type ListCache = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<PathB
 /// task engine, and a per-store cache made every `/new` re-parse every retained record; entries
 /// are validated against the file text on each read, so sharing never serves a stale record.
 fn shared_list_cache(state_dir: &Path) -> ListCache {
-    static CACHES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, ListCache>>> = std::sync::OnceLock::new();
-    CACHES.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-        .entry(state_dir.to_path_buf()).or_default().clone()
+    static CACHES: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, ListCache>>,
+    > = std::sync::OnceLock::new();
+    CACHES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(state_dir.to_path_buf())
+        .or_default()
+        .clone()
 }
 
 /// File-backed task record store rooted at the resolved state directory.
@@ -89,6 +113,19 @@ impl TaskRecordStore {
             state_dir,
             mutation_listener: Default::default(),
             write_listener: Default::default(),
+        }
+    }
+
+    pub fn resident_figures(&self) -> TaskRecordStoreResidentFigures {
+        let cache = self
+            .list_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        TaskRecordStoreResidentFigures {
+            cached_records: cache.len(),
+            cached_record_bytes: cache.values().map(|entry| entry.len).sum(),
+            // Event appends open and close their file within append_task_event; none stay resident.
+            open_event_logs: 0,
         }
     }
 
@@ -206,7 +243,19 @@ impl TaskRecordStore {
     }
 
     pub fn load(&self, task_id: &str) -> Result<Option<TaskRecord>, StoreError> {
-        read_record(&self.task_path(parse_task_id(task_id)?), &mut Vec::new())
+        let path = self.task_path(parse_task_id(task_id)?);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.list_cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&path);
+                return Ok(None);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        self.parse_and_cache(&path, text, &mut Vec::new())
     }
 
     pub fn list(&self) -> Result<ListTaskRecordsResult, StoreError> {
@@ -281,10 +330,12 @@ impl TaskRecordStore {
                 Err(error) => return Err(error),
             }
         }
-        if !records
-            .iter()
-            .any(|record| matches!(record.status, TaskStatus::Pending | TaskStatus::Running))
-        {
+        if !records.iter().any(|record| {
+            matches!(
+                record.status,
+                TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused
+            )
+        }) {
             let mut cache = self
                 .list_cache
                 .lock()
@@ -509,15 +560,33 @@ impl TaskRecordStore {
                 .join(format!("{task_id}.txt")),
         )?;
         remove_if_present(&event_log_path(&self.state_dir, task_id))?;
-        remove_if_present(&self.task_path(task_id))
+        remove_if_present(&self.task_path(task_id))?;
+        self.list_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.task_path(task_id));
+        Ok(())
     }
 
     fn write_record(&self, record: &TaskRecord, mode: WriteMode) -> Result<(), StoreError> {
         let task_id = parse_task_id(&record.task_id)?;
         std::fs::create_dir_all(self.tasks_dir())?;
         let path = self.task_path(task_id);
-        let payload =
-            serde_json::to_string(record).map_err(|error| StoreError::Parse(error.to_string()))?;
+        let payload = if record.status == TaskStatus::Paused {
+            serde_json::to_string(
+                &to_storable_task_record(record)
+                    .map_err(|error| StoreError::Parse(error.to_string()))?,
+            )
+        } else {
+            serde_json::to_string(record)
+        }
+        .map_err(|error| StoreError::Parse(error.to_string()))?;
+        let cached = CachedRecord {
+            len: payload.len(),
+            hash: text_hash(&payload),
+            record: record.clone(),
+            warnings: Vec::new(),
+        };
         match mode {
             WriteMode::Create => {
                 let mut file = match retry_windows_sharing(|| {
@@ -533,7 +602,11 @@ impl TaskRecordStore {
             }
             WriteMode::Replace => {
                 let mut tmp = path.as_os_str().to_os_string();
-                tmp.push(format!(".{}.{}.tmp", std::process::id(), uuid::Uuid::new_v4()));
+                tmp.push(format!(
+                    ".{}.{}.tmp",
+                    std::process::id(),
+                    uuid::Uuid::new_v4()
+                ));
                 let tmp = PathBuf::from(tmp);
                 let result = std::fs::write(&tmp, payload)
                     .and_then(|()| retry_windows_sharing(|| std::fs::rename(&tmp, &path)));
@@ -542,6 +615,10 @@ impl TaskRecordStore {
                 cleanup?;
             }
         }
+        self.list_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(path, cached);
         Ok(())
     }
 }

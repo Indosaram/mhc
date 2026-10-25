@@ -22,6 +22,8 @@ pub use transitions::{
     read_resolved_reasoning, resolved_reasoning_fields, transition_task_record,
 };
 pub use types::{
+    ParentModelFallback, ParentModelFallbackReason, FallbackClosingChild, StartQueued,
+    ReviveDeliveryUncertainty, RecordedRunPause, RunPauseRef, RunPauseKind,
     AwaitingInputReason, BackgroundMode, CancelRequest, CostReportStatus, DeliverAs,
     DurationSourceStatus, EffectiveModelRecord, EffectiveModelSource, HostSessionIdentity,
     Messageability, PendingSteeringEntry, PendingSteeringWorkpoolMetadata, RESIDENCY_STATES,

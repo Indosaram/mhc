@@ -96,5 +96,18 @@ pub fn create_task_record(
         runner_kind,
         host_session,
         cancel_requested: None,
+        parent_model: None,
+        parent_model_fallback: None,
+        fallback_closing_child: None,
+        start_queued: None,
+        revive_delivery_uncertain: None,
+        prior_runs_cost_usd: None,
+        run_pause: None,
+        resumed_run_epoch: None,
+        burnt_epoch: None,
+        fallback_handoff_epoch: None,
+        revival_deferred_reason: None,
+        recovery_deadline_at: None,
+        residency_claim: None,
     })
 }
