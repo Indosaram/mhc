@@ -52,7 +52,10 @@ pub struct ResumeRequest {
 pub enum BridgeOutcome {
     Ignored,
     Paused,
-    Resumed { installed: bool, failures: usize },
+    Resumed {
+        installed: bool,
+        failures: usize,
+    },
     /// The Resume named a sequence the run is no longer stopped at.
     StaleResume,
     Failed(String),
@@ -74,20 +77,32 @@ impl EngineRunPauseBridge {
         }
     }
 
+    pub fn close_admission(&self, parent: &str, seq: u64) {
+        self.engine.barrier.close(parent, seq);
+    }
+
     /// Apply one native hold change. A change at or below the sequence already applied is ignored:
     /// replaying an old Resume must never reopen admission.
     pub fn apply(&self, parent_session_id: &str, event: &RunHoldChangeEvent) -> BridgeOutcome {
         let hold: EngineRunHold = read_engine_run_hold(&event.state);
-        let _operation = self.operation.lock().unwrap_or_else(PoisonError::into_inner);
+        let _operation = self
+            .operation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         match event.change {
             RunHoldChange::Paused => {
                 if !hold.stopped {
                     return BridgeOutcome::Ignored;
                 }
-                let applied = self.last_applied.lock().unwrap_or_else(PoisonError::into_inner).replace(hold.pause_seq);
+                let mut applied = self
+                    .last_applied
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 if applied.is_some_and(|seq| seq >= hold.pause_seq) {
                     return BridgeOutcome::Ignored;
                 }
+                *applied = Some(hold.pause_seq);
+                drop(applied);
                 match self.engine.pause(parent_session_id, hold.pause_seq) {
                     Ok(()) => BridgeOutcome::Paused,
                     Err(error) => BridgeOutcome::Failed(error),
@@ -105,18 +120,36 @@ impl EngineRunPauseBridge {
                 {
                     return BridgeOutcome::StaleResume;
                 }
-                match self.engine.resume(parent_session_id, request.pause_seq, &request.resume_id) {
-                    Ok(senpi_task::pause::run_controller::RunResumeResult::Installed { failures }) => {
-                        let released = self.engine.release(parent_session_id, request.pause_seq, &request.resume_id);
+                match self
+                    .engine
+                    .resume(parent_session_id, request.pause_seq, &request.resume_id)
+                {
+                    Ok(senpi_task::pause::run_controller::RunResumeResult::Installed {
+                        failures,
+                    }) => {
+                        let released = self.engine.release(
+                            parent_session_id,
+                            request.pause_seq,
+                            &request.resume_id,
+                        );
                         // A Resume that installed but never released admission is retried as lost.
                         let failures = if released {
                             failures.len()
                         } else {
-                            failures.len() + self.engine.retry_lost(parent_session_id, request.pause_seq).len()
+                            failures.len()
+                                + self
+                                    .engine
+                                    .retry_lost(parent_session_id, request.pause_seq)
+                                    .len()
                         };
-                        BridgeOutcome::Resumed { installed: released, failures }
+                        BridgeOutcome::Resumed {
+                            installed: released,
+                            failures,
+                        }
                     }
-                    Ok(senpi_task::pause::run_controller::RunResumeResult::Superseded) => BridgeOutcome::StaleResume,
+                    Ok(senpi_task::pause::run_controller::RunResumeResult::Superseded) => {
+                        BridgeOutcome::StaleResume
+                    }
                     Err(error) => BridgeOutcome::Failed(error),
                 }
             }
@@ -125,7 +158,9 @@ impl EngineRunPauseBridge {
 
     /// Startup restoration: custody is rebuilt BEFORE the lifecycle reconcile reads the store.
     pub fn restore(&self, parent_session_id: &str) -> Option<u64> {
-        self.engine.restore(parent_session_id).map(|record| record.pause_seq)
+        self.engine
+            .restore(parent_session_id)
+            .map(|record| record.pause_seq)
     }
 
     /// The fenced runs of a restored Stop, so the reconcile knows which children are held.
@@ -146,7 +181,8 @@ fn resume_request(hold: &EngineRunHold) -> Option<ResumeRequest> {
 
 /// How the composition reads a hold change off a host event. The Rust extension event carries no
 /// hold projection of its own, so the host supplies the reader; `None` means "not a hold change".
-pub type RunHoldChangeReader = Arc<dyn Fn(&maho_ext_api::ExtensionEvent) -> Option<RunHoldChangeEvent> + Send + Sync>;
+pub type RunHoldChangeReader =
+    Arc<dyn Fn(&maho_ext_api::ExtensionEvent) -> Option<RunHoldChangeEvent> + Send + Sync>;
 
 /// `wireEventBridge`: register the hold-change handler on the host's event bus.
 ///
@@ -159,21 +195,24 @@ pub fn wire_run_pause_bridge(
     session_id: Arc<dyn Fn() -> Option<String> + Send + Sync>,
     read_hold_change: RunHoldChangeReader,
 ) {
-    api.on(EventKind::Context, Arc::new(move |payload, _| {
-        let bridge = bridge.clone();
-        let session_id = session_id.clone();
-        let read_hold_change = read_hold_change.clone();
-        Box::pin(async move {
-            let Some(event) = read_hold_change(payload) else {
-                return Ok(EventResult::None);
-            };
-            if let Some(session) = session_id() {
-                let _ = bridge.restore(&session);
-                let _ = bridge.apply(&session, &event);
-            }
-            Ok(EventResult::None)
-        })
-    }));
+    api.on(
+        EventKind::Context,
+        Arc::new(move |payload, _| {
+            let bridge = bridge.clone();
+            let session_id = session_id.clone();
+            let read_hold_change = read_hold_change.clone();
+            Box::pin(async move {
+                let Some(event) = read_hold_change(payload) else {
+                    return Ok(EventResult::None);
+                };
+                if let Some(session) = session_id() {
+                    let _ = bridge.restore(&session);
+                    let _ = bridge.apply(&session, &event);
+                }
+                Ok(EventResult::None)
+            })
+        }),
+    );
 }
 
 /// The credential a resumed run presents; named here so the wiring and the bridge agree.
@@ -199,7 +238,13 @@ mod tests {
             is_run_hold_change(&json!({"type": "session_hold_changed", "change": "resumed"})),
             Some(RunHoldChange::Resumed)
         );
-        assert_eq!(is_run_hold_change(&json!({"type": "session_hold_changed", "change": "bogus"})), None);
-        assert_eq!(is_run_hold_change(&json!({"type": "other", "change": "paused"})), None);
+        assert_eq!(
+            is_run_hold_change(&json!({"type": "session_hold_changed", "change": "bogus"})),
+            None
+        );
+        assert_eq!(
+            is_run_hold_change(&json!({"type": "other", "change": "paused"})),
+            None
+        );
     }
 }
