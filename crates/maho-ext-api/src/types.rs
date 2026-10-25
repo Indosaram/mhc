@@ -1639,8 +1639,9 @@ pub trait ExtensionContextActions: Send + Sync {
     /// Records a wake that was held rather than delivered.
     fn note_held_wake(&self, _source: &str) {}
     fn get_pause_state(&self) -> JsonValue { serde_json::json!({"pauseSeq": 0, "holds": []}) }
-    fn fence_run(&self, _run_ref: JsonValue) -> Result<(), ExtensionFailure> { Ok(()) }
-    fn release_run_fence(&self, _run_ref: JsonValue) -> Result<(), ExtensionFailure> { Ok(()) }
+    fn fence_run(&self, _run_ref: JsonValue) -> Result<(), ExtensionFailure> { Err(ExtensionFailure::new("Run fencing is unavailable")) }
+    fn supports_release_run_fence(&self) -> bool { false }
+    fn release_run_fence(&self, _run_ref: JsonValue) -> Result<(), ExtensionFailure> { Err(ExtensionFailure::new("Run fence release is unavailable")) }
     fn has_queued_person_input(&self) -> bool { false }
     /// Runs a registered child module; `None` when no session backs this context.
     fn offload(
@@ -1962,6 +1963,9 @@ pub struct CustomUiOptions {
     pub overlay_options: Option<JsonValue>,
 }
 pub trait ExtensionUi: Send + Sync {
+    /// Optional footer capability; unsupported engines must not trigger a tree scan.
+    fn supports_subagent_cost(&self) -> bool { false }
+    fn set_subagent_cost(&self, _cost: Option<f64>) {}
     fn actions(&self) -> Option<&dyn ExtensionUiActions> {
         None
     }

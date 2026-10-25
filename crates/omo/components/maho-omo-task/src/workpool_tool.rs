@@ -7,6 +7,15 @@ use senpi_task::{
 };
 
 pub fn register_workpool_tool(api: &mut ExtensionApi, backend: Arc<dyn WorkpoolToolBackend>) {
+    let attach = backend.clone();
+    api.on(maho_ext_api::EventKind::SessionStart, Arc::new(move |_, context| {
+        let backend = attach.clone();
+        let session = context.session_manager.session_id().to_owned();
+        Box::pin(async move {
+            backend.attach(&session).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+            Ok(maho_ext_api::EventResult::None)
+        })
+    }));
     let tool = Arc::new(WorkpoolTool::new(backend));
     let definition_tool = tool.clone();
     let mut definition = ToolDefinition::new(

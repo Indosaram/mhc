@@ -45,7 +45,8 @@ const TERMINAL: &[WorkpoolItemStatus] = &[WorkpoolItemStatus::Completed, Workpoo
 pub fn pool_work_is_finished(pool: &WorkpoolRecord) -> bool {
     pool.status != WorkpoolStatus::Open
         && pool.items.iter().all(|item| TERMINAL.contains(&item.status))
-        && pool.workers.iter().all(|worker| worker.status != super::types::WorkpoolWorkerStatus::Busy)
+        && pool.hold.is_none()
+        && pool.workers.iter().all(|worker| worker.status == super::types::WorkpoolWorkerStatus::Idle)
 }
 
 pub fn aggregate_results(pool: &WorkpoolRecord) -> Option<Vec<WorkpoolAggregateResult>> {
