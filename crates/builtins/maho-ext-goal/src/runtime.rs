@@ -479,6 +479,31 @@ impl GoalRuntime {
                     goal = Some(current);
                 }
             }
+            ExtensionEvent::HeldWakesReleased { .. } => {
+                if goal.as_ref().is_some_and(|goal| {
+                    goal.status == GoalStatus::Paused
+                        && crate::stop_pause::paused_by_stop(context, &goal.id)
+                }) && !crate::stop_pause::stop_hold_live(context)
+                {
+                    goal = Some(
+                        crate::store::update_goal(
+                            &reference,
+                            &GoalUpdate {
+                                status: Some(GoalStatus::Active),
+                                ..Default::default()
+                            },
+                            GoalUpdateSource::User,
+                            seconds,
+                        )
+                        .await
+                        .map_err(failure)?,
+                    );
+                    state
+                        .accounting
+                        .begin(goal.as_ref().expect("resumed goal"), now);
+                    // The delivery owner appends the matching resume marker after this transition.
+                }
+            }
             ExtensionEvent::SessionAbort => {
                 if goal
                     .as_ref()
@@ -493,11 +518,23 @@ impl GoalRuntime {
                         crate::store::update_goal(
                             &reference,
                             &GoalUpdate {
-                                status: Some(GoalStatus::Blocked),
-                                reason: Some("user interrupted the turn".into()),
+                                status: Some(if crate::stop_pause::stop_hold_live(context) {
+                                    GoalStatus::Paused
+                                } else {
+                                    GoalStatus::Blocked
+                                }),
+                                reason: if crate::stop_pause::stop_hold_live(context) {
+                                    None
+                                } else {
+                                    Some("user interrupted the turn".into())
+                                },
                                 ..Default::default()
                             },
-                            GoalUpdateSource::Model,
+                            if crate::stop_pause::stop_hold_live(context) {
+                                GoalUpdateSource::User
+                            } else {
+                                GoalUpdateSource::Model
+                            },
                             seconds,
                         )
                         .await

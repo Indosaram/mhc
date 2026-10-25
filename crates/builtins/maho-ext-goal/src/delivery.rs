@@ -20,6 +20,9 @@ pub struct GoalDelivery {
     wait: tokio::sync::Mutex<crate::wait_ticker::GoalWaitTicker>,
     context: Mutex<Option<ExtensionContext>>,
     subscriptions: Mutex<Vec<maho_ext_api::BusSubscription>>,
+    todo_backstop: Mutex<crate::todo_owed_backstop::TodoOwedBackstop>,
+    pub lifecycle: Arc<crate::lifecycle_facts::GoalLifecycleCollector>,
+    last_facts: Arc<Mutex<Option<crate::lifecycle_facts::GoalLifecycleFacts>>>,
 }
 impl GoalDelivery {
     pub fn new(
@@ -53,6 +56,9 @@ impl GoalDelivery {
             )),
             context: Mutex::new(None),
             subscriptions: Mutex::new(Vec::new()),
+            todo_backstop: Default::default(),
+            lifecycle: Default::default(),
+            last_facts: Default::default(),
         }
     }
     pub fn queue_callback(self: &Arc<Self>) -> crate::command_registration::QueueGoalContinuation {
@@ -182,14 +188,18 @@ impl GoalDelivery {
             1800000.0
         };
         // PERF-DIVERGENCE(senpi goal delivery): upstream clones the whole branch to find the last assistant message; we fetch only the branch tail up to the newest parseable assistant message. The selected message is identical.
-        let (_, tail) = ctx.session_manager.get_branch_tail(0, &mut |data: &serde_json::Value| {
-            data.get("type").and_then(serde_json::Value::as_str) == Some("message")
-                && data.get("message").is_some_and(|message| {
-                message.get("role").and_then(serde_json::Value::as_str) == Some("assistant")
-                    && serde_json::from_value::<maho_ai::types::AssistantMessage>(message.clone())
-                        .is_ok()
-                })
-        });
+        let (_, tail) = ctx
+            .session_manager
+            .get_branch_tail(0, &mut |data: &serde_json::Value| {
+                data.get("type").and_then(serde_json::Value::as_str) == Some("message")
+                    && data.get("message").is_some_and(|message| {
+                        message.get("role").and_then(serde_json::Value::as_str) == Some("assistant")
+                            && serde_json::from_value::<maho_ai::types::AssistantMessage>(
+                                message.clone(),
+                            )
+                            .is_ok()
+                    })
+            });
         let usage = crate::lifecycle_helpers::last_assistant_from_entries(&tail).map(|message| {
             (
                 message.usage.cache_read as f64,
@@ -362,6 +372,19 @@ impl GoalDelivery {
     ) -> Result<(), ExtensionFailure> {
         match event {
             ExtensionEvent::SessionStart(start) => {
+                self.todo_backstop.lock().map_err(failure)?.reset_chain();
+                let facts = self.last_facts.clone();
+                self.lifecycle
+                    .register_goal_lifecycle_collector(Arc::new(move || {
+                        facts
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone()
+                            .unwrap_or(crate::lifecycle_facts::GoalLifecycleFacts {
+                                goal: None,
+                                input: None,
+                            })
+                    }));
                 self.pending.store(false, Ordering::Release);
                 self.subscribe(ctx);
                 if let Some(goal) = goal {
@@ -489,8 +512,94 @@ impl GoalDelivery {
                             .await?;
                     }
                 }
+                let sources = self
+                    .runtime
+                    .monitor
+                    .lock()
+                    .map_err(failure)?
+                    .live_wake_sources();
+                let outcome = self
+                    .todo_backstop
+                    .lock()
+                    .map_err(failure)?
+                    .after_agent_end(
+                        &self.api,
+                        ctx,
+                        &ended,
+                        goal,
+                        self.pending.load(Ordering::Acquire),
+                        &sources,
+                        true,
+                    )?;
+                let input = crate::turn_end_liveness_report::collect_turn_end_liveness_input(
+                    ctx,
+                    &ended,
+                    goal,
+                    Some(&outcome),
+                    false,
+                    self.pending.load(Ordering::Acquire),
+                    &self.runtime.monitor.lock().map_err(failure)?,
+                    (self.now)() as i64,
+                )?;
+                crate::turn_end_liveness_report::report_turn_end_liveness(&self.api, ctx, &input);
+                *self.last_facts.lock().map_err(failure)? =
+                    Some(crate::lifecycle_facts::GoalLifecycleFacts {
+                        goal: goal.cloned(),
+                        input: Some(input),
+                    });
+                let reference = self.reference.clone();
+                let context = ctx.clone();
+                let monitor = self.runtime.monitor.clone();
+                let pending = self.pending.load(Ordering::Acquire);
+                let now = self.now.clone();
+                let ended_live = ended.clone();
+                let outcome_live = outcome.clone();
+                self.lifecycle
+                    .register_goal_lifecycle_collector(Arc::new(move || {
+                        let goal =
+                            crate::store::read_goal(&reference(&context)).unwrap_or_else(|error| {
+                                maho_ext_api::diagnostic(&format!(
+                                    "goal lifecycle read failed: {error}"
+                                ));
+                                None
+                            });
+                        let input = {
+                            let monitor = monitor
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            match crate::turn_end_liveness_report::collect_turn_end_liveness_input(
+                                &context,
+                                &ended_live,
+                                goal.as_ref(),
+                                Some(&outcome_live),
+                                false,
+                                pending,
+                                &monitor,
+                                now() as i64,
+                            ) {
+                                Ok(input) => Some(input),
+                                Err(error) => {
+                                    maho_ext_api::diagnostic(&format!(
+                                        "goal lifecycle collection failed: {error}"
+                                    ));
+                                    None
+                                }
+                            }
+                        };
+                        crate::lifecycle_facts::GoalLifecycleFacts { goal, input }
+                    }));
+                self.lifecycle.goal_lifecycle_changed(goal);
             }
             ExtensionEvent::HeldWakesReleased { sources } => {
+                if let Some(goal) = goal.filter(|goal| {
+                    goal.status == GoalStatus::Active
+                        && crate::stop_pause::paused_by_stop(ctx, &goal.id)
+                }) {
+                    crate::stop_pause::mark_stop_resumed(&self.api, &goal.id)?;
+                    self.queue(ctx, goal, GoalContinuationPath::SessionStart)
+                        .await?;
+                    return self.reconcile(ctx).await;
+                }
                 if !sources.contains_key("goal") {
                     return Ok(());
                 }
@@ -522,12 +631,20 @@ impl GoalDelivery {
                     maho_ext_api::InputDisposition::Started | maho_ext_api::InputDisposition::Queued,
                 ..
             } => {
+                self.todo_backstop.lock().map_err(failure)?.reset_chain();
                 self.pending.store(false, Ordering::Release);
             }
             ExtensionEvent::SessionAbort => {
+                if let Some(goal) = goal.filter(|goal| goal.status == GoalStatus::Paused)
+                    && crate::stop_pause::stop_hold_live(ctx)
+                {
+                    crate::stop_pause::mark_stop_paused(&self.api, &goal.id)?;
+                }
                 self.pending.store(false, Ordering::Release);
             }
             ExtensionEvent::SessionShutdown(_) => {
+                self.lifecycle.retire();
+                *self.last_facts.lock().map_err(failure)? = None;
                 self.pending.store(false, Ordering::Release);
                 self.subscriptions.lock().map_err(failure)?.clear();
                 *self.context.lock().map_err(failure)? = None;
