@@ -26,9 +26,38 @@ pub fn parse_agreement_record(
     };
     let date =
         valid_date(record.get("date")).ok_or_else(|| invalid(index, "date must be YYYY-MM-DD"))?;
+    let source = record
+        .get("source")
+        .map(|value| {
+            let obj = value
+                .as_object()
+                .ok_or_else(|| invalid(index, "source must name a session and message"))?;
+            if obj.len() != 2 {
+                return Err(invalid(index, "source must name a session and message"));
+            }
+            let session_id = obj
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .filter(|v| !v.trim().is_empty())
+                .ok_or_else(|| invalid(index, "source must name a session and message"))?;
+            let message_id = obj
+                .get("messageId")
+                .and_then(Value::as_str)
+                .filter(|v| !v.trim().is_empty())
+                .ok_or_else(|| invalid(index, "source must name a session and message"))?;
+            Ok(super::types::AgreementSource {
+                session_id: session_id.into(),
+                message_id: message_id.into(),
+            })
+        })
+        .transpose()?;
     let action = record.get("action").and_then(Value::as_str);
     if action == Some("new") {
-        assert_keys(record, &["action", "applies", "text", "date"], index)?;
+        assert_keys(
+            record,
+            &["action", "applies", "text", "date", "source"],
+            index,
+        )?;
         let text = bounded_text(record.get("text"), index)?
             .ok_or_else(|| invalid(index, "text must be non-empty"))?;
         let applies = match record.get("applies").and_then(Value::as_str) {
@@ -40,12 +69,13 @@ pub fn parse_agreement_record(
             applies,
             text,
             date,
+            source,
         });
     }
     if action != Some("reaffirm") {
         return Err(invalid(index, "action must be new or reaffirm"));
     }
-    assert_keys(record, &["action", "id", "date", "text"], index)?;
+    assert_keys(record, &["action", "id", "date", "text", "source"], index)?;
     let id = record
         .get("id")
         .and_then(Value::as_str)
@@ -63,6 +93,7 @@ pub fn parse_agreement_record(
     Ok(AgreementExtractionRecord::Reaffirm {
         id: id.to_string(),
         date,
+        source,
         text,
     })
 }

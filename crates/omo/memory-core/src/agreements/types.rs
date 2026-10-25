@@ -97,6 +97,14 @@ pub struct FactsKnownAgreement {
     pub n: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgreementSource {
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+}
+
 /// One agreement record emitted by the facts extractor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "lowercase")]
@@ -105,10 +113,14 @@ pub enum AgreementExtractionRecord {
         applies: AgreementScope,
         text: String,
         date: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<AgreementSource>,
     },
     Reaffirm {
         id: String,
         date: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<AgreementSource>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
     },

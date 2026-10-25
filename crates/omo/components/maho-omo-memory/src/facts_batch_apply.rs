@@ -10,7 +10,9 @@ use memory_core::{
         },
         mutation_plan::{MutationPlanError, plan_facts_mutation},
         person_routing::FactsPeopleRouting,
-        recovery::{FactsRecoveryResult, apply_facts_recovery, find_facts_batch_receipt},
+        recovery::{
+            FactsRecoveryResult, apply_facts_recovery_with_input, find_facts_batch_receipt,
+        },
     },
     git::{GitCommitAuthor, GitLogOptions, GitMemoryRepo, errors::GitError},
 };
@@ -208,7 +210,18 @@ pub fn apply_claimed(
             .map_err(FactsApplyError::Artifact)?;
         recovery
     };
-    match apply_facts_recovery(
+    let mut publisher = |recovery: &memory_core::facts::mutation_plan::FactsApplyRecovery| {
+        let fields = serde_json::Map::from_iter([(
+            "applyRecovery".into(),
+            serde_json::to_value(recovery).map_err(|error| {
+                memory_core::facts::recovery::FactsRecoveryError::Invalid(error.to_string())
+            })?,
+        )]);
+        update_run_ledger(&run_dir.join("ledger.json"), &fields).map_err(|error| {
+            memory_core::facts::recovery::FactsRecoveryError::Invalid(format!("{error:?}"))
+        })
+    };
+    match apply_facts_recovery_with_input(
         repo,
         &recovery,
         records.len() + agreements.len(),
@@ -217,6 +230,13 @@ pub fn apply_claimed(
             author_name: "Facts Extractor".into(),
             author_email: None,
         },
+        Some(
+            memory_core::facts::agreement_recovery::AgreementRecoveryInput {
+                batch: &batch,
+                agreements_policy: Some(agreements_policy),
+                publish_recovery: Some(&mut publisher),
+            },
+        ),
     )
     .map_err(FactsApplyError::Recovery)?
     {
@@ -348,6 +368,7 @@ mod tests {
         )
         .unwrap();
         let records = vec![FactsExtractionRecord::Project {
+            receipt: None,
             text: "Project uses a durable journal".into(),
             date: "2026-08-12".into(),
         }];
@@ -409,6 +430,7 @@ mod tests {
         let foreign = paths.repo.join("foreign.txt");
         std::fs::write(&foreign, "user change").unwrap();
         let records = vec![FactsExtractionRecord::Project {
+            receipt: None,
             text: "fact".into(),
             date: "2026-08-12".into(),
         }];
