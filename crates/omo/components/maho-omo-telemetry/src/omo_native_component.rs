@@ -71,6 +71,9 @@ impl OmoNativeTelemetryComponent {
                             loaded.diagnostics
                         ))),
                         error_kind: Some(telemetry_core::TelemetryDiagnosticErrorKind::Error),
+                        entry_kind: None,
+                        error_code: None,
+                        count: None,
                     });
                 }
                 return false;
@@ -232,7 +235,7 @@ impl Extension for OmoNativeTelemetryComponent {
             if let ExtensionEvent::TurnEnd {turn_index,message,tool_results}=event {
                 let event=serde_json::json!({"turnIndex":turn_index,"message":message,"toolResults":tool_results});
                 let hash=turn_hash(ctx.session_manager.session_id());
-                if let Some((_,true))=crate::omo_native_turns::turn_completed_properties(&event,&hash) && let Some(diagnostics)=&diagnostics {diagnostics(&telemetry_core::TelemetryDiagnosticInput {event:telemetry_core::TelemetryDiagnosticEvent::TelemetryEventPropertyRejected,source:"omo-native-turns".into(),error:Some(telemetry_core::TelemetryError::new("turn_end assistant usage contained missing or invalid values")),error_kind:Some(telemetry_core::TelemetryDiagnosticErrorKind::Error)});}
+                if let Some((_,true))=crate::omo_native_turns::turn_completed_properties(&event,&hash) && let Some(diagnostics)=&diagnostics {diagnostics(&telemetry_core::TelemetryDiagnosticInput {event:telemetry_core::TelemetryDiagnosticEvent::TelemetryEventPropertyRejected,source:"omo-native-turns".into(),error:Some(telemetry_core::TelemetryError::new("turn_end assistant usage contained missing or invalid values")),error_kind:Some(telemetry_core::TelemetryDiagnosticErrorKind::Error),entry_kind:None,error_code:None,count:None});}
                 if !hash.is_empty() && let Err(error)=summary.lock().unwrap_or_else(std::sync::PoisonError::into_inner).record(&hash,&event,&ctx.cwd,role) {warn(ctx,&format!("omo-native turn summary failed: {error}"));}
             }
             Box::pin(async {Ok(EventResult::None)})

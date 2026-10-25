@@ -31,6 +31,7 @@ struct Inner {
 /// Automatic flushes only run when `capture` is called inside a Tokio runtime; explicit `flush`
 /// and `shutdown` always deliver the queue.
 pub struct PostHogTelemetryTransport {
+    immediate: crate::posthog_immediate_send::ImmediateSender,
     inner: Arc<Inner>,
 }
 
@@ -41,6 +42,7 @@ impl PostHogTelemetryTransport {
             .build()
             .map_err(|error| TelemetryError::new(error.to_string()))?;
         Ok(Self {
+            immediate: crate::posthog_immediate_send::create_immediate_sender(api_key, options)?,
             inner: Arc::new(Inner {
                 api_key: api_key.to_string(),
                 options: options.clone(),
@@ -60,13 +62,17 @@ impl Inner {
         if self.options.disable_geoip {
             properties.insert("$geoip_disable".into(), true.into());
         }
-        json!({
+        let mut entry = json!({
             "type": "capture",
             "event": message.event,
             "distinct_id": message.distinct_id,
             "properties": properties,
-            "timestamp": to_iso_string(chrono::Utc::now()),
-        })
+            "timestamp": message.timestamp.clone().unwrap_or_else(|| to_iso_string(chrono::Utc::now())),
+        });
+        if let Some(uuid) = &message.uuid {
+            entry["uuid"] = uuid.clone().into();
+        }
+        entry
     }
 
     async fn flush(&self) -> Result<(), TelemetryError> {
@@ -140,12 +146,24 @@ impl TelemetryTransport for PostHogTelemetryTransport {
         Ok(())
     }
 
+    fn capture_immediate<'a>(
+        &'a self,
+        message: &'a TelemetryCaptureMessage,
+    ) -> Option<BoxFuture<'a, Result<(), crate::telemetry_delivery_error::TelemetryDeliveryError>>>
+    {
+        Some(self.immediate.send(message).boxed())
+    }
+
     fn flush(&self) -> Option<BoxFuture<'_, Result<(), TelemetryError>>> {
         Some(self.inner.flush().boxed())
     }
 
     fn shutdown(&self) -> BoxFuture<'_, Result<(), TelemetryError>> {
-        self.inner.flush().boxed()
+        async move {
+            self.immediate.shutdown().await;
+            self.inner.flush().await
+        }
+        .boxed()
     }
 }
 

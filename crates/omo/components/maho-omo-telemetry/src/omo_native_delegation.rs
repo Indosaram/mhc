@@ -71,6 +71,9 @@ pub fn create_omo_native_delegation_capture(
                         "delegation capture panicked",
                     )),
                     error_kind: Some(telemetry_core::TelemetryDiagnosticErrorKind::Error),
+                    entry_kind: None,
+                    error_code: None,
+                    count: None,
                 });
             } else {
                 maho_ext_api::diagnostic("telemetry_capture_failed: omo-native-delegation");
