@@ -330,6 +330,7 @@ fn seed_mutation_record(
         revival_deferred_reason: None,
         recovery_deadline_at: None,
         residency_claim: None,
+        terminal_at: None,
         started_at: None,
     };
     overrides(&mut record);

@@ -28,6 +28,9 @@ pub struct TaskRecordStoreResidentFigures {
 /// Encode paused records additively so rollback readers retain a valid status.
 pub fn to_storable_task_record(record: &TaskRecord) -> Result<Value, serde_json::Error> {
     let mut stored = serde_json::to_value(record)?;
+    if let Some(fallback) = stored.get_mut("parent_model_fallback").and_then(Value::as_object_mut) {
+        fallback.remove("phase");
+    }
     if record.status == TaskStatus::Paused {
         stored["status"] = Value::String("running".into());
         stored["paused"] = Value::Bool(true);

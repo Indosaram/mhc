@@ -15,7 +15,6 @@ pub fn create_task_record(
     let timestamp = iso_timestamp_now();
     let task_id = create_task_id(now_ms)?;
     let TaskRecordInput {
-        parent_model,
         name,
         task_summary,
         description,
@@ -30,6 +29,7 @@ pub fn create_task_record(
         fallback_models,
         fallback_attempts,
         resolved_model,
+        parent_model,
         tool_allow,
         tool_deny,
         notify_on_terminal,
@@ -58,6 +58,7 @@ pub fn create_task_record(
         created_at: timestamp.clone(),
         updated_at: timestamp,
         started_at: None,
+        terminal_at: None,
         notification: TaskNotification::default(),
         run_start_epoch: 0,
         team_run_id,
