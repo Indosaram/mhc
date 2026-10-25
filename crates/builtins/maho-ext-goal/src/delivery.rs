@@ -372,6 +372,10 @@ impl GoalDelivery {
     ) -> Result<(), ExtensionFailure> {
         match event {
             ExtensionEvent::SessionStart(start) => {
+                crate::lifecycle_facts::bind_session_lifecycle(
+                    &(self.reference)(ctx),
+                    &self.lifecycle,
+                );
                 self.todo_backstop.lock().map_err(failure)?.reset_chain();
                 let facts = self.last_facts.clone();
                 self.lifecycle
