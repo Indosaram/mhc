@@ -117,15 +117,34 @@ impl EventTelemetryClient {
     }
 
     pub fn capture_event(&self, name: &str, properties: &EventTelemetryProperties) {
+        self.capture_event_acknowledged(name, properties);
+    }
+
+    /// Returns true only when the transport accepted the projected event.
+    pub fn capture_event_acknowledged(
+        &self,
+        name: &str,
+        properties: &EventTelemetryProperties,
+    ) -> bool {
+        self.capture_event_with_delivery(name, properties, None)
+    }
+
+    /// Durable deliveries preserve their insertion identity and close time across retries.
+    pub fn capture_event_with_delivery(
+        &self,
+        name: &str,
+        properties: &EventTelemetryProperties,
+        delivery: Option<(&str, f64)>,
+    ) -> bool {
         let Some(client) = &self.inner else {
-            return;
+            return false;
         };
         let Some(allowlist) = client.allowlists.get(name).filter(|_| !name.is_empty()) else {
             client.report(
                 TelemetryDiagnosticEvent::TelemetryEventRejected,
                 "event name is empty or not allowlisted".to_string(),
             );
-            return;
+            return false;
         };
 
         let mut payload_properties = TelemetryCaptureProperties::new();
@@ -157,23 +176,59 @@ impl EventTelemetryClient {
             payload_properties.insert(key.clone(), value.clone());
         }
 
+        if let Some((uuid, timestamp)) = delivery {
+            payload_properties.insert("$insert_id".into(), Value::String(uuid.into()));
+            payload_properties.insert("$time".into(), serde_json::json!(timestamp / 1000.0));
+        }
         let payload = TelemetryCaptureMessage {
             distinct_id: client.distinct_id.clone(),
             event: name.to_string(),
             properties: payload_properties,
         };
-        match client.transport.capture(&payload) {
+        let delivered = if delivery.is_some() {
+            // A dedicated runtime also works when the recorder runs inside a current-thread runtime.
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        let runtime = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .map_err(|error| TelemetryError::new(error.to_string()))?;
+                        runtime.block_on(async {
+                            tokio::time::timeout(
+                                std::time::Duration::from_secs(10),
+                                client.transport.capture_durable(payload.clone()),
+                            )
+                            .await
+                            .map_err(|_| {
+                                TelemetryError::new("durable telemetry delivery timed out")
+                            })?
+                        })
+                    })
+                    .join()
+                    .unwrap_or_else(|_| {
+                        Err(TelemetryError::new("durable telemetry sender panicked"))
+                    })
+            })
+        } else {
+            client.transport.capture(&payload)
+        };
+        match delivered {
             Ok(()) => {
                 if let Some(on_capture) = &client.on_capture {
                     on_capture(&payload);
                 }
+                true
             }
-            Err(error) => report(
-                client.diagnostics.as_ref(),
-                TelemetryDiagnosticEvent::TelemetryCaptureFailed,
-                &client.source,
-                error,
-            ),
+            Err(error) => {
+                report(
+                    client.diagnostics.as_ref(),
+                    TelemetryDiagnosticEvent::TelemetryCaptureFailed,
+                    &client.source,
+                    error,
+                );
+                false
+            }
         }
     }
 
