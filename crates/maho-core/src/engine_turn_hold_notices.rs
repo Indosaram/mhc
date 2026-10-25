@@ -59,9 +59,13 @@ impl EngineTurnHoldNotices {
             match entry.get("customType").and_then(Value::as_str) {
                 Some("session-notice") => {
                     if let Some(notices) = data.get("notices").and_then(Value::as_array) {
-                        for notice in notices { this.remember(notice); }
-                    } else { this.remember(&data); }
-                },
+                        for notice in notices {
+                            this.remember(notice);
+                        }
+                    } else {
+                        this.remember(&data);
+                    }
+                }
                 Some("session-notices-consumed") => {
                     let ids: Vec<&str> = data
                         .get("noticeIds")
@@ -71,7 +75,13 @@ impl EngineTurnHoldNotices {
                     for (_, wake) in this.wakes.iter_mut() {
                         wake.notice_ids.retain(|id| !ids.contains(&id.as_str()));
                         wake.items.retain(|(id, _)| !ids.contains(&id.as_str()));
-                        if !wake.notice_ids.iter().any(|id| !wake.items.iter().any(|(item, _)| item == id)) { wake.message = None; }
+                        if !wake
+                            .notice_ids
+                            .iter()
+                            .any(|id| !wake.items.iter().any(|(item, _)| item == id))
+                        {
+                            wake.message = None;
+                        }
                     }
                     this.wakes.retain(|(_, wake)| !wake.notice_ids.is_empty());
                 }
@@ -82,7 +92,11 @@ impl EngineTurnHoldNotices {
     }
 
     pub fn notice_ids(&self, source: &str) -> Vec<String> {
-        self.wakes.iter().find(|(s, _)| s == source).map(|(_, wake)| wake.notice_ids.clone()).unwrap_or_default()
+        self.wakes
+            .iter()
+            .find(|(s, _)| s == source)
+            .map(|(_, wake)| wake.notice_ids.clone())
+            .unwrap_or_default()
     }
 
     pub fn sources(&self) -> Vec<(String, usize)> {
@@ -128,14 +142,23 @@ impl EngineTurnHoldNotices {
     }
 
     pub fn stopped_notice_text(count: usize) -> String {
-        format!("Paused: {count} {} arrived while paused. Send a message or /resume to continue.", if count == 1 { "update" } else { "updates" })
+        format!(
+            "Paused: {count} {} arrived while paused. Send a message or /resume to continue.",
+            if count == 1 { "update" } else { "updates" }
+        )
     }
 
     pub fn note(&mut self, source: &str, pause_seq: u64, message: Option<Value>) -> String {
         self.note_with_stop(source, pause_seq, message, false)
     }
 
-    pub fn note_with_stop(&mut self, source: &str, pause_seq: u64, message: Option<Value>, stopped: bool) -> String {
+    pub fn note_with_stop(
+        &mut self,
+        source: &str,
+        pause_seq: u64,
+        message: Option<Value>,
+        stopped: bool,
+    ) -> String {
         let count = self.notice_count() + 1;
         let mut data = Map::new();
         data.insert("noticeId".into(), json!(uuid::Uuid::new_v4().to_string()));
@@ -148,7 +171,11 @@ impl EngineTurnHoldNotices {
         data.insert("heldCount".into(), json!(count));
         data.insert(
             "text".into(),
-            json!(if stopped { Self::stopped_notice_text(count) } else { self.notice_text_for(count, Some(source)) }),
+            json!(if stopped {
+                Self::stopped_notice_text(count)
+            } else {
+                self.notice_text_for(count, Some(source))
+            }),
         );
         data.insert("action".into(), json!("resume_session"));
         if source != "goal"
@@ -165,7 +192,13 @@ impl EngineTurnHoldNotices {
         id
     }
 
-    pub fn note_items(&mut self, pause_seq: u64, items: &[HeldItem], stopped: bool, append: impl FnOnce(Value) -> Result<String, String>) -> Result<Vec<HeldItemReceipt>, String> {
+    pub fn note_items(
+        &mut self,
+        pause_seq: u64,
+        items: &[HeldItem],
+        stopped: bool,
+        append: impl FnOnce(Value) -> Result<String, String>,
+    ) -> Result<Vec<HeldItemReceipt>, String> {
         let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let notices: Vec<Value> = items.iter().enumerate().map(|(index, item)| {
             let count = self.notice_count() + index + 1;
@@ -174,36 +207,65 @@ impl EngineTurnHoldNotices {
             notice
         }).collect();
         let entry_id = append(json!({"notices": notices}))?;
-        let receipts = items.iter().zip(&notices).map(|(item, notice)| HeldItemReceipt { item_id: item.item_id.clone(), notice_id: notice["noticeId"].as_str().unwrap_or_default().to_owned(), entry_id: entry_id.clone() }).collect();
-        for notice in &notices { self.remember(notice); }
+        let receipts = items
+            .iter()
+            .zip(&notices)
+            .map(|(item, notice)| HeldItemReceipt {
+                item_id: item.item_id.clone(),
+                notice_id: notice["noticeId"].as_str().unwrap_or_default().to_owned(),
+                entry_id: entry_id.clone(),
+            })
+            .collect();
+        for notice in &notices {
+            self.remember(notice);
+        }
         Ok(receipts)
     }
 
     pub fn messages(&self) -> Vec<HeldMessage> {
         let mut out = Vec::new();
         for (source, wake) in &self.wakes {
-            let notice_ids: Vec<String> = wake.notice_ids.iter().filter(|id| !wake.items.iter().any(|(item, _)| item == *id)).cloned().collect();
+            let notice_ids: Vec<String> = wake
+                .notice_ids
+                .iter()
+                .filter(|id| !wake.items.iter().any(|(item, _)| item == *id))
+                .cloned()
+                .collect();
             if source != "goal" && !notice_ids.is_empty() {
                 if let Some(message) = &wake.message {
                     let mut message = message.clone();
                     if source == "monitor" {
-                        let prefix = format!("{} automatic monitor wakes held. Latest event:\n", notice_ids.len());
+                        let prefix = format!(
+                            "{} automatic monitor wakes held. Latest event:\n",
+                            notice_ids.len()
+                        );
                         if let Some(object) = message.as_object_mut() {
                             let content = match object.get("content") {
-                                Some(Value::String(text)) => Value::String(format!("{prefix}{text}")),
+                                Some(Value::String(text)) => {
+                                    Value::String(format!("{prefix}{text}"))
+                                }
                                 Some(Value::Array(blocks)) => {
                                     let mut next = vec![json!({"type": "text", "text": prefix})];
-                                    next.extend(blocks.iter().cloned()); Value::Array(next)
+                                    next.extend(blocks.iter().cloned());
+                                    Value::Array(next)
                                 }
                                 _ => Value::Array(vec![json!({"type": "text", "text": prefix})]),
                             };
                             object.insert("content".into(), content);
                         }
                     }
-                    out.push(HeldMessage { source: source.clone(), notice_ids, message });
+                    out.push(HeldMessage {
+                        source: source.clone(),
+                        notice_ids,
+                        message,
+                    });
                 }
             }
-            out.extend(wake.items.iter().map(|(id, message)| HeldMessage { source: source.clone(), notice_ids: vec![id.clone()], message: message.clone() }));
+            out.extend(wake.items.iter().map(|(id, message)| HeldMessage {
+                source: source.clone(),
+                notice_ids: vec![id.clone()],
+                message: message.clone(),
+            }));
         }
         out
     }
@@ -238,7 +300,13 @@ impl EngineTurnHoldNotices {
         let wake = &mut self.wakes[index].1;
         wake.notice_ids.retain(|id| !notice_ids.contains(id));
         wake.items.retain(|(id, _)| !notice_ids.contains(id));
-        if !wake.notice_ids.iter().any(|id| !wake.items.iter().any(|(item, _)| item == id)) { wake.message = None; }
+        if !wake
+            .notice_ids
+            .iter()
+            .any(|id| !wake.items.iter().any(|(item, _)| item == id))
+        {
+            wake.message = None;
+        }
         if wake.notice_ids.is_empty() {
             self.wakes.remove(index);
         }
@@ -253,7 +321,18 @@ impl EngineTurnHoldNotices {
             .map(|(s, _)| s.clone())
             .collect();
         for source in sources {
-            let ids: Vec<String> = self.wakes.iter().find(|(s, _)| s == &source).map(|(_, wake)| wake.notice_ids.iter().filter(|id| !wake.items.iter().any(|(item, _)| item == *id)).cloned().collect()).unwrap_or_default();
+            let ids: Vec<String> = self
+                .wakes
+                .iter()
+                .find(|(s, _)| s == &source)
+                .map(|(_, wake)| {
+                    wake.notice_ids
+                        .iter()
+                        .filter(|id| !wake.items.iter().any(|(item, _)| item == *id))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
             self.consume(&source, pause_seq, Some(&ids));
         }
     }
@@ -265,18 +344,26 @@ impl EngineTurnHoldNotices {
         let Some(id) = notice.get("noticeId").and_then(Value::as_str) else {
             return;
         };
-        let index = match self.wakes.iter().position(|(s, _)| s == producer) {
+        let custody_key = notice
+            .get("itemId")
+            .and_then(Value::as_str)
+            .map(|id| format!("{producer}:item:{id}:{}", id.len()))
+            .unwrap_or_else(|| producer.to_owned());
+        let index = match self.wakes.iter().position(|(s, _)| s == &custody_key) {
             Some(index) => index,
             None => {
-                self.wakes.push((producer.to_string(), HeldWake::default()));
+                self.wakes.push((custody_key, HeldWake::default()));
                 self.wakes.len() - 1
             }
         };
         let wake = &mut self.wakes[index].1;
         wake.notice_ids.push(id.to_string());
         if let Some(message) = notice.get("message").filter(|m| !m.is_null()) {
-            if notice.get("itemId").is_some() { wake.items.push((id.to_owned(), message.clone())); }
-            else { wake.message = Some(message.clone()); }
+            if notice.get("itemId").is_some() {
+                wake.items.push((id.to_owned(), message.clone()));
+            } else {
+                wake.message = Some(message.clone());
+            }
         }
     }
 }
@@ -302,16 +389,42 @@ mod tests {
 
     #[test]
     fn itemized_payloads_survive_replay_and_plain_wakes() {
-        let mut notices = EngineTurnHoldNotices::new(&[], Box::new(|_, _| Ok(())), Box::new(|_| {}));
-        let items = vec![HeldItem { source: "monitor".into(), message: json!({"content": "first"}), item_id: "one".into(), run_ref: None }, HeldItem { source: "monitor".into(), message: json!({"content": "second"}), item_id: "two".into(), run_ref: Some(json!({"runId":"run"})) }];
-        assert!(notices.note_items(1, &items, true, |_| Err("disk full".into())).is_err());
+        let mut notices =
+            EngineTurnHoldNotices::new(&[], Box::new(|_, _| Ok(())), Box::new(|_| {}));
+        let items = vec![
+            HeldItem {
+                source: "monitor".into(),
+                message: json!({"content": "first"}),
+                item_id: "one".into(),
+                run_ref: None,
+            },
+            HeldItem {
+                source: "monitor".into(),
+                message: json!({"content": "second"}),
+                item_id: "two".into(),
+                run_ref: Some(json!({"runId":"run"})),
+            },
+        ];
+        assert!(
+            notices
+                .note_items(1, &items, true, |_| Err("disk full".into()))
+                .is_err()
+        );
         assert_eq!(notices.notice_count(), 0);
         let batch = std::sync::Mutex::new(Value::Null);
-        let receipts = notices.note_items(1, &items, true, |data| { *batch.lock().expect("batch") = data; Ok("entry".into()) }).expect("written");
+        let receipts = notices
+            .note_items(1, &items, true, |data| {
+                *batch.lock().expect("batch") = data;
+                Ok("entry".into())
+            })
+            .expect("written");
         notices.note("monitor", 1, Some(json!({"content": "latest"})));
         assert_eq!(notices.messages().len(), 3);
-        let entries = vec![json!({"type":"custom", "customType":"session-notice", "data":batch.into_inner().expect("batch")})];
-        let mut replay = EngineTurnHoldNotices::new(&entries, Box::new(|_, _| Ok(())), Box::new(|_| {}));
+        let entries = vec![
+            json!({"type":"custom", "customType":"session-notice", "data":batch.into_inner().expect("batch")}),
+        ];
+        let mut replay =
+            EngineTurnHoldNotices::new(&entries, Box::new(|_, _| Ok(())), Box::new(|_| {}));
         assert_eq!(replay.messages()[0].message["content"], "first");
         assert_eq!(replay.messages()[1].message["content"], "second");
         replay.consume_notices(1);
@@ -363,5 +476,31 @@ mod tests {
         assert_eq!(replay.notice_count(), 1);
         assert!(replay.consume("codemode", 1, None));
         assert!(replay.messages().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod itemized_tests {
+    use super::*;
+    #[test]
+    fn failed_batch_has_no_custody_and_successful_items_keep_own_payloads() {
+        let notices = vec![
+            json!({"noticeId":"a","producer":"task","itemId":"a","message":{"content":"one"}}),
+            json!({"noticeId":"b","producer":"task","itemId":"b","message":{"content":"two"}}),
+        ];
+        let mut failed = EngineTurnHoldNotices::new(
+            &[],
+            Box::new(|_, _| Err("disk full".into())),
+            Box::new(|_| {}),
+        );
+        assert!(failed.note_items(notices.clone()).is_err());
+        assert_eq!(failed.notice_count(), 0);
+        let mut held = EngineTurnHoldNotices::new(&[], Box::new(|_, _| Ok(())), Box::new(|_| {}));
+        held.note_items(notices).expect("persist");
+        assert_eq!(held.notice_count(), 2);
+        let messages = held.messages();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].message["content"], "one");
+        assert_eq!(messages[1].message["content"], "two");
     }
 }

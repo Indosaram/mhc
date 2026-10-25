@@ -676,6 +676,7 @@ impl MoveLedger {
                 .hold(&file)
                 .await
                 .map_err(MoveLedgerError::Failed)?;
+            _guard.assert_held().map_err(MoveLedgerError::Failed)?;
             work()
         })
         .await
