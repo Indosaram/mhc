@@ -8,7 +8,12 @@ use tokio::sync::oneshot;
 
 use super::ports::{RunPauseOwner, RunRef};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum AdmissionState {
     Open,
     Closed { pause_seq: u64 },
@@ -16,11 +21,19 @@ pub enum AdmissionState {
 }
 
 /// The credential a resumed start presents; `None` means "any".
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ResumeCredential {
     pub pause_seq: u64,
     pub resume_id: String,
+    token: Arc<()>,
 }
+
+impl PartialEq for ResumeCredential {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.token, &other.token)
+    }
+}
+impl Eq for ResumeCredential {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdmissionParticipant {
@@ -146,7 +159,8 @@ impl AdmissionTicket {
     }
 
     pub fn check(&self) -> AdmissionCheck {
-        self.lock().check(self.entered_seq, self.credential.as_ref())
+        self.lock()
+            .check(self.entered_seq, self.credential.as_ref())
     }
 
     pub fn commit(&self) -> AdmissionCommit {
@@ -300,7 +314,10 @@ impl AdmissionBarrier {
         let mut barrier = root.lock().unwrap_or_else(PoisonError::into_inner);
         match &barrier.state {
             AdmissionState::Open => return Err(AdmissionBarrierError::StalePauseSequence),
-            AdmissionState::Closed { pause_seq: closed } if *closed != pause_seq => {
+            AdmissionState::Closed { pause_seq: closed }
+            | AdmissionState::Resuming {
+                pause_seq: closed, ..
+            } if *closed != pause_seq => {
                 return Err(AdmissionBarrierError::StalePauseSequence);
             }
             AdmissionState::Resuming {
@@ -316,6 +333,7 @@ impl AdmissionBarrier {
         let credential = ResumeCredential {
             pause_seq,
             resume_id: resume_id.to_string(),
+            token: Arc::new(()),
         };
         barrier.state = AdmissionState::Resuming {
             pause_seq,
@@ -339,13 +357,7 @@ impl AdmissionBarrier {
     }
 
     /// Rebuilds a root from persisted state; a superseded or non-newest sequence stays closed.
-    pub fn restore(
-        &self,
-        id: &str,
-        state: AdmissionState,
-        newest_seq: u64,
-        superseded: bool,
-    ) {
+    pub fn restore(&self, id: &str, state: AdmissionState, newest_seq: u64, superseded: bool) {
         let root = self.root(id);
         let mut barrier = root.lock().unwrap_or_else(PoisonError::into_inner);
         barrier.credential = None;
@@ -376,6 +388,7 @@ impl AdmissionBarrier {
             barrier.credential = Some(ResumeCredential {
                 pause_seq: *pause_seq,
                 resume_id: resume_id.clone(),
+                token: Arc::new(()),
             });
         }
     }
@@ -415,7 +428,10 @@ mod tests {
             AdmissionEntry::Held { pause_seq } => assert_eq!(pause_seq, 4),
             AdmissionEntry::Entered { .. } => panic!("a closed root must hold the start"),
         }
-        assert_eq!(barrier.state("root"), AdmissionState::Closed { pause_seq: 4 });
+        assert_eq!(
+            barrier.state("root"),
+            AdmissionState::Closed { pause_seq: 4 }
+        );
     }
 
     #[test]
@@ -464,8 +480,19 @@ mod tests {
     #[test]
     fn a_superseded_restore_stays_closed_at_the_newest_sequence() {
         let barrier = AdmissionBarrier::new();
-        barrier.restore("root", AdmissionState::Resuming { pause_seq: 2, resume_id: "r".into() }, 5, true);
-        assert_eq!(barrier.state("root"), AdmissionState::Closed { pause_seq: 5 });
+        barrier.restore(
+            "root",
+            AdmissionState::Resuming {
+                pause_seq: 2,
+                resume_id: "r".into(),
+            },
+            5,
+            true,
+        );
+        assert_eq!(
+            barrier.state("root"),
+            AdmissionState::Closed { pause_seq: 5 }
+        );
         assert_eq!(
             barrier.resume("root", 2, "r"),
             Err(AdmissionBarrierError::StalePauseSequence)
@@ -476,7 +503,10 @@ mod tests {
     fn restore_keeps_the_newest_closed_state() {
         let barrier = AdmissionBarrier::new();
         barrier.restore("root", AdmissionState::Closed { pause_seq: 5 }, 5, false);
-        assert_eq!(barrier.state("root"), AdmissionState::Closed { pause_seq: 5 });
+        assert_eq!(
+            barrier.state("root"),
+            AdmissionState::Closed { pause_seq: 5 }
+        );
         let credential = barrier.resume("root", 5, "r").expect("credential");
         assert_eq!(credential.pause_seq, 5);
     }

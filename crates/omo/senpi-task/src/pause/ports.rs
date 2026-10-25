@@ -1,6 +1,6 @@
 //! Run pause ports (`pause/ports.ts`).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use super::admission_barrier::AdmissionTicket;
@@ -8,7 +8,7 @@ use crate::host::HostError;
 use crate::manager::child_handle::ManagedChildHandle;
 use crate::manager::types::{ManagedRunner, ManagedRunnerError, ManagedStartSpec};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunRefKind {
     Dag,
@@ -17,7 +17,7 @@ pub enum RunRefKind {
     Team,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RunRef {
     pub kind: RunRefKind,
     pub id: String,
@@ -125,4 +125,57 @@ pub trait ChildCreationPort: Send + Sync {
         runner: &dyn ManagedRunner,
         ticket: AdmissionTicket,
     ) -> Result<GuardedChild, ManagedRunnerError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EngineHold {
+    pub kind: String,
+    pub key: String,
+    pub data: Option<serde_json::Value>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnginePauseState {
+    pub pause_seq: u64,
+    pub holds: Vec<EngineHold>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeRefusal {
+    Stale,
+    NotHeld,
+    WrongParent,
+}
+impl std::fmt::Display for ResumeRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Stale => "stale",
+            Self::NotHeld => "not_held",
+            Self::WrongParent => "wrong_parent",
+        })
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineResumeReceipt {
+    Refused(ResumeRefusal),
+    Released {
+        other_hold_live: bool,
+        turn_id: Option<String>,
+    },
+}
+pub const RELEASE_RUN_FENCE: &str = "releaseRunFence";
+pub trait EngineRunHoldContext: Send + Sync {
+    fn get_pause_state(&self) -> Option<EnginePauseState> {
+        None
+    }
+    fn fence_run(&self, _run_ref: &RunRef) {}
+    fn release_run_fence(&self, _run_ref: &RunRef) {}
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct EngineHoldChangedEvent {
+    pub state: EnginePauseState,
+    pub change: HoldChange,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldChange {
+    Paused,
+    Resumed,
 }
