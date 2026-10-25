@@ -4930,7 +4930,7 @@ impl AgentSession {
                 .unwrap_or(0)
                 .max(child_obligations)
         );
-        waits["background"] = json!(active.iter().filter(|r| r.kind == crate::work_custody_record::ObligationKind::Background).map(|r| json!({"source":r.source.as_deref().unwrap_or(&r.key),"activeCount":r.active_count.unwrap_or(1.)})).collect::<Vec<_>>());
+        waits["background"] = json!(active.iter().filter(|r| r.kind == crate::work_custody_record::ObligationKind::Background).map(|r| json!({"source":r.source.as_deref().unwrap_or(&r.key),"activeCount":r.active_count.unwrap_or(1.) as u64})).collect::<Vec<_>>());
         if !custody_persisted {
             ledger.custody_write_failed();
         }
