@@ -48,6 +48,10 @@ impl WorkpoolEngine {
 
     pub fn flush_aggregate(&self, pool_id: &str) -> Result<bool, WorkpoolError> {
         let pool = self.store.load(pool_id)?;
+        // A paused run holds its aggregate until Resume (`workpool/engine.ts` `flushAggregate`).
+        if self.admission.delivery_held(&pool.root_session_id) {
+            return Ok(false);
+        }
         if pool.aggregate.is_some_and(|state| state.generation == pool.generation && (state.delivered || state.accepted == Some(true))) {
             return Ok(false);
         }
@@ -227,7 +231,7 @@ mod tests {
             if self.denied { Err(WorkpoolAdmissionError("spawn denied".into())) } else { Ok(()) }
         }
         fn has_free_slot(&self, _model: &str) -> bool { true }
-        fn request(&self, _input: Box<dyn WorkpoolRequest>) -> Box<dyn FnOnce() + Send> { Box::new(|| {}) }
+        fn request(&self, _input: Box<dyn WorkpoolRequest>) -> crate::workpool::ports::WorkpoolRequestHandle { crate::workpool::ports::WorkpoolRequestHandle::dispatched(Box::new(|| {})) }
         fn drain(&self) {}
         fn get(&self, _task_id: &str) -> Option<TaskRecord> { None }
         fn task_run_epoch(&self, _task_id: &str) -> Option<u32> { None }
