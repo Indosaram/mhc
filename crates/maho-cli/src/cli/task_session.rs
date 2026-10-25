@@ -477,6 +477,10 @@ where
 }
 
 impl ChildSession for NativeChild {
+    fn run_pause(&self) -> Option<&dyn senpi_task::pause::native_child_pause::NativeRunPause> {
+        Some(self)
+    }
+
     fn rebind_workpool_identity(
         &self,
         identity: senpi_task::runners::in_process::child_handle::WorkpoolChildIdentity,
@@ -1005,5 +1009,169 @@ mod tests {
             "child"
         );
         assert!(!parent_cwd.join("child-only.txt").exists());
+    }
+}
+
+impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
+    fn pause_for_run(
+        &self,
+        owner: senpi_task::pause::ports::RunPauseOwner,
+    ) -> Result<
+        senpi_task::pause::ports::EngineInheritReceipt,
+        senpi_task::pause::native_child_pause::NativePauseError,
+    > {
+        use senpi_task::pause::{native_child_pause::NativePauseError, ports::*};
+        let session = self
+            .ensure_session()
+            .map_err(|error| NativePauseError::Engine(error.to_string()))?;
+        let kind = match owner.run_ref.kind {
+            RunRefKind::Task => "task",
+            RunRefKind::Dag => "dag",
+            RunRefKind::Team => "team",
+            RunRefKind::Workpool => "workpool",
+        };
+        block_on_sync(self.executor.clone(), async move {
+            session
+                .pause_for_run(
+                    &owner.parent_session_id,
+                    owner.parent_pause_seq,
+                    maho_core::run_holds::RunRef {
+                        kind: kind.into(),
+                        id: owner.run_ref.id,
+                    },
+                )
+                .await
+        })
+        .map(|receipt| match receipt {
+            maho_core::run_holds::InheritResult::Inherited { child_seq } => {
+                EngineInheritReceipt::Inherited { child_seq }
+            }
+            maho_core::run_holds::InheritResult::WrongParent => EngineInheritReceipt::WrongParent,
+        })
+        .map_err(|error| NativePauseError::Engine(error.to_string()))
+    }
+    fn resume_for_run(
+        &self,
+        request: senpi_task::pause::ports::ResumeTurnRequest,
+    ) -> Result<
+        senpi_task::pause::native_child_pause::NativeResumeResult,
+        senpi_task::pause::native_child_pause::NativePauseError,
+    > {
+        use senpi_task::pause::{
+            native_child_pause::{NativePauseError, NativeResumeResult},
+            ports::*,
+        };
+        let session = self
+            .ensure_session()
+            .map_err(|error| NativePauseError::Engine(error.to_string()))?;
+        let resumed = session.clone();
+        let result = block_on_sync(self.executor.clone(), async move {
+            resumed
+                .resume_for_run(
+                    &request.owner.parent_session_id,
+                    request.owner.parent_pause_seq,
+                    request.child_seq_cutoff,
+                )
+                .await
+        })
+        .map_err(|error| NativePauseError::Engine(error.to_string()))?;
+        Ok(match result {
+            maho_core::run_holds::ReleaseInheritedResult::WrongParent => {
+                NativeResumeResult::Refused(ResumeRefusal::WrongParent)
+            }
+            maho_core::run_holds::ReleaseInheritedResult::NotHeld => {
+                NativeResumeResult::Refused(ResumeRefusal::NotHeld)
+            }
+            maho_core::run_holds::ReleaseInheritedResult::Stale => {
+                NativeResumeResult::Refused(ResumeRefusal::Stale)
+            }
+            maho_core::run_holds::ReleaseInheritedResult::Released {
+                other_hold_live: true,
+            } => NativeResumeResult::OtherHoldLive,
+            maho_core::run_holds::ReleaseInheritedResult::Released {
+                other_hold_live: false,
+            } => {
+                let executor = self.executor.clone();
+                NativeResumeResult::Turn(ResumedChildTurn {
+                    turn_id: format!("run-resume-{}", self.session_id),
+                    outcome: Box::new(move || {
+                        match block_on_sync(executor, async move {
+                            session.wait_for_idle().await;
+                            Ok(session.get_last_assistant_text().unwrap_or_default())
+                        }) {
+                            Ok(text) => senpi_task::runners::RunnerOutcome::completed(text),
+                            Err(error) => senpi_task::runners::RunnerOutcome::error(
+                                senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
+                                error.to_string(),
+                            ),
+                        }
+                    }),
+                })
+            }
+        })
+    }
+    fn hold_input(
+        &self,
+        parent: &str,
+        input: senpi_task::pause::ports::HoldInput,
+    ) -> Result<
+        senpi_task::pause::ports::EngineHoldInputResult,
+        senpi_task::pause::native_child_pause::NativePauseError,
+    > {
+        use senpi_task::pause::{
+            native_child_pause::NativePauseError, ports::EngineHoldInputResult,
+        };
+        let session = self
+            .ensure_session()
+            .map_err(|error| NativePauseError::Engine(error.to_string()))?;
+        if session
+            .with_run_holds(|holds| holds.inherited_owner())
+            .is_none_or(|owner| owner.parent_session_id != parent)
+        {
+            return Err(NativePauseError::Engine("wrong_parent".into()));
+        }
+        let receipt = session.hold_input(serde_json::json!({"inputId":input.input_id,"revision":input.revision,"text":input.text,"origin":"human"})).map_err(NativePauseError::Engine)?;
+        if let Some(revision) = receipt["heldRevision"].as_u64() {
+            return Ok(EngineHoldInputResult::InputIdConflict {
+                held_revision: revision,
+            });
+        }
+        if let Some(revision) = receipt["revision"]
+            .as_u64()
+            .filter(|_| receipt["alreadyDelivered"] == true)
+        {
+            return Ok(EngineHoldInputResult::AlreadyDelivered { revision });
+        }
+        Ok(EngineHoldInputResult::Held {
+            entry_id: receipt["entryId"].as_str().unwrap_or_default().into(),
+            duplicate: receipt["duplicate"] == true,
+        })
+    }
+    fn observe_hold(
+        &self,
+        parent: &str,
+    ) -> Result<
+        Option<senpi_task::pause::ports::ObservedHold>,
+        senpi_task::pause::native_child_pause::NativePauseError,
+    > {
+        let session = self.ensure_session().map_err(|error| {
+            senpi_task::pause::native_child_pause::NativePauseError::Engine(error.to_string())
+        })?;
+        let owner = session.with_run_holds(|holds| holds.inherited_owner());
+        Ok(owner
+            .filter(|owner| owner.parent_session_id == parent)
+            .map(|_| senpi_task::pause::ports::ObservedHold {
+                held: true,
+                child_seq: session
+                    .holds()
+                    .iter()
+                    .filter_map(|hold| {
+                        hold.data
+                            .as_ref()
+                            .and_then(|data| data["localSeq"].as_u64())
+                    })
+                    .max()
+                    .unwrap_or(0),
+            }))
     }
 }
