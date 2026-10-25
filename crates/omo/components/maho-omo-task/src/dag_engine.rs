@@ -563,6 +563,101 @@ impl TaskDagEngine {
         lock(&self.runtime).session_id().map(str::to_owned)
     }
 
+    /// The paused-run sidecar every paused control verb reads and writes.
+    fn pause_store(&self) -> Arc<senpi_task::dag::paused_controls::DagPauseStore> {
+        Arc::new(senpi_task::dag::paused_controls::DagPauseStore::new(
+            self.store.state_dir(),
+        ))
+    }
+
+    /// The runtime's `cancelNode` capability: end one held node's child while the run stays paused.
+    fn cancel_node_capability(
+        &self,
+    ) -> Option<crate::dag_tool::DagCancelNode> {
+        let options = Arc::downgrade(&self.this);
+        let pauses = self.pause_store();
+        let holds = crate::dag_paused_cancel::ended_child_closure(self.task_manager.clone());
+        Some(Arc::new(move |run_id: &str, node_id: &str| {
+            let Some(dag) = options.upgrade() else {
+                return Err(crate::dag_tool::DagToolExecutionError::Control(
+                    senpi_task::dag::scheduler::DagNodeControlError::new(
+                        senpi_task::dag::scheduler::DagNodeControlErrorCode::RunNotFound,
+                        format!("dag run \"{run_id}\" is no longer live in this session"),
+                    ),
+                ));
+            };
+            let context = dag.scheduler_options_for(run_id)?;
+            senpi_task::dag::paused_controls::cancel_paused_dag_node(
+                &context,
+                &run_id.to_string(),
+                &node_id.to_string(),
+                holds.as_ref(),
+                pauses.as_ref(),
+            )
+            .map_err(crate::dag_tool::DagToolExecutionError::Control)
+        }))
+    }
+
+    /// The runtime's `guide` capability: validated add/edit/remove on a user-stopped run.
+    fn guide_capability(&self) -> Option<crate::dag_tool::DagGuide> {
+        let options = Arc::downgrade(&self.this);
+        let pauses = self.pause_store();
+        Some(Arc::new(move |run_id: &str, command: senpi_task::dag::paused_controls::PausedDagGuideCommand| {
+            let Some(dag) = options.upgrade() else {
+                return Err(crate::dag_tool::DagToolExecutionError::Control(
+                    senpi_task::dag::scheduler::DagNodeControlError::new(
+                        senpi_task::dag::scheduler::DagNodeControlErrorCode::RunNotFound,
+                        format!("dag run \"{run_id}\" is no longer live in this session"),
+                    ),
+                ));
+            };
+            let context = dag.scheduler_options_for(run_id)?;
+            senpi_task::dag::paused_controls::apply_paused_dag_guidance(
+                &context,
+                &run_id.to_string(),
+                command,
+                pauses.as_ref(),
+            )
+            .map_err(crate::dag_tool::DagToolExecutionError::Control)
+        }))
+    }
+
+    /// Why the run is paused right now, so the tool can refuse a model-driven `resume`.
+    fn pause_reason_capability(&self) -> Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>> {
+        let pauses = self.pause_store();
+        Some(Arc::new(move |run_id: &str| {
+            pauses
+                .read(&run_id.to_string())
+                .ok()
+                .and_then(|state| state.pause)
+                .map(|pause| match pause.reason {
+                    senpi_task::dag::paused_controls::DagRunPauseReason::UserStop => "user_stop".to_string(),
+                    senpi_task::dag::paused_controls::DagRunPauseReason::SessionShutdown => "session_shutdown".to_string(),
+                })
+        }))
+    }
+
+    /// The scheduler options of one existing run, rebuilt from its durable checkpoint. A run with no
+    /// checkpoint is not this session's to control, so the caller refuses instead of inventing one.
+    fn scheduler_options_for(
+        &self,
+        run_id: &str,
+    ) -> Result<DagSchedulerOptions, senpi_task::dag::scheduler::DagNodeControlError> {
+        let record = self
+            .store
+            .read_checkpoint::<DagRunRecordV1>(&run_id.to_string())
+            .ok()
+            .flatten()
+            .ok_or_else(|| {
+                senpi_task::dag::scheduler::DagNodeControlError::new(
+                    senpi_task::dag::scheduler::DagNodeControlErrorCode::RunNotFound,
+                    format!("unknown dag run \"{run_id}\""),
+                )
+                .with_run_id(run_id.to_string())
+            })?;
+        Ok(self.scheduler_options(record))
+    }
+
     /// TS `schedulerOptions` (shared by the first run, retry re-entry, amend re-entry).
     pub fn scheduler_options(&self, initial_record: DagRunRecordV1) -> DagSchedulerOptions {
         let configured = self.config["task"]["default_execution_mode"].as_str();
@@ -1574,6 +1669,9 @@ impl TaskDagEngine {
         let retry_dag = self.clone();
         let send_dag = self.clone();
         let amend_dag = self.clone();
+        let cancel_node_dag = self.cancel_node_capability();
+        let guide_dag = self.guide_capability();
+        let pause_reason = self.pause_reason_capability();
         let mut tool = crate::dag_tool::create_dag_tool(crate::dag_tool::DagToolDeps {
             manager: self.manager.clone(),
             parent_session_id: parent_session_id.clone(),
@@ -1595,6 +1693,11 @@ impl TaskDagEngine {
             amend: Some(Arc::new(move |run, definition| {
                 amend_dag.amend(run, definition)
             })),
+            // The paused-run verbs the runtime supplies: cancellation of one held node's child, the
+            // guidance custody of a user-stopped run, and why the run is paused right now.
+            cancel_node: cancel_node_dag,
+            guide: guide_dag,
+            pause_reason: pause_reason,
         });
         // TS manager.start: the core start, then ensureScheduled in the background.
         let execute = tool.execute.clone();

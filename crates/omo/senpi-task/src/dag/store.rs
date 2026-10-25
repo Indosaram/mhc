@@ -417,6 +417,10 @@ pub fn create_dag_file_store(
 }
 
 impl DagFileStore {
+    /// The DAG state dir this store was built over, so sibling sidecars land beside the runs.
+    pub fn state_dir(&self) -> &Path {
+        &self.paths.root
+    }
     pub fn set_checkpoint_listener(&self, listener: Option<Arc<dyn Fn() + Send + Sync>>) {
         *guard(&self.checkpoint_listener) = listener;
     }

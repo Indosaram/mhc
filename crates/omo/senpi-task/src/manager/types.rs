@@ -82,6 +82,9 @@ pub trait ManagedRunner: Send + Sync {
     fn resume(&self, _spec: &ManagedStartSpec, _session_path: &str) -> Option<ManagedRunnerResult> {
         None
     }
+    /// Awaited by every wrapper before it reports a child gone: a runner that tears down its own
+    /// children settles them here, and a wrapper must forward the call or the teardown is skipped.
+    fn settle_teardowns(&self) {}
 }
 
 #[derive(Clone)]

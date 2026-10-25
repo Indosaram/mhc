@@ -236,6 +236,7 @@ impl TaskComponent {
         let channels = OwnedResumptionChannels::new(
             api.events.clone(),
             Arc::new(TaskResumptionChannelManager {
+                owned_workpool_task_ids: None,
                 manager: engine.manager.clone(),
                 ownership,
             }),

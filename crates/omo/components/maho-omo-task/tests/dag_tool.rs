@@ -143,7 +143,14 @@ fn deps(manager: &DagManager) -> DagToolDeps {
         cancel: None,
         retry: None,
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     }
 }
 
@@ -607,7 +614,14 @@ fn snapshot_foreign_session_rejects() {
         cancel: None,
         retry: None,
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
     let result = run_dag_tool(
         &foreign,
@@ -667,7 +681,14 @@ fn wait_with_detach_disabled_blocks_and_resolves() {
         cancel: None,
         retry: None,
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -722,7 +743,14 @@ fn wait_with_default_detach_returns_detached() {
         cancel: None,
         retry: None,
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -784,7 +812,14 @@ fn wait_settled_run_returns_final_result() {
         cancel: None,
         retry: None,
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -860,7 +895,14 @@ fn cancel_action_forwards_reason() {
         })),
         retry: None,
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -914,7 +956,14 @@ fn cancel_foreign_run_rejects() {
         })),
         retry: None,
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1106,7 +1155,14 @@ fn retry_without_run_id_rejects() {
             manager_clone.snapshot(&run.to_string(), PARENT_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1162,7 +1218,14 @@ fn retry_with_both_node_id_and_node_ids_rejects() {
             manager_clone.snapshot(&run.to_string(), PARENT_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1223,7 +1286,14 @@ fn send_without_message_rejects() {
                 queue_position: None,
             })
         })),
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1486,7 +1556,14 @@ fn retry_seam_receives_targets_and_prompt() {
             manager_clone.snapshot(&run.to_string(), PARENT_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1544,7 +1621,14 @@ fn retry_with_neither_selector_passes_none() {
             manager_clone.snapshot(&run_id_clone, PARENT_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     run_dag_tool(
@@ -1598,7 +1682,14 @@ fn send_seam_returns_delivery_kind() {
                 queue_position: None,
             })
         })),
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1747,7 +1838,14 @@ fn engine_refusal_node_not_found_surfaces_verbatim() {
             Err(DagToolExecutionError::Control(err))
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1805,7 +1903,14 @@ fn engine_refusal_node_not_retryable_surfaces_verbatim() {
             Err(DagToolExecutionError::Control(err))
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1863,7 +1968,14 @@ fn engine_refusal_node_not_continuable_surfaces_verbatim() {
             Err(DagToolExecutionError::Control(err))
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1921,7 +2033,14 @@ fn engine_refusal_run_still_active_surfaces_verbatim() {
             Err(DagToolExecutionError::Control(err))
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1979,7 +2098,14 @@ fn engine_refusal_invalid_arguments_surfaces_verbatim() {
             Err(DagToolExecutionError::Control(err))
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -2148,7 +2274,14 @@ fn retry_foreign_session_enforces_run_not_owned() {
             manager_clone.snapshot(&run.to_string(), FOREIGN_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
