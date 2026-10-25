@@ -3808,6 +3808,76 @@ impl Inner {
         let manager = self.this.clone();
         let id = task_id.to_string();
         let stamped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let identity_owner = Arc::downgrade(handle);
+        let identity_manager = self.this.clone();
+        let identity_task = task_id.to_string();
+        let identity_stamp = stamped.clone();
+        let refresh_identity: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            let (Some(inner), Some(handle)) =
+                (identity_manager.upgrade(), identity_owner.upgrade())
+            else {
+                return;
+            };
+            let Some(record) = inner.try_load(&identity_task) else {
+                return;
+            };
+            if Some(record.run_start_epoch) != epoch
+                || identity_stamp.load(std::sync::atomic::Ordering::Acquire)
+                || !inner
+                    .live_handle(&identity_task)
+                    .is_some_and(|live| Arc::ptr_eq(&live, &handle))
+            {
+                return;
+            }
+            let (Some(transport), Some(identity)) = (&inner.host_transport, &record.host_session)
+            else {
+                return;
+            };
+            match transport.durable_session_id(identity) {
+                Ok(Some(session_id)) if !session_id.is_empty() => {
+                    if identity_stamp.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                        return;
+                    }
+                    if let Err(error) =
+                        inner
+                            .store
+                            .mutate(&identity_task, &mut |fresh: &TaskRecord| {
+                                if Some(fresh.run_start_epoch) != epoch
+                                    || fresh.host_pid != record.host_pid
+                                {
+                                    return fresh.clone();
+                                }
+                                TaskRecord {
+                                    child_session_id: Some(session_id.clone()),
+                                    ..fresh.clone()
+                                }
+                            })
+                    {
+                        log(
+                            "senpi-task host durable identity persistence failed",
+                            &identity_task,
+                            &error,
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => utils::logger::log(
+                    "senpi-task host identity lookup failed",
+                    Some(&json!({"taskId":identity_task,"error":error})),
+                ),
+            }
+        });
+        let initial_identity = refresh_identity.clone();
+        std::thread::spawn(move || initial_identity());
+        let host_identity = handle.subscribe(Arc::new(move |event| {
+            if matches!(
+                event.event_type.as_str(),
+                "session_info_changed" | "session_replaced" | "agent_start" | "message_end"
+            ) {
+                let refresh = refresh_identity.clone();
+                std::thread::spawn(move || refresh());
+            }
+        }));
         let durable = handle.on_durable_session_id(Arc::new(move |session_id| {
             let (Some(inner), Some(handle)) = (manager.upgrade(), owner.upgrade()) else {
                 return;
@@ -3995,6 +4065,7 @@ impl Inner {
             inner.reacquire_for_revive(&resumed_id, record.notification.run_epoch);
         }));
         Box::new(move || {
+            host_identity();
             transcript();
             stats();
             fallback();
