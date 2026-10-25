@@ -172,6 +172,7 @@ struct TrackedState {
     disposed: bool,
     turn: u64,
     outcome: Option<RunnerOutcome>,
+    outcomes: std::collections::HashMap<u64, RunnerOutcome>,
     observation: TurnObservation,
 }
 
@@ -257,6 +258,7 @@ impl InProcessChildHandle {
                 disposed: false,
                 turn: 0,
                 outcome: Some(settled_session_outcome(session.as_ref(), completion)),
+                outcomes: std::collections::HashMap::new(),
                 observation: TurnObservation::default(),
             }),
             settled: Condvar::new(),
@@ -401,7 +403,7 @@ impl InProcessChildHandle {
         handle
     }
 
-    fn begin_turn(&self, text: &str) {
+    pub(crate) fn begin_turn(&self, text: &str) -> crate::pause::ports::ResumedChildTurn {
         // The host snapshots its transcript to answer this, so read it before taking the lock the
         // session event observer also needs; no turn is active here, so no event can race it.
         let baseline =
@@ -430,11 +432,14 @@ impl InProcessChildHandle {
         let tracked = Arc::clone(&self.tracked);
         let completion = self.completion;
         let text = text.to_string();
+        let exact_tracked = Arc::clone(&tracked);
         thread::spawn(move || {
             let prompted = session.prompt(&text);
             let outcome = {
                 let mut state = tracked.lock();
                 if state.turn != turn {
+                    state.outcomes.insert(turn, RunnerOutcome::Cancelled);
+                    tracked.settled.notify_all();
                     return;
                 }
                 let outcome = match prompted {
@@ -450,6 +455,8 @@ impl InProcessChildHandle {
             session.park_idle_memory();
             let mut state = tracked.lock();
             if state.turn != turn {
+                state.outcomes.insert(turn, outcome);
+                tracked.settled.notify_all();
                 return;
             }
             state.outcome = Some(if state.aborted {
@@ -457,8 +464,25 @@ impl InProcessChildHandle {
             } else {
                 outcome
             });
+            let outcome = state.outcome.clone().expect("settled turn");
+            state.outcomes.insert(turn, outcome);
             tracked.settled.notify_all();
         });
+        crate::pause::ports::ResumedChildTurn {
+            turn_id: turn.to_string(),
+            outcome: Box::new(move || {
+                let mut state = exact_tracked.lock();
+                loop {
+                    if let Some(outcome) = state.outcomes.remove(&turn) {
+                        return outcome;
+                    }
+                    state = exact_tracked
+                        .settled
+                        .wait(state)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
+            }),
+        }
     }
 
     fn turn_active(&self) -> bool {
@@ -517,6 +541,9 @@ impl InProcessChildHandle {
 }
 
 impl ManagedChildHandle for InProcessChildHandle {
+    fn start_initial_turn(&self, text: &str) -> Option<crate::pause::ports::ResumedChildTurn> {
+        Some(self.begin_turn(text))
+    }
     fn run_pause(&self) -> Option<&dyn crate::pause::native_child_pause::NativeRunPause> {
         self.native_pause
             .as_ref()

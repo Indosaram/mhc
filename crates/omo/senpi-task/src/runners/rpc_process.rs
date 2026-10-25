@@ -28,6 +28,8 @@ pub type BuildSpawn = Arc<dyn Fn(&RpcRunnerSpec) -> RpcSpawnDescriptor + Send + 
 
 #[derive(Clone, Default)]
 pub struct RpcProcessRunnerOptions {
+    pub fallback_chain_deadline_ms: Option<u64>,
+    pub exclude_models: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
     pub spawn_child: Option<SpawnChild>,
     pub build_spawn: Option<BuildSpawn>,
     pub heartbeat_interval_ms: Option<u64>,
@@ -38,6 +40,9 @@ pub struct RpcProcessRunnerOptions {
 }
 
 pub struct RpcProcessRunner {
+    fallback_chain_deadline_ms: u64,
+    unsupported_noticed: std::sync::atomic::AtomicBool,
+    exclude_models: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
     pending_teardowns: Mutex<Vec<JoinHandle<()>>>,
     spawn_child: SpawnChild,
     build_spawn: BuildSpawn,
@@ -51,6 +56,9 @@ pub struct RpcProcessRunner {
 impl RpcProcessRunner {
     pub fn new(options: RpcProcessRunnerOptions) -> Self {
         Self {
+            fallback_chain_deadline_ms: options.fallback_chain_deadline_ms.unwrap_or(10_000),
+            unsupported_noticed: std::sync::atomic::AtomicBool::new(false),
+            exclude_models: options.exclude_models,
             pending_teardowns: Mutex::new(Vec::new()),
             spawn_child: options.spawn_child.unwrap_or_else(|| {
                 Arc::new(|descriptor| Arc::new(RpcChildProcess::spawn(descriptor)))
@@ -94,25 +102,63 @@ impl RpcProcessRunner {
     /// Failed non-resume starts discard their child in a tracked background teardown.
     pub fn start(&self, spec_input: &RpcRunnerSpec) -> Result<Arc<RpcChildHandle>, RunnerFailure> {
         let mut spec = spec_input.clone();
+        if let Some(resolve) = &self.exclude_models {
+            if let Some(chain) = &spec.fallback_models {
+                spec.fallback_models = Some(crate::manager::runner::without_excluded_selectors(
+                    chain,
+                    &resolve(),
+                ));
+            }
+        }
         if spec.extensions.is_none() && !self.inherited_extensions.is_empty() {
             spec.extensions = Some(self.inherited_extensions.clone());
         }
         (self.model_admission)(&spec)?;
         let descriptor = (self.build_spawn)(&spec);
         let child = (self.spawn_child)(&descriptor);
-        let client: Arc<dyn RpcClientPort> = Arc::new(RpcProtocolClient::new(
+        let protocol = Arc::new(RpcProtocolClient::new(
             child,
             RpcProtocolClientOptions {
                 on_malformed_line: self.on_malformed_line.clone(),
                 auto_answer_ui: None,
             },
         ));
+        let client: Arc<dyn RpcClientPort> = protocol.clone();
         let handle = RpcChildHandle::new(RpcChildHandleOptions {
             client: Arc::clone(&client),
             task_id: spec.task_id.clone(),
             heartbeat_interval_ms: self.heartbeat_interval_ms,
             now: Arc::clone(&self.now),
         });
+        if let (Some(model), Some(chain)) = (&spec.model, &spec.fallback_models) {
+            if !chain.is_empty() {
+                let deadline = std::time::Instant::now()
+                    + std::time::Duration::from_millis(self.fallback_chain_deadline_ms);
+                let configured = protocol.request(json!({"type":"get_protocol_info"}))
+                    .and_then(|pending| pending.wait_until(deadline))
+                    .and_then(|response| {
+                        let supported = response["success"] == true && response["command"] == "get_protocol_info" && response["data"]["capabilities"].as_array().is_some_and(|items| items.iter().any(|item| item == "retry_fallback_command"));
+                        if !supported {
+                            if !self.unsupported_noticed.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                                utils::logger::log("senpi-task engine lacks retry_fallback_command; retaining manager fallback", None);
+                            }
+                            return Ok(());
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            return Err(crate::runners::rpc::protocol_client::RpcClientError::Write { message: "fallback configuration deadline passed".into() });
+                        }
+                        protocol.request(json!({"type":"set_retry_fallback","retryFallback":{"modelFallback":true,"fallbackChains":{(model):chain}}}))?.wait_until(deadline).and_then(|response| {
+                            if response["success"] == true { Ok(()) } else { Err(crate::runners::rpc::protocol_client::RpcClientError::Write { message: format!("fallback configuration refused: {}", response["error"]) }) }
+                        })
+                    });
+                if let Err(error) = configured {
+                    utils::logger::log(
+                        "senpi-task child fallback configuration unavailable; retaining manager fallback",
+                        Some(&json!({"taskId":spec.task_id,"error":error.to_string()})),
+                    );
+                }
+            }
+        }
         let started = match &spec.resume_session_path {
             None => handle
                 .start_initial_prompt(&spec.prompt)

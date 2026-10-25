@@ -96,6 +96,7 @@ pub struct ResumeTurnRequest {
 /// A paused child that is being resumed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResumeTaskRequest {
+    pub allocation: Option<super::concurrency::QueuedTaskAdmission>,
     pub owner: RunPauseOwner,
     pub resume_credential: Option<ResumeCredential>,
     pub resume_id: String,
@@ -126,7 +127,12 @@ pub enum LostResumeResult {
 
 /// The effects a task run pause needs from the composition.
 pub trait TaskRunPausePorts: Send + Sync {
-    fn acquire_resume_capacity(&self, _task_id: &str, _epoch: i64) -> Result<(), String> {
+    fn acquire_resume_capacity(
+        &self,
+        _task_id: &str,
+        _epoch: i64,
+        _allocation: Option<&super::concurrency::QueuedTaskAdmission>,
+    ) -> Result<(), String> {
         Ok(())
     }
     fn park_capacity(&self, _task_id: &str, _epoch: i64) {}
@@ -395,6 +401,15 @@ impl TaskRunPause {
             Some(AdmissionEntry::Entered { ticket }) => Some(ticket),
             None => None,
         };
+        struct ResumeTicket(Option<crate::pause::admission_barrier::AdmissionTicket>);
+        impl Drop for ResumeTicket {
+            fn drop(&mut self) {
+                if let Some(ticket) = &self.0 {
+                    ticket.leave();
+                }
+            }
+        }
+        let _ticket_guard = ResumeTicket(ticket.clone());
         lock(&self.attempts).insert(task_id.to_string(), request.resume_id.clone());
         let mut cutoff = request.child_seq_cutoff;
         if handle.is_none() {
@@ -423,8 +438,30 @@ impl TaskRunPause {
         {
             return Err(RunPauseAdmissionHeld.to_string());
         }
-        self.ports
-            .acquire_resume_capacity(task_id, record.notification.run_epoch)?;
+        self.ports.acquire_resume_capacity(
+            task_id,
+            record.notification.run_epoch,
+            request.allocation.as_ref(),
+        )?;
+        let assert_current = || -> Result<(), String> {
+            let current = self.load(task_id)?;
+            if lock(&self.attempts).get(task_id) != Some(&request.resume_id)
+                || ticket.as_ref().is_some_and(|ticket| {
+                    ticket.check() != crate::pause::admission_barrier::AdmissionCheck::Allowed
+                })
+                || current.status != TaskStatus::Paused
+                || current.notification.run_epoch != record.notification.run_epoch
+                || !self
+                    .ports
+                    .live_handle(task_id)
+                    .is_some_and(|live| Arc::ptr_eq(&live, &handle))
+            {
+                self.park(task_id, record.notification.run_epoch);
+                return Err(RunPauseAdmissionHeld.to_string());
+            }
+            Ok(())
+        };
+        assert_current()?;
         let result = port.resume_turn(
             &handle,
             &ResumeTurnRequest {
@@ -439,6 +476,7 @@ impl TaskRunPause {
             self.park(task_id, record.notification.run_epoch);
             return Err(RunPauseAdmissionHeld.to_string());
         }
+        assert_current()?;
         let outcome = match result {
             ResumeTurnResult::OtherHoldLive { child_seq } => {
                 self.park(task_id, record.notification.run_epoch);
@@ -510,6 +548,7 @@ impl TaskRunPause {
                 match self.resume_paused_task(
                     task_id,
                     &ResumeTaskRequest {
+                        allocation: None,
                         owner: request.owner.clone(),
                         resume_credential: request.resume_credential.clone(),
                         resume_id: request.resume_id.clone(),
@@ -607,14 +646,23 @@ impl TaskRunPause {
             return Ok(None);
         }
         let timestamp = now_iso(self.ports.now());
-        let revived = self.ports.revive(&record, timestamp.clone());
-        if revived.status != record.status {
+        let mut opened = false;
+        self.ports
+            .store()
+            .mutate(task_id, &mut |fresh: &TaskRecord| {
+                if fresh.status != record.status
+                    || fresh.notification.run_epoch != record.notification.run_epoch
+                {
+                    return fresh.clone();
+                }
+                opened = true;
+                self.ports.revive(fresh, timestamp.clone())
+            })
+            .map_err(|error| error.to_string())?;
+        if !opened {
             return Err(format!(
                 "idle child {task_id} changed while joining the pause"
             ));
-        }
-        if let Err(error) = self.ports.store().replace(&revived) {
-            return Err(error.to_string());
         }
         if !self.ports.apply_pause(task_id, &timestamp) {
             return Err(format!(

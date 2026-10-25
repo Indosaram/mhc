@@ -9,7 +9,7 @@ use super::mutation_plan::{
     FactsApplyRecovery, MutationPlanError, facts_records_hash, plan_facts_mutation,
 };
 use super::person_routing::{FactsAliasTie, FactsPeopleRouting};
-use super::recovery::{FactsRecoveryError, FactsRecoveryResult, apply_facts_recovery};
+use super::recovery::{FactsRecoveryError, FactsRecoveryResult};
 use super::schema::FactsQueueEntry;
 
 /// A person identity reference with primary name and aliases.
@@ -39,15 +39,13 @@ pub enum FactsExtractionRecord {
 }
 
 impl FactsExtractionRecord {
+    pub fn receipt(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Project { receipt, .. } | Self::Person { receipt, .. } => receipt.as_ref(),
+        }
+    }
     pub fn rendered_text(&self) -> String {
-        let receipt = match self { Self::Project { receipt, .. } | Self::Person { receipt, .. } => receipt.as_ref() };
-        let Some(receipt) = receipt else { return self.text().to_owned(); };
-        let claim = match receipt.get("source").and_then(serde_json::Value::as_str) {
-            Some("user") => crate::tools::claim_frontmatter::ClaimReceipt::User { user_quote: receipt["userQuote"].as_str().unwrap_or_default().into(), approves: receipt["approves"].as_str().unwrap_or_default().into() },
-            Some("agent") => crate::tools::claim_frontmatter::ClaimReceipt::Agent { downgraded: receipt["downgraded"].as_bool() == Some(true) },
-            _ => crate::tools::claim_frontmatter::ClaimReceipt::Inferred,
-        };
-        format!("{} (source: {})", self.text(), crate::tools::claim_frontmatter::render_claim_receipt(&claim))
+        super::display::fact_display_text(self)
     }
     /// Return the fact text.
     pub fn text(&self) -> &str {
@@ -280,7 +278,7 @@ pub fn apply_facts_batch(
     repo: &GitMemoryRepo,
     batch: FactsBatch,
     author: &GitCommitAuthor,
-    options: ApplyFactsBatchOptions<'_>,
+    mut options: ApplyFactsBatchOptions<'_>,
 ) -> Result<ApplyFactsBatchResult, FactsExtractionError> {
     validate_facts_batch_id(&batch.batch_id)?;
     let count = facts_batch_size(&batch);
@@ -309,10 +307,27 @@ pub fn apply_facts_batch(
             affected_paths: Vec::new(),
         });
     }
-    if let Some(mut publish) = options.publish_recovery {
+    if let Some(publish) = options.publish_recovery.as_mut() {
         publish(&recovery)?;
     }
-    let recovery_result = apply_facts_recovery(repo, &recovery, count, author)?;
+    let mut publisher = |next: &FactsApplyRecovery| {
+        options
+            .publish_recovery
+            .as_mut()
+            .expect("publisher checked")(next)
+        .map_err(|error| FactsRecoveryError::Invalid(error.to_string()))
+    };
+    let recovery_result = super::recovery::apply_facts_recovery_with_input(
+        repo,
+        &recovery,
+        count,
+        author,
+        Some(super::agreement_recovery::AgreementRecoveryInput {
+            batch: &batch,
+            agreements_policy: Some(&policy),
+            publish_recovery: Some(&mut publisher),
+        }),
+    )?;
     match recovery_result {
         FactsRecoveryResult::Committed {
             sha,
@@ -363,6 +378,13 @@ pub fn parse_facts_extraction_record(
         .ok_or_else(|| invalid(index, "date must be YYYY-MM-DD"))?;
     let date = valid_date(date_str).ok_or_else(|| invalid(index, "date must be YYYY-MM-DD"))?;
 
+    let receipt = obj
+        .get("receipt")
+        .map(|value| {
+            super::display::parse_claim_receipt(value)
+                .ok_or_else(|| invalid(index, "receipt is malformed"))
+        })
+        .transpose()?;
     let scope = obj
         .get("scope")
         .and_then(|v| v.as_str())
@@ -373,7 +395,12 @@ pub fn parse_facts_extraction_record(
             return Err(invalid(index, "project record must not carry person"));
         }
         assert_allowed_keys(obj, &["scope", "text", "date", "receipt"], index)?;
-        return Ok(FactsExtractionRecord::Project { text, date, receipt: obj.get("receipt").cloned() });
+        return Ok(FactsExtractionRecord::Project {
+            text,
+            date,
+            receipt: receipt
+                .map(|receipt| serde_json::to_value(receipt).expect("receipt serialization")),
+        });
     }
 
     if scope != "person" {
@@ -408,7 +435,8 @@ pub fn parse_facts_extraction_record(
         person: FactsPersonReference { name, aliases },
         text,
         date,
-        receipt: obj.get("receipt").cloned(),
+        receipt: receipt
+            .map(|receipt| serde_json::to_value(receipt).expect("receipt serialization")),
     })
 }
 

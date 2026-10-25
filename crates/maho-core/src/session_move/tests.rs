@@ -407,3 +407,24 @@ fn payload_parser_checks_kind_prefix_and_traversal() {
         1
     );
 }
+
+#[tokio::test]
+async fn sealed_release_payload_is_discovered_without_a_caller_override() {
+    let f = Fixture::new().await;
+    let staged = extension_state::prepare_outgoing_state(&f.sender, "m1").expect("stage");
+    std::fs::write(staged.dir.join("extension.json"), "state").expect("state");
+    append_custom(
+        &f.sender,
+        ownership::SESSION_RELEASED,
+        json!({"reason":"move","move_id":"m1","state_attempt":staged.attempt}),
+    )
+    .expect("seal");
+    let manifest = f.export(None).await.expect("export sealed state");
+    assert!(
+        manifest
+            .payloads
+            .iter()
+            .flat_map(|payload| payload.files.iter())
+            .any(|entry| entry.path.contains("extension.json"))
+    );
+}

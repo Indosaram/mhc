@@ -15,6 +15,19 @@ use super::host_session_close::{
 /// The host-owned transport the lifecycle consumes (the exact adapter signature the host owner must
 /// provide). This is the ONLY surface the lifecycle needs from the rpc-host engine.
 pub trait HostTransport: Send + Sync {
+    fn publish_task_status(
+        &self,
+        _identity: &crate::state::HostSessionIdentity,
+        _status: crate::state::TaskStatus,
+    ) -> Result<(), String> {
+        Err("host status transport unavailable".into())
+    }
+    fn durable_session_id(
+        &self,
+        _identity: &crate::state::HostSessionIdentity,
+    ) -> Result<Option<String>, String> {
+        Err("host identity transport unavailable".into())
+    }
     /// `rpc-host/liveness.daemonReachable(socket)`: does the daemon answer on this socket?
     fn daemon_reachable(&self, socket: &str) -> bool;
     /// `rpc-host/liveness.liveSessionPaths(socket)`: `list_sessions { include_workers: true }`; `Err`

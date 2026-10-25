@@ -26,6 +26,9 @@ pub const RESUME_SESSION_CAPABILITY: &str = "resume_session";
 /// Host honors `open_session.attended:false` instead of silently starting unattended work.
 pub const ATTENDED_CAPABILITY: &str = "attended";
 /// Connection role (senpi#3811): may exercise a person's authority (Stop with intent, release a pause).
+pub const TASK_PARENT_CAPABILITY: &str = "task_parent";
+pub const SESSION_RELOCATION_CAPABILITY: &str = "session_relocation";
+pub const GRANT_SELECT_CAPABILITY: &str = "grant_select";
 pub const INTERACTIVE_USER_CAPABILITY: &str = "interactive_user";
 /// Host accepts `record_user_activity`.
 pub const USER_ACTIVITY_CAPABILITY: &str = "user_activity";

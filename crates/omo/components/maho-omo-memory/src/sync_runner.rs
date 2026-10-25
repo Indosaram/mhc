@@ -50,15 +50,27 @@ pub struct DeviceSyncSession {
 
 /// Resolves the account session for an identity. Called on the engine thread, so the returned
 /// future and the session (which holds `Rc` ports) never cross threads.
-pub type SyncSessionResolver =
-    Arc<dyn Fn(crate::device_session::resolver::SyncSessionRequest) -> Pin<Box<dyn Future<Output = Result<crate::device_session::resolver::SyncSessionResolution, String>>>> + Send + Sync>;
+pub type SyncSessionResolver = Arc<
+    dyn Fn(
+            crate::device_session::resolver::SyncSessionRequest,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                    Output = Result<crate::device_session::resolver::SyncSessionResolution, String>,
+                >,
+            >,
+        > + Send
+        + Sync,
+>;
 /// Opens a device engine (on the engine thread); the default is `open_device_sync`.
 pub type SyncOpen =
     Arc<dyn Fn(OpenDeviceSyncOptions) -> EngineResult<Option<DeviceSync>> + Send + Sync>;
 
 /// No device sign-in or device keys exist on this client: the runner stays idle.
 pub fn no_account_session() -> SyncSessionResolver {
-    Arc::new(|_| Box::pin(async { Ok(crate::device_session::resolver::SyncSessionResolution::SignedOut) }))
+    Arc::new(|_| {
+        Box::pin(async { Ok(crate::device_session::resolver::SyncSessionResolution::SignedOut) })
+    })
 }
 
 pub trait SyncRunnerLogger: Send + Sync {
@@ -74,7 +86,9 @@ pub enum SyncRepoStatus {
     Unavailable { reason: String },
 }
 
+pub type SyncChange = Arc<dyn Fn(PathBuf, Option<SyncRepoStatus>) + Send + Sync>;
 pub trait SyncRunner: Send + Sync {
+    fn on_change(&self, _listener: SyncChange) {}
     fn acquire<'a>(
         &'a self,
         identity: &'a str,
@@ -160,6 +174,7 @@ struct WorkerConfig {
     open: SyncOpen,
     check_runtime: bool,
     names: Arc<Mutex<BTreeMap<String, DeviceNameLookup>>>,
+    listeners: Arc<Mutex<Vec<SyncChange>>>,
 }
 
 struct Running {
@@ -175,14 +190,36 @@ async fn start_engine(
     identity: String,
     paths: MemoryIdentityPaths,
 ) -> Outcome {
-    use crate::device_session::resolver::{SyncSessionRequest, SyncSessionSpace, SyncSessionResolution};
-    let request = SyncSessionRequest { identity: identity.clone(), paths: paths.clone(), space: SyncSessionSpace { profile: None, project_dir: paths.repo.clone() } };
+    use crate::device_session::resolver::{
+        SyncSessionRequest, SyncSessionResolution, SyncSessionSpace,
+    };
+    let request = SyncSessionRequest {
+        identity: identity.clone(),
+        paths: paths.clone(),
+        space: SyncSessionSpace {
+            profile: None,
+            project_dir: paths.repo.clone(),
+        },
+    };
     let resolved = (cfg.resolve)(request).await;
     let session = match resolved {
-        Ok(SyncSessionResolution::Open(session)) => Some(DeviceSyncSession { session: session.session, device_name: session.device_name, on_ended: Some(Rc::new(move |notify| session.ended.borrow_mut().push(notify))) }),
+        Ok(SyncSessionResolution::Open(session)) => Some(DeviceSyncSession {
+            session: session.session,
+            device_name: session.device_name,
+            on_ended: Some(Rc::new(move |notify| {
+                session.ended.borrow_mut().push(notify)
+            })),
+        }),
         Ok(SyncSessionResolution::SignedOut) => None,
-        Ok(SyncSessionResolution::Idle(reason)) => { cfg.logger.info(&format!("sync idle: {reason:?}"), &identity); return Outcome::Idle; }
-        Err(error) => { cfg.logger.error(&error, &identity, "sync-session-failed"); return Outcome::Idle; }
+        Ok(SyncSessionResolution::Idle(reason)) => {
+            cfg.logger
+                .info(&format!("sync idle: {reason:?}"), &identity);
+            return Outcome::Idle;
+        }
+        Err(error) => {
+            cfg.logger.error(&error, &identity, "sync-session-failed");
+            return Outcome::Idle;
+        }
     };
     if let Some(lookup) = session.as_ref().and_then(|s| s.device_name.clone()) {
         cfg.names
@@ -201,13 +238,41 @@ async fn start_engine(
             &format!("memory sync unavailable: the sync engine could not be loaded ({SYNC_UNAVAILABLE}): {reason}"),
             &identity,
         );
+        for notify in lock(&cfg.listeners).clone() {
+            notify(
+                paths.repo.clone(),
+                Some(SyncRepoStatus::Unavailable {
+                    reason: reason.clone(),
+                }),
+            );
+        }
         return Outcome::Unavailable(reason);
     }
     let on_ended = session.on_ended.clone();
     let log_logger = cfg.logger.clone();
     let log_identity = identity.clone();
     let opened = (cfg.open)(OpenDeviceSyncOptions {
-        on_status_change: None,
+        on_status_change: Some(Rc::new({
+            let engines = engines.clone();
+            let repo = paths.repo.clone();
+            let listeners = cfg.listeners.clone();
+            move || {
+                let engines = engines.clone();
+                let repo = repo.clone();
+                let listeners = listeners.clone();
+                tokio::task::spawn_local(async move {
+                    let status = engines
+                        .borrow()
+                        .get(&repo)
+                        .and_then(|running| running.device.engine.status().ok())
+                        .map(SyncRepoStatus::Engine);
+                    let callbacks = lock(&listeners).clone();
+                    for notify in callbacks {
+                        notify(repo.clone(), status.clone());
+                    }
+                });
+            }
+        })),
         repo_dir: paths.repo.clone(),
         state_dir: paths.runtime.join("sync-device"),
         locks_dir: paths.locks.clone(),
@@ -237,7 +302,14 @@ async fn start_engine(
     };
     if let Some(on_ended) = on_ended {
         let device = device.clone();
-        on_ended(Box::new(move || { let device = device.clone(); tokio::task::spawn_local(async move { if let Err(error) = device.close().await { eprintln!("memory sync close failed: {error}"); } }); }));
+        on_ended(Box::new(move || {
+            let device = device.clone();
+            tokio::task::spawn_local(async move {
+                if let Err(error) = device.close().await {
+                    eprintln!("memory sync close failed: {error}");
+                }
+            });
+        }));
     }
     device.engine.start();
     // The watch callback runs on a notify thread; hand each change to a local task that owns the
@@ -261,9 +333,21 @@ async fn start_engine(
     // A watch is armed some time after it is created; one debounced local-commit cycle covers a
     // commit that landed in that window.
     device.notify_local_commit();
-    engines
-        .borrow_mut()
-        .insert(paths.repo, Running { device, unwatch });
+    engines.borrow_mut().insert(
+        paths.repo.clone(),
+        Running {
+            device: device.clone(),
+            unwatch,
+        },
+    );
+    if let Ok(status) = device.engine.status() {
+        for notify in lock(&cfg.listeners).clone() {
+            notify(
+                paths.repo.clone(),
+                Some(SyncRepoStatus::Engine(status.clone())),
+            );
+        }
+    }
     Outcome::Running
 }
 
@@ -296,6 +380,9 @@ async fn handle(cfg: WorkerConfig, engines: Engines, cmd: Cmd) {
                         .map_err(|error| error.to_string())
                 }
             };
+            for notify in lock(&cfg.listeners).clone() {
+                notify(repo.clone(), None);
+            }
             let _ = reply.send(result);
         }
     }
@@ -489,6 +576,9 @@ impl Shared {
 struct Runner(Arc<Shared>);
 
 impl SyncRunner for Runner {
+    fn on_change(&self, listener: SyncChange) {
+        lock(&self.0.cfg.listeners).push(listener);
+    }
     fn acquire<'a>(
         &'a self,
         identity: &'a str,
@@ -527,6 +617,7 @@ pub fn create_sync_runner(options: SyncRunnerOptions) -> Arc<dyn SyncRunner> {
             open,
             check_runtime,
             names: Arc::default(),
+            listeners: Arc::default(),
         },
         close_wait: options
             .close_wait
@@ -629,10 +720,20 @@ mod tests {
     }
 
     fn offline_resolver() -> SyncSessionResolver {
-        Arc::new(|_| Box::pin(async {
-            let session = offline_session();
-            Ok(crate::device_session::resolver::SyncSessionResolution::Open(crate::device_session::resolver::ResolvedDeviceSession { device_name: session.device_name, session: session.session, ended: Rc::new(RefCell::new(Vec::new())) }))
-        }))
+        Arc::new(|_| {
+            Box::pin(async {
+                let session = offline_session();
+                Ok(
+                    crate::device_session::resolver::SyncSessionResolution::Open(
+                        crate::device_session::resolver::ResolvedDeviceSession {
+                            device_name: session.device_name,
+                            session: session.session,
+                            ended: Rc::new(RefCell::new(Vec::new())),
+                        },
+                    ),
+                )
+            })
+        })
     }
 
     fn runner(
@@ -653,6 +754,7 @@ mod tests {
                 open: Arc::new(open_device_sync),
                 check_runtime: true,
                 names: Arc::default(),
+                listeners: Arc::default(),
             },
             close_wait: options
                 .close_wait

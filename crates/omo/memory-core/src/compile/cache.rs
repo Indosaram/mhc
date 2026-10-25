@@ -60,6 +60,22 @@ pub struct MemoryBlockCache {
 
 impl MemoryBlockCache {
     /// Creates an empty memory block cache.
+    pub fn persistent(build: String) -> Self {
+        Self::with_options(MemoryBlockCacheOptions {
+            build,
+            store: Some(Arc::new(|| Ok(()))),
+            on_store_error: Some(Arc::new(|error| {
+                eprintln!("memory block persistence: {error}")
+            })),
+            on_degraded: Some(Arc::new(|repo, revision, paths| {
+                eprintln!(
+                    "degraded memory projection {} {revision}: {paths:?}",
+                    repo.display()
+                )
+            })),
+            ..Default::default()
+        })
+    }
     pub fn new() -> Self {
         Self::default()
     }

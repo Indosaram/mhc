@@ -49,6 +49,49 @@ impl CliHostTransport {
 }
 
 impl HostTransport for CliHostTransport {
+    fn publish_task_status(
+        &self,
+        identity: &senpi_task::state::HostSessionIdentity,
+        status: senpi_task::state::TaskStatus,
+    ) -> Result<(), String> {
+        let socket = identity.socket.clone();
+        let path = identity.session_path.clone();
+        self.block_on(async move {
+            let client = maho_rpc::rpc_client::RpcClient::connect(Path::new(&socket)).await.map_err(|error| error.to_string())?;
+            let result = async {
+                client.open_session(serde_json::json!({"sessionPath":path,"kind":"worker","context":{},"retainOnDisconnect":true,"autoTitle":false})).await.map_err(|error| error.to_string())?;
+                client.set_session_context(std::collections::BTreeMap::from([("task_status".into(),Some(status.as_str().into()))])).await.map_err(|error| error.to_string())?;
+                Ok(())
+            }.await;
+            client.stop().await;
+            result
+        })?
+    }
+    fn durable_session_id(
+        &self,
+        identity: &senpi_task::state::HostSessionIdentity,
+    ) -> Result<Option<String>, String> {
+        let socket = identity.socket.clone();
+        let path = identity.session_path.clone();
+        self.block_on(async move {
+            let reply = maho_rpc::host_probe::request_on_socket(
+                &socket,
+                &serde_json::json!({"type":"list_sessions","include_workers":true}),
+                LIST_TIMEOUT_MS,
+            )
+            .await
+            .ok_or("host identity listing unanswered")?;
+            let sessions = reply["sessions"]
+                .as_array()
+                .ok_or("host identity listing malformed")?;
+            Ok(sessions
+                .iter()
+                .find(|session| session["sessionPath"].as_str() == Some(path.as_str()))
+                .and_then(|session| session["durableSessionId"].as_str())
+                .map(str::to_owned))
+        })?
+    }
+
     fn daemon_reachable(&self, socket: &str) -> bool {
         let socket = socket.to_owned();
         self.block_on(async move { daemon_reachable(&socket).await })

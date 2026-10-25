@@ -81,7 +81,7 @@ impl MemoryComponent {
             && !is_memory_child_process(&self.options.env)
             && !(self.options.disabled)()
     }
-    fn sync_runner(&self) -> Option<Arc<dyn crate::sync_runner::SyncRunner>> {
+    pub fn sync_runner(&self) -> Option<Arc<dyn crate::sync_runner::SyncRunner>> {
         self.sync_runner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -133,11 +133,35 @@ impl MemoryComponent {
                 crate::sync_runner::create_sync_runner(crate::sync_runner::SyncRunnerOptions {
                     logger: Arc::new(WarnLogger(hooks.warn.clone())),
                     resolve_session: {
-                        let source = crate::device_session::account_source::create_cli_account_source(None, &self.options.env, None).map_err(ExtensionFailure::new)?;
-                        let pins = PathBuf::from(self.options.env.get("HOME").cloned().unwrap_or_else(maho_core::config::home_dir)).join(".omo/sync-device");
-                        let resolver = crate::device_session::resolver::create_device_session_resolver(source, pins, Arc::new(crate::device_session::account_session::open_account_session));
+                        let source =
+                            crate::device_session::account_source::create_cli_account_source(
+                                None,
+                                &self.options.env,
+                                None,
+                            )
+                            .map_err(ExtensionFailure::new)?;
+                        let pins = PathBuf::from(
+                            self.options
+                                .env
+                                .get("HOME")
+                                .cloned()
+                                .unwrap_or_else(maho_core::config::home_dir),
+                        )
+                        .join(".omo/sync-device");
+                        let resolver =
+                            crate::device_session::resolver::create_device_session_resolver(
+                                source,
+                                pins,
+                                Arc::new(
+                                    crate::device_session::account_session::open_account_session,
+                                ),
+                            );
                         let project_dir = self.options.cwd.clone();
-                        let profile = self.settings()?.get("agent").and_then(serde_json::Value::as_str).map(str::to_owned);
+                        let profile = self
+                            .settings()?
+                            .get("agent")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned);
                         Some(Arc::new(move |mut request: crate::device_session::resolver::SyncSessionRequest| {
                             request.space.profile = profile.clone();
                             request.space.project_dir = project_dir.clone();
