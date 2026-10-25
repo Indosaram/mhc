@@ -132,13 +132,14 @@ mod tests {
     fn default_homes_honor_env_and_expand_tilde() {
         let mut env = BTreeMap::new();
         let homes = default_agent_homes(&env, "/home/u");
-        assert_eq!(homes[0].home_path, "/home/u/.claude");
-        assert_eq!(homes[1].home_path, "/home/u/.codex");
+        assert_eq!(homes[0].home_path, join("/home/u", ".claude"));
+        assert_eq!(homes[1].home_path, join("/home/u", ".codex"));
         env.insert("CLAUDE_CONFIG_DIR".into(), "  ~/cfg/claude ".into());
         env.insert("CODEX_HOME".into(), "   ".into());
         let homes = default_agent_homes(&env, "/home/u");
-        assert_eq!(homes[0].home_path, "/home/u/cfg/claude");
-        assert_eq!(homes[1].home_path, "/home/u/.codex");
+        // A configured home is resolved, so on Windows the POSIX fixture gains the cwd's drive.
+        assert_eq!(homes[0].home_path, resolve_path("/home/u/cfg/claude"));
+        assert_eq!(homes[1].home_path, join("/home/u", ".codex"));
     }
 
     #[test]

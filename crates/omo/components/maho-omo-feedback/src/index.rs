@@ -355,10 +355,15 @@ mod tests {
 
     #[test]
     fn state_dir_lives_under_the_agent_home() {
-        let env = BTreeMap::from([("MAHO_CODING_AGENT_DIR".to_string(), "/agent".to_string())]);
+        // An absolute agent dir on this platform (`/agent` is drive-relative on Windows).
+        let agent = std::env::temp_dir().join("agent");
+        let env = BTreeMap::from([(
+            "MAHO_CODING_AGENT_DIR".to_string(),
+            agent.to_string_lossy().into_owned(),
+        )]);
         assert_eq!(
             state_dir_of(&env, Path::new("/home/x")),
-            PathBuf::from("/agent/omo-senpi")
+            agent.join("omo-senpi")
         );
     }
 }

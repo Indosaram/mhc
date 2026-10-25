@@ -591,12 +591,20 @@ mod tests {
 
     #[test]
     fn module_roots_are_exactly_the_declared_files_deduplicated_and_skip_synthetic_sources() {
+        // Rooted POSIX paths are not absolute on Windows; give them a drive there.
+        let abs = |path: &str| {
+            if cfg!(windows) {
+                format!("C:{}", path.replace('/', "\\"))
+            } else {
+                path.to_string()
+            }
+        };
         let tool = |module: Option<&str>, source: &str| RegisteredToolChildModule {
             child_module: module.map(|path| ToolChildModule {
-                path: path.into(),
+                path: if path.starts_with('/') { abs(path) } else { path.into() },
                 export: "run".into(),
             }),
-            source_path: source.into(),
+            source_path: if source.starts_with('/') { abs(source) } else { source.into() },
         };
         let roots = tool_child_module_roots(&[
             tool(Some("./job.ts"), "/ext/a/index.ts"),
@@ -606,7 +614,10 @@ mod tests {
             tool(Some("./inline.ts"), "<inline:1>"),
             tool(None, "/ext/d/index.ts"),
         ]);
-        assert_eq!(roots, vec!["/ext/a/job.ts", "/abs/job.ts", "/ext/c/up.ts"]);
+        assert_eq!(
+            roots,
+            vec![abs("/ext/a/job.ts"), abs("/abs/job.ts"), abs("/ext/c/up.ts")]
+        );
     }
 
     #[test]

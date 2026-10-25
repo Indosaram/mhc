@@ -253,7 +253,7 @@ mod tests {
         let names: Vec<&str> = codex
             .transcripts
             .iter()
-            .map(|t| t.file_path.rsplit('/').next().unwrap_or(""))
+            .map(|t| t.file_path.rsplit(['/', '\\']).next().unwrap_or(""))
             .collect();
         assert_eq!(names, vec!["rollout-b.jsonl", "rollout-a.jsonl"]);
         assert!(!codex.truncated);
