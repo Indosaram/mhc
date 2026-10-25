@@ -23,7 +23,7 @@ use crate::support::time::{format_rfc3339_millis, now_millis};
 use super::schema::{
     FACTS_QUEUE_VERSION, FactsConsumedRecord, FactsConsumedWatermark, FactsCursor, FactsQueueEntry,
     FactsQueueLayout, FactsQueueRange, facts_queue_paths, initial_cursor,
-    parse_consumed, parse_cursor, parse_queue_entry,
+    parse_consumed, parse_cursor, parse_queue_entry, parse_queue_header,
 };
 
 const LOCK_WAIT_MS: u64 = 2000;
@@ -50,6 +50,11 @@ impl FactsAbortSignal {
     /// Check whether the signal has been aborted.
     pub fn is_aborted(&self) -> bool {
         self.aborted.load(Ordering::SeqCst)
+    }
+
+    /// Access the underlying atomic flag for shared cancellation state.
+    pub fn flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.aborted)
     }
 }
 
@@ -415,6 +420,35 @@ impl FactsQueue {
         self.locked(|| self.read_cursor_unlocked(conversation_id))
     }
 
+    /// Seed the enqueued_through watermark for an uninitialized conversation (e.g. forked session prefix).
+    /// Under the queue lock; only when no cursor exists; never lowers an existing cursor;
+    /// pending ranges are left untouched.
+    pub fn seed_enqueued_through(
+        &self,
+        conversation_id: &str,
+        end_message_id: &str,
+        end_snapshot_line: u64,
+    ) -> Result<(), FactsQueueError> {
+        self.locked(|| {
+            let cursor = self.read_cursor_unlocked(conversation_id)?;
+            let has_cursor = cursor.enqueued_through_snapshot_line >= 0
+                || cursor.enqueued_through_message_id.is_some();
+            if has_cursor {
+                return Ok(());
+            }
+            if (end_snapshot_line as i64) <= cursor.enqueued_through_snapshot_line {
+                return Ok(());
+            }
+            let updated = FactsCursor {
+                enqueued_through_message_id: Some(end_message_id.to_string()),
+                enqueued_through_snapshot_line: end_snapshot_line as i64,
+                ..cursor
+            };
+            self.write_cursor(conversation_id, &updated)?;
+            Ok(())
+        })
+    }
+
     fn locked<T, F>(&self, task: F) -> Result<T, FactsQueueError>
     where
         F: FnOnce() -> Result<T, FactsQueueError>,
@@ -500,8 +534,8 @@ impl FactsQueue {
         Ok(())
     }
 
-    /// Lists valid queue files; without `with_entries` each payload is dropped right after
-    /// validation so at most one file's transcript is resident at a time.
+    /// Lists valid queue files; without `with_entries` the header and transcript entries are
+    /// streamed via a visitor so transcripts are not materialized into memory.
     fn list_pending_unlocked(
         &self,
         with_entries: bool,
@@ -531,16 +565,26 @@ impl FactsQueue {
                 continue;
             }
             let file_path = self.layout.queue_dir.join(&name);
-            let raw = match fs::read_to_string(&file_path) {
-                Ok(r) => r,
-                Err(_) => continue,
+            let parsed = if with_entries {
+                let raw = match fs::read_to_string(&file_path) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+                match parse_queue_entry(&raw) {
+                    Some(parsed) => parsed,
+                    None => continue,
+                }
+            } else {
+                let file = match fs::File::open(&file_path) {
+                    Ok(f) => f,
+                    Err(_) => continue,
+                };
+                let reader = io::BufReader::new(file);
+                match parse_queue_header(reader) {
+                    Some(parsed) => parsed,
+                    None => continue,
+                }
             };
-            let Some(mut parsed) = parse_queue_entry(&raw) else {
-                continue;
-            };
-            if !with_entries {
-                parsed.entries = Vec::new();
-            }
             entries.push(PendingEntryWithFile {
                 entry: parsed,
                 file_path,

@@ -421,6 +421,7 @@ impl MemoryRuntimeWiring {
             crate::identity_runtime::as_memory_identity(identity),
             now.clone(),
         );
+        runner.spawner = attempt.spawner.clone();
         // Pin `facts-runner.ts`: the agreements policy resolves from the loaded config's `memory` section; a failed read keeps the defaults.
         if let Ok(memory) = settings() {
             runner.agreements_policy = crate::facts_agreements::resolve_facts_agreements(
@@ -527,6 +528,7 @@ mod tests {
             },
             sandbox: None,
             warn: std::sync::Arc::new(|error| panic!("{error}")),
+            spawner: None,
         };
         wiring.native_facts_wiring_for(
             &identity,

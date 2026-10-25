@@ -22,7 +22,15 @@ const INITIAL_NOTIFICATION_LIMIT: usize = 100;
 pub fn fork_session_manager(source_file: Option<&str>, cwd: &str, session_dir: Option<&str>) -> Result<SessionManager, String> {
     match source_file.filter(|path| std::path::Path::new(path).exists()) {
         Some(source_file) => fork_from_session_file(source_file, cwd, session_dir),
-        None => Ok(SessionManager::create(cwd, session_dir, source_file.map(|path| NewSessionOptions { id: None, parent_session: Some(path.to_owned()) }))),
+        None => Ok(SessionManager::create(
+            cwd,
+            session_dir,
+            source_file.map(|path| NewSessionOptions {
+                id: None,
+                parent_session: Some(path.to_owned()),
+                ..Default::default()
+            }),
+        )),
     }
 }
 pub fn fork_from_session_file(source_file: &str, cwd: &str, session_dir: Option<&str>) -> Result<SessionManager, String> {
@@ -39,7 +47,12 @@ pub fn fork_from_session_file(source_file: &str, cwd: &str, session_dir: Option<
     let timestamp = now_iso_millis();
     let file_timestamp = timestamp.replace([':', '.'], "-");
     let new_file = std::path::Path::new(&dir).join(format!("{file_timestamp}_{new_id}.jsonl"));
-    let header = json!({"type":"session","version":CURRENT_SESSION_VERSION,"id":new_id,"timestamp":timestamp,"cwd":cwd,"parentSession":source_file});
+    let last_copied_entry_id = entries
+        .iter()
+        .rev()
+        .find(|entry| entry.get("type").and_then(Value::as_str) != Some("session"))
+        .and_then(|entry| entry.get("id").and_then(Value::as_str));
+    let header = json!({"type":"session","version":CURRENT_SESSION_VERSION,"id":new_id,"timestamp":timestamp,"cwd":cwd,"parentSession":source_file,"forkedFromLeafId":last_copied_entry_id});
     let mut contents = format!("{}\n", serde_json::to_string(&header).map_err(|error| error.to_string())?);
     for entry in &entries {
         if entry.get("type").and_then(Value::as_str) == Some("session") { continue; }

@@ -24,6 +24,7 @@ pub struct FactsExtractorRunner {
     pub failures: FactsFailureStore,
     active: AtomicBool,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
+    pub spawner: Option<Arc<dyn crate::facts_child_spawner::FactsChildSessionSpawner>>,
 }
 struct ActiveLaunch<'a>(&'a AtomicBool);
 impl Drop for ActiveLaunch<'_> {
@@ -58,6 +59,7 @@ pub struct NativeFactsAttemptOptions {
     pub people: memory_core::facts::person_routing::FactsPeopleRouting,
     pub sandbox: Option<NativeFactsSandbox>,
     pub warn: Arc<dyn Fn(&str) + Send + Sync>,
+    pub spawner: Option<Arc<dyn crate::facts_child_spawner::FactsChildSessionSpawner>>,
 }
 pub struct NativeFactsExtractorPort {
     pub runner: Arc<FactsExtractorRunner>,
@@ -122,10 +124,13 @@ impl FactsExtractorRunner {
             attempt: Arc::new(move |runner, signal| {
                 let options = options.clone();
                 let cache = cache.clone();
+                let child_signal = signal.clone();
                 Box::pin(async move {
                     let mut warn = |message: &str| (options.warn)(message);
+                    let child_signal = child_signal.clone();
                     runner.launch_pending_once(FactsAttemptInput{resolve_model:options.resolve_model.as_ref(),deadline_ms:options.deadline_ms,termination_grace_ms:options.termination_grace_ms},signal.as_ref(),||runner.reconcile_runs(&options.people,&mut |message|(options.warn)(message)),|dir,payload,batch,resolution|{
                     let runner=runner.clone();let options=options.clone();let cache=cache.clone();
+                    let child_signal = child_signal.clone();
                     async move{
                         let run_id=dir.file_name().ok_or("Facts run directory has no name")?.to_string_lossy().into_owned();
                         let ledger:crate::facts_runner_types::FactsRunLedger=crate::worker::run_artifacts::read_run_json(&dir.join("ledger.json")).map_err(|error|error.to_string())?;
@@ -135,6 +140,7 @@ impl FactsExtractorRunner {
                             sandbox,
                             run_id:&run_id,run_dir:&dir,payload:(&payload).into(),oversized:false,agreements:payload.agreements.is_some(),record_limits:None,resolution:&resolution,env:&options.env,config_sources:&options.config_sources,launch:&options.launch,hard_deadline_at:chrono::Utc::now().timestamp_millis() as f64+options.deadline_ms as f64,
                             options:crate::worker::spawn_supervisor::FactsChildOptions{termination_grace_ms:options.termination_grace_ms as f64,max_output_bytes:options.max_output_bytes,supervisor_command:&options.supervisor_command,supervisor_args:&options.supervisor_args,batch_id:&batch,queued:&ledger.queued,launched_at:chrono::DateTime::parse_from_rfc3339(&ledger.started_at).map_err(|error|error.to_string())?.timestamp_millis()},
+                            signal:child_signal,
                         },&options.people,&mut |message|(options.warn)(message)).await
                     }
                 },&mut warn).await
@@ -143,6 +149,13 @@ impl FactsExtractorRunner {
         }
     }
     pub fn new(identity: MemoryIdentity, now: Arc<dyn Fn() -> i64 + Send + Sync>) -> Self {
+        Self::new_with_spawner(identity, now, None)
+    }
+    pub fn new_with_spawner(
+        identity: MemoryIdentity,
+        now: Arc<dyn Fn() -> i64 + Send + Sync>,
+        spawner: Option<Arc<dyn crate::facts_child_spawner::FactsChildSessionSpawner>>,
+    ) -> Self {
         let queue = FactsQueue::new(FactsQueueOptions {
             identity_paths: identity.paths.clone(),
             now: Some(now.clone()),
@@ -160,6 +173,7 @@ impl FactsExtractorRunner {
             failures,
             active: AtomicBool::new(false),
             now,
+            spawner,
         }
     }
     pub async fn launch_pending<F: Future<Output = Result<FactsLaunchResult, String>>>(
@@ -519,6 +533,11 @@ impl FactsExtractorRunner {
             }
             crate::worker::spawn_payload::FactsLaunchPayload::Text(_) => Vec::new(),
         };
+        if let Some(spawner) = &self.spawner {
+            return self
+                .execute_child_in_process(spawner.as_ref(), input, people, &targets, warn)
+                .await;
+        }
         let child = match crate::worker::facts_child_launch::launch_facts_model_chain(
             cache,
             input,
@@ -588,6 +607,235 @@ impl FactsExtractorRunner {
             .map_err(|error| error.to_string())?;
             return Ok(FactsLaunchResult::Failed { run_id: run.into() });
         }
+        self.finalize(dir, people, warn)
+    }
+    async fn execute_child_in_process(
+        &self,
+        spawner: &dyn crate::facts_child_spawner::FactsChildSessionSpawner,
+        input: crate::worker::facts_child_launch::FactsChildLaunchInput<'_>,
+        people: &memory_core::facts::person_routing::FactsPeopleRouting,
+        targets: &[memory_core::facts::FactsFailureTarget],
+        warn: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<FactsLaunchResult, String> {
+        let dir = input.run_dir;
+        let run = input.run_id;
+        let batch = input.options.batch_id;
+
+        let (first, fallbacks) = match input.resolution {
+            ReflectionModelResolution::Resolved {
+                model,
+                thinking,
+                fallbacks,
+                ..
+            } => {
+                let first = crate::worker::memory_model_attempts::ReflectionModelCandidate {
+                    model: model.clone(),
+                    thinking: thinking.clone(),
+                    load_extensions: None,
+                };
+                (first, fallbacks.clone())
+            }
+            _ => return Err("facts child launch requires a resolved model".into()),
+        };
+        let model_candidates: Vec<_> = std::iter::once(first).chain(fallbacks).collect();
+
+        let cancel_state = input
+            .signal
+            .as_ref()
+            .map(memory_core::facts::queue::FactsAbortSignal::flag)
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+
+        let payload_path = dir.join("facts-payload.json");
+        if let Err(err) = std::fs::write(&payload_path, input.payload.render()) {
+            return Err(format!("failed to write facts-payload.json: {err}"));
+        }
+
+        let extraction_path = dir.join("extraction.jsonl");
+        if let Err(err) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&extraction_path)
+        {
+            return Err(format!("failed to initialize extraction.jsonl: {err}"));
+        }
+
+        let record_tool = Arc::new(crate::facts_record_tool::create_facts_record_tool(
+            crate::facts_record_tool::FactsRecordToolInput {
+                extraction_path,
+                max_records: None,
+                max_bytes: None,
+                on_failure: None,
+                state: Some(crate::facts_record_tool::FactsRecordRunState {
+                    cancelled: cancel_state.clone(),
+                }),
+                max_calls: input.record_limits.map(|l| l.max_calls),
+                on_call: None,
+            },
+        ));
+        let mut custom_tools = vec![record_tool.clone().to_tool_definition()];
+        let mut tool_allowlist = vec![crate::facts_record_tool::FACTS_RECORD_TOOL_NAME.to_owned()];
+
+        let mut agreement_tool: Option<Arc<crate::facts_agreement_tool::FactsAgreementTool>> = None;
+        if input.agreements {
+            let agreements_path = dir.join(crate::facts_agreements::FACTS_AGREEMENTS_FILENAME);
+            if let Err(err) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&agreements_path)
+            {
+                return Err(format!("failed to initialize agreements.jsonl: {err}"));
+            }
+            let known_ids = match input.payload {
+                crate::worker::spawn_payload::FactsLaunchPayload::Facts(payload) => payload
+                    .agreements
+                    .as_deref()
+                    .map(|agreements| agreements.iter().map(|a| a.id.clone()).collect())
+                    .unwrap_or_default(),
+                crate::worker::spawn_payload::FactsLaunchPayload::Text(_) => {
+                    std::collections::BTreeSet::new()
+                }
+            };
+            let at = Arc::new(crate::facts_agreement_tool::create_facts_agreement_tool(
+                crate::facts_agreement_tool::FactsAgreementToolInput {
+                    extraction_path: agreements_path,
+                    known_ids,
+                    on_failure: None,
+                    state: Some(crate::facts_record_tool::FactsRecordRunState {
+                        cancelled: cancel_state.clone(),
+                    }),
+                },
+            ));
+            custom_tools.push(at.clone().to_tool_definition());
+            tool_allowlist.push(crate::facts_agreement_tool::FACTS_AGREEMENT_TOOL_NAME.to_owned());
+            agreement_tool = Some(at);
+        }
+
+        let persona = memory_core::facts::load_facts_persona().to_owned();
+        let prompt_text = format!(
+            "Extract durable facts from this payload and record each accepted fact with record_fact.\n\n{}",
+            input.payload.render()
+        );
+
+        let spawn_input = crate::facts_child_spawner::FactsChildSpawnInput {
+            run_id: run.to_owned(),
+            run_dir: dir.to_path_buf(),
+            model_candidates,
+            persona,
+            prompt: prompt_text,
+            custom_tools,
+            tool_allowlist,
+            hard_deadline_at: input.hard_deadline_at,
+            signal: input.signal.clone(),
+            cancel_state: cancel_state.clone(),
+        };
+
+        let session_result = match spawner.spawn(spawn_input).await {
+            Ok(res) => res,
+            Err(err) => {
+                cancel_state.store(true, Ordering::Release);
+                record_tool.deactivate();
+                if let Some(at) = &agreement_tool {
+                    at.deactivate();
+                }
+                let outcome = crate::facts_child_spawner::FactsChildSessionResult {
+                    completed: false,
+                    timed_out: false,
+                    cancelled: false,
+                    error_message: Some(err.clone()),
+                    attempt: 1,
+                    model: None,
+                };
+                if let Err(write_err) = crate::facts_child_spawner::write_facts_child_artifacts(
+                    dir, run, 1, &outcome,
+                ) {
+                    warn(&format!("failed to write facts child artifacts: {write_err}"));
+                }
+                let instant = chrono::DateTime::from_timestamp_millis((self.now)())
+                    .ok_or("Invalid facts clock")?
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                let mut io = FactsIo {
+                    queue: &self.queue,
+                    instant: &instant,
+                    warn,
+                    runtime_dir: Some(&self.identity.paths.runtime),
+                };
+                crate::facts_terminal_writes::FactsTerminalWrites {
+                    failures: &self.failures,
+                    io: &mut io,
+                }
+                .fail(&crate::facts_terminal_writes::FactsFailureWrite {
+                    run_dir: dir,
+                    run_id: run,
+                    batch_id: batch,
+                    targets,
+                    reason: memory_core::facts::FactsFailureReason::ChildExit,
+                    detail: &err,
+                    outcome: None,
+                })
+                .map_err(|error| error.to_string())?;
+                return Ok(FactsLaunchResult::Failed {
+                    run_id: run.into(),
+                });
+            }
+        };
+
+        record_tool.deactivate();
+        if let Some(at) = &agreement_tool {
+            at.deactivate();
+        }
+
+        if let Err(err) = crate::facts_child_spawner::write_facts_child_artifacts(
+            dir,
+            run,
+            session_result.attempt,
+            &session_result,
+        ) {
+            warn(&format!("failed to write facts child artifacts: {err}"));
+        }
+
+        if session_result.timed_out || !session_result.completed {
+            let instant = chrono::DateTime::from_timestamp_millis((self.now)())
+                .ok_or("Invalid facts clock")?
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            let mut io = FactsIo {
+                queue: &self.queue,
+                instant: &instant,
+                warn,
+                runtime_dir: Some(&self.identity.paths.runtime),
+            };
+            let reason = if session_result.timed_out {
+                memory_core::facts::FactsFailureReason::DeadlineExceeded
+            } else {
+                memory_core::facts::FactsFailureReason::ChildExit
+            };
+            let detail = session_result.error_message.as_deref().unwrap_or(
+                if session_result.cancelled {
+                    "facts child cancelled"
+                } else if session_result.timed_out {
+                    "facts child deadline exceeded"
+                } else {
+                    "facts child failed"
+                },
+            );
+            crate::facts_terminal_writes::FactsTerminalWrites {
+                failures: &self.failures,
+                io: &mut io,
+            }
+            .fail(&crate::facts_terminal_writes::FactsFailureWrite {
+                run_dir: dir,
+                run_id: run,
+                batch_id: batch,
+                targets,
+                reason,
+                detail,
+                outcome: None,
+            })
+            .map_err(|error| error.to_string())?;
+            return Ok(FactsLaunchResult::Failed {
+                run_id: run.into(),
+            });
+        }
+
         self.finalize(dir, people, warn)
     }
     pub fn prune(&self, warn: &mut dyn FnMut(&str)) {
@@ -887,6 +1135,7 @@ mod tests {
             warn: Arc::new(move |_| {
                 observed.fetch_add(1, Ordering::SeqCst);
             }),
+            spawner: None,
         });
         port.launch_pending(None).await.unwrap();
         assert!(!runner.identity.paths.repo.exists());
@@ -1110,5 +1359,126 @@ mod tests {
             FactsLaunchResult::Empty
         );
         assert!(!runner.identity.paths.repo.exists());
+    }
+
+    struct MockFactsChildSpawner {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl crate::facts_child_spawner::FactsChildSessionSpawner for MockFactsChildSpawner {
+        fn spawn<'a>(
+            &'a self,
+            input: crate::facts_child_spawner::FactsChildSpawnInput,
+        ) -> crate::facts_child_spawner::FactsChildSpawnFuture<'a> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                assert_eq!(input.tool_allowlist, vec!["record_fact"]);
+                assert_eq!(input.custom_tools.len(), 1);
+                Ok(crate::facts_child_spawner::FactsChildSessionResult {
+                    completed: true,
+                    timed_out: false,
+                    cancelled: false,
+                    error_message: None,
+                    attempt: 1,
+                    model: Some("mock/model".into()),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn wired_spawner_routes_to_in_process_child() {
+        let root = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mock = Arc::new(MockFactsChildSpawner {
+            calls: calls.clone(),
+        });
+        let mut runner = runner(root.path());
+        runner.spawner = Some(mock);
+        crate::engine_session::prepare_memory_engine_session(
+            &runner.identity.id,
+            &runner.identity.paths,
+            Default::default(),
+        )
+        .unwrap();
+        let dir = crate::facts_run_storage::reserve_facts_run_dir(
+            &crate::facts_run_storage::ReserveFactsRunDirOptions {
+                facts_dir: &runner.identity.paths.facts,
+                locks_dir: &runner.identity.paths.locks,
+                entries: &[],
+                batch_id: "batch-inproc",
+                launched_at: 0,
+                deadline_ms: None,
+                termination_grace_ms: None,
+                lock_wait_ms: None,
+                receipts_dir: None,
+                receipts: None,
+                warn: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        let payload = FactsPayload {
+            version: 1,
+            identity: "agent".into(),
+            today: "1970-01-01".into(),
+            known_people: vec![],
+            primary_human: memory_core::facts::FactsPrimaryHuman {
+                slug: "human".into(),
+                aliases: vec![],
+            },
+            entries: vec![],
+            agreements: None,
+        };
+        let run_id = dir.file_name().unwrap().to_string_lossy().into_owned();
+        let resolution = ReflectionModelResolution::Resolved {
+            category: "quick".into(),
+            model: "mock/model".into(),
+            thinking: None,
+            source: None,
+            fallbacks: vec![],
+        };
+        let mut cache = crate::worker::model_preflight::ModelPreflight::default();
+        let people = memory_core::facts::person_routing::FactsPeopleRouting {
+            enabled: true,
+            max_entries: 40,
+            max_entry_chars: 200,
+        };
+        let input = crate::worker::facts_child_launch::FactsChildLaunchInput {
+            sandbox: None,
+            run_id: &run_id,
+            run_dir: &dir,
+            payload: (&payload).into(),
+            oversized: false,
+            agreements: false,
+            record_limits: None,
+            resolution: &resolution,
+            env: &std::collections::BTreeMap::new(),
+            config_sources: &[],
+            launch: &crate::worker::model_preflight::Launcher {
+                command: "must-not-run".into(),
+                prefix_args: vec![],
+            },
+            hard_deadline_at: 100_000.0,
+            options: crate::worker::spawn_supervisor::FactsChildOptions {
+                termination_grace_ms: 100.0,
+                max_output_bytes: 1024,
+                supervisor_command: Path::new("must-not-run"),
+                supervisor_args: &[],
+                batch_id: "batch-inproc",
+                queued: &[],
+                launched_at: 0,
+            },
+            signal: None,
+        };
+        let mut warn = |msg: &str| panic!("{msg}");
+        let result = runner
+            .execute_child(&mut cache, input, &people, &mut warn)
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(result, FactsLaunchResult::NoFacts { .. }));
+        assert!(dir.join("extraction.jsonl").exists());
+        assert!(dir.join("outcome.json").exists());
     }
 }

@@ -17,11 +17,27 @@ pub struct MemoryFactsWiringOptions {
     pub warn: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
-pub struct MemoryFactsWiring { options: MemoryFactsWiringOptions, queue: FactsQueue, settles: usize, settled_sessions: std::collections::BTreeSet<String> }
+pub struct MemoryFactsWiring {
+    options: MemoryFactsWiringOptions,
+    queue: FactsQueue,
+    settles: usize,
+    settled_sessions: std::collections::BTreeSet<String>,
+    pub(crate) provenances: std::sync::RwLock<std::collections::HashMap<String, maho_ext_api::ForkProvenance>>,
+}
 
 pub fn create_memory_facts_wiring(options: MemoryFactsWiringOptions) -> MemoryFactsWiring {
-    let queue = FactsQueue::new(FactsQueueOptions { identity_paths:options.identity_paths.clone(), now:options.now.clone(), on_publish:None });
-    MemoryFactsWiring { options, queue, settles:0, settled_sessions:Default::default() }
+    let queue = FactsQueue::new(FactsQueueOptions {
+        identity_paths: options.identity_paths.clone(),
+        now: options.now.clone(),
+        on_publish: None,
+    });
+    MemoryFactsWiring {
+        options,
+        queue,
+        settles: 0,
+        settled_sessions: Default::default(),
+        provenances: std::sync::RwLock::new(Default::default()),
+    }
 }
 
 fn disabled() -> FactsEnqueueResult { FactsEnqueueResult::NotEnqueued { reason:"no-new-entries".into() } }
@@ -44,12 +60,46 @@ impl MemoryFactsWiring {
         });
         if let Err(error) = spawned { warn(&format!("facts extractor {kind} failed: {error}")); }
     }
+    pub fn set_provenance(&self, session: &str, provenance: Option<maho_ext_api::ForkProvenance>) {
+        if let Ok(mut map) = self.provenances.write() {
+            if let Some(prov) = provenance {
+                map.insert(session.to_owned(), prov);
+            } else {
+                map.remove(session);
+            }
+        }
+    }
+    pub fn provenance(&self, session: &str) -> Option<maho_ext_api::ForkProvenance> {
+        self.provenances.read().ok().and_then(|map| map.get(session).cloned())
+    }
     pub fn enqueue_settled(&self, conversation: &str, signal: Option<&FactsAbortSignal>) -> FactsEnqueueResult {
+        let provenance = self.provenance(conversation);
+        self.enqueue_settled_with_provenance(conversation, signal, provenance.as_ref())
+    }
+    pub fn enqueue_settled_with_provenance(
+        &self,
+        conversation: &str,
+        signal: Option<&FactsAbortSignal>,
+        provenance: Option<&maho_ext_api::ForkProvenance>,
+    ) -> FactsEnqueueResult {
         if signal.is_some_and(FactsAbortSignal::is_aborted) || !(self.options.facts_enabled)() { return disabled(); }
         let enqueue = || {
             let journal = TranscriptJournal::new(TranscriptJournalOptions::new(self.options.identity_paths.transcripts.join(conversation)));
             let entries = journal.read_entries().map_err(|error| error.to_string())?;
             if signal.is_some_and(FactsAbortSignal::is_aborted) || entries.is_empty() { return Ok(disabled()); }
+
+            if let Some(prov) = provenance
+                && let Ok(cursor) = self.queue.read_cursor(conversation)
+            {
+                let has_cursor = cursor.enqueued_through_snapshot_line >= 0 || cursor.enqueued_through_message_id.is_some();
+                if !has_cursor
+                    && let Some((end_msg_id, end_line)) = resolve_boundary_to_canonical(&entries, prov)
+                    && let Err(error) = self.queue.seed_enqueued_through(conversation, &end_msg_id, end_line)
+                {
+                    (self.options.warn)(&format!("facts queue seed failed: {conversation}: {error}"));
+                }
+            }
+
             self.queue.enqueue(FactsEnqueueRequest { identity:self.options.identity.clone(), session_id:conversation.into(), conversation_id:conversation.into(), entries, signal:signal.cloned() }).map_err(|error| error.to_string())
         };
         match enqueue() { Ok(result) => result, Err(error) => { (self.options.warn)(&format!("facts queue enqueue failed: {conversation}: {error}")); disabled() } }
@@ -97,6 +147,49 @@ impl MemoryFactsWiring {
     pub fn mark_consumed(&self, entries: &[FactsQueueEntry]) {
         if let Err(error) = self.queue.mark_consumed(entries) { (self.options.warn)(&format!("facts queue consume failed: {error}")); }
     }
+}
+
+pub fn resolve_boundary_to_canonical(
+    entries: &[memory_core::journal::TranscriptEntry],
+    provenance: &maho_ext_api::ForkProvenance,
+) -> Option<(String, u64)> {
+    let boundary_id = provenance.inherited_through_entry_id.as_deref()?;
+    let mut last_canonical: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if memory_core::journal::is_canonical_entry(entry) {
+            last_canonical.insert(entry.source_message_id(), index);
+        }
+    }
+    if let Some(&idx) = last_canonical.get(boundary_id) {
+        return Some((entries[idx].source_message_id().to_string(), (idx + 1) as u64));
+    }
+    let parent_path = std::path::Path::new(&provenance.parent_session);
+    if let Ok(file) = std::fs::File::open(parent_path) {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(file);
+        let mut preceding_message_id: Option<String> = None;
+        for line_result in reader.lines() {
+            let Ok(line) = line_result else { continue };
+            let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            if val.get("type").and_then(serde_json::Value::as_str) == Some("session") { continue; }
+            let id = val.get("id").and_then(serde_json::Value::as_str);
+            if val.get("type").and_then(serde_json::Value::as_str) == Some("message")
+                && let Some(msg_id) = id
+                && last_canonical.contains_key(msg_id)
+            {
+                preceding_message_id = Some(msg_id.to_string());
+            }
+            if id == Some(boundary_id) {
+                break;
+            }
+        }
+        if let Some(msg_id) = preceding_message_id
+            && let Some(&idx) = last_canonical.get(msg_id.as_str())
+        {
+            return Some((entries[idx].source_message_id().to_string(), (idx + 1) as u64));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -195,4 +288,214 @@ mod tests {
     #[test] fn disabled_never_launches_or_reconciles() { let root=tempfile::tempdir().unwrap(); let (mut wiring,calls)=fixture(root.path(),false,Rc::new(Cell::new(1))); wiring.on_settled("conversation"); wiring.reconcile_extractor(); assert!(wiring.reconcile_pending().is_empty()); assert_eq!(calls.get(),0); }
     #[tokio::test] async fn lowered_threshold_allows_shutdown_launch_once() { let root=tempfile::tempdir().unwrap(); let threshold=Rc::new(Cell::new(4)); let (mut wiring,calls)=fixture(root.path(),true,threshold.clone()); wiring.on_settled("conversation"); threshold.set(1); assert!(wiring.launch_if_threshold_met(None).await); assert!(!wiring.launch_if_threshold_met(None).await); assert_eq!(calls.get(),1); }
     #[tokio::test] async fn aborted_signal_prevents_enqueue_and_threshold_launch() { let root=tempfile::tempdir().unwrap(); let threshold=Rc::new(Cell::new(4)); let (mut wiring,calls)=fixture(root.path(),true,threshold.clone()); wiring.on_settled("conversation"); threshold.set(1); let signal=FactsAbortSignal::new(); signal.abort(); assert!(!wiring.enqueue_settled("conversation",Some(&signal)).is_enqueued()); assert!(!wiring.launch_if_threshold_met(Some(&signal)).await); assert_eq!(calls.get(),0); assert!(wiring.launch_if_threshold_met(None).await); }
+
+    fn text_entry(role: &str, msg_id: &str, text: &str) -> memory_core::journal::TranscriptEntry {
+        memory_core::journal::TranscriptEntry::Text(
+            memory_core::journal::TextTranscriptEntry::new(
+                role,
+                text,
+                "2026-01-01T00:00:00.000Z",
+                format!("{msg_id}:{role}"),
+                msg_id,
+            ),
+        )
+    }
+
+    #[test]
+    fn test_fork_with_3_inherited_and_1_new_message_enqueues_only_the_new_message() {
+        let root = tempfile::tempdir().unwrap();
+        let (wiring, _) = fixture(root.path(), true, Rc::new(Cell::new(4)));
+        let journal = TranscriptJournal::new(TranscriptJournalOptions::new(
+            wiring.options.identity_paths.transcripts.join("fork-session"),
+        ));
+        journal
+            .append(&[
+                text_entry("user", "m1", "First"),
+                text_entry("assistant", "m2", "Second"),
+                text_entry("user", "m3", "Third"),
+                text_entry("assistant", "m4", "Fourth"),
+            ])
+            .unwrap();
+
+        let prov = maho_ext_api::ForkProvenance {
+            parent_session: "/dummy/parent/session.jsonl".to_string(),
+            inherited_through_entry_id: Some("m3".to_string()),
+        };
+        wiring.set_provenance("fork-session", Some(prov));
+
+        let result = wiring.enqueue_settled("fork-session", None);
+        let entry = match result {
+            FactsEnqueueResult::Enqueued { entry } => entry,
+            other => panic!("expected enqueued, got {other:?}"),
+        };
+        assert_eq!(entry.range.start_message_id, "m4");
+        assert_eq!(entry.range.end_message_id, "m4");
+        assert_eq!(entry.range.start_line, 3);
+        assert_eq!(entry.entries.len(), 1);
+        assert_eq!(entry.entries[0].source_message_id(), "m4");
+    }
+
+    #[test]
+    fn test_shutdown_before_first_settle_on_a_fork_seeds_the_same_way() {
+        let root = tempfile::tempdir().unwrap();
+        let (wiring, _) = fixture(root.path(), true, Rc::new(Cell::new(4)));
+        let journal = TranscriptJournal::new(TranscriptJournalOptions::new(
+            wiring.options.identity_paths.transcripts.join("shutdown-fork"),
+        ));
+        journal
+            .append(&[
+                text_entry("user", "m1", "First"),
+                text_entry("assistant", "m2", "Second"),
+                text_entry("user", "m3", "Third"),
+                text_entry("assistant", "m4", "Fourth"),
+            ])
+            .unwrap();
+
+        let prov = maho_ext_api::ForkProvenance {
+            parent_session: "/dummy/parent/session.jsonl".to_string(),
+            inherited_through_entry_id: Some("m3".to_string()),
+        };
+        // Provenance captured during shutdown before first settle
+        wiring.set_provenance("shutdown-fork", Some(prov));
+
+        let result = wiring.enqueue_settled("shutdown-fork", None);
+        let entry = match result {
+            FactsEnqueueResult::Enqueued { entry } => entry,
+            other => panic!("expected enqueued, got {other:?}"),
+        };
+        assert_eq!(entry.range.start_message_id, "m4");
+        assert_eq!(entry.range.end_message_id, "m4");
+        assert_eq!(entry.range.start_line, 3);
+        assert_eq!(entry.entries.len(), 1);
+    }
+
+    #[test]
+    fn test_non_fork_still_enqueues_from_line_0() {
+        let root = tempfile::tempdir().unwrap();
+        let (wiring, _) = fixture(root.path(), true, Rc::new(Cell::new(4)));
+        let journal = TranscriptJournal::new(TranscriptJournalOptions::new(
+            wiring.options.identity_paths.transcripts.join("non-fork"),
+        ));
+        journal
+            .append(&[
+                text_entry("user", "m1", "First"),
+                text_entry("assistant", "m2", "Second"),
+                text_entry("user", "m3", "Third"),
+            ])
+            .unwrap();
+
+        // No provenance set
+        let result = wiring.enqueue_settled("non-fork", None);
+        let entry = match result {
+            FactsEnqueueResult::Enqueued { entry } => entry,
+            other => panic!("expected enqueued, got {other:?}"),
+        };
+        assert_eq!(entry.range.start_line, 0);
+        assert_eq!(entry.range.start_message_id, "m1");
+        assert_eq!(entry.range.end_message_id, "m3");
+        assert_eq!(entry.entries.len(), 3);
+    }
+
+    #[test]
+    fn test_old_style_fork_with_unreadable_parent_not_seeded() {
+        let root = tempfile::tempdir().unwrap();
+        let (wiring, _) = fixture(root.path(), true, Rc::new(Cell::new(4)));
+        let journal = TranscriptJournal::new(TranscriptJournalOptions::new(
+            wiring.options.identity_paths.transcripts.join("unreadable-parent"),
+        ));
+        journal
+            .append(&[
+                text_entry("user", "m1", "First"),
+                text_entry("assistant", "m2", "Second"),
+                text_entry("user", "m3", "Third"),
+                text_entry("assistant", "m4", "Fourth"),
+            ])
+            .unwrap();
+
+        // Unreadable parent with no inherited boundary id
+        let prov = maho_ext_api::ForkProvenance {
+            parent_session: "/nonexistent/unreadable/parent.jsonl".to_string(),
+            inherited_through_entry_id: None,
+        };
+        wiring.set_provenance("unreadable-parent", Some(prov));
+
+        let result = wiring.enqueue_settled("unreadable-parent", None);
+        let entry = match result {
+            FactsEnqueueResult::Enqueued { entry } => entry,
+            other => panic!("expected enqueued, got {other:?}"),
+        };
+        // Not seeded -> starts from line 0
+        assert_eq!(entry.range.start_line, 0);
+        assert_eq!(entry.range.start_message_id, "m1");
+        assert_eq!(entry.range.end_message_id, "m4");
+        assert_eq!(entry.entries.len(), 4);
+    }
+
+    #[test]
+    fn test_seed_enqueued_through_failure_reports_warning() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut wiring, _) = fixture(root.path(), true, Rc::new(Cell::new(4)));
+        let (warn_tx, warn_rx) = std::sync::mpsc::channel();
+        wiring.options.warn = Arc::new(move |msg| {
+            let _ = warn_tx.send(msg.to_string());
+        });
+        let journal = TranscriptJournal::new(TranscriptJournalOptions::new(
+            wiring.options.identity_paths.transcripts.join("seed-fail"),
+        ));
+        journal
+            .append(&[
+                text_entry("user", "m1", "First"),
+                text_entry("assistant", "m2", "Second"),
+            ])
+            .unwrap();
+
+        // Make the temporary cursor path a directory so write_cursor fails deterministically while reading cursor succeeds
+        let queue_paths = memory_core::facts::schema::facts_queue_paths(&wiring.options.identity_paths);
+        std::fs::create_dir_all(&queue_paths.cursor_dir).unwrap();
+        let cursor_path = queue_paths.cursor_path("seed-fail");
+        let tmp_path = std::path::PathBuf::from(format!("{}.tmp", cursor_path.display()));
+        std::fs::create_dir_all(&tmp_path).unwrap();
+
+        let prov = maho_ext_api::ForkProvenance {
+            parent_session: "/dummy/parent/session.jsonl".to_string(),
+            inherited_through_entry_id: Some("m1".to_string()),
+        };
+        wiring.set_provenance("seed-fail", Some(prov));
+
+        let _ = wiring.enqueue_settled("seed-fail", None);
+
+        let warnings: Vec<String> = warn_rx.try_iter().collect();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("facts queue seed failed: seed-fail")),
+            "expected seed warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_boundary_to_canonical_streams_parent_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        let parent_file = root.path().join("parent.jsonl");
+        let parent_content = [
+            r#"{"type":"session","id":"sess-1"}"#,
+            r#"{"type":"message","id":"m1","message":{"role":"user","content":"first"}}"#,
+            r#"{"type":"thought","id":"t1","content":"thinking"}"#,
+            r#"{"type":"message","id":"m2","message":{"role":"assistant","content":"second"}}"#,
+            r#"{"type":"tool_call","id":"tc1","tool":"test"}"#,
+        ].join("\n");
+        std::fs::write(&parent_file, parent_content).unwrap();
+
+        let entries = vec![
+            text_entry("user", "m1", "first"),
+            text_entry("assistant", "m2", "second"),
+        ];
+
+        let prov = maho_ext_api::ForkProvenance {
+            parent_session: parent_file.to_str().unwrap().to_string(),
+            inherited_through_entry_id: Some("tc1".to_string()),
+        };
+        let resolved = resolve_boundary_to_canonical(&entries, &prov);
+        assert_eq!(resolved, Some(("m2".to_string(), 2)));
+    }
 }
