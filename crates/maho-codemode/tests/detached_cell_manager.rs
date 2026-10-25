@@ -104,6 +104,19 @@ async fn disposal_dequeues_before_interrupt_and_flushes_notifications() {
 }
 
 #[tokio::test]
+async fn stop_settles_running_cell_even_before_detachment() {
+    let manager=Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default())));
+    let cell=manager.lock().unwrap().create("orphan".into(),input(EvalLanguage::Js)).unwrap();
+    manager.lock().unwrap().bind_kernel(&cell,Arc::new(||AgentToolResult::text("partial")),Arc::new(||(None,vec![])));
+    manager.lock().unwrap().mark_running(&cell);
+
+    let result=EvalDetachedCellManager::stop(&manager,"orphan","stop orphan").await.unwrap();
+
+    assert_eq!(result.state,EvalDetachedCellState::Cancelled);
+    assert!(manager.lock().unwrap().live_cells(None,None).is_empty());
+}
+
+#[tokio::test]
 async fn deadline_killed_cell_settles_cancelled_not_failed() {
     let mut manager = EvalDetachedCellManager::new(DetachedCellManagerOptions::default());
     let cell = manager.create("killed".into(), input(EvalLanguage::Js)).unwrap();
