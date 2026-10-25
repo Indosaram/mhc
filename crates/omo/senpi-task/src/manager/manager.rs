@@ -1343,6 +1343,7 @@ impl TaskManager {
                 claimed = true;
                 TaskRecord {
                     host_pid: Some(self.inner.host_pid),
+                    queued_admission: None,
                     ..fresh.clone()
                 }
             })
@@ -2305,6 +2306,18 @@ impl TaskManager {
             return Err("resume suspended".into());
         }
         lock(&self.inner.state).resume_attempts.remove(task_id);
+        self.inner
+            .store
+            .mutate(task_id, &mut |fresh: &TaskRecord| {
+                if fresh.notification.run_epoch != epoch {
+                    return fresh.clone();
+                }
+                TaskRecord {
+                    queued_admission: None,
+                    ..fresh.clone()
+                }
+            })
+            .map_err(|error| error.to_string())?;
         Ok(())
     }
 
