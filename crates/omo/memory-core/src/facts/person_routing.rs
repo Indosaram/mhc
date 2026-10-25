@@ -355,7 +355,7 @@ fn render_explicit_observations(
             }
             None => explicit.push(ObservationEntry {
                 date: record.date().to_string(),
-                content: record.text().to_string(),
+                content: record.rendered_text(),
                 ..ObservationEntry::default()
             }),
         }

@@ -12,6 +12,7 @@ const T0_MILLIS: i64 = 1786838400000;
 fn test_envelope() -> FactsPayloadEnvelope {
     FactsPayloadEnvelope {
         version: 1,
+            agreement_event_version: Some(1),
         identity: "facts-agent".to_string(),
         today: "2026-08-16".to_string(),
         known_people: Vec::new(),
@@ -43,6 +44,7 @@ fn sample_entry(
     .expect("valid transcript entry");
 
     FactsQueueEntry {
+        lead: None,
         version: FACTS_QUEUE_VERSION,
         identity: "facts-agent".to_string(),
         session_id: conversation_id.to_string(),

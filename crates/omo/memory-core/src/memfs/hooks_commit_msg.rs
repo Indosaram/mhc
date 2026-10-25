@@ -50,6 +50,11 @@ pub fn with_memory_hook_checker(
 
     let exec_quoted = shell_quote(&checker.exec_path);
     let script_quoted = shell_quote(&checker.script);
+    if checker.script.is_empty() {
+        let extra_arg = if stage == "commit-msg" { " \"$1\"" } else { "" };
+        let block = format!("omo_hook_runtime={exec_quoted}\nif [ -f \"$omo_hook_runtime\" ]; then\n  \"$omo_hook_runtime\" --memory-hook {stage}{extra_arg} || exit 1\n{}fi", if stage == "commit-msg" { "  exit 0\n" } else { "" });
+        return format!("{}{}\n{}", &script[..=anchor], block, &script[anchor + 1..]);
+    }
     let extra_arg = if stage == "commit-msg" { " \"$1\"" } else { "" };
     let exit_zero = if stage == "commit-msg" { "\n  exit 0" } else { "" };
 

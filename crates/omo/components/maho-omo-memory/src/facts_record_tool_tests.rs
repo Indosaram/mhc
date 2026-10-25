@@ -13,6 +13,7 @@ async fn given_a_one_record_budget_when_calls_race_then_the_count_is_reserved_be
     let failures = Arc::new(Mutex::new(Vec::new()));
     let failures_cb = Arc::clone(&failures);
     let tool = Arc::new(create_facts_record_tool(FactsRecordToolInput {
+                exchanges: Vec::new(),
         extraction_path: path.clone(),
         max_records: Some(1),
         max_bytes: None,
@@ -69,7 +70,8 @@ async fn given_an_exact_jsonl_byte_budget_when_two_calls_race_then_only_one_rese
         serde_json::to_string(&serde_json::json!({
             "scope": "project",
             "text": "é🌍",
-            "date": "2026-08-10"
+            "date": "2026-08-10",
+            "receipt": {"source":"inferred"}
         }))
         .unwrap()
     );
@@ -78,6 +80,7 @@ async fn given_an_exact_jsonl_byte_budget_when_two_calls_race_then_only_one_rese
     let failures = Arc::new(Mutex::new(Vec::new()));
     let failures_cb = Arc::clone(&failures);
     let tool = Arc::new(create_facts_record_tool(FactsRecordToolInput {
+                exchanges: Vec::new(),
         extraction_path: path.clone(),
         max_records: None,
         max_bytes: Some(line_bytes),
@@ -114,6 +117,7 @@ fn given_a_bounded_extraction_append_error_when_recording_fails_then_the_owner_i
 
     // Use a directory path instead of a file so append fails with EISDIR
     let tool = create_facts_record_tool(FactsRecordToolInput {
+                exchanges: Vec::new(),
         extraction_path: root.path().to_path_buf(),
         max_records: None,
         max_bytes: None,
@@ -153,6 +157,7 @@ fn given_malformed_records_when_the_tool_is_called_then_it_returns_errors_and_ap
     std::fs::write(&path, "seed\n").unwrap();
 
     let tool = create_facts_record_tool(FactsRecordToolInput {
+                exchanges: Vec::new(),
         extraction_path: path.clone(),
         max_records: None,
         max_bytes: None,
@@ -186,6 +191,7 @@ fn given_valid_person_and_project_records_when_recorded_in_order_then_exact_json
     std::fs::write(&path, "").unwrap();
 
     let tool = create_facts_record_tool(FactsRecordToolInput {
+                exchanges: Vec::new(),
         extraction_path: path.clone(),
         max_records: None,
         max_bytes: None,
@@ -215,8 +221,8 @@ fn given_valid_person_and_project_records_when_recorded_in_order_then_exact_json
 
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        "{\"scope\":\"person\",\"person\":{\"name\":\"Mina\",\"aliases\":[\"Min\"]},\"text\":\"Mina prefers Bun.\",\"date\":\"2026-08-10\"}\n\
-         {\"scope\":\"project\",\"text\":\"The project uses Bun.\",\"date\":\"2026-08-10\"}\n"
+        "{\"scope\":\"person\",\"person\":{\"name\":\"Mina\",\"aliases\":[\"Min\"]},\"text\":\"Mina prefers Bun.\",\"date\":\"2026-08-10\",\"receipt\":{\"source\":\"inferred\"}}\n\
+         {\"scope\":\"project\",\"text\":\"The project uses Bun.\",\"date\":\"2026-08-10\",\"receipt\":{\"source\":\"inferred\"}}\n"
     );
 }
 
@@ -228,6 +234,7 @@ fn given_an_inactive_facts_run_when_a_late_call_arrives_then_it_returns_an_error
     std::fs::write(&path, "").unwrap();
 
     let tool = create_facts_record_tool(FactsRecordToolInput {
+                exchanges: Vec::new(),
         extraction_path: path.clone(),
         max_records: None,
         max_bytes: None,
@@ -259,6 +266,7 @@ fn given_a_cancelled_facts_run_state_when_called_then_it_returns_an_error_withou
 
     let cancelled = Arc::new(AtomicBool::new(true));
     let tool = create_facts_record_tool(FactsRecordToolInput {
+                exchanges: Vec::new(),
         extraction_path: path.clone(),
         max_records: None,
         max_bytes: None,
@@ -291,6 +299,7 @@ fn given_a_call_budget_when_rejected_calls_count_then_the_limit_blocks_and_on_ca
     let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let seen_cb = Arc::clone(&seen);
     let tool = create_facts_record_tool(FactsRecordToolInput {
+                exchanges: Vec::new(),
         extraction_path: path,
         max_records: None,
         max_bytes: None,
@@ -310,4 +319,31 @@ fn given_a_call_budget_when_rejected_calls_count_then_the_limit_blocks_and_on_ca
         "Fact rejected: the facts tool-call limit (2) has been reached"
     );
     assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[test]
+fn repeated_validation_refusal_ends_without_discarding_prior_facts() {
+    let root=tempdir().unwrap();let path=root.path().join("facts.jsonl");
+    let tool=create_facts_record_tool(FactsRecordToolInput{exchanges:vec![],extraction_path:path.clone(),max_records:None,max_bytes:None,on_failure:None,max_calls:None,on_call:None,state:None});
+    assert!(!tool.execute("ok",&serde_json::json!({"scope":"project","text":"kept","date":"2026-10-01"})).is_error);
+    let rejected=serde_json::json!({"scope":"wrong","text":"bad","date":"2026-10-01"});
+    assert!(tool.execute("one",&rejected).is_error);
+    assert!(!tool.ended.load(Ordering::Acquire));
+    assert!(tool.execute("two",&rejected).is_error);
+    assert!(tool.ended.load(Ordering::Acquire));
+    assert_eq!(std::fs::read_to_string(path).unwrap().lines().count(),1);
+}
+#[test]
+fn verified_receipt_can_match_any_adjacent_payload_exchange() {
+    let root=tempdir().unwrap();let path=root.path().join("facts.jsonl");
+    let tool=create_facts_record_tool(FactsRecordToolInput{exchanges:vec![crate::consent_exchange::ConsentExchange{proposal:"Delete X?".into(),reply:"Yes delete it!".into()},crate::consent_exchange::ConsentExchange{proposal:"Other?".into(),reply:"no".into()}],extraction_path:path.clone(),max_records:None,max_bytes:None,on_failure:None,max_calls:None,on_call:None,state:None});
+    assert!(!tool.execute("ok",&serde_json::json!({"scope":"project","text":"Delete X","date":"2026-10-01","source":"user","user_quote":"yes delete it"})).is_error);
+    let record:serde_json::Value=serde_json::from_str(std::fs::read_to_string(path).unwrap().trim()).unwrap();
+    assert_eq!(record["receipt"]["source"],"user");assert_eq!(record["receipt"]["userQuote"],"Yes delete it!");
+}
+
+#[test]
+fn payload_exchanges_keep_queue_lead_and_break_on_image_only_user_or_tools(){
+ let payload:memory_core::facts::FactsPayload=serde_json::from_value(serde_json::json!({"version":1,"identity":"agent","today":"2026-10-01","knownPeople":[],"primaryHuman":{"slug":"human","aliases":[]},"entries":[{"version":1,"identity":"agent","sessionId":"session","conversationId":"session","enqueuedAt":"2026-10-01T00:00:00Z","range":{"start_message_id":"u1","end_message_id":"u2","start_line":0,"end_snapshot_line":3},"lead":{"kind":"assistant","text":"Delete X?","captured_at":"now","source_line_id":"a","source_message_id":"a"},"entries":[{"kind":"reasoning","text":"ignored","captured_at":"now","source_line_id":"r","source_message_id":"r"},{"kind":"user","text":"ok","captured_at":"now","source_line_id":"u1","source_message_id":"u1"},{"kind":"user","text":"","captured_at":"now","source_line_id":"u2","source_message_id":"u2"}]}]})).unwrap();
+ let exchanges=payload_exchanges(&payload);assert_eq!(exchanges.len(),1);assert_eq!(exchanges[0].proposal,"Delete X?");
 }

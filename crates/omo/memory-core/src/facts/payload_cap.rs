@@ -31,6 +31,8 @@ pub struct FactsPrimaryHuman {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FactsPayloadEnvelope {
     pub version: u32,
+    #[serde(rename = "agreementEventVersion", default, skip_serializing_if = "Option::is_none")]
+    pub agreement_event_version: Option<u32>,
     pub identity: String,
     pub today: String,
     #[serde(rename = "knownPeople")]
@@ -46,6 +48,7 @@ impl FactsPayloadEnvelope {
     pub fn to_payload(&self, entries: Vec<FactsQueueEntry>) -> FactsPayload {
         FactsPayload {
             version: self.version,
+            agreement_event_version: self.agreement_event_version,
             identity: self.identity.clone(),
             today: self.today.clone(),
             known_people: self.known_people.clone(),
@@ -60,6 +63,8 @@ impl FactsPayloadEnvelope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FactsPayload {
     pub version: u32,
+    #[serde(rename = "agreementEventVersion", default, skip_serializing_if = "Option::is_none")]
+    pub agreement_event_version: Option<u32>,
     pub identity: String,
     pub today: String,
     #[serde(rename = "knownPeople")]
@@ -200,6 +205,8 @@ where
 #[derive(Serialize)]
 struct FactsPayloadView<'a> {
     version: u32,
+    #[serde(rename = "agreementEventVersion", skip_serializing_if = "Option::is_none")]
+    agreement_event_version: Option<u32>,
     identity: &'a str,
     today: &'a str,
     #[serde(rename = "knownPeople")]
@@ -229,6 +236,7 @@ impl std::io::Write for ByteCounter {
 fn measure_entries_bytes(envelope: &FactsPayloadEnvelope, entries: &[&FactsQueueEntry]) -> usize {
     let view = FactsPayloadView {
         version: envelope.version,
+        agreement_event_version: envelope.agreement_event_version,
         identity: &envelope.identity,
         today: &envelope.today,
         known_people: &envelope.known_people,

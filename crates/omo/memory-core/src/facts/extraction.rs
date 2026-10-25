@@ -26,15 +26,29 @@ pub enum FactsExtractionRecord {
     Project {
         text: String,
         date: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receipt: Option<serde_json::Value>,
     },
     Person {
         person: FactsPersonReference,
         text: String,
         date: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receipt: Option<serde_json::Value>,
     },
 }
 
 impl FactsExtractionRecord {
+    pub fn rendered_text(&self) -> String {
+        let receipt = match self { Self::Project { receipt, .. } | Self::Person { receipt, .. } => receipt.as_ref() };
+        let Some(receipt) = receipt else { return self.text().to_owned(); };
+        let claim = match receipt.get("source").and_then(serde_json::Value::as_str) {
+            Some("user") => crate::tools::claim_frontmatter::ClaimReceipt::User { user_quote: receipt["userQuote"].as_str().unwrap_or_default().into(), approves: receipt["approves"].as_str().unwrap_or_default().into() },
+            Some("agent") => crate::tools::claim_frontmatter::ClaimReceipt::Agent { downgraded: receipt["downgraded"].as_bool() == Some(true) },
+            _ => crate::tools::claim_frontmatter::ClaimReceipt::Inferred,
+        };
+        format!("{} (source: {})", self.text(), crate::tools::claim_frontmatter::render_claim_receipt(&claim))
+    }
     /// Return the fact text.
     pub fn text(&self) -> &str {
         match self {
@@ -358,8 +372,8 @@ pub fn parse_facts_extraction_record(
         if obj.contains_key("person") {
             return Err(invalid(index, "project record must not carry person"));
         }
-        assert_allowed_keys(obj, &["scope", "text", "date"], index)?;
-        return Ok(FactsExtractionRecord::Project { text, date });
+        assert_allowed_keys(obj, &["scope", "text", "date", "receipt"], index)?;
+        return Ok(FactsExtractionRecord::Project { text, date, receipt: obj.get("receipt").cloned() });
     }
 
     if scope != "person" {
@@ -369,7 +383,7 @@ pub fn parse_facts_extraction_record(
     if !obj.contains_key("person") {
         return Err(invalid(index, "person record requires person"));
     }
-    assert_allowed_keys(obj, &["scope", "person", "text", "date"], index)?;
+    assert_allowed_keys(obj, &["scope", "person", "text", "date", "receipt"], index)?;
 
     let Some(person_obj) = obj.get("person").and_then(|v| v.as_object()) else {
         return Err(invalid(index, "person must be an object"));
@@ -394,6 +408,7 @@ pub fn parse_facts_extraction_record(
         person: FactsPersonReference { name, aliases },
         text,
         date,
+        receipt: obj.get("receipt").cloned(),
     })
 }
 

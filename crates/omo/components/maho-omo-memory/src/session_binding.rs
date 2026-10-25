@@ -211,7 +211,8 @@ pub fn create_session_binder(deps: SessionBinderDeps) -> SessionBinder {
         );
         let context =
             MemoryIdentityContext::new(identity.id.clone(), run.paths.clone(), binding.clone())
-                .with_durable_root(run.durable_root.clone());
+                .with_durable_root(run.durable_root.clone())
+                .with_project_scope(crate::context::ProjectScope { memory_root: memory_root.clone(), auto_identity: settings["auto_identity"].as_str().unwrap_or("project").to_owned() });
         state.run = Some(run);
         state.context = Some(context.clone());
         MEMORY_MODULE_SUPERVISOR.acquire();

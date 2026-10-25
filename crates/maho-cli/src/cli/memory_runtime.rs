@@ -290,17 +290,36 @@ impl MemoryRuntime {
             reflect: Some({
                 let this = this.clone();
                 Arc::new(move |session, event| {
-                    let identity = this.identity(session).ok_or("no bound memory session")?;
+                    let this = this.clone();
+                    Box::pin(async move {
+                    let identity = this.identity(&session).ok_or("no bound memory session")?;
                     let worker = this.worker(&identity)?;
+                    let reflection = &identity.identity_paths.reflection;
+                    let before = maho_omo_memory::reflection_stale_active::classify_active_reflection_holder(reflection, None);
+                    let mut recovered_run_id = None;
+                    if let maho_omo_memory::reflection_stale_active::ActiveHolderVerdict::Dead { run_id } = &before {
+                        this.reconcile_worker(&worker).await?;
+                        if matches!(maho_omo_memory::reflection_stale_active::classify_active_reflection_holder(reflection, None), maho_omo_memory::reflection_stale_active::ActiveHolderVerdict::None) { recovered_run_id = Some(run_id.clone()); }
+                    }
+                    let stuck = match maho_omo_memory::reflection_stale_active::classify_active_reflection_holder(reflection, None) {
+                        maho_omo_memory::reflection_stale_active::ActiveHolderVerdict::Stuck { run_id, reason } => Some(maho_omo_memory::reflection_stale_active::stale_reflection_lock_notice(reflection, &run_id, &reason)),
+                        _ => None,
+                    };
                     let result = worker
                         .store
-                        .evaluate(session, event)
+                        .evaluate(&session, event)
                         .map_err(|error| error.to_string())?
                         .ok_or("reflection reservation rejected")?;
                     if result.status == "active" {
                         this.launch(worker, result.run.clone(), true)?;
                     }
-                    Ok((result.status, result.run.run_id))
+                    Ok(maho_omo_memory::commands::types::ReflectionRequestReceipt {
+                        disposition: if result.status == "active" { maho_omo_memory::commands::types::ReflectionDisposition::Reserved } else { maho_omo_memory::commands::types::ReflectionDisposition::Pending },
+                        run_id: result.run.run_id,
+                        recovered_run_id,
+                        stuck,
+                    })
+                    })
                 })
             }),
             dream: Some(dream_sink),
@@ -542,7 +561,7 @@ impl MemoryRuntime {
         let worker = Arc::new(IdentityWorker {
             identity: identity.clone(),
             store,
-            runner: tokio::sync::Mutex::new(Default::default()),
+            runner: tokio::sync::Mutex::new({ let mut runner = worker::runner::SenpiSubprocessRunner::default(); runner.admission_memory_root = identity.durable_root.ancestors().nth(2).map(std::path::Path::to_path_buf); runner }),
             cache: tokio::sync::Mutex::new(Default::default()),
             sandbox: Mutex::new(Default::default()),
         });
@@ -563,13 +582,15 @@ impl MemoryRuntime {
             maho_omo_memory::model_registry_resolver::resolve_native_memory_model_registry(context);
         let sandbox_host = self.clone();
         let sandbox_identity = identity.identity.clone();
+        let facts_identity = identity.identity.clone();
+        let facts_session = context.model.as_ref().map(|model| worker::resolve_model::ReflectionSessionModel { provider: model.provider.clone(), id: model.id.clone(), thinking: None });
         let attempt = NativeFactsAttemptOptions {
             resolve_model: Arc::new(move || {
-                worker::resolve_model::resolve_reflection_model(
-                    "quick",
+                maho_omo_memory::facts_model::resolve_facts_model(
                     &(this.host.load_config)()?,
                     Some(&registry),
-                    None,
+                    facts_session.as_ref(),
+                    &facts_identity,
                 )
                 .map_err(|error| error.to_string())
             }),
