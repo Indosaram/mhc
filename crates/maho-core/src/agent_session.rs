@@ -5141,6 +5141,42 @@ impl AgentSession {
         Ok((messages, ids))
     }
 
+    pub async fn pause_for_run(
+        &self,
+        parent: &str,
+        pause_seq: u64,
+        run_ref: crate::run_holds::RunRef,
+    ) -> Result<crate::run_holds::InheritResult, String> {
+        let result = crate::run_holds::RunHolds::new(&mut lock(&self.engine_turn_hold))
+            .inherit(parent, pause_seq, run_ref)?;
+        if matches!(result, crate::run_holds::InheritResult::Inherited { .. }) {
+            self.abort().await;
+        }
+        self.refresh_lifecycle();
+        Ok(result)
+    }
+
+    pub async fn resume_for_run(
+        &self,
+        parent: &str,
+        pause_seq: u64,
+        child_seq_cutoff: u64,
+    ) -> Result<crate::run_holds::ReleaseInheritedResult, String> {
+        let result = crate::run_holds::RunHolds::new(&mut lock(&self.engine_turn_hold))
+            .release_inherited(parent, pause_seq, child_seq_cutoff)?;
+        if matches!(
+            result,
+            crate::run_holds::ReleaseInheritedResult::Released {
+                other_hold_live: false
+            }
+        ) && !self.paused()
+        {
+            self.deliver_held_inputs().await?;
+        }
+        self.refresh_lifecycle();
+        Ok(result)
+    }
+
     pub async fn deliver_held_inputs(&self) -> Result<(), String> {
         if self.held_inputs().is_empty() {
             return Ok(());
