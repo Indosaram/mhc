@@ -27,6 +27,7 @@ const MAX_SESSION_HEADER_SCAN_BYTES: usize = 1024 * 1024;
 pub struct NewSessionOptions {
     pub id: Option<String>,
     pub parent_session: Option<String>,
+    pub forked_from_leaf_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -1164,6 +1165,11 @@ impl SessionManager {
             false,
         )
         .map_err(|error| error.to_string())?;
+        let last_copied_entry_id = source_entries
+            .iter()
+            .rev()
+            .find(|entry| entry_type(entry) != "session")
+            .and_then(|entry| entry.get("id").and_then(Value::as_str));
         let header = json!({
             "type": "session",
             "version": CURRENT_SESSION_VERSION,
@@ -1171,6 +1177,7 @@ impl SessionManager {
             "timestamp": timestamp,
             "cwd": resolved_target_cwd,
             "parentSession": resolved_source_path,
+            "forkedFromLeafId": last_copied_entry_id,
         });
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -1480,6 +1487,12 @@ impl SessionManager {
             .and_then(|options| options.parent_session.clone())
         {
             header.insert("parentSession".to_owned(), Value::from(parent_session));
+        }
+        if let Some(forked_from_leaf_id) = options
+            .as_ref()
+            .and_then(|options| options.forked_from_leaf_id.clone())
+        {
+            header.insert("forkedFromLeafId".to_owned(), Value::from(forked_from_leaf_id));
         }
         self.file_entries = vec![Value::Object(header)];
         self.history_generation += 1;
@@ -2424,6 +2437,54 @@ impl SessionManager {
         self.session_name_cache.as_deref()
     }
 
+    pub fn fork_provenance(&self) -> Option<maho_ext_api::ForkProvenance> {
+        let header = self.header()?;
+        let parent_session = header.get("parentSession").and_then(Value::as_str)?.to_owned();
+        if let Some(leaf_val) = header.get("forkedFromLeafId") {
+            let inherited_through_entry_id = leaf_val.as_str().map(str::to_owned);
+            return Some(maho_ext_api::ForkProvenance {
+                parent_session,
+                inherited_through_entry_id,
+            });
+        }
+        // Old forks without the field: treat as fork only if parentSession is set and the parent
+        // session file is readable; boundary = last entry id present in both; else no seeding.
+        let resolved_parent = resolve_moved_session_path(&resolve_path(
+            &parent_session,
+            &parent_session,
+            &PathInputOptions::default(),
+        ));
+        if !Path::new(&resolved_parent).exists() {
+            return None;
+        }
+        let parent_entries = load_entries_from_file(&resolved_parent);
+        if parent_entries.is_empty()
+            || !parent_entries.iter().any(|entry| entry_type(entry) == "session")
+        {
+            return None;
+        }
+        let parent_ids: std::collections::HashSet<&str> = parent_entries
+            .iter()
+            .filter(|e| entry_type(e) != "session")
+            .filter_map(|e| e.get("id").and_then(Value::as_str))
+            .collect();
+        if parent_ids.is_empty() {
+            return None;
+        }
+        let boundary = self.entries().iter().rev().find_map(|e| {
+            let id = e.get("id").and_then(Value::as_str)?;
+            if parent_ids.contains(id) {
+                Some(id.to_owned())
+            } else {
+                None
+            }
+        })?;
+        Some(maho_ext_api::ForkProvenance {
+            parent_session,
+            inherited_through_entry_id: Some(boundary),
+        })
+    }
+
     pub fn branch(&self, leaf_id: Option<&str>) -> Vec<Value> {
         if let Some(id) = leaf_id
             && !self.by_id.contains_key(id)
@@ -3319,6 +3380,102 @@ mod tests {
             Some(target_dir.to_str().expect("target path"))
         );
         forked.dispose();
+    }
+
+    #[test]
+    fn fork_from_writes_boundary_and_fork_provenance_returns_it_after_reopen() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let source_dir = tmp.path().join("source");
+        let target_dir = tmp.path().join("target");
+        std::fs::create_dir_all(&source_dir).expect("source dir");
+        std::fs::create_dir_all(&target_dir).expect("target dir");
+        let source_file = source_dir.join("source-session.jsonl");
+        std::fs::write(
+            &source_file,
+            format!(
+                "{}\n{}\n{}\n",
+                serialize_entry(&header("source", Some(3), dir.as_str())),
+                serialize_entry(&json!({ "type": "message", "id": "entry-1", "message": { "role": "user" } })),
+                serialize_entry(&json!({ "type": "message", "id": "entry-2", "message": { "role": "assistant" } })),
+            ),
+        )
+        .expect("write source");
+
+        let mut forked = SessionManager::fork_from(
+            source_file.to_str().expect("source path"),
+            target_dir.to_str().expect("target path"),
+            Some(target_dir.to_str().expect("target dir")),
+            Some(NewSessionOptions {
+                id: Some("forked-session".to_owned()),
+                ..Default::default()
+            }),
+        )
+        .expect("fork");
+        let forked_file = forked.session_file().expect("forked session file").to_owned();
+
+        // Check header directly
+        let entries = load_entries_from_file(&forked_file);
+        assert_eq!(
+            entries.first().and_then(|entry| entry.get("forkedFromLeafId")).and_then(Value::as_str),
+            Some("entry-2")
+        );
+
+        // Check fork_provenance on live manager
+        let prov = forked.fork_provenance().expect("fork provenance");
+        assert_eq!(prov.parent_session, source_file.to_str().expect("source path"));
+        assert_eq!(prov.inherited_through_entry_id.as_deref(), Some("entry-2"));
+        forked.dispose();
+
+        // Reopen and check fork_provenance again
+        let mut reopened = SessionManager::open(&forked_file, Some(target_dir.to_str().expect("target dir")), Some(target_dir.to_str().expect("target path")), None).expect("reopen");
+        let prov_reopened = reopened.fork_provenance().expect("reopened fork provenance");
+        assert_eq!(prov_reopened.parent_session, source_file.to_str().expect("source path"));
+        assert_eq!(prov_reopened.inherited_through_entry_id.as_deref(), Some("entry-2"));
+        reopened.dispose();
+
+        // Old fork without forkedFromLeafId:
+        let old_fork_file = target_dir.join("old-fork.jsonl");
+        std::fs::write(
+            &old_fork_file,
+            format!(
+                "{}\n{}\n",
+                serialize_entry(&json!({
+                    "type": "session",
+                    "version": 3,
+                    "id": "old-fork",
+                    "timestamp": "2026-09-24T01:49:15.521Z",
+                    "cwd": target_dir.to_str().expect("target path"),
+                    "parentSession": source_file.to_str().expect("source path"),
+                })),
+                serialize_entry(&json!({ "type": "message", "id": "entry-1", "message": { "role": "user" } })),
+            ),
+        ).expect("write old fork");
+        let mut old_mgr = SessionManager::open(old_fork_file.to_str().expect("old fork file"), Some(target_dir.to_str().expect("target dir")), Some(target_dir.to_str().expect("target path")), None).expect("open old");
+        let old_prov = old_mgr.fork_provenance().expect("old fork provenance");
+        assert_eq!(old_prov.inherited_through_entry_id.as_deref(), Some("entry-1"));
+        old_mgr.dispose();
+
+        // Old fork with unreadable parent:
+        let broken_parent_fork_file = target_dir.join("broken-parent-fork.jsonl");
+        std::fs::write(
+            &broken_parent_fork_file,
+            format!(
+                "{}\n{}\n",
+                serialize_entry(&json!({
+                    "type": "session",
+                    "version": 3,
+                    "id": "broken-fork",
+                    "timestamp": "2026-09-24T01:49:15.521Z",
+                    "cwd": target_dir.to_str().expect("target path"),
+                    "parentSession": "/nonexistent/parent/session.jsonl",
+                })),
+                serialize_entry(&json!({ "type": "message", "id": "entry-1", "message": { "role": "user" } })),
+            ),
+        ).expect("write broken fork");
+        let mut broken_mgr = SessionManager::open(broken_parent_fork_file.to_str().expect("broken fork file"), Some(target_dir.to_str().expect("target dir")), Some(target_dir.to_str().expect("target path")), None).expect("open broken");
+        assert!(broken_mgr.fork_provenance().is_none());
+        broken_mgr.dispose();
     }
 
     #[test]
