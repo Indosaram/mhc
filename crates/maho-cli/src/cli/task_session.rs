@@ -888,6 +888,68 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_pause_receipts_are_real_and_idempotent() {
+        use senpi_task::pause::{native_child_pause::NativeRunPause, ports::*};
+        let root = tempfile::tempdir().unwrap();
+        let session =
+            maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
+                cwd: Some(root.path().to_string_lossy().into_owned()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .session;
+        let child = super::NativeChild::new(Arc::new(session), tokio::runtime::Handle::current());
+        tokio::task::spawn_blocking(move || {
+            let owner = RunPauseOwner {
+                parent_session_id: "parent".into(),
+                parent_pause_seq: 2,
+                run_ref: RunRef::task("task"),
+            };
+            assert!(matches!(
+                child.pause_for_run(owner).unwrap(),
+                EngineInheritReceipt::Inherited { .. }
+            ));
+            let input = HoldInput {
+                input_id: "input".into(),
+                revision: 1,
+                text: "guidance".into(),
+            };
+            let first = child.hold_input("parent", input.clone()).unwrap();
+            assert!(matches!(
+                first,
+                EngineHoldInputResult::Held {
+                    duplicate: false,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                child.hold_input("parent", input).unwrap(),
+                EngineHoldInputResult::Held {
+                    duplicate: true,
+                    ..
+                }
+            ));
+            assert!(
+                child
+                    .hold_input(
+                        "other",
+                        HoldInput {
+                            input_id: "other".into(),
+                            revision: 1,
+                            text: "wrong".into()
+                        }
+                    )
+                    .is_err()
+            );
+            assert!(child.observe_hold("parent").unwrap().unwrap().held);
+            assert!(child.observe_hold("other").unwrap().is_none());
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn native_child_shared_write_stays_in_child_cwd() {
         let root = tempfile::tempdir().expect("temporary workspace");
         let parent_cwd = root.path().join("parent");
@@ -1073,6 +1135,10 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
             let Ok(record) = maho_rpc::session_binding::session_event_record(event) else {
                 return;
             };
+            if record["type"] == "session_paused" {
+                let _ = settled.try_send(senpi_task::runners::RunnerOutcome::Cancelled);
+                return;
+            }
             if record["type"] == "agent_start" {
                 turn_started.store(true, std::sync::atomic::Ordering::Release);
             }
