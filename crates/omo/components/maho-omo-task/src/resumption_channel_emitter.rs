@@ -27,7 +27,7 @@ pub struct TaskResumptionChannelManager {
 
 #[derive(Clone, Copy)]
 enum Emission { Start, Changed, Shutdown }
-struct QueuedState { last_count: usize, last_ids: String, tail: Option<tokio::sync::oneshot::Receiver<()>> }
+struct QueuedState { last_ids: String, tail: Option<tokio::sync::oneshot::Receiver<()>> }
 pub struct QueuedResumptionChannelEmitter {
     events: EventBus,
     manager: Arc<dyn ResumptionChannelManager>,
@@ -88,7 +88,7 @@ impl QueuedResumptionChannelEmitter {
         Self::with_logger(events, manager, session_id, None)
     }
     pub fn with_logger(events: EventBus, manager: Arc<dyn ResumptionChannelManager>, session_id: Arc<dyn Fn() -> Option<String> + Send + Sync>, logger: Option<Arc<dyn Fn(&str) + Send + Sync>>) -> Arc<Self> {
-        Arc::new(Self { events, manager, session_id, logger, active: std::sync::atomic::AtomicBool::new(false), state: std::sync::Mutex::new(QueuedState { last_count: 0, last_ids: String::new(), tail: None }) })
+        Arc::new(Self { events, manager, session_id, logger, active: std::sync::atomic::AtomicBool::new(false), state: std::sync::Mutex::new(QueuedState { last_ids: String::new(), tail: None }) })
     }
     /// A store failure is logged ONCE per snapshot, never once per record.
     fn warn(&self, message: &str, error: &str) {
@@ -138,7 +138,7 @@ impl QueuedResumptionChannelEmitter {
                 let ids = channels.iter().filter_map(|channel| channel.get("id").and_then(Value::as_str).map(str::to_owned)).collect::<Vec<_>>().join("\u{0}");
                 let mut state = emitter.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 if matches!(emission, Emission::Changed) && ids == state.last_ids { return; }
-                state.last_ids = ids; state.last_count = channels.len();
+                state.last_ids = ids;
             }
             emitter.events.emit(RESUMPTION_CHANNEL_STATE_EVENT, &json!({"source":"senpi-task","kind":"children","activeCount":channels.len(),"items":channels,"channels":channels}));
         })

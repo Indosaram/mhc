@@ -125,8 +125,27 @@ pub struct TaskComponent {
     eval_handles: Mutex<Option<Arc<crate::eval_handle_host::TaskMutationObserver>>>,
     before_suspend: Mutex<Option<BeforeSuspendCallback>>,
     dag: Mutex<Option<Arc<crate::dag_engine::TaskDagEngine>>>,
+    /// `event-bridge.ts` pause custody: restored before the reconcile, applied on the host's Resume.
+    pause_custody: Mutex<Option<crate::event_bridge::TaskPauseCustody>>,
 }
 impl TaskComponent {
+    /// `event-bridge.ts` pause custody: restored on session start, applied on the host's Resume edge.
+    pub fn pause_custody(&self) -> Option<crate::event_bridge::TaskPauseCustody> {
+        self.pause_custody
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Wire the custody the bridge restores before the reconcile and applies on a Resume.
+    pub fn set_pause_custody(&self, api: &mut ExtensionApi, custody: crate::event_bridge::TaskPauseCustody) {
+        custody.register(api);
+        *self
+            .pause_custody
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(custody);
+    }
+
     pub fn bind_eval_workpools(
         &self,
         api: &mut ExtensionApi,
@@ -233,6 +252,8 @@ impl TaskComponent {
                 .session_id()
                 .map(str::to_owned)
         });
+        // The pause custody shares this session accessor; the channels take the original below.
+        let custody_session = session.clone();
         let channels = OwnedResumptionChannels::new(
             api.events.clone(),
             Arc::new(TaskResumptionChannelManager {
@@ -243,6 +264,10 @@ impl TaskComponent {
             session,
         )
         .map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+        // The on-demand memory report's task section: registered once, read only when requested.
+        if let Err(error) = crate::memory_reporter::register_task_memory_reporter(api, engine.memory.clone()) {
+            maho_ext_api::diagnostic(&format!("task memory reporter unavailable: {error}"));
+        }
         let dag_status_timers = status_timers;
         let status = TaskStatusUi::new(
             engine.manager.clone(),
@@ -275,12 +300,22 @@ impl TaskComponent {
             eval_handles: Mutex::new(None),
             before_suspend: Mutex::new(None),
             dag: Mutex::new(None),
+            pause_custody: Mutex::new(None),
         });
         let eval_handles = Arc::new(crate::eval_handle_host::TaskMutationObserver::default());
         *component
             .eval_handles
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(eval_handles.clone());
+        // The pause custody of this session: restored before the reconcile, resumed on the host's
+        // Resume edge. The bridge shares the engine's controller, so a Stop and a Resume see one ledger.
+        component.set_pause_custody(
+            api,
+            crate::event_bridge::TaskPauseCustody {
+                bridge: Arc::new(crate::run_pause_bridge::EngineRunPauseBridge::new(component.engine.pause.clone())),
+                session_id: custody_session,
+            },
+        );
         let state_dir = component.engine.store.state_dir().to_path_buf();
         component.engine.store.set_write_listener(Some(Arc::new(
             move |record, previous_status| {
@@ -424,6 +459,9 @@ impl TaskComponent {
         crate::reload_guard::wire_reload_guard(api, component.engine.manager.clone());
         let usage = api.get_flag("omo-task-usage-hint") != Some(FlagValue::Boolean(false));
         crate::event_bridge::wire_task_usage_guidance(api, Arc::new(move || usage));
+        // The hosted child's own session context, read once: it names the task id this process may
+        // claim on shutdown, and it must not be re-read per event.
+        let shutdown_context = api.profile.session_context.clone();
         for kind in [
             EventKind::SessionStart,
             EventKind::SessionBeforeSwitch,
@@ -434,10 +472,12 @@ impl TaskComponent {
             EventKind::AgentEnd,
         ] {
             let component = component.clone();
+            let shutdown_context = shutdown_context.clone();
             api.on(
                 kind,
                 Arc::new(move |event, context| {
                     let component = component.clone();
+                    let shutdown_context = shutdown_context.clone();
                     Box::pin(async move {
                         component
                             .engine
@@ -456,6 +496,20 @@ impl TaskComponent {
                                     .map_err(|error| {
                                         maho_ext_api::ExtensionFailure::new(error.to_string())
                                     })?;
+                                // Custody is restored BEFORE the reconcile reads records: a
+                                // restored Stop must already be in place when it scans them.
+                                let custody = component
+                                    .pause_custody
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .clone();
+                                if let Some(custody) = &custody
+                                    && let Some(pause_seq) = custody.restore()
+                                {
+                                    maho_ext_api::diagnostic(&format!(
+                                        "task session start restored a Stop at pause sequence {pause_seq}"
+                                    ));
+                                }
                                 let (lifecycle, owned_session) =
                                     (component.engine.lifecycle.clone(), session.to_owned());
                                 let reconciliation = tokio::task::spawn_blocking(move || {
@@ -632,8 +686,15 @@ impl TaskComponent {
                                         maho_ext_api::ExtensionFailure::new(error.to_string())
                                     })?;
                                 let lifecycle = component.engine.lifecycle.clone();
+                                // A hosted child suspends under ITS OWN task id, and only when the
+                                // canonical state dir proves the identity is ours.
+                                let owner = crate::event_bridge::shutdown_owner(
+                                    session,
+                                    &shutdown_context,
+                                    &component.engine.store.state_dir().to_path_buf(),
+                                );
                                 let input = senpi_task::lifecycle::SuspendInput {
-                                    own_task_id: None,
+                                    own_task_id: (owner != session).then_some(owner),
                                     parent_session_id: session.into(),
                                     reason: match shutdown.reason {
                                         maho_ext_api::SessionReason::Startup => "startup",

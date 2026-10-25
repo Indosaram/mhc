@@ -38,6 +38,9 @@ pub fn render_team_member_liveness(details: Option<&TeamMemberLivenessDetails<'_
 // adapter's message envelope here rather than modifying that engine type.
 #[derive(Deserialize)]
 struct CompletionPayload {
+    /// The run this completion belongs to; absent for a plain task child.
+    #[serde(default)]
+    run_ref: Option<senpi_task::pause::ports::RunRef>,
     task_id: String,
     name: String,
     status: String,

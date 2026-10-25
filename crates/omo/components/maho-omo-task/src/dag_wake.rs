@@ -117,3 +117,24 @@ impl DagWake {
 fn make_injection(run_id: &str, content: String, details: Value) -> IdleInjection {
     IdleInjection { key: format!("dag-run:{run_id}"), source: IdleInjectionSource::DagRun, custom_type: Some(DAG_WAKE_MESSAGE_TYPE.into()), content, display: Some(false), details: Some(details), passive: None, on_flushed: None, on_delivery_failed: None }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_user_stopped_run_requires_an_explicit_resume() {
+        let text = paused_wake_text("release", Some("user_stop"));
+        assert!(text.contains("paused by your Stop"));
+        assert!(text.contains("Resume the run to continue"));
+        // A shutdown pause is NOT a user stop: it resumes when the session restarts.
+        let shutdown = paused_wake_text("release", Some("session_shutdown"));
+        assert!(shutdown.contains("resume when the session restarts"));
+        assert!(paused_wake_text("release", None).contains("resume when the session restarts"));
+    }
+
+    #[test]
+    fn every_dag_wake_carries_its_run_reference() {
+        assert_eq!(dag_run_ref("dag_1"), json!({"kind":"dag","id":"dag_1"}));
+    }
+}

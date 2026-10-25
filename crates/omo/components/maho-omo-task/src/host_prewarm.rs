@@ -93,40 +93,52 @@ pub fn wire_host_prewarm(api: &mut ExtensionApi, engine: Arc<HostPrewarmEngine>)
     } else {
         "off".into()
     };
-    let mode = configured;
-    let warm = handle.warmed.clone();
+    let session_start_mode = configured == "session-start";
+    let first_turn_mode = configured == "first-turn";
     let start = engine.clone();
+    let warmed = handle.warmed.clone();
     api.on(EventKind::SessionStart, Arc::new(move |_, _| {
         let engine = start.clone();
+        let warmed = warmed.clone();
         Box::pin(async move {
             if let Some(session) = (engine.session_id)() {
                 if engine.resume_children != Some(false) && engine.reattach_on_reconcile != Some(false) {
                     warm_recorded_hosts(engine.as_ref(), &session);
                 }
-                if mode == "session-start" && warm.lock().unwrap_or_else(PoisonError::into_inner).insert(session, ()).is_none() {
+                if session_start_mode
+                    && warmed
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .insert(session, ())
+                        .is_none()
+                {
                     warm_own_host(engine.as_ref());
                 }
             }
             Ok(EventResult::None)
         })
     }));
-    if mode == "first-turn" {
+    if first_turn_mode {
+        let edges = engine.clone();
         for event in FIRST_TURN_EVENTS {
-            let engine = engine.clone();
-            let warm = handle.warmed.clone();
+            let engine = edges.clone();
+            let warmed = handle.warmed.clone();
             api.on(event, Arc::new(move |payload, context| {
                 // A preview payload is a read-only probe: it warms nothing and touches no state.
                 if (engine.is_preview)(payload) {
                     return Box::pin(async move { Ok(EventResult::None) });
                 }
                 let engine = engine.clone();
-                let warm = warm.clone();
-                let session = Some(context.session_manager.session_id().to_string());
+                let warmed = warmed.clone();
+                let session = context.session_manager.session_id().to_string();
                 Box::pin(async move {
-                    if let Some(session) = session {
-                        if warm.lock().unwrap_or_else(PoisonError::into_inner).insert(session, ()).is_none() {
-                            warm_own_host(engine.as_ref());
-                        }
+                    if warmed
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .insert(session, ())
+                        .is_none()
+                    {
+                        warm_own_host(engine.as_ref());
                     }
                     Ok(EventResult::None)
                 })

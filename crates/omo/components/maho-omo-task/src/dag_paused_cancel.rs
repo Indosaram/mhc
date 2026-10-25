@@ -104,7 +104,7 @@ mod tests {
         let cancel = create_paused_node_cancel(
             Arc::new(|_| unreachable!("the hold port is checked before the options are read")),
             None,
-            Arc::new(DagPauseStore::new(std::env::temp_dir())),
+            Arc::new(DagPauseStore::new(std::env::temp_dir().join("runs"))),
         );
         let error = cancel("dag_1", "n1").expect_err("no hold port refuses");
         assert_eq!(error.code, DagNodeControlErrorCode::NodeNotContinuable);

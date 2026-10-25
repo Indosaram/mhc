@@ -24,6 +24,9 @@ pub struct LeadInjection {
     pub key: String,
     pub source: &'static str,
     pub content: String,
+    /// The run this delivery belongs to (`runRef`). A per-team sink always names its team, so a
+    /// receiver can place the message even when several teams are live in one session.
+    pub run_ref: Option<crate::pause::ports::RunRef>,
     pub on_flushed: Option<OnFlushed>,
     pub on_delivery_failed: Option<OnDeliveryFailed>,
 }

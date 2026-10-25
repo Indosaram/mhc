@@ -565,8 +565,8 @@ impl TaskDagEngine {
 
     /// The paused-run sidecar every paused control verb reads and writes.
     fn pause_store(&self) -> Arc<senpi_task::dag::paused_controls::DagPauseStore> {
-        Arc::new(senpi_task::dag::paused_controls::DagPauseStore::new(
-            self.store.state_dir(),
+        Arc::new(senpi_task::dag::paused_controls::DagPauseStore::from_store(
+            &self.store,
         ))
     }
 
@@ -872,7 +872,9 @@ impl TaskDagEngine {
             })??;
         Ok(crate::dag_tool::DagToolSendOutcome {
             node_id: result.node_id,
-            task_id: result.task_id,
+            task_id: Some(result.task_id),
+            guidance_id: None,
+            effect_id: None,
             delivery: match result.delivery {
                 senpi_task::dag::node_send::DagNodeDeliveryResult::Steer => {
                     crate::dag_tool::DagToolSendDelivery::Steer

@@ -17,7 +17,7 @@ use crate::dag::journal::DagJournal;
 use crate::dag::manager::DagRunRecordV1;
 use crate::dag::node_control_context::{control_journal, owned_record};
 use crate::dag::scheduler::{DagNodeControlError, DagNodeControlErrorCode, DagSchedulerOptions};
-use crate::dag::store::{DagStoreError, DagStorePaths};
+use crate::dag::store::DagStoreError;
 use crate::dag::types::{DagNodeId, DagRunId};
 use crate::pause::guidance::{
     Guidance, GuidanceChange, GuidanceDraft, GuidanceError, GuidanceScope, add_guidance,
@@ -52,19 +52,24 @@ pub struct DagPauseState {
 
 /// The paused-run sidecar, keyed by run id inside the store's own `runs/` directory.
 pub struct DagPauseStore {
-    paths: DagStorePaths,
+    runs: std::path::PathBuf,
 }
 
 impl DagPauseStore {
-    /// `state_dir` is the DAG store root the scheduler's `DagFileStore` was built over.
-    pub fn new(state_dir: impl Into<std::path::PathBuf>) -> Self {
+    /// `runs_dir` is the DAG store's `runs/` directory: the same folder the run checkpoints live in.
+    pub fn new(runs_dir: impl Into<std::path::PathBuf>) -> Self {
         Self {
-            paths: DagStorePaths::new(&state_dir.into()),
+            runs: runs_dir.into(),
         }
     }
 
+    /// The sidecar of the store this scheduler runs over.
+    pub fn from_store(store: &crate::dag::store::DagFileStore) -> Self {
+        Self::new(store.state_dir().join("runs"))
+    }
+
     fn path(&self, run_id: &DagRunId) -> std::path::PathBuf {
-        self.paths.runs.join(format!("{run_id}.pause.json"))
+        self.runs.join(format!("{run_id}.pause.json"))
     }
 
     /// A run with no sidecar has no pause and no guidance: both are additive state.
@@ -354,8 +359,7 @@ pub fn cancel_paused_dag_node(
     ) {
         return Ok(());
     }
-    let journal = journal_guidance(options, record.clone())?;
-    let _ = journal;
+    let _ = journal_guidance(options, record.clone())?;
     if let Some(task_id) = &node.task_id {
         let task = options.task_manager.get(task_id);
         let outcome = options
@@ -448,7 +452,7 @@ mod tests {
     #[test]
     fn a_pause_state_round_trips_through_the_run_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let pauses = DagPauseStore::new(dir.path());
+        let pauses = DagPauseStore::new(dir.path().join("runs"));
         assert_eq!(pauses.read(&run_id()).expect("absent"), DagPauseState::default());
         let state = DagPauseState {
             pause: Some(DagRunPause {

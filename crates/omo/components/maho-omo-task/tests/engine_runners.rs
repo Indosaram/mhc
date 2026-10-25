@@ -21,6 +21,7 @@ fn live_parent_tools_are_resolved_for_each_child_launch() {
         shared_parent_tools: Arc::new(move || tools.lock().expect("tools").clone()),
         max_depth: 2,
         parent_registry: Arc::new(|| None),
+        exclude_models: Vec::new(),
         create_session: Arc::new(move |options| {
             sink.lock().expect("captures").push(options.custom_tools.iter().map(|tool| tool.name().to_owned()).collect::<Vec<_>>());
             Err(HostError { message: "fixture stop".into() })
@@ -48,6 +49,7 @@ fn live_parent_tools_are_resolved_when_resuming_existing_session() {
         shared_parent_tools: Arc::new(move || tools.lock().expect("tools").clone()),
         max_depth: 2,
         parent_registry: Arc::new(|| Some(Arc::new(ResumeRegistry))),
+        exclude_models: Vec::new(),
         create_session: Arc::new(move |options| {
             *sink.lock().expect("capture") = Some((options.session_manager.session_file().to_path_buf(), options.custom_tools.iter().map(|tool| tool.name().to_owned()).collect::<Vec<_>>()));
             Err(HostError { message: "fixture stop".into() })
