@@ -51,7 +51,8 @@ pub use stale_holder::{
 pub use worktree::{
     ReflectionCleanupReceipt, ReflectionFinalizeMode, ReflectionFinalizeResult, ReflectionWorktree,
     ReflectionWorktreeIdentity, WorktreeError, create_reflection_worktree,
-    discard_reflection_worktree, finalize_reflection_worktree, finalize_reflection_worktree_with_warn,
+    discard_reflection_worktree, finalize_reflection_worktree,
+    finalize_reflection_worktree_with_warn,
 };
 pub use worktree_integration::{
     IntegrateValidatedReflectionInput, LegacyAutoRunReceiptProbe, ReflectionIntegrationMode,
@@ -59,3 +60,5 @@ pub use worktree_integration::{
     cleanup_reflection_worktree, integrate_validated_reflection, probe_legacy_auto_run_receipt,
     probe_reflection_integration,
 };
+
+pub mod stale_holder_proof;
