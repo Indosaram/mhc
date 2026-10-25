@@ -713,3 +713,39 @@ fn fallback_walk_retains_parent_for_later_and_drops_spent_parent() {
     assert_eq!(rejected.remaining, vec![category]);
     assert_eq!(rejected.skipped, vec![sibling, parent]);
 }
+
+#[test]
+fn exact_resumed_outcome_settles_without_waiting_for_old_generic_turn() {
+    let harness = default_manager();
+    let task = started(harness.manager.start(&base_spec()));
+    let record = harness
+        .store
+        .load(&task.task_id)
+        .expect("load")
+        .expect("record");
+    let handle = harness
+        .manager
+        .get_resident_handle(&task.task_id)
+        .expect("live handle");
+    let (settle, exact) = std::sync::mpsc::channel();
+    harness.manager.track_resumed_turn(
+        &task.task_id,
+        handle,
+        &record.model,
+        record.notification.run_epoch,
+        Box::new(move || exact.recv_timeout(WAIT).expect("exact outcome")),
+    );
+    settle
+        .send(crate::runners::RunnerOutcome::completed("resumed result"))
+        .expect("settle");
+    let completed = harness
+        .manager
+        .wait_for(&task.task_id, None, Some(WAIT))
+        .expect("terminal record");
+    assert_eq!(completed.status, TaskStatus::Completed);
+    assert_eq!(completed.final_response.as_deref(), Some("resumed result"));
+    assert_eq!(
+        completed.notification.run_epoch,
+        record.notification.run_epoch
+    );
+}
