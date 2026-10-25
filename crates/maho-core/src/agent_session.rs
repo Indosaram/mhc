@@ -17987,7 +17987,7 @@ mod tests {
                     update(AgentToolResult::text("progress"));
                 }
                 let mut result = AgentToolResult::text("inner");
-                result.usage = Some(maho_ai::types::Usage {
+                result.usage = Some(maho_ai::types::Usage { context_usage: None,
                     input: 7,
                     total_tokens: 7,
                     ..Default::default()
