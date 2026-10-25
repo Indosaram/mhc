@@ -22,6 +22,23 @@ pub struct HostAssembly {
     pub parent: Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>,
 }
 impl HostAssembly {
+    fn recorded_socket(
+        &self,
+        spec: &senpi_task::runners::types::RpcRunnerSpec,
+    ) -> Result<String, HostError> {
+        let store = senpi_task::store::TaskRecordStore::new(&senpi_task::store::StateDirConfig {
+            project_dir: spec.cwd.clone().into(),
+            task_state_dir: Some(spec.state_dir.clone().into()),
+        });
+        match store
+            .load(&spec.task_id)
+            .map_err(error)?
+            .and_then(|record| record.host_session)
+        {
+            Some(identity) => Ok(identity.socket),
+            None => self.socket(),
+        }
+    }
     fn schedule_recovery(
         &self,
         handle: &Arc<handle::HostSessionHandle>,
@@ -36,7 +53,7 @@ impl HostAssembly {
                 }
                 if handle.heartbeat().is_err() {
                     let input = assembly.reattach_input(spec.clone());
-                    let socket = match assembly.socket() {
+                    let socket = match assembly.recorded_socket(&spec) {
                         Ok(socket) => socket,
                         Err(error) => {
                             handle.transport_lost(format!("host recovery routing failed: {error}"));
@@ -302,6 +319,15 @@ pub struct ProductionHostRunner {
 }
 impl ProductionHostRunner {
     fn start_rpc(&self, rpc: senpi_task::runners::types::RpcRunnerSpec) -> ManagedRunnerResult {
+        let mut rpc = rpc;
+        if let Some(reference) = rpc.model.as_deref() {
+            let decorators = maho_omo_task::planner_explicit_pin::split_model_decorators(reference);
+            rpc.model = Some(decorators.base);
+            rpc.reasoning = rpc
+                .reasoning
+                .or(rpc.variant.clone())
+                .or(decorators.thinking_level);
+        }
         (self.configured.admit)(&rpc).map_err(|e| ManagedRunnerError::Other(e.to_string()))?;
         let handle = self
             .configured
@@ -315,7 +341,7 @@ impl ProductionHostRunner {
         let identity = handle.identity.current();
         let socket = self
             .assembly
-            .socket()
+            .recorded_socket(&rpc)
             .map_err(|error| ManagedRunnerError::Other(error.to_string()))?;
         let recorded = store.mutate(&rpc.task_id, |current| {
             let mut record = current.clone();
@@ -392,7 +418,7 @@ fn build_host_runner(
         admit: Arc::new(move |spec| admission.admit(spec.state_dir.clone())),
         open: Arc::new(move |spec, context| {
             let socket = open_assembly.ensure(
-                open_assembly.socket()?,
+                open_assembly.recorded_socket(spec)?,
                 spec.extensions.clone().unwrap_or_default(),
             )?;
             let path = spec.resume_session_path.clone().unwrap_or_else(|| {
