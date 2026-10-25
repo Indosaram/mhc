@@ -13,7 +13,7 @@ use super::porcelain::describe_dirty_markdown_encoding_issues;
 use super::repo_arguments::{
     author_flags, command_error, normalize_pathspecs, normalize_seed_path,
 };
-use super::repo_log::{parse_log_output, parse_nul_paths};
+use super::repo_log::{parse_log_output, parse_log_output_with_paths};
 use super::repo_status::assert_no_unrelated_changes;
 use super::repo_tree::{parse_cat_file_batch, parse_ls_tree_blobs, parse_ls_tree_sized};
 use super::repo_types::{
@@ -34,6 +34,7 @@ pub struct GitMemoryRepo {
     pub path_state: GitPathStateStore,
     exec: Arc<dyn GitExec>,
     hook_installer: Option<GitHookInstaller>,
+    commit_times: Arc<super::repo_commit_times::PathCommitTimes>,
 }
 
 impl GitMemoryRepo {
@@ -48,6 +49,7 @@ impl GitMemoryRepo {
             path_state,
             exec,
             hook_installer: opts.install_hooks,
+            commit_times: Arc::default(),
         })
     }
 
@@ -119,7 +121,7 @@ impl GitMemoryRepo {
             }
         }
 
-        with_git_lock_retry(|| {
+        super::repo_lock_sweep::with_stranded_git_lock_recovery(&self.dir, || {
             let mut argv = vec!["commit".to_string(), "--allow-empty".to_string()];
             argv.extend(author_flags(&author));
             argv.push("-m".to_string());
@@ -224,17 +226,41 @@ impl GitMemoryRepo {
     }
 
     pub fn head_commit_timestamp(&self) -> Result<Option<i64>, GitError> {
-        let res = self.git_result(&[
-            "show".to_string(),
-            "-s".to_string(),
-            "--format=%ct".to_string(),
-            "HEAD".to_string(),
-        ])?;
+        let mut argv = super::stable_log_output::stable_log_output();
+        argv.extend([
+            "show".into(),
+            "-s".into(),
+            "--format=%ct".into(),
+            "HEAD".into(),
+        ]);
+        let res = self.git_result(&argv)?;
         if res.code != 0 {
             return Ok(None);
         }
         let trimmed = res.stdout.trim();
         Ok(trimmed.parse::<i64>().ok().filter(|&ts| ts >= 0))
+    }
+
+    pub fn path_commit_times(&self, revision: &str) -> Result<BTreeMap<String, i64>, GitError> {
+        let present = self.ls_tree(Some(revision), None)?;
+        self.commit_times
+            .at(&self.dir, revision, &present, &|args, timeout_ms| {
+                let result = self
+                    .exec
+                    .run(
+                        args,
+                        &GitExecOptions {
+                            cwd: self.dir.clone(),
+                            timeout_ms,
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(GitError::Io)?;
+                if result.code != 0 && args.first().is_none_or(|arg| arg != "merge-base") {
+                    return Err(command_error(args, &result));
+                }
+                Ok(result)
+            })
     }
 
     pub fn ls_tree(
@@ -285,10 +311,7 @@ impl GitMemoryRepo {
     }
 
     /// Lists `ls-tree -r -z` blob entries with their object ids.
-    pub fn ls_tree_blobs(
-        &self,
-        revision: Option<&str>,
-    ) -> Result<Vec<GitTreeBlobEntry>, GitError> {
+    pub fn ls_tree_blobs(&self, revision: Option<&str>) -> Result<Vec<GitTreeBlobEntry>, GitError> {
         let rev = revision.unwrap_or("HEAD");
         let res = self.git(&[
             "ls-tree".to_string(),
@@ -336,10 +359,23 @@ impl GitMemoryRepo {
     }
 
     pub fn log(&self, options: Option<&GitLogOptions>) -> Result<Vec<MemoryCommit>, GitError> {
-        let mut argv = vec![
-            "log".to_string(),
-            "--format=%x1e%H%x1f%s%x1f%b%x1f%an%x1f%ae%x1f%cI".to_string(),
-        ];
+        let include_paths = options.is_some_and(|o| o.include_paths);
+        let mut argv = super::stable_log_output::stable_log_output();
+        if include_paths {
+            argv.extend(["-c".into(), "log.showRoot=false".into()]);
+        }
+        argv.extend([
+            "log".into(),
+            "--format=%x1e%H%x1f%s%x1f%b%x1f%an%x1f%ae%x1f%cI".into(),
+        ]);
+        if include_paths {
+            argv.extend([
+                "--name-only".into(),
+                "-z".into(),
+                "--no-renames".into(),
+                "--full-diff".into(),
+            ]);
+        }
         if let Some(limit) = options.and_then(|o| o.limit) {
             argv.push("-n".to_string());
             argv.push(limit.to_string());
@@ -359,55 +395,11 @@ impl GitMemoryRepo {
         }
 
         let res = self.git(&argv)?;
-        let mut records = parse_log_output(&res.stdout);
-
-        let include_paths = options.is_some_and(|o| o.include_paths);
-        if include_paths && !records.is_empty() {
-            // One batched `diff-tree --stdin` instead of a process per commit. Output is
-            // `<sha>\0<path>\0...` per commit with changes, in input order; commits with no
-            // reported paths (root, merge, empty) emit nothing, matching the per-commit call.
-            let diff_argv = vec![
-                "diff-tree".to_string(),
-                "--stdin".to_string(),
-                "--name-only".to_string(),
-                "-z".to_string(),
-                "-r".to_string(),
-            ];
-            let mut stdin = String::new();
-            for commit in &records {
-                stdin.push_str(&commit.sha);
-                stdin.push('\n');
-            }
-            let diff_res = self.git_with_stdin(&diff_argv, stdin.as_bytes())?;
-            if diff_res.code != 0 {
-                return Err(command_error(&diff_argv, &diff_res));
-            }
-            let index_by_sha: BTreeMap<&str, usize> = records
-                .iter()
-                .enumerate()
-                .map(|(index, commit)| (commit.sha.as_str(), index))
-                .collect();
-            let mut paths: Vec<Vec<String>> = vec![Vec::new(); records.len()];
-            let mut next_index = 0usize;
-            let mut current: Option<usize> = None;
-            for token in diff_res.stdout.split('\0') {
-                if let Some(&index) = index_by_sha.get(token)
-                    && index >= next_index
-                {
-                    next_index = index + 1;
-                    current = Some(index);
-                    continue;
-                }
-                if let Some(index) = current {
-                    paths[index].extend(parse_nul_paths(token));
-                }
-            }
-            for (commit, commit_paths) in records.iter_mut().zip(paths) {
-                commit.paths = Some(commit_paths);
-            }
-        }
-
-        Ok(records)
+        Ok(if include_paths {
+            parse_log_output_with_paths(&res.stdout)
+        } else {
+            parse_log_output(&res.stdout)
+        })
     }
 
     pub fn worktree_add(
@@ -466,7 +458,7 @@ impl GitMemoryRepo {
         }
         argv.push(ref_name.to_string());
 
-        with_git_lock_retry(|| self.git(&argv))?;
+        super::repo_lock_sweep::with_stranded_git_lock_recovery(&self.dir, || self.git(&argv))?;
         self.require_head()
     }
 
@@ -512,26 +504,21 @@ impl GitMemoryRepo {
     }
 
     fn ensure_identity(&self, author_name: &str) -> Result<(), GitError> {
-        if self.config_get("omo.agentId")?.as_deref() != Some(&self.agent_id) {
-            self.config_set("omo.agentId", &self.agent_id)?;
-        }
-        if self.config_get("user.email")?.is_none() {
-            self.config_set("user.email", &format!("{}@omo.local", self.agent_id))?;
-        }
-        if self.config_get("user.name")?.is_none() {
-            self.config_set("user.name", author_name)?;
-        }
-        if self.config_get("commit.gpgsign")?.is_none() {
-            self.config_set("commit.gpgsign", "false")?;
-        }
-        if self.config_get("gc.auto")?.is_none() {
-            self.config_set("gc.auto", "0")?;
-        }
-        Ok(())
+        super::repo_config_defaults::ensure_repo_config_defaults(
+            &self.dir,
+            &self.agent_id,
+            author_name,
+            |key| self.config_get(key),
+            |key, value| self.config_set(key, value),
+            &|args, input| match input {
+                Some(input) => self.git_with_stdin(args, input),
+                None => self.git_result(args),
+            },
+        )
     }
 
     fn stage(&self, paths: &[String]) -> Result<(), GitError> {
-        with_git_lock_retry(|| {
+        super::repo_lock_sweep::with_stranded_git_lock_recovery(&self.dir, || {
             let mut argv = vec!["add".to_string(), "-A".to_string(), "--".to_string()];
             argv.extend_from_slice(paths);
             self.git(&argv)
@@ -549,16 +536,26 @@ impl GitMemoryRepo {
         reason: &str,
         author: &GitCommitAuthor,
     ) -> Result<GitCommitResult, GitError> {
-        with_git_lock_retry(|| {
-            let mut argv = vec!["commit".to_string()];
-            argv.extend(author_flags(author));
-            argv.push("-m".to_string());
-            argv.push(reason.to_string());
-            self.git(&argv)
-        })?;
+        let landed = super::commit_outcome::commit_judged_by_outcome(
+            || {
+                super::repo_lock_sweep::with_stranded_git_lock_recovery(&self.dir, || {
+                    let mut argv = vec!["commit".to_string()];
+                    argv.extend(author_flags(author));
+                    argv.push("-m".to_string());
+                    argv.push(reason.to_string());
+                    self.git(&argv)
+                })
+            },
+            || self.head(),
+            |args| self.git_result(args),
+            reason,
+        )?;
         Ok(GitCommitResult {
             committed: true,
-            sha: self.require_head()?,
+            sha: match landed {
+                Some(sha) => sha,
+                None => self.require_head()?,
+            },
         })
     }
 
