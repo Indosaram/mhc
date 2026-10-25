@@ -13,7 +13,7 @@ impl Extension for PromptPreset {
             if has_user_system_prompt(&event.system_prompt_options) { return Ok(EventResult::None); }
             let prompt_preset = ctx.model_registry.prompt_preset(model);
             let Some(preset) = resolve_preset(metadata(model, prompt_preset.as_deref()), settings(ctx), builder_input(&event.system_prompt_options, ctx)) else { return Ok(EventResult::None); };
-            Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt: Some(with_user_appends(preset.prompt, &event.system_prompt_options)), ..Default::default() }))
+            Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt_parts: Some(with_user_append_parts(preset.parts, &event.system_prompt_options)), system_prompt: Some(with_user_appends(preset.prompt, &event.system_prompt_options)), ..Default::default() }))
         })));
         api.on(EventKind::SessionStart, Arc::new(|_event, ctx| Box::pin(async move {
             refresh_header(ctx, None);
@@ -68,4 +68,9 @@ fn builder_input(options: &BuildSystemPromptOptions, ctx: &ExtensionContext) -> 
 pub fn has_user_system_prompt(options: &BuildSystemPromptOptions) -> bool { options.custom_prompt.as_deref().is_some_and(|prompt| !prompt.is_empty()) }
 pub fn with_user_appends(prompt: String, options: &BuildSystemPromptOptions) -> String {
     match options.append_system_prompt.as_deref().filter(|append| !append.is_empty()) { Some(append) => format!("{prompt}\n\n{append}"), None => prompt }
+}
+
+pub fn with_user_append_parts(mut parts:Vec<maho_ext_api::DynamicSystemPromptPart>,options:&BuildSystemPromptOptions)->Vec<maho_ext_api::DynamicSystemPromptPart> {
+    if let Some(append)=options.append_system_prompt.as_deref().filter(|append|!append.is_empty()) {parts.push(maho_ext_api::DynamicSystemPromptPart{name:"append_system_prompt".into(),source:Some("loader".into()),text:format!("\n\n{append}")});}
+    parts
 }
