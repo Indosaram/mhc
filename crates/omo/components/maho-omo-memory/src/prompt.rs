@@ -312,6 +312,7 @@ impl MemoryPromptHandler {
             .map_err(|error| MemoryPromptError::Compile(CompileError::Git(error.to_string())))?;
         let options = CompileMemoryBlockOptions {
             agent_id: input.identity.to_owned(),
+            projection: None,
         };
         let block = if turn.revision.as_deref() == head.as_deref() {
             self.cache

@@ -203,7 +203,7 @@ impl MemoryComponent {
                 sessions.insert(id.into(),MemorySessionState{enabled,context:None,memory_status_attempted:false,restart_notified:false,sync_repo:None,ui:Some(context.ui.clone())});
                 if !enabled{return Ok(None);}
                 let session_cwd=context.cwd.clone();
-                let identity=memory_core::identity::resolve::resolve_memory_identity(settings["agent"].as_str(),&session_cwd,&this.options.env).map_err(|error|error.to_string())?;
+                let identity=if memory_core::identity::is_auto_agent_value(settings["agent"].as_str()) { memory_core::identity::resolve_auto_identity(&session_cwd,&this.options.env,if settings["auto_identity"]=="git" { memory_core::identity::AutoIdentityMode::Git } else { memory_core::identity::AutoIdentityMode::Path }) } else { memory_core::identity::resolve::resolve_memory_identity(settings["agent"].as_str(),&session_cwd,&this.options.env) }.map_err(|error|error.to_string())?;
                 let entries=context.session_manager.get_entries();
                 let recorded=entries.iter().rev().find_map(|entry|{let data=&entry.data;if entry.kind!="custom"||data["customType"]!=MEMORY_BINDING_CUSTOM_TYPE{return None;}Some(crate::binding::MemorySessionBinding{identity:data["data"]["identity"].as_str()?.into(),repo_path_hash:data["data"]["repoPathHash"].as_str()?.into(),bound_at:data["data"]["boundAt"].as_f64()?})});
                 let adoption=crate::identity_adoption::adopt_session_identity(recorded.as_ref(),crate::identity_adoption::BoundIdentity{id:identity.id,paths:identity.paths.clone()},identity.paths.root.ancestors().nth(2).unwrap_or(&identity.paths.root),settings["agent"].as_str(),false);

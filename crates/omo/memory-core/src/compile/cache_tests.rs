@@ -16,6 +16,7 @@ fn given_the_same_template_identity_and_head_when_compiled_twice_then_the_stable
     let cache = MemoryBlockCache::new();
     let options = CompileMemoryBlockOptions {
         agent_id: "agent-cache-1".to_string(),
+        projection: None,
     };
 
     let first = cache
@@ -39,6 +40,7 @@ fn given_either_template_content_or_head_changes_when_compiled_then_each_stable_
     let cache = MemoryBlockCache::new();
     let options = CompileMemoryBlockOptions {
         agent_id: "agent-cache-2".to_string(),
+        projection: None,
     };
 
     let v1 = cache
@@ -85,6 +87,7 @@ fn given_repeated_calls_for_one_stable_projection_when_compile_runs_many_times_t
     let cache = MemoryBlockCache::new();
     let options = CompileMemoryBlockOptions {
         agent_id: "agent-repeated".to_string(),
+        projection: None,
     };
 
     for _ in 0..10 {
@@ -108,9 +111,11 @@ fn given_two_identities_at_the_same_head_when_compiled_through_one_cache_then_id
     let cache = MemoryBlockCache::new();
     let opt_a = CompileMemoryBlockOptions {
         agent_id: "agent-aaa".to_string(),
+        projection: None,
     };
     let opt_b = CompileMemoryBlockOptions {
         agent_id: "agent-bbb".to_string(),
+        projection: None,
     };
 
     let res_a = cache.compile(&repo, "template", &opt_a).expect("compile a");
@@ -132,6 +137,7 @@ fn given_cache_clear_when_called_then_all_entries_are_purged() {
     let cache = MemoryBlockCache::new();
     let options = CompileMemoryBlockOptions {
         agent_id: "agent-purge".to_string(),
+        projection: None,
     };
 
     cache.compile(&repo, "template", &options).expect("compile");
@@ -139,4 +145,74 @@ fn given_cache_clear_when_called_then_all_entries_are_purged() {
 
     cache.clear();
     assert_eq!(cache.size(), 0);
+}
+
+#[test]
+fn persistence_reuses_values_and_isolates_build_revision_and_degraded_results() {
+    use crate::compile::cache::MemoryBlockCacheOptions;
+    use std::sync::Arc;
+    let (_temp, repo) = repo_with(vec![]).unwrap();
+    let options = MemoryBlockCacheOptions {
+        store: Some(Arc::new(|| Ok(()))),
+        build: "build-a".into(),
+        ..Default::default()
+    };
+    let cache = MemoryBlockCache::with_options(options.clone());
+    assert_eq!(
+        cache
+            .remember(&repo, "estimate", "rev-a", || Ok(("cached".into(), true)))
+            .unwrap(),
+        "cached"
+    );
+    cache.settled();
+    let fresh = MemoryBlockCache::with_options(options.clone());
+    assert_eq!(
+        fresh
+            .remember(&repo, "estimate", "rev-a", || panic!(
+                "must reuse persisted value"
+            ))
+            .unwrap(),
+        "cached"
+    );
+    assert_eq!(
+        fresh
+            .remember(&repo, "estimate", "rev-b", || Ok(("revision".into(), true)))
+            .unwrap(),
+        "revision"
+    );
+    assert_eq!(
+        fresh
+            .remember(&repo, "degraded", "rev-a", || Ok((
+                "fallback".into(),
+                false
+            )))
+            .unwrap(),
+        "fallback"
+    );
+    fresh.settled();
+    let fresh = MemoryBlockCache::with_options(options.clone());
+    assert_eq!(
+        fresh
+            .remember(&repo, "degraded", "rev-a", || Ok((
+                "recomputed".into(),
+                true
+            )))
+            .unwrap(),
+        "recomputed"
+    );
+    let other = MemoryBlockCache::with_options(MemoryBlockCacheOptions {
+        build: "build-b".into(),
+        ..options
+    });
+    assert_eq!(
+        other
+            .remember(&repo, "estimate", "rev-a", || Ok((
+                "new-build".into(),
+                true
+            )))
+            .unwrap(),
+        "new-build"
+    );
+    fresh.settled();
+    other.settled();
 }
