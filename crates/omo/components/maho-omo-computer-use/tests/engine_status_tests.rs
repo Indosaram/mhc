@@ -2,23 +2,21 @@
 use std::collections::BTreeMap;
 #[cfg(unix)]
 use std::fs;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(unix)]
 use maho_omo_computer_use::engine_probe::{
-    probe_computer_use_engine, EngineProbeResult, COMPUTER_USE_DOCTOR_TIMEOUT_MS,
+    COMPUTER_USE_DOCTOR_TIMEOUT_MS, EngineProbeResult, probe_computer_use_engine,
 };
 use maho_omo_computer_use::engine_status::{
-    engine_error_code, EngineState, TrackedDesktopService, TrackedDesktopServiceOptions,
+    EngineState, TrackedDesktopService, TrackedDesktopServiceOptions, engine_error_code,
 };
 #[cfg(unix)]
 use maho_omo_computer_use::permission_status::describe_engine_permissions;
 #[cfg(unix)]
 use senpi_desktop_core::protocol::{ABI as ENGINE_ABI, PROTOCOL_VERSION};
-use senpi_desktop_protocol::{
-    EngineErrorData, ErrorCode, JsonRpcErrorData,
-};
+use senpi_desktop_protocol::{EngineErrorData, ErrorCode, JsonRpcErrorData};
 use senpi_desktop_service::rpc_client::{DesktopEngineRpcError, DesktopError};
 use senpi_desktop_service::service::DesktopServiceOptions;
 #[cfg(unix)]
@@ -117,6 +115,9 @@ EOF
             assert_eq!(caps.hello.abi, ENGINE_ABI);
             assert_eq!(caps.capabilities.capture_permission, "granted");
         }
+        EngineProbeResult::LaunchContextUnavailable { message, .. } => {
+            panic!("unexpected refusal: {message}")
+        }
         EngineProbeResult::Err { code, message } => {
             panic!("Expected success probe, got Err({code}: {message})");
         }
@@ -143,14 +144,12 @@ sleep 30
     write_executable_script(&engine_script, &script_content);
 
     let env = BTreeMap::new();
-    let res = probe_computer_use_engine(
-        &engine_script.to_string_lossy(),
-        &env,
-        200,
-    )
-    .await;
+    let res = probe_computer_use_engine(&engine_script.to_string_lossy(), &env, 200).await;
 
     match res {
+        EngineProbeResult::LaunchContextUnavailable { message, .. } => {
+            panic!("unexpected refusal: {message}")
+        }
         EngineProbeResult::Err { code, message } => {
             assert_eq!(code, "timeout");
             assert!(message.contains("timed out"));
@@ -183,6 +182,9 @@ exit 1
     .await;
 
     match res {
+        EngineProbeResult::LaunchContextUnavailable { message, .. } => {
+            panic!("unexpected refusal: {message}")
+        }
         EngineProbeResult::Err { code, message } => {
             assert_eq!(code, "handshake-failed");
             assert!(!message.is_empty());
@@ -218,5 +220,7 @@ EOF
     };
 
     let desc = describe_engine_permissions(None, &env, &opts).await;
-    assert!(desc.contains("capturePermission=granted inputPermission=denied axPermission=granted (passive probe)"));
+    assert!(desc.contains(
+        "capturePermission=granted inputPermission=denied axPermission=granted (passive probe)"
+    ));
 }

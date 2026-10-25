@@ -315,6 +315,10 @@ pub fn omo_components(
         "browser-bridge",
         maho_omo_browser_bridge::BrowserBridgeComponent::default(),
     ));
+    components.push(component(
+        "desktop-toolkit",
+        maho_omo_desktop_toolkit::DesktopToolkitComponent::default(),
+    ));
     components.push(OmoSenpiComponent::from_context_register(
         "lsp",
         |api, runtime| {
@@ -395,6 +399,7 @@ pub fn omo_component_names() -> Vec<&'static str> {
         "x-search",
         "feedback",
         "browser-bridge",
+        "desktop-toolkit",
         "lsp",
         "task",
         "memory",
