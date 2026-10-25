@@ -155,7 +155,11 @@ impl InteractiveSession for LocalInteractiveSession {
     fn request_remote_history(&self, _generation: u64, _sender: tokio::sync::mpsc::UnboundedSender<(u64, Result<Vec<serde_json::Value>, String>)>) {}
 
     fn new_session(&self, parent_session: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
-        let options = Some(NewSessionOptions { id: None, parent_session });
+        let options = Some(NewSessionOptions {
+            id: None,
+            parent_session,
+            ..Default::default()
+        });
         Box::pin(async move {
             self.session
                 .new_session(options)

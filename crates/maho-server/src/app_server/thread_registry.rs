@@ -22,7 +22,15 @@ const INITIAL_NOTIFICATION_LIMIT: usize = 100;
 pub fn fork_session_manager(source_file: Option<&str>, cwd: &str, session_dir: Option<&str>) -> Result<SessionManager, String> {
     match source_file.filter(|path| std::path::Path::new(path).exists()) {
         Some(source_file) => fork_from_session_file(source_file, cwd, session_dir),
-        None => Ok(SessionManager::create(cwd, session_dir, source_file.map(|path| NewSessionOptions { id: None, parent_session: Some(path.to_owned()) }))),
+        None => Ok(SessionManager::create(
+            cwd,
+            session_dir,
+            source_file.map(|path| NewSessionOptions {
+                id: None,
+                parent_session: Some(path.to_owned()),
+                ..Default::default()
+            }),
+        )),
     }
 }
 pub fn fork_from_session_file(source_file: &str, cwd: &str, session_dir: Option<&str>) -> Result<SessionManager, String> {

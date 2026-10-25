@@ -25,7 +25,7 @@ use memory_core::facts::queue::FactsAbortSignal;
 
 use crate::worker::memory_model_attempts::ReflectionModelCandidate;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct FactsChildSpawnInput {
     pub run_id: String,
     pub run_dir: PathBuf,
@@ -37,6 +37,23 @@ pub struct FactsChildSpawnInput {
     pub hard_deadline_at: f64,
     pub signal: Option<FactsAbortSignal>,
     pub cancel_state: Arc<AtomicBool>,
+}
+
+impl std::fmt::Debug for FactsChildSpawnInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FactsChildSpawnInput")
+            .field("run_id", &self.run_id)
+            .field("run_dir", &self.run_dir)
+            .field("model_candidates", &self.model_candidates)
+            .field("persona", &self.persona)
+            .field("prompt", &self.prompt)
+            .field("custom_tools_count", &self.custom_tools.len())
+            .field("tool_allowlist", &self.tool_allowlist)
+            .field("hard_deadline_at", &self.hard_deadline_at)
+            .field("signal", &self.signal)
+            .field("cancel_state", &self.cancel_state)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

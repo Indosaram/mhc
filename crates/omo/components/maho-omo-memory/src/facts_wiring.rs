@@ -85,14 +85,15 @@ impl MemoryFactsWiring {
             let entries = journal.read_entries().map_err(|error| error.to_string())?;
             if signal.is_some_and(FactsAbortSignal::is_aborted) || entries.is_empty() { return Ok(disabled()); }
 
-            if let Some(prov) = provenance {
-                if let Ok(cursor) = self.queue.read_cursor(conversation) {
-                    let has_cursor = cursor.enqueued_through_snapshot_line >= 0 || cursor.enqueued_through_message_id.is_some();
-                    if !has_cursor {
-                        if let Some((end_msg_id, end_line)) = resolve_boundary_to_canonical(&entries, prov) {
-                            let _ = self.queue.seed_enqueued_through(conversation, &end_msg_id, end_line);
-                        }
-                    }
+            if let Some(prov) = provenance
+                && let Ok(cursor) = self.queue.read_cursor(conversation)
+            {
+                let has_cursor = cursor.enqueued_through_snapshot_line >= 0 || cursor.enqueued_through_message_id.is_some();
+                if !has_cursor
+                    && let Some((end_msg_id, end_line)) = resolve_boundary_to_canonical(&entries, prov)
+                    && let Err(error) = self.queue.seed_enqueued_through(conversation, &end_msg_id, end_line)
+                {
+                    (self.options.warn)(&format!("facts queue seed failed: {conversation}: {error}"));
                 }
             }
 
@@ -160,29 +161,28 @@ pub fn resolve_boundary_to_canonical(
         return Some((entries[idx].source_message_id().to_string(), (idx + 1) as u64));
     }
     let parent_path = std::path::Path::new(&provenance.parent_session);
-    if parent_path.exists() {
-        if let Ok(raw) = std::fs::read_to_string(parent_path) {
-            let mut preceding_message_id: Option<String> = None;
-            for line in raw.lines() {
-                let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-                if val.get("type").and_then(serde_json::Value::as_str) == Some("session") { continue; }
-                let id = val.get("id").and_then(serde_json::Value::as_str);
-                if val.get("type").and_then(serde_json::Value::as_str) == Some("message") {
-                    if let Some(msg_id) = id {
-                        if last_canonical.contains_key(msg_id) {
-                            preceding_message_id = Some(msg_id.to_string());
-                        }
-                    }
-                }
-                if id == Some(boundary_id) {
-                    break;
-                }
+    if parent_path.exists()
+        && let Ok(raw) = std::fs::read_to_string(parent_path)
+    {
+        let mut preceding_message_id: Option<String> = None;
+        for line in raw.lines() {
+            let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+            if val.get("type").and_then(serde_json::Value::as_str) == Some("session") { continue; }
+            let id = val.get("id").and_then(serde_json::Value::as_str);
+            if val.get("type").and_then(serde_json::Value::as_str) == Some("message")
+                && let Some(msg_id) = id
+                && last_canonical.contains_key(msg_id)
+            {
+                preceding_message_id = Some(msg_id.to_string());
             }
-            if let Some(msg_id) = preceding_message_id {
-                if let Some(&idx) = last_canonical.get(msg_id.as_str()) {
-                    return Some((entries[idx].source_message_id().to_string(), (idx + 1) as u64));
-                }
+            if id == Some(boundary_id) {
+                break;
             }
+        }
+        if let Some(msg_id) = preceding_message_id
+            && let Some(&idx) = last_canonical.get(msg_id.as_str())
+        {
+            return Some((entries[idx].source_message_id().to_string(), (idx + 1) as u64));
         }
     }
     None
@@ -425,5 +425,47 @@ mod tests {
         assert_eq!(entry.range.start_message_id, "m1");
         assert_eq!(entry.range.end_message_id, "m4");
         assert_eq!(entry.entries.len(), 4);
+    }
+
+    #[test]
+    fn test_seed_enqueued_through_failure_reports_warning() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut wiring, _) = fixture(root.path(), true, Rc::new(Cell::new(4)));
+        let (warn_tx, warn_rx) = std::sync::mpsc::channel();
+        wiring.options.warn = Arc::new(move |msg| {
+            let _ = warn_tx.send(msg.to_string());
+        });
+        let journal = TranscriptJournal::new(TranscriptJournalOptions::new(
+            wiring.options.identity_paths.transcripts.join("seed-fail"),
+        ));
+        journal
+            .append(&[
+                text_entry("user", "m1", "First"),
+                text_entry("assistant", "m2", "Second"),
+            ])
+            .unwrap();
+
+        // Make the temporary cursor path a directory so write_cursor fails deterministically while reading cursor succeeds
+        let queue_paths = memory_core::facts::schema::facts_queue_paths(&wiring.options.identity_paths);
+        std::fs::create_dir_all(&queue_paths.cursor_dir).unwrap();
+        let cursor_path = queue_paths.cursor_path("seed-fail");
+        let tmp_path = std::path::PathBuf::from(format!("{}.tmp", cursor_path.display()));
+        std::fs::create_dir_all(&tmp_path).unwrap();
+
+        let prov = maho_ext_api::ForkProvenance {
+            parent_session: "/dummy/parent/session.jsonl".to_string(),
+            inherited_through_entry_id: Some("m1".to_string()),
+        };
+        wiring.set_provenance("seed-fail", Some(prov));
+
+        let _ = wiring.enqueue_settled("seed-fail", None);
+
+        let warnings: Vec<String> = warn_rx.try_iter().collect();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("facts queue seed failed: seed-fail")),
+            "expected seed warning, got {warnings:?}"
+        );
     }
 }

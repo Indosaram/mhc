@@ -103,9 +103,7 @@ fn create_fixture(
 
     let spawner = CliFactsChildSpawner::with_factory(
         FactsRuntimeFactory::Ready(factory),
-        root.path().to_string_lossy().into_owned(),
         root.path().join("agent").to_string_lossy().into_owned(),
-        Arc::new(|| Ok(serde_json::json!({}))),
     );
 
     let runner = Arc::new(FactsExtractorRunner::new_with_spawner(
@@ -216,7 +214,7 @@ async fn test_one_record_fact_call_writes_extraction_and_finalizes_cleanly() {
             command: "mock".into(),
             prefix_args: vec![],
         },
-        hard_deadline_at: 1700000000000.0 + 900_000.0,
+        hard_deadline_at: memory_core::support::time::now_millis() as f64 + 900_000.0,
         options: FactsChildOptions {
             termination_grace_ms: 5000.0,
             max_output_bytes: 65536,
@@ -296,7 +294,7 @@ async fn test_no_tool_call_yields_no_facts_not_invalid_extraction() {
             command: "mock".into(),
             prefix_args: vec![],
         },
-        hard_deadline_at: 1700000000000.0 + 900_000.0,
+        hard_deadline_at: memory_core::support::time::now_millis() as f64 + 900_000.0,
         options: FactsChildOptions {
             termination_grace_ms: 5000.0,
             max_output_bytes: 65536,
@@ -415,7 +413,7 @@ async fn test_abort_blocked_on_gate_ends_cancelled_with_no_records() {
                 command: "mock".into(),
                 prefix_args: vec![],
             },
-            hard_deadline_at: 1700000000000.0 + 900_000.0,
+            hard_deadline_at: memory_core::support::time::now_millis() as f64 + 900_000.0,
             options: FactsChildOptions {
                 termination_grace_ms: 5000.0,
                 max_output_bytes: 65536,
@@ -525,7 +523,7 @@ async fn test_first_candidate_model_absent_falls_back_to_second() {
             command: "mock".into(),
             prefix_args: vec![],
         },
-        hard_deadline_at: 1700000000000.0 + 900_000.0,
+        hard_deadline_at: memory_core::support::time::now_millis() as f64 + 900_000.0,
         options: FactsChildOptions {
             termination_grace_ms: 5000.0,
             max_output_bytes: 65536,
@@ -556,7 +554,7 @@ async fn test_agreements_payload_known_id_accepted_unknown_id_rejected() {
         "record_agreement",
         serde_json::json!({
             "action": "reaffirm",
-            "id": "agr-1",
+            "id": "0123456789",
             "date": "2026-10-25"
         })
         .as_object()
@@ -568,7 +566,7 @@ async fn test_agreements_payload_known_id_accepted_unknown_id_rejected() {
         "record_agreement",
         serde_json::json!({
             "action": "reaffirm",
-            "id": "unknown-999",
+            "id": "abcdef0123",
             "date": "2026-10-25"
         })
         .as_object()
@@ -600,7 +598,7 @@ async fn test_agreements_payload_known_id_accepted_unknown_id_rejected() {
         },
         entries: vec![],
         agreements: Some(vec![FactsKnownAgreement {
-            id: "agr-1".into(),
+            id: "0123456789".into(),
             scope: AgreementScope::Global,
             by: AgreementAuthor::Human,
             text: "Always use Bun".into(),
@@ -644,7 +642,7 @@ async fn test_agreements_payload_known_id_accepted_unknown_id_rejected() {
             command: "mock".into(),
             prefix_args: vec![],
         },
-        hard_deadline_at: 1700000000000.0 + 900_000.0,
+        hard_deadline_at: memory_core::support::time::now_millis() as f64 + 900_000.0,
         options: FactsChildOptions {
             termination_grace_ms: 5000.0,
             max_output_bytes: 65536,
@@ -671,11 +669,11 @@ async fn test_agreements_payload_known_id_accepted_unknown_id_rejected() {
     let agreements_content =
         std::fs::read_to_string(&agreements_path).expect("read agreements.jsonl");
     assert!(
-        agreements_content.contains("agr-1"),
+        agreements_content.contains("0123456789"),
         "known agreement must be recorded"
     );
     assert!(
-        !agreements_content.contains("unknown-999"),
+        !agreements_content.contains("abcdef0123"),
         "unknown agreement must not be recorded"
     );
     assert_eq!(

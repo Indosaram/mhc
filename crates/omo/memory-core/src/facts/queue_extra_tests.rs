@@ -257,7 +257,6 @@ fn given_queue_file_landed_without_cursor_write_when_next_settle_runs_then_retai
 }
 
 #[test]
-#[test]
 fn given_multiple_queue_files_when_list_pending_files_runs_then_headers_and_order_match_list_pending() {
     let (_dir, paths) = identity_fixture();
     let queue = queue_with(&paths, 0);

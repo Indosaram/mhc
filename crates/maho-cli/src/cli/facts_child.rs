@@ -12,7 +12,6 @@
 //! prompt: "Extract durable facts from this payload and record each accepted fact with record_fact.\n\n<payload>"
 
 use std::{
-    pin::Pin,
     sync::{
         atomic::Ordering,
         Arc, OnceLock,
@@ -24,8 +23,6 @@ use maho_omo_memory::facts_child_spawner::{
     FactsChildSessionResult, FactsChildSessionSpawner, FactsChildSpawnFuture, FactsChildSpawnInput,
 };
 
-use super::memory_runtime::LiveMemoryConfig;
-
 pub enum FactsRuntimeFactory {
     Ready(maho_core::sdk::HostRuntimeFactory),
     Lazy(OnceLock<maho_core::sdk::HostRuntimeFactory>),
@@ -33,47 +30,21 @@ pub enum FactsRuntimeFactory {
 
 pub struct CliFactsChildSpawner {
     factory: FactsRuntimeFactory,
-    cwd: String,
     agent_dir: String,
-    config: LiveMemoryConfig,
-    executor: Option<tokio::runtime::Handle>,
 }
 
 impl CliFactsChildSpawner {
-    pub fn new(
-        factory: FactsRuntimeFactory,
-        cwd: String,
-        agent_dir: String,
-        config: LiveMemoryConfig,
-        executor: Option<tokio::runtime::Handle>,
-    ) -> Self {
-        Self {
-            factory,
-            cwd,
-            agent_dir,
-            config,
-            executor,
-        }
+    pub fn new(factory: FactsRuntimeFactory, agent_dir: String) -> Self {
+        Self { factory, agent_dir }
     }
 
-    pub fn from_agent_dir(
-        cwd: String,
-        agent_dir: String,
-        config: LiveMemoryConfig,
-    ) -> Arc<Self> {
+    pub fn from_agent_dir(agent_dir: String) -> Arc<Self> {
         let factory = FactsRuntimeFactory::Lazy(OnceLock::new());
-        let executor = tokio::runtime::Handle::try_current().ok();
-        Arc::new(Self::new(factory, cwd, agent_dir, config, executor))
+        Arc::new(Self::new(factory, agent_dir))
     }
 
-    pub fn with_factory(
-        factory: FactsRuntimeFactory,
-        cwd: String,
-        agent_dir: String,
-        config: LiveMemoryConfig,
-    ) -> Arc<Self> {
-        let executor = tokio::runtime::Handle::try_current().ok();
-        Arc::new(Self::new(factory, cwd, agent_dir, config, executor))
+    pub fn with_factory(factory: FactsRuntimeFactory, agent_dir: String) -> Arc<Self> {
+        Arc::new(Self::new(factory, agent_dir))
     }
 
     fn runtime_factory(&self) -> Result<&maho_core::sdk::HostRuntimeFactory, String> {
@@ -111,10 +82,7 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
             let mut last_model: Option<String> = None;
 
             for (idx, candidate) in input.model_candidates.iter().enumerate() {
-                attempt_number = match u32::try_from(idx + 1) {
-                    Ok(val) => val,
-                    Err(_) => u32::MAX,
-                };
+                attempt_number = u32::try_from(idx + 1).unwrap_or(u32::MAX);
                 last_model = Some(candidate.model.clone());
 
                 let now_ms = memory_core::support::time::now_millis() as f64;
@@ -162,17 +130,15 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
                     }
                 };
 
-                let thinking_selection = match candidate.thinking.as_deref() {
-                    None => None,
-                    Some(level) => match maho_ai::types::ModelThinkingLevel::parse(level) {
-                        Some(level) => Some(maho_ai::types::ThinkingSelection {
+                let thinking_selection = candidate.thinking.as_deref().and_then(|level| {
+                    maho_ai::types::ModelThinkingLevel::parse(level).map(|level| {
+                        maho_ai::types::ThinkingSelection {
                             level,
                             source: maho_ai::types::ThinkingSelectionSource::Explicit,
                             legacy_variant_id: None,
-                        }),
-                        None => None,
-                    },
-                };
+                        }
+                    })
+                });
 
                 let retry_settings =
                     senpi_task::runners::in_process::runtime_fallback_settings::RetryFallbackSettings {
@@ -306,6 +272,19 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
                     }
                     TurnExit::PromptDone(prompt_res) => {
                         session.dispose().await;
+                        if signal.as_ref().is_some_and(|s| s.is_aborted())
+                            || cancel_state.load(Ordering::Acquire)
+                        {
+                            cancel_state.store(true, Ordering::Release);
+                            return Ok(FactsChildSessionResult {
+                                completed: false,
+                                timed_out: false,
+                                cancelled: true,
+                                error_message: Some("facts run cancelled".into()),
+                                attempt: attempt_number,
+                                model: last_model,
+                            });
+                        }
                         match prompt_res {
                             Ok(_) => {
                                 return Ok(FactsChildSessionResult {

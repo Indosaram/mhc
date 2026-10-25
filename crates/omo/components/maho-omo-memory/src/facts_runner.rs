@@ -614,7 +614,7 @@ impl FactsExtractorRunner {
         spawner: &dyn crate::facts_child_spawner::FactsChildSessionSpawner,
         input: crate::worker::facts_child_launch::FactsChildLaunchInput<'_>,
         people: &memory_core::facts::person_routing::FactsPeopleRouting,
-        targets: &[crate::facts_failure_recording::FactsQueuedKey],
+        targets: &[memory_core::facts::FactsFailureTarget],
         warn: &mut (dyn FnMut(&str) + Send),
     ) -> Result<FactsLaunchResult, String> {
         let dir = input.run_dir;
@@ -637,9 +637,13 @@ impl FactsExtractorRunner {
             }
             _ => return Err("facts child launch requires a resolved model".into()),
         };
-        let model_candidates: Vec<_> = std::iter::once(first).chain(fallbacks.into_iter()).collect();
+        let model_candidates: Vec<_> = std::iter::once(first).chain(fallbacks).collect();
 
-        let cancel_state = Arc::new(AtomicBool::new(false));
+        let cancel_state = input
+            .signal
+            .as_ref()
+            .map(memory_core::facts::queue::FactsAbortSignal::flag)
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
 
         let payload_path = dir.join("facts-payload.json");
         if let Err(err) = std::fs::write(&payload_path, input.payload.render()) {
