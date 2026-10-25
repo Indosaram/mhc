@@ -651,6 +651,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn resumed_turn_preserves_the_exact_deferred_outcome() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = calls.clone();
+        let returned = ResumeTurnResult::Resumed {
+            turn_id: "turn-2".into(),
+            outcome: Box::new(move || {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                crate::runners::RunnerOutcome::completed("exact turn")
+            }),
+        };
+        let ResumeTurnResult::Resumed { turn_id, outcome } = returned else {
+            panic!("resumed turn")
+        };
+        let tracked = TaskResumedTurn { turn_id, outcome };
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(tracked.turn_id, "turn-2");
+        assert_eq!(
+            (tracked.outcome)(),
+            crate::runners::RunnerOutcome::completed("exact turn")
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn a_parked_child_keeps_no_slot_after_its_resume() {
         let capacity = ResumeCapacity::default();
         capacity.park("t1", 3);
