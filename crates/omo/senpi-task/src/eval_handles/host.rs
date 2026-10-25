@@ -12,7 +12,7 @@ pub struct HandleSnapshot { pub reference: HandleRef, pub phase: HandlePhase, pu
 pub enum HandleOutcome { Fulfilled { reference: HandleRef, value: String }, Rejected { reference: HandleRef, code: EvalHandleErrorCode, message: String } }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskStatus { Pending, Running, Completed, Error, Cancelled, Interrupted, Lost }
-pub fn phase(status: TaskStatus) -> HandlePhase { match status { TaskStatus::Pending|TaskStatus::Running => HandlePhase::Pending, TaskStatus::Completed => HandlePhase::Succeeded, TaskStatus::Error => HandlePhase::Failed, TaskStatus::Cancelled|TaskStatus::Interrupted => HandlePhase::Cancelled, TaskStatus::Lost => HandlePhase::Lost } }
+pub enum TaskStatus { Pending, Running, Paused, Completed, Error, Cancelled, Interrupted, Lost }
+pub fn phase(status: TaskStatus) -> HandlePhase { match status { TaskStatus::Pending|TaskStatus::Running|TaskStatus::Paused => HandlePhase::Pending, TaskStatus::Completed => HandlePhase::Succeeded, TaskStatus::Error => HandlePhase::Failed, TaskStatus::Cancelled|TaskStatus::Interrupted => HandlePhase::Cancelled, TaskStatus::Lost => HandlePhase::Lost } }
 pub fn snapshot(reference: HandleRef, status: TaskStatus, host_status: impl Into<String>, epoch: i64) -> HandleSnapshot { HandleSnapshot { reference, phase: phase(status), host_status: host_status.into(), revision: epoch * 2 + i64::from(phase(status) != HandlePhase::Pending) } }
 pub fn unsupported(kind: HandleKind, operation: &str) -> EvalHandleHostError { EvalHandleHostError::new(EvalHandleErrorCode::Unsupported, format!("{operation} is for agent handles, not {kind:?}")) }

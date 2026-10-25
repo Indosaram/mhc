@@ -12,7 +12,7 @@ use serde_json::json;
 
 use crate::cua_actions::{ScreenshotBounds, actions_of, actions_script, parse_computer_actions};
 use crate::cua_definition::computer_actions_tool_definition;
-use crate::cua_errors::{ComputerFailure, computer_failure};
+use crate::cua_errors::{ComputerFailure, computer_failure, launch_context_failure};
 use crate::params::{DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS};
 use crate::session::ComputerHostContext;
 use crate::tool::{ComputerToolDeps, run_computer};
@@ -91,6 +91,15 @@ pub fn create_computer_actions_tool(deps: ComputerToolDeps) -> ToolDefinition {
                 {
                     Ok(r) => r,
                     Err(err) => {
+                        if let DesktopRunError::Engine(DesktopError::LaunchContext(launch)) = &err {
+                            let failure = launch_context_failure(launch);
+                            return Ok(ToolResult {
+                                content: vec![ToolContent::text(&failure.message)],
+                                details: Some(json!({ "value": failure, "isError": true })),
+                                structured_content: None,
+                                is_error: None,
+                            });
+                        }
                         let (reason, message, perm) = match &err {
                             DesktopRunError::Engine(DesktopError::Rpc(rpc)) => match &rpc.data {
                                 Some(senpi_desktop_protocol::JsonRpcErrorData::Engine(data)) => (

@@ -450,3 +450,28 @@ fn computer_actions_permission_tier_classification() {
     assert_eq!(p(json!({ "action": "batch", "actions": [] })), vec!["exec"]);
     assert_eq!(p(json!({ "action": "nope" })), vec!["exec"]);
 }
+
+#[test]
+fn launch_context_failure_maps_to_structured_computer_failure() {
+    let error = senpi_desktop_service::rpc_client::DesktopLaunchContextError {
+        message: "engine exited before handshake: self-responsible".into(),
+        reason: "self-responsible".into(),
+    };
+    let failure = senpi_desktop_tool::cua_errors::launch_context_failure(&error);
+
+    assert_eq!(failure.code, "COMPUTER_LAUNCH_CONTEXT_REQUIRED");
+    assert_eq!(failure.message, error.message);
+    assert_eq!(failure.reason.as_deref(), Some("self-responsible"));
+    assert!(failure.permission.is_none());
+    assert!(failure.settings_url.is_none());
+    assert!(failure.app.is_none());
+    assert!(failure.relaunch_required.is_none());
+
+    let value = serde_json::to_value(&failure).expect("serialize");
+    assert_eq!(
+        value.get("code").and_then(|v| v.as_str()),
+        Some("COMPUTER_LAUNCH_CONTEXT_REQUIRED")
+    );
+    assert_eq!(value.get("reason").and_then(|v| v.as_str()), Some("self-responsible"));
+    assert!(value.get("permission").is_none());
+}
