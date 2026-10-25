@@ -409,6 +409,7 @@ fn acquire_lock_with_clock(
         );
     }
 
+    let mut previous = None;
     let mut first_attempt = true;
     loop {
         if options.cancellation.map(|f| f()).unwrap_or(false) {
@@ -420,6 +421,13 @@ fn acquire_lock_with_clock(
         let skip_publish = !first_attempt && lock_path.exists();
         first_attempt = false;
         if !skip_publish && publish_exclusive(lock_path, record)? {
+            if let Some(previous) = previous.take() {
+                super::proven_dead_takeovers::remember_proven_dead_takeover(
+                    lock_path,
+                    &record.nonce,
+                    previous,
+                );
+            }
             return Ok(());
         }
 
@@ -427,12 +435,16 @@ fn acquire_lock_with_clock(
             return Err(AcquireLockError::Aborted);
         }
 
+        // A failed publish may have encountered a different acquisition after the recovered
+        // owner. Never carry an earlier takeover's proof across that intervening owner.
+        previous = None;
         let owner = match read_owner(lock_path)? {
             Some(o) => o,
             None => continue,
         };
 
         if recover_dead_owner(lock_path, &owner, record, now())? {
+            previous = owner.record.filter(is_lock_owner_proven_dead);
             continue;
         }
 
@@ -491,6 +503,7 @@ pub fn release_lock<N: LockNonce + ?Sized>(
     lock_path: &Path,
     nonce_source: &N,
 ) -> Result<bool, std::io::Error> {
+    super::proven_dead_takeovers::forget_proven_dead_takeover(lock_path, nonce_source.nonce());
     let owner = match read_owner(lock_path)? {
         Some(o) => o,
         None => return Ok(false),
