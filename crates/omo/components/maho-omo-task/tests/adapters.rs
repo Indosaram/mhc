@@ -17,7 +17,7 @@ fn dag() -> (tempfile::TempDir, DagToolDeps) {
     let root = tempfile::tempdir().expect("temporary project");
     let store = create_dag_file_store(&DagStoreConfig::new(root.path()), DagStoreOptions::default()).expect("DAG store");
     let manager = create_dag_manager(DagManagerOptions { store: Arc::new(store), new_run_id: Some(Arc::new(|| "run-1".into())), now: Some(Arc::new(|| 1)), materialize_skills: None, settings: None });
-    (root, DagToolDeps { manager, parent_session_id: Arc::new(|| "session-a".into()), root_session_id: Arc::new(|| "session-a".into()), wait: None, cancel: None, retry: None, send: None, amend: None })
+    (root, DagToolDeps { manager, parent_session_id: Arc::new(|| "session-a".into()), root_session_id: Arc::new(|| "session-a".into()), wait: None, cancel: None, retry: None, send: None, amend: None, cancel_node: None, guide: None, pause_reason: None })
 }
 fn start(deps: &DagToolDeps) -> String {
     let result = run_dag_tool(deps, serde_json::from_value(json!({"action":"start","definition":{"key":"plan","name":"release plan","nodes":[{"id":"a","prompt":"draft plan","category":"quick"},{"id":"b","prompt":"build it","subagent_type":"explore","model":"faux/faux-1","dependsOn":["a"]}]}})).expect("start input")).expect("start result");

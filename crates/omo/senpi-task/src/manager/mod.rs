@@ -19,6 +19,7 @@ pub mod outcome;
 pub mod parent_registry_context;
 pub mod residency_signal;
 pub mod respawn;
+pub mod run_pause;
 pub mod runner;
 pub mod runtime_fallback_event;
 pub mod start_admission;

@@ -781,6 +781,8 @@ impl Extension for Task {
                 let runners = maho_omo_task::engine_runners::build_task_runners(maho_omo_task::engine_runners::TaskRunnerBuildOptions {
                     shared_parent_tools: Vec::new(), get_shared_parent_tools: Some(super::task_runners::live_parent_tools(weak, executor.clone())), max_depth,
                     create_session: super::task_session::factory_with_workpool_events(executor.clone(), parent.weak_accessor(), Some(workpool_events.clone())), parent_registry, rpc_options: process.clone(),
+                    // omo.json `exclude_models` reaches every in-process and process child from here.
+                    exclude_models: config["exclude_models"].as_array().map(|patterns| patterns.iter().filter_map(|pattern| pattern.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
                 });
                 let registry: Arc<dyn senpi_task::host::SenpiModelRegistry> = Arc::new(Registry(ctx.model_registry.clone()));
                 let engine = {
