@@ -282,3 +282,94 @@ fn streamed_failed_tool_facts_survive_next_message_start_but_clear_after_parent_
     assert!(second.interrupted_tools.is_none());
     assert!(second.detail.is_none());
 }
+
+#[test]
+fn concrete_host_lookup_stamps_durable_identity_not_predecessor_route() {
+    use crate::lifecycle::{HostSessionCloseError, HostSessionCloseRequest, HostTransport};
+    struct Transport(std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>);
+    impl HostTransport for Transport {
+        fn daemon_reachable(&self, _: &str) -> bool {
+            true
+        }
+        fn live_session_paths(&self, _: &str) -> Result<Vec<String>, String> {
+            Ok(vec![])
+        }
+        fn close_host_session(
+            &self,
+            _: &HostSessionCloseRequest,
+        ) -> Result<(), HostSessionCloseError> {
+            Ok(())
+        }
+        fn durable_session_id(
+            &self,
+            _: &crate::state::HostSessionIdentity,
+        ) -> Result<Option<String>, String> {
+            Ok(Some("durable-id".into()))
+        }
+        fn publish_task_status(
+            &self,
+            _: &crate::state::HostSessionIdentity,
+            _: TaskStatus,
+        ) -> Result<(), String> {
+            if let Some(sender) = self.0.lock().unwrap().take() {
+                sender.send(()).unwrap();
+            }
+            Ok(())
+        }
+    }
+    let (sent, received) = std::sync::mpsc::channel();
+    let transport = Arc::new(Transport(std::sync::Mutex::new(Some(sent))));
+    let harness = super::fakes::make_manager(super::fakes::HarnessOptions {
+        customize: Some(Box::new(move |options| {
+            options.host_transport = Some(transport)
+        })),
+        ..Default::default()
+    });
+    let task = started(harness.manager.start(&base_spec()));
+    harness
+        .store
+        .mutate(&task.task_id, &mut |fresh: &crate::state::TaskRecord| {
+            crate::state::TaskRecord {
+                child_session_id: Some("predecessor".into()),
+                host_session: Some(crate::state::HostSessionIdentity {
+                    socket: "/host".into(),
+                    routing_id: "route-not-id".into(),
+                    session_path: "/session".into(),
+                    instance_id: "host".into(),
+                    daemon_pid: None,
+                    effect_seq: None,
+                    adopted_entry_id: None,
+                }),
+                ..fresh.clone()
+            }
+        })
+        .unwrap();
+    let (identity_sent, identity_received) = std::sync::mpsc::channel();
+    let identity_store = harness.store.clone();
+    let identity_task = task.task_id.clone();
+    harness.store.set_mutation_listener(Some(Arc::new(move || {
+        if identity_store
+            .load(&identity_task)
+            .unwrap()
+            .is_some_and(|record| record.child_session_id.as_deref() == Some("durable-id"))
+        {
+            let _ = identity_sent.send(());
+        }
+    })));
+    let fake = harness.in_process.wait_handle(&task.task_id);
+    fake.emit(&ManagedChildEvent::of("session_info_changed"));
+    identity_received.recv_timeout(super::fakes::WAIT).unwrap();
+    harness.store.set_mutation_listener(None);
+    assert_eq!(
+        harness
+            .store
+            .load(&task.task_id)
+            .unwrap()
+            .unwrap()
+            .child_session_id
+            .as_deref(),
+        Some("durable-id")
+    );
+    fake.complete("done");
+    received.recv_timeout(super::fakes::WAIT).unwrap();
+}
