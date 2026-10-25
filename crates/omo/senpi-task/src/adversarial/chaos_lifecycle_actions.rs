@@ -234,6 +234,7 @@ pub fn mass_revive_at_cap(state: &ChaosState) {
             start_queued: None,
             revive_delivery_uncertain: None,
             prior_runs_cost_usd: None,
+            queued_admission: None,
             run_pause: None,
             resumed_run_epoch: None,
             burnt_epoch: None,

@@ -323,6 +323,7 @@ fn seed_mutation_record(
         start_queued: None,
         revive_delivery_uncertain: None,
         prior_runs_cost_usd: None,
+        queued_admission: None,
         run_pause: None,
         resumed_run_epoch: None,
         burnt_epoch: None,
