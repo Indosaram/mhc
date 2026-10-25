@@ -32,6 +32,14 @@ pub type EventTelemetryProperties = Map<String, Value>;
 pub type EventTelemetrySetTimeout = Arc<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>;
 pub type EventTelemetryOnCapture = Arc<dyn Fn(&TelemetryCaptureMessage) + Send + Sync>;
 
+/// `uuid` makes a re-sent event idempotent: PostHog keeps one row per uuid. `timestamp` is the event's
+/// own time; a re-send passes the original one so the event lands on the same day it first did.
+#[derive(Clone, Default)]
+pub struct EventTelemetryCaptureOptions {
+    pub uuid: Option<String>,
+    pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 const EVENT_FLUSH_AT: u32 = 20;
 const EVENT_FLUSH_INTERVAL_MS: u64 = 10_000;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(1_000);
@@ -117,7 +125,18 @@ impl EventTelemetryClient {
     }
 
     pub fn capture_event(&self, name: &str, properties: &EventTelemetryProperties) {
-        self.capture_event_acknowledged(name, properties);
+        self.capture_event_with_options(name, properties, None);
+    }
+
+    /// Captures with a caller-supplied identity: a valid `uuid` is reused as the event id and
+    /// `timestamp` becomes the event's own time, so a re-send lands exactly where the first did.
+    pub fn capture_event_with_options(
+        &self,
+        name: &str,
+        properties: &EventTelemetryProperties,
+        options: Option<&EventTelemetryCaptureOptions>,
+    ) {
+        let _acknowledged = self.capture_event_inner(name, properties, options, None);
     }
 
     /// Returns true only when the transport accepted the projected event.
@@ -134,6 +153,16 @@ impl EventTelemetryClient {
         &self,
         name: &str,
         properties: &EventTelemetryProperties,
+        delivery: Option<(&str, f64)>,
+    ) -> bool {
+        self.capture_event_inner(name, properties, None, delivery)
+    }
+
+    fn capture_event_inner(
+        &self,
+        name: &str,
+        properties: &EventTelemetryProperties,
+        options: Option<&EventTelemetryCaptureOptions>,
         delivery: Option<(&str, f64)>,
     ) -> bool {
         let Some(client) = &self.inner else {
@@ -180,9 +209,31 @@ impl EventTelemetryClient {
             payload_properties.insert("$insert_id".into(), Value::String(uuid.into()));
             payload_properties.insert("$time".into(), serde_json::json!(timestamp / 1000.0));
         }
+        let requested_uuid = options.and_then(|options| options.uuid.as_deref());
+        let uuid = match requested_uuid {
+            Some(uuid) if is_valid_event_uuid(uuid) => uuid.to_string(),
+            Some(_) => {
+                client.report(
+                    TelemetryDiagnosticEvent::TelemetryEventPropertyRejected,
+                    "invalid event uuid".to_string(),
+                );
+                uuid::Uuid::now_v7().to_string()
+            }
+            None => uuid::Uuid::now_v7().to_string(),
+        };
+        // event_id is minted last so no event property can supply it; PostHog dedupes on `uuid`, so
+        // mirroring it there makes a direct and a relayed delivery of one event collapse. A re-send
+        // passes the uuid it first carried, so its event_id stays that same id.
+        payload_properties.insert("event_id".into(), Value::String(uuid.clone()));
+        let timestamp = options
+            .and_then(|options| options.timestamp)
+            .map_or_else(
+                || crate::diagnostics::to_iso_string(chrono::Utc::now()),
+                crate::diagnostics::to_iso_string,
+            );
         let payload = TelemetryCaptureMessage {
-            uuid: Some(uuid::Uuid::new_v4().to_string()),
-            timestamp: Some(crate::diagnostics::to_iso_string(chrono::Utc::now())),
+            uuid: Some(uuid),
+            timestamp: Some(timestamp),
             distinct_id: client.distinct_id.clone(),
             event: name.to_string(),
             properties: payload_properties,
@@ -329,6 +380,15 @@ pub fn create_event_telemetry_client(
             source: input.source.to_string(),
         }),
     }
+}
+
+/// `EVENT_UUID` of the TS original: lowercase hex groups, exactly 36 characters.
+fn is_valid_event_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte),
+        })
 }
 
 fn is_forbidden_key(key: &str, value: &Value) -> bool {
