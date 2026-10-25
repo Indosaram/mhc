@@ -110,6 +110,7 @@ fn frontmatter(
         read_only: None,
         kind: kind.map(str::to_string),
         aliases: aliases.map(|a| a.iter().map(|s| (*s).to_string()).collect()),
+        extra: None,
     }
 }
 
