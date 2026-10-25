@@ -339,6 +339,16 @@ pub fn read_session_ancestry(
     })
 }
 
+pub fn read_session_traceparent(
+    session_context: &BTreeMap<String, String>,
+    env: &BTreeMap<String, String>,
+) -> Option<String> {
+    senpi_task::runners::rpc_host::session_role::read_session_traceparent(
+        &serde_json::json!({"sessionContext": session_context}),
+        env,
+    )
+}
+
 impl TaskDagEngine {
     pub fn register_queries(
         &self,
