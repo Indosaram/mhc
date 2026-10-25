@@ -264,3 +264,36 @@ async fn registered_session_start_stays_silent_for_a_served_devin_lane()
     );
     Ok(())
 }
+
+#[test]
+fn registration_completes_migration_before_loading_configuration() {
+    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let migration_order = order.clone();
+    let config_order = order.clone();
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().to_string_lossy().into_owned();
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("startup", root.path().into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    ConfigStartupComponent {
+        run_migration: Some(Arc::new(move |_| {
+            migration_order.lock().unwrap().push("migration");
+            SenpiStartupMigrationResult::default()
+        })),
+        load_config: Some(Arc::new(move |_| {
+            assert_eq!(*config_order.lock().unwrap(), vec!["migration"]);
+            config_order.lock().unwrap().push("config");
+            maho_omo_config_resolution::load_senpi_omo_config(
+                omo_config_core::LoadOmoConfigOptions {
+                    cwd: Some(cwd.clone()),
+                    ..Default::default()
+                },
+            )
+        })),
+    }
+    .register(&mut api);
+    assert_eq!(*order.lock().unwrap(), vec!["migration", "config"]);
+}

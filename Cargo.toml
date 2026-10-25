@@ -131,6 +131,7 @@ members = [
     "crates/omo/components/maho-omo-git-master",
     "crates/omo/components/maho-omo-builtin-mcps",
     "crates/omo/components/maho-omo-browser-bridge",
+    "crates/omo/components/maho-omo-desktop-toolkit",
     "crates/omo/components/maho-omo-computer-use",
     "crates/omo/components/maho-omo-x-search",
     "crates/omo/components/maho-omo-gateway",
