@@ -14,6 +14,7 @@ fn new_record(text: &str, date: &str) -> AgreementExtractionRecord {
         applies: AgreementScope::Global,
         text: text.to_string(),
         date: date.to_string(),
+        source: None,
     }
 }
 
@@ -72,16 +73,19 @@ fn reaffirm_rewords_agent_items_only_and_stale_ids_are_events() {
                 id: human.id.clone(),
                 date: "2026-02-01".to_string(),
                 text: Some("changed".to_string()),
+                source: None,
             },
             AgreementExtractionRecord::Reaffirm {
                 id: existing[1].id.clone(),
                 date: "2026-02-01".to_string(),
                 text: Some("Be very brief".to_string()),
+                source: None,
             },
             AgreementExtractionRecord::Reaffirm {
                 id: "ffffffffff".to_string(),
                 date: "2026-02-02".to_string(),
                 text: None,
+                source: None,
             },
         ],
         &DEFAULT_AGREEMENTS_POLICY,

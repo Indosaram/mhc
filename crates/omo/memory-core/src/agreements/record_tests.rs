@@ -18,7 +18,8 @@ fn parses_new_and_reaffirm_records() {
         AgreementExtractionRecord::New {
             applies: AgreementScope::Project,
             text: "Run tests".to_string(),
-            date: "2026-02-28".to_string()
+            date: "2026-02-28".to_string(),
+            source: None,
         }
     );
     let reaffirm = parse_agreement_record(
@@ -30,7 +31,8 @@ fn parses_new_and_reaffirm_records() {
         AgreementExtractionRecord::Reaffirm {
             id: "0123456789".to_string(),
             date: "2026-02-28".to_string(),
-            text: None
+            text: None,
+            source: None,
         }
     );
 }
