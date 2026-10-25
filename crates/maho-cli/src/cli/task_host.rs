@@ -15,6 +15,7 @@ fn error(error: impl std::fmt::Display) -> HostError {
 }
 #[derive(Clone)]
 pub struct HostAssembly {
+    pub turns: Arc<std::sync::Mutex<std::collections::BTreeMap<String, connection::TurnState>>>,
     pub runtime: tokio::runtime::Handle,
     pub agent_dir: PathBuf,
     pub parent: Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>,
@@ -157,6 +158,15 @@ impl HostAssembly {
         ),
         HostError,
     > {
+        let turn = self
+            .turns
+            .lock()
+            .unwrap()
+            .entry(path.clone())
+            .or_insert_with(|| {
+                Arc::new((std::sync::Mutex::new((0, None)), std::sync::Condvar::new()))
+            })
+            .clone();
         let spec = spec.clone();
         let agent_dir = self.agent_dir.clone();
         let runtime = self.runtime.clone();
@@ -165,7 +175,7 @@ impl HostAssembly {
             {
                 let (socket_client,info)=maho_rpc::host_probe::authenticated_host_socket(&socket,&json!({"type":"get_protocol_info","observe":true}),30_000,Some(&agent_dir)).await.map_err(error)?;
                 let client=Arc::new(maho_rpc::rpc_client::RpcClient::from_stream(socket_client.into_stream(),Default::default()));
-                let live=connection::LiveClient::new(client.clone(),runtime.clone());
+                let live=connection::LiveClient::new(client.clone(),runtime.clone(),turn);
                 let opened=client.open_session(json!({"sessionPath":path,"cwd":spec.cwd,"kind":context.kind,"context":context.context,"retainOnDisconnect":true,"autoTitle":false,"model":spec.model,"thinkingLevel":spec.reasoning})).await.map_err(error)?;
                 let routing_id=client.session_id().ok_or_else(||error("host open returned no routing ID"))?;
                 let watch=live.clone();
