@@ -28,6 +28,7 @@ pub fn interrupted_assistant_message(
         response_id: None,
         provider_thinking_level: None,
         diagnostics: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         stop_details: None,
         deferred: None,
