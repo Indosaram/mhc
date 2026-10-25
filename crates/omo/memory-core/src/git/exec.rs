@@ -25,12 +25,48 @@ pub struct GitExecResult {
     pub stderr: String,
 }
 
+/// Raw result of a finished Git process whose stdout must survive byte-for-byte.
+///
+/// `git cat-file --batch` frames each record with a byte length, so decoding its stdout before
+/// parsing would both shift every later record and destroy a non-UTF-8 blob body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitExecBytesResult {
+    pub code: i32,
+    pub stdout: Vec<u8>,
+    pub stderr: String,
+}
+
+impl GitExecBytesResult {
+    /// The lossy text view of `stdout`, matching what [`GitExecResult`] would have carried.
+    pub fn stdout_text(&self) -> String {
+        String::from_utf8_lossy(&self.stdout).into_owned()
+    }
+}
+
 /// Abstraction over Git process execution for testing and platform shimming.
 ///
 /// Implementations run `git` with `argv` in `options.cwd` and report the exit code and captured
 /// output; a non-zero exit is a normal result, `Err` is reserved for spawn/IO failures.
 pub trait GitExec: Send + Sync {
     fn run(&self, argv: &[String], options: &GitExecOptions) -> std::io::Result<GitExecResult>;
+
+    /// Run `git` and keep `stdout` as raw bytes.
+    ///
+    /// The default implementation falls back to the lossy text view, which is correct for every
+    /// text read; only a caller that parses byte-framed output needs an implementation that keeps
+    /// the bytes intact.
+    fn run_bytes(
+        &self,
+        argv: &[String],
+        options: &GitExecOptions,
+    ) -> std::io::Result<GitExecBytesResult> {
+        let result = self.run(argv, options)?;
+        Ok(GitExecBytesResult {
+            code: result.code,
+            stdout: result.stdout.into_bytes(),
+            stderr: result.stderr,
+        })
+    }
 }
 
 impl dyn GitExec + '_ {
@@ -38,6 +74,23 @@ impl dyn GitExec + '_ {
     pub fn run_in(&self, cwd: &std::path::Path, args: &[&str]) -> std::io::Result<GitExecResult> {
         let argv: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
         self.run(
+            &argv,
+            &GitExecOptions {
+                cwd: cwd.to_path_buf(),
+                timeout_ms: 30_000,
+                ..GitExecOptions::default()
+            },
+        )
+    }
+
+    /// Run `git` with string-slice arguments in `cwd`, keeping stdout as raw bytes.
+    pub fn run_bytes_in(
+        &self,
+        cwd: &std::path::Path,
+        args: &[&str],
+    ) -> std::io::Result<GitExecBytesResult> {
+        let argv: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+        self.run_bytes(
             &argv,
             &GitExecOptions {
                 cwd: cwd.to_path_buf(),
@@ -101,6 +154,31 @@ impl GitExec for RuntimeGitExec {
         }
         Err(err)
     }
+
+    /// The `run_command` seam carries decoded text, so the byte-faithful path spawns the real `git`
+    /// with the same Windows install-root fallback; only a caller parsing byte-framed output (the
+    /// completion secret scan's `cat-file --batch`) needs it.
+    fn run_bytes(
+        &self,
+        argv: &[String],
+        options: &GitExecOptions,
+    ) -> std::io::Result<GitExecBytesResult> {
+        let err = match run_git_command_bytes("git", argv, options) {
+            Ok(result) => return Ok(result),
+            Err(err) => err,
+        };
+        if self.platform != GitPlatform::Windows || err.kind() != std::io::ErrorKind::NotFound {
+            return Err(err);
+        }
+        for candidate in windows_git_candidates(options) {
+            match run_git_command_bytes(&candidate, argv, options) {
+                Ok(result) => return Ok(result),
+                Err(fallback) if fallback.kind() == std::io::ErrorKind::NotFound => {}
+                Err(fallback) => return Err(fallback),
+            }
+        }
+        Err(err)
+    }
 }
 
 /// Builds a Git executor over `runtime`, defaulting to the current platform and a real spawner.
@@ -130,16 +208,43 @@ fn run_git_command(
     argv: &[String],
     options: &GitExecOptions,
 ) -> std::io::Result<GitExecResult> {
+    let (code, stdout, stderr) = run_git_command_raw(executable, argv, options)?;
+    Ok(GitExecResult {
+        code,
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
+fn run_git_command_bytes(
+    executable: &str,
+    argv: &[String],
+    options: &GitExecOptions,
+) -> std::io::Result<GitExecBytesResult> {
+    let (code, stdout, stderr) = run_git_command_raw(executable, argv, options)?;
+    Ok(GitExecBytesResult {
+        code,
+        stdout,
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
+fn run_git_command_raw(
+    executable: &str,
+    argv: &[String],
+    options: &GitExecOptions,
+) -> std::io::Result<(i32, Vec<u8>, Vec<u8>)> {
     // A missing cwd behaves like git itself (exit 128), never like a missing binary.
     if !options.cwd.exists() {
-        return Ok(GitExecResult {
-            code: 128,
-            stdout: String::new(),
-            stderr: format!(
+        return Ok((
+            128,
+            Vec::new(),
+            format!(
                 "fatal: cannot change to '{}': No such file or directory",
                 options.cwd.display()
-            ),
-        });
+            )
+            .into_bytes(),
+        ));
     }
     spawn_and_capture(executable, argv, options)
 }
@@ -222,7 +327,7 @@ fn spawn_and_capture(
     executable: &str,
     argv: &[String],
     options: &GitExecOptions,
-) -> std::io::Result<GitExecResult> {
+) -> std::io::Result<(i32, Vec<u8>, Vec<u8>)> {
     let explicit_path = options
         .env
         .iter()
@@ -338,13 +443,5 @@ fn spawn_and_capture(
     let stdout_bytes = out_rx.recv().unwrap_or_default();
     let stderr_bytes = err_rx.recv().unwrap_or_default();
 
-    let code = status.code().unwrap_or(1);
-    let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
-    let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
-
-    Ok(GitExecResult {
-        code,
-        stdout,
-        stderr,
-    })
+    Ok((status.code().unwrap_or(1), stdout_bytes, stderr_bytes))
 }
