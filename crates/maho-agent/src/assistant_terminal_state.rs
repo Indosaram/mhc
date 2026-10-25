@@ -270,6 +270,7 @@ pub fn create_terminal_failure_assistant_message(
         provider_thinking_level: partial_message
             .and_then(|message| message.provider_thinking_level.clone()),
         diagnostics,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: partial_message
             .and_then(|message| message.prompt_cache_diagnostics.clone()),
         usage: partial_message

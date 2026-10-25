@@ -10,6 +10,7 @@ use crate::utils::event_stream::AssistantMessageEventStream;
 pub fn setup_error_message(model: &Model, message: &str) -> AssistantMessage {
     AssistantMessage {
         error_cause: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,

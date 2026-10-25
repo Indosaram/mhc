@@ -1166,6 +1166,9 @@ pub struct AssistantMessageTiming {
 #[serde(rename_all = "camelCase")]
 pub struct AssistantMessage {
     pub content: Vec<ContentBlock>,
+    /// Request-local stable-prefix cache checkpoint hint for provider adapters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_breakpoint: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_diagnostics: Option<
         crate::api::openai_responses_shared::openai_responses_prompt_cache::PromptCacheDiagnostics,
@@ -1252,6 +1255,11 @@ impl Serialize for AssistantMessage {
             &mut state,
             "promptCacheDiagnostics",
             self.prompt_cache_diagnostics.as_ref(),
+        )?;
+        serialize_optional(
+            &mut state,
+            "promptCacheBreakpoint",
+            self.prompt_cache_breakpoint.as_ref(),
         )?;
         serialize_optional(&mut state, "thinkingLevel", self.thinking_level.as_ref())?;
         serialize_optional(

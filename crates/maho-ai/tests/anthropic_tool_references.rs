@@ -71,6 +71,7 @@ fn faux_assistant(calls: Vec<ContentBlock>) -> Message {
         timing: None,
         thinking_level: None,
         provider_diagnostic: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         error_cause: None,
         content: calls,
@@ -101,6 +102,7 @@ fn native_search_turn(reference_names: &[&str], use_id: &str) -> Message {
         timing: None,
         thinking_level: None,
         provider_diagnostic: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         error_cause: None,
         content: vec![

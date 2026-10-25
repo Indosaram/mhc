@@ -310,6 +310,7 @@ impl EventConverter {
                 failure_source: None,
                 timing: None,
                 error_cause: None,
+                prompt_cache_breakpoint: None,
                 prompt_cache_diagnostics: None,
                 thinking_level: None,
                 provider_diagnostic: None,
@@ -598,6 +599,7 @@ fn create_error_event(
         failure_source: None,
         timing: None,
         error_cause: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,
@@ -679,6 +681,16 @@ fn resolve_cache_retention(
     }
 }
 
+fn without_prompt_cache_breakpoint(message: &AssistantMessage) -> Value {
+    let mut value = serde_json::to_value(message).expect("assistant message serialization");
+    if message.prompt_cache_breakpoint == Some(true)
+        && let Some(object) = value.as_object_mut()
+    {
+        object.remove("promptCacheBreakpoint");
+    }
+    value
+}
+
 fn context_payload(context: &Context) -> Value {
     let messages: Vec<Value> = context
         .messages
@@ -711,6 +723,7 @@ fn context_payload(context: &Context) -> Value {
                     "timestamp": result.timestamp,
                 })
             }
+            Message::Assistant(assistant) => without_prompt_cache_breakpoint(assistant),
             other => serde_json::to_value(other).unwrap_or(Value::Null),
         })
         .collect();
@@ -1015,6 +1028,31 @@ mod tests {
     fn converter_model() -> Model {
         crate::models_generated::get_builtin_provider_models("anthropic").expect("models")[0]
             .clone()
+    }
+
+    #[test]
+    fn assistant_cache_hint_is_request_local_and_other_fields_are_preserved() {
+        let model = converter_model();
+        for hint in [None, Some(false), Some(true)] {
+            let mut message = EventConverter::new(&model).partial;
+            message.prompt_cache_breakpoint = hint;
+            message.content = vec![ContentBlock::text("stable")];
+            let original = serde_json::to_value(&message).expect("message");
+            let context = Context {
+                messages: vec![Message::Assistant(Box::new(message.clone()))],
+                ..Context::default()
+            };
+            let actual = context_payload(&context)["messages"][0].clone();
+            let mut expected = original;
+            if hint == Some(true) {
+                expected
+                    .as_object_mut()
+                    .expect("object")
+                    .remove("promptCacheBreakpoint");
+            }
+            assert_eq!(actual, expected);
+            assert_eq!(message.prompt_cache_breakpoint, hint);
+        }
     }
 
     #[test]
