@@ -21,6 +21,12 @@ pub struct WorkpoolChildIdentity {
 
 /// Blocking handle surface. `wait_for_outcome` blocks until the current turn settles.
 pub trait ManagedChildHandle: Send + Sync {
+    fn run_pause(&self) -> Option<Box<dyn crate::runners::rpc::native_run_pause::NativeRunPause>> {
+        None
+    }
+    fn on_self_resumed(&self, _listener: Arc<dyn Fn() + Send + Sync>) -> Option<Unsubscribe> {
+        None
+    }
     fn task_id(&self) -> &str;
     fn session_id(&self) -> Option<String>;
     fn pid(&self) -> Option<i64>;

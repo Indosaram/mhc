@@ -2,6 +2,11 @@
 
 use std::collections::BTreeMap;
 
+pub use crate::runners::rpc::native_run_pause::{NativeResumeReceipt, NativeRunPause};
+pub use crate::runners::task_parent_control::{
+    EngineHoldInputResult, EngineInheritReceipt, EngineResumeReceipt, HeldGuidanceInput,
+    ObservedHold, ResumeRequest, RunPauseOwner,
+};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
