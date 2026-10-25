@@ -26,7 +26,13 @@ cd "$repo_root"
 
 remote_url=$(git remote get-url origin)
 slug=$(printf '%s' "$remote_url" | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')
-owner=${slug%%/*}
+# The URL can name an account that was renamed (github redirects it), so resolve the owner
+# GitHub actually reports instead of trusting the remote URL.
+owner=$(gh api "repos/$slug" --jq .owner.login 2>/dev/null || true)
+[[ -n $owner ]] || owner=${slug%%/*}
+# Push and query against the resolved owner: an anonymous redirect to a renamed account does not
+# carry the token, so `git push` to the stale name fails with "Invalid username or token".
+slug="$owner/${slug##*/}"
 # Push and query as the repository owner's gh account, never the globally active one.
 export GH_TOKEN=${GH_TOKEN:-$(gh auth token --hostname github.com --user "$owner")}
 

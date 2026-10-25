@@ -2705,7 +2705,29 @@ mod tests {
 
     #[tokio::test]
     async fn stored_kimi_region_routes_the_base_url() {
-        let runtime = builtin_runtime("kimi-coding");
+        // kimi-coding impersonates the Kimi CLI, so resolving it needs recorded risk consent;
+        // keep that consent inside a temp agent dir so the test never reads the real settings.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{"providerRiskConsent":{"kimi-coding":"2026-01-01T00:00:00.000Z"}}"#,
+        )
+        .expect("settings");
+        let provider = maho_ai::providers::all::builtin_providers()
+            .expect("builtin providers")
+            .into_iter()
+            .find(|p| p.id() == "kimi-coding")
+            .expect("builtin provider");
+        let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
+            providers: Some(vec![provider]),
+            // The consent gate derives its agent dir from the credential store's file path, so the
+            // runtime needs a file-backed store in this temp dir; an in-memory store falls back to
+            // the process-global agent dir and would read the developer's real settings.
+            auth_path: Some(dir.path().join("auth.json")),
+            agent_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        })
+        .expect("model runtime");
         runtime
             .credentials
             .set(
@@ -3138,6 +3160,12 @@ mod tests {
             agent_dir: Some(dir.path().to_path_buf()),
             ..Default::default()
         }).expect("model runtime");
+        // Automatic rotation across pooled accounts is gated behind recorded consent.
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{"providerRiskConsent":{"pool:rotation":"2026-01-01T00:00:00.000Z"}}"#,
+        )
+        .expect("settings");
         runtime
             .credentials
             .set(

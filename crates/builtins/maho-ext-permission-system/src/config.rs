@@ -41,7 +41,13 @@ pub fn rules_for_preset_in(preset: PermissionPresetName, context: &PresetContext
         PermissionPresetName::Guarded => {
             let owned = |dir: String| Rule { permission: "external_directory".into(), pattern: format!("{dir}/*"), action: Action::Allow };
             let agent_dir = context.agent_dir.to_string_lossy().into_owned();
-            let memory = context.agent_dir.parent().unwrap_or(&context.agent_dir).join("memory").to_string_lossy().into_owned();
+            // Render the memory root from its parent's string form: `Path::join` would emit a
+            // backslash on Windows and mix separators with the sibling patterns above.
+            let memory_parent = context
+                .agent_dir
+                .parent()
+                .map_or_else(|| agent_dir.clone(), |dir| dir.to_string_lossy().into_owned());
+            let memory = format!("{memory_parent}/memory");
             // The shared system temp root (`context.temp_dir`) is deliberately not allowed: it is not mhc-owned.
             vec![
                 rule("*",Action::Allow), rule("external_directory",Action::Ask),
