@@ -348,3 +348,24 @@ impl ToolBarrier {
         }
     }
 }
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    #[tokio::test]
+    async fn aborted_barrier_wait_returns_without_release() {
+        let barrier = ToolBarrier::new(|_| {});
+        barrier.arm(ToolBarrierSpec {
+            id: "blocked".into(),
+            deadline_ms: 60_000,
+        });
+        let signal = maho_ai::utils::abort::AbortController::new();
+        let wait_signal = signal.signal();
+        signal.abort(None);
+        assert_eq!(
+            barrier.wait(Some(&wait_signal)).await.as_deref(),
+            Some("blocked")
+        );
+        assert!(barrier.release("blocked"));
+    }
+}

@@ -4978,8 +4978,15 @@ impl AgentSession {
                 || activity.has_session_work,
         );
         waits["background"] = json!(facts.background);
+        let previous_synthetic = ledger.attention.synthetic();
         let mut human = waits["human"].as_array().cloned().unwrap_or_default();
-        human.retain(|h| h["synthetic"] != true);
+        human.retain(|h| {
+            !previous_synthetic
+                .as_array()
+                .expect("synthetic waits")
+                .iter()
+                .any(|s| s["wait"]["requestId"] == h["requestId"])
+        });
         human.extend(ledger.attention.reconcile(&facts.synthetic));
         if ledger.current["role"] == "child" {
             human.clear();
@@ -5431,6 +5438,35 @@ impl AgentSession {
             self.human_input_admitted(prompt_kind(&options));
         }
         options.human_input_reported = true;
+        if options
+            .input_origin
+            .unwrap_or_else(|| input_origin_of(options.source))
+            == InputOrigin::Person
+            && self
+                .holds()
+                .iter()
+                .any(|h| h.kind == crate::engine_turn_hold::HoldKind::InheritedHold)
+        {
+            let mut input = json!({"inputId":format!("prompt-{}",uuid::Uuid::new_v4()),"revision":0,"text":text});
+            if let Some(images) = &options.images {
+                if !images.is_empty() {
+                    input["images"] = serde_json::to_value(images).map_err(|e| e.to_string())?;
+                }
+            }
+            if options.expand_prompt_templates.unwrap_or(true) {
+                input["prepare"] = json!(true);
+            }
+            self.hold_input(input)?;
+            let mut hold = lock(&self.engine_turn_hold);
+            let keys = hold
+                .holds()
+                .into_iter()
+                .filter(|h| h.kind == crate::engine_turn_hold::HoldKind::SessionHold)
+                .map(|h| h.key)
+                .collect::<Vec<_>>();
+            hold.release(&keys, crate::engine_turn_hold::HoldReleaseCause::Input)?;
+            return Ok(PromptDisposition::Queued);
+        }
         // Preparation runs before prompt admission locks; a held command may itself submit input.
         let (held_messages, held_ids) = Box::pin(self.take_held_input_messages()).await?;
         options.held_messages = held_messages;
@@ -21164,6 +21200,36 @@ mod tests {
             )
             .expect("configured faux provider");
         session
+    }
+
+    #[tokio::test]
+    async fn held_input_is_prepared_but_not_consumed_before_settlement() {
+        let session = test_session();
+        session
+            .hold_input(json!({"inputId":"held-a","revision":0,"text":"first"}))
+            .expect("hold");
+        session
+            .hold_input(json!({"inputId":"held-b","revision":0,"text":"second"}))
+            .expect("hold");
+        let (messages, ids) = session.take_held_input_messages().await.expect("prepare");
+        assert_eq!(ids, vec!["held-a", "held-b"]);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(session.held_inputs().len(), 2);
+        session.consume_held_inputs(&ids).expect("settle");
+        assert!(session.held_inputs().is_empty());
+    }
+
+    #[tokio::test]
+    async fn claimed_held_input_does_not_ride_two_turns() {
+        let session = test_session();
+        session
+            .hold_input(json!({"inputId":"held-a","revision":0,"text":"first"}))
+            .expect("hold");
+        lock(&session.delivered_held_inputs).push(("held-a".into(), 0));
+        let (messages, ids) = session.take_held_input_messages().await.expect("prepare");
+        assert!(messages.is_empty());
+        assert!(ids.is_empty());
+        assert_eq!(session.held_inputs().len(), 1);
     }
 
     fn test_session() -> AgentSession {
