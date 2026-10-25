@@ -24,7 +24,7 @@ fn blocked_key() -> &'static Regex {
 fn allowed_data_key() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"^(?:action|attemptId|disposition|stage|error|mode|count|willRetry|deferAdmission|delivered|restored|cause|accepted|skipped|rejectionCause|reason|durationMs|kind|retryable|phase|op|bytes|generation|requestId|tokens|tokensBefore|tokensAfter|contextWindow|attempt|aborted)$")
+        Regex::new(r"^(?:action|attemptId|disposition|stage|error|mode|count|willRetry|deferAdmission|delivered|restored|cause|accepted|skipped|rejectionCause|reason|durationMs|kind|retryable|phase|op|bytes|generation|requestId|tokens|tokensBefore|tokensAfter|contextWindow|attempt|aborted|sessionId|role|provider|model|source|actor|from|to|duringTurn|persistDefault|extension|handlerEvent|queuedId|ageMs)$")
             .expect("allowed data key regex")
     })
 }
@@ -265,5 +265,13 @@ mod tests {
         );
         logger.warn("careful", None);
         assert_eq!(seen.lock().expect("lock").len(), 1);
+    }
+
+    #[test]
+    fn queued_id_and_age_ms_are_allowed_data_keys() {
+        assert!(allowed_data_key().is_match("queuedId"));
+        assert!(allowed_data_key().is_match("ageMs"));
+        assert!(allowed_data_key().is_match("sessionId"));
+        assert!(!allowed_data_key().is_match("secretToken"));
     }
 }

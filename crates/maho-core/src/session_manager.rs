@@ -28,6 +28,7 @@ pub struct NewSessionOptions {
     pub id: Option<String>,
     pub parent_session: Option<String>,
     pub forked_from_leaf_id: Option<String>,
+    pub spawned_by: Option<crate::session_lifecycle_types::SpawnedBy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -37,6 +38,7 @@ pub struct UsageTotals {
     pub cache_read: i64,
     pub cache_write: i64,
     pub cost: f64,
+    pub cost_unknown: bool,
     pub latest_cache_hit_rate: Option<f64>,
 }
 
@@ -1494,6 +1496,14 @@ impl SessionManager {
         {
             header.insert("forkedFromLeafId".to_owned(), Value::from(forked_from_leaf_id));
         }
+        if let Some(spawned_by) = options
+            .as_ref()
+            .and_then(|options| options.spawned_by.as_ref())
+        {
+            if let Ok(val) = serde_json::to_value(spawned_by) {
+                header.insert("spawnedBy".to_owned(), val);
+            }
+        }
         self.file_entries = vec![Value::Object(header)];
         self.history_generation += 1;
         self.verbatim_from_count = 0;
@@ -1601,6 +1611,13 @@ impl SessionManager {
             .and_then(|cost| cost.get("total"))
             .and_then(Value::as_f64)
             .unwrap_or(0.0);
+        if usage
+            .get("costUnknown")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            self.usage_totals.cost_unknown = true;
+        }
         let cache_read = usage.get("cacheRead").and_then(Value::as_i64).unwrap_or(0);
         let latest_prompt_tokens = usage.get("input").and_then(Value::as_i64).unwrap_or(0)
             + cache_read
@@ -1655,7 +1672,16 @@ impl SessionManager {
             let persisted_entry = self.resident_store.materialize_cow(&self.file_entries[order]);
             return append_line(&session_file, &persisted_entry);
         }
-        let has_assistant = self.file_entries.iter().any(|candidate| {
+        let durable_lifecycle = {
+            let entry = &self.file_entries[order];
+            entry_type(entry) == "custom"
+                && entry
+                    .get("customType")
+                    .and_then(Value::as_str)
+                    .map(|ct| matches!(ct, "session-lifecycle" | "work-custody" | "child-lifecycle"))
+                    .unwrap_or(false)
+        };
+        let has_assistant = durable_lifecycle || self.file_entries.iter().any(|candidate| {
             entry_type(candidate) == "message"
                 && candidate
                     .get("message")
@@ -1779,10 +1805,23 @@ impl SessionManager {
         thinking_level: &str,
         thinking_selection: Option<Value>,
     ) -> Value {
+        self.append_thinking_level_change_with_model(thinking_level, thinking_selection, None)
+    }
+
+    pub fn append_thinking_level_change_with_model(
+        &mut self,
+        thinking_level: &str,
+        thinking_selection: Option<Value>,
+        model: Option<(&str, &str)>,
+    ) -> Value {
         let mut entry = self.base_entry("thinking_level_change");
         entry.insert("thinkingLevel".to_owned(), Value::from(thinking_level));
         if let Some(selection) = thinking_selection {
             entry.insert("thinkingSelection".to_owned(), selection);
+        }
+        if let Some((provider, model_id)) = model {
+            entry.insert("provider".to_owned(), Value::from(provider));
+            entry.insert("modelId".to_owned(), Value::from(model_id));
         }
         let entry = Value::Object(entry);
         self.append_entry(entry.clone());

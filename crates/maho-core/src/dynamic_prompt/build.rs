@@ -172,6 +172,8 @@ mod tests {
             ),
             file_path,
             disable_model_invocation: false,
+            provenance: None,
+            allowed_set: None,
         }
     }
 
