@@ -10,7 +10,8 @@ use senpi_task::{
     dag::{
         manager::DagRunRecordV1,
         paused_controls::{
-            DagPauseStore, PausedNodeCancelCause, PausedNodeHoldPort, cancel_paused_dag_node,
+            DagPauseStore, PausedNodeCancelCause, PausedNodeHoldPort,
+            cancel_paused_dag_node_with_store,
         },
         scheduler::{DagNodeControlError, DagNodeControlErrorCode, DagSchedulerOptions},
     },

@@ -45,7 +45,7 @@ pub fn recover_paused_dag_children(
     port: &dyn PausedChildRecoveryPort,
 ) -> Result<(), DagNodeControlError> {
     let record = owned_record(options, &options.initial_record.run_id)?;
-    let pauses = crate::dag::paused_controls::DagPauseStore::new(options.store.state_dir());
+    let pauses = crate::dag::paused_controls::DagPauseStore::from_store(options.store.clone());
     let pause = pauses.read(&record.run_id).map_err(|error| {
         DagNodeControlError::new(
             crate::dag::scheduler::DagNodeControlErrorCode::InvalidArguments,
