@@ -19,5 +19,9 @@ pub mod worker_turn;
 mod ported_tests;
 pub mod process_worker;
 pub mod dispatcher;
+pub mod run_pause;
 pub mod engine;
 
+
+#[cfg(test)]
+mod run_pause_tests;

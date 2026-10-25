@@ -35,6 +35,28 @@ impl WorkpoolEngine {
         self.dispatcher.attach_all()
     }
 
+    pub fn attach(&self, parent_session_id: &str, credential: Option<crate::pause::admission_barrier::ResumeCredential>) -> Result<(), WorkpoolError> {
+        for pool in self.store.list_result()? {
+            if pool.parent_session_id == parent_session_id { self.dispatcher.attach_with_credential(&pool.pool_id, credential.clone())?; }
+        }
+        Ok(())
+    }
+
+    pub fn owned_task_ids(&self) -> Result<std::collections::BTreeSet<String>, WorkpoolError> {
+        Ok(self.store.list_result()?.into_iter().flat_map(|pool| {
+            pool.workers.into_iter().map(|worker| worker.task_id)
+                .chain(pool.items.into_iter().filter_map(|item| item.binding.map(|binding| binding.task_id))).collect::<Vec<_>>()
+        }).collect())
+    }
+
+    pub fn pause_for_run(&self, caller: &WorkpoolCaller, pool_id: &str, pause_seq: u64) -> Result<(), WorkpoolError> {
+        super::run_pause::PoolRunPause { store: &self.store, admission: self.admission.as_ref(), dispatcher: &self.dispatcher }.pause_for_run(caller, pool_id, pause_seq)
+    }
+
+    pub fn resume_for_run(&self, caller: &WorkpoolCaller, pool_id: &str, pause_seq: u64, credential: Option<crate::pause::admission_barrier::ResumeCredential>) -> Result<super::run_pause::ResumePoolResult, WorkpoolError> {
+        super::run_pause::PoolRunPause { store: &self.store, admission: self.admission.as_ref(), dispatcher: &self.dispatcher }.resume_for_run(caller, pool_id, pause_seq, credential)
+    }
+
     pub fn dispose(&self) {
         self.dispatcher.stop_scheduling();
         for pool in self.store.list() {
@@ -49,7 +71,7 @@ impl WorkpoolEngine {
     pub fn flush_aggregate(&self, pool_id: &str) -> Result<bool, WorkpoolError> {
         let pool = self.store.load(pool_id)?;
         // A paused run holds its aggregate until Resume (`workpool/engine.ts` `flushAggregate`).
-        if self.admission.delivery_held(&pool.root_session_id) {
+        if pool.hold.is_some() || self.admission.delivery_held(&pool.root_session_id) {
             return Ok(false);
         }
         if pool.aggregate.is_some_and(|state| state.generation == pool.generation && (state.delivered || state.accepted == Some(true))) {
