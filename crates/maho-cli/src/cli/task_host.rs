@@ -125,7 +125,20 @@ impl HostAssembly {
         &self,
         future: impl std::future::Future<Output = Result<T, HostError>> + Send + 'static,
     ) -> Result<T, HostError> {
-        let runtime = self.runtime.clone();
+        // Callers include synchronous extension hooks on a current-thread runtime. Borrowing
+        // that runtime's handle while joining this thread stalls its I/O driver forever.
+        static HOST_RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> =
+            std::sync::OnceLock::new();
+        let runtime = if let Some(runtime) = HOST_RUNTIME.get() {
+            runtime
+        } else {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .map_err(error)?;
+            HOST_RUNTIME.get_or_init(|| runtime)
+        };
         std::thread::spawn(move || runtime.block_on(future))
             .join()
             .map_err(|_| error("task host assembly thread panicked"))?
@@ -257,6 +270,42 @@ impl HostAssembly {
     }
 }
 pub struct PrewarmHost(pub HostAssembly);
+
+#[cfg(test)]
+mod blocking_tests {
+    #[tokio::test(flavor = "current_thread")]
+    async fn synchronous_host_call_drives_its_own_io() {
+        let assembly = super::HostAssembly {
+            session_context: Default::default(),
+            turns: Default::default(),
+            runtime: tokio::runtime::Handle::current(),
+            agent_dir: Default::default(),
+            parent: std::sync::Arc::new(|| None),
+        };
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let result = assembly.block(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .map_err(super::error)?;
+                let address = listener.local_addr().map_err(super::error)?;
+                let (accepted, connected) = tokio::join!(
+                    listener.accept(),
+                    tokio::net::TcpStream::connect(address)
+                );
+                accepted.map_err(super::error)?;
+                connected.map_err(super::error)?;
+                Ok(())
+            });
+            send.send(result).expect("report host I/O result");
+        });
+        // Deliberately block this runtime like a synchronous extension hook.
+        receive
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("host I/O must not need the blocked caller's driver")
+            .expect("host I/O succeeds");
+    }
+}
 impl maho_omo_task::host_prewarm::HostPrewarmHost for PrewarmHost {
     fn agent_dir(&self) -> Option<String> {
         Some(self.0.agent_dir.to_string_lossy().into_owned())
