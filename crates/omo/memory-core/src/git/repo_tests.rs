@@ -19,10 +19,15 @@ fn create_repo() -> (tempfile::TempDir, GitMemoryRepo) {
 #[test]
 fn unicode_status_paths_are_raw_utf8() {
     let (_temp, repo) = create_repo();
-    repo.init(Some(InitializeGitRepoOptions::default())).expect("init");
+    repo.init(Some(InitializeGitRepoOptions::default()))
+        .expect("init");
     let path = "people/\u{ae40}\u{cca0}\u{c218}/card.md";
     fs::create_dir_all(repo.dir.join(path).parent().expect("card directory")).expect("mkdir");
-    fs::write(repo.dir.join(path), "---\ndescription: Person\n---\nidentity\n").expect("card");
+    fs::write(
+        repo.dir.join(path),
+        "---\ndescription: Person\n---\nidentity\n",
+    )
+    .expect("card");
     let status = repo.status(&[] as &[&str]).expect("status");
     assert!(status.contains(path));
     assert!(!status.contains("\\352"));
@@ -31,17 +36,38 @@ fn unicode_status_paths_are_raw_utf8() {
 #[test]
 fn unicode_memory_path_can_be_committed_without_false_dirty_rejection() {
     let (_temp, repo) = create_repo();
-    repo.init(Some(InitializeGitRepoOptions::default())).expect("init");
+    repo.init(Some(InitializeGitRepoOptions::default()))
+        .expect("init");
     let before = repo.head().expect("head");
     let path = "people/\u{ae40}\u{cca0}\u{c218}/card.md";
     fs::create_dir_all(repo.dir.join(path).parent().expect("card directory")).expect("mkdir");
-    fs::write(repo.dir.join(path), "---\ndescription: Person\n---\nidentity\n").expect("card");
-    repo.commit_write(&[path], "remember person", &GitCommitAuthor {
-        agent_id: "agent-one".into(), author_name: "Author".into(), author_email: None,
-    }).expect("commit");
+    fs::write(
+        repo.dir.join(path),
+        "---\ndescription: Person\n---\nidentity\n",
+    )
+    .expect("card");
+    repo.commit_write(
+        &[path],
+        "remember person",
+        &GitCommitAuthor {
+            agent_id: "agent-one".into(),
+            author_name: "Author".into(),
+            author_email: None,
+        },
+    )
+    .expect("commit");
     assert_ne!(repo.head().expect("head"), before);
-    assert!(repo.ls_tree(Some("HEAD"), None).expect("tree").contains(&path.to_string()));
-    assert!(repo.status(&[] as &[&str]).expect("status").trim().is_empty());
+    assert!(
+        repo.ls_tree(Some("HEAD"), None)
+            .expect("tree")
+            .contains(&path.to_string())
+    );
+    assert!(
+        repo.status(&[] as &[&str])
+            .expect("status")
+            .trim()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -332,7 +358,86 @@ fn test_supports_worktrees_and_merges() {
 
     assert_eq!(merged_sha.len(), 40);
     assert_eq!(
-        fs::read_to_string(repo.dir.join("feature.md")).expect("read").replace("\r\n", "\n"),
+        fs::read_to_string(repo.dir.join("feature.md"))
+            .expect("read")
+            .replace("\r\n", "\n"),
         "feature\n"
     );
+}
+
+#[test]
+fn path_log_includes_full_diff_under_follow_config() {
+    let (_temp, repo) = create_repo();
+    repo.init(None).unwrap();
+    let author = GitCommitAuthor {
+        agent_id: "agent-one".into(),
+        author_name: "Author".into(),
+        author_email: None,
+    };
+    fs::write(repo.dir.join("one.md"), "one\n").unwrap();
+    fs::write(repo.dir.join("two.md"), "two\n").unwrap();
+    repo.commit_write(&["one.md", "two.md"], "both", &author)
+        .unwrap();
+    repo.config_set("log.follow", "true").unwrap();
+    repo.config_set("log.showSignature", "true").unwrap();
+    let commits = repo
+        .log(Some(&GitLogOptions {
+            include_paths: true,
+            paths: Some(vec!["one.md".into()]),
+            ..Default::default()
+        }))
+        .unwrap();
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0].paths.as_ref().unwrap(), &["one.md", "two.md"]);
+}
+
+#[test]
+fn line_ending_repair_restores_only_index_equivalent_copies() {
+    let (_temp, repo) = create_repo();
+    repo.init(None).unwrap();
+    let author = GitCommitAuthor {
+        agent_id: "agent-one".into(),
+        author_name: "Author".into(),
+        author_email: None,
+    };
+    fs::write(repo.dir.join("one.md"), "one\ntwo\n").unwrap();
+    fs::write(repo.dir.join("edited.md"), "original\n").unwrap();
+    repo.commit_write(&["one.md", "edited.md"], "notes", &author)
+        .unwrap();
+    repo.config_set("core.autocrlf", "true").unwrap();
+    fs::write(repo.dir.join("one.md"), "one\r\ntwo\r\n").unwrap();
+    fs::write(repo.dir.join("edited.md"), "real edit\r\n").unwrap();
+    repo.init(None).unwrap();
+    assert_eq!(fs::read(repo.dir.join("one.md")).unwrap(), b"one\ntwo\n");
+    assert_eq!(
+        fs::read(repo.dir.join("edited.md")).unwrap(),
+        b"real edit\r\n"
+    );
+    assert_eq!(
+        repo.config_get("core.autocrlf").unwrap().as_deref(),
+        Some("false")
+    );
+}
+
+#[test]
+fn commit_times_ignore_follow_and_signature_settings() {
+    let (_temp, repo) = create_repo();
+    repo.init(None).unwrap();
+    fs::write(repo.dir.join("one.md"), "one\n").unwrap();
+    repo.commit_write(
+        &["one.md"],
+        "note",
+        &GitCommitAuthor {
+            agent_id: "agent-one".into(),
+            author_name: "Author".into(),
+            author_email: None,
+        },
+    )
+    .unwrap();
+    let plain = repo.path_commit_times("HEAD").unwrap();
+    assert!(plain["one.md"] >= 0);
+    repo.config_set("log.follow", "true").unwrap();
+    repo.config_set("log.showSignature", "true").unwrap();
+    let reopened = GitMemoryRepo::open(&repo.dir, "agent-one").unwrap();
+    assert_eq!(reopened.path_commit_times("HEAD").unwrap(), plain);
 }

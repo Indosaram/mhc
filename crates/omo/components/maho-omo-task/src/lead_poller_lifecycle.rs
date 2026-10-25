@@ -9,6 +9,30 @@ pub trait LeadInjectionCoordinator: Send + Sync {
     fn schedule_flush(&self);
     fn flush_soon(&self);
 }
+/// The per-team injection sink (`createInjectionSink`): every delivery names the team run that owns
+/// it, so a receiver can place the message even when several teams are live in one session.
+pub struct TeamScopedLeadSink {
+    pub inner: Arc<dyn LeadInjectionSink>,
+    pub team_run_id: String,
+}
+
+impl LeadInjectionSink for TeamScopedLeadSink {
+    fn enqueue(&self, injection: senpi_task::team::messaging::lead_poller_types::LeadInjection) {
+        let mut injection = injection;
+        // The reference is this team's, whatever the shared sink was told before.
+        injection.run_ref = Some(senpi_task::pause::ports::RunRef::new(
+            senpi_task::pause::ports::RunRefKind::Team,
+            self.team_run_id.clone(),
+        ));
+        self.inner.enqueue(injection);
+    }
+}
+
+/// `createInjectionSink(deps, teamRunId)`: one sink per owned team, never a shared one.
+pub fn create_team_injection_sink(inner: Arc<dyn LeadInjectionSink>, team_run_id: &str) -> Arc<dyn LeadInjectionSink> {
+    Arc::new(TeamScopedLeadSink { inner, team_run_id: team_run_id.to_string() })
+}
+
 pub struct LeadMessageSink {
     pub actions:Arc<dyn maho_ext_api::ExtensionActions>,
     pub coordinator:Option<Arc<dyn LeadInjectionCoordinator>>,
@@ -21,7 +45,9 @@ impl LeadInjectionSink for LeadMessageSink {
             coordinator.enqueue(injection,"senpi-task:team-message",false);
             match (self.parent_state)() { ParentState::Streaming=>coordinator.schedule_flush(),ParentState::Idle=>coordinator.flush_soon(),ParentState::Compacting|ParentState::SessionSwitching|ParentState::SessionShutdown=>{} }
         } else {
-            let sent = self.actions.send_message_with_receipt(maho_ext_api::CustomMessage { custom_type:"senpi-task:team-message".into(),content:vec![maho_ext_api::ToolContent::text(&injection.content)],display:false,details:None },maho_ext_api::SendMessageOptions { trigger_turn:true,deliver_as:Some(maho_ext_api::DeliverAs::Steer) });
+            // The direct path names the run too: a coordinator-less session must not lose ownership.
+            let details = injection.run_ref.as_ref().map(|run| serde_json::json!({"runRef": run}));
+            let sent = self.actions.send_message_with_receipt(maho_ext_api::CustomMessage { custom_type:"senpi-task:team-message".into(),content:vec![maho_ext_api::ToolContent::text(&injection.content)],display:false,details },maho_ext_api::SendMessageOptions { trigger_turn:true,deliver_as:Some(maho_ext_api::DeliverAs::Steer) });
             match sent {
                 Ok(receipt) => {
                     let flushed = injection.on_flushed.take();
@@ -74,7 +100,9 @@ impl LeadPollerLifecycle {
             let map = read_member_task_map(&(self.deps.runtime_dir)(&team.team_run_id));
             if self.stopped.load(Ordering::SeqCst) || (self.deps.session_id)().as_ref() != Some(&session) || (self.deps.session_file)().is_none() { break; }
             let append = self.deps.append_event.clone(); let file = self.deps.session_file.clone();
-            let deps = LeadPollerDeps { team_run_id: team.team_run_id.clone(), config: self.deps.config.clone(), coordinator: self.deps.sink.clone(), delivery_journal: self.deps.delivery_journal.clone(), append_event: Some(Box::new(move |id,event| append(id,event))), event_task_id: Box::new(move |message| map.get(&message.from).cloned()), lead_session_file: Some(Box::new(move || file())) };
+            // One sink per team: the coordinator path and the direct path both name this team's run.
+            let sink = create_team_injection_sink(self.deps.sink.clone(), &team.team_run_id);
+            let deps = LeadPollerDeps { team_run_id: team.team_run_id.clone(), config: self.deps.config.clone(), coordinator: sink, delivery_journal: self.deps.delivery_journal.clone(), append_event: Some(Box::new(move |id,event| append(id,event))), event_task_id: Box::new(move |message| map.get(&message.from).cloned()), lead_session_file: Some(Box::new(move || file())) };
             let poller = match &self.deps.factory { Some(factory) => factory(deps), None => Arc::new(create_lead_poller(deps)) };
             pollers.insert(team.team_run_id.clone(), OwnedPoller { owner: session.clone(), poller });
         }

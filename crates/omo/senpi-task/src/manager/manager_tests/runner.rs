@@ -131,11 +131,19 @@ fn given_managed_spec_when_in_process_started_then_maps_to_child_spec_and_inject
 }
 
 #[test]
-fn given_managed_spec_workpool_epoch_when_in_process_started_then_epoch_is_copied_without_recomputing() {
+fn given_managed_spec_workpool_epoch_when_in_process_started_then_epoch_is_copied_without_recomputing()
+ {
     let runner = CapturingInProcess::default();
     let captured = Arc::clone(&runner.captured);
-    let managed = create_in_process_managed_runner(runner, |_: &ManagedStartSpec| InProcessSessionContext::default());
-    managed.start(&ManagedStartSpec { workpool_run_epoch: Some(12), ..managed_spec() }).expect("started");
+    let managed = create_in_process_managed_runner(runner, |_: &ManagedStartSpec| {
+        InProcessSessionContext::default()
+    });
+    managed
+        .start(&ManagedStartSpec {
+            workpool_run_epoch: Some(12),
+            ..managed_spec()
+        })
+        .expect("started");
     assert_eq!(captured_child(&captured).0.workpool_run_epoch, Some(12));
 }
 
@@ -143,8 +151,15 @@ fn given_managed_spec_workpool_epoch_when_in_process_started_then_epoch_is_copie
 fn given_managed_workpool_epoch_when_in_process_started_then_epoch_reaches_child_spec() {
     let runner = CapturingInProcess::default();
     let captured = Arc::clone(&runner.captured);
-    let managed = create_in_process_managed_runner(runner, |_: &ManagedStartSpec| InProcessSessionContext::default());
-    managed.start(&ManagedStartSpec { workpool_run_epoch: Some(7), ..managed_spec() }).expect("started");
+    let managed = create_in_process_managed_runner(runner, |_: &ManagedStartSpec| {
+        InProcessSessionContext::default()
+    });
+    managed
+        .start(&ManagedStartSpec {
+            workpool_run_epoch: Some(7),
+            ..managed_spec()
+        })
+        .expect("started");
     let (child, _) = captured_child(&captured);
     assert_eq!(child.workpool_run_epoch, Some(7));
 }

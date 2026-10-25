@@ -331,6 +331,7 @@ impl FactsQueue {
             let at_iso = format_rfc3339_millis(at_millis);
 
             let entry = FactsQueueEntry {
+                lead: request.entries[..start_index].iter().rev().find(|entry| entry.kind() != "reasoning").cloned(),
                 version: FACTS_QUEUE_VERSION,
                 identity: request.identity,
                 session_id: request.session_id,

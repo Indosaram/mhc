@@ -116,6 +116,13 @@ pub fn fold_send_outcome(
     let node_id = node.id.clone();
     let run_id = record.run_id.clone();
     match outcome {
+        SendOutcome::Held { .. } => Ok(DagNodeSendResult {
+            node_id,
+            task_id: task_id.into(),
+            delivery: DagNodeDeliveryResult::Queued,
+            queue_position: None,
+            settled: None,
+        }),
         SendOutcome::Queued { queue_position, .. } => Ok(DagNodeSendResult {
             node_id,
             task_id: task_id.into(),
@@ -204,6 +211,12 @@ pub fn fold_send_outcome(
                 settled: Some(settled),
             })
         }
+        SendOutcome::Held { .. } => Err(control_error(
+            DagNodeControlErrorCode::NodeNotContinuable,
+            "Message is held until the run resumes".into(),
+            &run_id,
+            &node_id,
+        )),
         SendOutcome::NotFound { .. } => Err(control_error(
             DagNodeControlErrorCode::NodeNotFound,
             format!("dag node \"{node_id}\" points at task {task_id}, which no longer exists"),
@@ -289,7 +302,10 @@ pub fn watch_revived_task(
             return Ok(());
         }
     };
-    if matches!(task.status, TaskStatus::Pending | TaskStatus::Running) {
+    if matches!(
+        task.status,
+        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused
+    ) {
         fail_revived_node(
             &options,
             &node_id,
@@ -377,7 +393,7 @@ fn revived_failure(status: TaskStatus, message: Option<&str>) -> (DagNodeErrorCo
             DagNodeErrorCode::TaskCancelled,
             message.unwrap_or("task was cancelled").into(),
         ),
-        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Completed => (
+        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused | TaskStatus::Completed => (
             DagNodeErrorCode::TaskError,
             "task in a non-terminal-failure status".into(),
         ),

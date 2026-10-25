@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 
+use super::events::{agreement_event_key, legacy_agreement_events};
 use super::format::{agreement_id, normalize_agreement_text, sort_agreements};
 use super::types::{
     AgreementAuthor, AgreementExtractionRecord, AgreementItem, AgreementScope, AgreementStatus,
@@ -47,7 +48,6 @@ pub fn apply_agreement_records_with_receipts(
     policy: &AgreementsPolicy,
     prior_receipts: &[String],
 ) -> AgreementsMutation {
-    use crate::agreements::events::{agreement_event_key, legacy_agreement_events};
     let mut receipts = if prior_receipts.is_empty() {
         legacy_agreement_events(existing)
     } else {
@@ -101,7 +101,7 @@ pub fn apply_agreement_records_with_receipts(
                         id: id.clone(),
                     }),
                     Some(at) => {
-                        if claim(&mut known, &mut receipts, id, record) {
+                        if claim(id, record, &mut known, &mut receipts) {
                             bump(&mut items, &mut flagged, at, date, text.as_deref());
                         }
                     }
@@ -114,7 +114,7 @@ pub fn apply_agreement_records_with_receipts(
                 ..
             } => {
                 if let Some(at) = find_agreement(&items, text) {
-                    if claim(&mut known, &mut receipts, &items[at].id, record) {
+                    if claim(&items[at].id, record, &mut known, &mut receipts) {
                         bump(&mut items, &mut flagged, at, date, None);
                     }
                     continue;
@@ -160,7 +160,7 @@ pub fn apply_agreement_records_with_receipts(
                 if status == AgreementStatus::NeedsHuman && !flagged.contains(&created.id) {
                     flagged.push(created.id.clone());
                 }
-                claim(&mut known, &mut receipts, &created.id, record);
+                claim(&created.id, record, &mut known, &mut receipts);
                 items.push(created);
             }
         }
@@ -171,6 +171,33 @@ pub fn apply_agreement_records_with_receipts(
         events,
         receipts,
     }
+}
+
+fn claim(
+    id: &str,
+    record: &AgreementExtractionRecord,
+    known: &mut HashSet<String>,
+    receipts: &mut Vec<String>,
+) -> bool {
+    let mut ids = vec![id.to_string()];
+    if let AgreementExtractionRecord::New { text, .. } = record {
+        let alias = agreement_id(text);
+        if alias != id {
+            ids.push(alias);
+        }
+    }
+    let keys: Vec<String> = ids
+        .iter()
+        .map(|id| agreement_event_key(id, record))
+        .collect();
+    let duplicate = keys.iter().any(|key| known.contains(key));
+    for key in keys {
+        known.insert(key.clone());
+        if !receipts.contains(&key) {
+            receipts.push(key);
+        }
+    }
+    !duplicate
 }
 
 /// At the cap only a committed agent item that was never reaffirmed and is not flagged may go: the oldest one.
@@ -275,30 +302,3 @@ fn find_agreement(items: &[AgreementItem], text: &str) -> Option<usize> {
 #[cfg(test)]
 #[path = "mutate_tests.rs"]
 mod tests;
-
-fn claim(
-    known: &mut HashSet<String>,
-    receipts: &mut Vec<String>,
-    id: &str,
-    record: &AgreementExtractionRecord,
-) -> bool {
-    use crate::agreements::events::agreement_event_key;
-    let mut ids = vec![id.to_string()];
-    if let AgreementExtractionRecord::New { text, .. } = record {
-        let text_id = agreement_id(text);
-        if !ids.contains(&text_id) {
-            ids.push(text_id);
-        }
-    }
-    let keys: Vec<_> = ids
-        .iter()
-        .map(|id| agreement_event_key(id, record))
-        .collect();
-    let duplicate = keys.iter().any(|key| known.contains(key));
-    for key in keys {
-        if known.insert(key.clone()) {
-            receipts.push(key);
-        }
-    }
-    !duplicate
-}

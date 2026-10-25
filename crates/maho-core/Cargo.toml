@@ -20,6 +20,7 @@ thiserror = { workspace = true }
 chrono = { workspace = true, features = ["clock", "std", "alloc"] }
 sha2 = { workspace = true }
 hex = { workspace = true }
+filetime = { workspace = true }
 uuid = { workspace = true, features = ["v4", "v7"] }
 tokio = { workspace = true, features = ["fs", "sync", "time", "macros", "rt", "io-util", "process"] }
 regex = { workspace = true }

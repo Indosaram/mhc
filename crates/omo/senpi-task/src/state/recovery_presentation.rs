@@ -47,6 +47,7 @@ pub fn recovery_presentation(record: &RecoveryRecord<'_>) -> Option<RecoveryPres
             Some("idle_evicted") => "evicted while idle",
             Some("handoff_parked") => "handed off",
             Some("host_draining") => "host draining",
+            Some("session_quit") => "session quit",
             Some("store_index_unavailable") => "task store unavailable",
             Some(other) => other,
         }.to_owned(),

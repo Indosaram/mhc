@@ -19,7 +19,7 @@ pub fn project_member_status(status: TaskStatus) -> RuntimeMemberStatus {
     match status.as_str() {
         "pending" => MemberStatus::Pending,
         "running" => MemberStatus::Running,
-        "interrupted" => MemberStatus::Idle,
+        "interrupted" | "paused" => MemberStatus::Idle,
         "completed" => MemberStatus::Completed,
         // "error" | "cancelled" | "lost"
         _ => MemberStatus::Errored,
@@ -50,7 +50,11 @@ pub struct RefreshTeamMemberStatusesDeps<'a> {
     pub runtime_dir: &'a Path,
 }
 
-fn refresh_member(member: &mut RuntimeStateMember, map: &MemberTaskMap, manager: &dyn MemberStatusPort) {
+fn refresh_member(
+    member: &mut RuntimeStateMember,
+    map: &MemberTaskMap,
+    manager: &dyn MemberStatusPort,
+) {
     let Some(task_id) = map.get(&member.name) else {
         return;
     };

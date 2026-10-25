@@ -84,6 +84,7 @@ impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
             stream_simple: config.stream_simple,
             oauth: config.oauth,
             fallback_eligible: config.fallback_eligible,
+            owns_account_selection: config.owns_account_selection,
             refresh_models,
             retry_policy,
             ambient_auth: config.ambient_auth,
@@ -226,13 +227,15 @@ pub struct SwitchSessionOptions {
 }
 
 /// Immutable flags selected when a runtime is first launched.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct AgentSessionLaunchProfile {
     pub cwd: String,
     pub permission_preset: Option<String>,
     pub creation_model: Option<(String, String)>,
     pub initial_thinking_level: Option<String>,
     pub auto_title: Option<bool>,
+    pub prompt_size_inventory:
+        Option<std::sync::Arc<dyn crate::prompt_size_inventory::PromptSizeInventory>>,
 }
 
 /// senpi `applyRetryFallbackProfile`: overlays `{ modelFallback, fallbackChains }` on the session's
@@ -740,12 +743,26 @@ impl AgentSessionRuntime {
             .as_ref()
             .and_then(|profile| profile.initial_thinking_level.as_deref())
             .and_then(maho_ai::types::ModelThinkingLevel::parse);
+        let effective_model = launch_model
+            .or(restored_model)
+            .or_else(|| Some(self.session.model()));
+        let mut session_thinking = None;
+        if let Some(ref m) = effective_model {
+            let levels = crate::session_thinking_memory::derive_session_model_thinking_levels(&manager.current_branch());
+            if let Some(level_str) = levels.get(&format!("{}/{}", m.provider, m.id)) {
+                session_thinking = maho_ai::types::ModelThinkingLevel::parse(level_str);
+            }
+        }
         let thinking_selection = if manager
             .current_branch()
             .iter()
             .any(|entry| entry["type"] == "thinking_level_change")
         {
-            None
+            session_thinking.map(|level| maho_ai::types::ThinkingSelection {
+                level,
+                source: maho_ai::types::ThinkingSelectionSource::Explicit,
+                legacy_variant_id: None,
+            })
         } else {
             self.session.thinking_selection()
         };
@@ -756,12 +773,12 @@ impl AgentSessionRuntime {
             agent_dir: Some(self.services.agent_dir.clone()),
             model_runtime: Some(self.services.model_runtime().clone()),
             model_registry: Some(self.services.model_registry.clone()),
-            model: launch_model
-                .or(restored_model)
-                .or_else(|| Some(self.session.model())),
-            thinking_level: launch_thinking.and_then(|level| {
-                serde_json::from_value(serde_json::Value::from(level.as_str())).ok()
-            }),
+            model: effective_model,
+            thinking_level: launch_thinking
+                .or(session_thinking)
+                .and_then(|level| {
+                    serde_json::from_value(serde_json::Value::from(level.as_str())).ok()
+                }),
             thinking_selection: launch_thinking
                 .map(|level| maho_ai::types::ThinkingSelection {
                     level,
@@ -821,7 +838,17 @@ impl AgentSessionRuntime {
                 .report_removed_extensions(&runner, reason)
                 .await;
             created.session.set_extension_runner(runner).await;
-            created.session.bind_extensions(Default::default()).await;
+            let inventory = self
+                .launch_profile
+                .as_ref()
+                .and_then(|p| p.prompt_size_inventory.clone());
+            created
+                .session
+                .bind_extensions(crate::agent_session::ExtensionBindings {
+                    prompt_size_inventory: inventory,
+                    ..Default::default()
+                })
+                .await;
         }
         self.session = created.session;
         *self.lock_hold() = next_hold;

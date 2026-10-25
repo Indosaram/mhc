@@ -306,3 +306,27 @@ impl Storage for SqliteStorage {
         })
     }
 }
+
+#[cfg(test)]
+mod usage_parity_tests {
+    use super::add_usage;
+    use maho_ai::types::Usage;
+    #[test]
+    fn stats_combination_retains_optional_splits_and_unknown_prices() {
+        let first = Usage {
+            cache_write_1h: Some(3),
+            reasoning: Some(4),
+            cost_unknown: Some(true),
+            ..Usage::default()
+        };
+        let second = Usage {
+            cache_write_1h: Some(2),
+            ..Usage::default()
+        };
+        let total = add_usage(&first, &second);
+        assert_eq!(total.cache_write_1h, Some(5));
+        assert_eq!(total.reasoning, Some(4));
+        assert_eq!(total.cost_unknown, Some(true));
+        assert!(add_usage(&Usage::default(), &Usage::default()).cache_write_1h.is_none());
+    }
+}

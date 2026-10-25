@@ -115,7 +115,7 @@ fn consume_under_lock(
         return Ok(None);
     }
 
-    let range = format!("{}..HEAD", watermark.last_notified_head);
+    let range = format!("{}..{head}", watermark.last_notified_head);
     let log_options = GitLogOptions {
         range: Some(range),
         paths: Some(SOUL_PATHS.iter().map(|s| s.to_string()).collect()),
@@ -132,9 +132,9 @@ fn consume_under_lock(
     };
 
     if commits.len() == SOUL_SCAN_PAGE
-        && commits
-            .iter()
-            .all(|commit| commit.trailers.get("Omo-Writer").map(String::as_str) == Some("memory-tool"))
+        && commits.iter().all(|commit| {
+            commit.trailers.get("Omo-Writer").map(String::as_str) == Some("memory-tool")
+        })
     {
         let unbounded = GitLogOptions {
             limit: None,

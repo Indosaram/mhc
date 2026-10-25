@@ -181,3 +181,31 @@ fn stale_base_answers_the_head_from_state_and_5xx_is_unavailable()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn token_and_network_failures_are_typed_without_leaking_detail() {
+    struct Offline;
+    impl HttpClient for Offline {
+        fn send(&self, _: HttpRequest) -> PortFuture<'_, HttpResponse> {
+            Box::pin(async { Err(EngineError::Other("raw network secret".into())) })
+        }
+        fn open_stream(&self, _: HttpRequest) -> PortFuture<'_, StreamResponse> {
+            Box::pin(async { Err(EngineError::Other("raw network secret".into())) })
+        }
+    }
+    let auth = create_http_transport(HttpTransportOptions {
+        base_url: "https://test.invalid".into(),
+        token: Rc::new(|| Box::pin(async { Err(EngineError::Other("raw token secret".into())) })),
+        client: Rc::new(Offline),
+    });
+    assert!(matches!(auth.pull(0, 10).await, Err(EngineError::Auth)));
+    let offline = create_http_transport(HttpTransportOptions {
+        base_url: "https://test.invalid".into(),
+        token: Rc::new(|| Box::pin(async { Ok("token".into()) })),
+        client: Rc::new(Offline),
+    });
+    assert!(matches!(
+        offline.pull(0, 10).await,
+        Err(EngineError::Network)
+    ));
+}

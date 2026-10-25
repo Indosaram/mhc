@@ -1,7 +1,14 @@
+// Launch metadata: provisional and not promoted until release is confirmed.
+pub const FABLE55_RELEASED:bool=false;
+pub const FABLE55_PROMOTE_DEFAULTS:bool=false;
+pub const fn recommended_fable_model(released:bool,promote_defaults:bool)->&'static str {
+    if released && promote_defaults {"claude-fable-5-5"}else{"claude-fable-5-1"}
+}
+#[cfg(test)] mod launch_tests {#[test] fn promotion_requires_both_flags(){for (released,promoted,expected) in [(false,false,"claude-fable-5-1"),(true,false,"claude-fable-5-1"),(false,true,"claude-fable-5-1"),(true,true,"claude-fable-5-5")] {assert_eq!(super::recommended_fable_model(released,promoted),expected);}}}
 use maho_ai::{model::Model,types::ThinkingLevel};
 
 pub const RECOMMENDED_DEFAULT_MODELS: &[(&str,ThinkingLevel)] = &[
-    ("claude-opus-5-5",ThinkingLevel::Medium),("claude-fable-5-1",ThinkingLevel::Xhigh),
+    ("claude-opus-5-5",ThinkingLevel::Medium),(recommended_fable_model(FABLE55_RELEASED,FABLE55_PROMOTE_DEFAULTS),ThinkingLevel::Xhigh),
     ("kimi-k3",ThinkingLevel::Max),("gpt-6-astra",ThinkingLevel::Xhigh),
     ("gpt-6.1-sol",ThinkingLevel::Medium),("glm-5.3",ThinkingLevel::Max),
 ];
@@ -10,7 +17,7 @@ const KIMI_PROVIDERS:&[&str]=&["kimi-coding","kimi-for-coding","moonshotai","ope
 const GPT_PROVIDERS:&[&str]=&["chatgpt-subscription","openai","github-copilot","opencode"];
 const GLM_PROVIDERS:&[&str]=&["zai-coding-plan","opencode-go"];
 fn ranked_providers(model_id:&str)->&'static[&'static str]{match model_id{
-    "claude-opus-5-5"|"claude-fable-5-1"=>CLAUDE_PROVIDERS,"kimi-k3"=>KIMI_PROVIDERS,
+    "claude-opus-5-5"|"claude-fable-5-1"|"claude-fable-5-5"=>CLAUDE_PROVIDERS,"kimi-k3"=>KIMI_PROVIDERS,
     "gpt-6-astra"|"gpt-6.1-sol"=>GPT_PROVIDERS,"glm-5.3"=>GLM_PROVIDERS,_=>&[]
 }}
 pub fn canonical_model_id(id:&str)->String{

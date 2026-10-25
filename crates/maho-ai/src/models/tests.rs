@@ -3,8 +3,8 @@ use crate::models_generated::{
     CatalogError, MODELS, get_builtin_model, get_builtin_provider_models, get_builtin_providers,
 };
 use crate::types::{
-    AssistantMessageEvent, DoneReason, InputModality, ModelCost, ModelCostTier, ModelThinkingLevel as L,
-    StopReason,
+    AssistantMessageEvent, DoneReason, InputModality, ModelCost, ModelCostTier,
+    ModelThinkingLevel as L, StopReason,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -44,7 +44,10 @@ fn gpt_61_sol_catalog_preserves_route_budgets_efforts_and_aliases() {
         ("azure-openai-responses", 400_000),
     ] {
         let base = builtin(provider, "gpt-6.1-sol");
-        assert_eq!((base.context_window, base.max_tokens), (context_window, 128_000));
+        assert_eq!(
+            (base.context_window, base.max_tokens),
+            (context_window, 128_000)
+        );
         assert_eq!(base.input, vec![InputModality::Text, InputModality::Image]);
         assert!(base.reasoning);
         assert_eq!(
@@ -69,8 +72,15 @@ fn gpt_61_sol_catalog_preserves_route_budgets_efforts_and_aliases() {
             }])
         );
         assert!(supports_configuration_update(&base));
-        for key in ["supportsAdditionalTools", "supportsToolSearch", "supportsMidConvoSystemMessages"] {
-            assert_eq!(base.compat.as_ref().and_then(|compat| compat.get(key)), Some(&serde_json::json!(true)));
+        for key in [
+            "supportsAdditionalTools",
+            "supportsToolSearch",
+            "supportsMidConvoSystemMessages",
+        ] {
+            assert_eq!(
+                base.compat.as_ref().and_then(|compat| compat.get(key)),
+                Some(&serde_json::json!(true))
+            );
         }
         let mut expected = base.clone();
         expected.id = "gpt-6.1-sol-fast".into();
@@ -97,7 +107,10 @@ fn daybreak_catalog_preserves_provider_specific_metadata() {
             ("gpt-daybreak-red-latest", 400_000, 12.5, 75.0),
         ] {
             let model = builtin(provider, id);
-            assert_eq!((model.context_window, model.max_tokens), (context_window, 128_000));
+            assert_eq!(
+                (model.context_window, model.max_tokens),
+                (context_window, 128_000)
+            );
             assert_eq!(model.input, vec![InputModality::Text, InputModality::Image]);
             assert!(model.reasoning);
             assert!((model.cost.input - input).abs() < f64::EPSILON);
@@ -105,7 +118,10 @@ fn daybreak_catalog_preserves_provider_specific_metadata() {
             assert!(model.cost.tiers.is_none());
             assert_eq!(supports_configuration_update(&model), provider == "openai");
             if provider == "openai" {
-                assert_eq!(get_supported_thinking_levels(&model), vec![L::Off, L::Low, L::Medium, L::High, L::Xhigh, L::Max]);
+                assert_eq!(
+                    get_supported_thinking_levels(&model),
+                    vec![L::Off, L::Low, L::Medium, L::High, L::Xhigh, L::Max]
+                );
                 let limits = model.input_limits.expect("image limits");
                 assert_eq!(limits.max_request_bytes, Some(536_870_912));
                 assert_eq!(limits.images.expect("images").max_per_request, Some(1500));
@@ -276,6 +292,20 @@ fn calculate_cost_applies_tiers_and_one_hour_cache_writes() {
 }
 
 #[test]
+fn calculate_cost_marks_unknown_for_unpriced_model() {
+    let mut model = builtin("anthropic", "claude-opus-4-8");
+    model.cost.unknown = Some(true);
+    let mut usage = Usage {
+        input: 1000,
+        output: 500,
+        ..Usage::default()
+    };
+    let cost = calculate_cost(&model, &mut usage);
+    assert_eq!(cost.total, 0.0);
+    assert_eq!(usage.cost_unknown, Some(true));
+}
+
+#[test]
 fn models_are_equal_compares_id_and_provider() {
     let a = builtin("anthropic", "claude-opus-4-8");
     let mut b = a.clone();
@@ -374,7 +404,8 @@ fn provider_collection_retains_declared_retry_policy() {
             images: IndexMap::new(),
         },
         Some(profile),
-    ).expect("chat implementation");
+    )
+    .expect("chat implementation");
     let models = create_models(None);
     models.set_provider(provider);
     let retained = models
@@ -466,7 +497,13 @@ async fn models_collection_streams_with_explicit_key_and_rejects_unconfigured() 
         failed.error_message.as_deref(),
         Some("Unknown provider: nobody")
     );
-    assert!(models.get_available(None, None).await.expect("available models").is_empty());
+    assert!(
+        models
+            .get_available(None, None)
+            .await
+            .expect("available models")
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -534,7 +571,14 @@ async fn refresh_restores_stored_models_then_publishes_fetched_ones() {
         })
         .await;
     assert!(offline.errors.is_empty());
-    assert_eq!(models.get_available(Some("maho-refresh"), None).await.expect("available models").len(), 2);
+    assert_eq!(
+        models
+            .get_available(Some("maho-refresh"), None)
+            .await
+            .expect("available models")
+            .len(),
+        2
+    );
 
     let controller = AbortController::new();
     controller.abort(None);
@@ -598,7 +642,9 @@ fn plain_provider(id: &str, models: Vec<Model>) -> Arc<dyn Provider> {
 #[tokio::test]
 async fn ambient_bedrock_credentials_resolve_without_a_request_key() {
     let models = create_models(None);
-    models.set_provider(crate::providers::amazon_bedrock::amazon_bedrock_provider().expect("provider"));
+    models.set_provider(
+        crate::providers::amazon_bedrock::amazon_bedrock_provider().expect("provider"),
+    );
     let overrides = AuthResolutionOverrides {
         env: Some(ProviderEnv::from([(
             "AWS_PROFILE".to_owned(),
@@ -623,14 +669,28 @@ async fn provider_auth_check_and_resolution_preserve_cloud_classification() {
         async fn env(&self, name: &str) -> Option<String> {
             (name == "AWS_PROFILE").then(|| "work".into())
         }
-        async fn file_exists(&self, _: &str) -> bool { false }
+        async fn file_exists(&self, _: &str) -> bool {
+            false
+        }
     }
     let store = Arc::new(crate::auth::credential_store::InMemoryCredentialStore::new());
     let auth = ProviderModelsAuth::new(store.clone(), Arc::new(CloudContext));
     let provider = crate::providers::amazon_bedrock::amazon_bedrock_provider().expect("provider");
     let signal = crate::utils::abort::AbortController::new().signal();
-    assert!(auth.check(provider.as_ref(), &signal).await.expect("check").expect("profile").ambient);
-    assert!(auth.resolve(provider.as_ref(), &AuthResolutionOverrides::default()).await.expect("resolve").expect("profile").ambient);
+    assert!(
+        auth.check(provider.as_ref(), &signal)
+            .await
+            .expect("check")
+            .expect("profile")
+            .ambient
+    );
+    assert!(
+        auth.resolve(provider.as_ref(), &AuthResolutionOverrides::default())
+            .await
+            .expect("resolve")
+            .expect("profile")
+            .ambient
+    );
 }
 
 #[test]
@@ -1724,19 +1784,22 @@ async fn uses_explicit_request_api_key_and_env_during_provider_auth_resolution()
         models_store: None,
         auth: Some(auth),
     }));
-    models.set_provider(create_provider(CreateProviderOptions {
-        id: "p1".into(),
-        name: None,
-        base_url: None,
-        headers: None,
-        auth: None,
-        models: vec![model.clone()],
-        fetch_models: None,
-        restore_models: None,
-        filter_models: None,
-        api: ProviderApi::Single(echo),
-        images: IndexMap::new(),
-    }).expect("chat implementation"));
+    models.set_provider(
+        create_provider(CreateProviderOptions {
+            id: "p1".into(),
+            name: None,
+            base_url: None,
+            headers: None,
+            auth: None,
+            models: vec![model.clone()],
+            fetch_models: None,
+            restore_models: None,
+            filter_models: None,
+            api: ProviderApi::Single(echo),
+            images: IndexMap::new(),
+        })
+        .expect("chat implementation"),
+    );
 
     let mut options = SimpleStreamOptions::default();
     options.stream.request.api_key = Some("explicit-key".into());
@@ -1850,19 +1913,22 @@ async fn merges_resolved_auth_into_stream_options_explicit_options_win_per_field
         models_store: None,
         auth: Some(auth),
     }));
-    models.set_provider(create_provider(CreateProviderOptions {
-        id: "p1".into(),
-        name: None,
-        base_url: None,
-        headers: None,
-        auth: None,
-        models: vec![model.clone()],
-        fetch_models: None,
-        restore_models: None,
-        filter_models: None,
-        api: ProviderApi::Single(echo),
-        images: IndexMap::new(),
-    }).expect("chat implementation"));
+    models.set_provider(
+        create_provider(CreateProviderOptions {
+            id: "p1".into(),
+            name: None,
+            base_url: None,
+            headers: None,
+            auth: None,
+            models: vec![model.clone()],
+            fetch_models: None,
+            restore_models: None,
+            filter_models: None,
+            api: ProviderApi::Single(echo),
+            images: IndexMap::new(),
+        })
+        .expect("chat implementation"),
+    );
 
     let mut options = SimpleStreamOptions::default();
     options.stream.request.api_key = Some("explicit-key".into());
@@ -1969,19 +2035,22 @@ async fn adds_model_headers_only_for_model_auth_and_transforms_assembled_headers
         models_store: None,
         auth: Some(auth),
     }));
-    models.set_provider(create_provider(CreateProviderOptions {
-        id: "p1".into(),
-        name: None,
-        base_url: None,
-        headers: None,
-        auth: None,
-        models: vec![model.clone()],
-        fetch_models: None,
-        restore_models: None,
-        filter_models: None,
-        api: ProviderApi::Single(echo),
-        images: IndexMap::new(),
-    }).expect("chat implementation"));
+    models.set_provider(
+        create_provider(CreateProviderOptions {
+            id: "p1".into(),
+            name: None,
+            base_url: None,
+            headers: None,
+            auth: None,
+            models: vec![model.clone()],
+            fetch_models: None,
+            restore_models: None,
+            filter_models: None,
+            api: ProviderApi::Single(echo),
+            images: IndexMap::new(),
+        })
+        .expect("chat implementation"),
+    );
 
     let plain_overrides = AuthResolutionOverrides {
         api_key: Some("key".into()),
@@ -2127,7 +2196,7 @@ async fn streams_through_the_provider() {
 async fn applies_request_wide_pricing_tiers_above_the_configured_input_threshold() {
     let title = "applies request-wide pricing tiers above the configured input threshold";
     let mut model = with_provider(&builtin("openai", "gpt-6-astra"), "openai");
-    model.cost = ModelCost {
+    model.cost = ModelCost { unknown: None,
         effective_rates: None,
         input: 5.0,
         output: 30.0,
@@ -2141,7 +2210,7 @@ async fn applies_request_wide_pricing_tiers_above_the_configured_input_threshold
             input_tokens_above: 272_000,
         }]),
     };
-    let usage = |cache_write: u64| Usage {
+    let usage = |cache_write: u64| Usage { context_usage: None,
         input: 200_000,
         output: 100_000,
         cache_read: 72_000,
@@ -3190,21 +3259,24 @@ async fn cancel_deferred_resolves_the_provider_and_rejects_unknown_or_incapable_
         models_store: None,
         auth: Some(ambient_auth()),
     }));
-    models.set_provider(create_provider(CreateProviderOptions {
-        id: "cancel-target".into(),
-        name: None,
-        base_url: None,
-        headers: None,
-        auth: None,
-        models: vec![model.clone()],
-        fetch_models: None,
-        restore_models: None,
-        filter_models: None,
-        api: ProviderApi::Single(Arc::new(CancelRecorder {
-            calls: calls.clone(),
-        })),
-        images: IndexMap::new(),
-    }).expect("chat implementation"));
+    models.set_provider(
+        create_provider(CreateProviderOptions {
+            id: "cancel-target".into(),
+            name: None,
+            base_url: None,
+            headers: None,
+            auth: None,
+            models: vec![model.clone()],
+            fetch_models: None,
+            restore_models: None,
+            filter_models: None,
+            api: ProviderApi::Single(Arc::new(CancelRecorder {
+                calls: calls.clone(),
+            })),
+            images: IndexMap::new(),
+        })
+        .expect("chat implementation"),
+    );
 
     models
         .cancel_deferred_with_transforms(

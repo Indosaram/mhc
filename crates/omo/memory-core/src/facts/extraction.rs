@@ -27,24 +27,26 @@ pub enum FactsExtractionRecord {
         text: String,
         date: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        receipt: Option<super::display::ClaimReceipt>,
+        receipt: Option<serde_json::Value>,
     },
     Person {
         person: FactsPersonReference,
         text: String,
         date: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        receipt: Option<super::display::ClaimReceipt>,
+        receipt: Option<serde_json::Value>,
     },
 }
 
 impl FactsExtractionRecord {
-    pub fn receipt(&self) -> Option<&super::display::ClaimReceipt> {
+    pub fn receipt(&self) -> Option<&serde_json::Value> {
         match self {
             Self::Project { receipt, .. } | Self::Person { receipt, .. } => receipt.as_ref(),
         }
     }
-
+    pub fn rendered_text(&self) -> String {
+        super::display::fact_display_text(self)
+    }
     /// Return the fact text.
     pub fn text(&self) -> &str {
         match self {
@@ -97,12 +99,6 @@ pub struct PrimaryHuman {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FactsPayload {
     pub version: u32,
-    #[serde(
-        default,
-        rename = "agreementEventVersion",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub agreement_event_version: Option<u32>,
     pub identity: String,
     pub today: String,
     pub entries: Vec<FactsQueueEntry>,
@@ -351,7 +347,6 @@ pub fn validate_facts_recovery(
 ) -> Result<(), FactsExtractionError> {
     validate_facts_batch_id(&batch.batch_id)?;
     if recovery.version != 1
-        || recovery.agreement_event_version.is_some_and(|v| v != 1)
         || recovery.batch_id != batch.batch_id
         || recovery.records_hash
             != facts_records_hash(
@@ -396,17 +391,15 @@ pub fn parse_facts_extraction_record(
         .ok_or_else(|| invalid(index, "scope must be person or project"))?;
 
     if scope == "project" {
-        if obj
-            .get("person")
-            .is_some_and(|value| !is_placeholder_person(value))
-        {
+        if obj.contains_key("person") {
             return Err(invalid(index, "project record must not carry person"));
         }
-        assert_allowed_keys(obj, &["scope", "person", "text", "date", "receipt"], index)?;
+        assert_allowed_keys(obj, &["scope", "text", "date", "receipt"], index)?;
         return Ok(FactsExtractionRecord::Project {
             text,
             date,
-            receipt,
+            receipt: receipt
+                .map(|receipt| serde_json::to_value(receipt).expect("receipt serialization")),
         });
     }
 
@@ -442,7 +435,8 @@ pub fn parse_facts_extraction_record(
         person: FactsPersonReference { name, aliases },
         text,
         date,
-        receipt,
+        receipt: receipt
+            .map(|receipt| serde_json::to_value(receipt).expect("receipt serialization")),
     })
 }
 
@@ -540,31 +534,3 @@ mod tests;
 #[cfg(test)]
 #[path = "extraction_apply_tests.rs"]
 mod apply_tests;
-
-fn is_placeholder_person(value: &serde_json::Value) -> bool {
-    fn name(value: Option<&serde_json::Value>) -> bool {
-        match value {
-            None | Some(serde_json::Value::Null) => true,
-            Some(serde_json::Value::String(value)) => {
-                value.trim().is_empty()
-                    || ["n/a", "none", "null", "undefined", "unknown", "-"]
-                        .contains(&value.trim().to_lowercase().as_str())
-            }
-            _ => false,
-        }
-    }
-    let Some(obj) = value.as_object() else {
-        return name(Some(value));
-    };
-    if obj.keys().any(|key| key != "name" && key != "aliases") {
-        return false;
-    }
-    name(obj.get("name"))
-        && match obj.get("aliases") {
-            None | Some(serde_json::Value::Null) => true,
-            Some(serde_json::Value::Array(values)) => values
-                .iter()
-                .all(|v| v.as_str().is_some_and(|s| s.trim().is_empty())),
-            _ => false,
-        }
-}

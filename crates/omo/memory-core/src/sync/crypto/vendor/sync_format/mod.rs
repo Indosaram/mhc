@@ -1,3 +1,4 @@
+pub mod authority;
 pub mod canonical;
 pub mod fold;
 pub mod fork_evidence;

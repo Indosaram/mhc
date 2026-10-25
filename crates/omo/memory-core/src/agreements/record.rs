@@ -2,7 +2,9 @@
 
 use serde_json::{Map, Value};
 
-use super::types::{AGREEMENT_TEXT_MAX_CHARS, AgreementExtractionRecord, AgreementScope};
+use super::types::{
+    AGREEMENT_TEXT_MAX_CHARS, AgreementExtractionRecord, AgreementScope, AgreementSourceEvent,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgreementRecordValidationError {
@@ -28,28 +30,7 @@ pub fn parse_agreement_record(
         valid_date(record.get("date")).ok_or_else(|| invalid(index, "date must be YYYY-MM-DD"))?;
     let source = record
         .get("source")
-        .map(|value| {
-            let obj = value
-                .as_object()
-                .ok_or_else(|| invalid(index, "source must name a session and message"))?;
-            if obj.len() != 2 {
-                return Err(invalid(index, "source must name a session and message"));
-            }
-            let session_id = obj
-                .get("sessionId")
-                .and_then(Value::as_str)
-                .filter(|v| !v.trim().is_empty())
-                .ok_or_else(|| invalid(index, "source must name a session and message"))?;
-            let message_id = obj
-                .get("messageId")
-                .and_then(Value::as_str)
-                .filter(|v| !v.trim().is_empty())
-                .ok_or_else(|| invalid(index, "source must name a session and message"))?;
-            Ok(super::types::AgreementSource {
-                session_id: session_id.into(),
-                message_id: message_id.into(),
-            })
-        })
+        .map(|value| parse_source(value, index))
         .transpose()?;
     let action = record.get("action").and_then(Value::as_str);
     if action == Some("new") {
@@ -93,8 +74,83 @@ pub fn parse_agreement_record(
     Ok(AgreementExtractionRecord::Reaffirm {
         id: id.to_string(),
         date,
-        source,
         text,
+        source,
+    })
+}
+
+/// Validate only extraction entries, never lead-context messages. Accepts the serialized
+/// payload shape so callers can pass either FactsPayload or a versioned wire payload.
+pub fn validate_agreement_source(
+    record: &AgreementExtractionRecord,
+    payload: &impl serde::Serialize,
+    index: usize,
+) -> Result<(), AgreementRecordValidationError> {
+    let payload = serde_json::to_value(payload)
+        .map_err(|error| invalid(index, &format!("invalid extraction payload: {error}")))?;
+    let source = match record {
+        AgreementExtractionRecord::New { source, .. }
+        | AgreementExtractionRecord::Reaffirm { source, .. } => source,
+    };
+    let Some(source) = source else {
+        return if payload.get("agreementEventVersion").is_some() {
+            Err(invalid(index, "source user-message identity is required"))
+        } else {
+            Ok(())
+        };
+    };
+    let found = payload
+        .get("entries")
+        .and_then(Value::as_array)
+        .is_some_and(|entries| {
+            entries.iter().any(|entry| {
+                entry.get("sessionId").and_then(Value::as_str) == Some(source.session_id.as_str())
+                    && entry
+                        .get("entries")
+                        .and_then(Value::as_array)
+                        .is_some_and(|messages| {
+                            messages.iter().any(|message| {
+                                message.get("kind").and_then(Value::as_str) == Some("user")
+                                    && message.get("source_message_id").and_then(Value::as_str)
+                                        == Some(source.message_id.as_str())
+                            })
+                        })
+            })
+        });
+    if found {
+        Ok(())
+    } else {
+        Err(invalid(
+            index,
+            "source must identify a user message in the extraction payload, not lead context",
+        ))
+    }
+}
+
+fn parse_source(
+    value: &Value,
+    index: usize,
+) -> Result<AgreementSourceEvent, AgreementRecordValidationError> {
+    let source = value
+        .as_object()
+        .ok_or_else(|| invalid(index, "source must be an object"))?;
+    assert_keys(source, &["sessionId", "messageId"], index)?;
+    let nonempty = |key: &str| {
+        source
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+    };
+    let (Some(session_id), Some(message_id)) = (nonempty("sessionId"), nonempty("messageId"))
+    else {
+        return Err(invalid(
+            index,
+            "source requires non-empty sessionId and messageId",
+        ));
+    };
+    Ok(AgreementSourceEvent {
+        session_id: session_id.to_string(),
+        message_id: message_id.to_string(),
     })
 }
 

@@ -25,7 +25,16 @@ pub fn dag_event_lane(event_type: DagRunEventType) -> DagEventLane {
         | DagRunEventType::NodeSteered
         | DagRunEventType::DefinitionAmended
         | DagRunEventType::DiagnosticAdded
-        | DagRunEventType::StreamOverflow => DagEventLane::Boundary,
+        | DagRunEventType::StreamOverflow
+        | DagRunEventType::GuidanceAdded
+        | DagRunEventType::GuidanceEdited
+        | DagRunEventType::GuidanceRemoved
+        | DagRunEventType::GuidanceDispatching
+        | DagRunEventType::GuidanceDelivered
+        | DagRunEventType::NodeCancelRequested
+        | DagRunEventType::NodeRetryStaged
+        | DagRunEventType::NodePauseRecovered
+        | DagRunEventType::NodePauseLost => DagEventLane::Boundary,
     }
 }
 
@@ -41,7 +50,7 @@ pub fn dag_event_lane_of(event_type: &str) -> Result<DagEventLane, UnknownDagEve
 }
 
 impl DagRunEventType {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 26] = [
         Self::RunCreated,
         Self::RunStarted,
         Self::RunPaused,
@@ -59,6 +68,15 @@ impl DagRunEventType {
         Self::DefinitionAmended,
         Self::DiagnosticAdded,
         Self::StreamOverflow,
+        Self::GuidanceAdded,
+        Self::GuidanceEdited,
+        Self::GuidanceRemoved,
+        Self::GuidanceDispatching,
+        Self::GuidanceDelivered,
+        Self::NodeCancelRequested,
+        Self::NodeRetryStaged,
+        Self::NodePauseRecovered,
+        Self::NodePauseLost,
     ];
 
     pub fn parse(value: &str) -> Option<Self> {
@@ -71,8 +89,8 @@ pub fn payload_lane(payload: &DagRunEventPayload) -> DagEventLane {
     dag_event_lane(payload.event_type())
 }
 
-/// The 17 journaled type tags, in contract order.
-pub fn journaled_event_types() -> [&'static str; 17] {
+/// The 26 journaled type tags, in contract order.
+pub fn journaled_event_types() -> [&'static str; 26] {
     DAG_RUN_EVENT_TYPES
 }
 

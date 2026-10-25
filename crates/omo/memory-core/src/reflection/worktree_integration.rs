@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::git::exec::GitExec;
 
+use super::completion_repair::STABLE_LOG_OUTPUT;
 use super::machine::ReflectionOutcome;
 use super::worktree::{ReflectionCleanupReceipt, ReflectionWorktree, discard_reflection_worktree};
 
@@ -124,10 +125,16 @@ fn find_exact_run_receipt(
 }
 
 fn has_exact_run_receipt(exec: &dyn GitExec, cwd: &Path, commit: &str, run_id: &str) -> bool {
-    let trailers = exec.run_in(
-        cwd,
-        &["show", "-s", "--format=%(trailers:key=Omo-Run,valueonly)", commit],
-    );
+    // A user's `log.showSignature` puts gpg/ssh verification lines ahead of the parsed trailers and
+    // `log.follow` turns a single-path log into `--follow`, so both are pinned off for this read.
+    let mut argv: Vec<&str> = STABLE_LOG_OUTPUT.to_vec();
+    argv.extend([
+        "show",
+        "-s",
+        "--format=%(trailers:key=Omo-Run,valueonly)",
+        commit,
+    ]);
+    let trailers = exec.run_in(cwd, &argv);
     match trailers {
         Ok(res) if res.code == 0 => res.stdout.lines().any(|v| v.trim() == run_id),
         _ => false,

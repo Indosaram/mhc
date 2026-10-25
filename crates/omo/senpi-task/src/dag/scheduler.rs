@@ -1735,7 +1735,10 @@ fn fold_task_outcome(
     node_id: &DagNodeId,
     task: TaskRecord,
 ) -> Result<(), crate::dag::store::DagStoreError> {
-    if matches!(task.status, TaskStatus::Pending | TaskStatus::Running) {
+    if matches!(
+        task.status,
+        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused
+    ) {
         return fail_node(
             context,
             node_id,
@@ -1957,6 +1960,10 @@ fn owner_of(record: &DagRunRecordV1, node_id: &DagNodeId) -> DagTaskOwner {
 
 fn start_failure(result: &StartResult) -> (DagNodeErrorCode, String) {
     match result {
+        StartResult::Held(_) => (
+            DagNodeErrorCode::StartFailed,
+            "Task admission is held until the run resumes".into(),
+        ),
         StartResult::DepthDenied { reason, .. } => (DagNodeErrorCode::DepthDenied, reason.clone()),
         StartResult::PlanUnresolved(error) => {
             (DagNodeErrorCode::PlanUnresolved, error.message.clone())
@@ -1989,7 +1996,7 @@ fn task_failure(status: TaskStatus, message: Option<&str>) -> (DagNodeErrorCode,
             DagNodeErrorCode::TaskCancelled,
             message.unwrap_or("task was cancelled").to_string(),
         ),
-        TaskStatus::Completed | TaskStatus::Pending | TaskStatus::Running => (
+        TaskStatus::Completed | TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused => (
             DagNodeErrorCode::TaskError,
             "task in a non-terminal-failure status".to_string(),
         ),
@@ -2096,9 +2103,13 @@ pub enum DagNodeControlErrorCode {
     NodeNotRetryable,
     NodeHasNoTask,
     NodeNotContinuable,
+    RunPausedByUser,
+    RunNotUserPaused,
+    GuidanceFrozen,
+    GuidanceNotFound,
 }
 
-pub const DAG_NODE_CONTROL_ERROR_CODES: [DagNodeControlErrorCode; 8] = [
+pub const DAG_NODE_CONTROL_ERROR_CODES: [DagNodeControlErrorCode; 12] = [
     DagNodeControlErrorCode::RunNotFound,
     DagNodeControlErrorCode::RunNotOwned,
     DagNodeControlErrorCode::RunStillActive,
@@ -2107,6 +2118,10 @@ pub const DAG_NODE_CONTROL_ERROR_CODES: [DagNodeControlErrorCode; 8] = [
     DagNodeControlErrorCode::NodeNotRetryable,
     DagNodeControlErrorCode::NodeHasNoTask,
     DagNodeControlErrorCode::NodeNotContinuable,
+    DagNodeControlErrorCode::RunPausedByUser,
+    DagNodeControlErrorCode::RunNotUserPaused,
+    DagNodeControlErrorCode::GuidanceFrozen,
+    DagNodeControlErrorCode::GuidanceNotFound,
 ];
 
 impl DagNodeControlErrorCode {
@@ -2120,6 +2135,10 @@ impl DagNodeControlErrorCode {
             Self::NodeNotRetryable => "node_not_retryable",
             Self::NodeHasNoTask => "node_has_no_task",
             Self::NodeNotContinuable => "node_not_continuable",
+            Self::RunPausedByUser => "run_paused_by_user",
+            Self::RunNotUserPaused => "run_not_user_paused",
+            Self::GuidanceFrozen => "guidance_frozen",
+            Self::GuidanceNotFound => "guidance_not_found",
         }
     }
 }

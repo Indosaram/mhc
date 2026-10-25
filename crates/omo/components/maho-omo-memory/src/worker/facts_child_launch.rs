@@ -115,6 +115,7 @@ mod tests {
         let payload = FactsPayload {
             agreement_event_version: None,
             version: 1,
+            agreement_event_version: Some(1),
             identity: "agent".into(),
             today: "2026-10-02".into(),
             known_people: vec![],

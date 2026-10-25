@@ -25,16 +25,30 @@ fn requested_kernel_tools_reach_the_resolved_start_hook_before_spawn() {
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured = seen.clone();
     let tool = TaskToolDeps {
-        start: Some(std::sync::Arc::new(move |spec, names| manager.start_prepared(spec, |_, plan, mode| {
-            captured.lock().expect("capture lock").push((names.to_vec(), plan.model.clone(), mode));
-            Err("grant refused".into())
-        }))),
+        start: Some(std::sync::Arc::new(move |spec, names| {
+            manager.start_prepared(spec, |_, plan, mode| {
+                captured.lock().expect("capture lock").push((
+                    names.to_vec(),
+                    plan.model.clone(),
+                    mode,
+                ));
+                Err("grant refused".into())
+            })
+        })),
         ..Default::default()
     };
     let mut input = params("lookup", "quick", Some(true));
     input.tools = Some(vec!["lookup".into()]);
-    let result = build_task_execute(TaskExecuteDeps { manager: &harness.manager, tool: &tool, policy: &tool }, ForegroundWaitOptions::default())
-        .execute("kernel-grant", &input, None, None, &ctx()).expect("execute");
+    let result = build_task_execute(
+        TaskExecuteDeps {
+            manager: &harness.manager,
+            tool: &tool,
+            policy: &tool,
+        },
+        ForegroundWaitOptions::default(),
+    )
+    .execute("kernel-grant", &input, None, None, &ctx())
+    .expect("execute");
     let seen = seen.lock().expect("capture lock");
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].0, vec!["lookup".to_owned()]);
@@ -141,7 +155,10 @@ fn given_a_background_task_when_the_start_result_is_rendered_then_it_directs_the
 
     // then
     let normalized = first_text(&result).to_lowercase();
-    assert!(normalized.contains("automatically delivered"), "{normalized}");
+    assert!(
+        normalized.contains("automatically delivered"),
+        "{normalized}"
+    );
     assert!(normalized.contains("end your turn"), "{normalized}");
     assert!(normalized.contains("independent work"), "{normalized}");
     assert!(!normalized.contains("read progress"), "{normalized}");
@@ -248,4 +265,46 @@ fn given_a_resolved_foreground_record_when_execution_completes_then_resolved_met
     assert_eq!(result.details.resolved_model, record.resolved_model);
     assert_eq!(result.details.model.as_deref(), Some(record.model.as_str()));
     assert_eq!(result.details.run_in_background, Some(false));
+}
+
+#[test]
+fn held_single_spawn_returns_without_wait_and_forwards_parent_model() {
+    use crate::manager::{start_admission::HeldStart, types::StartResult};
+    use crate::tools::task::foreground_wait::ParentModel;
+    let harness = default_manager();
+    let tool = TaskToolDeps {
+        start: Some(std::sync::Arc::new(|spec, _| {
+            assert_eq!(spec.parent_model.as_deref(), Some("provider/parent"));
+            StartResult::Held(HeldStart {
+                kind: "held",
+                task_id: "held-one".into(),
+                pause_seq: 9,
+                root_session_id: "parent".into(),
+            })
+        })),
+        ..Default::default()
+    };
+    let mut input = params("work", "quick", Some(false));
+    input.tools = Some(vec!["lookup".into()]);
+    let context = TaskToolContext {
+        model: Some(ParentModel {
+            provider: "provider".into(),
+            id: "parent".into(),
+        }),
+        ..ctx()
+    };
+    let result = build_task_execute(
+        TaskExecuteDeps {
+            manager: &harness.manager,
+            tool: &tool,
+            policy: &tool,
+        },
+        ForegroundWaitOptions::default(),
+    )
+    .execute("held", &input, None, None, &context)
+    .expect("execute");
+    assert_eq!(result.details.task_id, "held-one");
+    assert_eq!(result.details.status, "paused");
+    assert_eq!(result.details.pause_seq, Some(9));
+    assert!(harness.manager.resident_task_ids().is_empty());
 }

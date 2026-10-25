@@ -43,6 +43,9 @@ fn given_a_completed_task_with_run_stats_when_the_status_row_renders_then_durati
     .expect("run stats should parse");
     let details = TaskOutputDetails::Status {
         snapshot: TaskSnapshot {
+            parent_model: None,
+            parent_model_fallback: None,
+            effective_model: None,
             task_id: "st_done".to_string(),
             name: None,
             description: None,

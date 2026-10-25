@@ -132,6 +132,7 @@ fn test_facts_records_hash_is_stable_without_agreements_and_changes_with_them() 
         applies: AgreementScope::Global,
         text: "Run tests".to_string(),
         date: "2026-08-10".to_string(),
+        source: None,
     }];
 
     // when

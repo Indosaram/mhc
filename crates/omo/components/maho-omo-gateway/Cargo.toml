@@ -11,9 +11,12 @@ maho-ext-api = { path = "../../../maho-ext-api" }
 maho-omo-agent-home = { path = "../maho-omo-agent-home" }
 maho-omo-config-resolution = { path = "../maho-omo-config-resolution" }
 maho-omo-config-core = { path = "../../omo-config-core" }
+futures.workspace = true
+regex.workspace = true
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+sha2.workspace = true
 thiserror = "=2.0.20"
 
 [dev-dependencies]

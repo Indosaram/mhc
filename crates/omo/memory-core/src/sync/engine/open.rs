@@ -32,6 +32,7 @@ pub struct SyncSession {
 }
 
 pub struct OpenDeviceSyncOptions {
+    pub on_status_change: Option<Rc<dyn Fn()>>,
     pub repo_dir: PathBuf,
     /// The device's private state (item peer, capture receipts), outside the repository.
     pub state_dir: PathBuf,
@@ -140,6 +141,7 @@ pub fn open_device_sync(options: OpenDeviceSyncOptions) -> EngineResult<Option<D
             machine_id: options.machine_id.clone(),
         });
         Ok(SyncEngine::new(EngineDeps {
+            on_status_change: options.on_status_change,
             repo: Rc::new(repo),
             store: Rc::new(store),
             transport: options.session.transport.clone(),

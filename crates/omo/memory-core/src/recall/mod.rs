@@ -12,6 +12,7 @@ pub mod gate;
 pub mod haystack;
 pub mod ledger;
 pub mod planner;
+pub mod project_corpus;
 pub mod provider;
 pub mod render;
 pub mod select;
@@ -20,9 +21,10 @@ pub mod strategy;
 pub use assets::{KIBITZER_PERSONA_MARKDOWN, kibitzer_persona, load_kibitzer_persona};
 pub use bm25::{
     DocumentTerms, DocumentTermsInput, RECALL_TERM_ACCESS, RankedRecallDocument,
-    RecallQueryExpansions, RecallTermAccess, RecallTermsSnapshot, StoredDocumentTerms, is_cjk_char,
-    is_han_character, on_recall_documents_encoded, rank_recall_documents_bm25,
-    recall_document_terms, recall_expansion_weights, recall_terms, tokenize_recall_text,
+    RecallQueryExpansions, RecallTermAccess, RecallTermFigures, RecallTermsSnapshot,
+    StoredDocumentTerms, is_cjk_char, is_han_character, on_recall_documents_encoded,
+    rank_recall_documents_bm25, recall_document_terms, recall_expansion_weights, recall_term_figures,
+    recall_terms, tokenize_recall_text,
 };
 pub use bm25_persist::{
     RECALL_TERM_STORE_NAME, RecallTermErrorHandler, RecallTermPersistence,
@@ -43,9 +45,13 @@ pub use ledger::{
     recall_ledger_disk_reads, sanitize_session_filename,
 };
 pub use planner::{MAX_RECALL_QUERIES, plan_recall_queries};
+pub use project_corpus::{
+    PROJECT_MEMORY_PATH_PREFIX, ProjectMemoryPath, parse_project_memory_path,
+    qualify_project_documents,
+};
 pub use provider::{
-    RecallCorpus, RecallCorpusCache, RecallCorpusCacheOptions, RecallDocument,
-    RecallTermStoreLoader, is_recall_candidate_path, load_recall_corpus,
+    RecallCorpus, RecallCorpusCache, RecallCorpusCacheOptions, RecallDocument, RecallMemoryFigures,
+    RecallTermStoreLoader, is_recall_candidate_path, load_recall_corpus, recall_memory_figures,
 };
 pub use render::{RECALL_HINT_HEADER, RECALL_HINT_HEADER_KO, render_nudge_block};
 pub use select::{RecallCandidate, SelectRecallOptions, select_recall_candidates};

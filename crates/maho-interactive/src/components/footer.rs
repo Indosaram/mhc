@@ -62,6 +62,7 @@ pub struct FooterSnapshot {
     pub cache_read: f64,
     pub cache_write: f64,
     pub cost: f64,
+    pub subagent_cost: Option<f64>,
     pub latest_cache_hit_rate: Option<f64>,
     pub context_window: f64,
     pub context_percent: Option<f64>,
@@ -119,7 +120,8 @@ impl FooterComponent {
         {
             middle.push(segment(format!("CH{rate:.1}%"), ThemeColor::Dim));
         }
-        if s.cost != 0. || s.subscription || s.provider.as_deref() == Some("kimi-coding") {
+        let subagent_cost = s.subagent_cost.filter(|cost| cost.is_finite() && *cost > 0.0).unwrap_or(0.0);
+        if s.cost != 0. || s.subscription || s.provider.as_deref() == Some("kimi-coding") || subagent_cost > 0.0 {
             middle.push(segment(
                 format!(
                     "$ {:.3}{}",
@@ -130,7 +132,7 @@ impl FooterComponent {
                         ""
                     }
                 )
-                .replacen("$ ", "$", 1),
+                .replacen("$ ", "$", 1) + &if subagent_cost > 0.0 { format!(" (+{subagent_cost:.3})") } else { String::new() },
                 ThemeColor::Success,
             ));
         }

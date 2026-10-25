@@ -122,6 +122,11 @@ fn record(nodes: Vec<DagNode>, status: DagRunStatus) -> DagRunRecordV1 {
         amend_history: None,
         lease_holder_pid: None,
         previous_lease_holder_pid: None,
+        guidance: None,
+        retry_on_resume: None,
+        cancel_requested_nodes: None,
+        paused_child_acks: None,
+        pause: None,
         edges: Vec::<DagEdge>::new(),
         nodes,
     }

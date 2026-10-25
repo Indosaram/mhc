@@ -46,7 +46,7 @@ pub fn create_memory_tools_with_options(resolve: MemoryContextResolver, options:
     let exposure = options.exposure;
     let memory_resolve = Arc::clone(&resolve);
     let memory_options = options.clone();
-    let mut memory = ToolDefinition::new(MEMORY_TOOL_NAME, MEMORY_TOOL_DESCRIPTION, serde_json::json!({"type":"object","required":["command","reason"],"properties":{"command":{"enum":["create","str_replace","insert","delete","rename","update_description"]},"reason":{"type":"string"},"file_path":{"type":"string"},"old_path":{"type":"string"},"new_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"insert_line":{"type":"number"},"insert_text":{"type":"string"},"description":{"type":"string"},"file_text":{"type":"string"}}}), Arc::new(move |call| {
+    let mut memory = ToolDefinition::new(MEMORY_TOOL_NAME, MEMORY_TOOL_DESCRIPTION, serde_json::json!({"type":"object","required":["command","reason"],"properties":{"command":{"enum":["create","str_replace","insert","delete","rename","update_description"]},"reason":{"type":"string"},"file_path":{"type":"string"},"old_path":{"type":"string"},"new_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"insert_line":{"type":"number"},"insert_text":{"type":"string"},"description":{"type":"string"},"file_text":{"type":"string"},"source":{"type":"string","enum":["user","agent","inferred"]},"user_quote":{"type":"string"}}}), Arc::new(move |call| {
         let resolve = Arc::clone(&memory_resolve);
         let options = memory_options.clone();
         Box::pin(async move {
@@ -81,7 +81,7 @@ pub fn create_memory_tools_with_options(resolve: MemoryContextResolver, options:
     memory.execution_mode = Some(ToolExecutionMode::Sequential);
     memory.prompt_snippet = Some("memory - edit omo memory blocks (create/str_replace/insert/delete/rename/update_description); auto-commits each change".into());
     memory.prompt_guidelines = Some(vec!["Record durable facts, preferences, and decisions with the memory tool as you learn them; every change is committed with the reason you provide.".into(), "Memory files are markdown with YAML frontmatter; keep each block's description accurate because the memory index surfaces it.".into(), "When creating, renaming, or deleting memory files, update [[path]] references in other memory files so they stay discoverable.".into()]);
-    let mut patch = ToolDefinition::new(MEMORY_APPLY_PATCH_TOOL_NAME, MEMORY_APPLY_PATCH_DESCRIPTION, serde_json::json!({"type":"object","required":["reason","input"],"properties":{"reason":{"type":"string"},"input":{"type":"string"}}}), Arc::new(move |call| {
+    let mut patch = ToolDefinition::new(MEMORY_APPLY_PATCH_TOOL_NAME, MEMORY_APPLY_PATCH_DESCRIPTION, serde_json::json!({"type":"object","required":["reason","input"],"properties":{"reason":{"type":"string"},"input":{"type":"string"},"source":{"type":"string","enum":["user","agent","inferred"]},"user_quote":{"type":"string"}}}), Arc::new(move |call| {
         let resolve = Arc::clone(&resolve);
         let options = options.clone();
         Box::pin(async move {

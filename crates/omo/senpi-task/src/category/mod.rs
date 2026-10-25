@@ -11,6 +11,7 @@ pub use builtins::{
     is_category_chain_viable, is_category_gate_satisfied, resolve_deep_category_prompt_append,
 };
 pub use fallback_chains::{CATEGORY_FALLBACK_CHAINS, category_fallback_chain};
+pub(crate) use resolver::{category_model_candidates, exclude_model_patterns};
 pub use resolver::{
     CategoryModelSelection, CategoryResolutionResult, ModelUnavailable, ResolveCategoryOptions,
     ResolvedChildSpec, builtin_category_chain_candidates, resolve_available_category_names,

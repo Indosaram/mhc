@@ -4,11 +4,14 @@ pub mod errors;
 pub mod exit_mapping;
 pub mod handle;
 pub mod model_admission;
+pub mod native_run_pause;
 pub mod parent_extensions;
 pub mod process;
 pub mod protocol_client;
 pub mod spawn;
+pub mod start_cleanup;
 pub mod terminate;
+pub mod turn_claim;
 pub mod turn_outcome;
 pub mod ui_auto_answer;
 

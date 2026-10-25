@@ -58,7 +58,7 @@ mod tests {
                 |active, mut probes| async move {
                     probes.excluded_selectors.insert(active.to_owned());
                     let resolution = resolve_model_profile(&ResolveModelProfileInput {
-                        profiles: None, active, available_models: available,
+                        profiles: None, active, available_models: available, custom_providers: None,
                     });
                     (resolution, probes)
                 },

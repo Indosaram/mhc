@@ -13,6 +13,7 @@ use crate::support::paths::to_git_path;
 use crate::support::time::now_iso;
 
 use super::agreements_write_guard::refuse_agreements_violation;
+use super::claim_frontmatter::{ClaimReceipt, has_legacy_user_header, restamp_content};
 use super::memfs::{
     MemoryFrontmatter, ValidateMemoryPathOptions, parse_memory_file, render_memory_file,
     validate_memory_path,
@@ -62,7 +63,11 @@ pub fn run_memory_apply_patch(
     repo.clean_check().map_err(|e| err(e.to_string()))?;
 
     let operations = parse_memory_patch(&params.input).map_err(|e| err(e.message))?;
-    let affected_paths = apply_operations(&repo.dir, &operations)?;
+    let (affected_paths, stripped_paths) = apply_operations(
+        &repo.dir,
+        &operations,
+        params.provenance.as_ref().and_then(|p| p.claim.as_ref()),
+    )?;
     if let Some(violation) =
         refuse_agreements_violation(repo, &affected_paths).map_err(|e| err(e.to_string()))?
     {
@@ -75,6 +80,7 @@ pub fn run_memory_apply_patch(
             &params.reason,
             params.provenance.as_ref(),
             MemoryWriter::MemoryTool,
+            &stripped_paths,
         ),
         &params.author,
     );
@@ -121,7 +127,9 @@ pub fn run_memory_apply_patch(
 fn apply_operations(
     root: &Path,
     operations: &[PatchOperation],
-) -> Result<Vec<String>, MemoryToolError> {
+    claim: Option<&ClaimReceipt>,
+) -> Result<(Vec<String>, Vec<String>), MemoryToolError> {
+    let mut stripped_paths = Vec::new();
     let mut pending_writes: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut pending_deletes: BTreeSet<PathBuf> = BTreeSet::new();
     let mut affected_paths: BTreeSet<String> = BTreeSet::new();
@@ -156,7 +164,7 @@ fn apply_operations(
         if let Some(content) = pending_w.get(abs) {
             return Ok(content.clone());
         }
-        read_utf8_text_strict(abs, rel)
+        read_utf8_text_strict(abs, rel).map(|text| text.replace("\r\n", "\n"))
     };
 
     for op in operations {
@@ -178,7 +186,8 @@ fn apply_operations(
                 }
                 let raw_content = content_lines.join("\n");
                 let normalized = normalize_added_content(&target_rel, &raw_content);
-                pending_writes.insert(target_abs.clone(), normalized);
+                let written = restamp_content(None, &normalized, claim).map_err(|e| err(e.0))?;
+                pending_writes.insert(target_abs.clone(), written);
                 pending_deletes.remove(&target_abs);
                 affected_paths.insert(target_rel);
             }
@@ -204,21 +213,42 @@ fn apply_operations(
                 let parsed = parse_for_tool(&current)?;
                 assert_editable(parsed.frontmatter.read_only.as_deref(), &source_rel)?;
 
-                let mut next = current;
+                let mut next = current.clone();
                 for hunk in hunks {
                     next = apply_memory_patch_hunk(&next, hunk, &source_rel)
                         .map_err(|e| MemoryToolError::new(e.message))?;
                 }
 
-                if let Ok(next_parsed) = parse_memory_file(&next)
-                    && next_parsed.frontmatter.read_only.as_deref() == Some("true")
-                {
+                if parse_for_tool(&next)?.frontmatter.read_only.as_deref() == Some("true") {
                     return Err(err(format!(
                         "{target_rel} cannot be written with read_only=true"
                     )));
                 }
 
-                pending_writes.insert(target_abs.clone(), next);
+                let written =
+                    restamp_content(Some(&current), &next, claim).map_err(|e| err(e.0))?;
+                if has_legacy_user_header(Some(&current)) && !has_legacy_user_header(Some(&written))
+                {
+                    stripped_paths.push(source_rel.clone());
+                }
+                if source_abs != target_abs {
+                    let overwritten = if let Some(pending) = pending_writes.get(&target_abs) {
+                        Some(pending.clone())
+                    } else if pending_deletes.contains(&target_abs) || !target_abs.exists() {
+                        None
+                    } else {
+                        Some(
+                            String::from_utf8_lossy(
+                                &fs::read(&target_abs).map_err(|e| err(e.to_string()))?,
+                            )
+                            .into_owned(),
+                        )
+                    };
+                    if has_legacy_user_header(overwritten.as_deref()) {
+                        stripped_paths.push(target_rel.clone());
+                    }
+                }
+                pending_writes.insert(target_abs.clone(), written);
                 pending_deletes.remove(&target_abs);
                 affected_paths.insert(target_rel.clone());
 
@@ -244,7 +274,7 @@ fn apply_operations(
         }
     }
 
-    Ok(affected_paths.into_iter().collect())
+    Ok((affected_paths.into_iter().collect(), stripped_paths))
 }
 
 fn to_relative(root: &Path, target: &Path) -> String {
@@ -270,6 +300,7 @@ fn normalize_added_content(rel_path: &str, raw_content: &str) -> String {
             read_only: None,
             kind: None,
             aliases: None,
+            extra: Default::default(),
         };
         render_memory_file(&frontmatter, raw_content).unwrap_or_else(|_| raw_content.to_string())
     }

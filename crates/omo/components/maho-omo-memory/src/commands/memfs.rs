@@ -6,10 +6,10 @@ use std::sync::Arc;
 use maho_ext_api::ExtensionApi;
 use memory_core::{
     git::GitMemoryRepo,
-    memfs::install_hooks,
     sync::MirrorSync,
 };
 
+use crate::worker::spawn_supervisor_support::install_memory_hooks as install_hooks;
 use super::args::{ParseCommandArgsOptions, parse_command_args_full};
 use super::backup::create_repo_backup;
 use super::memfs_extra::{memfs_backup, memfs_diff, memfs_restore, memfs_tokens};

@@ -77,6 +77,9 @@ pub fn rpc_command_shape_error(command: &Value) -> Option<&'static str> {
     (!command.is_object()).then_some("RPC command must be a JSON object.")
 }
 pub fn rpc_command_payload_error(command: &Value) -> Option<&'static str> {
+    if let Some(error) = crate::pause_command_validation::validate_pause_command(command) {
+        return Some(error);
+    }
     match command.get("type").and_then(Value::as_str) {
         Some("edit_user_message")
             if command

@@ -29,7 +29,7 @@ use maho_ai::types::{
 use serde_json::{Map, json};
 
 fn usage() -> Usage {
-    Usage {
+    Usage { context_usage: None,
         input: 100,
         output: 50,
         cache_read: 0,
@@ -38,6 +38,7 @@ fn usage() -> Usage {
         reasoning: None,
         total_tokens: 150,
         cost: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -55,6 +56,7 @@ fn failed_assistant(stop_reason: StopReason, tool_call_id: &str) -> AgentMessage
     AgentMessage::Llm(Message::Assistant(Box::new(AssistantMessage {
         failure_source: None,
         timing: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,
