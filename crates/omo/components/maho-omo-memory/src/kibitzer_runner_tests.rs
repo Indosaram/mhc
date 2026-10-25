@@ -261,7 +261,7 @@ fn given_a_running_turn_when_steered_then_the_accumulator_is_preserved() {
     let (runner, child, _spawner, _manual) = runner(JudgeSettle { completed: true, cancelled: false, failure_message: None });
     let mut first = runner.start(request(false, 8));
     assert!(poll_once(first.as_mut()).is_pending(), "the first turn is still running");
-    child.fire_nudge(0, RecallNudge { path: "a.md".into(), hint: "before steer".into() });
+    child.fire_nudge(0, RecallNudge { path: "a.md".into(), hint: "before steer".into(), source: None });
     let mut second = runner.start(request(false, 8));
     assert!(poll_once(second.as_mut()).is_pending(), "the steer joins the running turn");
     assert_eq!(child.armed_settles(), 2, "each start arms its own settlement");

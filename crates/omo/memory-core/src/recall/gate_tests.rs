@@ -14,6 +14,7 @@ fn nudge(path: &str, hint: &str) -> RecallNudge {
     RecallNudge {
         path: path.to_string(),
         hint: hint.to_string(),
+        source: None,
     }
 }
 

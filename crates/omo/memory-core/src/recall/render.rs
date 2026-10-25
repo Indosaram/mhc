@@ -18,9 +18,10 @@ pub fn render_nudge_block(nudge: &RecallNudge) -> String {
     } else {
         RECALL_HINT_HEADER
     };
+    let display_path = nudge.source.as_deref().unwrap_or(&nudge.path);
     format!(
         "<recalled-memory source=\"[[{}]]\">\n{}\n{}\n</recalled-memory>",
-        escape_markup(&nudge.path),
+        escape_markup(display_path),
         header,
         escape_markup(&nudge.hint),
     )
