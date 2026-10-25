@@ -56,6 +56,7 @@ fn builder_input(options: &BuildSystemPromptOptions, ctx: &ExtensionContext) -> 
         context_files: options.context_files.iter().map(|file| maho_core::system_prompt::ContextFile { path: file.path.clone(), content: file.content.clone() }).collect(),
         skills: options.skills.iter().map(|skill| maho_core::skills::Skill {
             name: skill.name.clone(), description: skill.description.clone(), file_path: skill.file_path.clone(), base_dir: skill.base_dir.clone(), disable_model_invocation: skill.disable_model_invocation,
+            provenance: None, allowed_set: None,
             source_info: maho_core::source_info::SourceInfo {
                 path: skill.source_info.path.clone(), source: skill.source_info.source.clone(), base_dir: skill.source_info.base_dir.clone(),
                 scope: match skill.source_info.scope { maho_ext_api::SourceScope::User => maho_core::source_info::SourceScope::User, maho_ext_api::SourceScope::Project => maho_core::source_info::SourceScope::Project, maho_ext_api::SourceScope::Temporary => maho_core::source_info::SourceScope::Temporary, maho_ext_api::SourceScope::System => maho_core::source_info::SourceScope::System },

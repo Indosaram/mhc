@@ -12,6 +12,7 @@ pub struct UsageTotals {
     pub cache_read: i64,
     pub cache_write: i64,
     pub cost: f64,
+    pub cost_unknown: bool,
 }
 
 pub fn create_usage_totals() -> UsageTotals {
