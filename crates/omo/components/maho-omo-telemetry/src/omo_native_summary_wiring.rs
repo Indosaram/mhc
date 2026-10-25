@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use futures::FutureExt;
 use futures::future::BoxFuture;
 use serde_json::{Map, Value};
 use telemetry_core::{
@@ -211,7 +212,6 @@ pub async fn settle_within(work: BoxFuture<'static, ()>, ms: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::FutureExt;
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex as StdMutex;
