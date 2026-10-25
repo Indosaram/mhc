@@ -47,8 +47,9 @@ pub fn renderers() -> maho_ext_api::ToolRenderers<(), serde_json::Value> {
     maho_ext_api::ToolRenderers {
         render_call: Some(Arc::new(|args, source, _| {
             let theme = crate::todo_widget_component::theme(source);
-            let label =
-                render_raw_call_label(args).unwrap_or_else(|error| std::panic::panic_any(error));
+            // Streaming partial args (e.g. a phase whose `items` has not arrived) do not parse yet;
+            // senpi's label never throws, so show the generic label until they do.
+            let label = render_raw_call_label(args).unwrap_or_else(|_| "todo".into());
             Box::new(Text::with_padding(
                 theme.fg(ThemeColor::ToolTitle, &theme.bold(&label)),
                 0,

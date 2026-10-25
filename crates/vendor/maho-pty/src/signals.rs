@@ -26,7 +26,9 @@ pub(crate) fn send_signal(
             return Ok(());
         }
         let error = std::io::Error::last_os_error();
-        if error.raw_os_error() != Some(libc::ESRCH) {
+        // macOS answers EPERM (not ESRCH) for a group whose members are all exiting zombies, so a
+        // signal racing the child's exit must fall back to the direct child like a vanished group.
+        if !matches!(error.raw_os_error(), Some(libc::ESRCH | libc::EPERM)) {
             return Err(PtyError::from(error));
         }
     }
