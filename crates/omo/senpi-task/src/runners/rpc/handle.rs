@@ -14,9 +14,14 @@ use crate::manager::child_handle::{
 use crate::runners::RunnerOutcome;
 use crate::runners::rpc::errors::RpcCommandError;
 use crate::runners::rpc::exit_mapping::classify_child_exit;
+use crate::runners::rpc::native_run_pause::RpcRunPause;
 use crate::runners::rpc::protocol_client::{RpcClientError, RpcClientPort};
+use crate::runners::rpc::turn_claim::{TurnClaim, create_turn_claim};
 use crate::runners::rpc::turn_outcome::{
     agent_end_outcome, exit_turn_outcome, extract_assistant_text, prompt_failure_outcome,
+};
+use crate::runners::task_parent_control::{
+    TaskParentControlError, TaskParentWire, create_task_parent_control,
 };
 use crate::runners::types::{
     ChildExitOutcome, RpcEntriesResult, RpcSpawnSpec, RpcSwitchSessionResult,
@@ -49,6 +54,9 @@ struct HandleState {
 }
 
 struct HandleShared {
+    claims: TurnClaim,
+    resumed_listeners: Mutex<Vec<(u64, Arc<dyn Fn() + Send + Sync>)>>,
+    next_listener: std::sync::atomic::AtomicU64,
     state: Mutex<HandleState>,
     changed: Condvar,
 }
@@ -69,6 +77,29 @@ impl HandleShared {
 
     fn on_event(&self, event: &Value) {
         let mut state = self.lock();
+        if event["type"] == "agent_start" && state.turn_outcome.is_some() && state.exit.is_none() {
+            state.reached_idle = false;
+            state.turn_outcome = None;
+            state.terminal_assistant_message = None;
+            state.terminal_wire_message = None;
+            state.aborted_by_user = false;
+            state.turn_baseline = state.final_text.clone();
+            let claimed = self.claims.consume();
+            drop(state);
+            if !claimed {
+                let listeners: Vec<_> = self
+                    .resumed_listeners
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .iter()
+                    .map(|(_, listener)| Arc::clone(listener))
+                    .collect();
+                for listener in listeners {
+                    listener();
+                }
+            }
+            state = self.lock();
+        }
         match event.get("type").and_then(Value::as_str) {
             Some("message_end") => {
                 if let Some(terminal) = event.get("message").and_then(terminal_message) {
@@ -111,6 +142,7 @@ impl HandleShared {
 
 /// The RPC child handle. The runner attaches the spawn facts after a successful start.
 pub struct RpcChildHandle {
+    control: Arc<crate::runners::task_parent_control::TaskParentControl>,
     task_id: String,
     client: Arc<dyn RpcClientPort>,
     shared: Arc<HandleShared>,
@@ -122,6 +154,9 @@ pub struct RpcChildHandle {
 impl RpcChildHandle {
     pub fn new(options: RpcChildHandleOptions) -> Arc<Self> {
         let shared = Arc::new(HandleShared {
+            claims: create_turn_claim(),
+            resumed_listeners: Mutex::new(Vec::new()),
+            next_listener: std::sync::atomic::AtomicU64::new(0),
             state: Mutex::new(HandleState::default()),
             changed: Condvar::new(),
         });
@@ -145,13 +180,69 @@ impl RpcChildHandle {
             Duration::from_millis(options.heartbeat_interval_ms),
             options.now,
         );
+        let wire_client = Arc::clone(&client);
+        let control = Arc::new(create_task_parent_control(TaskParentWire::new(
+            80,
+            Arc::new(move |command| {
+                wire_client
+                    .send_task_parent(command)
+                    .map_err(|error| TaskParentControlError::new(&error.to_string()))
+            }),
+        )));
         Arc::new(Self {
+            control,
             task_id: options.task_id,
             client,
             shared,
             spawn_spec: Mutex::new(None),
             resume: Mutex::new(None),
             unsubscribe: Mutex::new(vec![unsubscribe_event, unsubscribe_exit]),
+        })
+    }
+
+    pub fn run_pause(&self) -> RpcRunPause {
+        let shared = Arc::clone(&self.shared);
+        RpcRunPause {
+            task_id: self.task_id.clone(),
+            control: Arc::clone(&self.control),
+            claims: self.shared.claims.clone(),
+            current_outcome: Arc::new(move || {
+                let mut state = shared.lock();
+                loop {
+                    if let Some(outcome) = &state.turn_outcome {
+                        return outcome.clone();
+                    }
+                    if let Some(exit) = &state.exit {
+                        return exit_turn_outcome(exit, state.final_text.as_deref());
+                    }
+                    state = shared
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
+            }),
+        }
+    }
+
+    pub fn on_self_resumed(&self, listener: Arc<dyn Fn() + Send + Sync>) -> Unsubscribe {
+        let id = self
+            .shared
+            .next_listener
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.shared
+            .resumed_listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((id, listener));
+        let shared = Arc::downgrade(&self.shared);
+        Box::new(move || {
+            if let Some(shared) = shared.upgrade() {
+                shared
+                    .resumed_listeners
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .retain(|(key, _)| *key != id);
+            }
         })
     }
 
@@ -327,6 +418,12 @@ impl RpcChildHandle {
 }
 
 impl ManagedChildHandle for RpcChildHandle {
+    fn run_pause(&self) -> Option<Box<dyn crate::runners::rpc::native_run_pause::NativeRunPause>> {
+        Some(Box::new(RpcChildHandle::run_pause(self)))
+    }
+    fn on_self_resumed(&self, listener: Arc<dyn Fn() + Send + Sync>) -> Option<Unsubscribe> {
+        Some(RpcChildHandle::on_self_resumed(self, listener))
+    }
     fn task_id(&self) -> &str {
         &self.task_id
     }
