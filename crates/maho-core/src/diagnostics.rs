@@ -38,6 +38,8 @@ pub struct ResourceDiagnostic {
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collision: Option<ResourceCollision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

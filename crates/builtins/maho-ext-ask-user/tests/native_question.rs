@@ -299,7 +299,7 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
     let mut completion = pending[0].completion.clone();
     if reload {
         if !late_rebind {
-            responses.as_ref().expect("response sender").send_replace(Some(QuestionResponse {status:QuestionStatus::Answered,answers:[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into(),comment:None,unanswered:vec![],auto_resolved_after_ms:None}));
+            responses.as_ref().expect("response sender").send_replace(Some(QuestionResponse {status:QuestionStatus::Answered,answers:[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into(),comment:None,unanswered:vec![],auto_resolved_after_ms:None,cancel_origin:None,resolved_by:None}));
         }
         session.emit_session_shutdown(SessionReason::Reload).await;
         if pending[0].owner.borrow().is_some() { return Err("Reload did not detach owner".into()); }
@@ -315,7 +315,7 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
         session.emit_session_shutdown(SessionReason::Quit).await;
         if !get_pending_questions(&session.session_id()).is_empty() { return Err("Shutdown left pending question".into()); }
     } else if !late_rebind {
-        responses.as_ref().expect("response sender").send_replace(Some(QuestionResponse {status:QuestionStatus::Answered, answers:if empty_submission{Default::default()}else{[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into()},comment:None,unanswered:if empty_submission{vec![request.questions[0].id.clone()]}else{vec![]},auto_resolved_after_ms:None}));
+        responses.as_ref().expect("response sender").send_replace(Some(QuestionResponse {status:QuestionStatus::Answered, answers:if empty_submission{Default::default()}else{[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into()},comment:None,unanswered:if empty_submission{vec![request.questions[0].id.clone()]}else{vec![]},auto_resolved_after_ms:None,cancel_origin:None,resolved_by:None}));
     }
     if !late_rebind { tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop { if completion.borrow().is_some() { break; } completion.changed().await?; }
@@ -337,7 +337,7 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
             if reopened != request || pending[0].owner.borrow().is_none() || completion.borrow().is_some() || !settlements.lock().expect("settlements").is_empty() {
                 return Err("Late publication barrier did not preserve pending reattached request".into());
             }
-            responses.as_ref().expect("response sender").send_replace(Some(QuestionResponse {status:QuestionStatus::Answered, answers:[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into(),comment:None,unanswered:vec![],auto_resolved_after_ms:None}));
+            responses.as_ref().expect("response sender").send_replace(Some(QuestionResponse {status:QuestionStatus::Answered, answers:[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into(),comment:None,unanswered:vec![],auto_resolved_after_ms:None,cancel_origin:None,resolved_by:None}));
             tokio::time::timeout(std::time::Duration::from_secs(5), async {
                 loop { if completion.borrow().is_some() { break; } completion.changed().await?; }
                 Ok::<(), tokio::sync::watch::error::RecvError>(())
