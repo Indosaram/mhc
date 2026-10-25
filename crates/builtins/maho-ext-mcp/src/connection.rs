@@ -69,7 +69,10 @@ impl ServerConnection {
         })
     }
     pub fn set_project_policy(&self, resolve: crate::transport::ProjectPolicyResolver) {
-        *self.project_policy.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(resolve);
+        *self
+            .project_policy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(resolve);
     }
     pub fn set_auth(&self, refresh: Arc<crate::auth::oauth_refresh::McpRefreshManager>) {
         *self
@@ -253,8 +256,13 @@ impl ServerConnection {
         let transport =
             match create_mcp_transport(&self.server_name, config, env, self.logger.clone()) {
                 Ok(mut transport) => {
-                    transport.resolve_project_policy = self.project_policy.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-                    transport.project_policy = transport.resolve_project_policy.is_some();
+                    transport.resolve_project_policy = self
+                        .project_policy
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    transport.project_policy =
+                        materialized.is_some() || transport.resolve_project_policy.is_some();
                     transport.auth = self
                         .auth
                         .lock()

@@ -50,6 +50,11 @@ mod tests {
         )
         .unwrap();
         let declaration = crate::skills::SkillServerDecl {
+            skill_name: "fixture".into(),
+            scope: Some("project".into()),
+            provenance: None,
+            allowed_set: None,
+            skill_path: dir.path().join("SKILL.md"),
             raw: serde_json::json!({"command":"server","args":["${TOKEN}"]}),
             source_path: source.clone(),
             include_tools_by_skill: Default::default(),

@@ -10,6 +10,7 @@ autotests = false
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = { version = "=1.0.149", features = ["preserve_order"] }
 thiserror = "=2.0.20"
+notify = "=8.2.0"
 sha2 = "=0.10.9"
 sha1 = "=0.10.6"
 regex = "=1.12.3"

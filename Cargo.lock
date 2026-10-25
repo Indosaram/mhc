@@ -4263,6 +4263,7 @@ dependencies = [
  "maho-ext-host",
  "maho-ext-tool-search",
  "maho-test-support",
+ "notify",
  "rcgen",
  "regex",
  "reqwest 0.12.28",
