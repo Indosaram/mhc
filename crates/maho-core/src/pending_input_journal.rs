@@ -110,15 +110,20 @@ mod tests {
                 .unwrap_or_default(),
             vec![true]
         );
-        let unix = fs_journal_durability(false, recording_open);
-        assert!(unix.sync_directory(&dir).is_ok());
-        assert_eq!(
-            OPENED
-                .lock()
-                .map(|opened| opened.clone())
-                .unwrap_or_default(),
-            vec![true, false]
-        );
+        // The unix branch really opens the directory to fsync it, which Windows cannot do at all
+        // (`File::open` on a directory is Access Denied), so that half only runs off Windows.
+        #[cfg(not(windows))]
+        {
+            let unix = fs_journal_durability(false, recording_open);
+            assert!(unix.sync_directory(&dir).is_ok());
+            assert_eq!(
+                OPENED
+                    .lock()
+                    .map(|opened| opened.clone())
+                    .unwrap_or_default(),
+                vec![true, false]
+            );
+        }
         let _ = std::fs::remove_file(&file);
     }
 

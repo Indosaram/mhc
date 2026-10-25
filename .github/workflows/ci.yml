@@ -15,6 +15,11 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "10"
   RUST_BACKTRACE: "1"
+  # CI builds are candidate builds: they embed the non-production test key so the
+  # `native_update_*` integration tests can sign and verify their fixture releases.
+  # Release builds (release.yml) set their own real key and channel.
+  MHC_RELEASE_PUBKEY_FILE: crates/maho-cli/tests/fixtures/release-test-key/test.pub
+  MHC_RELEASE_CHANNEL: candidate
   # Full debuginfo for ~140 crates' test binaries is far larger than line tables.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   CARGO_PROFILE_TEST_DEBUG: line-tables-only
