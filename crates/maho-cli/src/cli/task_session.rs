@@ -888,6 +888,91 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stop_crossing_real_native_staged_creation_holds_first_prompt_without_running_it() {
+        use senpi_task::manager::types::*;
+        struct CrossingRunner {
+            barrier: senpi_task::pause::admission_barrier::AdmissionBarrier,
+            child: Arc<senpi_task::runners::in_process::child_handle::InProcessChildHandle>,
+        }
+        impl ManagedRunner for CrossingRunner {
+            fn start(&self, _: &ManagedStartSpec) -> ManagedRunnerResult {
+                panic!("must stage")
+            }
+            fn start_staged(
+                &self,
+                _: &ManagedStartSpec,
+            ) -> Option<Result<StagedManagedChild, ManagedRunnerError>> {
+                self.barrier.close("parent", 8);
+                Some(Ok(StagedManagedChild {
+                    child: self.child.clone(),
+                    first_prompt: "held first prompt".into(),
+                    begin: Box::new(|| panic!("Stop crossed creation; first turn must not begin")),
+                }))
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let session = Arc::new(
+            maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
+                cwd: Some(root.path().to_string_lossy().into_owned()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .session,
+        );
+        let native = Arc::new(super::NativeChild::new(
+            session.clone(),
+            tokio::runtime::Handle::current(),
+        ));
+        let barrier = senpi_task::pause::admission_barrier::AdmissionBarrier::new();
+        let child = senpi_task::runners::in_process::child_handle::InProcessChildHandle::restored(
+            "staged", native,
+        );
+        let runner = Arc::new(CrossingRunner {
+            barrier: barrier.clone(),
+            child,
+        });
+        let store = senpi_task::store::TaskRecordStore::new(&senpi_task::store::StateDirConfig {
+            project_dir: root.path().into(),
+            task_state_dir: None,
+        });
+        let mut options = TaskManagerOptions::new(
+            store.clone(),
+            ManagedRunners {
+                in_process: runner.clone(),
+                process: runner,
+            },
+            Arc::new(|_| {
+                Ok(ResolvedChildPlan {
+                    model: "p/m".into(),
+                    ..Default::default()
+                })
+            }),
+            root.path().to_string_lossy(),
+        );
+        options.admission_barrier = Some(barrier);
+        let manager = senpi_task::manager::create_task_manager(options);
+        tokio::task::spawn_blocking(move || {
+            let started = manager.start(&ManagerStartSpec {
+                parent_session_id: "parent".into(),
+                prompt: "held first prompt".into(),
+                ..Default::default()
+            });
+            let StartResult::Started(task) = started else {
+                panic!("start refused: {started:?}")
+            };
+            assert_eq!(
+                store.load(&task.task_id).unwrap().unwrap().status,
+                senpi_task::state::TaskStatus::Paused
+            );
+            assert_eq!(session.held_inputs()[0]["text"], "held first prompt");
+            assert!(session.paused());
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn native_pause_receipts_are_real_and_idempotent() {
         use senpi_task::pause::{native_child_pause::NativeRunPause, ports::*};
         let root = tempfile::tempdir().unwrap();
