@@ -3916,7 +3916,7 @@ impl Inner {
             {
                 return;
             }
-            let Some(mut record) = inner.try_load(&id) else {
+            let Some(record) = inner.try_load(&id) else {
                 return;
             };
             if Some(record.run_start_epoch) != epoch || session_id.is_empty() {
@@ -3925,8 +3925,15 @@ impl Inner {
             if stamped.swap(true, std::sync::atomic::Ordering::AcqRel) {
                 return;
             }
-            record.child_session_id = Some(session_id.to_string());
-            if let Err(error) = inner.store.replace(&record) {
+            if let Err(error) = inner.store.mutate(&id, &mut |fresh: &TaskRecord| {
+                if Some(fresh.run_start_epoch) != epoch || fresh.host_pid != record.host_pid {
+                    return fresh.clone();
+                }
+                TaskRecord {
+                    child_session_id: Some(session_id.to_string()),
+                    ..fresh.clone()
+                }
+            }) {
                 log(
                     "senpi-task late durable identity persistence failed",
                     &id,
