@@ -61,6 +61,7 @@ impl FactsRecoveryResult {
 /// Errors returned by recovery execution.
 #[derive(Debug)]
 pub enum FactsRecoveryError {
+    Migration(String),
     OwnershipLost(FactsOwnershipLostError),
     Git(GitError),
 }
@@ -68,6 +69,7 @@ pub enum FactsRecoveryError {
 impl std::fmt::Display for FactsRecoveryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Migration(message) => f.write_str(message),
             Self::OwnershipLost(err) => write!(f, "{err}"),
             Self::Git(err) => write!(f, "git error: {err}"),
         }
@@ -77,6 +79,7 @@ impl std::fmt::Display for FactsRecoveryError {
 impl std::error::Error for FactsRecoveryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Migration(_) => None,
             Self::OwnershipLost(err) => Some(err),
             Self::Git(err) => Some(err),
         }
@@ -130,6 +133,19 @@ pub fn apply_facts_recovery(
     record_count: usize,
     author: &GitCommitAuthor,
 ) -> Result<FactsRecoveryResult, FactsRecoveryError> {
+    apply_facts_recovery_with_agreements(repo, recovery, record_count, author, None)
+}
+
+pub struct AgreementRecoveryInput<'a> {
+    pub batch: &'a super::extraction::FactsBatch,
+    pub policy: &'a crate::agreements::AgreementsPolicy,
+    pub publish: &'a mut dyn FnMut(&FactsApplyRecovery) -> Result<(), String>,
+}
+
+pub fn apply_facts_recovery_with_agreements(
+    repo: &GitMemoryRepo, recovery: &FactsApplyRecovery, record_count: usize, author: &GitCommitAuthor,
+    mut agreement: Option<AgreementRecoveryInput<'_>>,
+) -> Result<FactsRecoveryResult, FactsRecoveryError> {
     let Some(observed) = capture_owned_facts_state(repo, recovery)? else {
         return Ok(FactsRecoveryResult::ParentDirty { detail: None });
     };
@@ -140,9 +156,21 @@ pub fn apply_facts_recovery(
         return Ok(FactsRecoveryResult::ParentDirty { detail: None });
     }
 
+    let effective = if let Some(input) = agreement.as_ref() {
+        super::agreement_recovery::upgrade_agreement_recovery(repo, recovery, input.batch, input.policy).map_err(FactsRecoveryError::Migration)?
+    } else if recovery.agreement_event_version != Some(1) && recovery.paths.iter().any(|entry| entry.path == AGREEMENTS_PATH) {
+        return Err(FactsRecoveryError::Migration("Legacy agreement recovery requires its original records and an atomic recovery publisher".into()));
+    } else { recovery.clone() };
+    let effective_boundary = effective.paths.iter().map(|entry| (entry.path.clone(), entry.pre.clone())).collect();
+    let upgraded = effective != *recovery;
     let mut transaction = FactsMutationTransaction::new(repo, recovery, &boundary);
+    transaction.restore_pre_state()?;
+    if upgraded {
+        (agreement.as_mut().ok_or_else(|| FactsRecoveryError::Migration("Missing recovery publisher".into()))?.publish)(&effective).map_err(FactsRecoveryError::Migration)?;
+        transaction = FactsMutationTransaction::new(repo, &effective, &effective_boundary);
+    }
+    let recovery = &effective;
     let run_tx = (|| -> Result<FactsRecoveryResult, FactsRecoveryError> {
-        transaction.restore_pre_state()?;
         transaction.apply_post_state()?;
         let paths: Vec<String> = recovery.paths.iter().map(|e| e.path.clone()).collect();
         let evicted = evicted_agreement_ids(repo, recovery)?;

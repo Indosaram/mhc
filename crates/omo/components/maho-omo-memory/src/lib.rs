@@ -3,8 +3,10 @@ pub mod agreement_notice;
 pub mod binding;
 pub mod capabilities;
 pub mod composition;
+pub mod consent_exchange;
 pub mod context;
 pub mod delivery;
+pub mod device_session;
 pub mod dream_scoring;
 pub mod dream_selector;
 pub mod dream_trigger;
@@ -20,6 +22,7 @@ pub mod facts_child_spawner;
 pub mod facts_drain;
 pub mod facts_failure_recording;
 pub mod facts_launch_selection;
+pub mod facts_model;
 pub mod facts_oversize;
 pub mod facts_people_payload;
 #[cfg(test)]

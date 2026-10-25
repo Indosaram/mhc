@@ -143,7 +143,11 @@ fn call_memory_tool(id: JsonRpcId, name: &str, args: &Map<String, Value>, option
         Ok(session) => session,
         Err(error) => return tool_text(id, error.message, true),
     };
-    let tool_provenance = provenance.as_ref().map(|provenance| MemoryToolProvenanceInput { session_id: provenance.session_id.clone(), user_turns: provenance.user_turns, claim: None });
+    let tool_provenance = provenance.as_ref().map(|provenance| MemoryToolProvenanceInput {
+        session_id: provenance.session_id.clone(),
+        user_turns: provenance.user_turns,
+        claim: args.get("provenance").and_then(|provenance| provenance.get("claim")).cloned().and_then(|claim| serde_json::from_value(claim).ok()),
+    });
     let tool_call_id = provenance.as_ref().and_then(|provenance| provenance.tool_call_id.as_deref());
     let outcome = if name == MEMORY_TOOL_NAME {
         // Field-level validation lives in run_memory_tool's required guards; the injected

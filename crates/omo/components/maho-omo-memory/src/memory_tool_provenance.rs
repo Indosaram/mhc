@@ -13,7 +13,7 @@ use crate::context::MemoryIdentityContext;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimReceipt {
     pub source: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "userQuote", skip_serializing_if = "Option::is_none")]
     pub user_quote: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approves: Option<String>,
@@ -80,14 +80,14 @@ pub fn resolve_claim_receipt(
         };
     }
 
-    let exchanges = pending_consent_exchange(entries, tool_call_id);
+    let exchanges = crate::consent_exchange::pending_consent_exchange(entries, tool_call_id);
     let quote = user_quote.unwrap_or("").trim();
-    for (proposal, reply) in exchanges {
-        if is_valid_user_reply(quote, &reply) {
-            let approves = proposal_id(&proposal);
+    for exchange in exchanges {
+        if is_valid_user_reply(quote, &exchange.reply) {
+            let approves = proposal_id(&exchange.proposal);
             return ClaimReceipt {
                 source: "user".to_string(),
-                user_quote: Some(quote.to_string()),
+                user_quote: Some(exchange.reply.split_whitespace().collect::<Vec<_>>().join(" ")),
                 approves: Some(approves),
                 downgraded: None,
             };
@@ -110,13 +110,15 @@ pub fn proposal_id(proposal: &str) -> String {
 }
 
 fn is_valid_user_reply(quote: &str, reply: &str) -> bool {
-    let q = quote.trim().to_lowercase();
-    let r = reply.trim().to_lowercase();
-    if q.is_empty() || r.is_empty() {
-        return false;
-    }
-    let bare_q = q.trim_end_matches(['.', '!']);
-    let bare_r = r.trim_end_matches(['.', '!']);
+    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    let q = normalize(quote);
+    let r = normalize(reply);
+    let bare_q = q.strip_suffix(['.', '!']).unwrap_or(&q);
+    let bare_r = r.strip_suffix(['.', '!']).unwrap_or(&r);
+    let allowed = reply.trim_matches(' ');
+    if allowed.is_empty() { return false; }
+    let word = allowed.strip_suffix(['.', '!']).unwrap_or(allowed);
+    if !word.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == ' ' || ('\u{ac00}'..='\u{d7a3}').contains(&ch)) { return false; }
     bare_q == bare_r && is_consent_phrase(bare_q)
 }
 
@@ -141,73 +143,6 @@ fn is_consent_phrase(phrase: &str) -> bool {
             | "삭제해줘"
             | "진행해"
     )
-}
-
-struct ConversationMessage {
-    role: String,
-    text: String,
-    tool_call_ids: Vec<String>,
-}
-
-fn pending_consent_exchange(entries: &[Value], tool_call_id: Option<&str>) -> Vec<(String, String)> {
-    let mut messages: Vec<ConversationMessage> = Vec::new();
-    for entry in entries {
-        if let Some(msg) = conversation_message(entry) {
-            messages.push(msg);
-        }
-    }
-    if let Some(last) = messages.last() {
-        if last.role == "assistant" && tool_call_id.is_some() && last.tool_call_ids.iter().any(|id| id == tool_call_id.unwrap()) {
-            messages.pop();
-        }
-    }
-    if messages.len() < 2 {
-        return Vec::new();
-    }
-    let reply = &messages[messages.len() - 1];
-    let proposal = &messages[messages.len() - 2];
-    if reply.role == "user" && proposal.role == "assistant" && !proposal.text.trim().is_empty() {
-        vec![(proposal.text.clone(), reply.text.clone())]
-    } else {
-        Vec::new()
-    }
-}
-
-fn conversation_message(entry: &Value) -> Option<ConversationMessage> {
-    if let Some(role) = entry.get("role").and_then(Value::as_str) {
-        let text = entry.get("text").or_else(|| entry.get("content")).and_then(Value::as_str).unwrap_or("").to_string();
-        return Some(ConversationMessage {
-            role: role.to_string(),
-            text,
-            tool_call_ids: Vec::new(),
-        });
-    }
-    if entry.get("type").and_then(Value::as_str) == Some("message") {
-        let message = entry.get("message")?;
-        let role = message.get("role").and_then(Value::as_str)?;
-        let mut tool_call_ids = Vec::new();
-        let mut text_parts = Vec::new();
-        if let Some(content) = message.get("content").and_then(Value::as_array) {
-            for block in content {
-                if block.get("type").and_then(Value::as_str) == Some("toolCall") {
-                    if let Some(id) = block.get("id").and_then(Value::as_str) {
-                        tool_call_ids.push(id.to_string());
-                    }
-                }
-                if let Some(text) = block.get("text").and_then(Value::as_str) {
-                    text_parts.push(text);
-                }
-            }
-        } else if let Some(content_str) = message.get("content").and_then(Value::as_str) {
-            text_parts.push(content_str);
-        }
-        return Some(ConversationMessage {
-            role: role.to_string(),
-            text: text_parts.join(" "),
-            tool_call_ids,
-        });
-    }
-    None
 }
 
 #[cfg(test)]
