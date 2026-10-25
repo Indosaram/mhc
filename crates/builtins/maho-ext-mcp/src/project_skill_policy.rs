@@ -181,7 +181,7 @@ impl ProjectMcpAuthority {
     ) -> Result<ProjectMcpMaterialization, McpError> {
         let cancelled =
             || McpError::new(McpErrorKind::Connect, "Project MCP authorization cancelled");
-        if signal.as_ref().is_some_and(|signal| signal.aborted()) {
+        if signal.as_ref().is_some_and(|signal| signal.is_aborted()) {
             return Err(cancelled());
         }
         let registration = current_registration(
@@ -219,7 +219,7 @@ impl ProjectMcpAuthority {
         } else {
             joined.await
         };
-        if signal.as_ref().is_some_and(|signal| signal.aborted()) {
+        if signal.as_ref().is_some_and(|signal| signal.is_aborted()) {
             return Err(cancelled());
         }
         let names = effective_grant_names(&read(&self.store_path), &self.identity);
@@ -255,7 +255,7 @@ impl ProjectMcpAuthority {
                 } else {
                     selected.await
                 };
-                if signal.as_ref().is_some_and(|signal| signal.aborted()) {
+                if signal.as_ref().is_some_and(|signal| signal.is_aborted()) {
                     return Err(cancelled());
                 }
                 if answer.as_deref() == Some("Allow") {

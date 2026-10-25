@@ -30,6 +30,7 @@ impl fmt::Display for EngineState {
 
 pub fn engine_error_code(error: &DesktopError) -> String {
     match error {
+        DesktopError::LaunchContext(_) => "launch-context-unavailable".to_string(),
         DesktopError::AbiMismatch(_) => "abi-mismatch".to_string(),
         DesktopError::Service(e) => {
             let msg = e.to_string();

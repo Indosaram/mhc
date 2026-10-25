@@ -186,7 +186,7 @@ impl WorkerGrants {
     /// `#stop`: every pending dialog is cancelled, so a closing worker is never left waiting on one.
     pub fn cancel_all(&self) {
         let cancelled: Vec<PendingGrant> =
-            lock(&self.pending).drain().map(|(_, grant)| grant).collect();
+            std::mem::take(&mut *lock(&self.pending)).into_values().collect();
         for grant in cancelled {
             (grant.cancel)();
         }

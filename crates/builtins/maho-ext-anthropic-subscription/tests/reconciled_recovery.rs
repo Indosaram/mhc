@@ -755,7 +755,7 @@ fn stream_protocol_helpers_map_stop_reasons_and_tools() {
     assert_eq!(map_stop_reason(Some("max_tokens")),maho_ai::types::StopReason::Length);
     let model=maho_ai::models_generated::MODELS["anthropic"].values().next().expect("model").clone();
     let mut output=empty_output(&model,1);
-    update_usage(&model,&mut output,&json!({"input_tokens":3,"output_tokens":2}));
+    update_usage(&model,&mut output,&json!({"input_tokens":3,"output_tokens":2}),maho_ext_anthropic_subscription::stream_protocol::UsageScope::Query);
     assert_eq!(output.usage.input,3);assert_eq!(output.usage.output,2);assert_eq!(output.usage.total_tokens,5);
 }
 

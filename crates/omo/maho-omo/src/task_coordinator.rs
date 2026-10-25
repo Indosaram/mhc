@@ -54,7 +54,7 @@ impl CompletionCoordinator for TaskCoordinator {
 
 impl LeadInjectionCoordinator for TaskCoordinator {
     fn enqueue(&self, injection: LeadInjection, custom_type: &str, display: bool) {
-        let LeadInjection { key, content, run_ref, on_flushed, on_delivery_failed } = injection;
+        let LeadInjection { key, source: _, content, run_ref, on_flushed, on_delivery_failed } = injection;
         let callbacks = DeliveryCallbacks::new(move |result| match result {
             Ok(()) => { if let Some(callback) = on_flushed { callback(); } }
             Err(error) => { if let Some(callback) = on_delivery_failed { callback(&error.message); } }

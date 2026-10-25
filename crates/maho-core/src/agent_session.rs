@@ -32605,7 +32605,7 @@ mod tests {
         let runner = ExtensionRunner::new(
             Vec::new(),
             Default::default(),
-            EventBus::default(),
+            maho_ext_api::EventBus::default(),
             test_extension_context(&session),
         );
         let events = runner.events.clone();

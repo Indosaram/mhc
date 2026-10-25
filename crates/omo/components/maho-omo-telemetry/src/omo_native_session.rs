@@ -14,7 +14,7 @@ pub use crate::session_inventory::{
 use crate::account_inventory::{EngineTables, read_connected_accounts};
 use crate::index::{SenpiTelemetryOptions, get_senpi_telemetry_state_dir};
 use crate::product_identity::{
-    EVENT_PROPERTY_ALLOWLISTS, OMO_NATIVE_SCHEMA_VERSION, create_omo_native_product_config,
+    EVENT_PROPERTY_ALLOWLISTS, OMO_NATIVE_SCHEMA_VERSION, OmoNativeAttributionInput, create_omo_native_product_config,
     get_omo_native_attribution, get_omo_native_state_dir, hash_session_id,
     with_omo_native_attribution,
 };
@@ -291,7 +291,7 @@ fn config_enabled(
 }
 
 /// A runtime without zone data (or a host that refuses the lookup) simply ships no timezone.
-pub fn read_time_zone(provider: Option<&Arc<dyn Fn() -> String + Send + Sync>>) -> Option<String> {
+pub fn read_time_zone(provider: Option<&(dyn Fn() -> String + Send + Sync)>) -> Option<String> {
     let zone = match provider {
         Some(provider) => provider(),
         None => std::env::var("TZ").unwrap_or_default(),
@@ -321,7 +321,7 @@ pub fn start_native_session(
     let os = options
         .os_provider
         .as_deref()
-        .unwrap_or_else(get_default_telemetry_os_provider);
+        .unwrap_or(get_default_telemetry_os_provider());
     let attribution = get_omo_native_attribution(&OmoNativeAttributionInput {
         env: Some(&env),
         state_dir: None,
@@ -397,7 +397,7 @@ pub fn start_native_session(
         EngineTables::load().as_ref(),
     );
     let reason = session_reason(input.payload);
-    let timezone = read_time_zone(options.time_zone.as_ref());
+    let timezone = read_time_zone(options.time_zone.as_deref());
     let mut properties = serde_json::Map::from_iter([
         ("$session_id".into(), json!(hash)),
         ("$os".into(), json!(os.platform())),
@@ -613,7 +613,7 @@ mod tests {
         };
         let home = tempfile::tempdir().unwrap();
         assert!(!is_inside_temp_dir(home.path(), &env(&[]), &deps));
-        assert_eq!(*root, Path::new("/"));
+        assert_eq!(root, Path::new("/"));
     }
 
     #[test]
@@ -621,7 +621,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let deps = TempDirDeps {
             platform: Some("win32".into()),
-            tmpdir: Some(Arc::new(|| tmp.path().to_string_lossy().into_owned())),
+            tmpdir: Some(Arc::new({ let path = tmp.path().to_string_lossy().into_owned(); move || path.clone() })),
             posix_temp_roots: None,
             realpath: Some(Arc::new(|candidate: &Path| {
                 std::fs::canonicalize(candidate).ok()
@@ -649,12 +649,12 @@ mod tests {
             !zone.trim().is_empty() && zone.trim().len() <= 64
         }).map(|zone| zone.trim().to_string()));
         assert_eq!(
-            read_time_zone(Some(&Arc::new(|| "Europe/Berlin".to_string()))).as_deref(),
+            read_time_zone(Some(&|| "Europe/Berlin".to_string())).as_deref(),
             Some("Europe/Berlin")
         );
-        assert_eq!(read_time_zone(Some(&Arc::new(|| String::new()))), None);
+        assert_eq!(read_time_zone(Some(&|| String::new())), None);
         assert_eq!(
-            read_time_zone(Some(&Arc::new(|| "x".repeat(65)))),
+            read_time_zone(Some(&|| "x".repeat(65))),
             None
         );
     }

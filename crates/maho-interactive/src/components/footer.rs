@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn footer_cost_renders_unknown_and_subagent_cost() {
-        let theme = Theme::default();
+        let theme = Theme::builtin("dark", crate::theme::ColorMode::Truecolor).unwrap();
         let mut snapshot = FooterSnapshot {
             cost: 0.38,
             ..Default::default()

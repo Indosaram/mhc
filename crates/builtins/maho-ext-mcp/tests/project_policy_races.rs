@@ -109,7 +109,7 @@ async fn real_service_reauthorization_disable_cancels_prompt_and_prevents_spawn(
         .unwrap()
         .unwrap();
     connection.disable().await.unwrap();
-    assert!(signal.aborted());
+    assert!(signal.is_aborted());
     assert!(
         tokio::time::timeout(Duration::from_secs(3), pending)
             .await

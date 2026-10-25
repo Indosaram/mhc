@@ -249,11 +249,19 @@ impl ServerConnection {
             .signal();
         let materialized =
             match crate::project_skill_policy::get_project_mcp_authority(&self.config) {
-                Some(authority) => Some(
-                    crate::project_stdio_transport::ProjectStdioTransport::new(authority)
-                        .start_with_signal(Some(signal))
-                        .await?,
-                ),
+                Some(authority) => {
+                    let ui_signal = maho_ext_api::AbortSignal::default();
+                    let transport = crate::project_stdio_transport::ProjectStdioTransport::new(authority);
+                    let started = tokio::select! {
+                        biased;
+                        () = signal.cancelled() => {
+                            ui_signal.abort();
+                            return Err(McpError::new(crate::errors::McpErrorKind::Connect, "Project MCP authorization cancelled"));
+                        }
+                        result = transport.start_with_signal(Some(ui_signal.clone())) => result?,
+                    };
+                    Some(started)
+                },
                 None => None,
             };
         let (config, env) = materialized

@@ -401,7 +401,7 @@ impl GoalDelivery {
                     &self.lifecycle,
                 );
                 let events = self.api.events.clone();
-                let session_id = ctx.session_manager.session_id();
+                let session_id = ctx.session_manager.session_id().to_owned();
                 self.lifecycle
                     .on_goal_lifecycle_change(Arc::new(move |goal| {
                         events.emit(
@@ -582,7 +582,7 @@ impl GoalDelivery {
                     Some(&outcome),
                     crate::turn_end_liveness_report::deadline_stop_pending(ctx),
                     self.pending.load(Ordering::Acquire),
-                    &self.runtime.monitor.lock().map_err(failure)?,
+                    &*self.runtime.monitor.lock().map_err(failure)?,
                     (self.now)() as i64,
                 )?;
                 crate::turn_end_liveness_report::report_turn_end_liveness(&self.api, ctx, &input);

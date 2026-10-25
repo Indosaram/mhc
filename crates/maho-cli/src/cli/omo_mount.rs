@@ -309,6 +309,7 @@ pub fn task_component(
 pub fn retained_engine(engine: &maho_omo_task::engine::TaskEngine) -> maho_omo_task::engine::TaskEngine {
     maho_omo_task::engine::TaskEngine {
         manager: engine.manager.clone(), lifecycle: engine.lifecycle.clone(),
+        pause: engine.pause.clone(), run_pause: engine.run_pause.clone(), memory: engine.memory.clone(),
         notifier: engine.notifier.clone(), runtime: engine.runtime.clone(),
         store: engine.store.clone(), config: engine.config.clone(), agents: engine.agents.clone(),
     }

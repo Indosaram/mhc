@@ -6,7 +6,7 @@ pub fn is_model_unreachable_detail(detail: Option<&str>) -> bool {
     detail.is_some_and(|detail| detail.starts_with(MODEL_UNREACHABLE_MARKER))
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReflectionModelCandidate { pub model: String, pub thinking: Option<String>, pub load_extensions: Option<bool> }
 #[derive(Debug)]
 pub struct ReflectionChildResult { pub code: Option<i32>, pub signal: Option<String>, pub stdout: String, pub stderr: String, pub timed_out: bool }

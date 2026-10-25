@@ -485,18 +485,18 @@ mod itemized_tests {
     #[test]
     fn failed_batch_has_no_custody_and_successful_items_keep_own_payloads() {
         let notices = vec![
-            json!({"noticeId":"a","producer":"task","itemId":"a","message":{"content":"one"}}),
-            json!({"noticeId":"b","producer":"task","itemId":"b","message":{"content":"two"}}),
+            HeldItem { source: "task".into(), item_id: "a".into(), message: json!({"content":"one"}), run_ref: None },
+            HeldItem { source: "task".into(), item_id: "b".into(), message: json!({"content":"two"}), run_ref: None },
         ];
         let mut failed = EngineTurnHoldNotices::new(
             &[],
             Box::new(|_, _| Err("disk full".into())),
             Box::new(|_| {}),
         );
-        assert!(failed.note_items(notices.clone()).is_err());
+        assert!(failed.note_items(1, &notices, false, |_| Err("disk full".into())).is_err());
         assert_eq!(failed.notice_count(), 0);
         let mut held = EngineTurnHoldNotices::new(&[], Box::new(|_, _| Ok(())), Box::new(|_| {}));
-        held.note_items(notices).expect("persist");
+        held.note_items(1, &notices, false, |_| Ok("entry".into())).expect("persist");
         assert_eq!(held.notice_count(), 2);
         let messages = held.messages();
         assert_eq!(messages.len(), 2);

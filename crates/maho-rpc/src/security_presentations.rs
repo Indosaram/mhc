@@ -333,7 +333,7 @@ mod tests {
             "req-1",
             None,
             &[],
-            cancelled.clone(),
+            { let cancelled = cancelled.clone(); Arc::new(move || { cancelled.store(true, Ordering::SeqCst); }) },
             &fanout,
         );
         assert!(accepted);
@@ -380,7 +380,7 @@ mod tests {
             "req-2",
             Some("c2"),
             &[],
-            cancelled.clone(),
+            { let cancelled = cancelled.clone(); Arc::new(move || { cancelled.store(true, Ordering::SeqCst); }) },
             &fanout,
         );
         assert!(accepted);
@@ -398,7 +398,7 @@ mod tests {
             "req-3",
             None,
             &["grant_select".into()],
-            cancelled.clone(),
+            { let cancelled = cancelled.clone(); Arc::new(move || { cancelled.store(true, Ordering::SeqCst); }) },
             &fanout,
         );
         assert!(accepted);

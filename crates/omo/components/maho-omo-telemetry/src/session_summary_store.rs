@@ -648,12 +648,12 @@ mod tests {
             session_hash: "a".repeat(64),
             owner: owner(1, "boot-self"),
             created_at: 1000.0,
-            properties: Map::from([("turns".to_string(), json!(2))]),
+            properties: Map::from_iter([("turns".to_string(), json!(2))]),
         };
         storage.write_pending(&pending).unwrap();
         assert_eq!(storage.pending_uuids(), vec![pending.uuid.clone()]);
         assert_eq!(
-            storage.read_pending(&pending.uuid),
+            with_recovery_ops(storage.clone()).read_pending(&pending.uuid),
             ReadResult::Value(pending.clone())
         );
         assert!(storage.pending_bytes(&pending.uuid) > 0);

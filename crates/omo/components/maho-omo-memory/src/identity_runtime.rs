@@ -481,7 +481,7 @@ mod tests {
             },
         );
         let mut sandbox = IdentitySandbox::default();
-        let args = crate::worker::spawn_types::ReflectionSpawnArgs {
+        let args = crate::worker::spawn_types::ReflectionSpawnArgs { memory_root: None, max_concurrent_runs: None,
             command: "child".into(),
             args: vec![],
             cwd: root.path().into(),

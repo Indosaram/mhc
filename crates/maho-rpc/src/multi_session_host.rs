@@ -1526,6 +1526,7 @@ impl HostCore {
                 creation_model: provider.clone().zip(model_id.clone()),
                 initial_thinking_level: thinking_level.clone(),
                 auto_title: *auto_title,
+                prompt_size_inventory: None,
             },
             session_path: session_path.clone(),
             durable_session_id: durable_session_id.clone(),

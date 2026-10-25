@@ -4691,32 +4691,37 @@ impl InteractiveMode {
         }
         let ui_mcp = self.extension_ui.clone();
         let session_id = self.session.session_id();
-        let select_fn: maho_core::mcp_grant_presentations::McpGrantSelect =
+        let select_fn: maho_core::mcp_grant_presentations::Select =
             Arc::new(move |title, choices, opts| {
                 let ui = ui_mcp.clone();
                 Box::pin(async move {
                     use maho_ext_api::ExtensionUi;
-                    ui.select(&title, &choices, opts).await
+                    let signal = maho_ext_api::AbortSignal::default();
+                    let selection = ui.select(&title, &choices, maho_ext_api::ExtensionUiDialogOptions { signal: Some(signal.clone()), timeout_ms: None });
+                    tokio::select! {
+                        answer = selection => Ok(answer),
+                        () = opts.cancelled() => { signal.abort(); Ok(None) }
+                    }
                 })
             });
-        self.detach_mcp_grant_presentation = Some(Box::new(
-            maho_core::mcp_grant_presentations::attach_mcp_grant_presentation(
-                session_id, select_fn,
-            ),
-        ));
+        let attachment = maho_core::mcp_grant_presentations::attach_mcp_grant_presentation(
+                &session_id, select_fn,
+            );
+        self.detach_mcp_grant_presentation = Some(Box::new(move || drop(attachment)));
 
         if let Some(unsubscribe) = self.unsubscribe_security_notices.take() {
             unsubscribe();
         }
         let ui_sec = self.extension_ui.clone();
-        self.unsubscribe_security_notices = Some(self.session.security_notices().subscribe(
+        let subscription = self.session.subscribe_security_notices(
             Arc::new(move |snapshot| {
                 for notice in &snapshot.notices {
                     use maho_ext_api::ExtensionUi;
                     ui_sec.notify(&notice.message, maho_ext_api::NotificationType::Warning);
                 }
             }),
-        ));
+        );
+        self.unsubscribe_security_notices = Some(Box::new(move || drop(subscription)));
 
         let binding = self.start_extension_binding();
         tokio::pin!(binding);
@@ -8498,8 +8503,8 @@ impl InteractiveMode {
             {
                 let session = self.session.clone();
                 self.park_action(async move {
-                    let _ = session.resume_session().await;
-                });
+                    session.resume_session().await
+                }, |mode, result| { if let Err(error) = result { mode.show_status(error); } });
                 return Ok(true);
             }
             use crate::components::session_selector::SessionSelectorComponent;
@@ -12368,10 +12373,6 @@ impl InteractiveMode {
                     }),
                 ));
             }
-            UiRequest::SetSubagentCost(cost_usd) => {
-                self.footer_data.set_subagent_cost(cost_usd);
-                self.editor_host.request_render();
-            }
             UiRequest::WorkingMessage(message) => self.working_message = message,
             UiRequest::WorkingVisible(visible) => self.working_visible = visible,
             UiRequest::Notify(text, _) => self.show_status(text),
@@ -14044,6 +14045,7 @@ fn session_stats_from_wire(value: &serde_json::Value) -> maho_core::agent_sessio
             .get("cost")
             .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.0),
+        cost_unknown: value.get("costUnknown").and_then(serde_json::Value::as_bool).unwrap_or(false),
         context_usage: value.get("contextUsage").and_then(context_usage_from_wire),
     }
 }

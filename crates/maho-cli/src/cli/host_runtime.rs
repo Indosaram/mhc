@@ -315,6 +315,7 @@ impl CliRuntimeConfiguration {
             },
             initial_thinking_level: self.thinking.clone(),
             auto_title: self.auto_title_sessions,
+            prompt_size_inventory: None,
         }
     }
 }

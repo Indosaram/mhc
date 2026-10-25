@@ -423,7 +423,7 @@ pub fn purge_opted_out_storage(
     );
     crate::session_summary_optout_purge::purge_opted_out_queue(
         &with_recovery_ops(storage),
-        &is_scope_consented,
+        is_scope_consented.as_ref(),
     );
 }
 

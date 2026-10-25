@@ -23,6 +23,7 @@ fn launch_profile(cwd: &str) -> AgentSessionLaunchProfile {
         creation_model: None,
         initial_thinking_level: None,
         auto_title: None,
+        prompt_size_inventory: None,
     }
 }
 

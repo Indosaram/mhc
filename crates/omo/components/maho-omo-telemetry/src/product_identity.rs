@@ -221,7 +221,7 @@ pub fn get_omo_native_attribution(input: &OmoNativeAttributionInput<'_>) -> OmoN
     let machine_hash = if now < sunset {
         let os: &dyn telemetry_core::TelemetryOsProvider = input
             .os_provider
-            .unwrap_or_else(telemetry_core::get_default_telemetry_os_provider);
+            .unwrap_or(telemetry_core::get_default_telemetry_os_provider());
         Some(telemetry_core::get_telemetry_distinct_id(
             &create_omo_native_product_config().machine_id_prefix,
             os,
