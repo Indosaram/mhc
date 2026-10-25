@@ -145,7 +145,14 @@ fn pump(store: &WorkpoolStore, admission: &Arc<dyn WorkpoolAdmission + Send + Sy
         state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pending.insert(item.item_id.clone(), PendingRequest {
             pool_id: pool_id.to_owned(), worker_id: idle.map(|worker| worker.task_id), cancel: None,
         });
-        let cancel = admission.request(Box::new(request));
+        let handle = admission.request(Box::new(request));
+        let crate::workpool::ports::WorkpoolRequestHandle { held, cancel } = handle;
+        if held.is_some() {
+            // The run is paused: the turn stays held until Resume, so nothing waits and nothing is
+            // acknowledged (`workpool/dispatcher.ts` `if (request.kind === "held") return`).
+            state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pending.remove(&item.item_id);
+            continue;
+        }
         let mut state_guard = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(pending) = state_guard.pending.get_mut(&item.item_id) {
             pending.cancel = Some(cancel);
@@ -401,13 +408,13 @@ mod tests {
         fn resolve(&self, _: &WorkpoolCaller, _: &WorkpoolAgent) -> Result<PoolSpec, WorkpoolAdmissionError> { Ok(PoolSpec { start: Default::default(), plan: Default::default() }) }
         fn authorize_spawn(&self, _: &WorkpoolAgent, _: &str) -> Result<(), WorkpoolAdmissionError> { Ok(()) }
         fn has_free_slot(&self, _: &str) -> bool { true }
-        fn request(&self, mut request: Box<dyn WorkpoolRequest>) -> Box<dyn FnOnce() + Send> {
+        fn request(&self, mut request: Box<dyn WorkpoolRequest>) -> crate::workpool::ports::WorkpoolRequestHandle {
             assert!(request.current());
             assert!(request.authorize().is_ok());
             assert!(request.bind(&self.task.task_id, 1));
             request.event(WorkpoolEvent { pool_id: request.pool().pool_id.clone(), kind: WorkpoolEventKind::Dispatched,
                 item_id: Some(request.item().item_id.clone()), task_id: Some(self.task.task_id.clone()), run_epoch: Some(1), error: None });
-            Box::new(|| {})
+            crate::workpool::ports::WorkpoolRequestHandle::dispatched(Box::new(|| {}))
         }
         fn drain(&self) {}
         fn get(&self, _: &str) -> Option<TaskRecord> { Some(self.task.clone()) }

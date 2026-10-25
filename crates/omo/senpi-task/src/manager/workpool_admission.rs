@@ -14,10 +14,18 @@ use crate::workpool::types::{WorkpoolAgent, WorkpoolCaller, WorkpoolErrorCode, W
 pub struct ManagerWorkpoolAdmission {
     manager: Arc<TaskManager>,
     worker_tools: Arc<Mutex<BTreeMap<String, Vec<crate::runners::in_process::shared_tool_filter::ChildToolRef>>>>,
+    /// Every dispatched turn enters this barrier, so a pause that lands mid-dispatch holds the turn.
+    barrier: crate::pause::admission_barrier::AdmissionBarrier,
 }
 
 impl ManagerWorkpoolAdmission {
-    pub fn new(manager: Arc<TaskManager>) -> Self { Self { manager, worker_tools: Arc::new(Mutex::new(BTreeMap::new())) } }
+    pub fn new(manager: Arc<TaskManager>) -> Self { Self::with_barrier(manager, crate::pause::admission_barrier::AdmissionBarrier::new()) }
+
+    pub fn with_barrier(manager: Arc<TaskManager>, barrier: crate::pause::admission_barrier::AdmissionBarrier) -> Self {
+        Self { manager, worker_tools: Arc::new(Mutex::new(BTreeMap::new())), barrier }
+    }
+
+    pub fn barrier(&self) -> &crate::pause::admission_barrier::AdmissionBarrier { &self.barrier }
     pub fn bind_worker_tools(&self, pool_id: &str, tools: Vec<crate::runners::in_process::shared_tool_filter::ChildToolRef>) -> Result<(), WorkpoolAdmissionError> {
         let pool = crate::workpool::store::WorkpoolStore::new(self.manager.state_dir()).load(pool_id).map_err(|error| WorkpoolAdmissionError(error.to_string()))?;
         let mut expected = pool.kernel_tool_names.unwrap_or_default();
@@ -30,6 +38,18 @@ impl ManagerWorkpoolAdmission {
     pub fn release_worker_tools(&self, pool_id: &str) {
         self.worker_tools.lock().unwrap_or_else(PoisonError::into_inner).remove(pool_id);
     }
+}
+
+/// Leaves the admission ticket when the dispatch attempt ends, on every exit path.
+struct AdmissionLeaveGuard(crate::manager::start_admission::StartAdmission);
+
+impl Drop for AdmissionLeaveGuard {
+    fn drop(&mut self) { self.0.leave(); }
+}
+
+/// Whether the barrier still permits this start (`admission.check().kind === "allowed"`).
+fn admission_allowed(scope: &crate::manager::start_admission::StartAdmission) -> bool {
+    matches!(scope.check(), crate::pause::admission_barrier::AdmissionCheck::Allowed)
 }
 
 struct AdmissionLeaseGuard(Arc<dyn crate::lifecycle::admission_lease::SessionAdmissionLease>);
@@ -46,14 +66,14 @@ impl WorkpoolAdmission for ManagerWorkpoolAdmission {
     fn authorize_spawn(&self, _agent: &WorkpoolAgent, session: &str) -> Result<(), WorkpoolAdmissionError> { self.manager.admission_authorize(session) }
     fn has_free_slot(&self, model: &str) -> bool { self.manager.has_free_slot(model) }
 
-    fn request(&self, mut request: Box<dyn WorkpoolRequest>) -> Box<dyn FnOnce() + Send> {
+    fn request(&self, mut request: Box<dyn WorkpoolRequest>) -> crate::workpool::ports::WorkpoolRequestHandle {
         let task_id = match request.worker().map(|worker| worker.task_id.clone()).or_else(|| request.item().binding.as_ref().map(|binding| binding.task_id.clone())) {
             Some(task_id) => task_id,
             None => match crate::state::create_task_id(None) {
                 Ok(task_id) => task_id.to_string(),
                 Err(error) => {
                     request.event(event(request.as_ref(), crate::workpool::types::WorkpoolEventKind::AdmissionFailed, "", 0, Some((WorkpoolErrorCode::SpawnFailed, error.to_string()))));
-                    return Box::new(|| {});
+                    return crate::workpool::ports::WorkpoolRequestHandle::dispatched(Box::new(|| {}));
                 }
             },
         };
@@ -72,15 +92,39 @@ impl WorkpoolAdmission for ManagerWorkpoolAdmission {
                 }
                 Some(_) => {
                     request.event(event(request.as_ref(), crate::workpool::types::WorkpoolEventKind::AdmissionFailed, &task_id, i64::from(worker.run_epoch), Some((WorkpoolErrorCode::WorkerNotContinuable, "Worker epoch is no longer continuable.".into()))));
-                    return Box::new(|| {});
+                    return crate::workpool::ports::WorkpoolRequestHandle::dispatched(Box::new(|| {}));
                 }
                 None => {
                     request.event(event(request.as_ref(), crate::workpool::types::WorkpoolEventKind::AdmissionFailed, &task_id, 0, Some((WorkpoolErrorCode::WorkerNotContinuable, "Worker task record is unavailable.".into()))));
-                    return Box::new(|| {});
+                    return crate::workpool::ports::WorkpoolRequestHandle::dispatched(Box::new(|| {}));
                 }
             },
             None => 0,
         };
+        // Every turn enters the root's barrier first, so a pause that lands between here and the
+        // launch holds the turn instead of racing it (`manager/workpool-admission.ts`).
+        let pool_id = request.pool().pool_id.clone();
+        let run_ref = crate::pause::ports::RunRef::new(crate::pause::ports::RunRefKind::Workpool, pool_id.clone());
+        let entered = crate::manager::start_admission::enter_start_admission(
+            crate::manager::start_admission::EnterStartAdmissionInput {
+                barrier: &self.barrier,
+                spec: &request.pool().worker_spec.start,
+                task_id: task_id.clone(),
+                run_ref: Some(run_ref.clone()),
+                credential: request.resume_credential(),
+                held: None,
+            },
+        );
+        let scope = match entered {
+            crate::manager::start_admission::StartAdmissionEntry::Held(custody) => {
+                return crate::workpool::ports::WorkpoolRequestHandle::held(custody);
+            }
+            crate::manager::start_admission::StartAdmissionEntry::Entered(entered) => entered.scope,
+        };
+        scope.update(crate::pause::admission_barrier::AdmissionParticipant {
+            key: format!("run:workpool:{pool_id}"),
+            run_ref,
+        });
         let model = request.pool().worker_spec.plan.model.clone();
         let manager = self.manager.clone();
         let worker_tools = Arc::clone(&self.worker_tools);
@@ -88,10 +132,19 @@ impl WorkpoolAdmission for ManagerWorkpoolAdmission {
         let grant_cancelled = cancelled.clone();
         let grant_task_id = task_id.clone();
         let grant_model = model.clone();
+        // `granted` marks that the grant closure started, so cancel never leaves a live ticket.
+        let granted = Arc::new(AtomicBool::new(false));
+        let granted_for_grant = granted.clone();
+        let granted_for_cancel = granted.clone();
+        let admission_scope = scope.clone();
         let grant: crate::manager::concurrency::Grant = Box::new(move || {
+            granted_for_grant.store(true, Ordering::Release);
             let task_id = grant_task_id;
             let model = grant_model;
-            if task_id.is_empty() || grant_cancelled.load(Ordering::Acquire) || !request.current() {
+            // Leaving is unconditional: the ticket never outlives the dispatch attempt.
+            let _admission_leave = AdmissionLeaveGuard(admission_scope.clone());
+            let admission = admission_scope.clone();
+            if task_id.is_empty() || grant_cancelled.load(Ordering::Acquire) || !request.current() || !admission_allowed(&admission) {
                 if !task_id.is_empty() { manager.release_reserved_slot(&task_id, &model, epoch); }
                 return;
             }
@@ -106,7 +159,7 @@ impl WorkpoolAdmission for ManagerWorkpoolAdmission {
                     request.event(event(request.as_ref(), crate::workpool::types::WorkpoolEventKind::AdmissionFailed, &task_id, epoch, Some((WorkpoolErrorCode::WorkerNotContinuable, "Worker changed before revival.".into()))));
                     return;
             }
-            if grant_cancelled.load(Ordering::Acquire) || !request.current() {
+            if grant_cancelled.load(Ordering::Acquire) || !request.current() || !admission_allowed(&admission) {
                 manager.release_reserved_slot(&task_id, &model, epoch);
                 return;
             }
@@ -174,7 +227,7 @@ impl WorkpoolAdmission for ManagerWorkpoolAdmission {
                 Ok(None) => { if request.worker().is_none() { let _ = manager.cancel_task(&task_id, None, CancelOptions::default()); } manager.release_reserved_slot(&task_id, &model, epoch); return; }
                 Err(error) => { if request.worker().is_none() { let _ = manager.cancel_task(&task_id, None, CancelOptions::default()); } manager.release_reserved_slot(&task_id, &model, epoch); request.event(event(request.as_ref(), crate::workpool::types::WorkpoolEventKind::AdmissionFailed, &task_id, epoch, Some((error.code, error.message)))); return; }
             };
-            if grant_cancelled.load(Ordering::Acquire) || !request.current() {
+            if grant_cancelled.load(Ordering::Acquire) || !request.current() || !admission_allowed(&admission) {
                 if request.worker().is_none() { let _ = manager.cancel_task(&task_id, None, CancelOptions::default()); }
                 manager.release_reserved_slot(&task_id, &model, epoch);
                 return;
@@ -197,7 +250,7 @@ impl WorkpoolAdmission for ManagerWorkpoolAdmission {
                     }
                     Ok(_) | Err(_) => { manager.release_reserved_slot(&task_id, &model, epoch); request.event(event(request.as_ref(), crate::workpool::types::WorkpoolEventKind::AdmissionFailed, &task_id, epoch, Some((WorkpoolErrorCode::WorkerNotContinuable, "Worker could not be revived.".into())))); return; }
                 }
-            } else if grant_cancelled.load(Ordering::Acquire) || !request.current() {
+            } else if grant_cancelled.load(Ordering::Acquire) || !request.current() || !admission_allowed(&admission) {
                 let _ = manager.cancel_task(&task_id, None, CancelOptions::default()); manager.release_reserved_slot(&task_id, &model, epoch); return;
             } else if let Err(error) = manager.launch_prepared(record, ManagedStartSpec { prompt: turn_prompt.message.clone(), workpool_state_dir: Some(manager.state_dir().to_string_lossy().into_owned()), workpool_run_epoch: Some(u32::try_from(epoch).unwrap_or_default()), ..managed }) {
                 if let Some(lease) = &admission_lease { lease.release(); } manager.release_reserved_slot(&task_id, &model, epoch); request.event(event(request.as_ref(), crate::workpool::types::WorkpoolEventKind::AdmissionFailed, &task_id, epoch, Some((WorkpoolErrorCode::SpawnFailed, error)))); return;
@@ -210,12 +263,17 @@ impl WorkpoolAdmission for ManagerWorkpoolAdmission {
         });
         self.manager.enqueue_workpool(&model, &task_id, epoch, grant);
         let manager = self.manager.clone();
-        Box::new(move || {
+        crate::workpool::ports::WorkpoolRequestHandle::dispatched(Box::new(move || {
             cancelled.store(true, Ordering::Release);
             manager.remove_workpool_waiter(&model, &task_id);
-        })
+            // The grant closure has not run yet, so nothing else will leave the ticket.
+            if !granted_for_cancel.load(Ordering::Acquire) { scope.leave(); }
+        }))
     }
 
+    fn delivery_held(&self, root_session_id: &str) -> bool {
+        !matches!(self.barrier.state(root_session_id), crate::pause::admission_barrier::AdmissionState::Open)
+    }
     fn drain(&self) {}
     fn get(&self, task_id: &str) -> Option<TaskRecord> { self.manager.get(task_id) }
     fn task_run_epoch(&self, task_id: &str) -> Option<u32> { self.manager.run_epoch(task_id).and_then(|epoch| u32::try_from(epoch).ok()) }

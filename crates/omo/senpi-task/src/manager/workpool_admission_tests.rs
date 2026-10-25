@@ -59,7 +59,7 @@ fn save_pool(h:&Harness,pool:&mut WorkpoolRecord) {
 fn queued_cancel_removes_waiter_and_releasing_head_does_not_run_cancelled_request() {
     let h=harness(1);assert!(h.manager.reserve_slot("test/model","st_00000001",0));
     let (mut pool,item)=pool(&h,"",None);save_pool(&h,&mut pool);let(request,_current,_events,_binds)=request(pool,item,None);
-    let cancel=h.admission.request(request);cancel();h.manager.release_reserved_slot("st_00000001","test/model",0);
+    let handle=h.admission.request(request);assert!(handle.held.is_none());(handle.cancel)();h.manager.release_reserved_slot("st_00000001","test/model",0);
     wait_until("head capacity released",||h.manager.has_free_slot("test/model"));
     assert!(h.runner.specs().is_empty());
 }
@@ -74,7 +74,7 @@ fn valid_reuse_binds_next_epoch_and_uses_real_manager_revival_path() {
     let worker=WorkpoolWorker{task_id:started.task_id.clone(),run_epoch:0,status:WorkpoolWorkerStatus::Idle,completed_turns:0,idle_since:0};let(mut pool,_item)=pool(&h,&started.task_id,Some(worker.clone()));
     pool.items[0].status=WorkpoolItemStatus::Assigned;pool.items[0].binding=Some(crate::workpool::types::WorkpoolBinding{task_id:started.task_id.clone(),run_epoch:1,generation:1});pool.items[0].delivery=Some(WorkpoolDelivery{phase:WorkpoolDeliveryPhase::Queued,message_sha256:None});save_pool(&h,&mut pool);
     let item=pool.items[0].clone();
-    let(request,_current,events,binds)=request(pool,item,Some(worker));let _cancel=h.admission.request(request);
+    let(request,_current,events,binds)=request(pool,item,Some(worker));let _handle=h.admission.request(request);
     wait_until("real worker revival",||events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|event|event.kind==crate::workpool::types::WorkpoolEventKind::Dispatched));
     assert_eq!(binds.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_slice(),[(started.task_id.clone(),1)]);
     assert_eq!(h.runner.wait_handle(&started.task_id).follow_up_calls().len(),1);
@@ -105,8 +105,42 @@ fn burnt_worker_epoch_is_not_reused() {
     let worker=WorkpoolWorker{task_id:started.task_id.clone(),run_epoch:0,status:WorkpoolWorkerStatus::Idle,completed_turns:0,idle_since:0};let(mut pool,_item)=pool(&h,&started.task_id,Some(worker.clone()));
     pool.items[0].status=WorkpoolItemStatus::Assigned;pool.items[0].binding=Some(crate::workpool::types::WorkpoolBinding{task_id:started.task_id.clone(),run_epoch:2,generation:1});pool.items[0].delivery=Some(WorkpoolDelivery{phase:WorkpoolDeliveryPhase::Queued,message_sha256:None});save_pool(&h,&mut pool);
     let item=pool.items[0].clone();
-    let(request,_current,events,binds)=request(pool,item,Some(worker));let _cancel=h.admission.request(request);
+    let(request,_current,events,binds)=request(pool,item,Some(worker));let _handle=h.admission.request(request);
     wait_until("burnt epoch denial",||events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|event|event.kind==crate::workpool::types::WorkpoolEventKind::AdmissionFailed));
     assert!(binds.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty());
     assert!(h.runner.wait_handle(&started.task_id).follow_up_calls().is_empty());
+}
+
+#[test]
+fn a_paused_root_holds_the_turn_without_dispatching_or_acknowledging() {
+    let h=harness(1);h.admission.barrier().close("root",3);
+    let (mut pool,item)=pool(&h,"",None);save_pool(&h,&mut pool);let(request,_current,events,binds)=request(pool,item,None);
+    let handle=h.admission.request(request);
+    let held=handle.held.clone().expect("held custody");
+    assert_eq!(held.pause_seq,3);
+    assert_eq!(held.root_session_id,"root");
+    assert!(binds.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty());
+    assert!(events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty());
+    assert!(h.runner.specs().is_empty());
+    assert!(h.admission.barrier().in_flight("root").is_empty());
+}
+
+#[test]
+fn delivery_held_follows_the_root_barrier_state() {
+    let h=harness(1);
+    assert!(!h.admission.delivery_held("root"));
+    h.admission.barrier().close("root",2);
+    assert!(h.admission.delivery_held("root"));
+    assert!(!h.admission.delivery_held("other"));
+}
+
+#[test]
+fn an_open_root_admission_dispatches_and_leaves_no_ticket() {
+    let h=harness(1);assert!(h.manager.reserve_slot("test/model","st_00000001",0));
+    let (mut pool,item)=pool(&h,"",None);save_pool(&h,&mut pool);let(request,_current,_events,_binds)=request(pool,item,None);
+    let handle=h.admission.request(request);
+    assert!(handle.held.is_none());
+    h.manager.release_reserved_slot("st_00000001","test/model",0);
+    wait_until("worker launched",||!h.runner.specs().is_empty());
+    assert!(h.admission.barrier().in_flight("root").is_empty());
 }
