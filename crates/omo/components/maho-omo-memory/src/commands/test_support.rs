@@ -406,7 +406,7 @@ pub fn fake_deps(
     let reflect_receipt = receipt.clone();
     let reflect: Option<super::types::Reflect> =
         match overrides.reflection_sink.unwrap_or(true) {
-            true => Some(Arc::new(move |_session: &str, event: ReflectionEvent| {
+            true => Some(Arc::new(move |_session: String, event: ReflectionEvent| {
                 let request = match event {
                     ReflectionEvent::Manual { focus, recent_n, conversation_ids } => {
                         ManualReflectionRequest { focus, recent_n, conversation_ids }
@@ -421,7 +421,10 @@ pub fn fake_deps(
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .clone();
-                Ok(receipt)
+                Box::pin(async move { Ok(super::types::ReflectionRequestReceipt {
+                    disposition: if receipt.0 == "active" { super::types::ReflectionDisposition::Reserved } else { super::types::ReflectionDisposition::Pending },
+                    run_id: receipt.1, recovered_run_id: None, stuck: None,
+                }) })
             })),
             false => None,
         };

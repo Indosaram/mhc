@@ -6,6 +6,17 @@ pub enum MemoryGuardDecision { Allow, Block {reason:String}, AdviseBash }
 pub struct MemoryGuard {warned_bash_sessions:BTreeSet<String>}
 pub type GuardWarning=std::sync::Arc<dyn Fn(&str)+Send+Sync>;
 pub fn register_memory_guard(api:&mut maho_ext_api::ExtensionApi,resolve:crate::prompt::PromptContextResolver,resolve_cwd:std::sync::Arc<dyn Fn()->std::path::PathBuf+Send+Sync>,captured_tools:std::sync::Arc<dyn Fn()->Vec<String>+Send+Sync>,warn:GuardWarning) {
+    api.on(maho_ext_api::EventKind::ToolResult, std::sync::Arc::new(|event, _context| {
+        Box::pin(async move {
+            if let maho_ext_api::ExtensionEvent::ToolResult(result) = event {
+                let payload = serde_json::json!({"type":"tool_result", "toolName":result.tool_name, "isError":result.is_error, "content":result.content});
+                if crate::receipt_read_guard::unverified_receipt_notice(&payload).is_some() {
+                    result.content.push(maho_ext_api::ToolContent::text(crate::receipt_read_guard::UNVERIFIED_RECEIPT_NOTICE));
+                }
+            }
+            Ok(maho_ext_api::EventResult::None)
+        })
+    }));
     let guard=std::sync::Arc::new(std::sync::Mutex::new(MemoryGuard::default()));
     api.on(maho_ext_api::EventKind::ToolCall,std::sync::Arc::new(move |event,context| {
         let result=if let maho_ext_api::ExtensionEvent::ToolCall(call)=event {
@@ -51,6 +62,7 @@ impl MemoryGuard {
         for raw in target_paths(input,patch){
             if raw.contains('\0'){continue;}
             let lexical=resolve_path(&cwd.join(&raw))?;
+            if operation == Some("read") && crate::project_memory_grants::is_granted_project_memory_read(context, &lexical) { continue; }
             for candidate in stable_roots(&[lexical]){
                 if own_roots.iter().any(|root|within(root,&candidate)){continue;}
                 if agents_roots.contains(&candidate)||(recursive&&agents_roots.iter().any(|root|within(&candidate,root)))||foreign_roots.iter().any(|root|within(root,&candidate)){return Ok(MemoryGuardDecision::Block{reason:format!("cross-identity memory access denied: {tool_name} to {raw} belongs to another memory identity")});}
@@ -64,6 +76,7 @@ mod tests{
     use super::*;
     use std::path::PathBuf;
     fn fixture()->(tempfile::TempDir,MemoryIdentityContext,PathBuf){let dir=tempfile::tempdir().unwrap();let paths=memory_core::identity::layout::build_identity_paths(dir.path(),"own");let foreign=paths.root.parent().unwrap().join("foreign/repo");std::fs::create_dir_all(&foreign).unwrap();let context=MemoryIdentityContext::new("own".into(),paths,crate::binding::MemorySessionBinding{identity:"own".into(),repo_path_hash:"hash".into(),bound_at:1.0});(dir,context,foreign)}
+    #[test]fn granted_project_notes_allow_only_reads(){let(dir,context,foreign)=fixture();let note=foreign.join("notes/fixture.md");std::fs::create_dir_all(note.parent().unwrap()).unwrap();std::fs::write(&note,"fixture").unwrap();crate::project_memory_grants::grant_project_memory_read(&context,&foreign);let mut guard=MemoryGuard::default();assert_eq!(guard.check(Some(&context),dir.path(),"read",&serde_json::json!({"path":note}),None,&[]).unwrap(),MemoryGuardDecision::Allow);for tool in ["write","edit","grep","glob","ls"]{assert!(matches!(guard.check(Some(&context),dir.path(),tool,&serde_json::json!({"path":note}),None,&[]).unwrap(),MemoryGuardDecision::Block{..}));}crate::project_memory_grants::revoke_project_memory_reads(&context);}
     #[test]fn foreign_read_has_stable_reason(){let(dir,context,foreign)=fixture();let raw=foreign.join("persona.md");assert_eq!(MemoryGuard::default().check(Some(&context),dir.path(),"read",&serde_json::json!({"path":raw}),None,&[]).unwrap(),MemoryGuardDecision::Block{reason:format!("cross-identity memory access denied: read to {} belongs to another memory identity",raw.display())});}
     #[test]fn own_worktree_edit_is_allowed(){let(dir,context,_)=fixture();assert_eq!(MemoryGuard::default().check(Some(&context),dir.path(),"edit",&serde_json::json!({"file_path":context.identity_paths.worktrees.join("reflection/notes.md")}),None,&[]).unwrap(),MemoryGuardDecision::Allow);}
     #[test]fn unbound_foreign_read_is_allowed(){let(dir,_,foreign)=fixture();assert_eq!(MemoryGuard::default().check(None,dir.path(),"read",&serde_json::json!({"path":foreign}),None,&[]).unwrap(),MemoryGuardDecision::Allow);}

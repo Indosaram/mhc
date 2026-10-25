@@ -99,10 +99,12 @@ pub fn create_identity_runtime(
     settings: &serde_json::Value,
 ) -> Result<MemoryIdentityRuntime, String> {
     let store = create_identity_reservation_store(&identity, settings)?;
+    let mut runner = crate::worker::runner::SenpiSubprocessRunner::default();
+    runner.admission_memory_root = identity.durable_root.parent().and_then(std::path::Path::parent).map(std::path::Path::to_path_buf);
     Ok(MemoryIdentityRuntime {
         identity,
         store,
-        runner: Default::default(),
+        runner,
         sandbox: Default::default(),
     })
 }

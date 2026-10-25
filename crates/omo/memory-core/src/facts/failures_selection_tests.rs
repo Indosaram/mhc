@@ -14,6 +14,7 @@ fn test_entry(
     end_snapshot_line: u64,
 ) -> FactsQueueEntry {
     FactsQueueEntry {
+        lead: None,
         version: FACTS_QUEUE_VERSION,
         identity: "agent".to_string(),
         session_id: conversation_id.to_string(),

@@ -26,10 +26,12 @@ fn fixture_author() -> GitCommitAuthor {
 fn sample_records() -> Vec<FactsExtractionRecord> {
     vec![
         FactsExtractionRecord::Project {
+            receipt: None,
             text: "The project uses Bun.".to_string(),
             date: "2026-08-10".to_string(),
         },
         FactsExtractionRecord::Person {
+            receipt: None,
             person: FactsPersonReference {
                 name: "Mina".to_string(),
                 aliases: vec!["mina".to_string()],
@@ -56,6 +58,7 @@ fn test_given_valid_jsonl_with_person_and_project_scopes_when_parsed_then_record
     assert_eq!(
         records[0],
         FactsExtractionRecord::Project {
+            receipt: None,
             text: "The project uses Bun.".to_string(),
             date: "2026-08-10".to_string(),
         }
@@ -63,6 +66,7 @@ fn test_given_valid_jsonl_with_person_and_project_scopes_when_parsed_then_record
     assert_eq!(
         records[1],
         FactsExtractionRecord::Person {
+            receipt: None,
             person: FactsPersonReference {
                 name: "Mina".to_string(),
                 aliases: vec!["mina".to_string()],
@@ -272,6 +276,7 @@ fn test_given_a_matching_envelope_when_validated_then_it_does_not_throw() {
         agreements: None,
     };
     let recovery = FactsApplyRecovery {
+        agreement_event_version: None,
         version: 1,
         batch_id: VALID_BATCH_ID.to_string(),
         head_before_apply: "head-sha".to_string(),
@@ -336,6 +341,7 @@ fn test_given_an_unsorted_path_list_when_validated_then_it_throws() {
         agreements: None,
     };
     let recovery = FactsApplyRecovery {
+        agreement_event_version: None,
         version: 1,
         batch_id: VALID_BATCH_ID.to_string(),
         head_before_apply: "head-sha".to_string(),
@@ -400,6 +406,7 @@ fn test_given_a_mismatched_records_hash_when_validated_then_it_throws() {
         agreements: None,
     };
     let recovery = FactsApplyRecovery {
+        agreement_event_version: None,
         version: 1,
         batch_id: VALID_BATCH_ID.to_string(),
         head_before_apply: "head-sha".to_string(),
@@ -425,6 +432,7 @@ fn test_given_a_non_uuid_batch_id_when_validated_then_it_throws() {
         agreements: None,
     };
     let recovery = FactsApplyRecovery {
+        agreement_event_version: None,
         version: 1,
         batch_id: "not-a-uuid".to_string(),
         head_before_apply: "head-sha".to_string(),
@@ -512,6 +520,7 @@ fn test_given_either_valid_record_arm_when_validated_directly_then_the_record_is
     assert_eq!(
         parsed_project,
         FactsExtractionRecord::Project {
+            receipt: None,
             text: "The project uses Bun.".to_string(),
             date: "2026-08-10".to_string(),
         }
@@ -519,6 +528,7 @@ fn test_given_either_valid_record_arm_when_validated_directly_then_the_record_is
     assert_eq!(
         parsed_person,
         FactsExtractionRecord::Person {
+            receipt: None,
             person: FactsPersonReference {
                 name: "Mina".to_string(),
                 aliases: vec!["Min".to_string()],

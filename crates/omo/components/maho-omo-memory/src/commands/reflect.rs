@@ -93,7 +93,7 @@ pub async fn handle_reflect(
         recent_n,
         conversation_ids: conversation_ids.clone(),
     };
-    let receipt = match sink(&session_id, event) {
+    let receipt = match sink(session_id, event).await {
         Ok(receipt) => receipt,
         Err(error) => return respond(ctx, error, NotifyLevel::Error),
     };
@@ -114,15 +114,20 @@ pub async fn handle_reflect(
         format!(" ({})", scope.join("; "))
     };
 
-    let (status, run_id) = receipt;
-    let text = if status == "active" {
+    let run_id = receipt.run_id;
+    let mut level = NotifyLevel::Info;
+    let text = if receipt.disposition == super::types::ReflectionDisposition::Reserved {
         format!("reflection run {run_id} reserved{suffix}; it starts at the next idle boundary")
+    } else if let Some(recovered) = receipt.recovered_run_id {
+        format!("reflection request queued as {run_id}{suffix}; the previous run {recovered} had stopped without releasing its lock, so it was settled and this request runs next")
     } else {
-        format!(
-            "reflection request queued as {run_id}{suffix}; a run is already active and this request runs next"
-        )
+        let queued = format!("reflection request queued as {run_id}{suffix}; a run is already active and this request runs next");
+        if let Some(stuck) = receipt.stuck {
+            level = NotifyLevel::Warning;
+            format!("{queued}. {stuck}")
+        } else { queued }
     };
-    respond(ctx, text, NotifyLevel::Info)
+    respond(ctx, text, level)
 }
 
 pub fn register_reflect_command(api: &mut ExtensionApi, deps: Arc<MemoryCommandDeps>) {
@@ -159,6 +164,15 @@ mod tests {
         assert!(response.text.contains("reserved"));
         assert!(response.text.contains("run-1"));
         assert_eq!(context.ui.last_level(), Some(NotifyLevel::Info));
+    }
+
+    #[tokio::test]
+    async fn recovered_receipt_explains_dead_holder_and_stuck_receipt_warns() {
+        let (_root,identity)=temp_identity();let mut fake=fake_deps(Some(identity),FakeDepsOverrides::default());
+        fake.deps.reflect=Some(Arc::new(|_,_|Box::pin(async{Ok(super::super::types::ReflectionRequestReceipt{disposition:super::super::types::ReflectionDisposition::Pending,run_id:"next".into(),recovered_run_id:Some("dead".into()),stuck:None})})));
+        let context=fake_command_context(FakeContextOptions::default());let response=handle_reflect(&fake.deps,&context.ctx,"").await;assert_eq!(response.level,NotifyLevel::Info);
+        fake.deps.reflect=Some(Arc::new(|_,_|Box::pin(async{Ok(super::super::types::ReflectionRequestReceipt{disposition:super::super::types::ReflectionDisposition::Pending,run_id:"next".into(),recovered_run_id:None,stuck:Some("lock liveness unknown".into())})})));
+        let response=handle_reflect(&fake.deps,&context.ctx,"").await;assert_eq!(response.level,NotifyLevel::Warning);
     }
 
     #[tokio::test]

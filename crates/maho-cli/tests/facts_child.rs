@@ -166,6 +166,7 @@ async fn test_one_record_fact_call_writes_extraction_and_finalizes_cleanly() {
         .set_responses(vec![tool_msg.into(), done_msg.into()]);
 
     let payload = FactsPayload {
+        agreement_event_version: Some(1),
         version: 1,
         identity: "agent".into(),
         today: "2026-10-25".into(),
@@ -246,6 +247,7 @@ async fn test_no_tool_call_yields_no_facts_not_invalid_extraction() {
     fixture.provider.set_responses(vec![msg.into()]);
 
     let payload = FactsPayload {
+        agreement_event_version: Some(1),
         version: 1,
         identity: "agent".into(),
         today: "2026-10-25".into(),
@@ -357,6 +359,7 @@ async fn test_abort_blocked_on_gate_ends_cancelled_with_no_records() {
     fixture.provider.set_responses(vec![tool_msg.into()]);
 
     let payload = FactsPayload {
+        agreement_event_version: Some(1),
         version: 1,
         identity: "agent".into(),
         today: "2026-10-25".into(),
@@ -469,6 +472,7 @@ async fn test_first_candidate_model_absent_falls_back_to_second() {
         ]);
 
     let payload = FactsPayload {
+        agreement_event_version: Some(1),
         version: 1,
         identity: "agent".into(),
         today: "2026-10-25".into(),
@@ -588,6 +592,7 @@ async fn test_agreements_payload_known_id_accepted_unknown_id_rejected() {
         .set_responses(vec![tool_msg.into(), done_msg.into()]);
 
     let payload = FactsPayload {
+        agreement_event_version: Some(1),
         version: 1,
         identity: "agent".into(),
         today: "2026-10-25".into(),
@@ -700,6 +705,7 @@ async fn test_model_turn_error_stop_reason_fails_and_does_not_consume_queue() {
 
     // Create a mock queue entry and write it to the queue directory
     let queue_entry = memory_core::facts::FactsQueueEntry {
+        lead: None,
         version: memory_core::facts::FACTS_QUEUE_VERSION,
         identity: "agent".into(),
         session_id: "test-session".into(),
@@ -784,6 +790,7 @@ async fn test_model_turn_error_stop_reason_fails_and_does_not_consume_queue() {
     .expect("available run dir");
 
     let payload = FactsPayload {
+        agreement_event_version: Some(1),
         version: 1,
         identity: "agent".into(),
         today: "2026-10-25".into(),
