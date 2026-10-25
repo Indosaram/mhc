@@ -377,6 +377,7 @@ pub type PausedChildCallback =
     Arc<dyn Fn(&TaskRecord, &crate::pause::ports::RunPauseOwner, u64) + Send + Sync>;
 
 pub struct TaskManagerOptions {
+    pub host_transport: Option<Arc<dyn crate::lifecycle::HostTransport>>,
     pub on_paused_child: Option<PausedChildCallback>,
     pub child_creation_port: Option<Arc<dyn crate::pause::ports::ChildCreationPort>>,
     pub admission_barrier: Option<crate::pause::admission_barrier::AdmissionBarrier>,
@@ -412,6 +413,7 @@ impl TaskManagerOptions {
         cwd: impl Into<String>,
     ) -> Self {
         Self {
+            host_transport: None,
             on_paused_child: None,
             child_creation_port: None,
             admission_barrier: None,
