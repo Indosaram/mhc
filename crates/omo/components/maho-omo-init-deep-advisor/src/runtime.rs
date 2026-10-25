@@ -4,6 +4,10 @@ use crate::{eligibility::compute_eligibility,git_helpers::{git_head,run},propose
 pub const CHOICES: &[&str]=&["Run now","Skip this time","Never in this project","Never anywhere"];
 pub struct AdvisorPreflight { pub root:PathBuf,pub state_dir:PathBuf }
 pub async fn run_advisor_after_preflight(api:&ExtensionApi,context:&ExtensionContext,preflight:&AdvisorPreflight,skills_root:&Path,now:f64) -> Result<(),ExtensionFailure> {
+    // A modal select would take every key the user is typing into the prompt (an Enter could pick
+    // "Run now"), so the startup proposal is skipped while the editor holds a draft.
+    let typing=|| !context.ui.get_editor_text().trim().is_empty();
+    if typing() { return Ok(()); }
     let result=prepare_proposal(preflight,now).map_err(|e|ExtensionFailure::new(e.to_string()))?;
     let Some((repo,eligibility))=result else { return Ok(()); };
     match &context.defer_macrotask {
@@ -14,6 +18,7 @@ pub async fn run_advisor_after_preflight(api:&ExtensionApi,context:&ExtensionCon
         }
         None=>tokio::task::yield_now().await,
     }
+    if typing() { return Ok(()); }
     let choices=CHOICES.iter().map(|s|(*s).to_owned()).collect::<Vec<_>>();
     let choice=context.ui.select("Init-deep",&choices,ExtensionUiDialogOptions {timeout_ms:Some(60_000),signal:None}).await;
     handle_choice(choice.as_deref(),api,preflight,&repo,&eligibility,skills_root,now)

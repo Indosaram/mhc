@@ -31,7 +31,15 @@ impl maho_ext_api::Extension for InitDeepAdvisorComponent {
                 let preflight=advisor_preflight(ctx.has_ui,runtime.get_flag("omo-senpi-init-deep-advisor-disabled")==Some(FlagValue::Boolean(true)),&ctx.cwd,&state_dir,marker(&state_dir),start);
                 match preflight {Ok(Some(preflight))=>{let mut api=maho_ext_api::ExtensionApi::new(registered.clone(),profile.clone(),events.clone(),runtime.clone());api.cwd=ctx.cwd.clone();let ctx=ctx.clone();let skills=skills.clone();tokio::spawn(async move {let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64()*1000.0;if let Err(error)=crate::runtime::run_advisor_after_preflight(&api,&ctx,&preflight,&skills,now).await {match &ctx.logger {Some(logger)=>logger.warn(&format!("init-deep-advisor failed: {error}"),None),None=>maho_ext_api::diagnostic(&format!("init-deep-advisor failed: {error}"))};}});},Ok(None)=>{},Err(error)=>match &ctx.logger {Some(logger)=>logger.warn(&format!("init-deep-advisor failed: {error}"),None),None=>maho_ext_api::diagnostic(&format!("init-deep-advisor failed: {error}"))}}
                 };
-                if let Some(defer)=deferred { defer(Box::new(run)); } else { run(); }
+                // The preflight forks `git` twice; with no macrotask hook it would run inside this poll
+                // and stall the input loop that drives the binding, so it moves to a blocking thread.
+                match deferred {
+                    Some(defer) => defer(Box::new(run)),
+                    None => match tokio::runtime::Handle::try_current() {
+                        Ok(handle) => { let entered = handle.clone(); drop(handle.spawn_blocking(move || { let _guard = entered.enter(); run(); })); }
+                        Err(_) => run(),
+                    },
+                }
             }
             Box::pin(async {Ok(EventResult::None)})
         }));
