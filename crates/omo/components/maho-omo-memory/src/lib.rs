@@ -112,8 +112,8 @@ pub mod recall_session_read;
 pub mod recall_store_runtime;
 pub mod recall_transcript_mentions;
 pub mod recall_wiring;
-pub mod receipts_port;
 pub mod receipt_read_guard;
+pub mod receipts_port;
 pub mod reflection_run_id;
 pub mod reflection_settings;
 pub mod reflection_stale_active;
@@ -138,9 +138,9 @@ pub mod status_active_runs;
 pub mod status_live;
 pub mod status_live_wiring;
 pub mod supervisor;
+pub mod sync_config_error;
 pub mod sync_runner;
 pub mod sync_runtime;
-pub mod sync_config_error;
 pub mod sync_status_surface;
 pub mod tool_metadata;
 pub mod tool_receipts;
@@ -165,3 +165,5 @@ pub mod commands;
 pub mod palace;
 
 pub mod sync_status_cached;
+
+pub mod reflection_stale_active_sync;

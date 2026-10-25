@@ -292,58 +292,51 @@ impl MemoryRuntime {
                 Arc::new(move |session, event| {
                     let this = this.clone();
                     Box::pin(async move {
-                    let identity = this.identity(&session).ok_or("no bound memory session")?;
-                    let worker = this.worker(&identity)?;
-                    let reflection = &identity.identity_paths.reflection;
-                    let before = maho_omo_memory::reflection_stale_active::classify_active_reflection_holder(reflection, None);
-                    let mut recovered_run_id = None;
-                    if let maho_omo_memory::reflection_stale_active::ActiveHolderVerdict::Dead { run_id } = &before {
-                        this.reconcile_worker(&worker).await?;
-                        if matches!(maho_omo_memory::reflection_stale_active::classify_active_reflection_holder(reflection, None), maho_omo_memory::reflection_stale_active::ActiveHolderVerdict::None) { recovered_run_id = Some(run_id.clone()); }
-                    }
-                    let stuck = match maho_omo_memory::reflection_stale_active::classify_active_reflection_holder(reflection, None) {
-                        maho_omo_memory::reflection_stale_active::ActiveHolderVerdict::Stuck { run_id, reason } => Some(maho_omo_memory::reflection_stale_active::stale_reflection_lock_notice(reflection, &run_id, &reason)),
-                        _ => None,
-                    };
-                    let result = worker
-                        .store
-                        .evaluate(&session, event)
-                        .map_err(|error| error.to_string())?
-                        .ok_or("reflection reservation rejected")?;
-                    if result.status == "active" {
-                        this.launch(worker, result.run.clone(), true)?;
-                    } else if result.status == "pending" {
-                        let runtime = this.clone();
-                        let recovery_worker = worker.clone();
-                        let receipt = maho_omo_memory::wiring_static::recover_pending_reflection(
-                            &identity.identity_paths.reflection,
-                            result.run.run_id.clone(),
-                            &move || {
-                                let runtime = runtime.clone();
-                                let worker = recovery_worker.clone();
-                                std::thread::spawn(move || {
-                                    tokio::runtime::Builder::new_current_thread()
-                                        .enable_all()
-                                        .build()
-                                        .map_err(|error| error.to_string())?
-                                        .block_on(runtime.reconcile_worker(&worker))
-                                })
-                                .join()
-                                .map_err(|_| {
-                                    "manual reflection reconciliation panicked".to_string()
-                                })?
-                            },
-                        );
-                        if let Some(notice) = receipt.stuck {
-                            return Err(notice);
+                        let identity = this.identity(&session).ok_or("no bound memory session")?;
+                        let worker = this.worker(&identity)?;
+                        let result = worker
+                            .store
+                            .evaluate(&session, event)
+                            .map_err(|error| error.to_string())?
+                            .ok_or("reflection reservation rejected")?;
+                        if result.status == "active" {
+                            this.launch(worker.clone(), result.run.clone(), true)?;
                         }
-                    }
-                    Ok(maho_omo_memory::commands::types::ReflectionRequestReceipt {
-                        disposition: if result.status == "active" { maho_omo_memory::commands::types::ReflectionDisposition::Reserved } else { maho_omo_memory::commands::types::ReflectionDisposition::Pending },
-                        run_id: result.run.run_id,
-                        recovered_run_id,
-                        stuck,
-                    })
+                        let mut recovered_run_id = None;
+                        let mut stuck = None;
+                        if result.status == "pending" {
+                            let runtime = this.clone();
+                            let recovery_worker = worker.clone();
+                            let reflection = identity.identity_paths.reflection.clone();
+                            let run_id = result.run.run_id.clone();
+                            let receipt = tokio::task::spawn_blocking(move || {
+                                maho_omo_memory::wiring_static::recover_pending_reflection(
+                                    &reflection,
+                                    run_id,
+                                    &|| {
+                                        tokio::runtime::Builder::new_current_thread()
+                                            .enable_all()
+                                            .build()
+                                            .map_err(|error| error.to_string())?
+                                            .block_on(runtime.reconcile_worker(&recovery_worker))
+                                    },
+                                )
+                            })
+                            .await
+                            .map_err(|error| error.to_string())?;
+                            recovered_run_id = receipt.recovered_run_id;
+                            stuck = receipt.stuck;
+                        }
+                        Ok(maho_omo_memory::commands::types::ReflectionRequestReceipt {
+                            disposition: if result.status == "active" {
+                                maho_omo_memory::commands::types::ReflectionDisposition::Reserved
+                            } else {
+                                maho_omo_memory::commands::types::ReflectionDisposition::Pending
+                            },
+                            run_id: result.run.run_id,
+                            recovered_run_id,
+                            stuck,
+                        })
                     })
                 })
             }),
@@ -586,7 +579,15 @@ impl MemoryRuntime {
         let worker = Arc::new(IdentityWorker {
             identity: identity.clone(),
             store,
-            runner: tokio::sync::Mutex::new({ let mut runner = worker::runner::SenpiSubprocessRunner::default(); runner.admission_memory_root = identity.durable_root.ancestors().nth(2).map(std::path::Path::to_path_buf); runner }),
+            runner: tokio::sync::Mutex::new({
+                let mut runner = worker::runner::SenpiSubprocessRunner::default();
+                runner.admission_memory_root = identity
+                    .durable_root
+                    .ancestors()
+                    .nth(2)
+                    .map(std::path::Path::to_path_buf);
+                runner
+            }),
             cache: tokio::sync::Mutex::new(Default::default()),
             sandbox: Mutex::new(Default::default()),
         });
@@ -608,7 +609,15 @@ impl MemoryRuntime {
         let sandbox_host = self.clone();
         let sandbox_identity = identity.identity.clone();
         let facts_identity = identity.identity.clone();
-        let facts_session = context.model.as_ref().map(|model| worker::resolve_model::ReflectionSessionModel { provider: model.provider.clone(), id: model.id.clone(), thinking: None });
+        let facts_session =
+            context
+                .model
+                .as_ref()
+                .map(|model| worker::resolve_model::ReflectionSessionModel {
+                    provider: model.provider.clone(),
+                    id: model.id.clone(),
+                    thinking: None,
+                });
         let attempt = NativeFactsAttemptOptions {
             resolve_model: Arc::new(move || {
                 maho_omo_memory::facts_model::resolve_facts_model(
@@ -864,7 +873,7 @@ impl MemoryRuntime {
         });
         let this = self.clone();
         let refresh = Arc::new(
-            move |identity: &MemoryIdentityContext, context: &ExtensionContext, _sync: Option<&maho_omo_memory::sync_status_surface::SyncStatusReader>| {
+            move |identity: &MemoryIdentityContext, context: &ExtensionContext, _sync: Option<&maho_omo_memory::sync_status_cached::SyncStatusReader>| {
                 this.refresh_status(identity, context, StatusRefresh::Footer)
             },
         );
@@ -1003,7 +1012,12 @@ impl MemoryRuntime {
                 now_ms: memory_core::support::time::now_millis(),
                 show_footer: context.has_ui,
                 check_advisory: mode == StatusRefresh::Initial,
-                sync_status: None,
+                sync_status: self
+                    .wiring
+                    .try_lock()
+                    .ok()
+                    .and_then(|wiring| wiring.seams.sync_status.clone())
+                    .as_ref(),
                 session_id: Some(context.session_manager.session_id()),
             },
         )
