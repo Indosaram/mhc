@@ -12,6 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 
+tempfile.workspace = true
 loro = "=1.16.2"
 saphyr-parser = "=0.2.2"
 url.workspace = true
@@ -36,7 +37,6 @@ libc.workspace = true
 [dev-dependencies]
 filetime.workspace = true
 pretty_assertions.workspace = true
-tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "test-util"] }
 
 # Imported from COMP 93b78ac: this crate does not opt into `[lints] workspace = true`.
