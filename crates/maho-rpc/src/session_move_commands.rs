@@ -15,6 +15,7 @@ fn wire(record: MoveRecord) -> Value {
 fn status_wire(status: MoveStatus) -> Value {
     match status {
         MoveStatus::Receiving => json!({"state":"receiving"}),
+        MoveStatus::AcceptedRevoked => json!({"state":"accepted","revoked":true}),
         MoveStatus::Accepted => json!({"state":"accepted"}),
         MoveStatus::Declined { reason } => json!({"state":"declined","reason":reason.as_str()}),
         MoveStatus::Failed { reason } => json!({"state":"failed","reason":reason.as_str()}),
@@ -23,7 +24,76 @@ fn status_wire(status: MoveStatus) -> Value {
 fn refusal(command: &Value, code: &str, detail: &str) -> Value {
     json!({"id":command["id"],"type":"response","command":"move_session","success":false,"error":code,"errorCode":code,"errorData":{"detail":detail}})
 }
+pub fn validate_move_request(command: &Value) -> Result<(), String> {
+    let op = command["op"].as_str().unwrap_or_default();
+    if op == "import" {
+        let dir = text(command, "bundleDir")?;
+        let cwd = text(command, "cwd")?;
+        if !Path::new(dir).is_absolute() || !Path::new(cwd).is_absolute() {
+            return Err("import needs bundleDir and cwd as absolute paths.".into());
+        }
+        if command.get("from").is_some_and(|value| !value.is_string()) {
+            return Err("from must be a string.".into());
+        }
+        return Ok(());
+    }
+    if !bundle::is_move_id(&command["moveId"]) {
+        return Err("moveId must be a plain id.".into());
+    }
+    match op {
+        "prepare" | "cancel" => {}
+        "status" => {
+            if command.get("sessionPath").is_some() {
+                text(command, "sessionPath")?;
+            }
+        }
+        "export" => {
+            text(command, "sessionPath")?;
+            text(command, "target")?;
+            if command.get("droppedUserMessages").is_some_and(|value| {
+                value
+                    .as_array()
+                    .is_none_or(|items| items.iter().any(|item| !item.is_string()))
+            }) {
+                return Err("droppedUserMessages must contain strings.".into());
+            }
+        }
+        "finish" => {
+            text(command, "sessionPath")?;
+            let answer = &command["answer"];
+            let valid = match answer["state"].as_str() {
+                Some("receiving" | "accepted") => true,
+                Some("declined") => matches!(
+                    answer["reason"].as_str(),
+                    Some(
+                        "no_record"
+                            | "expired"
+                            | "cancelled"
+                            | "chunk_without_ready"
+                            | "repository"
+                    )
+                ),
+                Some("failed") => matches!(
+                    answer["reason"].as_str(),
+                    Some("bundle_invalid" | "import_failed")
+                ),
+                _ => false,
+            };
+            if !valid {
+                return Err("finish needs the receiver's answer from status.".into());
+            }
+        }
+        "revoke" => {
+            text(command, "sessionPath")?;
+        }
+        _ => return Err("invalid move operation".into()),
+    }
+    Ok(())
+}
 pub async fn move_session(agent_dir: &str, hosted_paths: &[String], command: &Value) -> Value {
+    if let Err(error) = validate_move_request(command) {
+        return refusal(command, "invalid_move_request", &error);
+    }
     let op = command["op"].as_str().unwrap_or_default();
     if op != "import" && !bundle::is_move_id(&command["moveId"]) {
         return refusal(
@@ -57,7 +127,7 @@ pub async fn move_session(agent_dir: &str, hosted_paths: &[String], command: &Va
         "export"=>export(&root,hosted_paths,command),
         "finish"=>finish(&root,hosted_paths,command),
         "import"=>import(agent_dir,&ledger,command).await,
-        "revoke"=>revoke(hosted_paths,command),
+        "revoke"=>{let result=revoke(hosted_paths,command)?;ledger.mark_revoked(id).await.map_err(|error|error.to_string())?;Ok(result)},
         _=>Err("invalid_move_request: op must be one of prepare, cancel, status, export, import, finish or revoke".into()),
     }}.await;
     match result {
@@ -177,7 +247,19 @@ fn export(root: &Path, hosted: &[String], command: &Value) -> Result<Value, Stri
             }
         }
     }
-    let manifest = json!({"format":1,"moveId":id,"sessionId":session_id,"sessionFileName":Path::new(path).file_name().and_then(|name|name.to_str()).ok_or("invalid file name")?,"sourceCwd":entries.first().and_then(|entry|entry["cwd"].as_str()).unwrap_or_default(),"repository":entries.iter().rev().find(|entry|entry["customType"]=="repository-identity").map(|entry|entry["data"].clone()).unwrap_or(Value::Null),"session":{"path":bundle::SESSION_BUNDLE_PATH,"sha256":bundle::sha256_file(&staging.join(bundle::SESSION_BUNDLE_PATH)).map_err(|e|e.to_string())?},"sidecars":sidecars,"droppedUserMessages":command.get("droppedUserMessages").cloned().unwrap_or_else(||json!([]))});
+    let mut payloads = Vec::new();
+    if let Some(state) =
+        maho_core::session_move::extension_state::sealed_outgoing_state_dir(Path::new(path), id)?
+    {
+        if state.exists() {
+            let destination = staging.join("state");
+            maho_core::session_move::extension_state::copy_tree(&state, &destination)?;
+            let mut files = Vec::new();
+            collect_payload(&destination, &staging, &mut files)?;
+            payloads.push(json!({"kind":"extension-state","files":files}));
+        }
+    }
+    let manifest = json!({"payloads":payloads,"format":1,"moveId":id,"sessionId":session_id,"sessionFileName":Path::new(path).file_name().and_then(|name|name.to_str()).ok_or("invalid file name")?,"sourceCwd":entries.first().and_then(|entry|entry["cwd"].as_str()).unwrap_or_default(),"repository":entries.iter().rev().find(|entry|entry["customType"]=="repository-identity").map(|entry|entry["data"].clone()).unwrap_or(Value::Null),"session":{"path":bundle::SESSION_BUNDLE_PATH,"sha256":bundle::sha256_file(&staging.join(bundle::SESSION_BUNDLE_PATH)).map_err(|e|e.to_string())?},"sidecars":sidecars,"droppedUserMessages":command.get("droppedUserMessages").cloned().unwrap_or_else(||json!([]))});
     std::fs::write(staging.join(bundle::MANIFEST_FILE), manifest.to_string())
         .map_err(|e| e.to_string())?;
     if dir.exists() {
@@ -185,6 +267,21 @@ fn export(root: &Path, hosted: &[String], command: &Value) -> Result<Value, Stri
     }
     std::fs::rename(staging, &dir).map_err(|e| e.to_string())?;
     Ok(json!({"move_id":id,"session_id":session_id,"bundle_dir":dir,"files":1+sidecars.len()}))
+}
+fn collect_payload(dir: &Path, root: &Path, files: &mut Vec<Value>) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_dir()
+        {
+            collect_payload(&entry.path(), root, files)?;
+        } else {
+            files.push(json!({"path":entry.path().strip_prefix(root).map_err(|error|error.to_string())?.to_string_lossy(),"sha256":bundle::sha256_file(&entry.path()).map_err(|error|error.to_string())?}));
+        }
+    }
+    Ok(())
 }
 fn finish(root: &Path, hosted: &[String], command: &Value) -> Result<Value, String> {
     let path = text(command, "sessionPath")?;
@@ -196,8 +293,39 @@ fn finish(root: &Path, hosted: &[String], command: &Value) -> Result<Value, Stri
     if !matches!(answer, "receiving" | "accepted" | "declined" | "failed") {
         return Err("invalid_move_request: invalid answer state".into());
     }
+    let dir = root.join("outgoing").join(id);
+    if dir.exists()
+        && bundle::read_manifest(&dir)
+            .map_err(|error| error.to_string())?
+            .move_id
+            != id
+    {
+        return Err("move_mismatch: kept bundle belongs to another move".into());
+    }
     let entries = maho_core::session_manager::load_entries_from_file(path);
     let ownership = session_ownership(&entries);
+    if matches!(ownership, SessionOwnership::Writable)
+        && entries.iter().any(|entry| {
+            entry["customType"] == "session_reclaimed" && entry["data"]["move_id"] == id
+        })
+        && dir.exists()
+    {
+        let manifest = bundle::read_manifest(&dir).map_err(|error| error.to_string())?;
+        let mut manager = maho_core::session_manager::SessionManager::open(path, None, None, None)?;
+        for (index, text) in manifest.dropped_user_messages.iter().enumerate() {
+            let input_id = format!("move:{id}:{index}");
+            if !manager
+                .entries()
+                .iter()
+                .any(|entry| entry["data"]["inputId"] == input_id)
+            {
+                manager.append_custom(
+                    "held-input",
+                    Some(json!({"inputId":input_id,"revision":0,"text":text,"prepare":true})),
+                );
+            }
+        }
+    }
     if let SessionOwnership::Refused(ref hold) = ownership {
         if hold.move_id != id {
             return Err("move_mismatch: session belongs to another move".into());
@@ -255,7 +383,10 @@ fn finish(root: &Path, hosted: &[String], command: &Value) -> Result<Value, Stri
     if dir.exists() {
         std::fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    Ok(json!({"ownership":if answer=="accepted"{"moved"}else{"writable"}}))
+    let moved = matches!(ownership,SessionOwnership::Refused(ref hold) if hold.state==RefusedState::Moving)
+        && answer == "accepted"
+        && command["answer"]["revoked"] != true;
+    Ok(json!({"ownership":if moved{"moved"}else{"writable"}}))
 }
 async fn import(agent_dir: &str, ledger: &MoveLedger, command: &Value) -> Result<Value, String> {
     let bundle_dir = Path::new(text(command, "bundleDir")?);
@@ -324,6 +455,21 @@ async fn import(agent_dir: &str, ledger: &MoveLedger, command: &Value) -> Result
             .map_err(|e| e.to_string())?;
         std::fs::copy(bundle_dir.join(&sidecar.path), dest).map_err(|e| e.to_string())?;
     }
+    for payload in &manifest.payloads {
+        let state =
+            maho_core::session_move::extension_state::moved_state_dir(&target, &manifest.move_id)?;
+        for file in &payload.files {
+            let relative = file
+                .path
+                .strip_prefix("state/")
+                .ok_or("invalid state payload path")?;
+            let destination = state.join(relative);
+            std::fs::create_dir_all(destination.parent().ok_or("invalid state parent")?)
+                .map_err(|error| error.to_string())?;
+            std::fs::copy(bundle_dir.join(&file.path), destination)
+                .map_err(|error| error.to_string())?;
+        }
+    }
     ledger
         .commit(&manifest.move_id, || {
             std::fs::rename(&staged, &target).map_err(|e| e.to_string())?;
@@ -370,4 +516,29 @@ fn revoke(hosted: &[String], command: &Value) -> Result<Value, String> {
         Some(json!({"move_id":id,"session_id":session_id,"reason":"revoked"})),
     );
     Ok(json!({"ownership":"moved"}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rejects_invalid_move_answers_and_relative_import_paths() {
+        for answer in [
+            json!({"state":"ready"}),
+            json!({"state":"declined","reason":"typo"}),
+            json!({"state":"failed"}),
+        ] {
+            assert!(
+                validate_move_request(
+                    &json!({"op":"finish","moveId":"m","sessionPath":"/session","answer":answer})
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            validate_move_request(&json!({"op":"import","bundleDir":"relative","cwd":"/repo"}))
+                .is_err()
+        );
+        assert!(validate_move_request(&json!({"op":"finish","moveId":"m","sessionPath":"/session","answer":{"state":"accepted","revoked":true}})).is_ok());
+    }
 }
