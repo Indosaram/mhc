@@ -470,6 +470,7 @@ impl ExtensionContextActions for ContextSessionManager {
     }
     fn get_pause_state(&self) -> JsonValue { self.active(); self.actions.get_pause_state() }
     fn fence_run(&self, run_ref: JsonValue) -> Result<(), ExtensionFailure> { self.runtime.assert_active()?; self.actions.fence_run(run_ref) }
+    fn supports_release_run_fence(&self) -> bool { self.active(); self.actions.supports_release_run_fence() }
     fn release_run_fence(&self, run_ref: JsonValue) -> Result<(), ExtensionFailure> { self.runtime.assert_active()?; self.actions.release_run_fence(run_ref) }
     fn has_queued_person_input(&self) -> bool { self.active(); self.actions.has_queued_person_input() }
 

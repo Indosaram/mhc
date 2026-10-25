@@ -133,12 +133,12 @@ impl WorkpoolStore {
 
 #[derive(Serialize, Deserialize)]
 struct DiskRecord {
-    #[serde(default, skip_serializing_if = "Option::is_none")] hold: Option<super::types::WorkpoolHold>,
     version: u8, pool_id: String, name: String, parent_session_id: String, root_session_id: String,
     generation: u32, revision: u32, mode: WorkpoolMode, agent: WorkpoolAgent,
     worker_spec: Value, status: super::types::WorkpoolStatus,
     #[serde(skip_serializing_if = "Option::is_none", default)] kernel_tool_names: Option<Vec<String>>,
     items: Vec<super::types::WorkpoolItem>, workers: Vec<super::types::WorkpoolWorker>,
+    #[serde(skip_serializing_if = "Option::is_none", default)] hold: Option<super::types::WorkpoolHold>,
     #[serde(skip_serializing_if = "Option::is_none", default)] aggregate: Option<super::types::WorkpoolAggregate>,
 }
 
