@@ -53,6 +53,7 @@ pub fn render_agreements_file(
                 read_only: None,
                 kind: None,
                 aliases: None,
+                extra: None,
             },
             Vec::new(),
         ),

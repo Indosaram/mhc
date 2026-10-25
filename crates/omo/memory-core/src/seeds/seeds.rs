@@ -45,6 +45,7 @@ pub fn build_default_seed_files() -> Vec<DefaultSeedFile> {
             read_only: None,
             kind: None,
             aliases: None,
+            extra: None,
         },
         DEFAULT_PERSONA_BODY,
     )
@@ -56,6 +57,7 @@ pub fn build_default_seed_files() -> Vec<DefaultSeedFile> {
             read_only: None,
             kind: Some("person".to_string()),
             aliases: Some(Vec::new()),
+            extra: None,
         },
         DEFAULT_HUMAN_BODY,
     )
@@ -70,9 +72,9 @@ pub fn build_default_seed_files() -> Vec<DefaultSeedFile> {
             relative_path: "system/human.md".to_string(),
             content: human_content,
         },
-        DefaultSeedFile { relative_path: "system/boundaries.md".to_string(), content: render_memory_file(&MemoryFrontmatter { description: "Boundaries - what the person told me not to do, in their words".to_string(), read_only: None, kind: None, aliases: None }, DEFAULT_BOUNDARIES_BODY).unwrap_or_default() },
-        DefaultSeedFile { relative_path: "system/self-aware.md".to_string(), content: render_memory_file(&MemoryFrontmatter { description: "Self-aware - how I look from outside: what my person, reviewers, tests, and tools showed about my behavior, with sources".to_string(), read_only: None, kind: None, aliases: None }, DEFAULT_SELF_AWARE_BODY).unwrap_or_default() },
-        DefaultSeedFile { relative_path: "reference/self/observations.md".to_string(), content: render_memory_file(&MemoryFrontmatter { description: "Self-observations journal - external reactions to my behavior (corrections, gate verdicts, test contradictions), one line each, appended as they happen; reflection promotes to system/self-aware.md".to_string(), read_only: None, kind: None, aliases: None }, DEFAULT_SELF_OBSERVATIONS_BODY).unwrap_or_default() },
+        DefaultSeedFile { relative_path: "system/boundaries.md".to_string(), content: render_memory_file(&MemoryFrontmatter { description: "Boundaries - what the person told me not to do, in their words".to_string(), read_only: None, kind: None, aliases: None, extra: None }, DEFAULT_BOUNDARIES_BODY).unwrap_or_default() },
+        DefaultSeedFile { relative_path: "system/self-aware.md".to_string(), content: render_memory_file(&MemoryFrontmatter { description: "Self-aware - how I look from outside: what my person, reviewers, tests, and tools showed about my behavior, with sources".to_string(), read_only: None, kind: None, aliases: None, extra: None }, DEFAULT_SELF_AWARE_BODY).unwrap_or_default() },
+        DefaultSeedFile { relative_path: "reference/self/observations.md".to_string(), content: render_memory_file(&MemoryFrontmatter { description: "Self-observations journal - external reactions to my behavior (corrections, gate verdicts, test contradictions), one line each, appended as they happen; reflection promotes to system/self-aware.md".to_string(), read_only: None, kind: None, aliases: None, extra: None }, DEFAULT_SELF_OBSERVATIONS_BODY).unwrap_or_default() },
         DefaultSeedFile {
             relative_path: MEMORY_DISCIPLINE_SKILL_PATH.to_string(),
             content: MEMORY_DISCIPLINE_SKILL_CONTENT.to_string(),
