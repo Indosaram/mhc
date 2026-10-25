@@ -5687,10 +5687,14 @@ impl AgentSession {
         options
             .observed_pause_seq
             .get_or_insert_with(|| lock(&self.engine_turn_hold).current_pause_seq());
-        options.hold_after_preparation = self
-            .holds()
-            .iter()
-            .any(|h| h.kind == crate::engine_turn_hold::HoldKind::RunFence);
+        options.hold_after_preparation = options
+            .input_origin
+            .unwrap_or_else(|| input_origin_of(options.source))
+            == InputOrigin::Person
+            && self
+                .holds()
+                .iter()
+                .any(|h| h.kind == crate::engine_turn_hold::HoldKind::RunFence);
         let input_hold = Arc::new(self.external_admission.begin_input(
             text.starts_with('/'),
             options.source == Some(InputSource::Extension),
@@ -5729,7 +5733,11 @@ impl AgentSession {
             return Ok(PromptDisposition::Queued);
         }
         // Preparation runs before prompt admission locks; a held command may itself submit input.
-        let (held_messages, held_ids) = Box::pin(self.take_held_input_messages()).await?;
+        let (held_messages, held_ids) = if options.hold_after_preparation {
+            (Vec::new(), Vec::new())
+        } else {
+            Box::pin(self.take_held_input_messages()).await?
+        };
         let _held_reservation = HeldInputReservation {
             session: self.clone(),
             ids: held_ids.clone(),
