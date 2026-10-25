@@ -682,3 +682,201 @@ async fn test_agreements_payload_known_id_accepted_unknown_id_rejected() {
         "exactly one agreement line written"
     );
 }
+
+#[tokio::test]
+async fn test_model_turn_error_stop_reason_fails_and_does_not_consume_queue() {
+    let fixture = create_fixture(None, vec![]);
+
+    // Configure faux provider to return an assistant message with stop_reason: Error
+    let err_msg = faux_assistant_message(
+        "",
+        FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Error),
+            error_message: Some("Request timed out.".into()),
+            ..Default::default()
+        },
+    );
+    fixture.provider.set_responses(vec![err_msg.into()]);
+
+    // Create a mock queue entry and write it to the queue directory
+    let queue_entry = memory_core::facts::FactsQueueEntry {
+        version: memory_core::facts::FACTS_QUEUE_VERSION,
+        identity: "agent".into(),
+        session_id: "test-session".into(),
+        conversation_id: "test-conv".into(),
+        range: memory_core::facts::FactsQueueRange {
+            start_message_id: "msg-1".into(),
+            end_message_id: "msg-2".into(),
+            start_line: 0,
+            end_snapshot_line: 1,
+        },
+        enqueued_at: "2026-10-25T12:00:00.000Z".into(),
+        entries: vec![],
+    };
+    let queue_dir = fixture.runner.identity.paths.facts_queue.join("queue");
+    std::fs::create_dir_all(&queue_dir).expect("create queue dir");
+    let queue_file = queue_dir.join("20261025T120000000Z_test-conv_msg-2.json");
+    std::fs::write(
+        &queue_file,
+        serde_json::to_string(&queue_entry).expect("serialize queue entry"),
+    )
+    .expect("write queue file");
+    assert!(queue_file.exists(), "queue file must exist before execution");
+
+    // Also test spawner directly to assert spawner result is completed: false with the error message
+    let spawner = fixture.runner.spawner.as_ref().expect("spawner present");
+    let cancel_state = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let direct_spawn_input = maho_omo_memory::facts_child_spawner::FactsChildSpawnInput {
+        run_id: "test-direct-run".into(),
+        run_dir: fixture.run_dir.clone(),
+        model_candidates: vec![ReflectionModelCandidate {
+            model: "faux/faux-1".into(),
+            thinking: None,
+            load_extensions: None,
+        }],
+        persona: memory_core::facts::load_facts_persona().to_owned(),
+        prompt: "Extract durable facts".into(),
+        custom_tools: vec![],
+        tool_allowlist: vec![],
+        hard_deadline_at: memory_core::support::time::now_millis() as f64 + 900_000.0,
+        signal: None,
+        cancel_state: cancel_state.clone(),
+    };
+    let spawner_res = spawner
+        .spawn(direct_spawn_input)
+        .await
+        .expect("spawn result");
+    assert!(!spawner_res.completed, "spawner result must not be completed");
+    assert_eq!(
+        spawner_res.error_message.as_deref(),
+        Some("Request timed out."),
+        "spawner result must preserve error message"
+    );
+
+    // Re-set provider responses for the runner execution
+    let err_msg2 = faux_assistant_message(
+        "",
+        FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Error),
+            error_message: Some("Request timed out.".into()),
+            ..Default::default()
+        },
+    );
+    fixture.provider.set_responses(vec![err_msg2.into()]);
+
+    let batch_id = "test-batch-err-002".to_string();
+    let run_dir = maho_omo_memory::facts_run_storage::reserve_facts_run_dir(
+        &maho_omo_memory::facts_run_storage::ReserveFactsRunDirOptions {
+            facts_dir: &fixture.runner.identity.paths.facts,
+            locks_dir: &fixture.runner.identity.paths.locks,
+            entries: std::slice::from_ref(&queue_entry),
+            batch_id: &batch_id,
+            launched_at: 1700000000000,
+            deadline_ms: Some(900_000),
+            termination_grace_ms: Some(5_000),
+            lock_wait_ms: None,
+            receipts_dir: None,
+            receipts: None,
+            warn: None,
+        },
+    )
+    .expect("reserve run dir")
+    .expect("available run dir");
+
+    let payload = FactsPayload {
+        version: 1,
+        identity: "agent".into(),
+        today: "2026-10-25".into(),
+        known_people: vec![],
+        primary_human: FactsPrimaryHuman {
+            slug: "human".into(),
+            aliases: vec![],
+        },
+        entries: vec![],
+        agreements: None,
+    };
+    let run_id = run_dir
+        .file_name()
+        .expect("run dir name")
+        .to_string_lossy()
+        .into_owned();
+    let resolution = ReflectionModelResolution::Resolved {
+        category: "quick".into(),
+        model: "faux/faux-1".into(),
+        thinking: None,
+        source: None,
+        fallbacks: vec![],
+    };
+    let mut cache = ModelPreflight::default();
+    let people = FactsPeopleRouting {
+        enabled: true,
+        max_entries: 40,
+        max_entry_chars: 200,
+    };
+    let mut notes = Vec::new();
+    let mut warn = |msg: &str| notes.push(msg.to_owned());
+    let supervisor_args: Vec<String> = Vec::new();
+    let queued_keys = vec![maho_omo_memory::facts_failure_recording::FactsQueuedKey {
+        conversation_id: queue_entry.conversation_id.clone(),
+        end_message_id: queue_entry.range.end_message_id.clone(),
+        end_snapshot_line: queue_entry.range.end_snapshot_line,
+    }];
+    let input = FactsChildLaunchInput {
+        sandbox: None,
+        run_id: &run_id,
+        run_dir: &run_dir,
+        payload: (&payload).into(),
+        oversized: false,
+        agreements: false,
+        record_limits: None,
+        resolution: &resolution,
+        env: &BTreeMap::new(),
+        config_sources: &[],
+        launch: &Launcher {
+            command: "mock".into(),
+            prefix_args: vec![],
+        },
+        hard_deadline_at: memory_core::support::time::now_millis() as f64 + 900_000.0,
+        options: FactsChildOptions {
+            termination_grace_ms: 5000.0,
+            max_output_bytes: 65536,
+            supervisor_command: Path::new("mock"),
+            supervisor_args: &supervisor_args,
+            batch_id: &batch_id,
+            queued: &queued_keys,
+            launched_at: 1700000000000,
+        },
+        signal: None,
+    };
+
+    let result = fixture
+        .runner
+        .execute_child(&mut cache, input, &people, &mut warn)
+        .await
+        .expect("execute child");
+
+    // Must be Failed, NOT NoFacts or Committed
+    assert!(
+        matches!(result, FactsLaunchResult::Failed { .. }),
+        "errored model turn must result in FactsLaunchResult::Failed"
+    );
+    assert!(
+        !matches!(result, FactsLaunchResult::NoFacts { .. }),
+        "errored model turn must not result in NoFacts"
+    );
+
+    // Queue file must still exist (not consumed)
+    assert!(
+        queue_file.exists(),
+        "queue file must not be consumed when model turn errors"
+    );
+
+    // final.json must reflect the failure
+    let final_path = run_dir.join("final.json");
+    assert!(final_path.exists(), "final.json must exist");
+    let final_val: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&final_path).expect("read final.json"))
+            .expect("parse final.json");
+    assert_eq!(final_val["outcome"], "failed");
+    assert_eq!(final_val["detail"], "Request timed out.");
+}
