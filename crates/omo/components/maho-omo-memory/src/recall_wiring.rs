@@ -88,6 +88,7 @@ pub struct MemoryRecallWiringOptions {
 }
 
 pub struct MemoryRecallWiring {
+    project_scope: Arc<crate::project_memory_nudge::ProjectMemoryScope>,
     options: MemoryRecallWiringOptions,
     delivery: Arc<KibitzerDelivery>,
     sidecars: Mutex<BTreeMap<String, Arc<KibitzerSidecar>>>,
@@ -104,9 +105,7 @@ pub struct MemoryRecallWiring {
 /// tokenize the corpus again; a term-store save that fails is logged and never fails recall.
 pub type RecallWarn = Arc<dyn Fn(&str) + Send + Sync>;
 
-pub fn create_shared_recall_corpus_cache(
-    warn: Option<RecallWarn>,
-) -> RecallCorpusCache {
+pub fn create_shared_recall_corpus_cache(warn: Option<RecallWarn>) -> RecallCorpusCache {
     RecallCorpusCache::new(RecallCorpusCacheOptions {
         shared: true,
         on_term_store_error: Some(Arc::new(move |error: &std::io::Error| {
@@ -155,6 +154,7 @@ impl MemoryRecallWiring {
             warn: options.warn.clone(),
         });
         Arc::new(Self {
+            project_scope: Default::default(),
             options,
             delivery,
             sidecars: Mutex::new(BTreeMap::new()),
@@ -176,6 +176,19 @@ impl MemoryRecallWiring {
         api: &mut maho_ext_api::ExtensionApi,
         theme: ResolveEntryTheme,
     ) {
+        let settings = self.options.resolve_settings.clone();
+        self.project_scope.register(
+            api,
+            self.options.resolve_context.clone(),
+            Arc::new(move || {
+                let value = settings().unwrap_or_default();
+                (
+                    value["project_scope"]["nudge"].as_bool().unwrap_or(true),
+                    value["project_scope"]["recall"].as_bool().unwrap_or(true),
+                )
+            }),
+            self.options.send_message.clone(),
+        );
         let drain = create_recall_drain(RecallDrainOptions {
             resolve_context: self.options.resolve_context.clone(),
             resolve_settings: Arc::clone(&self.options.drain_resolve_settings),
@@ -279,7 +292,24 @@ impl MemoryRecallWiring {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .load(&repo)
             .ok()?;
-        if corpus.documents.is_empty() {
+        let mut documents = corpus.documents.clone();
+        let project_documents = if (self.options.resolve_settings)()
+            .ok()
+            .and_then(|value| value["project_scope"]["recall"].as_bool())
+            .unwrap_or(true)
+        {
+            self.project_scope.recall_corpora(
+                &snapshot.id,
+                &mut self
+                    .corpus_cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+        } else {
+            Vec::new()
+        };
+        documents.extend(project_documents);
+        if documents.is_empty() {
             return None;
         }
         let exclude_paths = self
@@ -289,11 +319,11 @@ impl MemoryRecallWiring {
             .excluded_paths(TranscriptMentionInput {
                 session_id: &snapshot.id,
                 entries: mention_entries,
-                documents: &corpus.documents,
+                documents: &documents,
             });
         let ledger = (self.options.ledger_for)(&context);
         collect_recall_candidates(CollectRecallCandidatesInput {
-            documents: &corpus.documents,
+            documents: &documents,
             snapshot,
             identity: &context.identity,
             recall_settings: &recall_settings,
@@ -340,9 +370,23 @@ impl MemoryRecallWiring {
             })
             .expect("max_concurrent_wakes is validated positive by the config resolver"),
         );
+        let resources = (self.options.session_resources_for)(session_id);
+        *resources
+            .project_scope
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            if (self.options.resolve_settings)()
+                .ok()
+                .and_then(|value| value["project_scope"]["recall"].as_bool())
+                .unwrap_or(true)
+            {
+                Some(self.project_scope.clone())
+            } else {
+                None
+            };
         let sidecar = KibitzerSidecar::new(KibitzerSidecarOptions {
             session_id: session_id.to_string(),
-            resources: (self.options.session_resources_for)(session_id),
+            resources,
             wake_slot,
             spawner: Arc::clone(&self.options.spawner),
             executor: Arc::clone(&self.options.executor),
