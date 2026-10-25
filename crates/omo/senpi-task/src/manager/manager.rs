@@ -3228,9 +3228,14 @@ impl Inner {
         }
         lock(&self.state).queued_launches.remove(&record.task_id);
         let epoch = record.notification.run_epoch;
-        if !matches!(
-            self.admission_barrier.state(&record.root_session_id),
-            crate::pause::admission_barrier::AdmissionState::Open
+        if !context.managed_spec.admission.as_ref().map_or_else(
+            || {
+                matches!(
+                    self.admission_barrier.state(&record.root_session_id),
+                    crate::pause::admission_barrier::AdmissionState::Open
+                )
+            },
+            |scope| scope.check() == crate::pause::admission_barrier::AdmissionCheck::Allowed,
         ) {
             lock(&self.state)
                 .held_launches
