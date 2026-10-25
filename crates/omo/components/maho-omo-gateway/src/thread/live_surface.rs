@@ -203,6 +203,7 @@ impl LiveThreadSurface {
         let socket = socket.to_owned();
         let kind = self.kind_of(&socket);
         let transport = self.transport.clone();
+        let durable = durable_session_id.map(str::to_owned);
         let capabilities: std::collections::BTreeSet<String> = ["attach_session", "release_attachment", "release_caller_aware"].iter().map(|name| (*name).to_owned()).collect();
         Box::pin(async move {
             if kind == GatewayEndpointKind::Tui {
@@ -213,10 +214,11 @@ impl LiveThreadSurface {
                 return transport.request(&socket, command, None).await;
             }
             let send_command = command.clone();
-            let send = move || transport.request(&socket, send_command.clone(), None);
-            match fenced_command(transport.as_ref(), &socket, command, &capabilities, durable_session_id, &send).await? {
-                FenceOutcome::Ran(frame) => Ok(frame),
-                FenceOutcome::Refused(frame) => Ok(frame),
+            let send_transport = transport.clone();
+            let send_socket = socket.clone();
+            let send = move || send_transport.request(&send_socket, send_command.clone(), None);
+            match fenced_command(transport.as_ref(), &socket, command, &capabilities, durable.as_deref(), &send).await? {
+                FenceOutcome::Ran(frame) | FenceOutcome::Refused(frame) => Ok(frame),
                 FenceOutcome::Failed(error) => Err(error),
             }
         })
@@ -408,12 +410,14 @@ impl SurfaceHandle {
     fn fenced(&self, socket: &str, command: Value, durable_session_id: Option<&str>) -> BoxFuture<Result<Value, String>> {
         let socket = socket.to_owned();
         let transport = self.transport.clone();
+        let durable = durable_session_id.map(str::to_owned);
         let capabilities: std::collections::BTreeSet<String> = ["attach_session", "release_attachment", "release_caller_aware"].iter().map(|name| (*name).to_owned()).collect();
         Box::pin(async move {
             let send_command = command.clone();
+            let send_transport = transport.clone();
             let send_socket = socket.clone();
-            let send = move || transport.request(&send_socket, send_command.clone(), None);
-            match fenced_command(transport.as_ref(), &socket, command, &capabilities, durable_session_id, &send).await? {
+            let send = move || send_transport.request(&send_socket, send_command.clone(), None);
+            match fenced_command(transport.as_ref(), &socket, command, &capabilities, durable.as_deref(), &send).await? {
                 FenceOutcome::Ran(frame) | FenceOutcome::Refused(frame) => Ok(frame),
                 FenceOutcome::Failed(error) => Err(error),
             }

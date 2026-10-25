@@ -102,7 +102,9 @@ pub fn await_session_request(request: SessionAwait<'_>) -> StoreExtensionResult<
             }
         }
         let remaining = deadline.saturating_duration_since(now);
-        std::thread::sleep(remaining.min(Duration::from_millis(WAKE_FILE_RECHECK_MS)).min(Duration::from_millis(50)));
+        // Upstream watches the wake file and its directory; with no watcher in this workspace the
+        // documented recheck interval is the only mechanism, so a completion is seen within it.
+        std::thread::sleep(remaining.min(Duration::from_millis(WAKE_FILE_RECHECK_MS)));
     }
     expire_and_read(&request)
 }

@@ -146,7 +146,7 @@ pub fn create_gateway_store(options: GatewayStoreOptions) -> Result<Arc<SqliteGa
         agent_dir: options.agent_dir.clone(),
         busy_timeout_ms: options.busy_timeout_ms.unwrap_or(GATEWAY_BUSY_TIMEOUT_MS),
         lock_wait_max_ms: options.lock_wait_max_ms.unwrap_or(GATEWAY_LOCK_WAIT_MAX_MS),
-        instance_id: options.instance_id.unwrap_or_else(|| format!("instance-{}", uuid::Uuid::new_v4())),
+        instance_id: options.instance_id.unwrap_or_else(|| super::store_ops::new_id("instance")),
         runtime_instance: options.runtime_instance,
         legacy_mailbox_directories: Vec::new(),
         test_hooks: Default::default(),
