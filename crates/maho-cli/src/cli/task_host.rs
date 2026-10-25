@@ -175,7 +175,7 @@ impl HostAssembly {
             #[cfg(unix)]
             {
                 let (socket_client,info)=maho_rpc::host_probe::authenticated_host_socket(&socket,&json!({"type":"get_protocol_info","observe":true}),30_000,Some(&agent_dir)).await.map_err(error)?;
-                let client=Arc::new(maho_rpc::rpc_client::RpcClient::from_stream(socket_client.into_stream(),Default::default()));
+                let client=Arc::new(maho_rpc::rpc_client::RpcClient::from_stream(socket_client.into_stream().map_err(error)?,Default::default()));
                 let live=connection::LiveClient::new(client.clone(),runtime.clone(),turn);
                 let mut request=json!({"sessionPath":path,"cwd":spec.cwd,"kind":context.kind,"context":context.context,"retainOnDisconnect":true,"autoTitle":false});
                 if let Some(reference)=spec.model.as_deref() {
@@ -232,9 +232,8 @@ struct ProductionHostRunner {
     assembly: HostAssembly,
     configured: ConfiguredRpcHostRunner,
 }
-impl ManagedRunner for ProductionHostRunner {
-    fn start(&self, spec: &ManagedStartSpec) -> ManagedRunnerResult {
-        let rpc = senpi_task::manager::runner::to_rpc_spec(spec);
+impl ProductionHostRunner {
+    fn start_rpc(&self, rpc: senpi_task::runners::types::RpcRunnerSpec) -> ManagedRunnerResult {
         (self.configured.admit)(&rpc).map_err(|e| ManagedRunnerError::Other(e.to_string()))?;
         let handle = self
             .configured
@@ -244,6 +243,11 @@ impl ManagedRunner for ProductionHostRunner {
         self.assembly.schedule_recovery(&handle, rpc);
         Ok(handle)
     }
+}
+impl ManagedRunner for ProductionHostRunner {
+    fn start(&self, spec: &ManagedStartSpec) -> ManagedRunnerResult {
+        self.start_rpc(senpi_task::manager::runner::to_rpc_spec(spec))
+    }
     fn settle_teardowns(&self) -> Result<(), ManagedRunnerError> {
         use senpi_task::manager::runner::RpcRunnerLike;
         self.configured
@@ -251,21 +255,29 @@ impl ManagedRunner for ProductionHostRunner {
             .map_err(ManagedRunnerError::Runner)
     }
 }
-pub fn select_runner(
-    assembly: HostAssembly,
-    settings: &serde_json::Value,
-    fallback: Arc<dyn ManagedRunner>,
-) -> Arc<dyn ManagedRunner> {
-    if cfg!(windows) || settings["task"]["process_runner"].as_str() != Some("host") {
-        return fallback;
+pub struct HostRespawn {
+    pub assembly: HostAssembly,
+    pub settings: serde_json::Value,
+    pub fallback: Arc<dyn RpcRespawnRunner>,
+}
+impl RpcRespawnRunner for HostRespawn {
+    fn start(&self, spec: &senpi_task::runners::types::RpcRunnerSpec) -> ManagedRunnerResult {
+        if cfg!(windows) || self.settings["task"]["process_runner"].as_str() != Some("host") {
+            return self.fallback.start(spec);
+        }
+        build_host_runner(self.assembly.clone(), Arc::new(|| Ok(()))).start_rpc(spec.clone())
     }
+}
+fn build_host_runner(
+    assembly: HostAssembly,
+    settle: Arc<dyn Fn() -> Result<(), HostError> + Send + Sync>,
+) -> ProductionHostRunner {
     let open_assembly = assembly.clone();
     let admission = assembly.clone();
-    let cleanup = fallback.clone();
     let configured = ConfiguredRpcHostRunner {
         runner: RpcHostRunner {
             opener: session_open::create_host_session_opener(),
-            settle_fallback: Arc::new(move || cleanup.settle_teardowns().map_err(error)),
+            settle_fallback: settle,
         },
         admit: Arc::new(move |spec| admission.admit(spec.state_dir.clone())),
         open: Arc::new(move |spec, context| {
@@ -286,8 +298,22 @@ pub fn select_runner(
             open_assembly.open(spec, context, socket, path)
         }),
     };
-    Arc::new(ProductionHostRunner {
+    ProductionHostRunner {
         assembly,
         configured,
-    })
+    }
+}
+pub fn select_runner(
+    assembly: HostAssembly,
+    settings: &serde_json::Value,
+    fallback: Arc<dyn ManagedRunner>,
+) -> Arc<dyn ManagedRunner> {
+    if cfg!(windows) || settings["task"]["process_runner"].as_str() != Some("host") {
+        return fallback;
+    }
+    let cleanup = fallback.clone();
+    Arc::new(build_host_runner(
+        assembly,
+        Arc::new(move || cleanup.settle_teardowns().map_err(error)),
+    ))
 }
