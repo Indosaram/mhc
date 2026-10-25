@@ -780,3 +780,35 @@ fn refused_pause_does_not_trap_ordinary_completion() {
         Some("ordinary completion")
     );
 }
+
+#[test]
+fn late_durable_id_replaces_predecessor_once_and_ignores_later_reports() {
+    let harness = default_manager();
+    let task = started(harness.manager.start(&base_spec()));
+    harness
+        .store
+        .mutate(&task.task_id, &mut |record: &crate::state::TaskRecord| {
+            crate::state::TaskRecord {
+                child_session_id: Some("predecessor".into()),
+                ..record.clone()
+            }
+        })
+        .unwrap();
+    let handle = harness
+        .in_process
+        .handle(&task.task_id)
+        .or_else(|| harness.process.handle(&task.task_id))
+        .unwrap();
+    handle.emit_durable_id("durable-current");
+    handle.emit_durable_id("stale-later");
+    assert_eq!(
+        harness
+            .store
+            .load(&task.task_id)
+            .unwrap()
+            .unwrap()
+            .child_session_id
+            .as_deref(),
+        Some("durable-current")
+    );
+}
