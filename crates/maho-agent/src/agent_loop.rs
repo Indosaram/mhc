@@ -1292,6 +1292,7 @@ async fn stream_assistant_response(
                         .as_ref()
                         .and_then(|m| m.provider_thinking_level.clone()),
                     diagnostics: partial.as_ref().and_then(|m| m.diagnostics.clone()),
+                    prompt_cache_breakpoint: None,
                     prompt_cache_diagnostics: partial
                         .as_ref()
                         .and_then(|m| m.prompt_cache_diagnostics.clone()),

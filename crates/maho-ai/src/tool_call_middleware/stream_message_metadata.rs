@@ -13,6 +13,7 @@ fn clone_usage(usage: &Usage) -> Usage {
 fn clone_legacy_message(source: &AssistantMessage, content: Vec<ContentBlock>) -> AssistantMessage {
     AssistantMessage {
         error_cause: source.error_cause,
+        prompt_cache_breakpoint: source.prompt_cache_breakpoint,
         prompt_cache_diagnostics: source.prompt_cache_diagnostics.clone(),
         thinking_level: None,
         provider_diagnostic: None,
@@ -55,6 +56,7 @@ pub fn clone_message_with_content(
 ) -> AssistantMessage {
     AssistantMessage {
         error_cause: source.error_cause,
+        prompt_cache_breakpoint: source.prompt_cache_breakpoint,
         prompt_cache_diagnostics: source.prompt_cache_diagnostics.clone(),
         thinking_level: source.thinking_level,
         provider_diagnostic: source.provider_diagnostic.clone(),
@@ -145,6 +147,7 @@ mod tests {
     fn message() -> AssistantMessage {
         AssistantMessage {
             error_cause: None,
+            prompt_cache_breakpoint: None,
             prompt_cache_diagnostics: None,
             thinking_level: None,
             provider_diagnostic: None,
