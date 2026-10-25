@@ -2696,6 +2696,9 @@ impl Inner {
                 name_warning: registration.warning.clone(),
             })
         };
+        if let Some(admission) = &context.managed_spec.admission {
+            admission.transfer();
+        }
         let immediate = {
             let mut concurrency = lock(&self.concurrency);
             if concurrency.has_free_slot(&plan.model) {
@@ -2913,6 +2916,9 @@ impl Inner {
             .to_string());
         }
         self.attach_launched(context, &handle);
+        if let Some(admission) = &context.managed_spec.admission {
+            admission.leave();
+        }
         self.end_launch(&record.task_id);
         if let Err(error) = self.steering.notify_started(&record.task_id) {
             log(
