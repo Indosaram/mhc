@@ -126,6 +126,10 @@ pub enum LostResumeResult {
 
 /// The effects a task run pause needs from the composition.
 pub trait TaskRunPausePorts: Send + Sync {
+    fn acquire_resume_capacity(&self, _task_id: &str, _epoch: i64) -> Result<(), String> {
+        Ok(())
+    }
+    fn park_capacity(&self, _task_id: &str, _epoch: i64) {}
     fn begin_native_pause(&self, _task_id: &str, _epoch: i64) {}
     fn finish_native_pause(
         &self,
@@ -419,6 +423,8 @@ impl TaskRunPause {
         {
             return Err(RunPauseAdmissionHeld.to_string());
         }
+        self.ports
+            .acquire_resume_capacity(task_id, record.notification.run_epoch)?;
         let result = port.resume_turn(
             &handle,
             &ResumeTurnRequest {
@@ -622,6 +628,7 @@ impl TaskRunPause {
     /// `park`: a child that stays held gives its slot back and settles its pause intent.
     pub fn park(&self, task_id: &str, epoch: i64) {
         self.capacity.park(task_id, epoch);
+        self.ports.park_capacity(task_id, epoch);
         self.intents.settle(task_id, epoch);
     }
 

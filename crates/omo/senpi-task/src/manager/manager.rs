@@ -2064,8 +2064,47 @@ impl TaskManager {
         }
     }
 
+    pub fn park_run_capacity(&self, task_id: &str, epoch: i64) {
+        if let Some(lease) = lock(&self.inner.concurrency).park(task_id, epoch) {
+            lock(&self.inner.parked).insert(task_id.into(), lease);
+        }
+    }
+
+    pub fn acquire_resume_capacity(&self, task_id: &str, epoch: i64) -> Result<(), String> {
+        let lease = lock(&self.inner.parked).get(task_id).cloned();
+        if let Some(lease) = lease {
+            let resumed = lock(&self.inner.concurrency).unpark(&lease);
+            let grants = lock(&self.inner.concurrency).drain();
+            for grant in grants {
+                spawn_grant(grant);
+            }
+            resumed
+                .recv_timeout(Duration::from_secs(30))
+                .map_err(|error| error.to_string())?;
+            if lock(&self.inner.concurrency).lease_state(task_id, epoch) != Some("held") {
+                return Err("resume suspended".into());
+            }
+            lock(&self.inner.parked).remove(task_id);
+            return Ok(());
+        }
+        let record = self
+            .inner
+            .try_load(task_id)
+            .ok_or("task record unavailable")?;
+        if lock(&self.inner.concurrency).try_acquire(&record.model, task_id, epoch) {
+            return Ok(());
+        }
+        if lock(&self.inner.concurrency).lease_state(task_id, epoch) == Some("held") {
+            return Ok(());
+        }
+        Err("resume capacity unavailable".into())
+    }
+
     pub fn begin_native_pause(&self, task_id: &str, epoch: i64) {
         self.inner.pauses_pending.request(task_id, epoch);
+        if let Some(lease) = lock(&self.inner.parked).get(task_id).cloned() {
+            lock(&self.inner.concurrency).suspend_unpark(&lease);
+        }
         if let Some((_, wake)) = lock(&self.inner.state).resume_attempts.remove(task_id) {
             let _ = wake.send(());
         }
