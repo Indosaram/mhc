@@ -3,6 +3,19 @@ use maho_ext_api::{IdleInjection, IdleInjectionCoordinator, IdleInjectionSource}
 use serde_json::{Value, json};
 use senpi_task::{completion::ParentState, dag::types::{DagNodeCounts, DagRunEventPayload}};
 
+/// The run reference every DAG wake carries, so a receiver can tell which run owns the injection.
+pub fn dag_run_ref(run_id: &str) -> Value { json!({"kind":"dag","id":run_id}) }
+
+/// The text a paused run shows. A user's Stop is NOT an automatic restart: only an explicit Resume
+/// on the parent session continues it.
+pub fn paused_wake_text(name: &str, reason: Option<&str>) -> String {
+    match reason {
+        Some("user_stop") => format!("DAG \"{name}\" paused by your Stop. Resume the run to continue."),
+        Some(reason) => format!("DAG \"{name}\" paused ({reason}): it will resume when the session restarts."),
+        None => format!("DAG \"{name}\" paused: it will resume when the session restarts."),
+    }
+}
+
 pub const DAG_WAKE_MESSAGE_TYPE: &str = "omo-senpi.dag-run";
 pub type DagWakeInjection = IdleInjection;
 pub struct DagWake {
@@ -21,17 +34,17 @@ pub fn create_dag_wake(coordinator: Arc<dyn IdleInjectionCoordinator>, parent_st
 impl DagWake {
     fn handle_run_event(&mut self, run: DagWakeRun<'_>, event_type: &str, counts: Option<DagNodeCounts>, failure: Option<DagWakeFailure<'_>>, state: ParentState) {
         if event_type == "dag.run.paused" {
-            let cause = failure.as_ref().map_or_else(String::new, |reason| format!(" ({})", reason.code));
-            let mut details = json!({"runId":run.run_id,"name":run.name,"status":"paused"});
-            if let Some(reason) = failure { details["reason"] = json!(reason.code); }
-            let injection = make_injection(run.run_id, format!("DAG \"{}\" paused{cause}: it will resume when the session restarts.", run.name), details);
+            let reason = failure.as_ref().map(|reason| reason.code);
+            let mut details = json!({"runId":run.run_id,"name":run.name,"status":"paused","runRef":dag_run_ref(run.run_id)});
+            if let Some(reason) = reason { details["reason"] = json!(reason); }
+            let injection = make_injection(run.run_id, paused_wake_text(run.name, reason), details);
             self.route(run.parent_session_id, injection, state);
             return;
         }
         let status = match event_type { "dag.run.completed" => "completed", "dag.run.failed" => "failed", "dag.run.cancelled" => "cancelled", _ => return };
         let Some(counts) = counts else { return };
         let mut content = format!("DAG \"{}\" {status}: {} completed, {} failed, {} cancelled, {} skipped ({} total)", run.name, counts.completed, counts.failed, counts.cancelled, counts.skipped, counts.total);
-        let mut details = json!({"runId":run.run_id,"name":run.name,"status":status,"counts":counts});
+        let mut details = json!({"runId":run.run_id,"name":run.name,"status":status,"counts":counts,"runRef":dag_run_ref(run.run_id)});
         if let Some(failure) = failure {
             let node = failure.node_id.map_or_else(String::new, |node| format!(" at {node}"));
             content.push_str(&format!(". First failure{node} [{}]: {}", failure.code, failure.message));
@@ -61,10 +74,10 @@ impl DagWake {
         match event {
             DagRunEventPayload::RunPaused { reason } => {
                 let state = (self.parent_state)();
-                let cause = reason.as_deref().map_or_else(String::new, |reason| format!(" ({reason})"));
-                let mut details = json!({"runId":run.run_id,"name":run.name,"status":"paused"});
-                if let Some(reason) = reason.as_deref() { details["reason"] = json!(reason); }
-                self.route(run.parent_session_id, make_injection(run.run_id, format!("DAG \"{}\" paused{cause}: it will resume when the session restarts.", run.name), details), state);
+                let reason = reason.as_deref();
+                let mut details = json!({"runId":run.run_id,"name":run.name,"status":"paused","runRef":dag_run_ref(run.run_id)});
+                if let Some(reason) = reason { details["reason"] = json!(reason); }
+                self.route(run.parent_session_id, make_injection(run.run_id, paused_wake_text(run.name, reason), details), state);
             }
             DagRunEventPayload::RunCompleted { counts } => {
                 self.on_run_event(run, event.event_type().as_str(), Some(*counts), None);

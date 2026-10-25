@@ -2103,9 +2103,13 @@ pub enum DagNodeControlErrorCode {
     NodeNotRetryable,
     NodeHasNoTask,
     NodeNotContinuable,
+    RunPausedByUser,
+    RunNotUserPaused,
+    GuidanceFrozen,
+    GuidanceNotFound,
 }
 
-pub const DAG_NODE_CONTROL_ERROR_CODES: [DagNodeControlErrorCode; 8] = [
+pub const DAG_NODE_CONTROL_ERROR_CODES: [DagNodeControlErrorCode; 12] = [
     DagNodeControlErrorCode::RunNotFound,
     DagNodeControlErrorCode::RunNotOwned,
     DagNodeControlErrorCode::RunStillActive,
@@ -2114,6 +2118,10 @@ pub const DAG_NODE_CONTROL_ERROR_CODES: [DagNodeControlErrorCode; 8] = [
     DagNodeControlErrorCode::NodeNotRetryable,
     DagNodeControlErrorCode::NodeHasNoTask,
     DagNodeControlErrorCode::NodeNotContinuable,
+    DagNodeControlErrorCode::RunPausedByUser,
+    DagNodeControlErrorCode::RunNotUserPaused,
+    DagNodeControlErrorCode::GuidanceFrozen,
+    DagNodeControlErrorCode::GuidanceNotFound,
 ];
 
 impl DagNodeControlErrorCode {
@@ -2127,6 +2135,10 @@ impl DagNodeControlErrorCode {
             Self::NodeNotRetryable => "node_not_retryable",
             Self::NodeHasNoTask => "node_has_no_task",
             Self::NodeNotContinuable => "node_not_continuable",
+            Self::RunPausedByUser => "run_paused_by_user",
+            Self::RunNotUserPaused => "run_not_user_paused",
+            Self::GuidanceFrozen => "guidance_frozen",
+            Self::GuidanceNotFound => "guidance_not_found",
         }
     }
 }

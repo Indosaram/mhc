@@ -41,7 +41,7 @@ pub fn compose_task_engine_with_clock(deps: ComposeTaskEngineDeps, rpc_respawn: 
     let runtime = Arc::new(Mutex::new(TaskRuntimeContext::new(deps.cwd.clone())));
     let state = runtime.clone();
     let actions = deps.actions.clone();
-    let parent = Arc::new(TaskParentNotifier { actions: deps.actions, coordinator: deps.coordinator, is_streaming: Arc::new(move || state.lock().unwrap_or_else(PoisonError::into_inner).parent_state() == senpi_task::completion::ParentState::Streaming) });
+    let parent = Arc::new(TaskParentNotifier { actions: deps.actions, coordinator: deps.coordinator, is_streaming: Arc::new(move || state.lock().unwrap_or_else(PoisonError::into_inner).parent_state() == senpi_task::completion::ParentState::Streaming), on_delivery_failed: None });
     let mut notification = CompletionNotifierDeps::new(parent, Arc::new(store.clone()));
     notification.state_dir = Some(store.state_dir().into());
     let state = runtime.clone();

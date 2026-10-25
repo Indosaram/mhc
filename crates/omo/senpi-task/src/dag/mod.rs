@@ -17,6 +17,7 @@ pub mod node_control_context;
 pub mod node_retry;
 pub mod node_send;
 pub mod owner;
+pub mod paused_controls;
 pub mod recovery;
 pub mod recovery_lease_watch;
 pub mod results;
