@@ -129,8 +129,20 @@ pub fn create_session_binder(deps: SessionBinderDeps) -> SessionBinder {
         let session_cwd = surface.cwd.clone().unwrap_or_else(|| deps.cwd.clone());
         let memory_root = resolve_memory_root(&deps.env, &session_cwd);
         let agent = settings["agent"].as_str();
-        let resolved = resolve_memory_identity(agent, &session_cwd, &deps.env)
-            .map_err(|error| error.to_string())?;
+        let resolved = if memory_core::identity::is_auto_agent_value(agent) {
+            memory_core::identity::resolve_auto_identity(
+                &session_cwd,
+                &deps.env,
+                if settings["auto_identity"] == "git" {
+                    memory_core::identity::AutoIdentityMode::Git
+                } else {
+                    memory_core::identity::AutoIdentityMode::Path
+                },
+            )
+        } else {
+            resolve_memory_identity(agent, &session_cwd, &deps.env)
+        }
+        .map_err(|error| error.to_string())?;
         let entries = (surface.read_entries)();
         let previous = find_latest_memory_binding(&entries).cloned();
         let adoption = adopt_session_identity(
