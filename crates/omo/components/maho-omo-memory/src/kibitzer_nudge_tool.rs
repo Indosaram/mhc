@@ -93,7 +93,7 @@ pub fn execute_nudge(
             terminate: cap_reached(&input),
         };
     }
-    input.accepted.push(RecallNudge { path: params.path.clone(), hint: params.hint.clone() });
+    input.accepted.push(RecallNudge { path: params.path.clone(), hint: params.hint.clone(), source: None });
     let capped = cap_reached(&input);
     let text = if capped {
         format!(
@@ -170,7 +170,7 @@ mod tests {
     }
 
     fn recorded(path: &str, hint: &str) -> RecallNudge {
-        RecallNudge { path: path.to_string(), hint: hint.to_string() }
+        RecallNudge { path: path.to_string(), hint: hint.to_string(), source: None }
     }
 
     fn call(
