@@ -1389,6 +1389,9 @@ pub trait SessionManager: ToolSessionManager {
     }
     fn get_leaf_id(&self) -> Option<String>;
     fn get_session_name(&self) -> Option<String>;
+    fn is_child_session(&self) -> bool {
+        self.fork_provenance().is_some()
+    }
     fn fork_provenance(&self) -> Option<ForkProvenance> {
         None
     }

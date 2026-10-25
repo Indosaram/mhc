@@ -1426,6 +1426,18 @@ impl maho_ext_api::SessionManager for ExtensionSessionManagerView {
             .upgrade()
             .and_then(|inner| AgentSession { inner }.session_name())
     }
+    fn is_child_session(&self) -> bool {
+        self.session.upgrade().is_some_and(|inner| {
+            AgentSession { inner }.with_session_manager(|manager| {
+                manager.header().is_some_and(|header| {
+                    header
+                        .get("parentSession")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some()
+                })
+            })
+        })
+    }
     fn fork_provenance(&self) -> Option<maho_ext_api::ForkProvenance> {
         self.session.upgrade().and_then(|inner| {
             AgentSession { inner }.with_session_manager(|manager| manager.fork_provenance())
@@ -3293,6 +3305,16 @@ impl maho_ext_api::SessionManager for SessionContextManager {
     }
     fn get_session_name(&self) -> Option<String> {
         self.session.session_name()
+    }
+    fn is_child_session(&self) -> bool {
+        self.session.with_session_manager(|manager| {
+            manager.header().is_some_and(|header| {
+                header
+                    .get("parentSession")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+            })
+        })
     }
     fn fork_provenance(&self) -> Option<maho_ext_api::ForkProvenance> {
         self.session

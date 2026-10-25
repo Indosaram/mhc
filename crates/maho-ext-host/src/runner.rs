@@ -457,6 +457,10 @@ impl SessionManager for ContextSessionManager {
         self.active();
         self.session.get_session_name()
     }
+    fn is_child_session(&self) -> bool {
+        self.active();
+        self.session.is_child_session()
+    }
     fn fork_provenance(&self) -> Option<ForkProvenance> {
         self.active();
         self.session.fork_provenance()
