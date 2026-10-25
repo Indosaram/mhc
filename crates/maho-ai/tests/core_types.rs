@@ -16,7 +16,7 @@ fn provider_native_content_allows_provider_native_blocks_in_assistant_message_co
         }),
     });
 
-    let message = AssistantMessage { timing: None, failure_source: None,
+    let message = AssistantMessage {  timing: None, failure_source: None,
         thinking_level: None,
         provider_diagnostic: None,
         prompt_cache_breakpoint: None,

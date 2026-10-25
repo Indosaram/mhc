@@ -868,7 +868,7 @@ pub struct UsageCost {
     pub total: f64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestContextUsage { pub input: u64, pub output: u64 }
 
