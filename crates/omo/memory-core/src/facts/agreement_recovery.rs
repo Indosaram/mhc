@@ -1,71 +1,79 @@
-//! Upgrade a legacy agreement post-image only with its original batch and durable publisher.
-use super::{
-    agreements_target::render_agreements_content,
-    extraction::FactsBatch,
-    mutation_plan::{FactsApplyRecovery, facts_records_hash},
-};
-use crate::{
-    agreements::{AGREEMENTS_PATH, AgreementsPolicy},
-    git::{GitMemoryRepo, path_state::GitWorktreeIdentity},
-};
+//! Ownership-checked upgrade of pre-event-version agreement recovery envelopes.
+use super::extraction::FactsBatch;
+use super::mutation_plan::{FactsApplyRecovery, facts_records_hash};
+use super::recovery::FactsRecoveryError;
+use crate::agreements::{AGREEMENTS_PATH, AgreementsPolicy};
+use crate::git::{GitMemoryRepo, path_state::GitWorktreeIdentity};
+
+pub type RecoveryPublisher<'a> =
+    dyn FnMut(&FactsApplyRecovery) -> Result<(), FactsRecoveryError> + 'a;
+pub struct AgreementRecoveryInput<'a> {
+    pub batch: &'a FactsBatch,
+    pub agreements_policy: Option<&'a AgreementsPolicy>,
+    pub publish_recovery: Option<&'a mut RecoveryPublisher<'a>>,
+}
+
 pub fn upgrade_agreement_recovery(
     repo: &GitMemoryRepo,
     recovery: &FactsApplyRecovery,
-    batch: &FactsBatch,
-    policy: &AgreementsPolicy,
-) -> Result<FactsApplyRecovery, String> {
+    input: Option<&AgreementRecoveryInput<'_>>,
+) -> Result<FactsApplyRecovery, FactsRecoveryError> {
     if recovery.agreement_event_version == Some(1) {
         return Ok(recovery.clone());
     }
-    let Some(ledger) = recovery
+    let Some(at) = recovery
         .paths
         .iter()
-        .find(|entry| entry.path == AGREEMENTS_PATH)
+        .position(|entry| entry.path == AGREEMENTS_PATH)
     else {
         return Ok(recovery.clone());
     };
-    if batch.batch_id != recovery.batch_id
-        || facts_records_hash(
-            &batch.records,
-            batch.agreements.as_deref().unwrap_or_default(),
-        ) != recovery.records_hash
-        || batch.agreements.is_none()
-    {
-        return Err("Legacy agreement recovery requires its original records and an atomic recovery publisher".into());
-    }
-    let existing = match &ledger.pre.worktree {
-        GitWorktreeIdentity::File(file) => Some(
-            repo.read_blobs(&[file.oid.clone()])
-                .map_err(|error| error.to_string())?
-                .remove(&file.oid)
-                .ok_or("Missing legacy agreement pre-image")?,
-        ),
-        GitWorktreeIdentity::Missing => None,
+    let invalid = || {
+        FactsRecoveryError::Invalid("Legacy agreement recovery requires its original records and an atomic recovery publisher".into())
     };
-    let rendered = render_agreements_content(
-        existing.as_deref(),
-        batch.agreements.as_deref().unwrap_or_default(),
-        policy,
-    )
-    .map_err(|error| error.to_string())?;
-    let content = rendered
-        .content
-        .or(existing)
-        .ok_or("Legacy agreement recovery has no ledger content")?;
-    let mut effective = recovery.clone();
-    effective.agreement_event_version = Some(1);
-    let ledger = effective
-        .paths
-        .iter_mut()
-        .find(|entry| entry.path == AGREEMENTS_PATH)
-        .ok_or("Missing agreement path")?;
-    let oid = repo.path_state.hash_index_blob(AGREEMENTS_PATH, &content, true).map_err(|error| error.to_string())?;
-    ledger.post.index.as_mut().ok_or("Missing agreement post-image index")?.oid = oid;
-    if let GitWorktreeIdentity::File(file) = &mut ledger.post.worktree {
-        file.oid = repo
-            .path_state
-            .hash_worktree_blob(&content, true)
-            .map_err(|error| error.to_string())?;
+    let input = input.ok_or_else(invalid)?;
+    if input.publish_recovery.is_none()
+        || input.batch.batch_id != recovery.batch_id
+        || input.batch.agreements.is_none()
+        || facts_records_hash(
+            &input.batch.records,
+            input.batch.agreements.as_deref().unwrap_or_default(),
+        ) != recovery.records_hash
+    {
+        return Err(invalid());
     }
-    Ok(effective)
+    let ledger = &recovery.paths[at];
+    let existing = match &ledger.pre.worktree {
+        GitWorktreeIdentity::Missing => None,
+        GitWorktreeIdentity::File(file) => {
+            let blobs = repo.read_blobs(&[file.oid.clone()])?;
+            Some(blobs.get(&file.oid).cloned().ok_or_else(|| {
+                FactsRecoveryError::Invalid("Missing legacy agreement pre-image".into())
+            })?)
+        }
+    };
+    let policy = input.agreements_policy.copied().unwrap_or_default();
+    let rendered = super::agreements_target::render_agreements_content(
+        existing.as_deref(),
+        input.batch.agreements.as_deref().unwrap_or_default(),
+        &policy,
+    )
+    .map_err(|error| FactsRecoveryError::Invalid(error.to_string()))?;
+    let content = rendered.content.or(existing).ok_or_else(|| {
+        FactsRecoveryError::Invalid("Legacy agreement recovery has no ledger content".into())
+    })?;
+    let mut upgraded = recovery.clone();
+    upgraded.agreement_event_version = Some(1);
+    let post = &mut upgraded.paths[at].post;
+    post.index.oid = repo
+        .path_state
+        .hash_index_blob(AGREEMENTS_PATH, &content, true)?;
+    if let GitWorktreeIdentity::File(file) = &mut post.worktree {
+        file.oid = repo.path_state.hash_worktree_blob(&content, true)?;
+    }
+    Ok(upgraded)
 }
+
+#[cfg(test)]
+#[path = "agreement_recovery_tests.rs"]
+mod tests;

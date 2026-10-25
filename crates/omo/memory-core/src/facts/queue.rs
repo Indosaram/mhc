@@ -8,8 +8,8 @@ use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use serde::{Deserialize, Serialize};
@@ -25,8 +25,8 @@ use crate::support::time::{format_rfc3339_millis, now_millis};
 
 use super::schema::{
     FACTS_QUEUE_VERSION, FactsConsumedRecord, FactsConsumedWatermark, FactsCursor, FactsQueueEntry,
-    FactsQueueLayout, FactsQueueRange, facts_queue_paths, initial_cursor,
-    parse_consumed, parse_cursor, parse_queue_entry, parse_queue_header,
+    FactsQueueLayout, FactsQueueRange, facts_queue_paths, initial_cursor, parse_consumed,
+    parse_cursor, parse_queue_entry, parse_queue_header,
 };
 
 const LOCK_WAIT_MS: u64 = 2000;
@@ -331,7 +331,6 @@ impl FactsQueue {
             let at_iso = format_rfc3339_millis(at_millis);
 
             let entry = FactsQueueEntry {
-                lead: request.entries[..start_index].iter().rev().find(|entry| entry.kind() != "reasoning").cloned(),
                 version: FACTS_QUEUE_VERSION,
                 identity: request.identity,
                 session_id: request.session_id,
@@ -344,6 +343,7 @@ impl FactsQueue {
                 },
                 enqueued_at: at_iso.clone(),
                 entries: request.entries[start_index..].to_vec(),
+                lead: super::queue_lead::lead_of(&request.entries, start_index),
             };
 
             if aborted_now() {
@@ -399,18 +399,39 @@ impl FactsQueue {
             return Ok(Vec::new());
         }
         self.locked(|| {
-            let pending = self.list_pending_unlocked(true)?;
             let mut claims = self.read_claims_unlocked()?;
-            let requested: HashSet<String> = entries.iter().map(entry_key).collect();
             let reclaim_before = (self.now)() - 15 * 60_000;
-            let claimed: Vec<_> = pending
-                .into_iter()
-                .filter(|pending| {
-                    let key = entry_key(&pending.entry);
-                    requested.contains(&key)
-                        && claims.get(&key).is_none_or(|claim| claim.claimed_at < reclaim_before)
-                })
-                .collect();
+            let mut selected = HashSet::new();
+            let mut claimed = Vec::new();
+            for entry in entries {
+                let key = entry_key(entry);
+                if selected.contains(&key)
+                    || claims
+                        .get(&key)
+                        .is_some_and(|claim| claim.claimed_at >= reclaim_before)
+                {
+                    continue;
+                }
+                let file_path = self.layout.entry_path(
+                    &entry.conversation_id,
+                    &entry.range.end_message_id,
+                    &entry.enqueued_at,
+                );
+                let Some(current) = fs::read_to_string(&file_path)
+                    .ok()
+                    .and_then(|raw| parse_queue_entry(&raw))
+                else {
+                    continue;
+                };
+                if entry_key(&current) != key {
+                    continue;
+                }
+                selected.insert(key);
+                claimed.push(PendingEntryWithFile {
+                    entry: current,
+                    file_path,
+                });
+            }
             for pending in &claimed {
                 let claimed_at_millis = (self.now)();
                 claims.insert(
@@ -440,7 +461,10 @@ impl FactsQueue {
             let mut claims = self.read_claims_unlocked()?;
             for entry in entries {
                 let key = entry_key(entry);
-                if claims.get(&key).is_some_and(|claim| claim.claim_id == claim_id) {
+                if claims
+                    .get(&key)
+                    .is_some_and(|claim| claim.claim_id == claim_id)
+                {
                     claims.remove(&key);
                 }
             }
@@ -476,7 +500,8 @@ impl FactsQueue {
             let claims_before = claims.len();
             claims.retain(|key, _| !consumed_keys.contains(key));
             // PERF-DIVERGENCE(senpi facts queue): upstream rewrites claims.json even when no claim was removed; this port skips the write/rename when nothing changed and the file already exists. File content is identical.
-            if claims.len() != claims_before || !self.layout.queue_dir.join("claims.json").exists() {
+            if claims.len() != claims_before || !self.layout.queue_dir.join("claims.json").exists()
+            {
                 self.write_claims(&claims)?;
             }
             self.advance_consumed(entries)?;
@@ -532,7 +557,11 @@ impl FactsQueue {
             wait_timeout_ms: Some(LOCK_WAIT_MS),
             ..Default::default()
         };
-        with_lock(&self.lock_path, &record, &options, task).map_err(FactsQueueError::from)
+        with_lock(&self.lock_path, &record, &options, || {
+            super::parked::migrate_parked_entries(&self.layout)?;
+            task()
+        })
+        .map_err(FactsQueueError::from)
     }
 
     fn effective_anchor(
@@ -550,7 +579,13 @@ impl FactsQueue {
                 .get(conversation_id)
                 .map(|rec| rec.end_message_id.clone()),
         ];
-        for pending in self.list_pending_unlocked(false)? {
+        let mut retained =
+            super::queue_scan::scan_queue_entries(&self.layout.queue_dir, Some(conversation_id))?;
+        retained.extend(super::queue_scan::scan_queue_entries(
+            &self.layout.parked_dir,
+            Some(conversation_id),
+        )?);
+        for pending in retained {
             if pending.entry.conversation_id == conversation_id {
                 candidates.push(Some(pending.entry.range.end_message_id));
             }
@@ -611,13 +646,14 @@ impl FactsQueue {
     ) -> Result<Vec<PendingEntryWithFile>, FactsQueueError> {
         let read_dir = match fs::read_dir(&self.layout.queue_dir) {
             Ok(dir) => dir,
-            Err(_) => return Ok(Vec::new()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
         };
         let mut names = Vec::new();
         for dir_entry in read_dir {
             let dir_entry = match dir_entry {
                 Ok(de) => de,
-                Err(_) => continue,
+                Err(error) => return Err(error.into()),
             };
             let file_name = dir_entry.file_name().to_string_lossy().into_owned();
             names.push(file_name);
