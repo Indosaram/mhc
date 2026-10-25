@@ -32,7 +32,8 @@ use crate::kibitzer_sidecar_admission::KibitzerBlockingExecutor;
 use crate::kibitzer_sidecar_wake::KibitzerWakeDeliver;
 use crate::kibitzer_wake_slot::{KibitzerWakeSlot, KibitzerWakeSlotOptions};
 use crate::recall_consumer::{
-    CollectRecallCandidatesInput, CollectedRecallCandidates, collect_recall_candidates,
+    CollectRecallCandidatesInput, CollectedRecallCandidates,
+    collect_recall_candidates_with_projects,
 };
 use crate::recall_drain::{
     DrainPendingFor, DrainQueued, EnvLookup, RecallDrainOptions, create_recall_drain,
@@ -144,17 +145,31 @@ impl MemoryRecallWiring {
         options: MemoryRecallWiringOptions,
         corpus_cache: RecallCorpusCache,
     ) -> Arc<Self> {
+        let settings = options.resolve_settings.clone();
+        let project_scope = Arc::new(crate::project_memory_nudge::ProjectMemoryScope::new(
+            options.resolve_context.clone(),
+            Arc::new(move || {
+                let value = settings().unwrap_or_default();
+                crate::project_memory_nudge::ProjectMemorySwitches {
+                    nudge: value["project_scope"]["nudge"].as_bool().unwrap_or(true),
+                    recall: value["project_scope"]["recall"].as_bool().unwrap_or(true),
+                }
+            }),
+        ));
         let delivery = KibitzerDelivery::new(KibitzerDeliveryOptions {
             ledger_for: options.ledger_for.clone(),
             pending_for: options.pending_for.clone(),
             coordinator: options.coordinator.clone(),
             send_message: options.send_message.clone(),
             append_entry: options.append_entry.clone(),
-            resolve_source: None,
+            resolve_source: Some({
+                let scope = project_scope.clone();
+                Arc::new(move |session, path| scope.source_for(session, path))
+            }),
             warn: options.warn.clone(),
         });
         Arc::new(Self {
-            project_scope: Default::default(),
+            project_scope,
             options,
             delivery,
             sidecars: Mutex::new(BTreeMap::new()),
@@ -176,19 +191,8 @@ impl MemoryRecallWiring {
         api: &mut maho_ext_api::ExtensionApi,
         theme: ResolveEntryTheme,
     ) {
-        let settings = self.options.resolve_settings.clone();
-        self.project_scope.register(
-            api,
-            self.options.resolve_context.clone(),
-            Arc::new(move || {
-                let value = settings().unwrap_or_default();
-                (
-                    value["project_scope"]["nudge"].as_bool().unwrap_or(true),
-                    value["project_scope"]["recall"].as_bool().unwrap_or(true),
-                )
-            }),
-            self.options.send_message.clone(),
-        );
+        self.project_scope
+            .register(api, self.options.send_message.clone());
         let drain = create_recall_drain(RecallDrainOptions {
             resolve_context: self.options.resolve_context.clone(),
             resolve_settings: Arc::clone(&self.options.drain_resolve_settings),
@@ -308,7 +312,9 @@ impl MemoryRecallWiring {
         } else {
             Vec::new()
         };
-        documents.extend(project_documents);
+        documents.extend(crate::project_recall_seats::project_documents_of(
+            &project_documents,
+        ));
         if documents.is_empty() {
             return None;
         }
@@ -322,15 +328,18 @@ impl MemoryRecallWiring {
                 documents: &documents,
             });
         let ledger = (self.options.ledger_for)(&context);
-        collect_recall_candidates(CollectRecallCandidatesInput {
-            documents: &documents,
-            snapshot,
-            identity: &context.identity,
-            recall_settings: &recall_settings,
-            ledger: &ledger,
-            extra_texts,
-            exclude_paths: &exclude_paths,
-        })
+        collect_recall_candidates_with_projects(
+            CollectRecallCandidatesInput {
+                documents: &corpus.documents,
+                snapshot,
+                identity: &context.identity,
+                recall_settings: &recall_settings,
+                ledger: &ledger,
+                extra_texts,
+                exclude_paths: &exclude_paths,
+            },
+            &project_documents,
+        )
         .ok()
         .flatten()
     }
