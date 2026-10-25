@@ -15,6 +15,8 @@ pub struct ProjectMcpMaterialization {
     pub granted_names: Vec<String>,
 }
 pub struct ProjectMcpAuthority {
+    pub notices: Arc<crate::policy_notices::PolicyNotices>,
+    pub notice_event: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
     pub identity: String,
     pub store_path: PathBuf,
     pub policy_digest: String,
@@ -171,6 +173,17 @@ impl ProjectMcpAuthority {
             .clone()
     }
     pub async fn resolve(&self) -> Result<ProjectMcpMaterialization, McpError> {
+        self.resolve_with_signal(None).await
+    }
+    pub async fn resolve_with_signal(
+        &self,
+        signal: Option<maho_ext_api::AbortSignal>,
+    ) -> Result<ProjectMcpMaterialization, McpError> {
+        let cancelled =
+            || McpError::new(McpErrorKind::Connect, "Project MCP authorization cancelled");
+        if signal.as_ref().is_some_and(|signal| signal.aborted()) {
+            return Err(cancelled());
+        }
         let registration = current_registration(
             &self.name,
             &crate::skills::SkillServerDecl {
@@ -200,7 +213,15 @@ impl ProjectMcpAuthority {
             ));
         }
         let decision = decision_lock(&self.store_path, &self.identity);
-        let (_decision, shared_decision) = join_decision(decision).await;
+        let joined = join_decision(decision);
+        let (_decision, shared_decision) = if let Some(signal) = &signal {
+            tokio::select! { biased; _ = signal.cancelled() => return Err(cancelled()), result = joined => result }
+        } else {
+            joined.await
+        };
+        if signal.as_ref().is_some_and(|signal| signal.aborted()) {
+            return Err(cancelled());
+        }
         let names = effective_grant_names(&read(&self.store_path), &self.identity);
         if !self.first.swap(false, std::sync::atomic::Ordering::AcqRel) {
             let policy = crate::project_env::project_mcp_environment(
@@ -216,20 +237,28 @@ impl ProjectMcpAuthority {
                 && let Some(ui) = &self.ui
             {
                 let choices = vec!["Allow".into(), "Deny".into()];
-                if ui
-                    .select(
-                        &format!(
-                            "Project MCP server {} wants: {}",
-                            self.name,
-                            policy.withheld.join(", ")
-                        ),
-                        &choices,
-                        Default::default(),
-                    )
-                    .await
-                    .as_deref()
-                    == Some("Allow")
-                {
+                let title = format!(
+                    "Project MCP server {} wants: {}",
+                    self.name,
+                    policy.withheld.join(", ")
+                );
+                let selected = ui.select(
+                    &title,
+                    &choices,
+                    maho_ext_api::ExtensionUiDialogOptions {
+                        signal: signal.clone(),
+                        ..Default::default()
+                    },
+                );
+                let answer = if let Some(signal) = &signal {
+                    tokio::select! { biased; _ = signal.cancelled() => return Err(cancelled()), answer = selected => answer }
+                } else {
+                    selected.await
+                };
+                if signal.as_ref().is_some_and(|signal| signal.aborted()) {
+                    return Err(cancelled());
+                }
+                if answer.as_deref() == Some("Allow") {
                     if identity_for_roots(
                         &self.name,
                         &self.source_path,
@@ -295,17 +324,18 @@ impl ProjectMcpAuthority {
             &self.ambient,
         )
         .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
-        if !policy.withheld.is_empty()
-            && let Some(ui) = &self.ui
-        {
-            ui.notify(
-                &format!(
-                    "Project MCP server {} is starting without: {}",
-                    self.name,
-                    policy.withheld.join(", ")
-                ),
-                maho_ext_api::NotificationType::Info,
-            );
+        let (event, warning) = self.notices.notice(
+            &self.identity,
+            &self.name,
+            &self.skill_name,
+            self.trusted,
+            &policy.withheld,
+        );
+        if let Some(emit) = &self.notice_event {
+            emit(event);
+        }
+        if let Some(warning) = warning {
+            maho_ext_api::diagnostic(&warning);
         }
         let wire = serde_json::from_value(policy.declaration)
             .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
@@ -331,6 +361,38 @@ impl ProjectMcpAuthority {
         })
     }
 }
+pub fn reuse_project_skill_server(
+    name: &str,
+    original: &crate::skills::SkillServerDecl,
+    cwd: &Path,
+    agent_dir: &Path,
+    existing: &ResolvedMcpServer,
+) -> Result<bool, McpError> {
+    let Some(authority) = existing.config.as_ref().and_then(get_project_mcp_authority) else {
+        return Ok(false);
+    };
+    let current = current_registration(name, original)?;
+    let root = current
+        .provenance
+        .as_ref()
+        .and_then(|provenance| provenance.project_root.clone())
+        .unwrap_or_else(|| skill_project_root(cwd));
+    let provenance = declaration_digest(
+        &serde_json::json!({"provenance":current.provenance,"allowedSet":current.allowed_set.as_ref().map(|set| &set.digest)}),
+    );
+    if authority.identity
+        != identity_for_roots(name, &current.source_path, &current.raw, &root, cwd)?
+        || authority.store_path != resolve_grants_store_path(Some(agent_dir))
+        || authority.provenance_digest != provenance
+    {
+        return Ok(false);
+    }
+    authority.materialize(&effective_grant_names(
+        &read(&authority.store_path),
+        &authority.identity,
+    ))?;
+    Ok(true)
+}
 pub async fn prepare_project_skill_server(
     name: &str,
     original: &crate::skills::SkillServerDecl,
@@ -339,6 +401,30 @@ pub async fn prepare_project_skill_server(
     trusted: bool,
     explicit: &BTreeMap<String, String>,
     ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+) -> Result<ResolvedMcpServer, McpError> {
+    prepare_project_skill_server_with_notices(
+        name,
+        original,
+        cwd,
+        agent_dir,
+        trusted,
+        explicit,
+        ui,
+        Arc::default(),
+        None,
+    )
+    .await
+}
+pub async fn prepare_project_skill_server_with_notices(
+    name: &str,
+    original: &crate::skills::SkillServerDecl,
+    cwd: &Path,
+    agent_dir: &Path,
+    trusted: bool,
+    explicit: &BTreeMap<String, String>,
+    ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+    notices: Arc<crate::policy_notices::PolicyNotices>,
+    notice_event: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
 ) -> Result<ResolvedMcpServer, McpError> {
     let original = &current_registration(name, original)?;
     let project_root = original
@@ -361,6 +447,21 @@ pub async fn prepare_project_skill_server(
         &ambient,
     )
     .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
+    if !shared_decision && !policy.withheld.is_empty() {
+        let (event, warning) = notices.notice(
+            &identity,
+            name,
+            &original.skill_name,
+            trusted,
+            &policy.withheld,
+        );
+        if let Some(emit) = &notice_event {
+            emit(event);
+        }
+        if let Some(warning) = warning {
+            maho_ext_api::diagnostic(&warning);
+        }
+    }
     if !shared_decision
         && !policy.withheld.is_empty()
         && let Some(ui) = &ui
@@ -414,8 +515,16 @@ pub async fn prepare_project_skill_server(
     let latest = current_registration(name, original)?;
     if identity_for_roots(name, &latest.source_path, &latest.raw, &project_root, cwd)? != identity {
         drop(_decision);
-        return Box::pin(prepare_project_skill_server(
-            name, &latest, cwd, agent_dir, trusted, explicit, ui,
+        return Box::pin(prepare_project_skill_server_with_notices(
+            name,
+            &latest,
+            cwd,
+            agent_dir,
+            trusted,
+            explicit,
+            ui,
+            notices,
+            notice_event,
         ))
         .await;
     }
@@ -428,6 +537,8 @@ pub async fn prepare_project_skill_server(
         granted_names: vec![],
     };
     let mut authority = ProjectMcpAuthority {
+        notices,
+        notice_event,
         identity,
         store_path,
         policy_digest: declaration_digest(

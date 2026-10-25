@@ -87,6 +87,8 @@ pub struct McpService {
     project_trusted: bool,
     deferred: Arc<crate::startup_race::McpDeferredAttach>,
     pending_auth: BTreeMap<String, crate::auth::oauth_provider::McpOAuthProvider>,
+    policy_notices: Arc<crate::policy_notices::PolicyNotices>,
+    policy_notice_event: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
     elicitation_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
     output_artifacts: Arc<crate::guard::output_guard::McpOutputArtifacts>,
     registration: Option<crate::expose::session::McpSessionRegistration>,
@@ -108,6 +110,8 @@ impl McpService {
             project_trusted: false,
             deferred: Default::default(),
             pending_auth: BTreeMap::new(),
+            policy_notices: Default::default(),
+            policy_notice_event: None,
             elicitation_ui: None,
             output_artifacts: Arc::new(Default::default()),
             registration: None,
@@ -116,6 +120,9 @@ impl McpService {
             self_weak: None,
             registration_inputs: None,
         }
+    }
+    pub fn set_policy_notice_event(&mut self, emit: Arc<dyn Fn(serde_json::Value) + Send + Sync>) {
+        self.policy_notice_event = Some(emit);
     }
     pub fn set_elicitation_ui(&mut self, ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>) {
         self.elicitation_ui = ui;
@@ -369,13 +376,26 @@ impl McpService {
                 warnings.push(format!("MCP server '{name}' from skill {} collides with the {} config; system config wins.",decl.source_path.display(),existing.source));
                 continue;
             }
+            let project = decl
+                .provenance
+                .as_ref()
+                .map_or(decl.scope.as_deref() == Some("project"), |provenance| {
+                    provenance.kind != "user"
+                });
+            if project && let Some(existing) = existing {
+                if crate::project_skill_policy::reuse_project_skill_server(
+                    name, decl, &cwd, &agent_dir, existing,
+                )? {
+                    continue;
+                }
+            }
             let resolved = if decl
                 .provenance
                 .as_ref()
                 .map_or(decl.scope.as_deref() == Some("project"), |provenance| {
                     provenance.kind != "user"
                 }) {
-                crate::project_skill_policy::prepare_project_skill_server(
+                crate::project_skill_policy::prepare_project_skill_server_with_notices(
                     name,
                     decl,
                     &cwd,
@@ -383,6 +403,8 @@ impl McpService {
                     self.project_trusted,
                     &self.session_env,
                     self.elicitation_ui.clone(),
+                    self.policy_notices.clone(),
+                    self.policy_notice_event.clone(),
                 )
                 .await?
             } else {

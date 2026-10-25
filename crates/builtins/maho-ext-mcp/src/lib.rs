@@ -27,6 +27,7 @@ pub mod logging;
 pub mod needs_auth;
 pub mod notification_schemas;
 pub mod notifications;
+pub mod policy_notices;
 pub mod process_tree;
 pub mod project_env;
 pub mod project_skill_policy;
