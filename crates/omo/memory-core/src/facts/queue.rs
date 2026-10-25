@@ -51,6 +51,11 @@ impl FactsAbortSignal {
     pub fn is_aborted(&self) -> bool {
         self.aborted.load(Ordering::SeqCst)
     }
+
+    /// Access the underlying atomic flag for shared cancellation state.
+    pub fn flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.aborted)
+    }
 }
 
 /// Request payload for enqueuing journal entries into the facts queue.

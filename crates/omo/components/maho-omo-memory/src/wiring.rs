@@ -542,6 +542,7 @@ impl MemoryWiring {
         let provenance = self.provenance_by_session.get(session).cloned();
         self.on_settled_with_provenance(session, entries, api, now, ui, warn, provenance)
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn on_settled_with_provenance(
         &mut self,
         session: &str,

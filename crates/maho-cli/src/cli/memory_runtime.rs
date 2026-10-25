@@ -624,9 +624,7 @@ impl MemoryRuntime {
             })),
             warn: self.host.warn.clone(),
             spawner: Some(crate::cli::facts_child::CliFactsChildSpawner::from_agent_dir(
-                self.host.cwd.to_string_lossy().into_owned(),
                 self.host.agent_dir.to_string_lossy().into_owned(),
-                self.host.load_config.clone(),
             )),
         };
         let this = self.clone();

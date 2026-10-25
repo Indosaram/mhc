@@ -1319,6 +1319,7 @@ pub fn fork_session(
         Some(maho_core::session_manager::NewSessionOptions {
             id: session_id.map(str::to_owned),
             parent_session: None,
+            ..Default::default()
         }),
     )
 }
