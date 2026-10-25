@@ -460,8 +460,30 @@ mod tests {
         );
     }
 
-    fn set_dir_mtime(dir: &std::path::Path, mtime: std::time::SystemTime) {
+    /// `File::open` on a directory is Access Denied on Windows, so ask for attribute access
+    /// with `FILE_FLAG_BACKUP_SEMANTICS` (same helper shape as maho-ext-hooks' trust storage).
+    #[cfg(windows)]
+    fn open_dir_for_times(dir: &std::path::Path) -> std::io::Result<std::fs::File> {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+        const FILE_READ_ATTRIBUTES: u32 = 0x0080;
+        const FILE_SHARE_READ: u32 = 1;
+        const FILE_SHARE_WRITE: u32 = 2;
+        const FILE_SHARE_DELETE: u32 = 4;
+        std::fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(dir)
+    }
+    #[cfg(not(windows))]
+    fn open_dir_for_times(dir: &std::path::Path) -> std::io::Result<std::fs::File> {
         std::fs::File::open(dir)
+    }
+
+    fn set_dir_mtime(dir: &std::path::Path, mtime: std::time::SystemTime) {
+        open_dir_for_times(dir)
             .expect("open themes dir")
             .set_modified(mtime)
             .expect("set directory mtime");
