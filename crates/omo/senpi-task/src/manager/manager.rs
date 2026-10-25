@@ -3837,47 +3837,50 @@ impl Inner {
         lock(&self.state)
             .failed_turns
             .insert(task_id.into(), Arc::clone(&failed));
+        let streamed = Arc::new(Mutex::new(Vec::<String>::new()));
         let fallback = handle.subscribe(Arc::new(move |event| {
             if event.event_type == "message_start" {
-                *lock(&failed) = (None, Vec::new());
+                lock(&streamed).clear();
             }
             if matches!(event.event_type.as_str(), "message_update" | "message_end") {
                 if let Some(message) = event.message.as_ref().filter(|m| {
                     m.get("role").and_then(serde_json::Value::as_str) == Some("assistant")
                 }) {
-                    let mut facts = lock(&failed);
-                    if let Some(content) =
-                        message.get("content").and_then(serde_json::Value::as_array)
-                    {
-                        for part in content {
-                            if part.get("type").and_then(serde_json::Value::as_str)
-                                == Some("toolCall")
-                            {
-                                if let Some(name) =
-                                    part.get("name").and_then(serde_json::Value::as_str)
-                                {
-                                    if !facts.1.iter().any(|n| n == name) {
-                                        facts.1.push(name.into());
-                                    }
+                    let tools = message
+                        .get("content")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter(|part| part["type"] == "toolCall")
+                        .filter_map(|part| part["name"].as_str())
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>();
+                    if event.event_type == "message_update" {
+                        *lock(&streamed) = tools;
+                    } else {
+                        let mut facts = lock(&failed);
+                        if matches!(message["stopReason"].as_str(), Some("error" | "aborted")) {
+                            let mut names = tools;
+                            for name in lock(&streamed).iter() {
+                                if !names.contains(name) {
+                                    names.push(name.clone());
                                 }
                             }
+                            let message_text = message["errorMessage"]
+                                .as_str()
+                                .filter(|text| !text.is_empty())
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| {
+                                    format!(
+                                        "stopped with {}",
+                                        message["stopReason"].as_str().unwrap_or_default()
+                                    )
+                                });
+                            *facts = (Some(message_text), names);
+                        } else {
+                            *facts = (None, Vec::new());
                         }
-                    }
-                    if event.event_type == "message_end"
-                        && matches!(
-                            message
-                                .get("stopReason")
-                                .and_then(serde_json::Value::as_str),
-                            Some("error" | "aborted")
-                        )
-                    {
-                        facts.0 = Some(
-                            message
-                                .get("errorMessage")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("child turn failed")
-                                .into(),
-                        );
+                        return;
                     }
                 }
             }
@@ -3890,8 +3893,8 @@ impl Inner {
             if event.to.as_deref() != record.parent_model.as_deref() {
                 return;
             }
-            let facts = lock(&failed);
-            let detail = facts.0.as_deref().or(event.last_error.as_deref());
+            let mut facts = lock(&failed);
+            let detail = facts.0.as_deref();
             let classified = crate::manager::parent_model_fallback::reason_of_failure(
                 detail.unwrap_or_default(),
                 record
@@ -3899,7 +3902,9 @@ impl Inner {
                     .as_ref()
                     .map(|model| model.model_id.as_str()),
             );
-            let reason = if classified != crate::state::ParentModelFallbackReason::Error {
+            let reason = if event.limit.is_some() {
+                crate::state::ParentModelFallbackReason::UsageLimit
+            } else if classified != crate::state::ParentModelFallbackReason::Error {
                 classified
             } else {
                 match event.reason.as_deref() {
@@ -3910,13 +3915,23 @@ impl Inner {
                 }
             };
             record.parent_model_fallback = Some(crate::manager::parent_model_fallback::build(
-                event.from.clone().unwrap_or(record.model.clone()),
+                crate::manager::parent_model_fallback::base_selector(
+                    event.from.as_deref().unwrap_or(&record.model),
+                )
+                .into(),
                 reason,
                 detail,
                 &facts.1,
                 chrono::Utc::now().to_rfc3339(),
             ));
-            if let Err(error) = fallback_store.replace(&record) {
+            *facts = (None, Vec::new());
+            let note = record.parent_model_fallback.clone();
+            if let Err(error) =
+                fallback_store.mutate(&fallback_id, &mut |fresh: &TaskRecord| TaskRecord {
+                    parent_model_fallback: note.clone(),
+                    ..fresh.clone()
+                })
+            {
                 log(
                     "senpi-task parent fallback fact persistence failed",
                     &fallback_id,
