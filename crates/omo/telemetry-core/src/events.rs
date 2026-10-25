@@ -34,10 +34,11 @@ pub type EventTelemetryOnCapture = Arc<dyn Fn(&TelemetryCaptureMessage) + Send +
 
 /// `uuid` makes a re-sent event idempotent: PostHog keeps one row per uuid. `timestamp` is the event's
 /// own time; a re-send passes the original one so the event lands on the same day it first did.
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct EventTelemetryCaptureOptions {
     pub uuid: Option<String>,
     pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    pub timestamp_ms: Option<f64>,
 }
 
 const EVENT_FLUSH_AT: u32 = 20;
@@ -67,7 +68,7 @@ pub struct CreateEventTelemetryClientInput<'a> {
 }
 
 struct EnabledEventClient {
-    transport: Box<dyn TelemetryTransport>,
+    transport: Arc<dyn TelemetryTransport>,
     allowlists: HashMap<String, HashSet<String>>,
     shared_properties: TelemetryCaptureProperties,
     distinct_id: String,
@@ -90,6 +91,85 @@ impl EnabledEventClient {
             &self.source,
             TelemetryError::new(message),
         );
+    }
+
+    /// The allowlist projection every capture path shares; `None` after reporting a rejected event.
+    fn build_payload(
+        &self,
+        name: &str,
+        properties: &EventTelemetryProperties,
+        options: Option<&EventTelemetryCaptureOptions>,
+    ) -> Option<TelemetryCaptureMessage> {
+        let Some(allowlist) = self.allowlists.get(name).filter(|_| !name.is_empty()) else {
+            self.report(
+                TelemetryDiagnosticEvent::TelemetryEventRejected,
+                "event name is empty or not allowlisted".to_string(),
+            );
+            return None;
+        };
+
+        let mut payload_properties = TelemetryCaptureProperties::new();
+        for (key, value) in properties {
+            if is_forbidden_key(key, value) {
+                self.report(
+                    TelemetryDiagnosticEvent::TelemetryEventPropertyRejected,
+                    format!("forbidden event property: {key}"),
+                );
+                continue;
+            }
+            if !allowlist.contains(key) {
+                self.report(
+                    TelemetryDiagnosticEvent::TelemetryEventPropertyDropped,
+                    format!("unknown event property: {key}"),
+                );
+                continue;
+            }
+            let Some(projected) = project_value(value) else {
+                self.report(
+                    TelemetryDiagnosticEvent::TelemetryEventPropertyRejected,
+                    format!("invalid event property value: {key}"),
+                );
+                continue;
+            };
+            payload_properties.insert(key.clone(), projected);
+        }
+        for (key, value) in &self.shared_properties {
+            payload_properties.insert(key.clone(), value.clone());
+        }
+
+        let requested_uuid = options.and_then(|options| options.uuid.as_deref());
+        let uuid = match requested_uuid {
+            Some(uuid) if is_valid_event_uuid(uuid) => uuid.to_string(),
+            Some(_) => {
+                self.report(
+                    TelemetryDiagnosticEvent::TelemetryEventPropertyRejected,
+                    "invalid event uuid".to_string(),
+                );
+                uuid::Uuid::now_v7().to_string()
+            }
+            None => uuid::Uuid::now_v7().to_string(),
+        };
+        // event_id is minted last so no event property can supply it; PostHog dedupes on `uuid`, so
+        // mirroring it there makes a direct and a relayed delivery of one event collapse. A re-send
+        // passes the uuid it first carried, so its event_id stays that same id.
+        payload_properties.insert("event_id".into(), Value::String(uuid.clone()));
+        let timestamp = options
+            .and_then(|options| {
+                options.timestamp.or_else(|| {
+                    options.timestamp_ms.and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
+                })
+            })
+            .map_or_else(
+                || crate::diagnostics::to_iso_string(chrono::Utc::now()),
+                crate::diagnostics::to_iso_string,
+            );
+        Some(TelemetryCaptureMessage {
+            uuid: Some(uuid),
+            timestamp: Some(timestamp),
+            distinct_id: self.distinct_id.clone(),
+            event: name.to_string(),
+            properties: payload_properties,
+        })
     }
 
     async fn flush(&self) {
@@ -168,76 +248,13 @@ impl EventTelemetryClient {
         let Some(client) = &self.inner else {
             return false;
         };
-        let Some(allowlist) = client.allowlists.get(name).filter(|_| !name.is_empty()) else {
-            client.report(
-                TelemetryDiagnosticEvent::TelemetryEventRejected,
-                "event name is empty or not allowlisted".to_string(),
-            );
+        let Some(mut payload) = client.build_payload(name, properties, options) else {
             return false;
         };
-
-        let mut payload_properties = TelemetryCaptureProperties::new();
-        for (key, value) in properties {
-            if is_forbidden_key(key, value) {
-                client.report(
-                    TelemetryDiagnosticEvent::TelemetryEventPropertyRejected,
-                    format!("forbidden event property: {key}"),
-                );
-                continue;
-            }
-            if !allowlist.contains(key) {
-                client.report(
-                    TelemetryDiagnosticEvent::TelemetryEventPropertyDropped,
-                    format!("unknown event property: {key}"),
-                );
-                continue;
-            }
-            let Some(projected) = project_value(value) else {
-                client.report(
-                    TelemetryDiagnosticEvent::TelemetryEventPropertyRejected,
-                    format!("invalid event property value: {key}"),
-                );
-                continue;
-            };
-            payload_properties.insert(key.clone(), projected);
-        }
-        for (key, value) in &client.shared_properties {
-            payload_properties.insert(key.clone(), value.clone());
-        }
-
         if let Some((uuid, timestamp)) = delivery {
-            payload_properties.insert("$insert_id".into(), Value::String(uuid.into()));
-            payload_properties.insert("$time".into(), serde_json::json!(timestamp / 1000.0));
+            payload.properties.insert("$insert_id".into(), Value::String(uuid.into()));
+            payload.properties.insert("$time".into(), serde_json::json!(timestamp / 1000.0));
         }
-        let requested_uuid = options.and_then(|options| options.uuid.as_deref());
-        let uuid = match requested_uuid {
-            Some(uuid) if is_valid_event_uuid(uuid) => uuid.to_string(),
-            Some(_) => {
-                client.report(
-                    TelemetryDiagnosticEvent::TelemetryEventPropertyRejected,
-                    "invalid event uuid".to_string(),
-                );
-                uuid::Uuid::now_v7().to_string()
-            }
-            None => uuid::Uuid::now_v7().to_string(),
-        };
-        // event_id is minted last so no event property can supply it; PostHog dedupes on `uuid`, so
-        // mirroring it there makes a direct and a relayed delivery of one event collapse. A re-send
-        // passes the uuid it first carried, so its event_id stays that same id.
-        payload_properties.insert("event_id".into(), Value::String(uuid.clone()));
-        let timestamp = options
-            .and_then(|options| options.timestamp)
-            .map_or_else(
-                || crate::diagnostics::to_iso_string(chrono::Utc::now()),
-                crate::diagnostics::to_iso_string,
-            );
-        let payload = TelemetryCaptureMessage {
-            uuid: Some(uuid),
-            timestamp: Some(timestamp),
-            distinct_id: client.distinct_id.clone(),
-            event: name.to_string(),
-            properties: payload_properties,
-        };
         let delivered = if delivery.is_some() {
             // A dedicated runtime also works when the recorder runs inside a current-thread runtime.
             std::thread::scope(|scope| {
@@ -283,6 +300,53 @@ impl EventTelemetryClient {
                 false
             }
         }
+    }
+
+    /// Sends one ack-gated event immediately and resolves only on the transport's 2xx answer. `None` when the
+    /// client is disabled or the event/properties are rejected; an `Err` keeps the caller's pending record.
+    pub fn capture_immediate(
+        &self,
+        name: &str,
+        properties: &EventTelemetryProperties,
+        options: &EventTelemetryCaptureOptions,
+    ) -> Option<BoxFuture<'static, Result<(), crate::telemetry_delivery_error::TelemetryDeliveryError>>>
+    {
+        let client = self.inner.as_ref()?;
+        let payload = client.build_payload(name, properties, Some(options))?;
+        let transport = Arc::clone(&client.transport);
+        let on_capture = client.on_capture.clone();
+        let source = client.source.clone();
+        let diagnostics = client.diagnostics.clone();
+        Some(
+            async move {
+                let Some(send) = transport.capture_immediate(&payload) else {
+                    return Err(
+                        crate::telemetry_delivery_error::TelemetryDeliveryError::new(
+                            None,
+                            Some(TelemetryError::new("transport has no immediate send")),
+                        ),
+                    );
+                };
+                match send.await {
+                    Ok(()) => {
+                        if let Some(on_capture) = &on_capture {
+                            on_capture(&payload);
+                        }
+                        Ok(())
+                    }
+                    Err(error) => {
+                        report(
+                            diagnostics.as_ref(),
+                            TelemetryDiagnosticEvent::TelemetryCaptureFailed,
+                            &source,
+                            TelemetryError::new(error.to_string()),
+                        );
+                        Err(error)
+                    }
+                }
+            }
+            .boxed(),
+        )
     }
 
     pub async fn flush(&self) {
@@ -335,18 +399,19 @@ pub fn create_event_telemetry_client(
     options.flush_interval = EVENT_FLUSH_INTERVAL_MS;
 
     let api_key = get_telemetry_api_key(input.env, &product.default_api_key);
-    let transport = match build_transport(input.transport_factory.as_ref(), &api_key, &options) {
-        Ok(transport) => transport,
-        Err(error) => {
-            report(
-                input.diagnostics.as_ref(),
-                TelemetryDiagnosticEvent::TelemetryPosthogInitFailed,
-                input.source,
-                error,
-            );
-            return disabled;
-        }
-    };
+    let transport: Arc<dyn TelemetryTransport> =
+        match build_transport(input.transport_factory.as_ref(), &api_key, &options) {
+            Ok(transport) => transport.into(),
+            Err(error) => {
+                report(
+                    input.diagnostics.as_ref(),
+                    TelemetryDiagnosticEvent::TelemetryPosthogInitFailed,
+                    input.source,
+                    error,
+                );
+                return disabled;
+            }
+        };
 
     let allowlists = input
         .property_allowlist
@@ -418,3 +483,6 @@ fn project_value(value: &Value) -> Option<Value> {
         Value::Null | Value::Array(_) | Value::Object(_) => None,
     }
 }
+
+/// Unused map type kept for parity with the TS `EventTelemetryProperties` alias.
+pub type EventTelemetryPropertyMap = Map<String, Value>;
