@@ -1,3 +1,5 @@
+pub type RecordListenerCallback = std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn Fn(&str, Option<&TaskRecord>) + Send + Sync>>>>;
+pub type ListenerCallback = Option<std::sync::Arc<dyn Fn(&str, Option<&TaskRecord>) + Send + Sync>>;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -90,7 +92,7 @@ fn shared_list_cache(state_dir: &Path) -> ListCache {
 #[derive(Clone)]
 pub struct TaskRecordStore {
     state_dir: PathBuf,
-    record_listener: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn Fn(&str, Option<&TaskRecord>) + Send + Sync>>>>,
+    record_listener: RecordListenerCallback,
     mutation_listener: std::sync::Arc<std::sync::Mutex<Option<MutationListener>>>,
     write_listener: std::sync::Arc<std::sync::Mutex<Option<WriteListener>>>,
     list_cache: ListCache,
@@ -139,7 +141,7 @@ impl TaskRecordStore {
     }
 
     /// All manager/lifecycle clones share the post-commit observer. Clear it during shutdown.
-    pub fn set_record_listener(&self, listener: Option<std::sync::Arc<dyn Fn(&str, Option<&TaskRecord>) + Send + Sync>>) {
+    pub fn set_record_listener(&self, listener: ListenerCallback) {
         *self.record_listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = listener;
     }
     fn notify_record(&self, id: &str, record: Option<&TaskRecord>) {

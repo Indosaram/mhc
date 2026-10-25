@@ -284,11 +284,11 @@ fn read_skill(
     cwd: &Path,
     dirs: &[PathBuf],
     discover: &DiscoverSkills,
-    cache: &mut HashMap<PathBuf, SkillDiscovery>,
+    caches: (&mut HashMap<PathBuf, SkillDiscovery>, &mut HashMap<PathBuf, CheckedProjectSkills>),
     user_dirs: &[PathBuf],
     rejected: &mut Vec<SkillRejection>,
-    project_cache: &mut HashMap<PathBuf, CheckedProjectSkills>,
 ) -> Option<LoadedSkill> {
+    let (cache, project_cache) = caches;
     if !is_valid_skill_name(name) {
         return None;
     }
@@ -418,10 +418,9 @@ pub fn create_fs_skill_loader(options: FsSkillLoaderOptions) -> Arc<SkillLoader>
                 Path::new(cwd),
                 &dirs,
                 &discover,
-                &mut cache,
+                (&mut cache, &mut project_cache),
                 &user_dirs,
                 &mut rejected,
-                &mut project_cache,
             ) {
                 Some(skill) => skills.push(skill),
                 None if !rejected.iter().any(|entry| entry.name == *name) => {

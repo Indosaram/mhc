@@ -9,6 +9,7 @@
 //! - any other provider: the stored `accounts` list when it is non-empty, else the flat credential as one
 //!   account; env slots only when nothing is stored.
 
+pub type GetApiKeyEnvVarsCallback = Arc<dyn Fn(&str) -> Option<Vec<String>> + Send + Sync>;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -26,7 +27,7 @@ const CAP: u64 = 10;
 #[derive(Clone)]
 pub struct EngineTables {
     pub normalize_provider_id: Arc<dyn Fn(&str) -> String + Send + Sync>,
-    pub get_api_key_env_vars: Arc<dyn Fn(&str) -> Option<Vec<String>> + Send + Sync>,
+    pub get_api_key_env_vars: GetApiKeyEnvVarsCallback,
     pub api_key_env_providers: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
 }
 
@@ -181,7 +182,7 @@ fn primary_env_var(provider: &str, tables: &EngineTables) -> Option<String> {
     )
 }
 
-fn kind_of(provider: &str, tables: &EngineTables) -> String {
+fn kind_of(provider: &str, _tables: &EngineTables) -> String {
     let current = RETIRED_PROVIDER_IDS
         .iter()
         .find(|(retired, _)| *retired == provider)

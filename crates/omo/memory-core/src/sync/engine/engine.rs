@@ -280,11 +280,10 @@ impl Inner {
                 *this.last_error.borrow_mut() = Some(error.to_string());
             }
         }
-        if before != this.shown_key() {
-            if let Some(notify) = &this.deps.on_status_change {
+        if before != this.shown_key()
+            && let Some(notify) = &this.deps.on_status_change {
                 notify();
             }
-        }
         this.reports.bump();
         this.settled.bump();
         if this.rerun.get()

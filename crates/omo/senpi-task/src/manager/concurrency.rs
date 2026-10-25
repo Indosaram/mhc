@@ -286,13 +286,11 @@ impl TaskConcurrency {
         if let Some(entry) = self
             .parked
             .get_mut(&lease_key(&lease.task_id, lease.run_epoch))
-        {
-            if Arc::ptr_eq(&entry.lease, lease) {
+            && Arc::ptr_eq(&entry.lease, lease) {
                 entry.resumable = true;
                 entry.resumed.push(tx);
                 return rx;
             }
-        }
         let _ = tx.send(());
         rx
     }
@@ -300,12 +298,10 @@ impl TaskConcurrency {
         if let Some(entry) = self
             .parked
             .get_mut(&lease_key(&lease.task_id, lease.run_epoch))
-        {
-            if Arc::ptr_eq(&entry.lease, lease) && entry.resumable {
+            && Arc::ptr_eq(&entry.lease, lease) && entry.resumable {
                 entry.resumable = false;
                 entry.settle();
             }
-        }
     }
     pub fn release_lease(&mut self, task_id: &str, epoch: i64) -> Vec<Grant> {
         let key = lease_key(task_id, epoch);

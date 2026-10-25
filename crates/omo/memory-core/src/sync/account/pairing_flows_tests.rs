@@ -1,5 +1,5 @@
 use super::{
-    approve::{ApproveOutcome, approve_device},
+    approve::{ApprovalConfirmation, ApproveOutcome, approve_device},
     http::create_account_http,
     join::{CeremonyClock, join_account},
     pairing::{PairingParty, approval_commitment},
@@ -106,8 +106,7 @@ async fn approval_requires_matching_commitment_and_human_confirmation() {
         create_account_http(options(service.clone())),
         &pairing,
         &Clock,
-        "pending",
-        &|_| Box::pin(async { Ok(false) }),
+        ApprovalConfirmation { pending_id: "pending", confirm_code: &|_| Box::pin(async { Ok(false) }) },
     )
     .await
     .expect("decline");
@@ -120,13 +119,12 @@ async fn approval_requires_matching_commitment_and_human_confirmation() {
         create_account_http(options(service.clone())),
         &pairing,
         &Clock,
-        "pending",
-        &|code| {
+        ApprovalConfirmation { pending_id: "pending", confirm_code: &|code| {
             Box::pin(async move {
                 assert_eq!(code.len(), 6);
                 Ok(true)
             })
-        },
+        } },
     )
     .await
     .expect("approve");
@@ -147,8 +145,7 @@ async fn approval_requires_matching_commitment_and_human_confirmation() {
         create_account_http(options(bad.clone())),
         &pairing,
         &Clock,
-        "pending",
-        &|_| panic!("must not confirm substituted keys"),
+        ApprovalConfirmation { pending_id: "pending", confirm_code: &|_| panic!("must not confirm substituted keys") },
     )
     .await
     .expect("refusal");

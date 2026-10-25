@@ -37,11 +37,12 @@ pub struct DynamicPromptCoreContext {
     pub surface: PromptSurface,
 }
 
+pub type PromptPartsObserver<'a> = &'a dyn Fn(&[DynamicSystemPromptPart]);
 /// `BuildDynamicSystemPromptOptions`.
 pub struct BuildDynamicSystemPromptOptions<'a> {
     pub custom_prompt: Option<String>,
     pub append_system_prompt: Option<String>,
-    pub on_parts: Option<&'a dyn Fn(&[DynamicSystemPromptPart])>,
+    pub on_parts: Option<PromptPartsObserver<'a>>,
     pub cwd: String,
     pub selected_tools: Vec<String>,
     pub tool_snippets: HashMap<String, String>,

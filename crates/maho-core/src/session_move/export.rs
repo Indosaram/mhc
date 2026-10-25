@@ -61,14 +61,13 @@ async fn write_move_bundle(
             }
         },
     };
-    if let Some(state) = &state {
-        if !state.exists() {
+    if let Some(state) = &state
+        && !state.exists() {
             return Err(format!(
                 "The extension state the move release staged is missing ({}); the session was not exported without it.",
                 state.display()
             ));
         }
-    }
     let staging = PathBuf::from(format!(
         "{}.partial-{}",
         options.bundle_dir.display(),
@@ -102,7 +101,7 @@ async fn write_move_bundle(
             .iter()
             .filter(|e| e["customType"] == "repository-identity")
             .filter_map(|e| parse_repository_identity(&e["data"]))
-            .last(),
+            .next_back(),
         session: BundleFile {
             path: SESSION_BUNDLE_PATH.into(),
             sha256: sha256_file_async(&staging.join(SESSION_BUNDLE_PATH))

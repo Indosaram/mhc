@@ -132,10 +132,7 @@ fn is_run_outcome(value: &Value, run_id: &str) -> bool {
         Some(Value::Number(number)) => number.as_f64().is_some(),
         _ => false,
     };
-    let signal_ok = match child_exit.get("signal") {
-        Some(Value::Null) | Some(Value::String(_)) => true,
-        _ => false,
-    };
+    let signal_ok = matches!(child_exit.get("signal"), Some(Value::Null) | Some(Value::String(_)));
     let timed_out_ok = fields.get("timedOut").is_some_and(Value::is_boolean);
     version_is_one
         && names_run

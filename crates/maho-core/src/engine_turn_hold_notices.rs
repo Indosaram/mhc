@@ -231,8 +231,8 @@ impl EngineTurnHoldNotices {
                 .filter(|id| !wake.items.iter().any(|(item, _)| item == *id))
                 .cloned()
                 .collect();
-            if source != "goal" && !notice_ids.is_empty() {
-                if let Some(message) = &wake.message {
+            if source != "goal" && !notice_ids.is_empty()
+                && let Some(message) = &wake.message {
                     let mut message = message.clone();
                     if source == "monitor" {
                         let prefix = format!(
@@ -260,7 +260,6 @@ impl EngineTurnHoldNotices {
                         message,
                     });
                 }
-            }
             out.extend(wake.items.iter().map(|(id, message)| HeldMessage {
                 source: source.clone(),
                 notice_ids: vec![id.clone()],

@@ -35,7 +35,7 @@ impl RunCompletionTracker {
         if !matches!(
             previous,
             Some(BoulderWorkStatus::Active | BoulderWorkStatus::Paused)
-        ) && !(previous.is_none() && !first)
+        ) && (previous.is_some() || first)
         {
             return None;
         }

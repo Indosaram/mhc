@@ -62,7 +62,7 @@ pub fn recover_paused_dag_children(
         if node.state != DagNodeState::Paused || node.task_id.is_none() {
             continue;
         }
-        let task_id = node.task_id.as_ref().unwrap();
+        let task_id = node.task_id.as_ref().expect("validated recovery state is present");
         let fresh = owned_record(options, &record.run_id)?;
         if fresh.pause.as_ref().map(|p| p.pause_seq) != Some(pause_seq)
             || fresh.status != crate::dag::types::DagRunStatus::Paused

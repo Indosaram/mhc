@@ -342,8 +342,8 @@ impl MoveLedger {
         self.locked(move_id, || {
             let mut record = self.current(move_id)?;
             let landing = self.landing(move_id)?;
-            if let (Some(read), Some(target)) = (landed, landing.target.as_deref()) {
-                if let Some(next) =
+            if let (Some(read), Some(target)) = (landed, landing.target.as_deref())
+                && let Some(next) =
                     settled_landing(record.as_ref(), landing.committing, read(target))
                 {
                     self.write_landing(
@@ -356,7 +356,6 @@ impl MoveLedger {
                     )?;
                     record = Some(next);
                 }
-            }
             if revoked {
                 return Ok(MoveStatus::AcceptedRevoked);
             }

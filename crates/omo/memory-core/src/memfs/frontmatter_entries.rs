@@ -45,11 +45,10 @@ pub fn duplicate_frontmatter_keys(content: &str) -> Vec<String> {
     let mut dup_set = HashSet::new();
     if let Some(entries) = content_frontmatter_entries(content) {
         for entry in entries {
-            if !seen.insert(entry.key.clone()) {
-                if dup_set.insert(entry.key.clone()) {
+            if !seen.insert(entry.key.clone())
+                && dup_set.insert(entry.key.clone()) {
                     duplicates.push(entry.key);
                 }
-            }
         }
     }
     duplicates

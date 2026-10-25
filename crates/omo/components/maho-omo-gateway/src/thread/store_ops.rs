@@ -8,6 +8,7 @@
 //! drain with its own `BEGIN IMMEDIATE` (`reconcile`), which cannot succeed until this transaction is
 //! fully published or fully rolled back.
 
+pub type AfterCommitCallback = Mutex<Option<Vec<Box<dyn FnOnce() + Send>>>>;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -26,7 +27,7 @@ use crate::paths::gateway_inbox_directory;
 use super::provenance_record::is_provenance;
 use super::schema::{GATEWAY_MIGRATIONS, GATEWAY_NEEDS_FK_OFF, GatewaySchemaVersionError};
 use super::types::{
-    AdmissionLedger, ClaimOutcome, ClaimRequest, DeliveryRow, DeliveryState, DeliveryTransition, EffectiveLane, EnqueueOutcome, EnqueueRequest, GatewayStoreConfig,
+    ClaimOutcome, ClaimRequest, DeliveryRow, DeliveryState, DeliveryTransition, EffectiveLane, EnqueueOutcome, EnqueueRequest, GatewayStoreConfig,
     GatewayStoreEvent, GatewayStoreStats, OutcomeRecord, ProcessIdentity, ReconcileOutcome, ReconcileRequest, RecordOutcomeRequest, RefusalReason, StoredDeliveryEnvelope,
 };
 
@@ -191,8 +192,8 @@ pub struct StoreContext {
     pub self_identity: ProcessIdentity,
     pub stats: GatewayStoreStatsCounters,
     events: Mutex<Vec<GatewayStoreEvent>>,
-    after_commit: Mutex<Option<Vec<Box<dyn FnOnce() + Send>>>>,
-    after_rollback: Mutex<Option<Vec<Box<dyn FnOnce() + Send>>>>,
+    after_commit: AfterCommitCallback,
+    after_rollback: AfterCommitCallback,
 }
 
 #[derive(Debug, Default)]
@@ -1015,7 +1016,7 @@ pub fn enqueue(ctx: &StoreContext, request: &EnqueueRequest) -> Result<EnqueueOu
         let position = queue_position(ctx, &row)?;
         ctx.exec(commit_sql)?;
         committed = true;
-        Ok(EnqueueOutcome::Inserted { row, queue_position: position })
+        Ok(EnqueueOutcome::Inserted { row: Box::new(row), queue_position: position })
     })();
     if outcome.is_err() && !committed {
         rollback_quietly(ctx);
@@ -1088,7 +1089,7 @@ pub fn reconcile(ctx: &StoreContext, request: &ReconcileRequest) -> Result<Recon
         let mut transitions = Vec::new();
         let mut dual = Vec::new();
         for row in select_rows(ctx, &format!("target_durable_id = ? AND state IN {OPEN_STATES}"), &[v_str(target)], Some("seq"))? {
-            let mut to = row.state;
+            let to;
             if row.state == DeliveryState::Queued {
                 if row.expires_at <= request.now {
                     transition(ctx, &row, DeliveryState::Refused, request.now, Some(RefusalReason::Expired))?;
@@ -1161,7 +1162,7 @@ pub fn claim(ctx: &StoreContext, request: &ClaimRequest) -> Result<ClaimOutcome,
         )?;
         unlink_marker(ctx, &row.target_durable_id, &row.delivery_id);
         match select_row(ctx, &request.delivery_id)? {
-            Some(row) => Ok(ClaimOutcome::Claimed { row }),
+            Some(row) => Ok(ClaimOutcome::Claimed { row: Box::new(row) }),
             None => Ok(ClaimOutcome::Lost { state: None }),
         }
     })
@@ -1191,7 +1192,7 @@ pub fn record_outcome(ctx: &StoreContext, request: &RecordOutcomeRequest) -> Res
             }
         }
         match select_row(ctx, &request.delivery_id)? {
-            Some(row) => Ok(ClaimOutcome::Claimed { row }),
+            Some(row) => Ok(ClaimOutcome::Claimed { row: Box::new(row) }),
             None => Ok(ClaimOutcome::Lost { state: None }),
         }
     })

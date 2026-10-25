@@ -45,11 +45,10 @@ impl SessionWorkObligations {
     pub fn new(store: Box<dyn CustodyStore>) -> Self {
         let mut records = BTreeMap::new();
         for entry in store.entries() {
-            if entry["type"] == "custom" && entry["customType"] == "work-custody" {
-                if let Some(record) = read_work_custody(&entry["data"]) {
+            if entry["type"] == "custom" && entry["customType"] == "work-custody"
+                && let Some(record) = read_work_custody(&entry["data"]) {
                     records.insert(record.id.clone(), record);
                 }
-            }
         }
         Self {
             records,

@@ -1,6 +1,7 @@
 //! Where a session's relocation requests go (senpi `modes/rpc/session-relocation-channel.ts`, docs/rpc.md
 //! "Continuing a session on another computer"): to ONE connection, the one attached to the session that advertised
 //! `session_relocation`, and only that connection's answer counts.
+pub type SendCallback = Arc<dyn Fn(&str, Value, RelocationRecordKind) + Send + Sync>;
 use crate::custom_capability::SESSION_RELOCATION_CAPABILITY;
 use serde_json::{Map, Value};
 use std::sync::Arc;
@@ -43,7 +44,7 @@ pub struct RelocationClientInfo {
 pub struct RelocationChannel {
     offerer: ConnectionSource,
     current: ConnectionSource,
-    send: Arc<dyn Fn(&str, Value, RelocationRecordKind) + Send + Sync>,
+    send: SendCallback,
 }
 
 impl RelocationChannel {
@@ -159,10 +160,9 @@ pub fn answer_host_response(
     }
     reply.insert("type".into(), Value::from("response"));
     reply.insert("command".into(), Value::from("host_response"));
-    if !frame
+    if frame
         .get("id")
-        .and_then(Value::as_str)
-        .is_some_and(|id| !id.is_empty())
+        .and_then(Value::as_str).is_none_or(|id| id.is_empty())
     {
         reply.insert("success".into(), Value::Bool(false));
         reply.insert("error".into(), Value::from("invalid_host_response"));

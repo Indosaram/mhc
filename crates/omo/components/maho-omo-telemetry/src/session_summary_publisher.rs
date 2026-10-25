@@ -297,6 +297,7 @@ mod tests {
         assert!(advanced.load(Ordering::SeqCst));
         assert_eq!(*pending_before.lock().unwrap(), 1);
         assert!(storage.pending_uuids().is_empty());
+        {
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].uuid, "01234567-89ab-cdef-0123-456789abcdef");
@@ -304,6 +305,7 @@ mod tests {
         assert_eq!(seen[0].properties["summary_seq"], 2);
         assert_eq!(seen[0].properties["ended_by"], "checkpoint");
         assert_eq!(seen[0].properties["session_role"], "root");
+        }
         publisher.settled().await;
     }
 

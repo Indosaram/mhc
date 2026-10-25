@@ -148,11 +148,10 @@ impl AccountChain {
                 }
             }
             for entry in &entries {
-                if let (Some(seq), Some(link)) = (entry["seq"].as_u64(), entry["link"].as_str()) {
-                    if seq <= state.head().map_or(0, |h| h.seq) {
+                if let (Some(seq), Some(link)) = (entry["seq"].as_u64(), entry["link"].as_str())
+                    && seq <= state.head().map_or(0, |h| h.seq) {
                         self.links.insert(seq, link.into());
                     }
-                }
             }
             self.state = state;
             if let Some((seq, reason)) = refused {
@@ -185,15 +184,14 @@ impl AccountChain {
         if let Some(position) = self.positions.get(&seq) {
             return Ok(position.clone());
         }
-        if let Some(at) = self.refused_at {
-            if seq > at {
+        if let Some(at) = self.refused_at
+            && seq > at {
                 return Ok(self
                     .positions
                     .get(&at)
                     .cloned()
                     .unwrap_or(ChainPosition::Unknown));
             }
-        }
         if self.held_from.is_some_and(|at| seq >= at) {
             return Ok(ChainPosition::Pending);
         }

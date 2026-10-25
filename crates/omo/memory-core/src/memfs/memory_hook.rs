@@ -48,9 +48,7 @@ pub fn provenance_of(content: Option<&str>) -> Option<String> {
     let content = content?;
     let entries = content_frontmatter_entries(content)?;
     entries
-        .into_iter()
-        .filter(|entry| entry.key == PROVENANCE_FRONTMATTER_KEY)
-        .last()
+        .into_iter().rfind(|entry| entry.key == PROVENANCE_FRONTMATTER_KEY)
         .map(|entry| entry.value)
 }
 
@@ -166,11 +164,10 @@ pub fn commit_message_failures(
         };
         failures.extend(look_alike_failures(&entry.path, &staged));
         let header = provenance_of(Some(&staged));
-        if let Some(h) = header {
-            if !hand_commit_keeps(cwd, entry, &staged, &h, &heads) {
+        if let Some(h) = header
+            && !hand_commit_keeps(cwd, entry, &staged, &h, &heads) {
                 failures.push(format!("  {}: {RECEIPT_REFUSAL}", entry.path));
             }
-        }
     }
     failures
 }
@@ -200,10 +197,8 @@ fn hand_commit_keeps(
     if let Some(o) = ours {
         parents.push(o);
     }
-    for t in theirs {
-        if let Some(t) = t {
-            parents.push(t);
-        }
+    for t in theirs.into_iter().flatten() {
+        parents.push(t);
     }
 
     parents.iter().any(|parent| {

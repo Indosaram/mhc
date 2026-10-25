@@ -30,11 +30,10 @@ impl LifecycleChildren {
             records: IndexMap::new(),
         };
         for e in entries {
-            if e["type"] == "custom" && e["customType"] == "child-lifecycle" {
-                if let Some(r) = read_child_report(&e["data"]) {
+            if e["type"] == "custom" && e["customType"] == "child-lifecycle"
+                && let Some(r) = read_child_report(&e["data"]) {
                     let _ = s.accept(r, |_| Ok(()));
                 }
-            }
         }
         s
     }

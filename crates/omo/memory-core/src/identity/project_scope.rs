@@ -101,9 +101,9 @@ impl ProjectIdentityResolver {
         if checked.contains(path) {
             return;
         }
-        if self.probe.link_kind(path).await == Some(EntryKind::Symlink) {
-            if let Some(target) = self.probe.real_path(path).await {
-                if self.probe.link_kind(&target).await == Some(EntryKind::Directory)
+        if self.probe.link_kind(path).await == Some(EntryKind::Symlink)
+            && let Some(target) = self.probe.real_path(path).await
+                && self.probe.link_kind(&target).await == Some(EntryKind::Directory)
                     && !self
                         .is_inside_git_work_tree(path.parent().unwrap_or(path))
                         .await
@@ -113,8 +113,6 @@ impl ProjectIdentityResolver {
                 {
                     self.links.lock().await.insert(target);
                 }
-            }
-        }
         checked.insert(path.to_path_buf());
     }
     async fn scan_session_tree(&self, scope: &ScopeRoots) {

@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use maho_ext_api::{BusSubscription, EventKind, EventResult, ExtensionApi};
+use maho_ext_api::{EventKind, EventResult, ExtensionApi};
 use serde_json::{Value, json};
 
 use crate::event_schemas::HANDOFF_HINT_ACTIONS;

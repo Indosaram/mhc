@@ -73,7 +73,7 @@ const LOOKUP_TOOLS: [&str; 11] = [
 const SSH_VALUE_FLAGS: &str = "BbcDEeFIiJLlmOoPpQRSWw";
 
 fn contains(values: &[&str], value: &str) -> bool {
-    values.iter().any(|candidate| *candidate == value)
+    values.contains(&value)
 }
 
 /// Wrapper options that take a value (`env -u NAME`, `sudo -u user`, `time -o file`), per env(1),

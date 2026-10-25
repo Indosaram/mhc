@@ -338,11 +338,10 @@ impl WorkpoolRequest for DispatcherRequest {
                     item_id: Some(self.item.item_id.clone()), task_id: event.task_id.clone(), run_epoch: event.run_epoch,
                     error: Some(WorkpoolEventError { code: error.code, message: error.message }) });
             }
-            if event.error.as_ref().is_some_and(|error| error.code == WorkpoolErrorCode::DeliveryUncertain) {
-                if let (Some(task_id), Some(epoch)) = (event.task_id.clone(), event.run_epoch) {
+            if event.error.as_ref().is_some_and(|error| error.code == WorkpoolErrorCode::DeliveryUncertain)
+                && let (Some(task_id), Some(epoch)) = (event.task_id.clone(), event.run_epoch) {
                     observe_completion(&self.pool, (task_id, epoch), &self.store, Arc::clone(&self.admission), Arc::clone(&self.emit), &self.state, Arc::clone(&self.schedule));
                 }
-            }
             (self.schedule)(self.pool.pool_id.clone());
             (self.emit)(event);
         } else if event.kind == WorkpoolEventKind::Dispatched {

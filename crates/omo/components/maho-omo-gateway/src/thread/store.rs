@@ -89,7 +89,7 @@ impl SqliteGatewayStore {
         &self,
     ) -> Result<Vec<super::store_extension_facade::RetainedRegistration>, StoreError> {
         let ctx = self.context()?;
-        let mut extensions = self.extensions()?;
+        let extensions = self.extensions()?;
         let mut retained = Vec::new();
         for name in ctx
             .all(
@@ -176,7 +176,7 @@ impl SqliteGatewayStore {
                 };
             }
         };
-        let registered = match extensions.load(&*ctx, &self.modules, name) {
+        let registered = match extensions.load(&ctx, &self.modules, name) {
             Ok(registered) => registered,
             Err(refused) => {
                 return super::extension_session_ops::SessionCallReply {
@@ -205,10 +205,9 @@ impl SqliteGatewayStore {
         });
         drop(extensions);
         drop(ctx);
-        if phase == SessionCallPhase::Op && reply.result.is_ok() {
-            if let (Some(wake_dir), Some(wake)) = (wake_dir.as_deref(), entry.entry.wake.as_deref())
-            {
-                if let Err(error) = super::extension_session_ops::touch_wake(
+        if phase == SessionCallPhase::Op && reply.result.is_ok()
+            && let (Some(wake_dir), Some(wake)) = (wake_dir.as_deref(), entry.entry.wake.as_deref())
+                && let Err(error) = super::extension_session_ops::touch_wake(
                     Path::new(&self.config.agent_dir),
                     wake_dir,
                     wake,
@@ -222,8 +221,6 @@ impl SqliteGatewayStore {
                         listener(name, &error.message());
                     }
                 }
-            }
-        }
         reply
     }
 }

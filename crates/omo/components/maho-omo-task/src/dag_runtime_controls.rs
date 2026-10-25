@@ -4,6 +4,9 @@
 //! record-based controls, and retry/amend take the record-based path instead of acquiring or adopting
 //! a scheduler. Only a run that is not user-stopped reaches the live entry points.
 
+pub type LiveRetryCallback = Arc<dyn Fn(&str, Option<&[String]>, Option<&str>) -> Result<DagRunSnapshot, DagToolExecutionError> + Send + Sync>;
+pub type LiveSendCallback = Arc<dyn Fn(&str, &str, &str) -> Result<DagToolSendOutcome, DagToolExecutionError> + Send + Sync>;
+pub type LiveAmendCallback = Arc<dyn Fn(&str, senpi_task::dag::graph::DagDefinition) -> Result<DagRunSnapshot, DagToolExecutionError> + Send + Sync>;
 use std::sync::Arc;
 
 use senpi_task::dag::{
@@ -18,15 +21,15 @@ pub struct DagRuntimeControlsPorts {
     pub pauses: Arc<DagPauseStore>,
     pub options: Arc<dyn Fn(&str) -> DagSchedulerOptions + Send + Sync>,
     /// Retry on a live run: acquire or adopt the scheduler and re-enter the nodes.
-    pub live_retry: Arc<dyn Fn(&str, Option<&[String]>, Option<&str>) -> Result<DagRunSnapshot, DagToolExecutionError> + Send + Sync>,
+    pub live_retry: LiveRetryCallback,
     /// Retry on a user-stopped run: the record-based staged mutation, no scheduler.
-    pub paused_retry: Arc<dyn Fn(&str, Option<&[String]>, Option<&str>) -> Result<DagRunSnapshot, DagToolExecutionError> + Send + Sync>,
+    pub paused_retry: LiveRetryCallback,
     /// Send on a live run: steer a running child or revive a resident one.
-    pub live_send: Arc<dyn Fn(&str, &str, &str) -> Result<DagToolSendOutcome, DagToolExecutionError> + Send + Sync>,
+    pub live_send: LiveSendCallback,
     /// Amend on a live run: edit the definition and re-enter.
-    pub live_amend: Arc<dyn Fn(&str, senpi_task::dag::graph::DagDefinition) -> Result<DagRunSnapshot, DagToolExecutionError> + Send + Sync>,
+    pub live_amend: LiveAmendCallback,
     /// Amend on a user-stopped run: journal the amendment, never re-enter.
-    pub paused_amend: Arc<dyn Fn(&str, senpi_task::dag::graph::DagDefinition) -> Result<DagRunSnapshot, DagToolExecutionError> + Send + Sync>,
+    pub paused_amend: LiveAmendCallback,
     pub clear_admission_latch: Arc<dyn Fn(&str) + Send + Sync>,
 }
 

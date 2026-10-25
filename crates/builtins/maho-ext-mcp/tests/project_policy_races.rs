@@ -16,7 +16,7 @@ impl ExtensionUi for BlockingUi {
                 return None;
             }
             let signal = options.signal.expect("reauthorization passes signal");
-            self.entered.send(signal.clone()).unwrap();
+            self.entered.send(signal.clone()).expect("grant entry observer");
             signal.cancelled().await;
             None
         })
@@ -152,7 +152,7 @@ async fn service_reload_reuses_identity_but_revoke_and_edit_are_seen_before_spaw
         )
         .await
         .unwrap();
-    let declarations = maho_ext_mcp::skills::parse_skill_mcp_declarations(&[skill.clone()]);
+    let declarations = maho_ext_mcp::skills::parse_skill_mcp_declarations(std::slice::from_ref(&skill));
     service
         .attach_skill_mcp_servers(&declarations)
         .await

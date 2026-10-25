@@ -100,8 +100,9 @@ fn read_varint(bytes: &[u8], at: &mut usize) -> Option<u64> {
     }
     None
 }
+type WireField<'a> = (u64, u8, &'a [u8], &'a [u8]);
 /// Decode wire fields while retaining unknown fields verbatim for forward compatibility.
-fn fields(bytes: &[u8]) -> Option<Vec<(u64, u8, &[u8], &[u8])>> {
+fn fields(bytes: &[u8]) -> Option<Vec<WireField<'_>>> {
     let mut out = Vec::new();
     let mut at = 0;
     while at < bytes.len() {

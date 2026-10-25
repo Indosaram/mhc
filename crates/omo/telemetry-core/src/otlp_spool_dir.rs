@@ -1,3 +1,4 @@
+pub type OnLockLeftCallback = Option<Arc<dyn Fn(&io::Error) + Send + Sync>>;
 use crate::otlp_spool_file::{Signal, count_spool_records};
 use crate::otlp_spool_lock::*;
 pub use crate::otlp_spool_names::*;
@@ -29,7 +30,7 @@ pub struct SpoolContext {
     pub cap_bytes: u64,
     pub max_age_ms: u64,
     pub on_drop: Arc<dyn Fn(DropReason, usize) + Send + Sync>,
-    pub on_lock_left: Option<Arc<dyn Fn(&io::Error) + Send + Sync>>,
+    pub on_lock_left: OnLockLeftCallback,
 }
 impl SpoolContext {
     fn owner(&self) -> LockOwner {
@@ -351,11 +352,10 @@ pub fn sweep_spool(ctx: &SpoolContext) -> io::Result<()> {
         }
     }
     for entry in list_spool(&ctx.dir)? {
-        if let SpoolEntry::Batch { name, batch_id, .. } = entry {
-            if now.saturating_sub(batch_created_ms(&batch_id)) > ctx.max_age_ms {
+        if let SpoolEntry::Batch { name, batch_id, .. } = entry
+            && now.saturating_sub(batch_created_ms(&batch_id)) > ctx.max_age_ms {
                 drop_file(ctx, &name, DropReason::Expired)?;
             }
-        }
     }
     for file in list_quarantine(ctx)? {
         if now.saturating_sub(file.mtime_ms) > ctx.max_age_ms {

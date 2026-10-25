@@ -16,10 +16,12 @@ pub struct PurgeReport<'a> {
     pub on_skipped: &'a dyn Fn(TelemetrySpoolEntryKind),
     pub on_failed: &'a dyn Fn(&str),
 }
+pub type Unlink<'a> = &'a dyn Fn(&Path) -> io::Result<()>;
+pub type OwnerOf<'a> = &'a dyn Fn(&Path, u32) -> u32;
 #[derive(Default)]
 pub struct PurgeSeams<'a> {
-    pub unlink: Option<&'a dyn Fn(&Path) -> io::Result<()>>,
-    pub owner_of: Option<&'a dyn Fn(&Path, u32) -> u32>,
+    pub unlink: Option<Unlink<'a>>,
+    pub owner_of: Option<OwnerOf<'a>>,
 }
 fn owned(path: &Path, stat: &fs::Metadata, seams: &PurgeSeams<'_>) -> bool {
     #[cfg(unix)]

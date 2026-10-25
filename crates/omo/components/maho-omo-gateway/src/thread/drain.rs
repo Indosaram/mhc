@@ -4,6 +4,8 @@
 //! IMMEDIATE` barrier (`reconcile`), then admits queued rows in seq order with a two-phase claim:
 //! T1 claims the row, the runtime call runs outside any transaction, T2 records the outcome.
 
+pub type LogCallback = Option<Arc<dyn Fn(&str) + Send + Sync>>;
+pub type OnAdmittedCallback = Option<Arc<dyn Fn(&str, &str) + Send + Sync>>;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -33,11 +35,11 @@ pub struct InboxDrainOptions {
     pub durable_id: String,
     pub session_path: Arc<dyn Fn() -> Option<String> + Send + Sync>,
     pub now: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
-    pub log: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    pub log: LogCallback,
     /// Shows the queued notice in the session's own UI.
-    pub notify: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    pub notify: LogCallback,
     /// A delivery this drain started, steered or queued into the session.
-    pub on_admitted: Option<Arc<dyn Fn(&str, &str) + Send + Sync>>,
+    pub on_admitted: OnAdmittedCallback,
 }
 
 /// A held row (the user is composing) costs no store write and stops the pass, so nothing behind it

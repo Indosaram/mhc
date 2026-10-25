@@ -305,9 +305,8 @@ pub fn payload_exchanges(payload: &memory_core::facts::FactsPayload) -> Vec<crat
         for item in &entry.entries {
             if item.kind() == "reasoning" { continue; }
             let text = match item { memory_core::journal::entries::TranscriptEntry::Text(text) => text.text.as_str(), _ => "" };
-            if item.kind() == "user" && !text.trim().is_empty() {
-                if let Some(proposal) = &proposal { exchanges.push(crate::consent_exchange::ConsentExchange { proposal: proposal.clone(), reply: text.into() }); }
-            }
+            if item.kind() == "user" && !text.trim().is_empty()
+                && let Some(proposal) = &proposal { exchanges.push(crate::consent_exchange::ConsentExchange { proposal: proposal.clone(), reply: text.into() }); }
             proposal = (item.kind() == "assistant" && !text.trim().is_empty()).then(|| text.to_owned());
         }
     }

@@ -1,4 +1,5 @@
 //! Host RPC adapters (`runners/rpc-host.ts` and `rpc-host/`).
+pub type AdmitCallback = Arc<dyn Fn(&crate::runners::types::RpcRunnerSpec) -> Result<(), HostError> + Send + Sync>;
 pub mod durable_json;
 pub mod handle;
 pub mod handle_listeners;
@@ -38,7 +39,7 @@ pub struct ConfiguredRpcHostRunner {
     pub runner: RpcHostRunner,
     /// Store-index admission is a precondition of opening any hosted child.
     pub admit:
-        Arc<dyn Fn(&crate::runners::types::RpcRunnerSpec) -> Result<(), HostError> + Send + Sync>,
+        AdmitCallback,
     pub open: OpenHostSession,
 }
 impl crate::manager::runner::RpcRunnerLike for ConfiguredRpcHostRunner {

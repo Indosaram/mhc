@@ -19,9 +19,8 @@ pub fn validate_record(value: &Value) -> Result<(), WorkpoolError> {
     }
     if let Some(items) = object.get("items").and_then(Value::as_array) {
         for item in items {
-            if let Some(ids) = item.get("delivery").and_then(|d| d.get("entry_ids")) {
-                if !ids.as_array().is_some_and(|ids| ids.iter().all(Value::is_string)) { return Err(invalid()); }
-            }
+            if let Some(ids) = item.get("delivery").and_then(|d| d.get("entry_ids"))
+                && !ids.as_array().is_some_and(|ids| ids.iter().all(Value::is_string)) { return Err(invalid()); }
         }
     }
     Ok(())

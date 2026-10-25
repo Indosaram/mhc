@@ -6,6 +6,39 @@
 //! child, and installs the resumed runs before admission is released. A cancelled run leaves custody
 //! and releases its fences.
 
+pub type PauseTaskCallback = Arc<
+        dyn Fn(
+                &str,
+                &RunPauseOwner,
+            )
+                -> Result<Option<senpi_task::manager::run_pause::EngineInheritReceipt>, String>
+            + Send
+            + Sync,
+    >;
+pub type ResumeTaskCallback = Arc<
+        dyn Fn(
+                &str,
+                &RunPauseOwner,
+                &str,
+                Option<u64>,
+                Option<&ResumeCredential>,
+            ) -> Result<ResumeParticipantResult, String>
+            + Send
+            + Sync,
+    >;
+pub type ObserveTaskHoldCallback = Arc<
+        dyn Fn(&str, &str) -> Option<senpi_task::manager::run_pause::ObservedHold> + Send + Sync,
+    >;
+pub type HoldTaskInputCallback = Arc<
+        dyn Fn(
+                &str,
+                &senpi_task::manager::run_pause::HeldTaskInput,
+            ) -> Result<senpi_task::manager::run_pause::EngineHoldInputResult, String>
+            + Send
+            + Sync,
+    >;
+pub type FenceRunCallback = Arc<dyn Fn(&RunRef) -> Result<(), String> + Send + Sync>;
+pub type CancelTaskCallback = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 use senpi_task::pause::registry::PauseError;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -58,40 +91,13 @@ pub trait RunPauseSource: Send + Sync {
 pub struct EngineRunPauseEffects {
     pub sources: Arc<Mutex<Vec<Arc<dyn RunPauseSource>>>>,
     pub task_records: Arc<dyn Fn() -> Vec<senpi_task::state::TaskRecord> + Send + Sync>,
-    pub pause_task: Arc<
-        dyn Fn(
-                &str,
-                &RunPauseOwner,
-            )
-                -> Result<Option<senpi_task::manager::run_pause::EngineInheritReceipt>, String>
-            + Send
-            + Sync,
-    >,
-    pub resume_task: Arc<
-        dyn Fn(
-                &str,
-                &RunPauseOwner,
-                &str,
-                Option<u64>,
-                Option<&ResumeCredential>,
-            ) -> Result<ResumeParticipantResult, String>
-            + Send
-            + Sync,
-    >,
-    pub observe_task_hold: Arc<
-        dyn Fn(&str, &str) -> Option<senpi_task::manager::run_pause::ObservedHold> + Send + Sync,
-    >,
-    pub hold_task_input: Arc<
-        dyn Fn(
-                &str,
-                &senpi_task::manager::run_pause::HeldTaskInput,
-            ) -> Result<senpi_task::manager::run_pause::EngineHoldInputResult, String>
-            + Send
-            + Sync,
-    >,
-    pub fence_run: Arc<dyn Fn(&RunRef) -> Result<(), String> + Send + Sync>,
-    pub release_fences: Arc<dyn Fn(&RunRef) -> Result<(), String> + Send + Sync>,
-    pub cancel_task: Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
+    pub pause_task: PauseTaskCallback,
+    pub resume_task: ResumeTaskCallback,
+    pub observe_task_hold: ObserveTaskHoldCallback,
+    pub hold_task_input: HoldTaskInputCallback,
+    pub fence_run: FenceRunCallback,
+    pub release_fences: FenceRunCallback,
+    pub cancel_task: CancelTaskCallback,
 }
 
 impl RunPauseEffects for EngineRunPauseEffects {
@@ -106,13 +112,11 @@ impl RunPauseEffects for EngineRunPauseEffects {
         loop {
             let before = sessions.len();
             for record in &records {
-                if sessions.contains(&record.parent_session_id) {
-                    if let Some(child) = &record.child_session_id {
-                        if !sessions.contains(child) {
+                if sessions.contains(&record.parent_session_id)
+                    && let Some(child) = &record.child_session_id
+                        && !sessions.contains(child) {
                             sessions.push(child.clone());
                         }
-                    }
-                }
             }
             if before == sessions.len() {
                 break;

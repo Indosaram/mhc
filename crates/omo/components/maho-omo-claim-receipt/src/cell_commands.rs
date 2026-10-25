@@ -148,12 +148,10 @@ fn list_words(list: &str) -> Vec<String> {
         let mut word = "X".to_owned();
         if let Some(found) = STRING_LITERAL.find(trimmed) {
             let literal = found.as_str();
-            if trimmed.ends_with(literal) {
-                let prefix = &trimmed[..trimmed.len() - literal.len()];
-                if LITERAL_PREFIX.is_match(prefix) {
+            if let Some(prefix) = trimmed.strip_suffix(literal)
+                && LITERAL_PREFIX.is_match(prefix) {
                     word = unquote(literal);
                 }
-            }
         }
         words.push(word);
     }

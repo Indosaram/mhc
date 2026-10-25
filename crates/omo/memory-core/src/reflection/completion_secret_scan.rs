@@ -212,7 +212,7 @@ fn read_blob_contents(
 ) -> Result<BTreeMap<String, String>, String> {
     let mut unique: Vec<&str> = Vec::new();
     for oid in oids {
-        if !unique.iter().any(|seen| *seen == oid.as_str()) {
+        if !unique.contains(&oid.as_str()) {
             unique.push(oid.as_str());
         }
     }

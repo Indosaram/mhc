@@ -210,11 +210,10 @@ pub fn collect_skill_entries_with_options(
     let canonical = std::fs::canonicalize(dir)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| dir.to_string());
-    if let Some(ref ancestry) = options.ancestry {
-        if ancestry.contains(&canonical) {
+    if let Some(ref ancestry) = options.ancestry
+        && ancestry.contains(&canonical) {
             return entries;
         }
-    }
     let mut descendants = options.ancestry.clone().unwrap_or_default();
     descendants.insert(canonical);
 

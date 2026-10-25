@@ -51,7 +51,7 @@ pub fn compose_engine_host_wiring(input: EngineHostWiringInput) -> RunnerBuildCo
         create_session: input.create_session,
         parent_registry: input.parent_registry,
         exclude_models: exclude_models_of(&input.config),
-        resolve_inherited_extensions: Arc::new(|| Vec::new()),
+        resolve_inherited_extensions: Arc::new(Vec::new),
     }
 }
 

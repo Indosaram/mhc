@@ -66,11 +66,11 @@ pub struct ExecuteBatchInput<'a> {
 enum BatchStart<'a> {
     Started {
         item: &'a ResolvedSpawnItem,
-        result: StartedTask,
+        result: Box<StartedTask>,
         skills: Option<TaskSkillSummary>,
     },
     Failed {
-        detail: TaskToolItemDetail,
+        detail: Box<TaskToolItemDetail>,
         skills: Option<TaskSkillSummary>,
     },
 }
@@ -191,17 +191,17 @@ fn start_all<'a>(input: &ExecuteBatchInput<'a>) -> Vec<BatchStart<'a>> {
                 starts.push(match start {
                     StartResult::Started(result) => BatchStart::Started {
                         item,
-                        result,
+                        result: Box::new(result),
                         skills,
                     },
                     other => BatchStart::Failed {
-                        detail: failed_start_detail(item, &other, skills.clone()),
+                        detail: Box::new(failed_start_detail(item, &other, skills.clone())),
                         skills,
                     },
                 });
             }
             Err(message) => starts.push(BatchStart::Failed {
-                detail: item_error(item, "", &message, None),
+                detail: Box::new(item_error(item, "", &message, None)),
                 skills: None,
             }),
         }
@@ -281,7 +281,7 @@ fn live_starts<'s>(starts: &'s [BatchStart<'_>]) -> Vec<&'s StartedTask> {
     starts
         .iter()
         .filter_map(|start| match start {
-            BatchStart::Started { result, .. } => Some(result),
+            BatchStart::Started { result, .. } => Some(result.as_ref()),
             BatchStart::Failed { .. } => None,
         })
         .collect()
@@ -306,7 +306,7 @@ fn background_result(starts: &[BatchStart<'_>]) -> TaskToolResult {
                 result,
                 skills,
             } => started_detail(item, result, skills.as_ref()),
-            BatchStart::Failed { detail, .. } => detail.clone(),
+            BatchStart::Failed { detail, .. } => detail.as_ref().clone(),
         })
         .collect();
     result(
@@ -494,7 +494,7 @@ fn sync_result(input: &ExecuteBatchInput<'_>, starts: &[BatchStart<'_>]) -> Task
         .iter()
         .map(|start| match start {
             BatchStart::Failed { detail, .. } => BatchItemOutput {
-                detail: detail.clone(),
+                detail: detail.as_ref().clone(),
                 body: detail
                     .error_message
                     .clone()

@@ -20,8 +20,8 @@ impl KeyringReceiver {
         if let Some(reason) = self.fold.refusal(entry) {
             return Some(reason);
         }
-        if entry["kind"] == "keyring" && entry["body"]["kind"] == "fork-resolution" {
-            if let Some(evidence) = entry["body"].get("evidence") {
+        if entry["kind"] == "keyring" && entry["body"]["kind"] == "fork-resolution"
+            && let Some(evidence) = entry["body"].get("evidence") {
                 let ancestry = self
                     .fold
                     .through(evidence["common"]["seq"].as_u64().unwrap_or(0));
@@ -29,7 +29,6 @@ impl KeyringReceiver {
                     return Some("fork_evidence_invalid");
                 }
             }
-        }
         self.fold.accept(entry);
         None
     }

@@ -382,13 +382,12 @@ impl McpService {
                 .map_or(decl.scope.as_deref() == Some("project"), |provenance| {
                     provenance.kind != "user"
                 });
-            if project && let Some(existing) = existing {
-                if crate::project_skill_policy::reuse_project_skill_server(
+            if project && let Some(existing) = existing
+                && crate::project_skill_policy::reuse_project_skill_server(
                     name, decl, &cwd, &agent_dir, existing,
                 )? {
                     continue;
                 }
-            }
             let resolved = if decl
                 .provenance
                 .as_ref()
@@ -401,10 +400,9 @@ impl McpService {
                     &cwd,
                     &agent_dir,
                     self.project_trusted,
-                    &self.session_env,
-                    self.elicitation_ui.clone(),
+                    &self.session_env, (self.elicitation_ui.clone(),
                     self.policy_notices.clone(),
-                    self.policy_notice_event.clone(),
+                    self.policy_notice_event.clone()),
                 )
                 .await?
             } else {

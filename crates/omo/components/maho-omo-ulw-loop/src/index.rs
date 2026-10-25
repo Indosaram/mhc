@@ -88,15 +88,14 @@ async fn status(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .observe(Some(plan));
-        if let Some(run) = run {
-            if let Err(error) = lifecycle.mark_run_completed(&run) {
+        if let Some(run) = run
+            && let Err(error) = lifecycle.mark_run_completed(&run) {
                 log_warn(
                     logger,
                     "omo-senpi ulw-loop run completion failed",
                     Some(serde_json::json!({"runId":run,"error":error.message})),
                 );
             }
-        }
     }
     Some((result.stdout, status_has_active_incomplete_run(&value)))
 }

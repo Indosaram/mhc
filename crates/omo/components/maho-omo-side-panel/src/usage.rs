@@ -1,3 +1,5 @@
+#[cfg(test)]
+pub type ListenerCallback = Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
 use crate::{
     constants::{CLAUDE_PROVIDERS, CODEX_PROVIDERS, MIN_ACCESS_TOKEN_LENGTH},
     native::now,
@@ -468,7 +470,7 @@ mod tests {
     fn engine_reports_repaint_and_stop_unsubscribes() {
         use std::sync::atomic::AtomicUsize;
         let records = Arc::new(Mutex::new(Vec::new()));
-        let listener: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>> = Arc::default();
+        let listener: ListenerCallback = Arc::default();
         let repaints = Arc::new(AtomicUsize::new(0));
         let source = NativeUsage::create(
             PathBuf::from("/nonexistent-side-panel-test"),

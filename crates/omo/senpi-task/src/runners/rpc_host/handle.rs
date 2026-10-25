@@ -64,14 +64,14 @@ impl HostSessionHandle {
         self.current_port().transport_lost(message);
     }
     fn current_port(&self) -> Arc<dyn HostSessionPort> {
-        self.port.lock().unwrap().clone()
+        self.port.lock().expect("hosted child state lock poisoned").clone()
     }
     fn bind_events(self: &Arc<Self>) {
-        if let Some(unsubscribe) = self.event_subscription.lock().unwrap().take() {
+        if let Some(unsubscribe) = self.event_subscription.lock().expect("hosted child state lock poisoned").take() {
             unsubscribe();
         }
         let weak = Arc::downgrade(self);
-        let port = self.port.lock().unwrap().clone();
+        let port = self.port.lock().expect("hosted child state lock poisoned").clone();
         let observed_port = port.clone();
         let subscription = port.on_event(Arc::new(move |event| {
             let Some(handle) = weak.upgrade() else {
@@ -80,11 +80,10 @@ impl HostSessionHandle {
             if event.event_type == "agent_start" {
                 let status_handle = Arc::downgrade(&handle);
                 std::thread::spawn(move || {
-                    if let Some(handle) = status_handle.upgrade() {
-                        if let Err(error) = handle.teardown.publish_running() {
+                    if let Some(handle) = status_handle.upgrade()
+                        && let Err(error) = handle.teardown.publish_running() {
                             eprintln!("host running publication failed: {error}");
                         }
-                    }
                 });
                 let was_settled = handle
                     .settled
@@ -96,7 +95,7 @@ impl HostSessionHandle {
             }
             handle.listeners.emit_event(event);
         }));
-        *self.event_subscription.lock().unwrap() = Some(subscription);
+        *self.event_subscription.lock().expect("hosted child state lock poisoned") = Some(subscription);
     }
     pub fn begin_turn(&self, text: &str) -> Result<(), HostError> {
         self.settled
@@ -110,7 +109,7 @@ impl HostSessionHandle {
         port: Arc<dyn HostSessionPort>,
         identity: HostSessionIdentity,
     ) -> Result<(), HostError> {
-        *self.port.lock().unwrap() = port;
+        *self.port.lock().expect("hosted child state lock poisoned") = port;
         self.identity.adopt(identity);
         self.bind_events();
         self.teardown.republish_status()
@@ -237,7 +236,7 @@ impl ManagedChildHandle for HostSessionHandle {
 
 impl Drop for HostSessionHandle {
     fn drop(&mut self) {
-        if let Some(unsubscribe) = self.event_subscription.get_mut().unwrap().take() {
+        if let Some(unsubscribe) = self.event_subscription.get_mut().expect("validated recovery state is present").take() {
             unsubscribe();
         }
     }
@@ -251,7 +250,7 @@ impl CurrentPortPause {
         Arc<dyn crate::pause::native_child_pause::NativeRunPause>,
         crate::pause::native_child_pause::NativePauseError,
     > {
-        self.0.lock().unwrap().native_pause().ok_or_else(|| {
+        self.0.lock().expect("hosted child state lock poisoned").native_pause().ok_or_else(|| {
             crate::pause::native_child_pause::NativePauseError::Engine(
                 "native_pause_unavailable".into(),
             )

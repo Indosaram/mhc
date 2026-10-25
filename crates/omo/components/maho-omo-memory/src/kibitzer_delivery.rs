@@ -9,6 +9,7 @@
 //! The coordinator key is `kibitzer:{path}` - the upstream member scope (one coordinator per
 //! wiring); it is deliberately NOT session-prefixed, matching `delivery.ts`.
 
+pub type ResolveSourceCallback = Option<Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>>;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -84,7 +85,7 @@ pub struct KibitzerDeliveryOptions {
     pub coordinator: Option<Arc<dyn KibitzerIdleCoordinator>>,
     pub send_message: Arc<dyn Fn(KibitzerSteerMessage) -> Result<(), String> + Send + Sync>,
     pub append_entry: AppendEntry,
-    pub resolve_source: Option<Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>>,
+    pub resolve_source: ResolveSourceCallback,
     pub warn: Arc<dyn Fn(&str) + Send + Sync>,
 }
 

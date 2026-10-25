@@ -104,7 +104,7 @@ pub struct PromptCachePrefixRequest {
     pub startup_notes: Option<PromptSizeStartupNotes>,
 }
 pub enum PromptCachePrefixResult {
-    Ready(PromptCachePrefixRequest),
+    Ready(Box<PromptCachePrefixRequest>),
     Skipped(String),
 }
 pub async fn compose_turn_system_prompt(
@@ -179,5 +179,5 @@ pub async fn build_prompt_cache_prefix_request(
             startup_notes: sizes_only.then(|| sources.startup_notes()),
         })
     };
-    tokio::select! { biased; () = signal.cancelled() => PromptCachePrefixResult::Skipped("prefix build cancelled".into()), result = work => match result { Ok(request) => PromptCachePrefixResult::Ready(request), Err(reason) => PromptCachePrefixResult::Skipped(reason) } }
+    tokio::select! { biased; () = signal.cancelled() => PromptCachePrefixResult::Skipped("prefix build cancelled".into()), result = work => match result { Ok(request) => PromptCachePrefixResult::Ready(Box::new(request)), Err(reason) => PromptCachePrefixResult::Skipped(reason) } }
 }

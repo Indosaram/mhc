@@ -571,8 +571,7 @@ impl GoalDelivery {
                         ctx,
                         &ended,
                         goal,
-                        self.pending.load(Ordering::Acquire),
-                        &sources,
+                        (self.pending.load(Ordering::Acquire), &sources),
                         ctx.todo_turn_end_backstop_enabled()?,
                     )?;
                 let input = crate::turn_end_liveness_report::collect_turn_end_liveness_input(
@@ -580,8 +579,8 @@ impl GoalDelivery {
                     &ended,
                     goal,
                     Some(&outcome),
-                    crate::turn_end_liveness_report::deadline_stop_pending(ctx),
-                    self.pending.load(Ordering::Acquire),
+                    (crate::turn_end_liveness_report::deadline_stop_pending(ctx),
+                    self.pending.load(Ordering::Acquire)),
                     &*self.runtime.monitor.lock().map_err(failure)?,
                     (self.now)() as i64,
                 )?;
@@ -619,8 +618,8 @@ impl GoalDelivery {
                                 &ended_live,
                                 goal.as_ref(),
                                 Some(&outcome_live),
-                                crate::turn_end_liveness_report::deadline_stop_pending(&context),
-                                pending.load(Ordering::Acquire),
+                                (crate::turn_end_liveness_report::deadline_stop_pending(&context),
+                                pending.load(Ordering::Acquire)),
                                 &monitor,
                                 now() as i64,
                             ) {
@@ -810,7 +809,7 @@ mod tests {
         let mut backstop = crate::todo_owed_backstop::TodoOwedBackstop::default();
         assert_eq!(
             backstop
-                .after_agent_end(&api, &ctx, &event, None, false, &["child".into()], true)
+                .after_agent_end(&api, &ctx, &event, None, (false, &["child".into()]), true)
                 .unwrap(),
             "waiting"
         );
@@ -818,7 +817,7 @@ mod tests {
         for expected in ["delivered", "delivered", "capped", "cap"] {
             assert_eq!(
                 backstop
-                    .after_agent_end(&api, &ctx, &event, None, false, &[], true)
+                    .after_agent_end(&api, &ctx, &event, None, (false, &[]), true)
                     .unwrap(),
                 expected
             );
@@ -827,7 +826,7 @@ mod tests {
         branch.entries.lock().unwrap()[0] = entry(false);
         assert_eq!(
             backstop
-                .after_agent_end(&api, &ctx, &event, None, false, &[], true)
+                .after_agent_end(&api, &ctx, &event, None, (false, &[]), true)
                 .unwrap(),
             "delivered"
         );
@@ -835,7 +834,7 @@ mod tests {
         backstop.reset_chain();
         assert_eq!(
             backstop
-                .after_agent_end(&api, &ctx, &event, None, false, &[], false)
+                .after_agent_end(&api, &ctx, &event, None, (false, &[]), false)
                 .unwrap(),
             "disabled"
         );
@@ -843,7 +842,7 @@ mod tests {
         aborted.aborted = true;
         assert_eq!(
             backstop
-                .after_agent_end(&api, &ctx, &aborted, None, false, &[], true)
+                .after_agent_end(&api, &ctx, &aborted, None, (false, &[]), true)
                 .unwrap(),
             "not-clean"
         );
@@ -858,14 +857,14 @@ mod tests {
         )];
         assert_eq!(
             backstop
-                .after_agent_end(&api, &ctx, &question, None, false, &[], true)
+                .after_agent_end(&api, &ctx, &question, None, (false, &[]), true)
                 .unwrap(),
             "question"
         );
         ctx.mode = ExtensionMode::Print;
         assert_eq!(
             backstop
-                .after_agent_end(&api, &ctx, &event, None, false, &[], true)
+                .after_agent_end(&api, &ctx, &event, None, (false, &[]), true)
                 .unwrap(),
             "non-interactive"
         );
@@ -873,7 +872,7 @@ mod tests {
         branch.entries.lock().unwrap().clear();
         assert_eq!(
             backstop
-                .after_agent_end(&api, &ctx, &event, None, false, &[], true)
+                .after_agent_end(&api, &ctx, &event, None, (false, &[]), true)
                 .unwrap(),
             "no-open-tasks"
         );

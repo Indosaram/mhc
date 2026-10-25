@@ -692,7 +692,7 @@ pub fn has_blank_key(credential: &Credential) -> bool {
         Credential::ApiKey(api_key) => api_key
             .key
             .as_deref()
-            .map_or(false, |k| k.trim().is_empty()),
+            .is_some_and(|k| k.trim().is_empty()),
         Credential::OAuth(_) => false,
     }
 }
@@ -705,20 +705,19 @@ pub fn has_blank_pooled_key(credential: &PooledCredential) -> bool {
     credential
         .key
         .as_deref()
-        .map_or(false, |k| k.trim().is_empty())
+        .is_some_and(|k| k.trim().is_empty())
 }
 
 /// Drops a blank or whitespace `key` from an API-key credential; used only for providers that declare `keyOptional`.
 pub fn without_blank_key(mut credential: Credential) -> Credential {
-    if let Credential::ApiKey(ref mut api_key) = credential {
-        if api_key
+    if let Credential::ApiKey(ref mut api_key) = credential
+        && api_key
             .key
             .as_deref()
-            .map_or(false, |k| k.trim().is_empty())
+            .is_some_and(|k| k.trim().is_empty())
         {
             api_key.key = None;
         }
-    }
     credential
 }
 

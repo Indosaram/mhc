@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use telemetry_core::{TelemetryDeliveryError, TelemetryDiagnosticEvent, TelemetryError};
+use telemetry_core::{TelemetryDiagnosticEvent, TelemetryError};
 
 use crate::session_summary_publisher::SummaryPublish;
 use crate::session_summary_store::{PendingRecord, SummaryStorage};
@@ -72,6 +72,7 @@ mod tests {
     use futures::FutureExt;
     use futures::future::BoxFuture;
     use serde_json::json;
+    use telemetry_core::TelemetryDeliveryError;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
 

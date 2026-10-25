@@ -30,12 +30,11 @@ impl LifecycleLedger {
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
         let mut current=restored.clone().unwrap_or_else(||json!({"state":"done","seq":0,"epoch":0,"epochOrigin":"automatic","humanInputRevision":0,"selfSettleEligible":true,"restoring":true,"persisted":false,"runPaused":false,"since":chrono::Utc::now().to_rfc3339(),"role":if spawned_by.is_some(){"child"}else{"root"},"rootSessionId":spawned_by.map(|s|s["rootSessionId"].clone()).unwrap_or(json!(session_id))}));
-        if restored.is_none() {
-            if let Some(s) = spawned_by {
+        if restored.is_none()
+            && let Some(s) = spawned_by {
                 current["parentSessionId"] = s["parentSessionId"].clone();
                 current["taskId"] = s["taskId"].clone();
             }
-        }
         let r = restored.as_ref().unwrap_or(&Value::Null);
         let sealed = r["epochSealed"] == true;
         let run_id = r["runId"].as_str().map(str::to_owned);
@@ -228,11 +227,10 @@ impl LifecycleLedger {
                 json!({"kind":if standing{"agent"}else{"reply"},"at":now})
             };
         }
-        if state == "failed" {
-            if let Some(f) = failure {
+        if state == "failed"
+            && let Some(f) = failure {
                 n["failure"] = f;
             }
-        }
         if state == "done"
             && (standing || (self.sealed && self.current.get("settleDecision").is_some()))
         {

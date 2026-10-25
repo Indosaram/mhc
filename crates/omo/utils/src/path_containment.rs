@@ -3,11 +3,13 @@
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+pub type Realpath<'a> = &'a dyn Fn(&Path) -> io::Result<PathBuf>;
+
 /// Options for path containment. `realpath` is injectable for alternate filesystems/tests.
 #[derive(Clone, Copy, Default)]
 pub struct PathContainmentOptions<'a> {
     pub platform: Option<&'a str>,
-    pub realpath: Option<&'a dyn Fn(&Path) -> io::Result<PathBuf>>,
+    pub realpath: Option<Realpath<'a>>,
 }
 
 fn lexical_resolve(path: &Path) -> io::Result<PathBuf> {

@@ -162,11 +162,10 @@ pub fn create_otlp_sender(input: CreateOtlpTelemetryTransportInput) -> OtlpTelem
         .iter()
         .map(|host| (*host).to_string())
         .collect();
-    if let Some(host) = url_host(&endpoint) {
-        if !host.is_empty() {
+    if let Some(host) = url_host(&endpoint)
+        && !host.is_empty() {
             hosts.push(host);
         }
-    }
     let fetch = create_traceparent_fetch(fetch, &hosts);
     let sender = Arc::new_cyclic(|weak: &Weak<OtlpSender>| {
         let on_appended: Arc<dyn Fn(&mut SpoolWriter) + Send + Sync> = {
@@ -307,14 +306,13 @@ pub fn create_otlp_sender(input: CreateOtlpTelemetryTransportInput) -> OtlpTelem
     };
     // The startup sweep + pass runs first; a flush waits for it, so a batch sealed by an early flush is
     // never left behind by a pass that listed the spool before the seal.
-    if input_auto_start(&transport.sender) {
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+    if input_auto_start(&transport.sender)
+        && let Ok(handle) = tokio::runtime::Handle::try_current() {
             let sender = Arc::clone(&transport.sender);
             handle.spawn(async move {
                 sender.ensure_started().await;
             });
         }
-    }
     transport
 }
 
@@ -508,13 +506,12 @@ impl OtlpSender {
                     .sealed(signal, &batch_id, bytes);
             }
         });
-        if let Some(sender) = self.self_weak.upgrade() {
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        if let Some(sender) = self.self_weak.upgrade()
+            && let Ok(handle) = tokio::runtime::Handle::try_current() {
                 handle.spawn(async move {
                     sender.batches.pump().await;
                 });
             }
-        }
     }
 
     fn seal_providers(&self) {

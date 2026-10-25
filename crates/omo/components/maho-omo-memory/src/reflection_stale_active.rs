@@ -5,6 +5,7 @@
 //! decides, fail-closed, whether that holder is provably gone; only then is the existing
 //! reconciliation asked to settle the run.
 
+pub type ShouldReconcileCallback = Option<Box<dyn Fn(&str) -> bool + Send + Sync>>;
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,7 +48,7 @@ pub fn stale_reflection_lock_notice(reflection_dir: &Path, run_id: &str, reason:
 pub async fn recover_stale_reflection_holder<F, Fut>(
     reflection_dir: &Path,
     reconcile: F,
-    should_reconcile: Option<Box<dyn Fn(&str) -> bool + Send + Sync>>,
+    should_reconcile: ShouldReconcileCallback,
 ) -> (ActiveHolderVerdict, Option<String>)
 where
     F: FnOnce() -> Fut,
@@ -56,8 +57,8 @@ where
     let verdict = classify_active_reflection_holder(reflection_dir, None);
     match &verdict {
         ActiveHolderVerdict::Dead { run_id } => {
-            if let Some(should) = &should_reconcile {
-                if !should(run_id) {
+            if let Some(should) = &should_reconcile
+                && !should(run_id) {
                     let notice = stale_reflection_lock_notice(
                         reflection_dir,
                         run_id,
@@ -65,7 +66,6 @@ where
                     );
                     return (verdict, Some(notice));
                 }
-            }
             reconcile().await;
             let after = classify_active_reflection_holder(reflection_dir, None);
             match &after {

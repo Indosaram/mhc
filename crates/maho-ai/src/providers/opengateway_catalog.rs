@@ -30,18 +30,16 @@ pub fn parse_open_gateway_price_table(value: &Value) -> Result<Vec<PriceRoute>, 
     let object = value.as_object().ok_or_else(|| "OpenGateway price table is not an object".to_owned())?;
     let envelope = object.get("entries").is_some_and(|entries| !is_price_route_entry(entries));
     if envelope {
-        if let Some(currency) = object.get("currency") {
-            if currency.as_str() != Some("USD") {
+        if let Some(currency) = object.get("currency")
+            && currency.as_str() != Some("USD") {
                 return Err(format!("OpenGateway price table has unsupported currency: {} (expected USD)", currency));
             }
-        }
-        if let Some(unit) = object.get("unit") {
-            if unit.as_str() != Some("USD_PER_TOKEN") {
+        if let Some(unit) = object.get("unit")
+            && unit.as_str() != Some("USD_PER_TOKEN") {
                 return Err(format!("OpenGateway price table has unsupported unit: {} (expected USD_PER_TOKEN)", unit));
             }
-        }
     }
-    let entries = if envelope { object.get("entries").unwrap() } else { value };
+    let entries = if envelope { object.get("entries").expect("validated catalog envelope has entries") } else { value };
     let entries = entries.as_object().ok_or_else(|| "OpenGateway price table entries is not an object".to_owned())?;
     let mut routes = Vec::new();
     for entry in entries.values() {
@@ -67,6 +65,11 @@ pub fn parse_open_gateway_price_table(value: &Value) -> Result<Vec<PriceRoute>, 
     Ok(routes)
 }
 
+
+
+#[allow(dead_code)]
+fn _record_type_anchor(_: &Map<String, Value>) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,6 +94,3 @@ mod tests {
         assert!(parse_open_gateway_price_table(&json!({"entries":entries,"unit":"OTHER"})).is_err());
     }
 }
-
-#[allow(dead_code)]
-fn _record_type_anchor(_: &Map<String, Value>) {}

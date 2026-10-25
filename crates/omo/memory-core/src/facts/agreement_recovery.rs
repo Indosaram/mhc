@@ -46,7 +46,7 @@ pub fn upgrade_agreement_recovery(
     let existing = match &ledger.pre.worktree {
         GitWorktreeIdentity::Missing => None,
         GitWorktreeIdentity::File(file) => {
-            let blobs = repo.read_blobs(&[file.oid.clone()])?;
+            let blobs = repo.read_blobs(std::slice::from_ref(&file.oid))?;
             Some(blobs.get(&file.oid).cloned().ok_or_else(|| {
                 FactsRecoveryError::Invalid("Missing legacy agreement pre-image".into())
             })?)

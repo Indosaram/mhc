@@ -472,6 +472,54 @@ pub fn cancel_paused_dag_node_with_store(
     Ok(())
 }
 
+pub use crate::dag::manager::paused_amendment_unsafe;
+
+/// Checkpoint-backed callers use the same sidecar cancellation implementation.
+pub fn cancel_paused_dag_node(
+    options: &DagSchedulerOptions,
+    run_id: &DagRunId,
+    node_id: &DagNodeId,
+    close: impl Fn(&str, &str) + Send + Sync,
+) -> Result<(), DagNodeControlError> {
+    struct Close<F>(F);
+    impl<F: Fn(&str, &str) + Send + Sync> PausedNodeHoldPort for Close<F> {
+        fn close_hold(
+            &self,
+            task: &str,
+            cause: PausedNodeCancelCause,
+        ) -> Result<(), DagNodeControlError> {
+            (self.0)(task, cause.as_str());
+            Ok(())
+        }
+    }
+    let pauses = DagPauseStore::from_store(options.store.clone());
+    if let Some(record) = options
+        .store
+        .read_checkpoint::<DagRunRecordV1>(run_id)
+        .map_err(|error| {
+            DagNodeControlError::new(DagNodeControlErrorCode::InvalidArguments, error.to_string())
+        })?
+        && let Some(pause) = record.pause {
+            let mut state = pauses.read(run_id).map_err(|error| {
+                DagNodeControlError::new(
+                    DagNodeControlErrorCode::InvalidArguments,
+                    error.to_string(),
+                )
+            })?;
+            state.pause = Some(DagRunPause {
+                reason: DagRunPauseReason::UserStop,
+                pause_seq: Some(pause.pause_seq),
+            });
+            pauses.write(run_id, &state).map_err(|error| {
+                DagNodeControlError::new(
+                    DagNodeControlErrorCode::InvalidArguments,
+                    error.to_string(),
+                )
+            })?;
+        }
+    cancel_paused_dag_node_with_store(options, run_id, node_id, &Close(close), &pauses)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,54 +605,4 @@ mod tests {
                 .exists()
         );
     }
-}
-
-pub use crate::dag::manager::paused_amendment_unsafe;
-
-/// Checkpoint-backed callers use the same sidecar cancellation implementation.
-pub fn cancel_paused_dag_node(
-    options: &DagSchedulerOptions,
-    run_id: &DagRunId,
-    node_id: &DagNodeId,
-    close: impl Fn(&str, &str) + Send + Sync,
-) -> Result<(), DagNodeControlError> {
-    struct Close<F>(F);
-    impl<F: Fn(&str, &str) + Send + Sync> PausedNodeHoldPort for Close<F> {
-        fn close_hold(
-            &self,
-            task: &str,
-            cause: PausedNodeCancelCause,
-        ) -> Result<(), DagNodeControlError> {
-            (self.0)(task, cause.as_str());
-            Ok(())
-        }
-    }
-    let pauses = DagPauseStore::from_store(options.store.clone());
-    if let Some(record) = options
-        .store
-        .read_checkpoint::<DagRunRecordV1>(run_id)
-        .map_err(|error| {
-            DagNodeControlError::new(DagNodeControlErrorCode::InvalidArguments, error.to_string())
-        })?
-    {
-        if let Some(pause) = record.pause {
-            let mut state = pauses.read(run_id).map_err(|error| {
-                DagNodeControlError::new(
-                    DagNodeControlErrorCode::InvalidArguments,
-                    error.to_string(),
-                )
-            })?;
-            state.pause = Some(DagRunPause {
-                reason: DagRunPauseReason::UserStop,
-                pause_seq: Some(pause.pause_seq),
-            });
-            pauses.write(run_id, &state).map_err(|error| {
-                DagNodeControlError::new(
-                    DagNodeControlErrorCode::InvalidArguments,
-                    error.to_string(),
-                )
-            })?;
-        }
-    }
-    cancel_paused_dag_node_with_store(options, run_id, node_id, &Close(close), &pauses)
 }

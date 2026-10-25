@@ -1,25 +1,28 @@
 //! Bounded reattachment refuses late reopen (`rpc-host/reattach-port.ts`).
+pub type EnsureCallback = Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
+pub type OpenCallback = Arc<
+        dyn Fn(&str, &str) -> Result<(Arc<dyn HostSessionPort>, HostSessionIdentity), String>
+            + Send
+            + Sync,
+    >;
 use super::handle_port::{HostSessionIdentity, HostSessionPort};
 use std::sync::Arc;
 pub struct ReattachPortInput {
     pub delays: Vec<std::time::Duration>,
     pub sleep: Arc<dyn Fn(std::time::Duration) + Send + Sync>,
     pub admit: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
-    pub ensure: Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>,
-    pub open: Arc<
-        dyn Fn(&str, &str) -> Result<(Arc<dyn HostSessionPort>, HostSessionIdentity), String>
-            + Send
-            + Sync,
-    >,
+    pub ensure: EnsureCallback,
+    pub open: OpenCallback,
     pub notice: Arc<dyn Fn(&str) + Send + Sync>,
     pub attach_only: bool,
 }
+pub type ReattachedSession = Result<Option<(Arc<dyn HostSessionPort>, HostSessionIdentity)>, String>;
 pub fn create_reattach_port(
     input: &ReattachPortInput,
     socket: &str,
     path: &str,
     abandoned: &dyn Fn() -> bool,
-) -> Result<Option<(Arc<dyn HostSessionPort>, HostSessionIdentity)>, String> {
+) -> ReattachedSession {
     for delay in &input.delays {
         (input.sleep)(*delay);
         if abandoned() {

@@ -1,12 +1,11 @@
 use crate::{
     index::SenpiTelemetryOptions,
-    omo_native_consent::NativeConsent,
     omo_native_session_summary::{
         SessionSummaryOptions, SessionSummaryRecorder, SessionSummaryRecorder as Recorder,
     },
     session_summary_publisher::SummaryPublish,
     session_summary_store::{
-        ConsentScope, PendingRecord, Probes, RecordConsent, WindowRecord, create_summary_storage,
+        ConsentScope, Probes, RecordConsent, WindowRecord, create_summary_storage,
     },
     session_summary_window::{
         EndedBy, SummaryMeta, SummaryTurn, add_turn, open_window, summary_properties, usd_of,

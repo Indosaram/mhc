@@ -86,18 +86,17 @@ pub fn build_skill_allowed_set(sources: &[PathBuf]) -> SkillAllowedSet {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockedSkillLinkError {
     pub message: String,
-    pub diagnostic: ResourceDiagnostic,
+    pub diagnostic: Box<ResourceDiagnostic>,
 }
 
 impl BlockedSkillLinkError {
     pub fn new(path: &Path, target: &Path) -> Self {
         let display = |p: &Path| -> String {
             let home = crate::config::home_dir_path();
-            if inside_skill_root(p, &home) {
-                if let Ok(stripped) = p.strip_prefix(&home) {
+            if inside_skill_root(p, &home)
+                && let Ok(stripped) = p.strip_prefix(&home) {
                     return format!("~{}{}", std::path::MAIN_SEPARATOR, stripped.display());
                 }
-            }
             p.display().to_string()
         };
         let msg = format!(
@@ -114,7 +113,7 @@ impl BlockedSkillLinkError {
         };
         Self {
             message: msg,
-            diagnostic: diag,
+            diagnostic: Box::new(diag),
         }
     }
 }
@@ -137,23 +136,21 @@ pub fn authorize_skill_path(
         return Ok(path.to_path_buf());
     }
 
-    let prov = provenance.unwrap();
+    let Some(prov) = provenance else { return Ok(path.to_path_buf()); };
     let canonical = match std::fs::canonicalize(path) {
         Ok(c) => c,
         Err(_) => return Err(BlockedSkillLinkError::new(path, Path::new("unresolvable target"))),
     };
 
     let mut allowed_roots = Vec::new();
-    if let Some(ref pr) = prov.project_root {
-        if let Ok(c) = std::fs::canonicalize(pr) {
+    if let Some(ref pr) = prov.project_root
+        && let Ok(c) = std::fs::canonicalize(pr) {
             allowed_roots.push(c);
         }
-    }
-    if prov.kind == SkillProvenanceKind::ProjectSelected {
-        if let Ok(c) = std::fs::canonicalize(&prov.selected_root) {
+    if prov.kind == SkillProvenanceKind::ProjectSelected
+        && let Ok(c) = std::fs::canonicalize(&prov.selected_root) {
             allowed_roots.push(c);
         }
-    }
     for root in &allowed.roots {
         if let Ok(c) = std::fs::canonicalize(root) {
             allowed_roots.push(c);

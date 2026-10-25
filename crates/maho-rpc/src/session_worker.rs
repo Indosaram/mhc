@@ -1,3 +1,4 @@
+pub type ListenerCallback = std::sync::Arc<std::sync::Mutex<Option<Box<dyn Fn(serde_json::Value) + Send + Sync>>>>;
 use crate::session_release_interrupt::BoxFuture;
 use crate::session_worker_protocol::{SESSION_WORKER_LIMITS, WorkerDisplay};
 pub fn apply_display(display: &mut WorkerDisplay, next: WorkerDisplay) -> bool {
@@ -231,15 +232,10 @@ fn publish_output(
 /// senpi `WorkerEventWriter.settleGrantDialog`: the grant dialog for `id` settled in this isolate, so the host may
 /// stop waiting for an answer and forget the connection it routed it to.
 pub fn publish_grant_settled(
-    port: &WorkerPort,
-    session: &maho_core::agent_session::AgentSession,
+    publish: &dyn Fn(serde_json::Value),
     id: &str,
 ) {
-    publish_output(
-        port,
-        session,
-        serde_json::json!({"type": "security_grant_settled", "id": id}),
-    );
+    publish(serde_json::json!({"type": "security_grant_settled", "id": id}));
 }
 
 /// The select a session's MCP grant flow asks through (senpi `ExtensionUIContext["select"]`).
@@ -650,7 +646,7 @@ mod tests {
     #[test]
     fn binding_security_presentations_mirrors_notices_and_detaches_both() {
         let attached = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let listener: std::sync::Arc<std::sync::Mutex<Option<Box<dyn Fn(serde_json::Value) + Send + Sync>>>> =
+        let listener: ListenerCallback =
             std::sync::Arc::new(std::sync::Mutex::new(None));
         let published = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let detached = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));

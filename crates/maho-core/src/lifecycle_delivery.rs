@@ -7,11 +7,10 @@ pub fn message_ticket(message: &Value) -> Option<&str> {
 pub fn lifecycle_delivery_entries(entries: &[Value]) -> indexmap::IndexMap<String, String> {
     let mut result = indexmap::IndexMap::new();
     for e in entries {
-        if e["type"] == "custom_message" {
-            if let (Some(ticket), Some(id)) = (message_ticket(e), e["id"].as_str()) {
+        if e["type"] == "custom_message"
+            && let (Some(ticket), Some(id)) = (message_ticket(e), e["id"].as_str()) {
                 result.entry(ticket.into()).or_insert_with(|| id.into());
             }
-        }
     }
     result
 }

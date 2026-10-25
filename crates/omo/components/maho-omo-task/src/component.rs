@@ -182,13 +182,11 @@ impl TaskComponent {
                     loop {
                         let before = sessions.len();
                         for record in &records {
-                            if sessions.contains(&record.parent_session_id) {
-                                if let Some(child) = &record.child_session_id {
-                                    if !sessions.contains(child) {
+                            if sessions.contains(&record.parent_session_id)
+                                && let Some(child) = &record.child_session_id
+                                    && !sessions.contains(child) {
                                         sessions.push(child.clone());
                                     }
-                                }
-                            }
                         }
                         if sessions.len() == before {
                             break;
@@ -753,7 +751,7 @@ impl TaskComponent {
                                 let owner = crate::event_bridge::shutdown_owner(
                                     session,
                                     &shutdown_context,
-                                    &component.engine.store.state_dir().to_path_buf(),
+                                    component.engine.store.state_dir(),
                                 );
                                 let input = senpi_task::lifecycle::SuspendInput {
                                     own_task_id: (owner != session).then_some(owner),

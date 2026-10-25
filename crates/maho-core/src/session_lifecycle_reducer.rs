@@ -3,7 +3,7 @@
 //! Port of senpi `packages/coding-agent/src/core/session-lifecycle-reducer.ts`.
 
 use crate::session_lifecycle_types::{
-    ChildLifecycleReport, ChildTerminal, LifecycleFailure, LifecycleHold, LifecycleHoldKind,
+    ChildTerminal, LifecycleFailure, LifecycleHold, LifecycleHoldKind,
     LifecycleWaits, SessionLifecycleState, SessionRole,
 };
 
@@ -23,8 +23,8 @@ pub fn lifecycle_state(facts: &LifecycleFacts) -> SessionLifecycleState {
         hold.kind == LifecycleHoldKind::SessionHold || hold.kind == LifecycleHoldKind::InheritedHold
     });
 
-    if facts.role == SessionRole::Child && facts.terminal.is_some() {
-        match facts.terminal.unwrap() {
+    if facts.role == SessionRole::Child && let Some(terminal) = facts.terminal {
+        match terminal {
             ChildTerminal::Completed => {
                 if facts.holds.is_empty() {
                     return SessionLifecycleState::Done;

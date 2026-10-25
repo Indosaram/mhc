@@ -214,8 +214,8 @@ impl TaskParentControl {
         )?;
         if response["success"] != true {
             let message = error(&response);
-            if message.starts_with("input_id_conflict:") {
-                if let Some(revision) = message
+            if message.starts_with("input_id_conflict:")
+                && let Some(revision) = message
                     .rsplit_once(" at revision ")
                     .and_then(|(_, r)| r.parse().ok())
                 {
@@ -223,7 +223,6 @@ impl TaskParentControl {
                         held_revision: revision,
                     });
                 }
-            }
             return Err(if message.starts_with("wrong_parent:") {
                 TaskParentControlError::new("wrong_parent")
             } else {

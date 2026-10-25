@@ -1336,12 +1336,11 @@ fn parse_event(
 pub fn encode_paused_nodes(checkpoint: &mut Value) {
     if let Some(nodes) = checkpoint.get_mut("nodes").and_then(Value::as_array_mut) {
         for node in nodes {
-            if let Some(obj) = node.as_object_mut() {
-                if obj.get("state").and_then(Value::as_str) == Some("paused") {
+            if let Some(obj) = node.as_object_mut()
+                && obj.get("state").and_then(Value::as_str) == Some("paused") {
                     obj.insert("state".to_string(), Value::String("running".to_string()));
                     obj.insert("paused".to_string(), Value::Bool(true));
                 }
-            }
         }
     }
 }
@@ -1349,12 +1348,11 @@ pub fn encode_paused_nodes(checkpoint: &mut Value) {
 pub fn decode_paused_nodes(checkpoint: &mut Value) {
     if let Some(nodes) = checkpoint.get_mut("nodes").and_then(Value::as_array_mut) {
         for node in nodes {
-            if let Some(obj) = node.as_object_mut() {
-                if obj.get("paused").and_then(Value::as_bool) == Some(true) {
+            if let Some(obj) = node.as_object_mut()
+                && obj.get("paused").and_then(Value::as_bool) == Some(true) {
                     obj.remove("paused");
                     obj.insert("state".to_string(), Value::String("paused".to_string()));
                 }
-            }
         }
     }
 }

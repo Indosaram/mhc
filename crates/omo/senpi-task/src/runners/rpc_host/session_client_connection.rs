@@ -56,31 +56,6 @@ impl SessionClientConnection {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    struct Client;
-    impl HostRpcClient for Client {
-        fn on_event(
-            &self,
-            _: crate::manager::child_handle::ManagedChildListener,
-        ) -> crate::manager::child_handle::Unsubscribe {
-            Box::new(|| {})
-        }
-        fn command(&self, _: serde_json::Value) -> Result<(), HostError> {
-            Ok(())
-        }
-    }
-    impl HostRunHoldClient for Client {}
-    #[test]
-    fn wire_is_reused_only_within_one_engine_connection() {
-        let a = SessionClientConnection::new("a".into(), Arc::new(Client), Arc::new(Client));
-        let b = SessionClientConnection::new("b".into(), Arc::new(Client), Arc::new(Client));
-        assert!(Arc::ptr_eq(&a.task_parent_wire(), &a.task_parent_wire()));
-        assert!(!Arc::ptr_eq(&a.task_parent_wire(), &b.task_parent_wire()));
-    }
-}
-
 impl super::handle_port::HostSessionPort for SessionClientConnection {
     fn get_available_models(
         &self,
@@ -283,5 +258,30 @@ impl crate::pause::native_child_pause::NativeRunPause for SessionClientConnectio
             .map_err(|error| {
                 crate::pause::native_child_pause::NativePauseError::Engine(error.to_string())
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct Client;
+    impl HostRpcClient for Client {
+        fn on_event(
+            &self,
+            _: crate::manager::child_handle::ManagedChildListener,
+        ) -> crate::manager::child_handle::Unsubscribe {
+            Box::new(|| {})
+        }
+        fn command(&self, _: serde_json::Value) -> Result<(), HostError> {
+            Ok(())
+        }
+    }
+    impl HostRunHoldClient for Client {}
+    #[test]
+    fn wire_is_reused_only_within_one_engine_connection() {
+        let a = SessionClientConnection::new("a".into(), Arc::new(Client), Arc::new(Client));
+        let b = SessionClientConnection::new("b".into(), Arc::new(Client), Arc::new(Client));
+        assert!(Arc::ptr_eq(&a.task_parent_wire(), &a.task_parent_wire()));
+        assert!(!Arc::ptr_eq(&a.task_parent_wire(), &b.task_parent_wire()));
     }
 }

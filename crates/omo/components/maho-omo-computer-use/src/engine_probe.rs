@@ -309,8 +309,7 @@ pub async fn probe_computer_use_engine(
     // Only a naturally exited child, before hello/protocol failure, may supply a refusal.
     if refusal_enabled
         && matches!(&result, EngineProbeResult::Err { code, .. } if code == "handshake-failed")
-    {
-        if let Ok(Ok(status)) = timeout(Duration::from_millis(timeout_ms), guard.child.wait()).await
+        && let Ok(Ok(status)) = timeout(Duration::from_millis(timeout_ms), guard.child.wait()).await
         {
             guard.pid = None;
             let _ = (&mut stderr_guard.handle).await;
@@ -318,17 +317,15 @@ pub async fn probe_computer_use_engine(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
-            if status.code() == Some(1) {
-                if let Some(reason) = refusal.lock().unwrap_or_else(|e| e.into_inner()).finish() {
+            if status.code() == Some(1)
+                && let Some(reason) = refusal.lock().unwrap_or_else(|e| e.into_inner()).finish() {
                     return EngineProbeResult::LaunchContextUnavailable {
                         message: launch_context_message(&reason),
                         reason,
                         diagnostic: tail,
                     };
                 }
-            }
         }
-    }
     guard.kill_group();
     guard.wait_exited().await;
     result
@@ -391,7 +388,7 @@ pub fn parse_launch_refusal(stderr: &str) -> Option<String> {
             let reason = deserializer.deserialize_map(Record).ok()?;
             deserializer.end().ok()?;
             structured = Some(reason);
-        } else if complete && line.len() + 1 <= 512 {
+        } else if complete && line.len() < 512 {
             let reason = if let Some(rest) = line.strip_prefix(
                 "senpi-desktop-engine: refusing to run as its own responsible process (pid ",
             ) {

@@ -1501,11 +1501,9 @@ impl SessionManager {
         if let Some(spawned_by) = options
             .as_ref()
             .and_then(|options| options.spawned_by.as_ref())
-        {
-            if let Ok(val) = serde_json::to_value(spawned_by) {
+            && let Ok(val) = serde_json::to_value(spawned_by) {
                 header.insert("spawnedBy".to_owned(), val);
             }
-        }
         self.file_entries = vec![Value::Object(header)];
         self.history_generation += 1;
         self.verbatim_from_count = 0;

@@ -9,6 +9,7 @@ pub struct EngineTurnWatch {
     pub outcome: Box<dyn FnOnce() -> crate::runners::RunnerOutcome + Send>,
     pub cancel: Box<dyn FnOnce() + Send>,
 }
+pub type NativePauseView = (Option<u64>, Vec<(String, Option<String>)>);
 pub trait RunHoldSession: Send + Sync {
     fn pause_for_run(&self, owner: RunPauseOwner)
     -> Result<EngineInheritReceipt, NativePauseError>;
@@ -17,7 +18,7 @@ pub trait RunHoldSession: Send + Sync {
         request: ResumeTurnRequest,
     ) -> Result<EngineResumeReceipt, NativePauseError>;
     fn hold_input(&self, input: HoldInput) -> Result<EngineHoldInputResult, NativePauseError>;
-    fn pause_view(&self) -> Option<(Option<u64>, Vec<(String, Option<String>)>)>;
+    fn pause_view(&self) -> Option<NativePauseView>;
 }
 pub struct InProcessRunPause {
     session: Arc<dyn RunHoldSession>,

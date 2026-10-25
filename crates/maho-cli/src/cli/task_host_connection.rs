@@ -37,7 +37,7 @@ impl LiveClient {
     ) -> Arc<Self> {
         let observed = turn.clone();
         let subscription = client.on_event(Arc::new(move |event| {
-            let mut state = observed.0.lock().unwrap();
+            let mut state = observed.0.lock().expect("host turn state lock poisoned");
             if event["type"] == "agent_start" {
                 state.generation += 1;
                 state.outcome = None;
@@ -80,18 +80,18 @@ impl LiveClient {
             .map_err(failure)
     }
     pub fn outcome(&self) -> RunnerOutcome {
-        let mut state = self.turn.0.lock().unwrap();
+        let mut state = self.turn.0.lock().expect("host turn state lock poisoned");
         while state.outcome.is_none() {
-            state = self.turn.1.wait(state).unwrap();
+            state = self.turn.1.wait(state).expect("host turn state lock poisoned");
         }
-        state.outcome.clone().unwrap()
+        state.outcome.clone().expect("completed host turn has an outcome")
     }
     pub fn watch(
         self: &Arc<Self>,
     ) -> senpi_task::runners::in_process::native_run_pause::EngineTurnWatch {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let token = {
-            let mut state = self.turn.0.lock().unwrap();
+            let mut state = self.turn.0.lock().expect("host turn state lock poisoned");
             state.next_watch += 1;
             let token = state.next_watch;
             state.watches.insert(token, (false, tx));
@@ -100,16 +100,16 @@ impl LiveClient {
         let cancel = self.turn.clone();
         senpi_task::runners::in_process::native_run_pause::EngineTurnWatch {
             outcome: Box::new(move || {
-                let outcome = rx.recv().unwrap_or_else(|_| {
+
+                rx.recv().unwrap_or_else(|_| {
                     RunnerOutcome::error(
                         RunnerFailureKind::ChildTurnFailed,
                         "host turn observer closed",
                     )
-                });
-                outcome
+                })
             }),
             cancel: Box::new(move || {
-                cancel.0.lock().unwrap().watches.remove(&token);
+                cancel.0.lock().expect("host turn state lock poisoned").watches.remove(&token);
             }),
         }
     }
@@ -127,7 +127,7 @@ impl HostRpcClient for LiveClient {
         Some(self.outcome())
     }
     fn transport_lost(&self, message: String) {
-        let mut state = self.turn.0.lock().unwrap();
+        let mut state = self.turn.0.lock().expect("host turn state lock poisoned");
         let outcome = RunnerOutcome::error(RunnerFailureKind::ChildTurnFailed, message);
         state.outcome = Some(outcome.clone());
         for (_, (_, tx)) in std::mem::take(&mut state.watches) {
@@ -141,7 +141,7 @@ impl HostRpcClient for LiveClient {
             command["type"].as_str(),
             Some("prompt" | "followUp" | "steer")
         ) {
-            self.turn.0.lock().unwrap().outcome = None;
+            self.turn.0.lock().expect("host turn state lock poisoned").outcome = None;
         }
         let client = self.client.clone();
         self.call(async move {
@@ -270,6 +270,6 @@ impl HostRunHoldClient for LiveClient {
 }
 impl Drop for LiveClient {
     fn drop(&mut self) {
-        self.subscription.get_mut().unwrap().take();
+        self.subscription.get_mut().expect("host subscription lock poisoned").take();
     }
 }

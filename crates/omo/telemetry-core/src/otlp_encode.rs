@@ -108,7 +108,7 @@ pub fn encode_log_record(record: &ReadableLogRecord) -> LogRecord {
         body: record.body.clone(),
         trace_id: span.map_or_else(Vec::new, |context| hex_to_bytes(&context.trace_id)),
         span_id: span.map_or_else(Vec::new, |context| hex_to_bytes(&context.span_id)),
-        flags: span.map_or(0, |context| u32::from(context.trace_flags & 0xff)),
+        flags: span.map_or(0, |context| u32::from(context.trace_flags)),
     }
 }
 
@@ -120,7 +120,7 @@ pub fn encode_span(span: &ReadableSpan) -> Span {    Span {
             .parent_span_id
             .as_ref()
             .map_or_else(Vec::new, |parent| hex_to_bytes(parent)),
-        flags: u32::from(span.span_context.trace_flags & 0xff),
+        flags: u32::from(span.span_context.trace_flags),
         name: span.name.clone(),
         kind: span.kind.proto(),
         start_time_unix_nano: span.start_time_unix_nano,

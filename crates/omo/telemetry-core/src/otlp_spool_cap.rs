@@ -83,12 +83,11 @@ impl SpoolCap {
     }
     pub fn sealed(&mut self, signal: Signal, id: &str, bytes: u64) -> io::Result<()> {
         self.sizes.insert(size_key(signal, id), bytes);
-        if let Some(bound) = self.bound {
-            if bound.saturating_add(bytes) <= self.ctx.cap_bytes {
+        if let Some(bound) = self.bound
+            && bound.saturating_add(bytes) <= self.ctx.cap_bytes {
                 self.bound = Some(bound + bytes);
                 return Ok(());
             }
-        }
         self.enforce()
     }
     pub fn enforce(&mut self) -> io::Result<()> {

@@ -50,7 +50,7 @@ pub fn statfs(path: &Path) -> std::io::Result<FileSystemStatistics> {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(FileSystemStatistics {
-                filesystem_type: info.assume_init().f_type as i64,
+                filesystem_type: info.assume_init().f_type,
             })
         }
     })

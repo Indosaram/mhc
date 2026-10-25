@@ -79,11 +79,10 @@ fn ancestry(depth: Option<&String>, root: Option<&String>) -> SessionAncestry {
     }
 }
 pub fn read_session_traceparent(pi: &Value, env: &BTreeMap<String, String>) -> Option<String> {
-    if let Some(context) = read_session_context(pi) {
-        if context.get("role").is_some_and(|role| !role.is_empty()) {
+    if let Some(context) = read_session_context(pi)
+        && context.get("role").is_some_and(|role| !role.is_empty()) {
             return context.get("traceparent").cloned();
         }
-    }
     read_session_role(&Value::Null, env)?;
     env.get("OMO_SENPI_TASK_TRACEPARENT").cloned()
 }

@@ -67,10 +67,9 @@ pub fn parse_spool_name(name: &str) -> SpoolEntry {
         if let Some(rest) = name
             .strip_prefix(&format!("active-{signal}-"))
             .and_then(|s| s.strip_suffix(".otlp"))
-        {
-            if let Some((pid, boot)) = rest.split_once('-') {
-                if digits(pid) && hex(boot, 32) {
-                    if let Ok(pid) = pid.parse() {
+            && let Some((pid, boot)) = rest.split_once('-')
+                && digits(pid) && hex(boot, 32)
+                    && let Ok(pid) = pid.parse() {
                         return SpoolEntry::Active {
                             name: name.into(),
                             signal,
@@ -78,23 +77,19 @@ pub fn parse_spool_name(name: &str) -> SpoolEntry {
                             boot_id: boot.into(),
                         };
                     }
-                }
-            }
-        }
         if let Some(rest) = name.strip_prefix(&format!("batch-{signal}-")) {
-            if let Some(id) = rest.strip_suffix(".otlp") {
-                if uuid7(id) {
+            if let Some(id) = rest.strip_suffix(".otlp")
+                && uuid7(id) {
                     return SpoolEntry::Batch {
                         name: name.into(),
                         signal,
                         batch_id: id.into(),
                     };
                 }
-            }
-            if let Some((id, tail)) = rest.split_once(".sending-") {
-                if let Some((boot, lease)) = tail.split_once('-') {
-                    if uuid7(id) && hex(boot, 32) && digits(lease) {
-                        if let Ok(lease_expires_ms) = lease.parse() {
+            if let Some((id, tail)) = rest.split_once(".sending-")
+                && let Some((boot, lease)) = tail.split_once('-')
+                    && uuid7(id) && hex(boot, 32) && digits(lease)
+                        && let Ok(lease_expires_ms) = lease.parse() {
                             return SpoolEntry::Sending {
                                 name: name.into(),
                                 signal,
@@ -103,9 +98,6 @@ pub fn parse_spool_name(name: &str) -> SpoolEntry {
                                 lease_expires_ms,
                             };
                         }
-                    }
-                }
-            }
         }
     }
     if let Some(target) = name.strip_suffix(".lock") {

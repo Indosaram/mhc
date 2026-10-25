@@ -22,8 +22,8 @@ pub fn build_child_context(spec: &RpcRunnerSpec) -> ChildSessionContext {
     if let Some(traceparent) = &spec.traceparent {
         context.insert("traceparent".into(), traceparent.clone());
     }
-    if let Some(env) = &spec.member_env {
-        if let (Some(identity), Some(config)) = (
+    if let Some(env) = &spec.member_env
+        && let (Some(identity), Some(config)) = (
             env.get("SENPI_TASK_MEMBER"),
             env.get("SENPI_TASK_TEAM_CONFIG"),
         ) {
@@ -34,29 +34,9 @@ pub fn build_child_context(spec: &RpcRunnerSpec) -> ChildSessionContext {
                 context.insert("team_config".into(), config.clone());
             }
         }
-    }
     ChildSessionContext {
         kind: "worker",
         context,
-    }
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn delegation_trace_round_trips_in_session_context() {
-        let spec = RpcRunnerSpec {
-            traceparent: Some("delegating-turn".into()),
-            ..Default::default()
-        };
-        let child = build_child_context(&spec);
-        assert_eq!(
-            super::super::session_role::read_session_traceparent(
-                &serde_json::json!({"sessionContext":child.context}),
-                &BTreeMap::new()
-            ),
-            Some("delegating-turn".into())
-        );
     }
 }
 
@@ -82,4 +62,23 @@ pub fn resolve_child_session_path(
             .replace(':', "-"),
         uuid
     ))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn delegation_trace_round_trips_in_session_context() {
+        let spec = RpcRunnerSpec {
+            traceparent: Some("delegating-turn".into()),
+            ..Default::default()
+        };
+        let child = build_child_context(&spec);
+        assert_eq!(
+            super::super::session_role::read_session_traceparent(
+                &serde_json::json!({"sessionContext":child.context}),
+                &BTreeMap::new()
+            ),
+            Some("delegating-turn".into())
+        );
+    }
 }

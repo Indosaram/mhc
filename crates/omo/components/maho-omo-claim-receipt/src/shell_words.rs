@@ -77,11 +77,10 @@ fn heredoc_terminator(line: &str) -> Option<String> {
         if bytes[index] == b'<' && bytes[index + 1] == b'<' {
             let previous_is_angle = index > 0 && bytes[index - 1] == b'<';
             let next_is_angle = bytes.get(index + 2) == Some(&b'<');
-            if !previous_is_angle && !next_is_angle {
-                if let Some(terminator) = terminator_at(line, index + 2) {
+            if !previous_is_angle && !next_is_angle
+                && let Some(terminator) = terminator_at(line, index + 2) {
                     return Some(terminator);
                 }
-            }
         }
         index += 1;
     }

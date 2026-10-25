@@ -4,6 +4,7 @@
 //! show that path), never at its `@project/<identity>/<path>` key, so a note it already read is
 //! found in the transcript by the file path.
 
+pub type SourceForCallback = Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use serde_json::Value;
@@ -15,12 +16,12 @@ use crate::recall_transcript_mentions::{
 };
 
 pub struct ProjectSourceMentions {
-    source_for: Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>,
+    source_for: SourceForCallback,
     index: BranchMentionIndex,
 }
 
 impl ProjectSourceMentions {
-    pub fn new(source_for: Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>) -> Self {
+    pub fn new(source_for: SourceForCallback) -> Self {
         Self {
             source_for,
             index: create_transcript_mention_index(),

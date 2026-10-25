@@ -751,7 +751,7 @@ impl TaskDagEngine {
     }
 
     /// Why the run is paused right now, so the tool can refuse a model-driven `resume`.
-    fn pause_reason_capability(&self) -> Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>> {
+    fn pause_reason_capability(&self) -> crate::dag_tool::PauseReasonCallback {
         let pauses = self.pause_store();
         Some(Arc::new(move |run_id: &str| {
             pauses
@@ -777,7 +777,7 @@ impl TaskDagEngine {
     ) -> Result<DagSchedulerOptions, senpi_task::dag::scheduler::DagNodeControlError> {
         let record = self
             .store
-            .read_checkpoint::<DagRunRecordV1>(&run_id.to_string())
+            .read_checkpoint::<DagRunRecordV1>(run_id)
             .ok()
             .flatten()
             .ok_or_else(|| {
@@ -1835,7 +1835,7 @@ impl TaskDagEngine {
             // guidance custody of a user-stopped run, and why the run is paused right now.
             cancel_node: cancel_node_dag,
             guide: guide_dag,
-            pause_reason: pause_reason,
+            pause_reason,
         });
         // TS manager.start: the core start, then ensureScheduled in the background.
         let execute = tool.execute.clone();

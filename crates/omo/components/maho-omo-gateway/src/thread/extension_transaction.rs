@@ -108,7 +108,7 @@ pub fn extension_transaction<'a>(ctx: &'a StoreContext, name: &str, now: i64, se
 
     let all = {
         let sql_guard = sql_guard.clone();
-        Arc::new(move |columns: &[String], statement: &str, params: &[Value], order_by: Option<&str>| -> Result<Vec<SqlRow>, String> {
+        std::rc::Rc::new(move |columns: &[String], statement: &str, params: &[Value], order_by: Option<&str>| -> Result<Vec<SqlRow>, String> {
             sql_guard().map_err(|error| error.message)?;
             single_extension_statement(statement).map_err(|error| error.message)?;
             for column in columns {
@@ -117,26 +117,26 @@ pub fn extension_transaction<'a>(ctx: &'a StoreContext, name: &str, now: i64, se
             let order = order_by.map(|order| format!(" ORDER BY {order}")).unwrap_or_default();
             let sql = format!("{statement}{order}");
             ctx.all(&sql, &values_to_params(params)).map_err(|error| error.message())
-        }) as Arc<dyn Fn(&[String], &str, &[Value], Option<&str>) -> Result<Vec<SqlRow>, String> + 'a>
+        }) as std::rc::Rc<dyn Fn(&[String], &str, &[Value], Option<&str>) -> Result<Vec<SqlRow>, String> + 'a>
     };
     let one = {
         let sql_guard = sql_guard.clone();
-        Arc::new(move |columns: &[String], statement: &str, params: &[Value]| -> Result<Option<SqlRow>, String> {
+        std::rc::Rc::new(move |columns: &[String], statement: &str, params: &[Value]| -> Result<Option<SqlRow>, String> {
             sql_guard().map_err(|error| error.message)?;
             single_extension_statement(statement).map_err(|error| error.message)?;
             for column in columns {
                 single_extension_statement(column).map_err(|error| error.message)?;
             }
             ctx.one(statement, &values_to_params(params)).map_err(|error| error.message())
-        }) as Arc<dyn Fn(&[String], &str, &[Value]) -> Result<Option<SqlRow>, String> + 'a>
+        }) as std::rc::Rc<dyn Fn(&[String], &str, &[Value]) -> Result<Option<SqlRow>, String> + 'a>
     };
     let exec = {
         let sql_guard = sql_guard.clone();
-        Arc::new(move |statement: &str, params: &[Value]| -> Result<usize, String> {
+        std::rc::Rc::new(move |statement: &str, params: &[Value]| -> Result<usize, String> {
             sql_guard().map_err(|error| error.message)?;
             single_extension_statement(statement).map_err(|error| error.message)?;
             ctx.run(statement, &values_to_params(params)).map_err(|error| error.message())
-        }) as Arc<dyn Fn(&str, &[Value]) -> Result<usize, String> + 'a>
+        }) as std::rc::Rc<dyn Fn(&str, &[Value]) -> Result<usize, String> + 'a>
     };
 
     // Every helper joins the op's transaction through the same guard: in flight from the call until it
@@ -146,7 +146,7 @@ pub fn extension_transaction<'a>(ctx: &'a StoreContext, name: &str, now: i64, se
         let guard = guard.clone();
         let owner = owner.clone();
         let provenance = sender_provenance.clone();
-        Arc::new(move |request: ExtensionEnqueueRequest| -> Result<GatewayDeliveryResult, String> {
+        std::rc::Rc::new(move |request: ExtensionEnqueueRequest| -> Result<GatewayDeliveryResult, String> {
             let value = run_joined(&guard, &owner, || {
                 let binding = store_relay_ops::select_bindings(ctx, "binding_id = ?", &[v_str(&request.binding_id)])
                     .map_err(|error| error.message())?
@@ -198,14 +198,15 @@ pub fn extension_transaction<'a>(ctx: &'a StoreContext, name: &str, now: i64, se
                 }
             });
             serde_json::from_value::<GatewayDeliveryResult>(value?).map_err(|error| error.to_string())
-        }) as Arc<dyn Fn(ExtensionEnqueueRequest) -> Result<GatewayDeliveryResult, String> + 'a>
+        }) as std::rc::Rc<dyn Fn(ExtensionEnqueueRequest) -> Result<GatewayDeliveryResult, String> + 'a>
     };
 
     let outbox_ack = {
         let guard = guard.clone();
         let owner = owner.clone();
-        Arc::new(move |request: ExtensionAckRequest| -> Result<ExtensionAckReply, String> {
-            let value = run_joined(&guard, &owner, || {
+        std::rc::Rc::new(move |request: ExtensionAckRequest| -> Result<ExtensionAckReply, String> {
+
+            run_joined(&guard, &owner, || {
                 let outcome = store_relay_ops::ack_outbox(ctx, now, &request.binding_id, request.cursor, request.provider_message_id.as_deref()).map_err(|error| error.message())?;
                 match outcome {
                     store_relay_ops::RelayOutcome::Ok { value: (acked_cursor, changed) } => {
@@ -213,31 +214,31 @@ pub fn extension_transaction<'a>(ctx: &'a StoreContext, name: &str, now: i64, se
                     }
                     store_relay_ops::RelayOutcome::Refused { message, .. } => Err(message),
                 }
-            });
-            value
-        }) as Arc<dyn Fn(ExtensionAckRequest) -> Result<ExtensionAckReply, String> + 'a>
+            })
+        }) as std::rc::Rc<dyn Fn(ExtensionAckRequest) -> Result<ExtensionAckReply, String> + 'a>
     };
 
     let bind = {
         let guard = guard.clone();
         let owner = owner.clone();
-        Arc::new(move |request: ExtensionBindRequest| -> Result<ExtensionBindReply, String> {
-            let value = run_joined(&guard, &owner, || {
+        std::rc::Rc::new(move |request: ExtensionBindRequest| -> Result<ExtensionBindReply, String> {
+
+            run_joined(&guard, &owner, || {
                 let input: store_relay_ops::BindInput = serde_json::from_value(request.input.clone()).map_err(|error| error.to_string())?;
                 match store_relay_ops::bind_thread(ctx, now, &input).map_err(|error| error.message())? {
                     store_relay_ops::RelayOutcome::Ok { value } => Ok(ExtensionBindReply { binding: serde_json::to_value(&value).unwrap_or(Value::Null), deduplicated: false }),
                     store_relay_ops::RelayOutcome::Refused { message, .. } => Err(message),
                 }
-            });
-            value
-        }) as Arc<dyn Fn(ExtensionBindRequest) -> Result<ExtensionBindReply, String> + 'a>
+            })
+        }) as std::rc::Rc<dyn Fn(ExtensionBindRequest) -> Result<ExtensionBindReply, String> + 'a>
     };
 
     let unbind = {
         let guard = guard.clone();
         let owner = owner.clone();
-        Arc::new(move |request: ExtensionUnbindRequest| -> Result<ExtensionUnbindReply, String> {
-            let value = run_joined(&guard, &owner, || {
+        std::rc::Rc::new(move |request: ExtensionUnbindRequest| -> Result<ExtensionUnbindReply, String> {
+
+            run_joined(&guard, &owner, || {
                 match store_relay_ops::unbind_thread(ctx, now, &request.binding_id, request.expected_revision).map_err(|error| error.message())? {
                     store_relay_ops::RelayOutcome::Ok { value: (binding, already_closed, in_flight) } => Ok(ExtensionUnbindReply {
                         binding: serde_json::to_value(&binding).unwrap_or(Value::Null),
@@ -246,38 +247,37 @@ pub fn extension_transaction<'a>(ctx: &'a StoreContext, name: &str, now: i64, se
                     }),
                     store_relay_ops::RelayOutcome::Refused { message, .. } => Err(message),
                 }
-            });
-            value
-        }) as Arc<dyn Fn(ExtensionUnbindRequest) -> Result<ExtensionUnbindReply, String> + 'a>
+            })
+        }) as std::rc::Rc<dyn Fn(ExtensionUnbindRequest) -> Result<ExtensionUnbindReply, String> + 'a>
     };
 
     let rebind = {
         let guard = guard.clone();
         let owner = owner.clone();
-        Arc::new(move |request: ExtensionRebindRequest| -> Result<ExtensionRebindReply, String> {
-            let value = run_joined(&guard, &owner, || {
+        std::rc::Rc::new(move |request: ExtensionRebindRequest| -> Result<ExtensionRebindReply, String> {
+
+            run_joined(&guard, &owner, || {
                 match store_relay_ops::rebind_thread(ctx, now, &request.binding_id, request.expected_revision, &request.session_durable_id).map_err(|error| error.message())? {
                     store_relay_ops::RelayOutcome::Ok { value: (binding, closed) } => Ok(ExtensionRebindReply { binding: serde_json::to_value(&binding).unwrap_or(Value::Null), closed }),
                     store_relay_ops::RelayOutcome::Refused { message, .. } => Err(message),
                 }
-            });
-            value
-        }) as Arc<dyn Fn(ExtensionRebindRequest) -> Result<ExtensionRebindReply, String> + 'a>
+            })
+        }) as std::rc::Rc<dyn Fn(ExtensionRebindRequest) -> Result<ExtensionRebindReply, String> + 'a>
     };
 
     let binding_for = {
         let guard = guard.clone();
         let owner = owner.clone();
-        Arc::new(move |lookup: ExtensionBindingLookup| -> Result<Option<Value>, String> {
+        std::rc::Rc::new(move |lookup: ExtensionBindingLookup| -> Result<Option<Value>, String> {
             let value = run_joined(&guard, &owner, || store_relay_ops::binding_for(ctx, &lookup).map(|binding| binding.map(|binding| serde_json::to_value(binding).unwrap_or(Value::Null))).map_err(|error| error.message()))?;
             Ok(value)
-        }) as Arc<dyn Fn(ExtensionBindingLookup) -> Result<Option<Value>, String> + 'a>
+        }) as std::rc::Rc<dyn Fn(ExtensionBindingLookup) -> Result<Option<Value>, String> + 'a>
     };
 
     let bindings_for_session = {
         let guard = guard.clone();
         let owner = owner.clone();
-        Arc::new(move |session_durable_id: &str| -> Result<Vec<Value>, String> {
+        std::rc::Rc::new(move |session_durable_id: &str| -> Result<Vec<Value>, String> {
             if session_durable_id.is_empty() {
                 return Err(argument_error("bindingsForSession needs a non-empty session durable id.").message);
             }
@@ -285,20 +285,20 @@ pub fn extension_transaction<'a>(ctx: &'a StoreContext, name: &str, now: i64, se
                 let bindings = store_relay_ops::bindings_for_session(ctx, session_durable_id, now).map_err(|error| error.message())?;
                 Ok(bindings.into_iter().map(|binding| serde_json::to_value(binding).unwrap_or(Value::Null)).collect())
             })
-        }) as Arc<dyn Fn(&str) -> Result<Vec<Value>, String> + 'a>
+        }) as std::rc::Rc<dyn Fn(&str) -> Result<Vec<Value>, String> + 'a>
     };
 
     let outbox_pending = {
         let guard = guard.clone();
         let owner = owner.clone();
-        Arc::new(move |request: ExtensionOutboxRequest| -> Result<Value, String> {
+        std::rc::Rc::new(move |request: ExtensionOutboxRequest| -> Result<Value, String> {
             run_joined(&guard, &owner, || {
                 match store_relay_ops::read_outbox(ctx, now, &request.binding_id, request.after_cursor, request.limit, true).map_err(|error| error.message())? {
                     store_relay_ops::RelayOutcome::Ok { value } => Ok(serde_json::to_value(&value).unwrap_or(Value::Null)),
                     store_relay_ops::RelayOutcome::Refused { message, .. } => Err(message),
                 }
             })
-        }) as Arc<dyn Fn(ExtensionOutboxRequest) -> Result<Value, String> + 'a>
+        }) as std::rc::Rc<dyn Fn(ExtensionOutboxRequest) -> Result<Value, String> + 'a>
     };
 
     ExtensionTransaction {

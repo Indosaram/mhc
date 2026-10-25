@@ -254,7 +254,7 @@ fn candidate_paths(
 
 fn changed_since(repo: &GitMemoryRepo, from: &str, to: &str) -> Option<Vec<String>> {
     let mut cmd = std::process::Command::new("git");
-    cmd.args(&["diff", "--name-only", "-z", "--diff-filter=ACMR", from, to, "--"])
+    cmd.args(["diff", "--name-only", "-z", "--diff-filter=ACMR", from, to, "--"])
         .current_dir(&repo.dir)
         .env("GIT_TERMINAL_PROMPT", "0");
     let output = cmd.output().ok()?;

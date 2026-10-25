@@ -4,6 +4,7 @@
 //! A capability missing here is a verb the model sees in the schema and cannot use, so registration
 //! is deliberately exhaustive: wait, cancel, cancelNode, retry, send, amend, and guide.
 
+pub type PauseReasonCallback = Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>;
 use std::sync::Arc;
 
 use maho_ext_api::ToolDefinition;
@@ -28,7 +29,7 @@ pub struct WorkflowToolCapabilities {
     pub send: crate::dag_tool::DagSend,
     pub amend: crate::dag_tool::DagAmend,
     pub guide: Option<crate::dag_tool::DagGuide>,
-    pub pause_reason: Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    pub pause_reason: PauseReasonCallback,
 }
 
 /// `registerTaskTools`: the dag tool's dependencies, with guide and cancelNode wired.

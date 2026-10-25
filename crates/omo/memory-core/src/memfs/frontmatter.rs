@@ -207,11 +207,10 @@ fn assert_strict_round_trip(
     if reparsed.read_only != frontmatter.read_only {
         mismatches.push("read_only");
     }
-    if let Some(kind) = &frontmatter.kind {
-        if reparsed.kind.as_deref() != Some(&sanitize_frontmatter_value(kind)) {
+    if let Some(kind) = &frontmatter.kind
+        && reparsed.kind.as_deref() != Some(&sanitize_frontmatter_value(kind)) {
             mismatches.push("kind");
         }
-    }
     if serde_json::to_string(&reparsed.aliases).unwrap_or_default()
         != serde_json::to_string(&frontmatter.aliases).unwrap_or_default()
     {

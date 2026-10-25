@@ -75,15 +75,14 @@ pub fn reconcile_scoped_revival(
                 .map(|record| deferred(&record.task_id, "reattach_disabled")),
         );
         for outcome in &outcomes {
-            if outcome.kind == ReconcileOutcomeKind::Deferred {
-                if let Some(reason) = &outcome.reason {
+            if outcome.kind == ReconcileOutcomeKind::Deferred
+                && let Some(reason) = &outcome.reason {
                     super::host_session_record::mark_revival_deferred(
                         context,
                         &outcome.task_id,
                         reason,
                     )?;
                 }
-            }
         }
         return Ok(outcomes);
     }
@@ -137,15 +136,14 @@ pub fn reconcile_scoped_revival(
         }
     }
     for outcome in &outcomes {
-        if outcome.kind == ReconcileOutcomeKind::Deferred {
-            if let Some(reason) = &outcome.reason {
+        if outcome.kind == ReconcileOutcomeKind::Deferred
+            && let Some(reason) = &outcome.reason {
                 super::host_session_record::mark_revival_deferred(
                     context,
                     &outcome.task_id,
                     reason,
                 )?;
             }
-        }
     }
     Ok(outcomes)
 }

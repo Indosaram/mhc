@@ -25,7 +25,7 @@ pub fn mark_suspension_reason(
 ) -> Result<(), LifecycleError> {
     context.store.mutate(task_id, &mut |fresh| {
         let mut next = fresh.clone();
-        next.suspension_reason = Some(reason.clone());
+        next.suspension_reason = Some(reason);
         next
     })?;
     Ok(())

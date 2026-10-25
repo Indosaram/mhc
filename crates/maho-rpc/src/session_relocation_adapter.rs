@@ -1,11 +1,12 @@
 //! Adapter from connection-scoped wire relocation to the integrated core result types.
+pub type SendCallback = Arc<dyn Fn(&str, Value) + Send + Sync>;
 use serde_json::Value;
 use std::sync::Arc;
 pub struct SessionRelocationAdapter {
     pub relocation: crate::session_relocation_legacy::RpcSessionRelocation,
     pub session: Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>,
     pub offerer: Arc<dyn Fn() -> Option<String> + Send + Sync>,
-    pub send: Arc<dyn Fn(&str, Value) + Send + Sync>,
+    pub send: SendCallback,
 }
 #[async_trait::async_trait]
 impl maho_core::session_relocation::SessionRelocationHost for SessionRelocationAdapter {

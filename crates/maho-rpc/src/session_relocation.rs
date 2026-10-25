@@ -495,7 +495,7 @@ impl RpcSessionRelocation {
         let move_id = data
             .as_ref()
             .and_then(|fields| fields.get("moveId"))
-            .filter(|value| is_plain_id(*value))
+            .filter(|value| is_plain_id(value))
             .and_then(Value::as_str)
             .map(str::to_owned);
         let Some(move_id) = move_id.filter(|_| accepted == Some(true)) else {

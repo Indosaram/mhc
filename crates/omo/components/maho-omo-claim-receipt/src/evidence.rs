@@ -275,7 +275,7 @@ impl TimelineBuilder {
         let is_error = message["isError"] == Value::Bool(true);
         let text = content_text(&message["content"]);
         if tool_name == "eval" {
-            self.eval_result(call_id.as_str(), &args, &message["details"], &text, is_error, index, entry_id);
+            self.eval_result(call_id.as_str(), &args, &message["details"], &text, is_error, (index, entry_id));
             return;
         }
         if MUTATION_TOOL_NAMES.contains(&tool_name.as_str()) {
@@ -345,9 +345,9 @@ impl TimelineBuilder {
         details: &Value,
         text: &str,
         is_error: bool,
-        index: usize,
-        entry_id: &str,
+        position: (usize, &str),
     ) {
+        let (index, entry_id) = position;
         let null = Value::Null;
         let record = if details.is_object() {
             details

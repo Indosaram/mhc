@@ -10,6 +10,8 @@
 //! the child's engine, and the Rust task crate has no async store. Callers that run inside an async
 //! task use `spawn_blocking`, exactly as the workflow tool does for the scheduler.
 
+pub type WaitingState = Mutex<BTreeMap<String, (i64, Vec<tokio::sync::oneshot::Sender<()>>)>>;
+pub type SettlementsState = Mutex<BTreeMap<(String, i64), Vec<tokio::sync::oneshot::Sender<()>>>>;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -182,8 +184,8 @@ fn now_iso(now: i64) -> String {
 /// The pause intents a child's own abort can settle immediately, so registration precedes the call.
 #[derive(Default)]
 struct PendingPauses {
-    waiting: Mutex<BTreeMap<String, (i64, Vec<tokio::sync::oneshot::Sender<()>>)>>,
-    settlements: Mutex<BTreeMap<(String, i64), Vec<tokio::sync::oneshot::Sender<()>>>>,
+    waiting: WaitingState,
+    settlements: SettlementsState,
 }
 
 impl PendingPauses {
@@ -198,13 +200,12 @@ impl PendingPauses {
     }
 
     fn acknowledge(&self, task_id: &str, epoch: i64) {
-        if let Some((held_epoch, waiters)) = lock(&self.waiting).remove(task_id) {
-            if held_epoch == epoch {
+        if let Some((held_epoch, waiters)) = lock(&self.waiting).remove(task_id)
+            && held_epoch == epoch {
                 for waiter in waiters {
                     let _ = waiter.send(());
                 }
             }
-        }
     }
 
     fn clear(&self, task_id: &str) {

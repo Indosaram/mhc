@@ -549,7 +549,7 @@ fn parked_endpoints_anchor_enqueue_and_manual_retry_restores_files() {
         .clone();
     assert_eq!(second.range.start_message_id, "m2");
     assert_eq!(second.lead, Some(entry_assistant("m1", "answer 1")));
-    assert_eq!(queue.claim(&[first.clone()], "worker").unwrap().len(), 0);
+    assert_eq!(queue.claim(std::slice::from_ref(&first), "worker").unwrap().len(), 0);
     assert_eq!(
         store
             .clear_for_retry(&FactsFailureFilter::default())

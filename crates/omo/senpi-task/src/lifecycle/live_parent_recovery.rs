@@ -131,15 +131,13 @@ impl LiveParentRecovery {
                         && (expired
                             || super::deferred_revival_reasons::PERMANENT_REVIVAL_REASONS
                                 .contains(&reason.as_str()))
-                    {
-                        if let Some(fresh) = context.store.load(&record.task_id)? {
+                        && let Some(fresh) = context.store.load(&record.task_id)? {
                             super::suspended_expiry::expire_suspended_child(
                                 context,
                                 &fresh,
                                 &|| true,
                             )?;
                         }
-                    }
                 }
             }
         }

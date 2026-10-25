@@ -3,6 +3,7 @@
 //! The one enablement decision (env opt-out matrix + automation gate + omo config gate), the expanded
 //! inventory, and the `session_started` event built from it.
 
+pub type RealpathCallback = Option<Arc<dyn Fn(&Path) -> Option<PathBuf> + Send + Sync>>;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -37,7 +38,7 @@ pub struct TempDirDeps {
     pub platform: Option<String>,
     pub tmpdir: Option<Arc<dyn Fn() -> String + Send + Sync>>,
     pub posix_temp_roots: Option<Vec<String>>,
-    pub realpath: Option<Arc<dyn Fn(&Path) -> Option<PathBuf> + Send + Sync>>,
+    pub realpath: RealpathCallback,
 }
 
 pub fn session_reason(payload: &Value) -> &'static str {
@@ -153,7 +154,7 @@ pub fn is_inside_temp_dir(
     if users_dirs.iter().any(|dir| {
         target
             .parent()
-            .and_then(|parent| resolve(parent))
+            .and_then(&resolve)
             .zip(resolve(dir))
             .is_some_and(|(parent, dir)| parent == dir)
     }) {

@@ -635,15 +635,14 @@ impl FormatterStep {
                 continue;
             }
 
-            if marker.tool == FormatterTool::Prettier {
-                if let Some(command) = resolve_bun_format(cwd).await {
+            if marker.tool == FormatterTool::Prettier
+                && let Some(command) = resolve_bun_format(cwd).await {
                     marker = Formatter {
                         tool: FormatterTool::BunFormat,
                         command,
                         args: vec!["format".into(), "--write".into()],
                     };
                 }
-            }
             let fp_str = file_path.to_string_lossy().into_owned();
             let fp_clone = file_path.clone();
             let marker_clone = marker.clone();

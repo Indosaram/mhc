@@ -14,10 +14,10 @@ use super::store_extensions::{SessionCaller, StoreExtensionRegistration};
 use super::types::{ClaimRequest, EnqueueRequest, GatewayStoreConfig, RecordOutcomeRequest, ReconcileRequest, RefusalReason};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "method", rename_all = "snake_case")]
+#[serde(tag = "op", content = "args", rename_all = "snake_case")]
 pub enum WorkerRequest {
     Init { config: GatewayStoreConfig, now: i64 },
-    Enqueue { request: EnqueueRequest },
+    Enqueue { request: Box<EnqueueRequest> },
     Reconcile { request: ReconcileRequest },
     Claim { request: ClaimRequest },
     RecordOutcome { request: RecordOutcomeRequest },
@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn a_frame_round_trips_through_json() {
         let request = WorkerRequest::Enqueue {
-            request: EnqueueRequest {
+            request: Box::new(EnqueueRequest {
                 provenance: super::super::types::Provenance { workspace: "Example".into(), project: "project".into(), lane: None, session: None },
                 now: 1,
                 delivery_id: "d-1".into(),
@@ -132,7 +132,7 @@ mod tests {
                 binding: None,
                 receipt: super::super::types::ReceiptRef { idempotency_key: "k".into(), args_hash: "h".into() },
                 endpoint_kind: None,
-            },
+            }),
         };
         let json = serde_json::to_value(&request).expect("serialize");
         assert_eq!(json["op"], "enqueue");

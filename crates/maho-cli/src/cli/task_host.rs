@@ -1,4 +1,12 @@
 //! Production selection of a worker session on the parent's task-host shard.
+pub type OpenedHostResult = Result<
+        (
+            Arc<dyn handle_port::HostSessionPort>,
+            open_session::OpenedHostSession,
+            Arc<dyn Fn() -> senpi_task::runners::RunnerOutcome + Send + Sync>,
+        ),
+        HostError,
+    >;
 #[path = "task_host_connection.rs"]
 mod connection;
 use senpi_task::{
@@ -193,14 +201,7 @@ impl HostAssembly {
         context: session_context::ChildSessionContext,
         socket: String,
         path: String,
-    ) -> Result<
-        (
-            Arc<dyn handle_port::HostSessionPort>,
-            open_session::OpenedHostSession,
-            Arc<dyn Fn() -> senpi_task::runners::RunnerOutcome + Send + Sync>,
-        ),
-        HostError,
-    > {
+    ) -> OpenedHostResult {
         let mut context = context;
         if let Some((_, key)) = maho_rpc::host_endpoints::parse_shard_socket(&socket) {
             context.context.insert("shard_key".into(), key);
@@ -209,7 +210,7 @@ impl HostAssembly {
         let turn = self
             .turns
             .lock()
-            .unwrap()
+            .expect("host turn registry lock poisoned")
             .entry(path.clone())
             .or_insert_with(|| {
                 Arc::new((
@@ -237,9 +238,8 @@ impl HostAssembly {
                     let (provider,id)=reference.split_once('/').ok_or_else(||error("model_unavailable: noncanonical host model pin"))?;
                     request["provider"]=provider.into();request["modelId"]=id.into();
                 }
-                if let (Some(model),Some(chain))=(&spec.model,&spec.fallback_models) {
-                    if !chain.is_empty(){request["retryFallback"]=json!({"modelFallback":true,"fallbackChains":{(model):chain}});}
-                }
+                if let (Some(model),Some(chain))=(&spec.model,&spec.fallback_models)
+                    && !chain.is_empty(){request["retryFallback"]=json!({"modelFallback":true,"fallbackChains":{(model):chain}});}
                 if let Some(reasoning)=spec.reasoning.as_ref().or(spec.variant.as_ref()){request["thinkingLevel"]=reasoning.clone().into();}
                 let opened=match client.open_session(request).await {Ok(opened)=>opened,Err(cause)=>{client.stop().await;return Err(error(cause));}};
                 let routing_id=client.session_id().ok_or_else(||error("host open returned no routing ID"))?;

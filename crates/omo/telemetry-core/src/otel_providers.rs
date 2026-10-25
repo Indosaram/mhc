@@ -5,6 +5,9 @@
 //! synchronous work and a Tokio task-local across awaits), the counterpart of the TS
 //! `AsyncLocalStorage` context manager.
 
+pub type OnAppendedCallback = Option<Arc<dyn Fn(&mut SpoolWriter) + Send + Sync>>;
+pub type OnWriteErrorCallback = Option<Arc<dyn Fn(&io::Error, usize) + Send + Sync>>;
+pub type OnErrorCallback = Arc<dyn Fn(&io::Error, usize) + Send + Sync>;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -78,8 +81,8 @@ pub struct CreateTelemetryProvidersInput {
     pub pid: Option<u32>,
     pub clock: Option<OtelClock>,
     pub consent: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
-    pub on_appended: Option<Arc<dyn Fn(&mut SpoolWriter) + Send + Sync>>,
-    pub on_write_error: Option<Arc<dyn Fn(&io::Error, usize) + Send + Sync>>,
+    pub on_appended: OnAppendedCallback,
+    pub on_write_error: OnWriteErrorCallback,
 }
 
 /// The providers plus the two WAL writers they append to. `seal_*` is the flush's way to publish a
@@ -265,7 +268,7 @@ pub fn create_telemetry_providers(input: CreateTelemetryProvidersInput) -> Telem
     let pid = input.pid.unwrap_or_else(std::process::id);
     let consent: Arc<dyn Fn() -> bool + Send + Sync> =
         input.consent.unwrap_or_else(|| Arc::new(|| true));
-    let on_error: Arc<dyn Fn(&io::Error, usize) + Send + Sync> = input
+    let on_error: OnErrorCallback = input
         .on_write_error
         .unwrap_or_else(|| Arc::new(|_error: &io::Error, _records: usize| {}));
     let on_appended: Arc<dyn Fn(&mut SpoolWriter) + Send + Sync> = input

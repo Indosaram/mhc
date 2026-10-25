@@ -465,7 +465,7 @@ impl std::fmt::Debug for InstalledDagRun {
 
 impl InstalledDagRun {
     pub fn wait(self) -> DagRecoveryOutcome {
-        self.settled.join().unwrap()
+        self.settled.join().expect("validated recovery state is present")
     }
 }
 

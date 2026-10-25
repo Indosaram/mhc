@@ -114,7 +114,6 @@ mod tests {
         PendingRecord, Probes, RecordConsent, WindowRecord, create_summary_storage,
         with_recovery_ops,
     };
-    use crate::session_summary_window::open_window;
     use serde_json::json;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};

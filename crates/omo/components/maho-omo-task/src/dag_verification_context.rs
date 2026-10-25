@@ -86,11 +86,11 @@ pub fn select_directives(
         let found = DAG_VERIFICATION_DIRECTIVES
             .iter()
             .filter_map(|directive| {
-                let at = content
+
+                content
                     .get(..cursor.saturating_sub(directive.len()))
                     .and_then(|head| head.rfind(directive))
-                    .map(|index| (index, *directive));
-                at
+                    .map(|index| (index, *directive))
             })
             .max_by_key(|(index, _)| *index);
         let Some((index, directive)) = found else {

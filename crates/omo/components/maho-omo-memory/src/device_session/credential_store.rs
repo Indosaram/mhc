@@ -20,9 +20,8 @@ impl CredentialStore for OsCredentialStore {
             {
                 let mut probe = tokio::process::Command::new("gdbus");
                 probe.args(["call", "--session", "--dest", "org.freedesktop.secrets", "--object-path", "/org/freedesktop/secrets/aliases/default", "--method", "org.freedesktop.DBus.Properties.Get", "org.freedesktop.Secret.Collection", "Locked"]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true);
-                if let Ok(Ok(reply)) = tokio::time::timeout(std::time::Duration::from_secs(10), probe.output()).await {
-                    if !reply.status.success() || String::from_utf8_lossy(&reply.stdout).contains("<true>") { return Ok(None); }
-                }
+                if let Ok(Ok(reply)) = tokio::time::timeout(std::time::Duration::from_secs(10), probe.output()).await
+                    && (!reply.status.success() || String::from_utf8_lossy(&reply.stdout).contains("<true>")) { return Ok(None); }
                 let output = match tokio::process::Command::new("secret-tool")
                     .args(["lookup", "service", "omo-cli", "name", &self.name])
                     .stdin(std::process::Stdio::null())

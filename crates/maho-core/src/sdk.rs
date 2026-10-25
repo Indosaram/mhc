@@ -341,7 +341,7 @@ pub async fn create_agent_session(
                 .flatten()
         })
         .or(configured_thinking)
-        .or_else(|| model.as_ref().and_then(|m| m.default_thinking_level).map(ModelThinkingLevel::from))
+        .or_else(|| model.as_ref().and_then(|m| m.default_thinking_level))
         .or_else(|| settings.get_string("defaultThinkingLevel").as_deref().and_then(ModelThinkingLevel::parse))
         .or(Some(ModelThinkingLevel::Medium));
     // senpi sdk.ts:360-365: without a model the level is "off" (`clamp_thinking_level_to_model(_, None)`).

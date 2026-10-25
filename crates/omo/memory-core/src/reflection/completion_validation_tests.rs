@@ -30,7 +30,7 @@ fn pressure_dream_budget_rejects_committed_token_count_at_target() {
 
 struct Fixture {
     _temp: TempDir,
-    repo: GitMemoryRepo,
+    _repo: GitMemoryRepo,
     worktree: ReflectionWorktree,
     exec: Arc<dyn GitExec>,
 }
@@ -67,7 +67,7 @@ fn fixture(seeds: &[(&str, &str)], run_id: &str) -> Fixture {
     .expect("create worktree");
     Fixture {
         _temp: temp,
-        repo,
+        _repo: repo,
         worktree,
         exec,
     }
@@ -610,9 +610,10 @@ fn given_a_new_glob_named_note_without_frontmatter_when_validated_then_it_is_dro
 
 /// The drop runs through pathspecs the agent chose, so every repair call must pin the literal-pathspec
 /// environment; a user's own glob/icase setting must not turn one name into many.
+type RecordedGitCalls = Vec<(Vec<String>, BTreeMap<String, String>)>;
 struct EnvRecordingExec {
     inner: Arc<dyn GitExec>,
-    calls: Mutex<Vec<(Vec<String>, BTreeMap<String, String>)>>,
+    calls: Mutex<RecordedGitCalls>,
 }
 
 impl GitExec for EnvRecordingExec {

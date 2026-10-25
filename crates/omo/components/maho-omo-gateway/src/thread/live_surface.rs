@@ -55,7 +55,7 @@ fn owner_session_path(owner: Option<&Value>) -> Vec<String> {
 
 /// Reads the one JSON line `host status --all` prints; anything without an `endpoints` array cannot enumerate.
 pub fn parse_host_status_all(stdout: &str) -> Option<Vec<HostEndpointReport>> {
-    let line = stdout.lines().map(str::trim).filter(|line| !line.is_empty()).next_back()?;
+    let line = stdout.lines().map(str::trim).rfind(|line| !line.is_empty())?;
     let parsed: Value = serde_json::from_str(line).ok()?;
     let endpoints = parsed.get("endpoints")?.as_array()?;
     Some(
@@ -136,8 +136,6 @@ pub struct LiveThreadSurface {
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
     enumeration: Mutex<Option<(i64, Vec<KnownEndpoint>)>>,
     kinds: Mutex<BTreeMap<String, GatewayEndpointKind>>,
-    tui_commands: Mutex<BTreeMap<String, Vec<String>>>,
-    last_listed: Mutex<BTreeMap<String, Vec<String>>>,
 }
 
 impl LiveThreadSurface {
@@ -149,8 +147,6 @@ impl LiveThreadSurface {
             now: options.now.unwrap_or_else(|| Arc::new(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as i64).unwrap_or(0))),
             enumeration: Mutex::new(None),
             kinds: Mutex::new(BTreeMap::new()),
-            tui_commands: Mutex::new(BTreeMap::new()),
-            last_listed: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -168,7 +164,7 @@ impl LiveThreadSurface {
         }
     }
 
-    fn known_endpoints(&self) -> Vec<KnownEndpoint> {
+    pub fn known_endpoints(&self) -> Vec<KnownEndpoint> {
         if let Ok(cached) = self.enumeration.lock()
             && let Some((expires_at, endpoints)) = cached.as_ref()
             && *expires_at > (*self.now)()
@@ -194,7 +190,7 @@ impl LiveThreadSurface {
         found
     }
 
-    fn call(&self, socket: &str, command: Value, durable_session_id: Option<&str>) -> BoxFuture<Result<Value, String>> {
+    pub fn call(&self, socket: &str, command: Value, durable_session_id: Option<&str>) -> BoxFuture<Result<Value, String>> {
         self.transport.request(socket, command, durable_session_id.map(str::to_owned))
     }
 
@@ -239,7 +235,7 @@ impl LiveThreadSurface {
     }
 
     /// The routing id of a host session, looked up in that host's own listing when the endpoint has none.
-    fn routing_id_of(&self, endpoint: &GatewayEndpointRef) -> BoxFuture<Result<Option<String>, String>> {
+    pub fn routing_id_of(&self, endpoint: &GatewayEndpointRef) -> BoxFuture<Result<Option<String>, String>> {
         if let Some(routing_id) = &endpoint.routing_id {
             let routing_id = routing_id.clone();
             return Box::pin(async move { Ok(Some(routing_id)) });
@@ -261,10 +257,7 @@ impl LiveThreadSurface {
     /// The gateway's sender port. A delivery is announced with `wake` only, never `prompt`.
     pub fn gateway(&self) -> GatewayEndpointPort {
         let surface = Arc::new(SurfaceHandle {
-            legacy: self.legacy.clone(),
             transport: self.transport.clone(),
-            status_all: self.status_all.clone(),
-            now: self.now.clone(),
         });
         let wake_surface = surface.clone();
         let release_surface = surface.clone();
@@ -397,17 +390,10 @@ impl LiveThreadSurface {
 
 /// The parts a gateway port needs after the surface is boxed.
 struct SurfaceHandle {
-    legacy: String,
     transport: Arc<dyn RpcTransport>,
-    status_all: Arc<dyn Fn() -> Option<Vec<HostEndpointReport>> + Send + Sync>,
-    now: Arc<dyn Fn() -> i64 + Send + Sync>,
 }
 
 impl SurfaceHandle {
-    fn kind_of(&self, _socket: &str) -> GatewayEndpointKind {
-        GatewayEndpointKind::RpcHost
-    }
-
     fn fenced(&self, socket: &str, command: Value, durable_session_id: Option<&str>) -> BoxFuture<Result<Value, String>> {
         let socket = socket.to_owned();
         let transport = self.transport.clone();
