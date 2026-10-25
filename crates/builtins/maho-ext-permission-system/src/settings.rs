@@ -46,7 +46,7 @@ pub fn resolve_permission_config(manager:&SettingsManager,cli:&[crate::types::Ru
     Ok(ResolvedPermissionConfig{rules,preset:effective})
 }
 /// `untrusted` for the read-only and ask presets. Otherwise the rules are evaluated last-match-wins (as the runtime
-/// does, so the always-prepended guarded base is overridden by later presets) for representative permissions:
+/// does, so the always-prepended default base is overridden by later presets) for representative permissions:
 /// any `ask` -> `on-request`, none -> `never`.
 pub fn effective_approval_summary(config:&ResolvedPermissionConfig)->ApprovalSummary {
     if matches!(config.preset,PermissionPresetName::ReadOnly|PermissionPresetName::Ask) {return ApprovalSummary::Untrusted;}
@@ -59,8 +59,8 @@ pub fn load_permission_settings(manager:&SettingsManager,cli:&[crate::types::Rul
 }
 
 /// The preset a session runs under when it is not the default: `--permission-preset`, else project, else global `permissionPreset`.
-/// `None` means the default (guarded) applies, so children must not be handed a preset.
+/// `None` means the default (full-access) applies, so children must not be handed a preset.
 pub fn explicit_non_default_preset(manager:&SettingsManager,cli:Option<PermissionPresetName>)->Option<PermissionPresetName> {
     let from=|settings:&Map<String,Value>|settings.get("permissionPreset").and_then(Value::as_str).and_then(parse_permission_preset_name);
-    cli.or_else(||from(manager.get_project())).or_else(||from(manager.get_global())).filter(|preset|*preset!=PermissionPresetName::Guarded)
+    cli.or_else(||from(manager.get_project())).or_else(||from(manager.get_global())).filter(|preset|*preset!=DEFAULT_PERMISSION_PRESET)
 }

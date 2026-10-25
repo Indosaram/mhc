@@ -2,8 +2,7 @@ use crate::{types::{Action, PermissionConfig, PermissionPresetName, PermissionVa
 use std::{collections::BTreeSet, path::PathBuf};
 
 pub const EDIT_TOOLS: [&str; 4] = ["edit", "write", "apply_patch", "multiedit"];
-// SAFETY-DIVERGENCE(senpi permission-system/config.ts): default full-access; default guarded.
-pub const DEFAULT_PERMISSION_PRESET: PermissionPresetName = PermissionPresetName::Guarded;
+pub const DEFAULT_PERMISSION_PRESET: PermissionPresetName = PermissionPresetName::FullAccess;
 pub const ACCEPT_EDITS_PERMISSION_PRESET_CAPABILITY: &str = "permission_preset_accept_edits";
 pub const AUTO_PERMISSION_PRESET_CAPABILITY: &str = "permission_preset_auto";
 

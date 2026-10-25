@@ -30,7 +30,7 @@ mhc 开箱即默认采用保护隐私与安全的保守策略。所有与上游�
 - **遥测默认关闭。** 除非明确开启，否则不会向外发送任何使用数据、提示词、路径或归因标头。开启后，仅发送不敏感的运行时指标（工具耗时、模型名、错误码；绝不发送文件内容或提示词）。如需开启，请在 `~/.omo/omo.jsonc` 中配置 `"telemetry": { "enabled": true }`，或在 `~/.omo/agent/settings.json` 中配置 `"enableInstallTelemetry": true`。
 - **从不收集 GeoIP。** 即使开启遥测，也始终强制禁用 IP 地理位置解析（`$geoip_disable: true`）。
 - **人物画像默认关闭。** 长期记忆会提取项目与主用户的事实，但第三方人物画像（`people/<slug>/`）默认关闭；如需启用，可在 `~/.omo/omo.jsonc` 中配置 `"memory": { "people": { "enabled": true } }`。
-- **默认采用 guarded 权限预设。** 工具可自由访问项目目录与 mhc 自有目录（`~/.omo/agent`、会话、记忆）。在交互模式下，访问外部路径、凭据文件（`auth.json`）或系统临时目录根路径会提示用户确认；在非交互模式（`-p`）或子智能体任务中，外部访问会被拒绝并给出覆盖提示。可通过 `--permission-preset full-access` 参数或在 `settings.json` 中设置 `"permissionPreset": "full-access"` 恢复无限制访问。
+- **可选的 guarded 权限预设。** 默认预设与 OmO 相同，为 `full-access`。在 `settings.json` 中设置 `"permissionPreset": "guarded"`（或传 `--permission-preset guarded`）后，工具可自由访问项目目录与 mhc 自有目录（`~/.omo/agent`、会话、记忆）；在交互模式下，访问外部路径、凭据文件（`auth.json`）或系统临时目录根路径会提示用户确认；在非交互模式（`-p`）或子智能体任务中，外部访问会被拒绝并给出覆盖提示。
 - **敏感环境变量清理。** 模型调用的 Shell 命令（bash 工具及 eval 内核）默认过滤敏感环境变量（`*_TOKEN`、`*_KEY`、`*_SECRET`、`*_AUTH`、`DATABASE_URL` 等）。可在 `settings.json` 中设置 `"bashEnvScrub": false` 关闭清理，或通过 `"bashEnvPassthrough": ["VAR_NAME"]` 白名单放行指定变量。
 - **可选 bash 沙箱。** 支持在 Linux（`bwrap`）和 macOS（`sandbox-exec`）上为 Shell 命令启用操作系统级写隔离保护；在 `settings.json` 中配置 `"bashSandbox": "auto"` 或 `"bashSandbox": "required"`（默认 `"off"`）。
 - **第一方仿冒提供商风险确认。** 仿冒第一方客户端身份的提供商（如使用 Claude 订阅 OAuth 令牌的 `anthropic`、`anthropic-subscription`、`chatgpt-subscription`、`github-copilot`、`kimi-coding`、`devin`、`cursor`）在记录明确风险确认前会被阻止请求。可在交互模式下通过 `/login <provider>` 确认，或使用 `mhc auth consent <provider>` 命令记录确认。
@@ -43,7 +43,6 @@ mhc 开箱即默认采用保护隐私与安全的保守策略。所有与上游�
 
 | 行为 | 之前 / OmO 默认值 | mhc 安全默认值 | 恢复之前行为的方法 |
 | --- | --- | --- | --- |
-| 工具权限 | 无限制 `full-access` | `guarded`（确认外部路径与凭据） | `settings.json` 中设置 `"permissionPreset": "full-access"` 或 CLI 传 `--permission-preset full-access` |
 | Shell 环境变量 | 继承进程全部环境变量 | 过滤包含密钥特征的环境变量 | `settings.json` 中设置 `"bashEnvScrub": false` 或指定 `"bashEnvPassthrough": ["NAME"]` |
 | 使用遥测 | 默认开启 | 默认关闭（`off`） | `~/.omo/omo.jsonc` 中设置 `"telemetry": { "enabled": true }` 或 `settings.json` 中设置 `"enableInstallTelemetry": true` |
 | GeoIP 地理位置 | 上游默认开启 | 强制永久关闭（`$geoip_disable: true`） | 不可开启（隐私保障） |
