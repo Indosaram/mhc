@@ -11,6 +11,7 @@ Branch: p5147/senpi-67. No Cargo commands executed.
    - evaluate_turn_facts implements effective wake filtering, queued-human continuation, retry/monitor/recovery background facts, synthetic waits and provider failure facts.
    - AgentSession::refresh_lifecycle uses the same evaluator, typed reducer and durable custody facts. Work-obligation mutations and wake publishers recompute after dropping registry locks.
    - Goal turn-end publisher now sends structured input facts; the session subscribes to these rather than treating verdict labels as facts.
+   - Live goal transitions publish goal_lifecycle_facts and are bound into AgentSession. The rebased controller retains integration's neutral GoalLifecycleService, including complete-then-clear observation; its regression test was adapted to the durable ledger constructor.
    - Focused tests cover ledger epoch/revision ownership, background custody, provider failure and queued-human/retry continuation.
 
 2. **Extension move API release/import orchestration and cancellation - implementation added, runtime validation pending.**
@@ -36,4 +37,4 @@ Branch: p5147/senpi-67. No Cargo commands executed.
 
 Rustfmt checks and git diff --check are the available local gates. Cargo build/check/test/clippy were prohibited; no Rust test or executable validation is claimed. The new controller options are a Rust API change; repository search found only local constructor sites before the rewrite. All added test behavior remains unexecuted until the global Cargo gate.
 
-Implementation is substantially extended, but full upstream equivalence is NOT verified. In particular, exhaustive command/reentrant prompt ordering, concurrent queued-turn consumption, goal-change publication outside turn-end, and custom-tool workspace-effect propagation still need runtime coverage/review at the global gate. Do not infer tested parity from commit subjects containing 'finish'.
+Implementation is substantially extended, but full upstream equivalence is NOT verified. In particular, exhaustive command/reentrant prompt ordering, concurrent queued-turn consumption, and custom-tool workspace-effect propagation still need runtime coverage/review at the global gate. Do not infer tested parity from commit subjects containing 'finish'.

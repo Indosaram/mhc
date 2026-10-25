@@ -163,6 +163,13 @@ impl SessionLifecycleController {
         self.goal_changed(goal);
     }
     pub fn goal_changed(&mut self, goal: Option<Value>) {
+        self.goal_service.transition(goal.as_ref().map(|g| {
+            maho_ext_api::goal_lifecycle::LifecycleGoal {
+                id: g["id"].as_str().expect("goal id").to_owned(),
+                status: g["status"].as_str().expect("goal status").to_owned(),
+                continuation_stopped: g.get("continuationStoppedAt").is_some(),
+            }
+        }));
         if let Some(g) = goal.as_ref().filter(|g| g["status"] == "complete") {
             if self
                 .goal
