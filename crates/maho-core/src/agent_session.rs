@@ -1328,6 +1328,11 @@ impl maho_ext_api::SessionManager for ExtensionSessionManagerView {
             .upgrade()
             .and_then(|inner| AgentSession { inner }.session_name())
     }
+    fn fork_provenance(&self) -> Option<maho_ext_api::ForkProvenance> {
+        self.session
+            .upgrade()
+            .and_then(|inner| AgentSession { inner }.with_session_manager(|manager| manager.fork_provenance()))
+    }
 }
 
 struct AbortSignalBridge(tokio::task::JoinHandle<()>);
@@ -3152,6 +3157,10 @@ impl maho_ext_api::SessionManager for SessionContextManager {
     }
     fn get_session_name(&self) -> Option<String> {
         self.session.session_name()
+    }
+    fn fork_provenance(&self) -> Option<maho_ext_api::ForkProvenance> {
+        self.session
+            .with_session_manager(|manager| manager.fork_provenance())
     }
     fn extension_context_actions(&self) -> Option<&dyn maho_ext_api::ExtensionContextActions> {
         Some(&self.actions)
@@ -9133,12 +9142,20 @@ impl AgentSession {
             }
         });
         let previous = self.session_file();
+        let forked_from_leaf_id = leaf.map(str::to_owned).or_else(|| {
+            entries
+                .last()
+                .and_then(|e| e.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
         self.emit_session_shutdown(maho_ext_api::SessionReason::Fork)
             .await;
         self.invalidate_extension_runtime().await;
         self.with_session_manager_mut(|manager| {
             manager.new_session(Some(crate::session_manager::NewSessionOptions {
                 parent_session: previous.clone(),
+                forked_from_leaf_id,
                 ..Default::default()
             }));
             for entry in entries {
