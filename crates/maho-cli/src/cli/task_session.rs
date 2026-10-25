@@ -1064,6 +1064,56 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
         let session = self
             .ensure_session()
             .map_err(|error| NativePauseError::Engine(error.to_string()))?;
+        let turn_id = request.resume_id.clone();
+        let has_held_inputs = !session.held_inputs().is_empty();
+        let (settled, outcome) = std::sync::mpsc::sync_channel(1);
+        let prompt_failed = settled.clone();
+        let turn_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let subscription = session.subscribe(Arc::new(move |event| {
+            let Ok(record) = maho_rpc::session_binding::session_event_record(event) else {
+                return;
+            };
+            if record["type"] == "agent_start" {
+                turn_started.store(true, std::sync::atomic::Ordering::Release);
+            }
+            if record["type"] != "agent_end"
+                || record["willRetry"] == true
+                || !turn_started.load(std::sync::atomic::Ordering::Acquire)
+            {
+                return;
+            }
+            let message = record["messages"].as_array().and_then(|messages| {
+                messages
+                    .iter()
+                    .rev()
+                    .find(|message| message["role"] == "assistant")
+            });
+            let result = match message {
+                Some(message) if message["stopReason"] == "aborted" => {
+                    senpi_task::runners::RunnerOutcome::Cancelled
+                }
+                Some(message) if message["stopReason"] == "error" => {
+                    senpi_task::runners::RunnerOutcome::error(
+                        senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
+                        message["errorMessage"]
+                            .as_str()
+                            .unwrap_or("child turn failed"),
+                    )
+                }
+                Some(message) => senpi_task::runners::RunnerOutcome::completed(
+                    message["content"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|block| block["type"] == "text")
+                        .filter_map(|block| block["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ),
+                None => senpi_task::runners::RunnerOutcome::completed(""),
+            };
+            let _ = settled.try_send(result);
+        }));
         let resumed = session.clone();
         let result = block_on_sync(self.executor.clone(), async move {
             resumed
@@ -1091,20 +1141,33 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
             maho_core::run_holds::ReleaseInheritedResult::Released {
                 other_hold_live: false,
             } => {
-                let executor = self.executor.clone();
+                if !has_held_inputs {
+                    self.executor.spawn(async move {
+                        if let Err(error) = session
+                            .prompt(
+                                maho_core::manual_continue::MANUAL_CONTINUE_DIRECTIVE,
+                                Default::default(),
+                            )
+                            .await
+                        {
+                            let _ =
+                                prompt_failed.try_send(senpi_task::runners::RunnerOutcome::error(
+                                    senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
+                                    error,
+                                ));
+                        }
+                    });
+                }
                 NativeResumeResult::Turn(ResumedChildTurn {
-                    turn_id: format!("run-resume-{}", self.session_id),
+                    turn_id,
                     outcome: Box::new(move || {
-                        match block_on_sync(executor, async move {
-                            session.wait_for_idle().await;
-                            Ok(session.get_last_assistant_text().unwrap_or_default())
-                        }) {
-                            Ok(text) => senpi_task::runners::RunnerOutcome::completed(text),
-                            Err(error) => senpi_task::runners::RunnerOutcome::error(
+                        let _subscription = subscription;
+                        outcome.recv().unwrap_or_else(|error| {
+                            senpi_task::runners::RunnerOutcome::error(
                                 senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
                                 error.to_string(),
-                            ),
-                        }
+                            )
+                        })
                     }),
                 })
             }
@@ -1138,7 +1201,7 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
         }
         if let Some(revision) = receipt["revision"]
             .as_u64()
-            .filter(|_| receipt["alreadyDelivered"] == true)
+            .filter(|_| receipt["kind"] == "already_delivered")
         {
             return Ok(EngineHoldInputResult::AlreadyDelivered { revision });
         }
