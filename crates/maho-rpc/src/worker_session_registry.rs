@@ -19,6 +19,9 @@ pub struct WorkerRoutes {
     pub failure: Box<dyn Fn(&str) + Send + Sync>,
     /// The worker died with a failure: the terminal close record (senpi \`publishTerminalFailure\`).
     pub terminal_failure: Box<dyn Fn(&str) + Send + Sync>,
+    /// The writer's security bridge: which connections can present a grant, and where a settled dialog is recorded
+    /// (senpi \`SessionEventWriter\`'s grant methods). \`None\` forwards a worker's grant traffic unchanged.
+    pub security: Option<std::sync::Arc<dyn crate::session_worker_client::WorkerSecurityWriter>>,
 }
 pub struct WorkerSessionEntry {
     pub close: SessionCloseState,
@@ -313,8 +316,33 @@ impl WorkerSessionRegistry {
                     RpcSessionState::Quarantined,
                 );
                 worker.quarantine();
-                Err(error)
+                // A worker that dies before commit (for example one that cannot load its modules) closes what the
+                // open is still waiting on: name why the worker died instead, as the commit check above does
+                // (#4037, #1953).
+                Err(self.named_worker_failure(&handle, error))
             }
+        }
+    }
+    /// A failure that is only the worker's death is re-thrown with the worker's own recorded reason (senpi
+    /// `closedByWorkerDeath`); any other failure is answered as it stands.
+    fn named_worker_failure(
+        &self,
+        handle: &str,
+        error: RpcSessionRegistryError,
+    ) -> RpcSessionRegistryError {
+        let failure = lock(&self.state)
+            .entries
+            .get(handle)
+            .and_then(|entry| entry.failure.clone());
+        match failure {
+            Some(failure) if crate::session_worker_protocol::closed_by_worker_death(&error) => {
+                RpcSessionRegistryError::new(
+                    "open_failed",
+                    Some(failure.trim_start_matches("open_failed: ")),
+                    None,
+                )
+            }
+            _ => error,
         }
     }
     async fn commit_open(
@@ -403,6 +431,7 @@ impl WorkerSessionRegistry {
             Arc::clone(&routes),
             routes,
         );
+        let security = output_routes.security.clone();
         SessionWorkerCallbacks {
             reserve: Box::new(move |path| {
                 reserve
@@ -456,6 +485,7 @@ impl WorkerSessionRegistry {
                     (exit_routes.terminal_failure)(&error);
                 }
             }),
+            security,
         }
     }
     pub fn mark_close(

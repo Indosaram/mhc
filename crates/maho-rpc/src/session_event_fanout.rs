@@ -554,6 +554,31 @@ impl ConnectionTargets {
             .map(|connection| Some(connection.id.clone()))
             .collect()
     }
+
+    /// Every connection attached to `session` (senpi `SessionEventFanout.attachedConnections`).
+    pub fn attached_connections(&self, session: &str) -> Vec<String> {
+        self.connections
+            .iter()
+            .filter(|connection| connection.sessions.contains(session))
+            .map(|connection| connection.id.clone())
+            .collect()
+    }
+
+    /// Whether `connection` registered `capability` in its own handshake (senpi `connectionHas`).
+    pub fn connection_has(&self, connection: &str, capability: &str) -> bool {
+        self.connections.iter().any(|candidate| {
+            candidate.id == connection
+                && candidate
+                    .capabilities
+                    .iter()
+                    .any(|name| name == capability)
+        })
+    }
+
+    /// Whether no connection is registered at all (senpi `SessionEventFanout.isEmpty`).
+    pub fn is_empty(&self) -> bool {
+        self.connections.is_empty()
+    }
 }
 struct SnapshotRecord {
     line: String,
