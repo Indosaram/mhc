@@ -293,7 +293,7 @@ mod tests {
         for (index, step) in GATEWAY_MIGRATIONS.iter().enumerate() {
             assert!(!step.is_empty(), "step {index} is empty");
         }
-        assert_eq!(GATEWAY_NEEDS_FK_OFF, &[6]);
+        assert_eq!(GATEWAY_NEEDS_FK_OFF.to_vec(), vec![6usize]);
     }
 
     #[test]

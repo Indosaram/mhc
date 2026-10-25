@@ -403,7 +403,7 @@ pub fn bind_thread(ctx: &StoreContext, now: i64, input: &BindInput) -> Result<Re
         }
         let stamp = rfc3339(now);
         let expires_at = input.ttl_seconds.map(|ttl| rfc3339(now + ttl * 1_000));
-        let binding_id = format!("bind-{}", uuid::Uuid::new_v4());
+        let binding_id = super::store_ops::new_id("bind");
         let direction = input.direction.clone().unwrap_or(BindingDirection { inbound: true, outbound: true });
         let events = serde_json::to_string(&input.outbound_events.clone().unwrap_or_default()).unwrap_or_else(|_| "[]".to_owned());
         ctx.run(

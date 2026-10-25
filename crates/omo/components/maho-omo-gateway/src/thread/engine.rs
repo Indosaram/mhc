@@ -200,7 +200,7 @@ impl GatewayEngine {
             return fail("turn_conflict", "The target has no live turn to steer.", Some(serde_json::json!({ "target": target.durable_id })));
         }
         let facts = sender_facts(&request.sender, self.sender_provenance());
-        let delivery_id = uuid::Uuid::new_v4().to_string();
+        let delivery_id = super::store_ops::new_id("delivery");
         let idempotency_key = request.idempotency_key.clone().unwrap_or_else(|| format!("auto:{delivery_id}"));
         let author = match &request.sender {
             GatewaySender::External { origin, .. } => origin.author.as_ref(),
