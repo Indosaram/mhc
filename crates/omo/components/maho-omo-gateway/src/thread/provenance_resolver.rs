@@ -170,11 +170,16 @@ fn exec_git_file(args: &[&str], options: &GitOptions) -> GitRun {
     }
 }
 
+fn read_file_default(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_default()
+}
+
+fn no_warning(_: &str) {}
+
 fn origin_remote(cwd: &Path, env: &BTreeMap<String, String>, warn: &dyn Fn(&str), runtime: &ProvenanceRuntime) -> Option<String> {
-    let default_read = |path: &Path| std::fs::read_to_string(path).unwrap_or_default();
     let read_git_file: &dyn Fn(&Path) -> String = match &runtime.read_git_file {
         Some(read) => read.as_ref(),
-        None => &default_read,
+        None => &read_file_default,
     };
     if !inside_repository(cwd, env, warn, read_git_file) {
         return None;
@@ -290,7 +295,6 @@ pub fn resolve_provenance(runtime: &ProvenanceRuntime) -> Provenance {
     if let (Some(workspace), Some(project)) = (explicit_workspace.clone(), explicit_project.clone()) {
         return Provenance { workspace, project, lane, session: None };
     }
-    let no_warning = |_: &str| {};
     let warn: &dyn Fn(&str) = match &runtime.on_warning {
         Some(warn) => warn.as_ref(),
         None => &no_warning,

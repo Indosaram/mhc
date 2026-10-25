@@ -64,6 +64,18 @@ struct Guard {
     running: AtomicUsize,
 }
 
+/// Runs one transaction helper: refused once the transaction ended, and counted as in flight from
+/// the call until it settles.
+fn run_joined<T>(guard: &Guard, owner: &str, body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    if !guard.active.load(Ordering::SeqCst) {
+        return Err(ended_error(owner).message);
+    }
+    guard.running.fetch_add(1, Ordering::SeqCst);
+    let result = body();
+    guard.running.fetch_sub(1, Ordering::SeqCst);
+    result
+}
+
 /// Builds the helpers of one op's transaction; `finish` marks the transaction ended.
 pub struct ExtensionTransaction {
     pub tx: StoreExtensionTransaction,
@@ -80,16 +92,6 @@ pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_pr
     let guard = Arc::new(Guard { active: AtomicBool::new(true), running: AtomicUsize::new(0) });
     let owner = name.to_owned();
 
-    let check_active = {
-        let guard = guard.clone();
-        let owner = owner.clone();
-        move || -> Result<(), StoreExtensionError> {
-            if !guard.active.load(Ordering::SeqCst) {
-                return Err(ended_error(&owner));
-            }
-            Ok(())
-        }
-    };
     let sql_guard = {
         let guard = guard.clone();
         let owner = owner.clone();
@@ -137,29 +139,21 @@ pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_pr
         }) as Arc<dyn Fn(&str, &[Value]) -> Result<usize, String> + Send + Sync>
     };
 
-    let joined = {
-        let check_active = check_active.clone();
-        let guard = guard.clone();
-        move |body: &dyn Fn() -> Result<Value, String>| -> Result<Value, String> {
-            check_active().map_err(|error| error.message)?;
-            guard.running.fetch_add(1, Ordering::SeqCst);
-            let result = body();
-            guard.running.fetch_sub(1, Ordering::SeqCst);
-            result
-        }
-    };
+    // Every helper joins the op's transaction through the same guard: in flight from the call until it
+    // settles, so a statement run in that gap is refused instead of landing inside its savepoint.
 
     let enqueue = {
-        let joined = joined.clone();
+        let guard = guard.clone();
+        let owner = owner.clone();
         let provenance = sender_provenance.clone();
         Arc::new(move |request: ExtensionEnqueueRequest| -> Result<GatewayDeliveryResult, String> {
-            let value = joined(&|| {
+            let value = run_joined(&guard, &owner, || {
                 let binding = store_relay_ops::select_bindings(ctx, "binding_id = ?", &[v_str(&request.binding_id)])
                     .map_err(|error| error.message())?
                     .into_iter()
                     .next()
                     .ok_or_else(|| "No binding has this id.".to_owned())?;
-                let delivery_id = format!("ext-{}", uuid::Uuid::new_v4());
+                let delivery_id = super::store_ops::new_id("ext");
                 let provenance = provenance
                     .as_ref()
                     .map(|provenance| provenance())
@@ -202,15 +196,16 @@ pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_pr
                     super::types::EnqueueOutcome::Refused { message, .. } => Err(message),
                     super::types::EnqueueOutcome::Busy => Err("the gateway store is locked".to_owned()),
                 }
-            })?;
-            serde_json::from_value::<GatewayDeliveryResult>(value).map_err(|error| error.to_string())
+            });
+            serde_json::from_value::<GatewayDeliveryResult>(value?).map_err(|error| error.to_string())
         }) as Arc<dyn Fn(ExtensionEnqueueRequest) -> Result<GatewayDeliveryResult, String> + Send + Sync>
     };
 
     let outbox_ack = {
-        let joined = joined.clone();
+        let guard = guard.clone();
+        let owner = owner.clone();
         Arc::new(move |request: ExtensionAckRequest| -> Result<ExtensionAckReply, String> {
-            joined(&|| {
+            let value = run_joined(&guard, &owner, || {
                 let outcome = store_relay_ops::ack_outbox(ctx, now, &request.binding_id, request.cursor, request.provider_message_id.as_deref()).map_err(|error| error.message())?;
                 match outcome {
                     store_relay_ops::RelayOutcome::Ok { value: (acked_cursor, changed) } => {
@@ -218,27 +213,31 @@ pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_pr
                     }
                     store_relay_ops::RelayOutcome::Refused { message, .. } => Err(message),
                 }
-            })
+            });
+            serde_json::from_value::<ExtensionAckReply>(value?).map_err(|error| error.to_string())
         }) as Arc<dyn Fn(ExtensionAckRequest) -> Result<ExtensionAckReply, String> + Send + Sync>
     };
 
     let bind = {
-        let joined = joined.clone();
+        let guard = guard.clone();
+        let owner = owner.clone();
         Arc::new(move |request: ExtensionBindRequest| -> Result<ExtensionBindReply, String> {
-            joined(&|| {
+            let value = run_joined(&guard, &owner, || {
                 let input: store_relay_ops::BindInput = serde_json::from_value(request.input.clone()).map_err(|error| error.to_string())?;
                 match store_relay_ops::bind_thread(ctx, now, &input).map_err(|error| error.message())? {
                     store_relay_ops::RelayOutcome::Ok { value } => Ok(ExtensionBindReply { binding: serde_json::to_value(&value).unwrap_or(Value::Null), deduplicated: false }),
                     store_relay_ops::RelayOutcome::Refused { message, .. } => Err(message),
                 }
-            })
+            });
+            serde_json::from_value::<ExtensionBindReply>(value?).map_err(|error| error.to_string())
         }) as Arc<dyn Fn(ExtensionBindRequest) -> Result<ExtensionBindReply, String> + Send + Sync>
     };
 
     let unbind = {
-        let joined = joined.clone();
+        let guard = guard.clone();
+        let owner = owner.clone();
         Arc::new(move |request: ExtensionUnbindRequest| -> Result<ExtensionUnbindReply, String> {
-            joined(&|| {
+            let value = run_joined(&guard, &owner, || {
                 match store_relay_ops::unbind_thread(ctx, now, &request.binding_id, request.expected_revision).map_err(|error| error.message())? {
                     store_relay_ops::RelayOutcome::Ok { value: (binding, already_closed, in_flight) } => Ok(ExtensionUnbindReply {
                         binding: serde_json::to_value(&binding).unwrap_or(Value::Null),
@@ -247,36 +246,42 @@ pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_pr
                     }),
                     store_relay_ops::RelayOutcome::Refused { message, .. } => Err(message),
                 }
-            })
+            });
+            serde_json::from_value::<ExtensionUnbindReply>(value?).map_err(|error| error.to_string())
         }) as Arc<dyn Fn(ExtensionUnbindRequest) -> Result<ExtensionUnbindReply, String> + Send + Sync>
     };
 
     let rebind = {
-        let joined = joined.clone();
+        let guard = guard.clone();
+        let owner = owner.clone();
         Arc::new(move |request: ExtensionRebindRequest| -> Result<ExtensionRebindReply, String> {
-            joined(&|| {
+            let value = run_joined(&guard, &owner, || {
                 match store_relay_ops::rebind_thread(ctx, now, &request.binding_id, request.expected_revision, &request.session_durable_id).map_err(|error| error.message())? {
                     store_relay_ops::RelayOutcome::Ok { value: (binding, closed) } => Ok(ExtensionRebindReply { binding: serde_json::to_value(&binding).unwrap_or(Value::Null), closed }),
                     store_relay_ops::RelayOutcome::Refused { message, .. } => Err(message),
                 }
-            })
+            });
+            serde_json::from_value::<ExtensionRebindReply>(value?).map_err(|error| error.to_string())
         }) as Arc<dyn Fn(ExtensionRebindRequest) -> Result<ExtensionRebindReply, String> + Send + Sync>
     };
 
     let binding_for = {
-        let joined = joined.clone();
+        let guard = guard.clone();
+        let owner = owner.clone();
         Arc::new(move |lookup: ExtensionBindingLookup| -> Result<Option<Value>, String> {
-            joined(&|| store_relay_ops::binding_for(ctx, &lookup).map(|binding| binding.map(|binding| serde_json::to_value(binding).unwrap_or(Value::Null))).map_err(|error| error.message()))
+            let value = run_joined(&guard, &owner, || store_relay_ops::binding_for(ctx, &lookup).map(|binding| binding.map(|binding| serde_json::to_value(binding).unwrap_or(Value::Null))).map_err(|error| error.message()))?;
+            Ok(value)
         }) as Arc<dyn Fn(ExtensionBindingLookup) -> Result<Option<Value>, String> + Send + Sync>
     };
 
     let bindings_for_session = {
-        let joined = joined.clone();
+        let guard = guard.clone();
+        let owner = owner.clone();
         Arc::new(move |session_durable_id: &str| -> Result<Vec<Value>, String> {
             if session_durable_id.is_empty() {
                 return Err(argument_error("bindingsForSession needs a non-empty session durable id.").message);
             }
-            joined(&|| {
+            run_joined(&guard, &owner, || {
                 let bindings = store_relay_ops::bindings_for_session(ctx, session_durable_id, now).map_err(|error| error.message())?;
                 Ok(bindings.into_iter().map(|binding| serde_json::to_value(binding).unwrap_or(Value::Null)).collect())
             })
@@ -284,9 +289,10 @@ pub fn extension_transaction(ctx: &StoreContext, name: &str, now: i64, sender_pr
     };
 
     let outbox_pending = {
-        let joined = joined.clone();
+        let guard = guard.clone();
+        let owner = owner.clone();
         Arc::new(move |request: ExtensionOutboxRequest| -> Result<Value, String> {
-            joined(&|| {
+            run_joined(&guard, &owner, || {
                 match store_relay_ops::read_outbox(ctx, now, &request.binding_id, request.after_cursor, request.limit, true).map_err(|error| error.message())? {
                     store_relay_ops::RelayOutcome::Ok { value } => Ok(serde_json::to_value(&value).unwrap_or(Value::Null)),
                     store_relay_ops::RelayOutcome::Refused { message, .. } => Err(message),

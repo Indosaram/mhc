@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -529,6 +529,20 @@ fn args_hash(value: &Value) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// A unique id for a row the gateway creates: the process, the clock and a counter, hashed.
+pub fn new_id(prefix: &str) -> String {
+    use sha2::Digest;
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|elapsed| elapsed.as_nanos()).unwrap_or(0);
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(std::process::id().to_le_bytes());
+    hasher.update(nanos.to_le_bytes());
+    hasher.update(counter.to_le_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    format!("{prefix}-{}", &digest[..32])
+}
+
 pub fn hash_args(value: &Value) -> String {
     args_hash(value)
 }
@@ -690,7 +704,7 @@ fn place_causally(ctx: &StoreContext, request: &EnqueueRequest) -> Result<Result
             via.push(request.sender_node.clone());
             CausalPlacement { root_id: cause.root_id.clone(), hop: cause.hop + 1, via, new_root: false }
         }
-        None => CausalPlacement { root_id: format!("root-{}", uuid::Uuid::new_v4()), hop: 1, via: vec![request.sender_node.clone()], new_root: true },
+        None => CausalPlacement { root_id: new_id("root"), hop: 1, via: vec![request.sender_node.clone()], new_root: true },
     };
     if let Some(claimed) = &request.claimed_root_id
         && *claimed != placement.root_id
@@ -1168,9 +1182,9 @@ pub fn record_outcome(ctx: &StoreContext, request: &RecordOutcomeRequest) -> Res
             OutcomeRecord::Admitted { admission_kind, turn_epoch } | OutcomeRecord::Applied { admission_kind, turn_epoch } => {
                 ctx.run(
                     "UPDATE deliveries SET admission_kind = ?, turn_epoch = ?, updated_at = ? WHERE delivery_id = ?",
-                    &[v_str(admission_kind), v_i64(*turn_epoch), v_i64(request.now), v_str(&row.delivery_id)],
+                    &[v_str(admission_kind.clone()), v_i64(*turn_epoch), v_i64(request.now), v_str(&row.delivery_id)],
                 )?;
-                let to = if matches!(request.outcome, OutcomeRecord::Applied { .. }) { DeliveryState::Applied } else { DeliveryState::Admitted };
+                let to = if matches!(&request.outcome, OutcomeRecord::Applied { .. }) { DeliveryState::Applied } else { DeliveryState::Admitted };
                 if row.state != to {
                     transition(ctx, &row, to, request.now, None)?;
                 }

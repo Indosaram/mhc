@@ -243,6 +243,7 @@ pub fn assemble_address_book(hosts: &[AddressBookHost], disk_sessions: &[DiskSes
             let created_at = session.created_at.clone().or_else(|| disk.map(|disk| disk.created_at.clone())).unwrap_or_else(|| assembled_at.to_owned());
             let updated_at = session.updated_at.clone().or_else(|| disk.and_then(|disk| disk.updated_at.clone()));
             let name = session.name.clone().or_else(|| disk.and_then(|disk| disk.name.clone()));
+            let disk_title = disk.and_then(|disk| thread_title(disk.name.as_deref(), disk.first_user_text.as_deref()));
             let kind = host.endpoint_kind.unwrap_or(GatewayEndpointKind::RpcHost);
             by_durable_id.insert(
                 durable_id.clone(),
@@ -262,7 +263,7 @@ pub fn assemble_address_book(hosts: &[AddressBookHost], disk_sessions: &[DiskSes
                     endpoint: Some(AddressEndpoint { kind, socket: host.socket.clone(), routing_id: Some(session.session_id.clone()), durable_session_id: durable_id }),
                     surface: Some(derive_surface(Some(kind), session.kind.as_deref(), &host.socket)),
                     alive: host.alive != Some(false),
-                    title: thread_title(name.as_deref(), None).or_else(|| disk.and_then(|disk| thread_title(disk.name.as_deref(), disk.first_user_text.as_deref()))),
+                    title: thread_title(name.as_deref(), None).or_else(|| disk_title.clone()),
                 },
             );
         }
