@@ -14,6 +14,7 @@ pub mod kernel_tools;
 pub mod lifecycle;
 pub mod manager;
 pub mod model_chain;
+pub mod model_exclusion;
 pub mod pause;
 pub mod progress;
 pub mod renderer_text;

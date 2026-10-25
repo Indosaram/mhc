@@ -5,7 +5,7 @@ use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 
 use super::*;
-use super::resolve::{excluded_model_pattern, is_excluded_model};
+use crate::model_exclusion::{excluded_model_pattern, is_excluded_model};
 use crate::delegate_adapter::DelegateFallbackEntry;
 use crate::host::SenpiModelRegistry;
 use crate::host::fake::{catalog_registry, model, registry};
