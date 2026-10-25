@@ -6,6 +6,9 @@ struct ManagedResident(Arc<dyn ManagedChildHandle>);
 impl ResidentHandle for ManagedResident {
     fn task_id(&self) -> &str { self.0.task_id() }
     fn kind(&self) -> ResidentKind { if self.0.pid().is_some() { ResidentKind::Rpc } else { ResidentKind::InProcess } }
+    fn mark_stopping(&self) { self.0.mark_stopping(); }
+    fn is_host_session(&self) -> bool { self.0.is_host_session() }
+    fn publish_task_status(&self, status: senpi_task::state::TaskStatus) -> Result<(), HostError> { self.0.publish_task_status(status) }
     fn pid(&self) -> Option<i64> { self.0.pid() }
     fn abort(&self) -> Result<(), HostError> { self.0.abort() }
     fn dispose(&self) -> Result<(), HostError> { self.0.dispose() }

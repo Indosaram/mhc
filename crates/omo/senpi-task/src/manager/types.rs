@@ -341,6 +341,7 @@ impl Default for ManagerConfig {
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 
 pub struct TaskManagerOptions {
+    pub admission_barrier: Option<crate::pause::admission_barrier::AdmissionBarrier>,
     pub store: crate::store::TaskRecordStore,
     pub runners: ManagedRunners,
     pub planner: ChildPlanner,
@@ -370,6 +371,7 @@ impl TaskManagerOptions {
         cwd: impl Into<String>,
     ) -> Self {
         Self {
+            admission_barrier: None,
             store,
             runners,
             planner,

@@ -632,6 +632,7 @@ impl TaskComponent {
                                     })?;
                                 let lifecycle = component.engine.lifecycle.clone();
                                 let input = senpi_task::lifecycle::SuspendInput {
+                                    own_task_id: None,
                                     parent_session_id: session.into(),
                                     reason: match shutdown.reason {
                                         maho_ext_api::SessionReason::Startup => "startup",

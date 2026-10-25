@@ -74,6 +74,8 @@ pub trait ManagedChildHandle: Send + Sync {
     }
     /// From here no transport recovery may bring the child back (TS `markStopping`).
     fn mark_stopping(&self) {}
+    fn is_host_session(&self) -> bool { false }
+    fn publish_task_status(&self, _status: crate::state::TaskStatus) -> Result<(), HostError> { Ok(()) }
 }
 
 /// Terminate (when supported) then always dispose.
