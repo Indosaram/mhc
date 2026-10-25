@@ -257,6 +257,7 @@ struct Inner {
     child_pause: Arc<dyn crate::pause::ports::ChildPausePort>,
     held_callback: Option<crate::manager::start_admission::HeldCallback>,
     host_status_publication: Mutex<()>,
+    launches_changed: std::sync::Condvar,
     trusted_respawn_launch: Option<crate::manager::types::TrustedRespawnLaunchResolver>,
     host_pid: i64,
     rpc_respawn_runner: Arc<dyn RpcRespawnRunner>,
@@ -480,6 +481,7 @@ impl TaskManager {
                 traceparent_for: options.traceparent_for,
                 held_callback: options.on_held_admission,
                 host_status_publication: Mutex::new(()),
+                launches_changed: std::sync::Condvar::new(),
                 admission_barrier: options.admission_barrier.unwrap_or_default(),
                 child_pause: options.child_pause_port.unwrap_or_else(|| {
                     Arc::new(crate::pause::native_child_pause::NativeChildPausePort)
@@ -2227,32 +2229,63 @@ impl TaskManager {
     }
 
     pub fn settle_launches_for_shutdown(&self, bound: Duration) {
-        let runners = self.inner.runners.clone();
+        let deadline = std::time::Instant::now() + bound;
         let inner = Arc::clone(&self.inner);
         let (tx, rx) = channel();
         std::thread::spawn(move || {
-            for runner in [&runners.in_process, &runners.process] {
-                let settled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    runner.settle_teardowns()
-                }));
-                match settled {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => log("senpi-task runner teardown failed", "", &error),
-                    Err(_) => log("senpi-task runner teardown panicked", "", &"runner panic"),
+            let settle = || {
+                for runner in [&inner.runners.in_process, &inner.runners.process] {
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        runner.settle_teardowns()
+                    })) {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => log("senpi-task runner teardown failed", "", &error),
+                        Err(_) => log("senpi-task runner teardown panicked", "", &"runner panic"),
+                    }
                 }
-            }
+            };
+            settle();
+            let state = lock(&inner.state);
+            let waited = inner
+                .launches_changed
+                .wait_timeout_while(
+                    state,
+                    deadline.saturating_duration_since(std::time::Instant::now()),
+                    |state| !state.launching.is_empty(),
+                )
+                .unwrap_or_else(PoisonError::into_inner);
+            drop(waited);
+            settle();
             let _ = tx.send(());
         });
-        if let Err(error) = rx.recv_timeout(bound) {
+        if let Err(error) =
+            rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        {
             log("senpi-task shutdown settlement incomplete", "", &error);
         }
-        let held: Vec<_> = lock(&inner.state).held_launches.values().cloned().collect();
+        let held: Vec<_> = {
+            let state = lock(&self.inner.state);
+            state
+                .held_launches
+                .values()
+                .chain(state.queued_launches.values())
+                .cloned()
+                .collect()
+        };
         for context in held {
-            if let Some(lease) = lock(&inner.concurrency).park(
-                &context.record.task_id,
+            let task_id = &context.record.task_id;
+            lock(&self.inner.concurrency).withdraw(
+                &context.model,
+                task_id,
                 context.record.notification.run_epoch,
-            ) {
-                lock(&inner.parked).insert(context.record.task_id, lease);
+            );
+            if let Some(lease) =
+                lock(&self.inner.concurrency).park(task_id, context.record.notification.run_epoch)
+            {
+                lock(&self.inner.parked).insert(task_id.clone(), lease);
+            }
+            if let Some(admission) = &context.managed_spec.admission {
+                admission.leave();
             }
         }
     }
@@ -3098,6 +3131,7 @@ impl Inner {
 
     fn end_launch(&self, task_id: &str) {
         lock(&self.state).launching.remove(task_id);
+        self.launches_changed.notify_all();
     }
 
     /// `#discardStaleLaunch`: a child whose start resolved after its launch went stale is torn down,
