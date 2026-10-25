@@ -172,4 +172,15 @@ impl ReleasableSession for AgentSessionRelease {
         }
         Ok(())
     }
+
+    /// `extensionRunner.emitSessionMove`: the session's own bus carries the export event, so a native extension
+    /// subscribed to `session_move_export` writes its state while this runtime is still live. The Rust extension
+    /// contract reports no handler failure, so a handler that cannot write fails the release only by its own report.
+    async fn emit_session_move(&self, move_id: &str, dir: &str) -> Result<(), String> {
+        self.session.emit_extension_event(
+            crate::session_release::SESSION_MOVE_EXPORT_EVENT,
+            &serde_json::json!({"type": "session_move_export", "moveId": move_id, "dir": dir}),
+        );
+        Ok(())
+    }
 }
