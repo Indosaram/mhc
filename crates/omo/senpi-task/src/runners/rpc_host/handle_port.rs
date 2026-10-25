@@ -17,6 +17,10 @@ pub struct HostSessionReplaced {
     pub durable_session_id: String,
 }
 pub trait HostSessionPort: Send + Sync {
+    fn wait_for_outcome(&self) -> Option<crate::runners::RunnerOutcome> {
+        None
+    }
+    fn transport_lost(&self, _message: String) {}
     fn watch_engine_turn(
         &self,
     ) -> Option<crate::runners::in_process::native_run_pause::EngineTurnWatch> {
@@ -27,6 +31,14 @@ pub trait HostSessionPort: Send + Sync {
     }
     fn native_pause(&self) -> Option<Arc<dyn crate::pause::native_child_pause::NativeRunPause>> {
         None
+    }
+    fn get_available_models(
+        &self,
+    ) -> Result<Vec<crate::runners::pinned_model_equivalence::CatalogModelIdentity>, HostError>
+    {
+        Err(HostError {
+            message: "host model catalog unsupported".into(),
+        })
     }
     fn send(&self, command: Value) -> Result<(), HostError>;
     fn get_state(&self) -> Result<Value, HostError>;

@@ -2,6 +2,18 @@
 use crate::host::HostError;
 use serde_json::Value;
 pub trait HostRpcClient: Send + Sync {
+    fn wait_for_outcome(&self) -> Option<crate::runners::RunnerOutcome> {
+        None
+    }
+    fn transport_lost(&self, _message: String) {}
+    fn get_available_models(
+        &self,
+    ) -> Result<Vec<crate::runners::pinned_model_equivalence::CatalogModelIdentity>, HostError>
+    {
+        Err(HostError {
+            message: "host model catalog unsupported".into(),
+        })
+    }
     fn command(&self, command: Value) -> Result<(), HostError>;
     fn get_state(&self) -> Result<Value, HostError> {
         Err(HostError {
