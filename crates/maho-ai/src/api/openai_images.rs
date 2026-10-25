@@ -541,7 +541,7 @@ pub fn parse_usage(raw_usage: &Value, model: &ImagesModel) -> Usage {
         .and_then(Value::as_u64)
         .unwrap_or_else(|| input.saturating_sub(image_tokens));
     let image_rate = model.cost.image_input.unwrap_or(model.cost.input);
-    let mut usage = Usage {
+    let mut usage = Usage { context_usage: None,
         input,
         output,
         cache_read: 0,

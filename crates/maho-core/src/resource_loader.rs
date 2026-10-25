@@ -217,7 +217,7 @@ pub fn snapshot_settings(settings: &SettingsManager) -> SettingsManager {
 }
 
 fn error_diagnostic(message: String, path: Option<String>) -> ResourceDiagnostic {
-    ResourceDiagnostic { diagnostic_type: ResourceDiagnosticType::Error, message, path, collision: None }
+    ResourceDiagnostic { category: None, diagnostic_type: ResourceDiagnosticType::Error, message, path, collision: None }
 }
 
 /// senpi `mergePaths`: resolve against cwd, keep the first canonical occurrence.
@@ -280,6 +280,7 @@ pub fn dedupe_prompts(prompts: Vec<PromptTemplate>) -> (Vec<PromptTemplate>, Vec
     for prompt in prompts {
         if let Some(existing) = kept.iter().find(|existing| existing.name == prompt.name) {
             diagnostics.push(ResourceDiagnostic {
+                category: None,
                 diagnostic_type: ResourceDiagnosticType::Collision,
                 message: format!("name \"/{}\" collision", prompt.name),
                 path: Some(prompt.file_path.clone()),

@@ -51,7 +51,7 @@ impl Extension for OpenAiImageGen {
                     };
                     Ok(match event {
                         ExtensionEvent::BeforeProviderRequest {payload,..} => inject::apply_image_generation_tools_if_changed(payload,mode).map_or(EventResult::None,EventResult::ProviderPayload),
-                        ExtensionEvent::BeforeAgentStart(event) if mode == ImageGenMode::Native => EventResult::BeforeAgentStart(maho_ext_api::BeforeAgentStartEventResult {message:None,system_prompt:Some(format!("{}\n{}",event.system_prompt,OPENAI_IMAGE_GEN_SECTION))}),
+                        ExtensionEvent::BeforeAgentStart(event) if mode == ImageGenMode::Native => EventResult::BeforeAgentStart(maho_ext_api::BeforeAgentStartEventResult { system_prompt_parts: None,message:None,system_prompt:Some(format!("{}\n{}",event.system_prompt,OPENAI_IMAGE_GEN_SECTION))}),
                         _ => EventResult::None,
                     })
                 })

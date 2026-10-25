@@ -101,7 +101,7 @@ impl RecallDrain {
                         let _ = actions.append_entry(NUDGED_ENTRY_TYPE, Some(value));
                     }
                     Ok(maho_ext_api::EventResult::BeforeAgentStart(
-                        maho_ext_api::BeforeAgentStartEventResult {
+                        maho_ext_api::BeforeAgentStartEventResult { system_prompt_parts: None,
                             message: Some(maho_ext_api::CustomMessage {
                                 custom_type: RECALL_CUSTOM_TYPE.into(),
                                 content: vec![maho_tools::definition::ToolContent::text(injection.message_content)],

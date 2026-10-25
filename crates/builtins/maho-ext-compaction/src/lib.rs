@@ -467,7 +467,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                     custom_type: message["customType"].as_str().unwrap_or_default().to_owned(),
                     content: vec![maho_ext_api::ToolContent::text(message["content"].as_str().unwrap_or_default())],
                     display: message["display"].as_bool().unwrap_or(false), details: message.get("details").cloned(),
-                })).transpose().map(|message| maho_ext_api::EventResult::BeforeAgentStart(maho_ext_api::BeforeAgentStartEventResult { message, system_prompt: None }));
+                })).transpose().map(|message| maho_ext_api::EventResult::BeforeAgentStart(maho_ext_api::BeforeAgentStartEventResult { system_prompt_parts: None, message, system_prompt: None }));
                 let state = std::sync::Arc::clone(&state);
                 let live_api = std::sync::Arc::clone(&live_api);
                 let warm = std::sync::Arc::clone(&warm);
