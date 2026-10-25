@@ -2292,8 +2292,12 @@ impl TaskManager {
             .get(task_id)
             .map(|(current, _)| *current);
         let held = lock(&self.inner.concurrency).lease_state(task_id, epoch) == Some("held");
-        if current != Some(attempt) || waited.is_err() || !held {
+        if current != Some(attempt) {
+            return Err("resume suspended".into());
+        }
+        if waited.is_err() || !held {
             lock(&self.inner.concurrency).withdraw(model, task_id, epoch);
+            lock(&self.inner.state).resume_attempts.remove(task_id);
             return Err("resume suspended".into());
         }
         lock(&self.inner.state).resume_attempts.remove(task_id);
