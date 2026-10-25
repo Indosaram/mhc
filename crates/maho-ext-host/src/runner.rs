@@ -342,6 +342,10 @@ impl SessionManager for ContextSessionManager {
         self.active();
         self.session.get_session_name()
     }
+    fn fork_provenance(&self) -> Option<ForkProvenance> {
+        self.active();
+        self.session.fork_provenance()
+    }
     fn extension_context_actions(&self) -> Option<&dyn ExtensionContextActions> {
         Some(self)
     }
