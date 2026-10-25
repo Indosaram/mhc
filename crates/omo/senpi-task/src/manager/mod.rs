@@ -17,6 +17,7 @@ pub mod launch_fence;
 pub mod manager;
 pub mod names;
 pub mod outcome;
+pub mod parent_model_fallback;
 pub mod parent_registry_context;
 pub mod residency_signal;
 pub mod respawn;
