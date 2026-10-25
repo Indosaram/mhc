@@ -31,6 +31,11 @@ pub enum ClaimReceipt {
     Inferred,
 }
 
+pub fn parse_claim_receipt(value: &serde_json::Value) -> Option<ClaimReceipt> {
+    crate::provenance::claim::parse_claim_receipt(value)?;
+    serde_json::from_value(value.clone()).ok()
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }

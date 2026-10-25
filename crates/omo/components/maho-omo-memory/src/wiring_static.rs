@@ -38,8 +38,8 @@ pub fn recover_pending_reflection(
     run_id: String,
     reconcile: &dyn Fn() -> Result<(), String>,
 ) -> crate::commands::types::ReflectionRequestReceipt {
-    let recovery = crate::reflection_stale_active::recover_stale_reflection_holder(
-        crate::reflection_stale_active::StaleHolderRecoveryInput {
+    let recovery = crate::reflection_stale_active_sync::recover_stale_reflection_holder(
+        crate::reflection_stale_active_sync::StaleHolderRecoveryInput {
             reflection_dir,
             reconcile,
             seams: None,
@@ -48,7 +48,7 @@ pub fn recover_pending_reflection(
     );
     let recovered_run_id = if recovery.notice.is_none() {
         match &recovery.verdict {
-            crate::reflection_stale_active::ActiveHolderVerdict::Dead { run_id } => {
+            crate::reflection_stale_active_sync::ActiveHolderVerdict::Dead { run_id } => {
                 Some(run_id.clone())
             }
             _ => None,
