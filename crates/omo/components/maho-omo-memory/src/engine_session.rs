@@ -1,8 +1,9 @@
 use std::{path::PathBuf,sync::Arc};
 use memory_core::{git::{GitMemoryRepo,errors::GitError,repo_types::{GitCommitAuthor,GitSeedFile,InitializeGitRepoOptions}},identity::layout::MemoryIdentityPaths,locks::{AcquireLockOptions,CreateLockRecordOptions,WithLockError,create_lock_record,memory_writer_lock_path,with_lock},tools::{memory::{MemoryToolLock,MemoryToolResult},tool_errors::MemoryToolError}};
 pub struct MemoryEngineSession {pub repo:GitMemoryRepo,pub lock:MemoryWriterLock,pub author:GitCommitAuthor}
-#[derive(Default)]
-pub struct MemoryEngineSessionOptions {pub lock_wait_timeout_ms:Option<u64>,pub lock_retry_delay_ms:Option<u64>}
+#[derive(Default,Clone)]
+pub struct MemoryEngineSessionOptions {pub lock_wait_timeout_ms:Option<u64>,pub lock_retry_delay_ms:Option<u64>,/// The engine-owned staged-memory hook checker the new repository's hooks run (`memoryHookChecker`).
+pub memory_hook_checker:Option<memory_core::memfs::MemoryHookChecker>}
 pub struct MemoryWriterLock{identity:String,path:PathBuf,wait_timeout_ms:u64,retry_delay_ms:Option<u64>}
 impl MemoryWriterLock {
     pub fn run<T,E:std::fmt::Display>(&self,domain:&str,operation:impl FnOnce()->Result<T,E>)->Result<T,MemoryToolError>{

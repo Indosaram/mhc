@@ -94,6 +94,7 @@ fn validated_tip(worktree: &ReflectionWorktree) -> ValidatedReflectionTip {
         crate::reflection::completion_validation::CompletionValidation::Valid {
             tip_sha,
             changed_paths,
+            ..
         } => ValidatedReflectionTip {
             tip_sha,
             changed_paths,

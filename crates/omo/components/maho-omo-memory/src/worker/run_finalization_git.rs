@@ -1,5 +1,5 @@
 use std::path::Path;
-use memory_core::{identity::resolve::MemoryIdentity, reflection::{CompletionValidation, ReflectionIntegrationMode, ReflectionIntegrationProbe, LegacyAutoRunReceiptProbe, ValidatedReflectionTip, IntegrateValidatedReflectionInput, cleanup_reflection_worktree, integrate_validated_reflection, probe_reflection_integration, probe_legacy_auto_run_receipt, validate_completion}};
+use memory_core::{identity::resolve::MemoryIdentity, reflection::{CompletionValidation, DescriptionPreflightWarn, ReflectionIntegrationMode, ReflectionIntegrationProbe, LegacyAutoRunReceiptProbe, ValidatedReflectionTip, IntegrateValidatedReflectionInput, cleanup_reflection_worktree, describe_dropped_entries, integrate_validated_reflection, preflight_reflection_descriptions, probe_reflection_integration, probe_legacy_auto_run_receipt, read_dropped_trailers, validate_completion}};
 use super::{run_artifacts::{RunOutcome, read_run_json, read_run_text_tail, update_run_ledger}, reservation_run_ledger::{ReservationRunLedger, parse_reservation_run_ledger, worktree_from_ledger}, run_finalization_types::DurableFinalizationDecision};
 
 fn checkpoint(path: &Path, decision: &DurableFinalizationDecision) -> Result<(), String> {
@@ -39,7 +39,7 @@ fn decision(outcome: &str, reason: Option<&str>, detail: Option<String>, integra
     DurableFinalizationDecision { outcome: outcome.into(), reason: reason.map(str::to_owned), detail, integration_sha, recovered_from_worktree: false }
 }
 
-pub fn resolve_finalization_decision(identity: &MemoryIdentity, run_dir: &Path, input: &ReservationRunLedger, child: &RunOutcome) -> Result<DurableFinalizationDecision, String> {
+pub fn resolve_finalization_decision(identity: &MemoryIdentity, run_dir: &Path, input: &ReservationRunLedger, child: &RunOutcome, warn: Option<&DescriptionPreflightWarn<'_>>) -> Result<DurableFinalizationDecision, String> {
     let path = run_dir.join("ledger.json");
     let mut ledger = parse_reservation_run_ledger(read_run_json(&path).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
     if ledger.run_id() != input.run_id() || child.run_id != ledger.run_id() { return Err("Finalization run id changed".into()); }
@@ -56,7 +56,10 @@ pub fn resolve_finalization_decision(identity: &MemoryIdentity, run_dir: &Path, 
     }
     let mut validated = ledger.value()["validatedTipSha"].as_str().map(|sha| ValidatedReflectionTip { tip_sha: sha.into(), changed_paths: ledger.value()["validatedChangedPaths"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str).map(str::to_owned).collect() });
     if validated.is_none() && worktree.dir.exists() {
-        match validate_completion(&worktree, ledger.value()["baseSha"].as_str().ok_or("Missing baseSha")?, worktree.exec.as_ref()) {
+        let base_sha = ledger.value()["baseSha"].as_str().ok_or("Missing baseSha")?;
+        // A run that only overran the description cap is repaired here, before the pure gate runs.
+        preflight_reflection_descriptions(&worktree, base_sha, worktree.exec.as_ref(), warn);
+        match validate_completion(&worktree, base_sha, worktree.exec.as_ref()) {
             CompletionValidation::Valid { tip_sha, changed_paths, .. } => {
                 if ledger.value()["targetDoc"].as_str().is_some_and(|target| changed_paths.iter().any(|path| path != target)) {
                     let result = decision("failed", Some("invalid_target"), Some("Dream changed paths outside targetDoc".into()), None);
@@ -65,9 +68,13 @@ pub fn resolve_finalization_decision(identity: &MemoryIdentity, run_dir: &Path, 
                 update_run_ledger(&path, serde_json::json!({"finalizePhase":"validated","validatedTipSha":tip_sha,"validatedChangedPaths":changed_paths}).as_object().ok_or("Invalid validation checkpoint")?).map_err(|error| error.to_string())?;
                 validated = Some(ValidatedReflectionTip { tip_sha, changed_paths });
             }
-            CompletionValidation::NoChanges { tip_sha, .. } => {
-                update_run_ledger(&path, serde_json::json!({"finalizePhase":"validated","validatedTipSha":tip_sha,"validatedChangedPaths":[],"finalizeOutcome":"no_changes"}).as_object().ok_or("Invalid validation checkpoint")?).map_err(|error| error.to_string())?;
-                cleanup()?; return Ok(decision("no_changes", None, None, None));
+            CompletionValidation::NoChanges { tip_sha, dropped, .. } => {
+                // Every entry the run wrote was refused: say so instead of reading as "nothing to do".
+                let note = (!dropped.is_empty()).then(|| describe_dropped_entries(&dropped));
+                let mut checkpoint_fields = serde_json::json!({"finalizePhase":"validated","validatedTipSha":tip_sha,"validatedChangedPaths":[],"finalizeOutcome":"no_changes"});
+                if let Some(note) = &note && let Some(fields) = checkpoint_fields.as_object_mut() { fields.insert("finalizeDetail".into(), note.clone().into()); }
+                update_run_ledger(&path, checkpoint_fields.as_object().ok_or("Invalid validation checkpoint")?).map_err(|error| error.to_string())?;
+                cleanup()?; return Ok(decision("no_changes", None, note, None));
             }
             CompletionValidation::DirtyUncommitted { detail } => {
                 let result = decision("dirty_uncommitted", Some("completion_validation"), Some(detail), None);
@@ -98,10 +105,20 @@ pub fn resolve_finalization_decision(identity: &MemoryIdentity, run_dir: &Path, 
             ReflectionIntegrationProbe::AlreadyMerged { integration_sha } => decision("merged", None, None, Some(integration_sha)),
             ReflectionIntegrationProbe::NotIntegrated if !worktree.dir.exists() => { let result = decision("failed", Some("missing_worktree"), None, None); checkpoint(&path, &result)?; return Ok(result); }
             ReflectionIntegrationProbe::NotIntegrated => {
+                // Read from the validated commit's trailers, so a run resumed after the validated checkpoint still
+                // reports what the gate dropped before it merged the rest.
+                let dropped_note = read_dropped_trailers(worktree.exec.as_ref(), &worktree.dir, ledger.value()["baseSha"].as_str().ok_or("Missing baseSha")?, &validated.tip_sha)
+                    .ok()
+                    .filter(|entries| !entries.is_empty())
+                    .map(|entries| describe_dropped_entries(&entries));
                 let engine = crate::engine_session::prepare_memory_engine_session(&identity.id, &identity.paths, Default::default()).map_err(|error| error.to_string())?;
                 let integrated = integrate_validated_reflection(&worktree, IntegrateValidatedReflectionInput { mode, run_id: ledger.run_id().into(), summary: format!("{} {}", ledger.value()["trigger"].as_str().ok_or("Missing trigger")?, ledger.run_id()), validated }, |operation| engine.lock.run("memory-write", operation).map_err(|error| error.to_string()));
                 let outcome = serde_json::to_value(integrated.outcome).map_err(|error| error.to_string())?;
-                let mut merged = decision(outcome.as_str().ok_or("Invalid integration outcome")?, None, integrated.detail, integrated.integration_sha);
+                let detail = match (integrated.detail, dropped_note) {
+                    (Some(detail), Some(note)) => Some(format!("{detail}; {note}")),
+                    (detail, note) => detail.or(note),
+                };
+                let mut merged = decision(outcome.as_str().ok_or("Invalid integration outcome")?, None, detail, integrated.integration_sha);
                 if merged.outcome == "merged" { validate_integrated_dream_budget(identity, &ledger, &mut merged)?; }
                 merged
             }
@@ -128,21 +145,21 @@ mod tests {
     }
     #[test] fn unchanged_tip_is_checkpointed_before_cleanup() {
         let root = tempfile::tempdir().unwrap(); let (identity, ledger, child, worktree) = fixture(root.path());
-        let result = resolve_finalization_decision(&identity, &root.path().join("run"), &ledger, &child).unwrap();
+        let result = resolve_finalization_decision(&identity, &root.path().join("run"), &ledger, &child, None).unwrap();
         assert_eq!(result.outcome, "no_changes"); assert!(!worktree.dir.exists());
         let checkpoint: serde_json::Value = read_run_json(&root.path().join("run/ledger.json")).unwrap();
         assert_eq!(checkpoint["finalizePhase"], "validated"); assert_eq!(checkpoint["finalizeOutcome"], "no_changes");
-        assert_eq!(resolve_finalization_decision(&identity, &root.path().join("run"), &ledger, &child).unwrap().outcome, "no_changes");
+        assert_eq!(resolve_finalization_decision(&identity, &root.path().join("run"), &ledger, &child, None).unwrap().outcome, "no_changes");
     }
     #[test] fn child_failure_records_stderr_and_cleans_worktree() {
         let root = tempfile::tempdir().unwrap(); let (identity, ledger, mut child, worktree) = fixture(root.path()); child.child_exit.code = Some(2);
         std::fs::write(root.path().join("run/child-stderr.log"), " failure detail\n").unwrap();
-        let result = resolve_finalization_decision(&identity, &root.path().join("run"), &ledger, &child).unwrap();
+        let result = resolve_finalization_decision(&identity, &root.path().join("run"), &ledger, &child, None).unwrap();
         assert_eq!(result.outcome, "failed"); assert_eq!(result.reason.as_deref(), Some("child_exit")); assert_eq!(result.detail.as_deref(), Some("failure detail")); assert!(!worktree.dir.exists());
     }
     #[test] fn changed_run_id_rejects_without_cleanup() {
         let root = tempfile::tempdir().unwrap(); let (identity, ledger, mut child, worktree) = fixture(root.path()); child.run_id = "other".into();
-        assert_eq!(resolve_finalization_decision(&identity, &root.path().join("run"), &ledger, &child).err().as_deref(), Some("Finalization run id changed")); assert!(worktree.dir.exists());
+        assert_eq!(resolve_finalization_decision(&identity, &root.path().join("run"), &ledger, &child, None).err().as_deref(), Some("Finalization run id changed")); assert!(worktree.dir.exists());
     }
     #[test] fn committed_reflection_is_integrated_under_writer_lock() {
         let root = tempfile::tempdir().unwrap(); let (identity, ledger, child, worktree) = fixture(root.path());
@@ -150,7 +167,7 @@ mod tests {
         for args in [vec!["add", "reference-fact.md"], vec!["-c", "user.name=agent", "-c", "user.email=agent@example.invalid", "commit", "-m", "Record reflection fact"]] {
             let output = worktree.exec.run_in(&worktree.dir, &args).unwrap(); assert_eq!(output.code, 0, "{}", output.stderr);
         }
-        let result = resolve_finalization_decision(&identity, &root.path().join("run"), &ledger, &child).unwrap();
+        let result = resolve_finalization_decision(&identity, &root.path().join("run"), &ledger, &child, None).unwrap();
         assert_eq!(result.outcome, "merged"); assert!(result.integration_sha.is_some());
         assert!(identity.paths.repo.join("reference-fact.md").exists()); assert!(!worktree.dir.exists());
         assert!(!memory_core::locks::memory_writer_lock_path(&identity.paths.locks).exists());
