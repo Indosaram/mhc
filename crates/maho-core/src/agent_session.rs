@@ -4461,6 +4461,9 @@ impl AgentSession {
             });
             drop(claimed);
             if let Err(error_message) = self.consume_held_inputs(&ids) {
+                lock(&self.delivered_held_inputs)
+                    .extend(ids.iter().cloned().map(|id| (id, generation)));
+                lock(&self.observed_held_inputs).extend(ids);
                 self.emit(AgentSessionEvent::ContinuationError { error_message });
             }
 
@@ -21487,6 +21490,70 @@ mod tests {
         assert!(messages.is_empty());
         assert!(ids.is_empty());
         assert_eq!(session.held_inputs().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_held_preparations_reserve_each_input_once() {
+        let session = test_session();
+        session
+            .hold_input(json!({"inputId":"one","revision":0,"text":"one"}))
+            .expect("hold");
+        let (first, second) = tokio::join!(
+            session.take_held_input_messages(),
+            session.take_held_input_messages()
+        );
+        let (_, a) = first.expect("first");
+        let (_, b) = second.expect("second");
+        assert_eq!(a.len() + b.len(), 1);
+        let ids = if a.is_empty() { b } else { a };
+        drop(HeldInputReservation {
+            session: session.clone(),
+            ids,
+        });
+        assert_eq!(
+            session
+                .take_held_input_messages()
+                .await
+                .expect("retry")
+                .1
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn reentrant_held_command_preparation_does_not_take_sibling_input() {
+        let session = test_session();
+        session
+            .hold_input(json!({"inputId":"one","revision":0,"text":"one"}))
+            .expect("hold");
+        let (messages, ids) = HELD_COMMAND_SESSION
+            .scope(session.session_id(), session.take_held_input_messages())
+            .await
+            .expect("reentrant");
+        assert!(messages.is_empty());
+        assert!(ids.is_empty());
+        assert_eq!(session.held_inputs().len(), 1);
+    }
+
+    #[test]
+    fn custom_read_effect_overrides_conservative_barrier_default() {
+        let session = test_session();
+        let mut definition = test_definition("custom-reader");
+        definition.workspace_effect = Some(crate::session_work_barrier::ToolWorkspaceEffect::Read);
+        session.register_tool_definition(
+            definition,
+            empty_source_info(),
+            test_tool("custom-reader"),
+        );
+        assert_eq!(
+            session.get_tool_workspace_effect("custom-reader"),
+            crate::session_work_barrier::ToolWorkspaceEffect::Read
+        );
+        assert_eq!(
+            session.get_tool_workspace_effect("unregistered"),
+            crate::session_work_barrier::ToolWorkspaceEffect::Write
+        );
     }
 
     fn test_session() -> AgentSession {
