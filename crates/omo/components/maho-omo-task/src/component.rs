@@ -707,6 +707,9 @@ impl TaskComponent {
                                 component.sync();
                             }
                             ExtensionEvent::SessionShutdown(shutdown) => {
+                                let manager = component.engine.manager.clone();
+                                tokio::task::spawn_blocking(move || manager.settle_launches_for_shutdown(std::time::Duration::from_secs(30)))
+                                    .await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                                 let before_suspend = component
                                     .before_suspend
                                     .lock()

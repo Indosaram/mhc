@@ -111,6 +111,22 @@ impl InProcessRunner {
     }
 
     pub fn start(&self, spec: &ChildSpec) -> Result<Arc<InProcessChildHandle>, RunnerError> {
+        let (handle, prompt) = self.create(spec)?;
+        handle.follow_up_turn(&prompt).map_err(|error| {
+            RunnerError::caused_by(
+                RunnerFailureKind::ChildPromptFailed,
+                error.message.clone(),
+                error,
+            )
+        })?;
+        Ok(handle)
+    }
+
+    /// Construct and subscribe the session without starting the first model turn.
+    pub fn create(
+        &self,
+        spec: &ChildSpec,
+    ) -> Result<(Arc<InProcessChildHandle>, String), RunnerError> {
         if spec.depth > self.max_depth {
             return Err(RunnerError::new(
                 RunnerFailureKind::DepthExceeded,
@@ -161,11 +177,13 @@ impl InProcessRunner {
                 })
             }
         };
-        Ok(InProcessChildHandle::start_with_completion(
-            &spec.task_id,
-            session,
-            &prompt_text,
-            spec.completion.unwrap_or_default(),
+        Ok((
+            InProcessChildHandle::restored_with_completion(
+                &spec.task_id,
+                session,
+                spec.completion.unwrap_or_default(),
+            ),
+            prompt_text,
         ))
     }
 

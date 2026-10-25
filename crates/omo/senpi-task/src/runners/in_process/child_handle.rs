@@ -108,11 +108,19 @@ pub struct WorkpoolChildIdentity {
 
 /// The host agent-session surface an in-process child drives. `prompt` blocks until the turn ends.
 pub trait ChildSession: Send + Sync {
+    fn run_pause(&self) -> Option<&dyn crate::pause::native_child_pause::NativeRunPause> {
+        None
+    }
     fn session_id(&self) -> String;
     fn prompt(&self, text: &str) -> Result<(), HostError>;
     fn steer(&self, text: &str) -> Result<(), HostError>;
     fn follow_up(&self, text: &str) -> Result<(), HostError>;
-    fn rebind_workpool_identity(&self, _identity: WorkpoolChildIdentity) -> Option<Result<(), HostError>> { None }
+    fn rebind_workpool_identity(
+        &self,
+        _identity: WorkpoolChildIdentity,
+    ) -> Option<Result<(), HostError>> {
+        None
+    }
     fn abort(&self) -> Result<(), HostError>;
     fn subscribe(&self, listener: ChildSessionListener) -> Unsubscribe;
     fn get_last_assistant_text(&self) -> Option<String>;
@@ -256,7 +264,12 @@ impl InProcessChildHandle {
 
     /// `createChildHandle` with the DEFAULT `FinalText` policy; other callers keep this signature.
     pub fn start(task_id: &str, session: Arc<dyn ChildSession>, prompt_text: &str) -> Arc<Self> {
-        Self::start_with_completion(task_id, session, prompt_text, ChildCompletionPolicy::FinalText)
+        Self::start_with_completion(
+            task_id,
+            session,
+            prompt_text,
+            ChildCompletionPolicy::FinalText,
+        )
     }
 
     /// `createChildHandle`: start tracking and immediately run the initial prompt.
@@ -291,17 +304,17 @@ impl InProcessChildHandle {
     fn begin_turn(&self, text: &str) {
         // The host snapshots its transcript to answer this, so read it before taking the lock the
         // session event observer also needs; no turn is active here, so no event can race it.
-        let baseline = self
-            .session
-            .get_last_assistant_text()
-            .or_else(|| match &self.tracked.lock().outcome {
-                Some(RunnerOutcome::Completed { final_response })
-                    if !final_response.is_empty() =>
-                {
-                    Some(final_response.clone())
-                }
-                _ => None,
-            });
+        let baseline =
+            self.session
+                .get_last_assistant_text()
+                .or_else(|| match &self.tracked.lock().outcome {
+                    Some(RunnerOutcome::Completed { final_response })
+                        if !final_response.is_empty() =>
+                    {
+                        Some(final_response.clone())
+                    }
+                    _ => None,
+                });
         let turn = {
             let mut state = self.tracked.lock();
             state.aborted = false;
@@ -404,6 +417,9 @@ impl InProcessChildHandle {
 }
 
 impl ManagedChildHandle for InProcessChildHandle {
+    fn run_pause(&self) -> Option<&dyn crate::pause::native_child_pause::NativeRunPause> {
+        self.session.run_pause()
+    }
     fn task_id(&self) -> &str {
         &self.task_id
     }
@@ -424,8 +440,16 @@ impl ManagedChildHandle for InProcessChildHandle {
         self.follow_up_turn(text)
     }
 
-    fn rebind_workpool_identity(&self, identity: crate::manager::child_handle::WorkpoolChildIdentity) -> Option<Result<(), HostError>> {
-        self.session.rebind_workpool_identity(WorkpoolChildIdentity { task_id: identity.task_id, state_dir: identity.state_dir, run_epoch: identity.run_epoch })
+    fn rebind_workpool_identity(
+        &self,
+        identity: crate::manager::child_handle::WorkpoolChildIdentity,
+    ) -> Option<Result<(), HostError>> {
+        self.session
+            .rebind_workpool_identity(WorkpoolChildIdentity {
+                task_id: identity.task_id,
+                state_dir: identity.state_dir,
+                run_epoch: identity.run_epoch,
+            })
     }
 
     fn abort(&self) -> Result<(), HostError> {
@@ -445,9 +469,7 @@ impl ManagedChildHandle for InProcessChildHandle {
         self.session
             .get_last_assistant_text()
             .or_else(|| match &self.tracked.lock().outcome {
-                Some(RunnerOutcome::Completed { final_response })
-                    if !final_response.is_empty() =>
-                {
+                Some(RunnerOutcome::Completed { final_response }) if !final_response.is_empty() => {
                     Some(final_response.clone())
                 }
                 _ => None,

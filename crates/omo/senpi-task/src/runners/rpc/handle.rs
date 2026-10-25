@@ -44,6 +44,8 @@ struct HandleState {
     final_text: Option<String>,
     turn_baseline: Option<String>,
     turn_outcome: Option<RunnerOutcome>,
+    turn_generation: u64,
+    settled_turns: std::collections::HashMap<u64, RunnerOutcome>,
     terminal_assistant_message: Option<RpcTerminalAssistantMessage>,
     /// The raw terminal assistant `message_end` payload of the current turn.
     terminal_wire_message: Option<Value>,
@@ -70,6 +72,8 @@ impl HandleShared {
         if state.turn_outcome.is_some() {
             return;
         }
+        let generation = state.turn_generation;
+        state.settled_turns.insert(generation, settled.clone());
         state.turn_outcome = Some(settled);
         state.reached_idle = true;
         self.changed.notify_all();
@@ -78,6 +82,7 @@ impl HandleShared {
     fn on_event(&self, event: &Value) {
         let mut state = self.lock();
         if event["type"] == "agent_start" && state.turn_outcome.is_some() && state.exit.is_none() {
+            state.turn_generation += 1;
             state.reached_idle = false;
             state.turn_outcome = None;
             state.terminal_assistant_message = None;
@@ -202,6 +207,10 @@ impl RpcChildHandle {
 
     pub fn run_pause(&self) -> RpcRunPause {
         let shared = Arc::clone(&self.shared);
+        let expected_turn = {
+            let state = shared.lock();
+            state.turn_generation + u64::from(state.turn_outcome.is_some())
+        };
         RpcRunPause {
             task_id: self.task_id.clone(),
             control: Arc::clone(&self.control),
@@ -209,7 +218,7 @@ impl RpcChildHandle {
             current_outcome: Arc::new(move || {
                 let mut state = shared.lock();
                 loop {
-                    if let Some(outcome) = &state.turn_outcome {
+                    if let Some(outcome) = state.settled_turns.get(&expected_turn) {
                         return outcome.clone();
                     }
                     if let Some(exit) = &state.exit {
@@ -277,6 +286,9 @@ impl RpcChildHandle {
         }
         if state.reached_idle || state.turn_outcome.is_some() {
             state.reached_idle = false;
+            if state.turn_outcome.is_some() {
+                state.turn_generation += 1;
+            }
             state.turn_outcome = None;
         }
         state.terminal_assistant_message = None;
@@ -418,9 +430,23 @@ impl RpcChildHandle {
 }
 
 impl ManagedChildHandle for RpcChildHandle {
-    fn run_pause(&self) -> Option<Box<dyn crate::runners::rpc::native_run_pause::NativeRunPause>> {
-        Some(Box::new(RpcChildHandle::run_pause(self)))
+    fn run_pause(&self) -> Option<&dyn crate::pause::native_child_pause::NativeRunPause> {
+        Some(self)
     }
+    fn publish_task_status(&self, status: crate::state::TaskStatus) -> Result<(), HostError> {
+        self.client
+            .publish_task_status(status)
+            .map_err(|error| HostError {
+                message: error.to_string(),
+            })
+    }
+    fn on_durable_session_id(
+        &self,
+        listener: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> Option<Unsubscribe> {
+        self.client.on_durable_session_id(listener)
+    }
+
     fn on_self_resumed(&self, listener: Arc<dyn Fn() + Send + Sync>) -> Option<Unsubscribe> {
         Some(RpcChildHandle::on_self_resumed(self, listener))
     }
@@ -626,7 +652,10 @@ pub fn managed_event(event: &Value) -> ManagedChildEvent {
             None
         }
     };
-    let is_message = matches!(event_type.as_str(), "message_start" | "message_end");
+    let is_message = matches!(
+        event_type.as_str(),
+        "message_start" | "message_update" | "message_end"
+    );
     let is_tool_start = event_type == "tool_execution_start";
     let is_tool_end = event_type == "tool_execution_end";
     ManagedChildEvent {
@@ -637,11 +666,154 @@ pub fn managed_event(event: &Value) -> ManagedChildEvent {
         input: value_for("input", is_tool_start),
         result: value_for("result", is_tool_end),
         is_error: event.get("isError").and_then(Value::as_bool),
+        source: string("source"),
+        model: value_for("model", event_type == "model_changed"),
+        thinking_level: string("thinkingLevel"),
+        effect_id: string("effectId"),
         to: string("to"),
         from: string("from"),
         chain_key: string("chainKey"),
         reason: string("reason"),
         last_error: string("lastError"),
         event_type,
+    }
+}
+
+// Normalize RPC wire controls onto the manager's existing native pause seam.
+impl crate::pause::native_child_pause::NativeRunPause for RpcChildHandle {
+    fn pause_for_run(
+        &self,
+        owner: crate::pause::ports::RunPauseOwner,
+    ) -> Result<
+        crate::pause::ports::EngineInheritReceipt,
+        crate::pause::native_child_pause::NativePauseError,
+    > {
+        use crate::runners::rpc::native_run_pause::NativeRunPause;
+        let wire = crate::runners::task_parent_control::RunPauseOwner {
+            parent_session_id: owner.parent_session_id,
+            parent_pause_seq: owner.parent_pause_seq,
+            run_ref: crate::runners::task_parent_control::RunRef {
+                id: owner.run_ref.id,
+                kind: match owner.run_ref.kind {
+                    crate::pause::ports::RunRefKind::Task => "task",
+                    crate::pause::ports::RunRefKind::Dag => "dag",
+                    crate::pause::ports::RunRefKind::Team => "team",
+                    crate::pause::ports::RunRefKind::Workpool => "workpool",
+                }
+                .into(),
+            },
+        };
+        RpcChildHandle::run_pause(self)
+            .pause_for_run(&wire)
+            .map(|receipt| match receipt {
+                crate::runners::task_parent_control::EngineInheritReceipt::Held { child_seq } => {
+                    crate::pause::ports::EngineInheritReceipt::Inherited { child_seq }
+                }
+                crate::runners::task_parent_control::EngineInheritReceipt::WrongParent => {
+                    crate::pause::ports::EngineInheritReceipt::WrongParent
+                }
+            })
+            .map_err(|error| {
+                crate::pause::native_child_pause::NativePauseError::Engine(error.to_string())
+            })
+    }
+    fn resume_for_run(
+        &self,
+        request: crate::pause::ports::ResumeTurnRequest,
+    ) -> Result<
+        crate::pause::native_child_pause::NativeResumeResult,
+        crate::pause::native_child_pause::NativePauseError,
+    > {
+        use crate::runners::rpc::native_run_pause::{NativeResumeReceipt, NativeRunPause};
+        let wire = crate::runners::task_parent_control::ResumeRequest {
+            parent_session_id: request.owner.parent_session_id,
+            parent_pause_seq: request.owner.parent_pause_seq,
+            resume_id: request.resume_id,
+            child_seq_cutoff: request.child_seq_cutoff,
+        };
+        RpcChildHandle::run_pause(self)
+            .resume_for_run(&wire)
+            .map(|receipt| match receipt {
+                NativeResumeReceipt::Refused { reason } => {
+                    crate::pause::native_child_pause::NativeResumeResult::Refused(
+                        match reason.as_str() {
+                            "wrong_parent" => crate::pause::ports::ResumeRefusal::WrongParent,
+                            "not_held" => crate::pause::ports::ResumeRefusal::NotHeld,
+                            _ => crate::pause::ports::ResumeRefusal::Stale,
+                        },
+                    )
+                }
+                NativeResumeReceipt::OtherHoldLive => {
+                    crate::pause::native_child_pause::NativeResumeResult::OtherHoldLive
+                }
+                NativeResumeReceipt::Turn { turn_id, outcome } => {
+                    crate::pause::native_child_pause::NativeResumeResult::Turn(
+                        crate::pause::ports::ResumedChildTurn {
+                            turn_id,
+                            outcome: Box::new(move || outcome()),
+                        },
+                    )
+                }
+            })
+            .map_err(|error| {
+                crate::pause::native_child_pause::NativePauseError::Engine(error.to_string())
+            })
+    }
+    fn hold_input(
+        &self,
+        parent: &str,
+        input: crate::pause::ports::HoldInput,
+    ) -> Result<
+        crate::pause::ports::EngineHoldInputResult,
+        crate::pause::native_child_pause::NativePauseError,
+    > {
+        use crate::runners::rpc::native_run_pause::NativeRunPause;
+        RpcChildHandle::run_pause(self)
+            .hold_input(
+                parent,
+                &crate::runners::task_parent_control::HeldGuidanceInput {
+                    input_id: input.input_id,
+                    revision: input.revision,
+                    text: input.text,
+                },
+            )
+            .map(|receipt| match receipt {
+                crate::runners::task_parent_control::EngineHoldInputResult::Held {
+                    entry_id,
+                    duplicate,
+                } => crate::pause::ports::EngineHoldInputResult::Held {
+                    entry_id,
+                    duplicate,
+                },
+                crate::runners::task_parent_control::EngineHoldInputResult::AlreadyDelivered {
+                    revision,
+                } => crate::pause::ports::EngineHoldInputResult::AlreadyDelivered { revision },
+                crate::runners::task_parent_control::EngineHoldInputResult::InputIdConflict {
+                    held_revision,
+                } => crate::pause::ports::EngineHoldInputResult::InputIdConflict { held_revision },
+            })
+            .map_err(|error| {
+                crate::pause::native_child_pause::NativePauseError::Engine(error.to_string())
+            })
+    }
+    fn observe_hold(
+        &self,
+        parent: &str,
+    ) -> Result<
+        Option<crate::pause::ports::ObservedHold>,
+        crate::pause::native_child_pause::NativePauseError,
+    > {
+        use crate::runners::rpc::native_run_pause::NativeRunPause;
+        RpcChildHandle::run_pause(self)
+            .observe_hold(parent)
+            .map(|hold| {
+                hold.map(|hold| crate::pause::ports::ObservedHold {
+                    held: hold.held,
+                    child_seq: hold.child_seq,
+                })
+            })
+            .map_err(|error| {
+                crate::pause::native_child_pause::NativePauseError::Engine(error.to_string())
+            })
     }
 }

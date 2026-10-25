@@ -127,7 +127,8 @@ impl IsolationWiring {
     }
 
     pub fn bind(&self, task_id: &str, handle: IsolationHandle, baseline: WorktreeBaseline) {
-        self.bindings().insert(task_id.to_string(), Binding { handle, baseline });
+        self.bindings()
+            .insert(task_id.to_string(), Binding { handle, baseline });
     }
 
     /// Release a binding without a merge (a start that failed after prepare).
@@ -142,7 +143,9 @@ impl IsolationWiring {
     /// Stamp the child's own identity onto the clone so a sweep can tell a live child from a dead host.
     pub fn stamp(&self, task_id: &str, handle: &dyn ManagedChildHandle) {
         let child = match handle.pid() {
-            Some(pid) => u32::try_from(pid).ok().map(|pid| OwnerChild::Process { pid }),
+            Some(pid) => u32::try_from(pid)
+                .ok()
+                .map(|pid| OwnerChild::Process { pid }),
             None => None,
         };
         let (Some(child), Some(runtime)) = (child, self.runtime.as_deref()) else {
@@ -194,16 +197,19 @@ impl IsolationWiring {
             baseline: binding.as_ref().map(|binding| &binding.baseline),
             handle: binding.as_ref().map(|binding| &binding.handle),
         });
-        if let Err(error) = self.store.mutate(task_id, |fresh| match fresh.isolation.as_ref() {
-            None => fresh.clone(),
-            Some(current) => crate::state::TaskRecord {
-                isolation: Some(IsolationRecord {
-                    spec: current.spec.clone(),
-                    merge_result: Some(result.clone()),
-                }),
-                ..fresh.clone()
-            },
-        }) {
+        if let Err(error) = self
+            .store
+            .mutate(task_id, |fresh| match fresh.isolation.as_ref() {
+                None => fresh.clone(),
+                Some(current) => crate::state::TaskRecord {
+                    isolation: Some(IsolationRecord {
+                        spec: current.spec.clone(),
+                        merge_result: Some(result.clone()),
+                    }),
+                    ..fresh.clone()
+                },
+            })
+        {
             utils::logger::log(
                 "senpi-task isolation settle failed",
                 Some(&serde_json::json!({ "taskId": task_id, "error": error.to_string() })),

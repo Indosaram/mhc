@@ -28,9 +28,9 @@ pub struct EngineInheritReceipt {
 pub use crate::pause::ports::{EngineHoldInputResult, ObservedHold};
 
 /// A resumed child's turn: the id the engine opened, which settles with that turn's outcome.
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskResumedTurn {
     pub turn_id: String,
+    pub outcome: crate::manager::child_handle::ExactTurnOutcome,
 }
 
 /// The input a paused child holds for the resumed run.
@@ -41,10 +41,14 @@ pub struct HeldTaskInput {
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResumeTurnResult {
-    Resumed { turn_id: String },
-    OtherHoldLive { child_seq: Option<u64> },
+    Resumed {
+        turn_id: String,
+        outcome: crate::manager::child_handle::ExactTurnOutcome,
+    },
+    OtherHoldLive {
+        child_seq: Option<u64>,
+    },
 }
 
 /// `RunPauseAdmissionHeld`: the run's Resume was superseded by a hold.
@@ -122,6 +126,20 @@ pub enum LostResumeResult {
 
 /// The effects a task run pause needs from the composition.
 pub trait TaskRunPausePorts: Send + Sync {
+    fn acquire_resume_capacity(&self, _task_id: &str, _epoch: i64) -> Result<(), String> {
+        Ok(())
+    }
+    fn park_capacity(&self, _task_id: &str, _epoch: i64) {}
+    fn begin_native_pause(&self, _task_id: &str, _epoch: i64) {}
+    fn finish_native_pause(
+        &self,
+        _task_id: &str,
+        _epoch: i64,
+        _accepted: bool,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     fn store(&self) -> &TaskRecordStore;
     /// Milliseconds since the epoch, as the store's timestamps are spelled.
     fn now(&self) -> i64;
@@ -310,6 +328,7 @@ impl TaskRunPause {
         };
         lock(&self.resumed).remove(task_id);
         // Registration above MUST precede the child call: its abort can settle immediately.
+        self.ports.begin_native_pause(task_id, epoch);
         let ack = match port.pause_for_run(&handle, owner) {
             Ok(ack) => ack,
             Err(error) => {
@@ -323,16 +342,19 @@ impl TaskRunPause {
                         if settled.is_some() {
                             self.intents.clear(task_id);
                         }
+                        self.ports.finish_native_pause(task_id, epoch, false)?;
                         return Err(error);
                     }
                 }
             }
         };
         let Some(ack) = ack else {
+            self.ports.finish_native_pause(task_id, epoch, false)?;
             self.intents.clear(task_id);
             return Ok(None);
         };
         self.remember(task_id, owner)?;
+        self.ports.finish_native_pause(task_id, epoch, true)?;
         // A pause that landed while a Resume was in flight cancels that attempt: the child stays held.
         if lock(&self.attempts).remove(task_id).is_some() && record.status == TaskStatus::Paused {
             self.park(task_id, epoch);
@@ -401,6 +423,8 @@ impl TaskRunPause {
         {
             return Err(RunPauseAdmissionHeld.to_string());
         }
+        self.ports
+            .acquire_resume_capacity(task_id, record.notification.run_epoch)?;
         let result = port.resume_turn(
             &handle,
             &ResumeTurnRequest {
@@ -420,7 +444,7 @@ impl TaskRunPause {
                 self.park(task_id, record.notification.run_epoch);
                 ResumeTaskResult::OtherHoldLive { child_seq }
             }
-            ResumeTurnResult::Resumed { turn_id } => {
+            ResumeTurnResult::Resumed { turn_id, outcome } => {
                 self.intents.clear(task_id);
                 if !self
                     .ports
@@ -438,6 +462,7 @@ impl TaskRunPause {
                     record.notification.run_epoch,
                     TaskResumedTurn {
                         turn_id: turn_id.clone(),
+                        outcome,
                     },
                 );
                 ResumeTaskResult::Resumed { turn_id }
@@ -512,7 +537,7 @@ impl TaskRunPause {
             ResumeTurnResult::OtherHoldLive { child_seq } => {
                 Ok(LostResumeResult::OtherHoldLive { child_seq })
             }
-            ResumeTurnResult::Resumed { turn_id } => {
+            ResumeTurnResult::Resumed { turn_id, outcome } => {
                 self.ports.track(
                     task_id,
                     handle,
@@ -520,6 +545,7 @@ impl TaskRunPause {
                     record.notification.run_epoch,
                     TaskResumedTurn {
                         turn_id: turn_id.clone(),
+                        outcome,
                     },
                 );
                 Ok(LostResumeResult::Resumed { turn_id })
@@ -602,6 +628,7 @@ impl TaskRunPause {
     /// `park`: a child that stays held gives its slot back and settles its pause intent.
     pub fn park(&self, task_id: &str, epoch: i64) {
         self.capacity.park(task_id, epoch);
+        self.ports.park_capacity(task_id, epoch);
         self.intents.settle(task_id, epoch);
     }
 
@@ -643,6 +670,30 @@ pub fn saved_run_owner(record: &TaskRecord) -> Option<RunPauseOwner> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resumed_turn_preserves_the_exact_deferred_outcome() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = calls.clone();
+        let returned = ResumeTurnResult::Resumed {
+            turn_id: "turn-2".into(),
+            outcome: Box::new(move || {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                crate::runners::RunnerOutcome::completed("exact turn")
+            }),
+        };
+        let ResumeTurnResult::Resumed { turn_id, outcome } = returned else {
+            panic!("resumed turn")
+        };
+        let tracked = TaskResumedTurn { turn_id, outcome };
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(tracked.turn_id, "turn-2");
+        assert_eq!(
+            (tracked.outcome)(),
+            crate::runners::RunnerOutcome::completed("exact turn")
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn a_parked_child_keeps_no_slot_after_its_resume() {

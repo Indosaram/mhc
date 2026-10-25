@@ -97,6 +97,7 @@ pub struct RpcTerminalAssistantMessage {
 /// `RpcRunnerSpec`: everything needed to launch (or resume) one RPC child.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RpcRunnerSpec {
+    pub traceparent: Option<String>,
     pub task_id: String,
     pub cwd: String,
     pub state_dir: String,
