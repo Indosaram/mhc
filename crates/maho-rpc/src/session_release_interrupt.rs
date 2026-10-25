@@ -78,6 +78,9 @@ pub trait ReleasableSession: Send + Sync {
     fn is_transcript_flushed(&self) -> bool;
     /// `sessionManager.persistHeaderNow()`.
     async fn persist_header_now(&self) -> Result<(), String>;
+    async fn prepare_move_state(&self, _move_id: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
     /// `sessionManager.appendCustomEntry(customType, data)`: on disk or not at all.
     fn append_custom_entry(&self, custom_type: &str, data: Value) -> Result<(), ReleaseWriteError>;
     /// `extensionRunner.emitSessionMove({ type: "session_move_export", moveId, dir })`: the session's extensions write
