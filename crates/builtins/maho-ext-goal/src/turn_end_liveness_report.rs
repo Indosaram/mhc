@@ -74,11 +74,14 @@ pub fn collect_turn_end_liveness_input(
     {
         expectations.push(WakeExpectation::QuestionToUser);
     }
-    let engine_held = ctx.engine_turns_held()?;
-    let ledger_hold = crate::stop_pause::live_hold_kinds(&ctx.session_manager.get_entries())
+    let pause_state = ctx.get_pause_state()?;
+    let ledger_hold = pause_state["holds"]
+        .as_array()
         .into_iter()
+        .flatten()
+        .filter_map(|hold| hold["kind"].as_str())
         .next()
-        .or_else(|| engine_held.then(|| "unattended".into()));
+        .map(str::to_owned);
     Ok(TurnEndLivenessInput {
         is_child_session: ctx.session_manager.fork_provenance().is_some(),
         mode: ctx.mode,
