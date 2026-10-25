@@ -104,6 +104,16 @@ impl LiveClient {
     }
 }
 impl HostRpcClient for LiveClient {
+    fn wait_for_outcome(&self) -> Option<RunnerOutcome> {
+        Some(self.outcome())
+    }
+    fn transport_lost(&self, message: String) {
+        self.turn.0.lock().unwrap().1 = Some(RunnerOutcome::error(
+            RunnerFailureKind::ChildTurnFailed,
+            message,
+        ));
+        self.turn.1.notify_all();
+    }
     fn command(&self, command: Value) -> Result<(), HostError> {
         let client = self.client.clone();
         self.call(async move {

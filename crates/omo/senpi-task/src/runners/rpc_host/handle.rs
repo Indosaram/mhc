@@ -17,6 +17,7 @@ pub struct HostSessionHandle {
     pub listeners: HandleListeners,
     teardown: Arc<HandleTeardown>,
     native_pause: CurrentPortPause,
+    stopped: std::sync::atomic::AtomicBool,
     settled: std::sync::atomic::AtomicBool,
     event_subscription: Mutex<Option<Unsubscribe>>,
     outcome: Arc<dyn Fn() -> RunnerOutcome + Send + Sync>,
@@ -43,6 +44,7 @@ pub fn create_host_session_handle(
         identity,
         listeners,
         teardown: Arc::new(teardown),
+        stopped: std::sync::atomic::AtomicBool::new(false),
         settled: std::sync::atomic::AtomicBool::new(opened.attached),
         event_subscription: Mutex::new(None),
         outcome,
@@ -51,6 +53,14 @@ pub fn create_host_session_handle(
     handle
 }
 impl HostSessionHandle {
+    pub fn stopped(&self) -> bool {
+        self.stopped.load(std::sync::atomic::Ordering::Acquire)
+    }
+    pub fn transport_lost(&self, message: String) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.current_port().transport_lost(message);
+    }
     fn current_port(&self) -> Arc<dyn HostSessionPort> {
         self.port.lock().unwrap().clone()
     }
@@ -177,9 +187,13 @@ impl ManagedChildHandle for HostSessionHandle {
             .and_then(|state| state["lastAssistantText"].as_str().map(str::to_string))
     }
     fn dispose(&self) -> Result<(), HostError> {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
         self.teardown.detach()
     }
     fn terminate(&self) -> Result<(), HostError> {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
         self.teardown.terminate()
     }
     fn has_terminate(&self) -> bool {

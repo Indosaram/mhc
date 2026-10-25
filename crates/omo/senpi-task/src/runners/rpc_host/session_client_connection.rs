@@ -82,6 +82,12 @@ mod tests {
 }
 
 impl super::handle_port::HostSessionPort for SessionClientConnection {
+    fn wait_for_outcome(&self) -> Option<crate::runners::RunnerOutcome> {
+        self.client.wait_for_outcome()
+    }
+    fn transport_lost(&self, message: String) {
+        self.client.transport_lost(message)
+    }
     fn native_pause(&self) -> Option<Arc<dyn crate::pause::native_child_pause::NativeRunPause>> {
         Some(Arc::new(self.clone()))
     }

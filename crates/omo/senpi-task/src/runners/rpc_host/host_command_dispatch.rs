@@ -2,6 +2,10 @@
 use crate::host::HostError;
 use serde_json::Value;
 pub trait HostRpcClient: Send + Sync {
+    fn wait_for_outcome(&self) -> Option<crate::runners::RunnerOutcome> {
+        None
+    }
+    fn transport_lost(&self, _message: String) {}
     fn command(&self, command: Value) -> Result<(), HostError>;
     fn get_state(&self) -> Result<Value, HostError> {
         Err(HostError {
