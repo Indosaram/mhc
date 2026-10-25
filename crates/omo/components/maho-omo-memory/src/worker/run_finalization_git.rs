@@ -57,7 +57,7 @@ pub fn resolve_finalization_decision(identity: &MemoryIdentity, run_dir: &Path, 
     let mut validated = ledger.value()["validatedTipSha"].as_str().map(|sha| ValidatedReflectionTip { tip_sha: sha.into(), changed_paths: ledger.value()["validatedChangedPaths"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str).map(str::to_owned).collect() });
     if validated.is_none() && worktree.dir.exists() {
         match validate_completion(&worktree, ledger.value()["baseSha"].as_str().ok_or("Missing baseSha")?, worktree.exec.as_ref()) {
-            CompletionValidation::Valid { tip_sha, changed_paths } => {
+            CompletionValidation::Valid { tip_sha, changed_paths, .. } => {
                 if ledger.value()["targetDoc"].as_str().is_some_and(|target| changed_paths.iter().any(|path| path != target)) {
                     let result = decision("failed", Some("invalid_target"), Some("Dream changed paths outside targetDoc".into()), None);
                     checkpoint(&path, &result)?; cleanup()?; return Ok(result);
