@@ -201,9 +201,6 @@ async fn daemon_reachable(socket: &str) -> bool {
 /// and be claimed by the next reconciling session - #8932). An unanswered or malformed listing is an
 /// ERROR, never an empty list: "could not ask" must stay distinguishable from "holds nothing"
 /// (omo#9450).
-async fn live_session_paths(socket: &str) -> Result<Vec<String>, String> {
-    live_session_paths_with_agent_dir(socket, None).await
-}
 async fn live_session_paths_with_agent_dir(
     socket: &str,
     agent_dir: Option<&Path>,
