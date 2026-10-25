@@ -67,6 +67,7 @@ pub(crate) fn base_record(task_id: &str, parent_session_id: &str) -> TaskRecord 
         start_queued: None,
         revive_delivery_uncertain: None,
         prior_runs_cost_usd: None,
+        queued_admission: None,
         run_pause: None,
         resumed_run_epoch: None,
         burnt_epoch: None,

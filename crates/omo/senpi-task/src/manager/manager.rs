@@ -1224,6 +1224,21 @@ impl TaskManager {
                 context.record.notification.run_epoch,
             );
             if let Some(admission) = admission {
+                if let Err(error) =
+                    self.inner
+                        .store
+                        .mutate(&context.record.task_id, &mut |record: &TaskRecord| {
+                            TaskRecord {
+                                queued_admission: Some(admission.clone()),
+                                ..record.clone()
+                            }
+                        })
+                {
+                    utils::logger::log(
+                        "senpi-task failed to persist held admission",
+                        Some(&json!({"taskId":context.record.task_id,"error":error.to_string()})),
+                    );
+                }
                 let mut state = lock(&self.inner.state);
                 state
                     .held_admissions
@@ -1268,6 +1283,7 @@ impl TaskManager {
                     .get(task_id)
                     .cloned()
             })
+            .or_else(|| record.queued_admission.clone())
             .ok_or("held admission allocation_missing")?;
         if admission.run_epoch != record.notification.run_epoch {
             return Ok(());
@@ -2240,6 +2256,9 @@ impl TaskManager {
             }
             attempt
         };
+        let allocation = allocation
+            .or(record.queued_admission.as_ref())
+            .filter(|saved| saved.run_epoch == epoch && saved.task_id == task_id);
         let model = allocation.map_or(record.model.as_str(), |saved| saved.model.as_str());
         let mut concurrency = lock(&self.inner.concurrency);
         let grant: Grant = Box::new(move || {
@@ -2278,7 +2297,24 @@ impl TaskManager {
     pub fn begin_native_pause(&self, task_id: &str, epoch: i64) {
         self.inner.pauses_pending.request(task_id, epoch);
         if let Some(record) = self.inner.try_load(task_id) {
-            lock(&self.inner.concurrency).withdraw(&record.model, task_id, epoch);
+            if let Some(admission) =
+                lock(&self.inner.concurrency).withdraw(&record.model, task_id, epoch)
+            {
+                if let Err(error) = self.inner.store.mutate(task_id, &mut |fresh: &TaskRecord| {
+                    if fresh.notification.run_epoch != epoch {
+                        return fresh.clone();
+                    }
+                    TaskRecord {
+                        queued_admission: Some(admission.clone()),
+                        ..fresh.clone()
+                    }
+                }) {
+                    utils::logger::log(
+                        "senpi-task failed to persist resume allocation",
+                        Some(&json!({"taskId":task_id,"error":error.to_string()})),
+                    );
+                }
+            }
         }
         if let Some(lease) = lock(&self.inner.parked).get(task_id).cloned() {
             lock(&self.inner.concurrency).suspend_unpark(&lease);
