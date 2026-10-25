@@ -1,6 +1,6 @@
 //! Crash-safe small JSON files (`rpc-host/durable-json.ts`).
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{self, Write},
     path::Path,
 };
@@ -44,7 +44,7 @@ pub fn write_text_durably(path: &Path, text: &str) -> io::Result<()> {
     }
     #[cfg(not(windows))]
     {
-        if let Err(error) = File::open(parent)?.sync_all()
+        if let Err(error) = fs::File::open(parent)?.sync_all()
             && ![Some(22), Some(95)].contains(&error.raw_os_error()) {
                 return Err(error);
             }
