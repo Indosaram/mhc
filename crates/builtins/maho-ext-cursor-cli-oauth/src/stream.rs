@@ -285,6 +285,7 @@ impl StreamMapper {
             output: AssistantMessage {
                 thinking_level: None,
                 provider_diagnostic: None,
+                prompt_cache_breakpoint: None,
                 prompt_cache_diagnostics: None,
                 content: Vec::new(),
                 api: model.api.clone(),

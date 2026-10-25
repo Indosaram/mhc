@@ -156,6 +156,7 @@ pub fn faux_assistant_message(
 ) -> AssistantMessage {
     AssistantMessage {
         error_cause: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,
@@ -482,6 +483,7 @@ fn clone_message(
 fn create_deferred_message(model: &Model, handle: &DeferredHandle) -> AssistantMessage {
     AssistantMessage {
         error_cause: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,
@@ -515,6 +517,7 @@ fn create_error_message(
 ) -> AssistantMessage {
     AssistantMessage {
         error_cause: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,

@@ -76,6 +76,7 @@ fn message(text: &str) -> maho_ai::types::AssistantMessage {
         response_id: None,
         provider_thinking_level: None,
         diagnostics: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         usage: Usage::default(),
         stop_reason: StopReason::Stop,

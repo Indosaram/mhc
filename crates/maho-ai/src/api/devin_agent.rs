@@ -89,6 +89,7 @@ fn create_output(model: &Model) -> AssistantMessage {
         failure_source: None,
         timing: None,
         error_cause: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,
