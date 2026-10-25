@@ -2103,7 +2103,29 @@ impl TaskManager {
         if !claimed {
             return Err("paused ownership changed".into());
         }
-        let handle = match self.respawn(&owned, Some(session_path)) {
+        let handle = match respawn_managed_task(&RespawnInput {
+            record: &owned,
+            session_path: Some(session_path),
+            state_dir: self.inner.store.state_dir(),
+            runners: &self.inner.runners,
+            rpc_runner: self.inner.rpc_respawn_runner.as_ref(),
+            trusted_launch: self.inner.trusted_respawn_launch.as_ref(),
+            before_launch: &|| {
+                if self.inner.try_load(task_id).is_some_and(|fresh| {
+                    fresh.status == TaskStatus::Paused
+                        && fresh.notification.run_epoch == owned.notification.run_epoch
+                        && fresh.host_pid == Some(self.inner.host_pid)
+                }) {
+                    Ok(())
+                } else {
+                    Err(RespawnResult::Failed {
+                        disposition: crate::lifecycle::port::RespawnDisposition::Retryable,
+                        code: crate::lifecycle::port::RespawnFailureCode::RespawnFailed,
+                        reason: "paused ownership changed".into(),
+                    })
+                }
+            },
+        }) {
             RespawnResult::Ok(handle) => handle,
             RespawnResult::Failed { reason, .. } => return Err(reason),
         };
@@ -2123,10 +2145,22 @@ impl TaskManager {
                 },
             },
         };
-        self.inner
+        let held = self
+            .inner
             .child_pause
-            .pause_for_run(handle.as_ref(), &owner)
-            .map_err(|e| e.to_string())?;
+            .pause_for_run(handle.as_ref(), &owner);
+        match held {
+            Ok(crate::pause::ports::EngineInheritReceipt::Inherited { .. }) => {}
+            result => {
+                if let Err(error) = discard_managed_handle(handle.as_ref()) {
+                    log("senpi-task paused restore cleanup failed", task_id, &error);
+                }
+                return Err(match result {
+                    Err(error) => error.to_string(),
+                    _ => "wrong_parent".into(),
+                });
+            }
+        }
         match self.reattach(&owned, handle) {
             ReattachResult::Ok => Ok(()),
             ReattachResult::Failed { reason, .. } => Err(reason),
