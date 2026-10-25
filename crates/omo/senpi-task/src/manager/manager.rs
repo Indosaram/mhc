@@ -2062,6 +2062,65 @@ impl TaskManager {
         }
     }
 
+    pub fn track_resumed_turn(
+        &self,
+        task_id: &str,
+        handle: Arc<dyn ManagedChildHandle>,
+        model: &str,
+        epoch: i64,
+        outcome: crate::manager::child_handle::ExactTurnOutcome,
+    ) {
+        crate::manager::outcome::track_exact_outcome(
+            self.inner.arc(),
+            task_id.into(),
+            handle,
+            model.into(),
+            epoch,
+            outcome,
+        );
+    }
+
+    pub fn restore_paused_task(
+        &self,
+        task_id: &str,
+    ) -> Result<Arc<dyn ManagedChildHandle>, String> {
+        let record = self
+            .inner
+            .try_load(task_id)
+            .ok_or("task record unavailable")?;
+        let recorded = crate::lifecycle::host_session_resume_path(&record).map(PathBuf::from);
+        let directory =
+            crate::lifecycle::reconcile::child_session_dir(self.inner.store.state_dir(), task_id);
+        let mut newest = None;
+        if recorded.is_none() {
+            for entry in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
+                let entry = entry.map_err(|error| error.to_string())?;
+                let path = entry.path();
+                let metadata = entry.metadata().map_err(|error| error.to_string())?;
+                if metadata.is_file()
+                    && path
+                        .extension()
+                        .is_some_and(|extension| extension == "jsonl")
+                {
+                    let candidate = (
+                        metadata.modified().map_err(|error| error.to_string())?,
+                        path,
+                    );
+                    if newest.as_ref().is_none_or(|best| &candidate > best) {
+                        newest = Some(candidate);
+                    }
+                }
+            }
+        }
+        let path = recorded
+            .or_else(|| newest.map(|(_, path)| path))
+            .ok_or("paused transcript unavailable; prompt replay is forbidden")?;
+        self.restore_paused_child(task_id, &path)?;
+        self.inner
+            .live_handle(task_id)
+            .ok_or("restored child is not attached".into())
+    }
+
     pub fn restore_paused_child(&self, task_id: &str, session_path: &Path) -> Result<(), String> {
         let record = self
             .inner

@@ -665,21 +665,21 @@ impl senpi_task::manager::run_pause::TaskRunPausePorts for ManagerRunPausePorts 
 
     fn restore(
         &self,
-        _record: &senpi_task::state::TaskRecord,
+        record: &senpi_task::state::TaskRecord,
     ) -> Option<Result<Arc<dyn senpi_task::manager::ManagedChildHandle>, String>> {
-        // No Rust runner rebuilds a paused child without starting a turn, so there is no restore port.
-        None
+        Some(self.manager.restore_paused_task(&record.task_id))
     }
 
     fn track(
         &self,
-        _task_id: &str,
-        _handle: Arc<dyn senpi_task::manager::ManagedChildHandle>,
-        _model: &str,
-        _epoch: i64,
-        _turn: senpi_task::manager::run_pause::TaskResumedTurn,
+        task_id: &str,
+        handle: Arc<dyn senpi_task::manager::ManagedChildHandle>,
+        model: &str,
+        epoch: i64,
+        turn: senpi_task::manager::run_pause::TaskResumedTurn,
     ) {
-        // The resumed turn's outcome is already subscribed by the handle; nothing to re-track.
+        self.manager
+            .track_resumed_turn(task_id, handle, model, epoch, turn.outcome);
     }
 
     fn revive(
@@ -845,9 +845,11 @@ impl senpi_task::manager::run_pause::TaskChildPausePort for NativeTaskPausePort 
         child: &Arc<dyn senpi_task::manager::ManagedChildHandle>,
         parent: &str,
     ) -> Option<senpi_task::manager::run_pause::ObservedHold> {
-        match senpi_task::pause::native_child_pause::NativeChildPausePort
-            .observe_hold(child.as_ref(), parent)
-        {
+        match senpi_task::pause::ports::ChildPausePort::observe_hold(
+            &senpi_task::pause::native_child_pause::NativeChildPausePort,
+            child.as_ref(),
+            parent,
+        ) {
             Ok(hold) => hold.map(|hold| senpi_task::manager::run_pause::ObservedHold {
                 held: hold.held,
                 child_seq: hold.child_seq,
@@ -863,20 +865,21 @@ impl senpi_task::manager::run_pause::TaskChildPausePort for NativeTaskPausePort 
         child: &Arc<dyn senpi_task::manager::ManagedChildHandle>,
         request: &senpi_task::manager::run_pause::ResumeTurnRequest,
     ) -> Result<senpi_task::manager::run_pause::ResumeTurnResult, String> {
-        let result = senpi_task::pause::native_child_pause::NativeChildPausePort
-            .resume_turn(
-                child.as_ref(),
-                senpi_task::pause::ports::ResumeTurnRequest {
-                    owner: request.owner.clone(),
-                    resume_id: request.resume_id.clone(),
-                    child_seq_cutoff: request.child_seq_cutoff,
-                },
-            )
-            .map_err(|error| error.to_string())?;
+        let result = senpi_task::pause::ports::ChildPausePort::resume_turn(
+            &senpi_task::pause::native_child_pause::NativeChildPausePort,
+            child.as_ref(),
+            &senpi_task::pause::ports::ResumeTurnRequest {
+                owner: request.owner.clone(),
+                resume_id: request.resume_id.clone(),
+                child_seq_cutoff: request.child_seq_cutoff,
+            },
+        )
+        .map_err(|error| error.to_string())?;
         Ok(match result {
             senpi_task::pause::ports::ResumeChildTurnResult::Resumed(turn) => {
                 senpi_task::manager::run_pause::ResumeTurnResult::Resumed {
                     turn_id: turn.turn_id,
+                    outcome: turn.outcome,
                 }
             }
             senpi_task::pause::ports::ResumeChildTurnResult::OtherHoldLive { child_seq } => {
@@ -890,17 +893,17 @@ impl senpi_task::manager::run_pause::TaskChildPausePort for NativeTaskPausePort 
         input: &senpi_task::manager::run_pause::HeldTaskInput,
         owner: &RunPauseOwner,
     ) -> Result<senpi_task::manager::run_pause::EngineHoldInputResult, String> {
-        let result = senpi_task::pause::native_child_pause::NativeChildPausePort
-            .hold_input(
-                child.as_ref(),
-                senpi_task::pause::ports::HoldInput {
-                    input_id: input.input_id.clone(),
-                    revision: input.revision,
-                    text: input.text.clone(),
-                },
-                &owner.parent_session_id,
-            )
-            .map_err(|error| error.to_string())?;
+        let result = senpi_task::pause::ports::ChildPausePort::hold_input(
+            &senpi_task::pause::native_child_pause::NativeChildPausePort,
+            child.as_ref(),
+            &senpi_task::pause::ports::HoldInput {
+                input_id: input.input_id.clone(),
+                revision: input.revision,
+                text: input.text.clone(),
+            },
+            &owner.parent_session_id,
+        )
+        .map_err(|error| error.to_string())?;
         use senpi_task::manager::run_pause::EngineHoldInputResult as Task;
         use senpi_task::pause::ports::EngineHoldInputResult as Native;
         Ok(match result {
