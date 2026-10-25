@@ -3666,17 +3666,20 @@ impl Inner {
             .remove(&context.record.task_id);
         let context = started.as_ref().unwrap_or(context);
         let task_id = &context.record.task_id;
-        let unsubscribe = self.subscribe_child_facts(handle, task_id);
         lock(&self.state).live.insert(
             task_id.clone(),
             LiveTask {
                 handle: Arc::clone(handle),
                 model: context.model.clone(),
-                unsubscribe: Some(unsubscribe),
+                unsubscribe: None,
                 managed_spec: Some(context.managed_spec.clone()),
                 runner: Some(Arc::clone(&context.runner)),
             },
         );
+        let unsubscribe = self.subscribe_child_facts(handle, task_id);
+        if let Some(live) = lock(&self.state).live.get_mut(task_id) {
+            live.unsubscribe = Some(unsubscribe);
+        }
         self.attach_child_subscribers(task_id, handle);
         self.record_spawn_facts(task_id, handle.as_ref());
         // Stamp the child's own identity onto the clone so a sweep can tell a live child from a dead host.
