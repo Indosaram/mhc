@@ -14091,6 +14091,20 @@ impl AgentSession {
         tool_call_id: Option<&str>,
         arguments_prepared: bool,
     ) -> Result<AgentToolResult, ExecuteToolError> {
+        self.wait_for_tool_barrier(tool_name, options.signal.as_ref())
+            .await;
+        if options
+            .signal
+            .as_ref()
+            .is_some_and(|signal| signal.aborted())
+        {
+            return Err(ExecuteToolError {
+                code: "aborted".into(),
+                tool_name: tool_name.into(),
+                message: "Tool call aborted before execution".into(),
+                active_tools: self.get_active_tool_names(),
+            });
+        }
         let nested = NESTED_TOOL_SCOPE
             .try_with(|(parent, recorder, sequence)| {
                 (
