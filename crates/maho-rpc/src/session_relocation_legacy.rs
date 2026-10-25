@@ -95,7 +95,8 @@ impl RpcSessionRelocation {
         signal: Option<maho_ai::utils::abort::AbortSignal>,
     ) -> Value {
         let Some(connection) = connection else {
-            return serde_json::to_value(maho_core::session_relocation::relocation_not_offered()).expect("relocation result serializes");
+            return serde_json::to_value(maho_core::session_relocation::relocation_not_offered())
+                .expect("relocation result serializes");
         };
         let answer = self
             .ask(
@@ -158,7 +159,8 @@ impl RpcSessionRelocation {
         signal: Option<maho_ai::utils::abort::AbortSignal>,
     ) -> Value {
         let Some(connection) = connection else {
-            return serde_json::to_value(maho_core::session_relocation::relocation_not_offered()).expect("relocation result serializes");
+            return serde_json::to_value(maho_core::session_relocation::relocation_not_offered())
+                .expect("relocation result serializes");
         };
         if !saved {
             return json!({"status":"unavailable","reason":"not_releasable","detail":"this session is not saved to a file"});

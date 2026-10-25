@@ -1843,8 +1843,9 @@ impl RpcConnectionHandler {
             .then(|| {
                 maho_core::mcp_grant_presentations::attach_mcp_grant_presentation(
                     &session.session_id(),
-                    std::sync::Arc::new(move |title, choices| {
-                        grant_ui.select_grant(&title, &choices, &Default::default())
+                    std::sync::Arc::new(move |title, choices, _signal| {
+                        let answer = grant_ui.select_grant(&title, &choices, &Default::default());
+                        Box::pin(async move { Ok(answer.await) })
                     }),
                 )
             });
@@ -1975,7 +1976,10 @@ impl RpcConnectionHandler {
         {
             let outcome = self.relocation.respond(frame, connection.unwrap_or("sole"));
             return crate::jsonl::serialize_json_line(
-                &crate::session_relocation_channel::answer_host_response(frame, Some(&mut |_| outcome)),
+                &crate::session_relocation_channel::answer_host_response(
+                    frame,
+                    Some(&mut |_| outcome),
+                ),
             )
             .map(Some);
         }
@@ -2030,8 +2034,9 @@ impl RpcConnectionHandler {
                     *presentation = Some(
                         maho_core::mcp_grant_presentations::attach_mcp_grant_presentation(
                             &self.session.session_id(),
-                            std::sync::Arc::new(move |title, choices| {
-                                ui.select_grant(&title, &choices, &Default::default())
+                            std::sync::Arc::new(move |title, choices, _signal| {
+                                let answer = ui.select_grant(&title, &choices, &Default::default());
+                                Box::pin(async move { Ok(answer.await) })
                             }),
                         ),
                     );
@@ -2083,7 +2088,9 @@ impl RpcConnectionHandler {
                         task_parent,
                     )),
                     "withdraw_held_input" => Some(if interactive {
-                        self.session.withdraw_held_input(value["inputId"].as_str().unwrap_or_default()).map(|withdrawn|serde_json::json!({"withdrawn":withdrawn}))
+                        self.session
+                            .withdraw_held_input(value["inputId"].as_str().unwrap_or_default())
+                            .map(|withdrawn| serde_json::json!({"withdrawn":withdrawn}))
                     } else {
                         Err("withdraw_held_input_requires_interactive_client".into())
                     }),
@@ -2236,8 +2243,9 @@ impl RpcConnectionHandler {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
             maho_core::mcp_grant_presentations::attach_mcp_grant_presentation(
                 session,
-                std::sync::Arc::new(move |title, choices| {
-                    ui.select_grant(&title, &choices, &Default::default())
+                std::sync::Arc::new(move |title, choices, _signal| {
+                    let answer = ui.select_grant(&title, &choices, &Default::default());
+                    Box::pin(async move { Ok(answer.await) })
                 }),
             ),
         );
