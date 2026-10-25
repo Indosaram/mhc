@@ -1303,20 +1303,32 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
                 other_hold_live: false,
             } => {
                 if !has_held_inputs {
-                    let result = block_on_sync(self.executor.clone(), async move {
-                        session
+                    let (admitted, admission) = std::sync::mpsc::sync_channel(1);
+                    self.executor.spawn(async move {
+                        let signal = admitted.clone();
+                        let result = session
                             .prompt(
                                 maho_core::manual_continue::MANUAL_CONTINUE_DIRECTIVE,
-                                Default::default(),
+                                maho_core::agent_session::PromptOptions {
+                                    prompt_admitted: Some(Arc::new(move |_| {
+                                        let _ = signal.try_send(());
+                                    })),
+                                    ..Default::default()
+                                },
                             )
-                            .await
+                            .await;
+                        if let Err(error) = result {
+                            let _ =
+                                prompt_failed.try_send(senpi_task::runners::RunnerOutcome::error(
+                                    senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
+                                    error,
+                                ));
+                        }
+                        let _ = admitted.try_send(());
                     });
-                    if let Err(error) = result {
-                        let _ = prompt_failed.try_send(senpi_task::runners::RunnerOutcome::error(
-                            senpi_task::runners::RunnerFailureKind::ChildTurnFailed,
-                            error.to_string(),
-                        ));
-                    }
+                    admission
+                        .recv()
+                        .map_err(|error| NativePauseError::Engine(error.to_string()))?;
                 }
                 NativeResumeResult::Turn(ResumedChildTurn {
                     turn_id,
