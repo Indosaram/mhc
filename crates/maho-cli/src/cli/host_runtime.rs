@@ -1217,6 +1217,7 @@ pub fn open_profile_session_manager(
         maho_core::session_manager::NewSessionOptions {
             id: Some(id),
             parent_session: None,
+            ..Default::default()
         }
     });
     match profile.session_path.as_deref() {

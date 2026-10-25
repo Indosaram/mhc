@@ -15,6 +15,7 @@ pub mod facts_agreements;
 pub mod facts_applied_reconcile;
 pub mod facts_apply_rpc;
 pub mod facts_batch_apply;
+pub mod facts_child_spawner;
 pub mod facts_drain;
 pub mod facts_failure_recording;
 pub mod facts_launch_selection;

@@ -31,7 +31,7 @@ pub fn conversation_frontiers(entries: &[FactsQueueEntry]) -> Vec<FactsQueueEntr
 }
 pub struct OversizeClassificationInput<'a> {
     pub envelope: &'a FactsPayloadEnvelope,
-    pub oversized: &'a [FactsQueueEntry],
+    pub oversized: &'a [memory_core::facts::OversizedFactsEntry],
     pub pending: &'a [FactsQueueEntry],
     pub envelope_oversized: bool,
     pub create_failure_id: Option<&'a dyn Fn() -> String>,
@@ -58,8 +58,9 @@ pub fn classify_oversize_payload<T: FactsPreflightFailure>(
         )?;
         return Ok(true);
     }
-    for entry in input.oversized {
-        let bytes = measure_facts_payload_bytes(&input.envelope.to_payload(vec![entry.clone()]));
+    for item in input.oversized {
+        let bytes = item.bytes;
+        let entry = &item.header;
         warn(
             "facts queue entry exceeds the payload byte cap; parking it",
             serde_json::json!({"conversationId":entry.conversation_id,"endMessageId":entry.range.end_message_id,"entryBytes":bytes,"maxBytes":max_bytes}),
@@ -115,13 +116,18 @@ mod tests {
             agreements: None,
         };
         let entries = [entry("a", 1), entry("a", 3), entry("b", 2)];
+        let oversized: Vec<_> = entries
+            .iter()
+            .cloned()
+            .map(|header| memory_core::facts::OversizedFactsEntry { header, bytes: 500 })
+            .collect();
         let mut recorder = Recorder(vec![]);
         assert!(
             classify_oversize_payload(
                 &mut recorder,
                 &OversizeClassificationInput {
                     envelope: &envelope,
-                    oversized: &entries,
+                    oversized: &oversized,
                     pending: &entries,
                     envelope_oversized: true,
                     create_failure_id: Some(&|| "id".into()),
@@ -150,13 +156,18 @@ mod tests {
             agreements: None,
         };
         let entries = [entry("a", 1), entry("b", 2)];
+        let oversized: Vec<_> = entries
+            .iter()
+            .cloned()
+            .map(|header| memory_core::facts::OversizedFactsEntry { header, bytes: 500 })
+            .collect();
         let mut recorder = Recorder(vec![]);
         assert!(
             !classify_oversize_payload(
                 &mut recorder,
                 &OversizeClassificationInput {
                     envelope: &envelope,
-                    oversized: &entries,
+                    oversized: &oversized,
                     pending: &entries,
                     envelope_oversized: false,
                     create_failure_id: None,

@@ -255,3 +255,71 @@ fn given_queue_file_landed_without_cursor_write_when_next_settle_runs_then_retai
     assert!(next.is_enqueued());
     assert_eq!(ranges(&queue), vec![pair("m1", "m2"), pair("m3", "m4")]);
 }
+
+#[test]
+fn given_multiple_queue_files_when_list_pending_files_runs_then_headers_and_order_match_list_pending() {
+    let (_dir, paths) = identity_fixture();
+    let queue = queue_with(&paths, 0);
+
+    for i in 1..=4 {
+        queue
+            .enqueue(request(journal(i * 2), None))
+            .expect("enqueue batch");
+    }
+
+    let pending = queue.list_pending().expect("list pending");
+    let pending_files = queue.list_pending_files().expect("list pending files");
+
+    assert!(
+        pending.len() >= 3,
+        "expected at least 3 files, got {}",
+        pending.len()
+    );
+    assert_eq!(pending_files.len(), pending.len());
+
+    let file_headers: Vec<_> = pending_files.iter().map(|f| &f.header).collect();
+    let expected_headers: Vec<_> = pending
+        .iter()
+        .map(|entry| {
+            let mut h = entry.clone();
+            h.entries.clear();
+            h
+        })
+        .collect();
+
+    for (i, (file, expected)) in pending_files.iter().zip(expected_headers.iter()).enumerate() {
+        assert_eq!(file.header, *expected, "mismatch at index {i}");
+        assert_eq!(file.file_path.exists(), true);
+    }
+
+    assert_eq!(
+        file_headers,
+        expected_headers.iter().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_seed_never_lowers_an_existing_cursor() {
+    let (_dir, paths) = identity_fixture();
+    let queue = queue_with(&paths, 0);
+
+    // Initial seed on a fresh conversation succeeds
+    queue
+        .seed_enqueued_through(CONVERSATION, "m3", 6)
+        .expect("seed");
+    let cursor = queue.read_cursor(CONVERSATION).expect("read cursor");
+    assert_eq!(cursor.enqueued_through_message_id.as_deref(), Some("m3"));
+    assert_eq!(cursor.enqueued_through_snapshot_line, 6);
+
+    // Seeding with a lower line / earlier message does NOT lower the cursor
+    queue
+        .seed_enqueued_through(CONVERSATION, "m1", 2)
+        .expect("lower seed");
+    let cursor2 = queue.read_cursor(CONVERSATION).expect("read cursor2");
+    assert_eq!(cursor2.enqueued_through_message_id.as_deref(), Some("m3"));
+    assert_eq!(cursor2.enqueued_through_snapshot_line, 6);
+
+    // Seeding does not alter pending ranges
+    let pending = queue.list_pending().expect("list pending");
+    assert!(pending.is_empty());
+}

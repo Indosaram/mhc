@@ -197,7 +197,8 @@ fn count_pending(queue_dir: &Path) -> usize {
         .filter_map(Result::ok)
         .filter_map(|entry| entry.file_name().into_string().ok())
         .filter(|name| {
-            name.ends_with(".json") && name != "consumed.json" && name != "failures.json"
+            name.ends_with(".json")
+                && !["claims.json", "consumed.json", "failures.json"].contains(&name.as_str())
         })
         .count()
 }
@@ -386,5 +387,25 @@ mod tests {
     fn given_a_clean_ledger_when_asking_for_the_hint_then_there_is_no_hint() {
         let state = overview(Vec::new());
         assert!(facts_remediation_hint(&state).is_none());
+    }
+
+    #[test]
+    fn given_consumed_failures_claims_and_two_batch_files_when_counting_pending_then_queue_depth_is_two() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("consumed.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("failures.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("claims.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("batch-1.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("batch-2.json"), "{}").unwrap();
+        assert_eq!(count_pending(dir.path()), 2);
+    }
+
+    #[test]
+    fn given_only_claims_consumed_and_failures_when_counting_pending_then_queue_depth_is_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("consumed.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("failures.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("claims.json"), "{}").unwrap();
+        assert_eq!(count_pending(dir.path()), 0);
     }
 }

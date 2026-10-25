@@ -30,6 +30,7 @@ pub struct FactsChildLaunchInput<'a> {
     pub launch: &'a Launcher,
     pub hard_deadline_at: f64,
     pub options: FactsChildOptions<'a>,
+    pub signal: Option<memory_core::facts::queue::FactsAbortSignal>,
 }
 pub async fn launch_facts_model_chain(
     cache: &mut ModelPreflight,
@@ -168,6 +169,7 @@ mod tests {
                     queued: &[],
                     launched_at: 0,
                 },
+                signal: None,
             },
             |error| panic!("{error}"),
         )

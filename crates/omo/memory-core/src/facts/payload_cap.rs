@@ -81,11 +81,18 @@ pub struct CappedFactsBatchInput {
     pub starvation_ms: Option<i64>,
 }
 
+/// An oversized queue entry candidate retained only as a header with its measured payload byte size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OversizedFactsEntry {
+    pub header: FactsQueueEntry,
+    pub bytes: usize,
+}
+
 /// Selected batch result with oversize tracking.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CappedFactsBatch {
     pub selected: Vec<FactsQueueEntry>,
-    pub oversized: Vec<FactsQueueEntry>,
+    pub oversized: Vec<OversizedFactsEntry>,
     pub envelope_oversized: bool,
 }
 
@@ -153,7 +160,13 @@ where
             };
             let single_bytes = measure_entries_bytes(envelope, &[&full]);
             if single_bytes > max_bytes {
-                oversized.push(full);
+                // PERF-DIVERGENCE(senpi facts payload cap): upstream retains full oversized entries in memory until classification; we drop entries immediately and retain only headers with measured byte counts. Parking and failure semantics are identical.
+                let mut header = full;
+                header.entries.clear();
+                oversized.push(OversizedFactsEntry {
+                    header,
+                    bytes: single_bytes,
+                });
                 break;
             }
             let next_bytes = next_selected_bytes(
