@@ -114,6 +114,18 @@ impl LockGuard {
     pub fn path(&self) -> &Path {
         &self.dir
     }
+
+    /// Asserts that the lock is still held immediately before write/rename (senpi #3811).
+    pub fn assert_held(&self) -> Result<(), String> {
+        #[cfg(unix)]
+        if self.broker.is_some() {
+            return Ok(());
+        }
+        if !self.dir.exists() {
+            return Err(format!("lock directory {} was lost", self.dir.display()));
+        }
+        Ok(())
+    }
 }
 
 impl Drop for LockGuard {
