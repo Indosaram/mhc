@@ -13,7 +13,14 @@ pub struct RunLaunchManifest {
     pub version: u32, pub run_id: String, pub attempt: u32,
     #[serde(skip_serializing_if = "Option::is_none")] pub next_attempt: Option<RunAttempt>,
     pub kind: RunKind, pub command: String, pub args: Vec<String>, pub cwd: String,
-    pub env: BTreeMap<String, String>, pub hard_deadline_at: f64, pub termination_grace_ms: f64,
+    pub env: BTreeMap<String, String>, pub hard_deadline_at: f64,
+    /// When the launcher queued the run; the supervisor rebases the deadlines by the queue duration.
+    #[serde(skip_serializing_if = "Option::is_none")] pub queued_at: Option<f64>,
+    /// The machine-wide memory root the supervisor takes its admission lease under.
+    #[serde(skip_serializing_if = "Option::is_none")] pub memory_root: Option<String>,
+    /// The configured machine-wide reflection capacity (`memory.reflection.max_concurrent_runs`).
+    #[serde(skip_serializing_if = "Option::is_none")] pub max_concurrent_runs: Option<usize>,
+    pub termination_grace_ms: f64,
     pub max_output_bytes: usize, pub stdout_path: String, pub stderr_path: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -123,4 +130,22 @@ mod tests {
     }
     #[test]
     fn prelaunch_rejects_corruption() { assert!(parse_run_prelaunch_artifact(serde_json::json!({"version": 2})).is_err()); }
+    #[test]
+    fn launch_manifest_carries_the_admission_protocol() {
+        let manifest = RunLaunchManifest { version: 1, run_id: "run".into(), attempt: 1, next_attempt: None, kind: RunKind::Reflection, command: "child".into(), args: vec![], cwd: "/w".into(), env: BTreeMap::new(), hard_deadline_at: 100.0, queued_at: Some(90.0), memory_root: Some("/memory".into()), max_concurrent_runs: Some(2), termination_grace_ms: 10.0, max_output_bytes: 100, stdout_path: "stdout".into(), stderr_path: "stderr".into() };
+        let value = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(value["queuedAt"], 90.0);
+        assert_eq!(value["memoryRoot"], "/memory");
+        assert_eq!(value["maxConcurrentRuns"], 2);
+        let round: RunLaunchManifest = serde_json::from_value(value).unwrap();
+        assert_eq!(round.queued_at, Some(90.0));
+        assert_eq!(round.memory_root.as_deref(), Some("/memory"));
+        assert_eq!(round.max_concurrent_runs, Some(2));
+    }
+    #[test]
+    fn a_manifest_without_admission_metadata_omits_it() {
+        let manifest = RunLaunchManifest { version: 1, run_id: "run".into(), attempt: 1, next_attempt: None, kind: RunKind::Facts, command: "child".into(), args: vec![], cwd: "/w".into(), env: BTreeMap::new(), hard_deadline_at: 100.0, queued_at: None, memory_root: None, max_concurrent_runs: None, termination_grace_ms: 10.0, max_output_bytes: 100, stdout_path: "stdout".into(), stderr_path: "stderr".into() };
+        let value = serde_json::to_value(&manifest).unwrap();
+        for key in ["queuedAt", "memoryRoot", "maxConcurrentRuns"] { assert!(value.get(key).is_none(), "{key}"); }
+    }
 }

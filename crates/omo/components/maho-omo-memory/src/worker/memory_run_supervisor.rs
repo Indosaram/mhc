@@ -153,11 +153,10 @@ pub async fn run_supervisor(
     let mut signals = TerminationSignals::new().map_err(|error| error.to_string())?;
     let launch_path = run_dir.join("launch.json");
     let ledger_path = run_dir.join("ledger.json");
-    let manifest: RunLaunchManifest = read_run_json(&launch_path).map_err(|error| error.to_string())?;
-    update_run_ledger(&ledger_path, &serde_json::Map::from_iter([
-        ("launching".into(), false.into()), ("pid".into(), std::process::id().into()),
-        ("processStart".into(), get_supervisor_process_start(std::process::id()).into()),
-    ])).map_err(|error| error.to_string())?;
+    // Admission publishes this supervisor as queued, waits for a machine slot and rebases both durable
+    // deadlines by the queue duration. The manifest the child reads is the rebased one.
+    let admission = super::supervisor_admission::admit_supervisor(run_dir)?;
+    let manifest: RunLaunchManifest = admission.manifest.clone();
     let env: BTreeMap<String, String> = std::env::vars().collect();
     let mut command = tokio::process::Command::new(executable);
     command.args(prefix).arg("--child-bootstrap").arg(run_dir)
@@ -166,9 +165,21 @@ pub async fn run_supervisor(
     command.process_group(0);
     #[cfg(windows)]
     command.creation_flags(0x0800_0000);
-    let mut bootstrap = command.spawn().map_err(|error| error.to_string())?;
+    let mut bootstrap = match command.spawn() {
+        Ok(bootstrap) => bootstrap,
+        Err(error) => {
+            admission.lease.release();
+            return Err(error.to_string());
+        }
+    };
     let pid = bootstrap.id().ok_or("child bootstrap did not receive a pid")?;
     let mut containment = ContainedBootstrap { pid: Some(pid), env: env.clone() };
+    // The pipe gate keeps the child idle until its lease ownership and ledger are durable: the slot now
+    // names the child, so the supervisor may die without freeing the capacity its child still uses.
+    if let Err(error) = admission.retain_for_child(pid) {
+        admission.lease.release();
+        return Err(error);
+    }
     update_run_ledger(&ledger_path, &serde_json::Map::from_iter([
         ("childPid".into(), pid.into()), ("childProcessStart".into(), get_supervisor_process_start(pid).into()),
     ])).map_err(|error| error.to_string())?;
@@ -237,6 +248,9 @@ pub async fn run_supervisor(
         timed_out: timed_out.load(std::sync::atomic::Ordering::SeqCst) || (clock_now.is_finite() && clock_now >= manifest.hard_deadline_at),
         recovered_from_worktree: None,
     };
+    // Capacity is freed only now, after the child's completion is confirmed: a slot released earlier
+    // would admit a second run while this one still writes the memory repository.
+    admission.lease.release();
     super::run_outcome_publication::publish_run_outcome(run_dir, &manifest, &outcome, gate)?;
     unlink_run_artifact(&launch_path).map_err(|error| error.to_string())
 }
@@ -263,7 +277,9 @@ mod tests {
             version: 1, run_id: "run".into(), attempt: 1, next_attempt: None,
             kind: RunKind::Facts, command: "/bin/sh".into(), args: vec![],
             cwd: root.to_string_lossy().into_owned(), env: BTreeMap::new(),
-            hard_deadline_at: wall_now() + 60_000.0, termination_grace_ms: 100.0,
+            hard_deadline_at: wall_now() + 60_000.0, queued_at: None,
+            memory_root: Some(root.join("memory-root").to_string_lossy().into_owned()), max_concurrent_runs: None,
+            termination_grace_ms: 100.0,
             max_output_bytes: 1024, stdout_path: root.join("stdout").to_string_lossy().into_owned(),
             stderr_path: root.join("stderr").to_string_lossy().into_owned(),
         };

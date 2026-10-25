@@ -1,12 +1,21 @@
 use std::{collections::BTreeMap,path::Path};
-use super::{run_artifacts::{RunLaunchManifest,RunOutcome,RunKind,RunAttempt,write_run_json_atomic,read_run_json,run_outcome_matches_ledger},memory_model_attempts::ReflectionChildResult,run_sentinel::{wait_for_run_completion,SentinelWaitResult},spawn_supervisor_support::{read_tail,is_node_signal}};
+use super::{ledger_deadline_reader::create_ledger_deadline_reader,run_artifacts::{RunLaunchManifest,RunOutcome,RunKind,RunAttempt,write_run_json_atomic,read_run_json,run_outcome_matches_ledger},memory_model_attempts::ReflectionChildResult,run_sentinel::{wait_for_run_completion,SentinelWaitResult},spawn_supervisor_support::{read_tail,is_node_signal}};
 
 /// Prefix of the error the launcher sees when the supervisor exits without a complete outcome.
 pub const SUPERVISOR_EXIT_PREFIX:&str="memory run supervisor exited with";
+/// Publication can still be waiting for the terminal gate after the child deadline expires.
+const OUTCOME_PUBLICATION_MARGIN_MS:f64=5_000.0;
 
 pub struct SupervisedChildInput<'a> {
     pub run_dir:&'a Path,pub run_id:&'a str,pub attempt:u32,pub model:&'a str,pub thinking:Option<&'a str>,pub next_attempt:Option<RunAttempt>,pub kind:RunKind,
-    pub command:&'a str,pub args:&'a [String],pub cwd:&'a Path,pub env:&'a BTreeMap<String,String>,pub hard_deadline_at:f64,pub termination_grace_ms:f64,pub max_output_bytes:usize,
+    pub command:&'a str,pub args:&'a [String],pub cwd:&'a Path,pub env:&'a BTreeMap<String,String>,pub hard_deadline_at:f64,
+    /// When the launcher queued the run; the supervisor rebases the deadlines by the queue duration.
+    pub queued_at:f64,
+    /// The machine-wide memory root the supervisor takes its admission lease under.
+    pub memory_root:String,
+    /// The configured machine-wide reflection capacity; omitted means the supervisor's own default.
+    pub max_concurrent_runs:Option<usize>,
+    pub termination_grace_ms:f64,pub max_output_bytes:usize,
     pub supervisor_command:&'a Path,pub supervisor_args:&'a [String],pub ledger:serde_json::Map<String,serde_json::Value>,
 }
 pub struct FactsChildOptions<'a> {
@@ -26,7 +35,10 @@ pub async fn run_reflection_child(args:&super::spawn_types::ReflectionSpawnArgs,
     if let Some(target)=metadata.target_doc {ledger["targetDoc"]=target.into();}
     if let (Some(budget),Some(target))=(metadata.system_token_budget,metadata.system_token_target) {ledger["systemTokenBudget"]=budget.into();ledger["systemTokenTarget"]=target.into();}
     let kind=if metadata.kind=="dream"{RunKind::Dream}else{RunKind::Reflection};
-    run_supervised_child(SupervisedChildInput {run_dir:&args.paths.session_dir,run_id:metadata.run_id,attempt:args.attempt,model:&args.model,thinking:args.thinking.as_deref(),next_attempt:args.next_attempt.clone(),kind,command:&args.command,args:&args.args,cwd:&args.cwd,env:&args.env,hard_deadline_at:args.hard_deadline_at,termination_grace_ms:options.termination_grace_ms,max_output_bytes:options.max_output_bytes,supervisor_command:options.supervisor_command,supervisor_args:options.supervisor_args,ledger:ledger.as_object().ok_or("Invalid reflection ledger")?.clone()}).await
+    // The supervisor takes its admission lease under the machine-wide root: the explicit one the candidate carried,
+    // else three levels above the worktree's repository (`<root>/agents/<slug>/repo`).
+    let memory_root=args.memory_root.clone().unwrap_or_else(||worktree.parent.dir.parent().and_then(Path::parent).and_then(Path::parent).map(Path::to_path_buf).unwrap_or_default());
+    run_supervised_child(SupervisedChildInput {run_dir:&args.paths.session_dir,run_id:metadata.run_id,attempt:args.attempt,model:&args.model,thinking:args.thinking.as_deref(),next_attempt:args.next_attempt.clone(),kind,command:&args.command,args:&args.args,cwd:&args.cwd,env:&args.env,hard_deadline_at:args.hard_deadline_at,queued_at:options.launched_at as f64,memory_root:memory_root.to_string_lossy().into_owned(),max_concurrent_runs:args.max_concurrent_runs,termination_grace_ms:options.termination_grace_ms,max_output_bytes:options.max_output_bytes,supervisor_command:options.supervisor_command,supervisor_args:options.supervisor_args,ledger:ledger.as_object().ok_or("Invalid reflection ledger")?.clone()}).await
 }
 pub async fn run_facts_child(#[cfg_attr(not(unix),allow(unused_mut))] mut args:super::spawn_types::FactsSpawnArgs,sandbox:Option<&(dyn Fn(super::spawn_types::FactsSpawnArgs)->Result<super::spawn_types::FactsSpawnArgs,String>+Sync)>,options:FactsChildOptions<'_>)->Result<ReflectionChildResult,String> {
     if options.termination_grace_ms<0.0||options.max_output_bytes==0{return Err("facts spawn limits are invalid".into());}
@@ -59,7 +71,7 @@ pub async fn run_facts_child(#[cfg_attr(not(unix),allow(unused_mut))] mut args:s
         broker_task.close().await?;
         return Err(error);
     }};
-    let result=run_supervised_child(SupervisedChildInput {run_dir:&args.paths.run_dir,run_id:&args.run_id,attempt:args.attempt,model:&args.model,thinking:args.thinking.as_deref(),next_attempt:args.next_attempt.clone(),kind:RunKind::Facts,command:&args.command,args:&args.args,cwd:&args.cwd,env:&args.env,hard_deadline_at:args.hard_deadline_at,termination_grace_ms:options.termination_grace_ms,max_output_bytes:options.max_output_bytes,supervisor_command:options.supervisor_command,supervisor_args:options.supervisor_args,ledger:ledger.as_object().ok_or("Invalid facts ledger")?.clone()}).await;
+    let result=run_supervised_child(SupervisedChildInput {run_dir:&args.paths.run_dir,run_id:&args.run_id,attempt:args.attempt,model:&args.model,thinking:args.thinking.as_deref(),next_attempt:args.next_attempt.clone(),kind:RunKind::Facts,command:&args.command,args:&args.args,cwd:&args.cwd,env:&args.env,hard_deadline_at:args.hard_deadline_at,queued_at:options.launched_at as f64,memory_root:String::new(),max_concurrent_runs:None,termination_grace_ms:options.termination_grace_ms,max_output_bytes:options.max_output_bytes,supervisor_command:options.supervisor_command,supervisor_args:options.supervisor_args,ledger:ledger.as_object().ok_or("Invalid facts ledger")?.clone()}).await;
     #[cfg(unix)]
     broker_task.close().await?;
     result
@@ -72,11 +84,15 @@ pub async fn run_supervised_child(input:SupervisedChildInput<'_>)->Result<Reflec
     directory.create(input.run_dir).map_err(|error|error.to_string())?;
     let stdout=input.run_dir.join("child-stdout.log");let stderr=input.run_dir.join("child-stderr.log");
     let launch=input.run_dir.join("launch.json");let outcome_path=input.run_dir.join("outcome.json");
-    let manifest=RunLaunchManifest {version:1,run_id:input.run_id.into(),attempt:input.attempt,next_attempt:input.next_attempt,kind:input.kind,command:input.command.into(),args:input.args.to_vec(),cwd:input.cwd.to_string_lossy().into_owned(),env:input.env.clone(),hard_deadline_at:input.hard_deadline_at,termination_grace_ms:input.termination_grace_ms,max_output_bytes:input.max_output_bytes,stdout_path:stdout.to_string_lossy().into_owned(),stderr_path:stderr.to_string_lossy().into_owned()};
+    let manifest=RunLaunchManifest {version:1,run_id:input.run_id.into(),attempt:input.attempt,next_attempt:input.next_attempt,kind:input.kind,command:input.command.into(),args:input.args.to_vec(),cwd:input.cwd.to_string_lossy().into_owned(),env:input.env.clone(),hard_deadline_at:input.hard_deadline_at,queued_at:Some(input.queued_at),memory_root:if input.memory_root.is_empty(){None}else{Some(input.memory_root.clone())},max_concurrent_runs:input.max_concurrent_runs,termination_grace_ms:input.termination_grace_ms,max_output_bytes:input.max_output_bytes,stdout_path:stdout.to_string_lossy().into_owned(),stderr_path:stderr.to_string_lossy().into_owned()};
     let mut ledger=input.ledger;
     ledger.insert("attempt".into(),input.attempt.into());ledger.insert("model".into(),input.model.into());
     if let Some(thinking)=input.thinking {ledger.insert("thinking".into(),thinking.into());}
-    ledger.insert("launching".into(),true.into());ledger.insert("hardDeadlineAt".into(),input.hard_deadline_at.into());ledger.insert("deadlineAt".into(),(input.hard_deadline_at+input.termination_grace_ms).into());
+    ledger.insert("launching".into(),true.into());
+    // Facts already carry their own `queued` payload (the queued batch keys); only a reflection or dream run is
+    // waiting for machine admission, so only those publish the boolean admission state.
+    if input.kind!=RunKind::Facts {ledger.insert("queued".into(),true.into());}
+    ledger.insert("hardDeadlineAt".into(),input.hard_deadline_at.into());ledger.insert("deadlineAt".into(),(input.hard_deadline_at+input.termination_grace_ms).into());
     write_run_json_atomic(&input.run_dir.join("ledger.json"),&ledger,0o600).map_err(|error|error.to_string())?;
     write_run_json_atomic(&launch,&manifest,0o600).map_err(|error|error.to_string())?;
     let mut command=tokio::process::Command::new(input.supervisor_command);
@@ -85,7 +101,9 @@ pub async fn run_supervised_child(input:SupervisedChildInput<'_>)->Result<Reflec
     let mut supervisor=command.spawn().map_err(|error|error.to_string())?;
     let matching=||read_run_json::<RunOutcome>(&outcome_path).is_ok_and(|outcome|run_outcome_matches_ledger(Some(input.attempt),&outcome));
     let complete=||outcome_path.exists()&&!launch.exists()&&matching();
-    let wait=wait_for_run_completion(&outcome_path,&launch,matching,input.hard_deadline_at+input.termination_grace_ms+5000.0,||chrono::Utc::now().timestamp_millis() as f64,None);
+    // The deadline is read from the live ledger, so a queued run waits without one and an admitted run arms the
+    // deadline its supervisor rebased by the queue duration.
+    let wait=wait_for_run_completion(&outcome_path,&launch,matching,create_ledger_deadline_reader(input.run_dir,OUTCOME_PUBLICATION_MARGIN_MS),||chrono::Utc::now().timestamp_millis() as f64,None);
     tokio::pin!(wait);
     tokio::select! {
         result=supervisor.wait()=> {
@@ -102,7 +120,7 @@ pub async fn run_supervised_child(input:SupervisedChildInput<'_>)->Result<Reflec
 mod tests {
     use super::*;
     fn input<'a>(root:&'a Path,args:&'a [String],env:&'a BTreeMap<String,String>)->SupervisedChildInput<'a> {
-        SupervisedChildInput {run_dir:root,run_id:"run",attempt:1,model:"p/m",thinking:None,next_attempt:None,kind:RunKind::Facts,command:"unused",args:&[],cwd:root,env,hard_deadline_at:chrono::Utc::now().timestamp_millis() as f64+10000.0,termination_grace_ms:5.0,max_output_bytes:1024,supervisor_command:Path::new("/bin/sh"),supervisor_args:args,ledger:serde_json::Map::new()}
+        SupervisedChildInput {run_dir:root,run_id:"run",attempt:1,model:"p/m",thinking:None,next_attempt:None,kind:RunKind::Facts,command:"unused",args:&[],cwd:root,env,hard_deadline_at:chrono::Utc::now().timestamp_millis() as f64+10000.0,queued_at:0.0,memory_root:String::new(),max_concurrent_runs:None,termination_grace_ms:5.0,max_output_bytes:1024,supervisor_command:Path::new("/bin/sh"),supervisor_args:args,ledger:serde_json::Map::new()}
     }
     #[tokio::test]
     async fn actual_supervisor_publishes_matching_outcome_and_reaps() {

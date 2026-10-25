@@ -21,7 +21,8 @@ mod tests {
         write_run_json_atomic(&root.join("launch.json"), &RunLaunchManifest {
             version: 1, run_id: "fixture".into(), attempt: 2, next_attempt: None, kind: RunKind::Facts,
             command: "unused".into(), args: vec![], cwd: root.to_string_lossy().into_owned(), env: Default::default(),
-            hard_deadline_at: 100.0, termination_grace_ms: 10.0, max_output_bytes: 1024,
+            hard_deadline_at: 100.0, queued_at: None, memory_root: None, max_concurrent_runs: None,
+            termination_grace_ms: 10.0, max_output_bytes: 1024,
             stdout_path: "stdout".into(), stderr_path: "stderr".into(),
         }, 0o600).unwrap();
     }
