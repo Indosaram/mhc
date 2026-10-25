@@ -121,3 +121,107 @@ async fn real_service_reauthorization_disable_cancels_prompt_and_prevents_spawn(
     service.dispose().await.unwrap();
     registry.dispose().await.unwrap();
 }
+
+#[tokio::test]
+async fn service_reload_reuses_identity_but_revoke_and_edit_are_seen_before_spawn() {
+    use maho_ext_mcp::{env_grants_store::*, project_skill_policy::*};
+    let root = tempfile::tempdir().unwrap();
+    let agent = tempfile::tempdir().unwrap();
+    let source = root.path().join("mcp.json");
+    std::fs::write(
+        &source,
+        r#"{"probe":{"command":"server","args":["${TOKEN}"]}}"#,
+    )
+    .unwrap();
+    let skill = maho_ext_mcp::skills::SkillLike {
+        name: "fixture".into(),
+        file_path: root.path().join("SKILL.md"),
+        base_dir: root.path().into(),
+        scope: Some("project".into()),
+        ..Default::default()
+    };
+    let registry = Arc::new(maho_ext_mcp::host_registry::HostMcpRegistry::default());
+    let mut service = maho_ext_mcp::service::McpService::new(registry.clone(), 74);
+    service
+        .attach_session(
+            root.path(),
+            agent.path(),
+            &BTreeMap::from([("TOKEN".into(), "secret".into())]),
+            false,
+            &[],
+        )
+        .await
+        .unwrap();
+    let declarations = maho_ext_mcp::skills::parse_skill_mcp_declarations(&[skill.clone()]);
+    service
+        .attach_skill_mcp_servers(&declarations)
+        .await
+        .unwrap();
+    let config = service.config.as_ref().unwrap().servers["probe"]
+        .config
+        .as_ref()
+        .unwrap();
+    let authority = get_project_mcp_authority(config).unwrap();
+    let connection = service.connections["probe"]
+        .entry
+        .lock()
+        .await
+        .connection
+        .clone();
+    service
+        .attach_skill_mcp_servers(&declarations)
+        .await
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        &authority,
+        &get_project_mcp_authority(
+            service.config.as_ref().unwrap().servers["probe"]
+                .config
+                .as_ref()
+                .unwrap()
+        )
+        .unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        &connection,
+        &service.connections["probe"].entry.lock().await.connection
+    ));
+    add_grant(
+        &authority.store_path,
+        &authority.identity,
+        GrantLabel {
+            project: "p".into(),
+            skill: "fixture".into(),
+            server: "probe".into(),
+        },
+        &["TOKEN".into()],
+    )
+    .unwrap();
+    assert_eq!(
+        authority.resolve().await.unwrap().config.args.unwrap(),
+        ["secret"]
+    );
+    revoke(&authority.store_path, &authority.identity, None).unwrap();
+    assert_eq!(
+        authority.resolve().await.unwrap().config.args.unwrap(),
+        ["${TOKEN}"]
+    );
+    std::fs::write(
+        &source,
+        r#"{"probe":{"command":"changed","args":["${TOKEN}"]}}"#,
+    )
+    .unwrap();
+    assert!(authority.resolve().await.is_err());
+    service
+        .attach_skill_mcp_servers(&maho_ext_mcp::skills::parse_skill_mcp_declarations(&[
+            skill,
+        ]))
+        .await
+        .unwrap();
+    assert!(!Arc::ptr_eq(
+        &connection,
+        &service.connections["probe"].entry.lock().await.connection
+    ));
+    service.dispose().await.unwrap();
+    registry.dispose().await.unwrap();
+}
