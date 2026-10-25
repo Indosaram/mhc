@@ -785,7 +785,7 @@ impl Extension for Task {
                     exclude_models: config["exclude_models"].as_array().map(|patterns| patterns.iter().filter_map(|pattern| pattern.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
                 });
                 let host_assembly = super::task_host::HostAssembly { turns: Default::default(), runtime: executor.clone(), agent_dir: ctx.agent_dir.clone(), parent: parent.weak_accessor() };
-                runners.process = super::task_host::select_runner(host_assembly, &config, runners.process);
+                runners.process = super::task_host::select_runner(host_assembly.clone(), &config, runners.process);
                 let registry: Arc<dyn senpi_task::host::SenpiModelRegistry> = Arc::new(Registry(ctx.model_registry.clone()));
                 let engine = {
                     let mut slot = engine_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -803,6 +803,23 @@ impl Extension for Task {
                 };
                 let handlers = {
                     let mut api = registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    {
+                        let warm_parent = parent.weak_accessor(); let id_parent = warm_parent.clone(); let cwd_parent = warm_parent.clone();
+                        let records = engine.manager.clone(); let admission = host_assembly.clone();
+                        maho_omo_task::host_prewarm::wire_host_prewarm(&mut api, Arc::new(maho_omo_task::host_prewarm::HostPrewarmEngine {
+                            process_runner: engine.config["task"]["process_runner"].as_str().map(str::to_owned),
+                            default_execution_mode: engine.config["task"]["default_execution_mode"].as_str().map(str::to_owned),
+                            host_shard_prewarm: engine.config["task"]["host_shard_prewarm"].as_str().map(str::to_owned),
+                            resume_children: engine.config["task"]["resume_children"].as_bool(), reattach_on_reconcile: engine.config["task"]["reattach_on_reconcile"].as_bool(), residency_max_children: None,
+                            platform: if cfg!(windows) {"win32"} else {std::env::consts::OS}.into(), state_dir: engine.store.state_dir().to_string_lossy().into_owned(),
+                            session_role: Arc::new(move ||senpi_task::runners::rpc_host::session_role::read_session_role(&serde_json::Value::Null, &std::env::vars().collect())),
+                            session_id: Arc::new(move ||id_parent().map(|session|session.session_id())), cwd: Arc::new(move ||cwd_parent().map(|session|session.cwd()).unwrap_or_default()),
+                            host: Arc::new(super::task_host::PrewarmHost(host_assembly.clone())),
+                            admit_task_store: Arc::new(move |_,store|admission.admit(store.into()).map_err(|error|eprintln!("host prewarm admission: {error}")).is_ok()),
+                            list_records: Arc::new(move ||records.list(&senpi_task::manager::types::ListScope::All).into_iter().map(|entry|entry.record).collect()),
+                            on_log: Arc::new(|message|eprintln!("{message}")), is_preview: Arc::new(|payload|matches!(payload, maho_ext_api::ExtensionEvent::BeforeAgentStart(event) if event.preview)),
+                        }));
+                    }
                     let ownership = senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps {
                         state_dir: senpi_task::store::StateDirConfig { project_dir: ctx.cwd.clone(), task_state_dir: Some(engine.store.state_dir().into()) },
                         team_bounds: super::task_session::configured_team_bounds(&engine.config)?, load_runtime_state: None,

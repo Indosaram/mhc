@@ -190,6 +190,37 @@ impl HostAssembly {
         })
     }
 }
+pub struct PrewarmHost(pub HostAssembly);
+impl maho_omo_task::host_prewarm::HostPrewarmHost for PrewarmHost {
+    fn agent_dir(&self) -> Option<String> {
+        Some(self.0.agent_dir.to_string_lossy().into_owned())
+    }
+    fn shard_socket(&self) -> String {
+        self.0.socket().unwrap_or_default()
+    }
+    fn routes_children_to_host(&self) -> bool {
+        true
+    }
+    fn ensure_endpoint(&self, socket: &str) -> Result<(), String> {
+        self.0
+            .ensure(socket.into(), Vec::new())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    fn warm_host(&self, socket: &str, cwd: &str, agent_dir: Option<&str>) -> Result<(), String> {
+        let socket = self
+            .0
+            .ensure(socket.into(), Vec::new())
+            .map_err(|e| e.to_string())?;
+        let cwd = cwd.to_owned();
+        let root = agent_dir.map(PathBuf::from);
+        self.0.block(async move {
+            #[cfg(unix)] {maho_rpc::host_probe::ask_host_authenticated(&socket,&json!({"type":"warm","cwd":cwd,"kind":"worker","context":{"role":"child","host_warmup":"1"}}),60_000,root.as_deref()).await.map_err(error)?.filter(|reply|reply["success"]==true).ok_or_else(||error("host warm refused"))?; Ok(())}
+            #[cfg(not(unix))] {let _=(socket,cwd,root);Err(error("host warm unavailable"))}
+        }).map_err(|e|e.to_string())
+    }
+}
+
 struct ProductionHostRunner {
     assembly: HostAssembly,
     configured: ConfiguredRpcHostRunner,
