@@ -90,6 +90,7 @@ fn shared_list_cache(state_dir: &Path) -> ListCache {
 #[derive(Clone)]
 pub struct TaskRecordStore {
     state_dir: PathBuf,
+    record_listener: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn Fn(&str, Option<&TaskRecord>) + Send + Sync>>>>,
     mutation_listener: std::sync::Arc<std::sync::Mutex<Option<MutationListener>>>,
     write_listener: std::sync::Arc<std::sync::Mutex<Option<WriteListener>>>,
     list_cache: ListCache,
@@ -114,6 +115,7 @@ impl TaskRecordStore {
         Self {
             list_cache: shared_list_cache(&state_dir),
             state_dir,
+            record_listener: Default::default(),
             mutation_listener: Default::default(),
             write_listener: Default::default(),
         }
@@ -137,6 +139,13 @@ impl TaskRecordStore {
     }
 
     /// All manager/lifecycle clones share the post-commit observer. Clear it during shutdown.
+    pub fn set_record_listener(&self, listener: Option<std::sync::Arc<dyn Fn(&str, Option<&TaskRecord>) + Send + Sync>>) {
+        *self.record_listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = listener;
+    }
+    fn notify_record(&self, id: &str, record: Option<&TaskRecord>) {
+        let listener = self.record_listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if let Some(listener) = listener { listener(id, record); }
+    }
     pub fn set_mutation_listener(&self, listener: Option<MutationListener>) {
         *self
             .mutation_listener
@@ -198,6 +207,7 @@ impl TaskRecordStore {
         // A lock adds a delete-pending race without strengthening CREATE_NEW uniqueness.
         self.write_record(record, WriteMode::Create)?;
         self.notify_write(record, None);
+        self.notify_record(&record.task_id, Some(record));
         self.notify_mutation();
         Ok(())
     }
@@ -215,6 +225,7 @@ impl TaskRecordStore {
             Ok(previous)
         })?;
         self.notify_write(record, previous_status);
+        self.notify_record(&record.task_id, Some(record));
         self.notify_mutation();
         Ok(())
     }
@@ -241,6 +252,7 @@ impl TaskRecordStore {
         if written && let Some(record) = &result {
             self.notify_write(record, previous_status);
         }
+        self.notify_record(task_id, result.as_ref());
         self.notify_mutation();
         Ok(result)
     }
@@ -487,7 +499,8 @@ impl TaskRecordStore {
         {
             self.notify_write(&result.record, previous_status);
         }
-        if result.is_some() {
+        if let Some(result) = &result {
+            self.notify_record(task_id, Some(&result.record));
             self.notify_mutation();
         }
         Ok(result)
@@ -498,6 +511,7 @@ impl TaskRecordStore {
         let parsed = parse_task_id(task_id)?;
         let path = self.task_path(parsed);
         with_task_record_lock(&path, || self.remove_record(parsed))?;
+        self.notify_record(task_id, None);
         self.notify_mutation();
         Ok(())
     }
@@ -522,6 +536,7 @@ impl TaskRecordStore {
             Ok(TombstoneResult::Tombstoned(Box::new(current)))
         })?;
         if matches!(result, TombstoneResult::Tombstoned(_)) {
+            self.notify_record(task_id, None);
             self.notify_mutation();
         }
         Ok(result)
@@ -532,10 +547,23 @@ impl TaskRecordStore {
         let parsed = parse_task_id(task_id)?;
         self.remove_record(parsed)?;
         remove_if_present(&self.tombstone_path(parsed))?;
+        self.notify_record(task_id, None);
         self.notify_mutation();
         Ok(())
     }
 
+    pub fn restore_expunging(&self, task_id: &str) -> Result<(), StoreError> {
+        let parsed = parse_task_id(task_id)?;
+        let path = self.task_path(parsed);
+        with_task_record_lock(&path, || {
+            std::fs::rename(self.tombstone_path(parsed), &path)?;
+            Ok(())
+        })?;
+        let record = self.load(task_id)?;
+        self.notify_record(task_id, record.as_ref());
+        self.notify_mutation();
+        Ok(())
+    }
     pub fn list_expunging(&self) -> Result<Vec<String>, StoreError> {
         let tasks_dir = self.tasks_dir();
         std::fs::create_dir_all(&tasks_dir)?;

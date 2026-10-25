@@ -23,6 +23,20 @@ pub struct TaskEngine {
     pub agents: std::collections::BTreeMap<String, senpi_task::agents::AgentDefinition>,
 }
 
+impl TaskEngine {
+    pub fn workpool_run_pause_source(
+        &self,
+        workpools: Arc<tokio::sync::Mutex<senpi_task::workpool::engine::WorkpoolEngine>>,
+        barrier: senpi_task::pause::admission_barrier::AdmissionBarrier,
+        owned_sessions: Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>,
+    ) -> crate::workpool_run_pause_source::WorkpoolRunPauseSource {
+        crate::workpool_run_pause_source::WorkpoolRunPauseSource {
+            store: senpi_task::workpool::store::WorkpoolStore::new(self.store.state_dir()),
+            barrier, workpools, owned_sessions,
+        }
+    }
+}
+
 pub fn compose_task_engine(deps: ComposeTaskEngineDeps) -> TaskEngine {
     compose_task_engine_with_rpc_respawn(deps, None)
 }

@@ -87,6 +87,22 @@ pub fn format_target_with_model(input: &StatusTargetInput<'_>) -> Option<String>
 }
 
 // WHERE it runs: the routing target plus the model actually resolved for it.
+pub fn format_parent_model_fallback(record: &crate::state::TaskRecord) -> Option<String> {
+    use crate::state::{EffectiveModelSource, ParentModelFallbackReason};
+    let fallback = record.parent_model_fallback.as_ref()?;
+    let parent = record.parent_model.as_deref()?;
+    let same = |provider: &str, model: &str| parent.split_once('/').is_some_and(|(p, m)| p == provider && m.split(':').next() == Some(model));
+    let observed = record.effective_model.as_ref();
+    let phase = if observed.is_some_and(|model| same(&model.provider, &model.model_id)) { "" } else {
+        let selected = record.resolved_model.as_ref().is_some_and(|model| same(&model.provider, &model.model_id));
+        if !selected || observed.is_some_and(|model| model.switched_by_operator == Some(true) || matches!(model.source, EffectiveModelSource::Set | EffectiveModelSource::Cycle | EffectiveModelSource::Restore | EffectiveModelSource::FallbackRevert)) { return None; }
+        if !record.status.is_terminal() || record.fallback_handoff_epoch.is_some() { "switching, " } else { "unconfirmed, " }
+    };
+    let reason = match fallback.reason { ParentModelFallbackReason::UsageLimit => "usage limit", ParentModelFallbackReason::NotSignedIn => "not signed in", ParentModelFallbackReason::Unavailable => "unavailable", ParentModelFallbackReason::Refused => "refused", ParentModelFallbackReason::Error => "error" };
+    let resets = optional_renderer_text(fallback.resets.as_deref()).map_or_else(String::new, |reset| format!(", resets {reset}"));
+    Some(format!("parent-model:{phase}{reason}{resets}"))
+}
+
 pub fn format_status_target(input: &StatusTargetInput<'_>) -> Option<String> {
     let target = format_target_with_model(input)?;
     match input.fallback_count {

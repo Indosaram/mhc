@@ -875,7 +875,11 @@ impl Extension for Task {
                                 source: maho_ext_api::IdleInjectionSource::WorkpoolAggregate,
                                 custom_type: Some("workpool-aggregate".into()),
                                 content: serde_json::to_string(&message.results).map_err(|error| error.to_string())?,
-                                display: Some(false), passive: Some(false), details: Some(serde_json::to_value(&message).map_err(|error| error.to_string())?),
+                                display: Some(false), passive: Some(false), details: Some({
+                                    let mut details = serde_json::to_value(&message).map_err(|error| error.to_string())?;
+                                    details["runRef"] = serde_json::json!({"kind": "workpool", "id": message.pool_id});
+                                    details
+                                }),
                                 on_flushed: Some(ack), on_delivery_failed: Some(Arc::new(move |error| fail(Some(error.to_owned())))),
                             });
                             if !accepted { return Err("idle-injection coordinator retired on session shutdown; injection not delivered".into()); }
