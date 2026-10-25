@@ -7,7 +7,13 @@
 use std::sync::Arc;
 
 use senpi_task::{
-    dag::{manager::DagRunRecordV1, paused_controls::{PausedNodeCancelCause, PausedNodeHoldPort, cancel_paused_dag_node, DagPauseStore}, scheduler::{DagNodeControlError, DagNodeControlErrorCode, DagSchedulerOptions}},
+    dag::{
+        manager::DagRunRecordV1,
+        paused_controls::{
+            DagPauseStore, PausedNodeCancelCause, PausedNodeHoldPort, cancel_paused_dag_node,
+        },
+        scheduler::{DagNodeControlError, DagNodeControlErrorCode, DagSchedulerOptions},
+    },
     manager::TaskManager,
     state::TaskStatus,
 };
@@ -22,7 +28,11 @@ struct EndedChildClosure {
 }
 
 impl PausedNodeHoldPort for EndedChildClosure {
-    fn close_hold(&self, task_id: &str, _cause: PausedNodeCancelCause) -> Result<(), DagNodeControlError> {
+    fn close_hold(
+        &self,
+        task_id: &str,
+        _cause: PausedNodeCancelCause,
+    ) -> Result<(), DagNodeControlError> {
         let Some(record) = self.manager.get(task_id) else {
             return Ok(());
         };
@@ -91,7 +101,13 @@ pub fn create_paused_node_cancel(
             .with_run_id(run_id.to_string()));
         };
         let context = options(run_id);
-        cancel_paused_dag_node(&context, &run_id.to_string(), &node_id.to_string(), holds.as_ref(), pauses.as_ref())
+        cancel_paused_dag_node_with_store(
+            &context,
+            &run_id.to_string(),
+            &node_id.to_string(),
+            holds.as_ref(),
+            pauses.as_ref(),
+        )
     })
 }
 

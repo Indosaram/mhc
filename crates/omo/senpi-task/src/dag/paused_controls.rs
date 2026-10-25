@@ -336,7 +336,7 @@ impl PausedNodeCancelCause {
 
 /// `cancelPausedDagNode`: end one node's child while the run stays paused, then journal the node
 /// cancelled. The run's pause must still be the one the caller read, or the cancel is refused.
-pub fn cancel_paused_dag_node(
+pub fn cancel_paused_dag_node_with_store(
     options: &DagSchedulerOptions,
     run_id: &DagRunId,
     node_id: &DagNodeId,
@@ -475,4 +475,54 @@ mod tests {
         pauses.write(&run_id(), &state).expect("write");
         assert_eq!(pauses.read(&run_id()).expect("read"), state);
     }
+}
+
+pub use crate::dag::manager::paused_amendment_unsafe;
+
+/// Checkpoint-backed callers use the same sidecar cancellation implementation.
+pub fn cancel_paused_dag_node(
+    options: &DagSchedulerOptions,
+    run_id: &DagRunId,
+    node_id: &DagNodeId,
+    close: impl Fn(&str, &str) + Send + Sync,
+) -> Result<(), DagNodeControlError> {
+    struct Close<F>(F);
+    impl<F: Fn(&str, &str) + Send + Sync> PausedNodeHoldPort for Close<F> {
+        fn close_hold(
+            &self,
+            task: &str,
+            cause: PausedNodeCancelCause,
+        ) -> Result<(), DagNodeControlError> {
+            (self.0)(task, cause.as_str());
+            Ok(())
+        }
+    }
+    let pauses = DagPauseStore::new(options.store.state_dir());
+    if let Some(record) = options
+        .store
+        .read_checkpoint::<DagRunRecordV1>(run_id)
+        .map_err(|error| {
+            DagNodeControlError::new(DagNodeControlErrorCode::InvalidArguments, error.to_string())
+        })?
+    {
+        if let Some(pause) = record.pause {
+            let mut state = pauses.read(run_id).map_err(|error| {
+                DagNodeControlError::new(
+                    DagNodeControlErrorCode::InvalidArguments,
+                    error.to_string(),
+                )
+            })?;
+            state.pause = Some(DagRunPause {
+                reason: DagRunPauseReason::UserStop,
+                pause_seq: Some(pause.pause_seq),
+            });
+            pauses.write(run_id, &state).map_err(|error| {
+                DagNodeControlError::new(
+                    DagNodeControlErrorCode::InvalidArguments,
+                    error.to_string(),
+                )
+            })?;
+        }
+    }
+    cancel_paused_dag_node_with_store(options, run_id, node_id, &Close(close), &pauses)
 }

@@ -120,6 +120,7 @@ fn given_a_linear_three_node_definition_when_the_real_engine_runs_then_every_eve
         schedule_retry: None,
         subscriber_ring: None,
         now: None,
+        resume_credential: None,
     })
     .expect("scheduler");
 
@@ -274,6 +275,7 @@ fn given_a_failed_root_when_the_real_engine_runs_then_the_dependent_chain_is_ski
         schedule_retry: None,
         subscriber_ring: None,
         now: None,
+        resume_credential: None,
     })
     .expect("scheduler");
 
@@ -374,6 +376,7 @@ impl ScriptedFixture {
             schedule_retry: None,
             subscriber_ring: None,
             now: None,
+            resume_credential: None,
         })
         .unwrap();
         scheduler.run().unwrap();
@@ -1018,6 +1021,8 @@ fn spawn_before_attachment_recovers_owned_task_without_a_second_spawn() {
         reattach: None,
         ancestry: None,
         node_spawn_policy: None,
+        paused_children: None,
+        resume_credential: None,
     })
     .resume_paused_runs(PARENT_SESSION_ID);
     assert_eq!(outcomes.len(), 1);
@@ -1076,6 +1081,7 @@ fn reversed_failures_leave_independent_branches_running_and_select_graph_first()
         schedule_retry: None,
         subscriber_ring: None,
         now: None,
+        resume_credential: None,
     })
     .unwrap();
     let (failure_tx, failure_rx) = mpsc::channel();
@@ -1359,6 +1365,7 @@ fn real_manager_residency_cap_batches_a_wide_wave_without_failures() {
         schedule_retry: None,
         subscriber_ring: None,
         now: None,
+        resume_credential: None,
     })
     .unwrap();
     let (attached_tx, attached_rx) = mpsc::channel();
