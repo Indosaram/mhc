@@ -37,7 +37,8 @@ pub fn find_dangling_questions(entries:&[Value])->Vec<DanglingQuestion>{
             if block["type"]!="toolCall"||block["incomplete"]==true{continue;}
             let variant=match block["name"].as_str(){Some("request_user_input")=>AskUserVariant::Codex,Some("ask_user_question")=>AskUserVariant::Claude,_=>continue};
             let Some(id)=block["id"].as_str()else{continue;};if settled.contains(id)||resumed.contains(id){continue;}
-            let wait=to_canonical(variant,&block["arguments"],id.into(),Some(DEFAULT_ASK_USER_TIMEOUT_MS)).is_ok_and(|request|request.wait_for_answer);
+            let Ok(request)=to_canonical(variant,&block["arguments"],id.into(),Some(DEFAULT_ASK_USER_TIMEOUT_MS))else{continue;};
+            let wait=request.wait_for_answer;
             if results.contains(id)&&(wait||!accepted.contains(id)){continue;}
             dangling.push(DanglingQuestion{tool_call_id:id.into(),variant,args:block["arguments"].clone()});
         }

@@ -64,6 +64,7 @@ impl AskUserQuestionState {
     pub fn activate_option(&mut self,id:&str,label:&str) {
         let Some(q)=self.request.questions.iter().find(|q| q.id==id) else { return; };
         if !q.options.iter().any(|o| o.label==label) { return; }
+        self.texts.remove(id);
         if q.multi_select { let values=self.selected.entry(id.into()).or_default(); if let Some(i)=values.iter().position(|s| s==label) { values.remove(i); } else { values.push(label.into()); } } else { self.selected.insert(id.into(),vec![label.into()]); } self.notice=None;
     }
     pub fn set_own_answer(&mut self,id:&str,text:&str) { let text=text.trim(); if text.is_empty() { return; } self.selected.remove(id); self.texts.insert(id.into(),text.into()); self.notice=None; }

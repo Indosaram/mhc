@@ -1,6 +1,14 @@
 use maho_ext_ask_user::resume::find_dangling_questions;
 use serde_json::json;
 #[test]
+fn invalid_dangling_questions_are_not_reopened() {
+    for arguments in [json!({}), json!({"waitForAnswer":true,"questions":[]})] {
+        let call=json!({"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"invalid","name":"ask_user_question","arguments":arguments}]}});
+        assert!(find_dangling_questions(&[call]).is_empty());
+    }
+}
+
+#[test]
 fn recovery_preserves_reverse_branch_order_and_ignores_incomplete_foreign_calls() {
     let call = |id: &str, name: &str, incomplete: bool| json!({"type":"toolCall","id":id,"name":name,"incomplete":incomplete,"arguments":{"waitForAnswer":false,"questions":[{"header":"Choice","question":"Pick?","multiSelect":false}]}});
     let entries = [

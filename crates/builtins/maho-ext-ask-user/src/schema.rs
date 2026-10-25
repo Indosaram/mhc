@@ -13,7 +13,7 @@ pub fn to_canonical(variant:AskUserVariant,args:&Value,request_id:String,timeout
     let wait_for_answer=args.get(wait_key).and_then(Value::as_bool).ok_or(WAIT_FLAG_STEER_TEXT)?;
     let max=if variant==AskUserVariant::Codex{3}else{4};
     let raw=args.get("questions").and_then(Value::as_array).filter(|questions|!questions.is_empty()&&questions.len()<=max).ok_or_else(||format!("questions must contain 1 to {max} items"))?;
-    let mut questions=Vec::new();
+    let mut questions:Vec<Question>=Vec::new();
     for (index,raw) in raw.iter().enumerate(){
         if !raw.is_object(){return Err("each question must be an object".into());}
         let header=text(raw,"header");if header.is_empty(){return Err("header must be non-empty".into());}
@@ -31,6 +31,7 @@ pub fn to_canonical(variant:AskUserVariant,args:&Value,request_id:String,timeout
             }
         }else if variant==AskUserVariant::Codex{return Err("options must contain 2 to 3 items".into());}
         let id=if variant==AskUserVariant::Claude{format!("q{}",index+1)}else{let id=text(raw,"id");if !snake_case(&id){return Err("id must be snake_case".into());}id};
+        if questions.iter().any(|question|question.id==id){return Err("question ids must be unique".into());}
         let multi_select=if variant==AskUserVariant::Claude{raw.get("multiSelect").and_then(Value::as_bool).ok_or("multiSelect is required")?}else{raw.get("multiSelect").and_then(Value::as_bool)==Some(true)};
         questions.push(Question{id,header,question,options,multi_select});
     }

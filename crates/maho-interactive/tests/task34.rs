@@ -64,6 +64,46 @@ fn key_string(binding: &str) -> String {
 }
 
 #[test]
+fn ask_user_own_answer_accepts_encoded_and_batched_text() {
+    install_keybindings();
+    for (input, expected) in [
+        ("\x1b[97u", "a"),
+        ("\x1b[200~custom reply\x1b[201~", "custom reply"),
+        ("custom reply", "custom reply"),
+    ] {
+        let request: QuestionRequest = serde_json::from_value(golden("task34-ask.json")["happy"]["request"].clone()).expect("request");
+        let captured = Rc::new(RefCell::new(None));
+        let sink = Rc::clone(&captured);
+        let mut component = AskUserQuestionComponent::new(request, Box::new(move |response| *sink.borrow_mut() = Some(response)), AskUserQuestionOptions::new(theme()));
+        let id = component.state.active_question().id.clone();
+
+        component.handle_input(input);
+        component.handle_input("\x1b[13;5u");
+
+        let response = captured.borrow().clone().expect("submitted own answer");
+        assert_eq!(response.answers[&id].text.as_deref(), Some(expected));
+    }
+}
+
+#[test]
+fn ask_user_option_replaces_previously_typed_answer() {
+    install_keybindings();
+    let request: QuestionRequest = serde_json::from_value(golden("task34-ask.json")["happy"]["request"].clone()).expect("request");
+    let captured = Rc::new(RefCell::new(None));
+    let sink = Rc::clone(&captured);
+    let mut component = AskUserQuestionComponent::new(request, Box::new(move |response| *sink.borrow_mut() = Some(response)), AskUserQuestionOptions::new(theme()));
+    let id = component.state.active_question().id.clone();
+    let label = component.state.active_question().options[0].label.clone();
+    component.state.set_own_answer(&id, "previous reply");
+
+    component.handle_input("1");
+
+    let response = captured.borrow().clone().expect("submitted option");
+    assert_eq!(response.answers[&id].selected, [label]);
+    assert_eq!(response.answers[&id].text, None);
+}
+
+#[test]
 fn ask_user_question_matches_pinned_golden() {
     install_keybindings();
     let fixture = golden("task34-ask.json");
