@@ -745,9 +745,11 @@ impl FactsExtractorRunner {
                     attempt: 1,
                     model: None,
                 };
-                let _ = crate::facts_child_spawner::write_facts_child_artifacts(
+                if let Err(write_err) = crate::facts_child_spawner::write_facts_child_artifacts(
                     dir, run, 1, &outcome,
-                );
+                ) {
+                    warn(&format!("failed to write facts child artifacts: {write_err}"));
+                }
                 let instant = chrono::DateTime::from_timestamp_millis((self.now)())
                     .ok_or("Invalid facts clock")?
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);

@@ -22,7 +22,7 @@ pub struct MemoryFactsWiring {
     queue: FactsQueue,
     settles: usize,
     settled_sessions: std::collections::BTreeSet<String>,
-    provenances: std::sync::RwLock<std::collections::HashMap<String, maho_ext_api::ForkProvenance>>,
+    pub(crate) provenances: std::sync::RwLock<std::collections::HashMap<String, maho_ext_api::ForkProvenance>>,
 }
 
 pub fn create_memory_facts_wiring(options: MemoryFactsWiringOptions) -> MemoryFactsWiring {
@@ -69,8 +69,11 @@ impl MemoryFactsWiring {
             }
         }
     }
+    pub fn provenance(&self, session: &str) -> Option<maho_ext_api::ForkProvenance> {
+        self.provenances.read().ok().and_then(|map| map.get(session).cloned())
+    }
     pub fn enqueue_settled(&self, conversation: &str, signal: Option<&FactsAbortSignal>) -> FactsEnqueueResult {
-        let provenance = self.provenances.read().ok().and_then(|map| map.get(conversation).cloned());
+        let provenance = self.provenance(conversation);
         self.enqueue_settled_with_provenance(conversation, signal, provenance.as_ref())
     }
     pub fn enqueue_settled_with_provenance(
@@ -161,12 +164,13 @@ pub fn resolve_boundary_to_canonical(
         return Some((entries[idx].source_message_id().to_string(), (idx + 1) as u64));
     }
     let parent_path = std::path::Path::new(&provenance.parent_session);
-    if parent_path.exists()
-        && let Ok(raw) = std::fs::read_to_string(parent_path)
-    {
+    if let Ok(file) = std::fs::File::open(parent_path) {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(file);
         let mut preceding_message_id: Option<String> = None;
-        for line in raw.lines() {
-            let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        for line_result in reader.lines() {
+            let Ok(line) = line_result else { continue };
+            let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
             if val.get("type").and_then(serde_json::Value::as_str) == Some("session") { continue; }
             let id = val.get("id").and_then(serde_json::Value::as_str);
             if val.get("type").and_then(serde_json::Value::as_str) == Some("message")
@@ -467,5 +471,31 @@ mod tests {
                 .any(|w| w.contains("facts queue seed failed: seed-fail")),
             "expected seed warning, got {warnings:?}"
         );
+    }
+
+    #[test]
+    fn test_resolve_boundary_to_canonical_streams_parent_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        let parent_file = root.path().join("parent.jsonl");
+        let parent_content = [
+            r#"{"type":"session","id":"sess-1"}"#,
+            r#"{"type":"message","id":"m1","message":{"role":"user","content":"first"}}"#,
+            r#"{"type":"thought","id":"t1","content":"thinking"}"#,
+            r#"{"type":"message","id":"m2","message":{"role":"assistant","content":"second"}}"#,
+            r#"{"type":"tool_call","id":"tc1","tool":"test"}"#,
+        ].join("\n");
+        std::fs::write(&parent_file, parent_content).unwrap();
+
+        let entries = vec![
+            text_entry("user", "m1", "first"),
+            text_entry("assistant", "m2", "second"),
+        ];
+
+        let prov = maho_ext_api::ForkProvenance {
+            parent_session: parent_file.to_str().unwrap().to_string(),
+            inherited_through_entry_id: Some("tc1".to_string()),
+        };
+        let resolved = resolve_boundary_to_canonical(&entries, &prov);
+        assert_eq!(resolved, Some(("m2".to_string(), 2)));
     }
 }

@@ -479,6 +479,9 @@ impl<'de> Deserialize<'de> for QueueHeaderReceiver {
 ///
 /// Validates the header fields and each transcript entry in the `entries` array using the
 /// same rules as [`parse_queue_entry`], returning None if corrupt, invalid, or version mismatch.
+///
+/// Note: Duplicate JSON keys are rejected (single-pass) while `parse_queue_entry` keeps the
+/// last value; publish never writes duplicates.
 pub fn parse_queue_header<R: Read>(reader: R) -> Option<FactsQueueEntry> {
     serde_json::from_reader::<R, QueueHeaderReceiver>(reader)
         .ok()
