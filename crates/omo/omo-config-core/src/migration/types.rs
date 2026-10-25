@@ -368,6 +368,8 @@ pub struct RunMigrationOptions<'a> {
     pub mode: MigrationMode,
     pub on_boundary: Option<Box<MigrationBoundaryHook<'a>>>,
     pub pid: Option<u32>,
+    /// Content gate forwarded into the single discovered plan; see [`MigrationPlan::should_run`].
+    pub should_run: Option<Rc<MigrationShouldRun<'a>>>,
     pub sources: Vec<MigrationSourceDescriptor>,
     pub target_path: String,
     pub transform: Box<MigrationTransform<'a>>,
