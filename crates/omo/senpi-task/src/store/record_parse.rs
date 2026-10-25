@@ -610,3 +610,29 @@ fn read_optional_string_array(record: &Object, key: &str) -> ParseResult<Option<
         .map(Some)
         .ok_or_else(|| format!("{key} is not a string array"))
 }
+
+#[cfg(test)]
+mod admission_tests {
+    #[test]
+    fn queued_allocation_survives_the_persisted_record_parser() {
+        let mut record = crate::test_support::base_record("st_00000001", "parent");
+        record.queued_admission = Some(crate::manager::concurrency::QueuedTaskAdmission {
+            model: record.model.clone(),
+            lane_key: "provider:account".into(),
+            task_id: record.task_id.clone(),
+            run_epoch: record.notification.run_epoch,
+            sequence: 42,
+        });
+        let serialized = serde_json::to_value(&record).unwrap();
+        let parsed = super::parse_task_record(&serialized, "record.json", &mut Vec::new()).unwrap();
+        assert_eq!(parsed.queued_admission, record.queued_admission);
+        let mut legacy = serialized;
+        legacy.as_object_mut().unwrap().remove("queued_admission");
+        assert!(
+            super::parse_task_record(&legacy, "legacy.json", &mut Vec::new())
+                .unwrap()
+                .queued_admission
+                .is_none()
+        );
+    }
+}
