@@ -21,9 +21,9 @@ use crate::lifecycle::{
 use crate::manager::concurrency::TaskConcurrencyConfig;
 use crate::manager::execution_mode::ExecutionMode;
 use crate::manager::types::{
-    ChildPlanner, ManagedRunner, ManagedRunnerError, ManagedRunnerResult, ManagedRunners, MaxChildren,
-    ManagedStartSpec, ManagerConfig, ManagerStartSpec, ResolvedChildPlan, SpawnAdmission,
-    StartResult, StartedTask, TaskManagerOptions,
+    ChildPlanner, ManagedRunner, ManagedRunnerError, ManagedRunnerResult, ManagedRunners,
+    ManagedStartSpec, ManagerConfig, ManagerStartSpec, MaxChildren, ResolvedChildPlan,
+    SpawnAdmission, StartResult, StartedTask, TaskManagerOptions,
 };
 use crate::manager::{
     ManagedChildHandle, ManagedChildListener, TaskManager, Unsubscribe, create_task_manager,
@@ -178,8 +178,12 @@ impl FakeHandle {
         lock(&self.state).follow_up_calls.clone()
     }
 
-    pub fn enable_workpool_rebinding(&self) { lock(&self.state).workpool_rebinding = true; }
-    pub fn workpool_identity(&self) -> Option<crate::manager::child_handle::WorkpoolChildIdentity> { lock(&self.state).workpool_identity.clone() }
+    pub fn enable_workpool_rebinding(&self) {
+        lock(&self.state).workpool_rebinding = true;
+    }
+    pub fn workpool_identity(&self) -> Option<crate::manager::child_handle::WorkpoolChildIdentity> {
+        lock(&self.state).workpool_identity.clone()
+    }
 
     pub fn abort_calls(&self) -> usize {
         lock(&self.state).abort_calls
@@ -245,9 +249,14 @@ impl ManagedChildHandle for FakeHandle {
         Ok(())
     }
 
-    fn rebind_workpool_identity(&self, identity: crate::manager::child_handle::WorkpoolChildIdentity) -> Option<Result<(), HostError>> {
+    fn rebind_workpool_identity(
+        &self,
+        identity: crate::manager::child_handle::WorkpoolChildIdentity,
+    ) -> Option<Result<(), HostError>> {
         let mut state = lock(&self.state);
-        if !state.workpool_rebinding { return None; }
+        if !state.workpool_rebinding {
+            return None;
+        }
         state.workpool_identity = Some(identity);
         Some(Ok(()))
     }
@@ -526,17 +535,39 @@ pub(crate) fn make_lifecycle_manager_with_cap(cap: usize) -> Harness {
     let admit = Arc::clone(&lifecycle);
     options.admit = Some(Arc::new(move |parent| match admit.admit_resident(parent) {
         Ok(AdmissionResult::Admitted) => SpawnAdmission::Admitted,
-        Ok(AdmissionResult::Evicted { evicted_task_id }) => SpawnAdmission::Evicted { evicted_task_id },
+        Ok(AdmissionResult::Evicted { evicted_task_id }) => {
+            SpawnAdmission::Evicted { evicted_task_id }
+        }
         Ok(AdmissionResult::Rejected(error)) => SpawnAdmission::Rejected {
             message: error.to_string(),
             max_children: Some(MaxChildren::Number(error.max_children)),
-            residents: Some(error.residents.iter().map(|resident| crate::manager::types::ResidentSummary { task_id: resident.task_id.clone(), name: resident.name.clone(), status: resident.status.as_str().to_string() }).collect()),
+            residents: Some(
+                error
+                    .residents
+                    .iter()
+                    .map(|resident| crate::manager::types::ResidentSummary {
+                        task_id: resident.task_id.clone(),
+                        name: resident.name.clone(),
+                        status: resident.status.as_str().to_string(),
+                    })
+                    .collect(),
+            ),
         },
-        Err(error) => SpawnAdmission::Rejected { message: error.to_string(), max_children: None, residents: None },
+        Err(error) => SpawnAdmission::Rejected {
+            message: error.to_string(),
+            max_children: None,
+            residents: None,
+        },
     }));
     let manager = create_task_manager(options);
     *lock(&registry.0) = Some(manager.clone());
-    Harness { manager, store, in_process: Arc::clone(&runner), process: Arc::clone(&runner), project }
+    Harness {
+        manager,
+        store,
+        in_process: Arc::clone(&runner),
+        process: Arc::clone(&runner),
+        project,
+    }
 }
 
 pub(crate) fn default_manager() -> Harness {
@@ -764,7 +795,7 @@ pub(crate) fn make_lifecycle_manager(
         store.clone(),
         ManagedRunners {
             in_process: Arc::clone(&runner),
-        process: Arc::clone(&runner) as Arc<dyn ManagedRunner>,
+            process: Arc::clone(&runner) as Arc<dyn ManagedRunner>,
         },
         category_planner(&[]),
         project.cwd(),
@@ -781,9 +812,17 @@ pub(crate) fn make_lifecycle_manager(
             Ok(AdmissionResult::Rejected(error)) => SpawnAdmission::Rejected {
                 message: error.to_string(),
                 max_children: Some(MaxChildren::Number(error.max_children)),
-                residents: Some(error.residents.iter().map(|resident| crate::manager::types::ResidentSummary {
-                    task_id: resident.task_id.clone(), name: resident.name.clone(), status: resident.status.as_str().to_string(),
-                }).collect()),
+                residents: Some(
+                    error
+                        .residents
+                        .iter()
+                        .map(|resident| crate::manager::types::ResidentSummary {
+                            task_id: resident.task_id.clone(),
+                            name: resident.name.clone(),
+                            status: resident.status.as_str().to_string(),
+                        })
+                        .collect(),
+                ),
             },
             Err(error) => SpawnAdmission::Rejected {
                 message: error.to_string(),

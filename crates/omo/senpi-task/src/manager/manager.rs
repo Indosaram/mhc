@@ -125,7 +125,6 @@ struct State {
     queued_launches: HashMap<String, LaunchContext>,
     held_admissions: HashMap<String, crate::manager::concurrency::QueuedTaskAdmission>,
     held_launches: HashMap<String, LaunchContext>,
-    run_stats_epochs: HashMap<String, i64>,
     next_subscriber_id: u64,
     processed_outcomes: u64,
 }
@@ -3221,10 +3220,6 @@ impl Inner {
         lock(&self.state)
             .run_stats
             .insert(task_id.to_string(), Arc::clone(&tracker));
-        if let Some(epoch) = epoch {
-            state.run_stats_epochs.insert(task_id.to_string(), epoch);
-        }
-        drop(state);
         let stats = handle.subscribe(Arc::new(move |event| {
             // `RunStatsTracker::accept` ignores every other event type (e.g. streaming deltas).
             if !matches!(
@@ -3401,9 +3396,9 @@ impl Inner {
             record.status = TaskStatus::Running;
             record.final_response = None;
             record.error_message = None;
-            lock(&inner.state)
-                .run_stats_epochs
-                .insert(resumed_id.clone(), record.run_start_epoch);
+            if let Some(tracker) = lock(&inner.state).run_stats.get(&resumed_id).cloned() {
+                lock(&tracker).run_start_epoch = record.run_start_epoch;
+            }
             if let Err(error) = inner.store.replace(&record) {
                 log("senpi-task self-resumed reopen failed", &resumed_id, &error);
                 return;
@@ -3447,49 +3442,11 @@ impl Inner {
             return None;
         }
         let record = self.try_load(&input.task_id)?;
-        let lower = input.failure.message.to_lowercase();
-        let usage = regex::Regex::new(r"quota|usage[_ ]limit|hit\s+your.*limit|(?:session|weekly|monthly|daily|hourly|\d+[- ]hour)\s+limit|limit\s+exhausted|insufficient[_ ](?:quota|credits?|balance)|credit[_ ]balance|credits?[_ ]required|billing|blocking_limit").expect("usage pattern").is_match(&lower);
-        let credential = regex::Regex::new(r"\b401\b|unauthori[sz]ed|invalid_grant|oauth refresh failed|subscription is required|invalid api key|incorrect api key|authentication (?:failed|error)").expect("credential pattern").is_match(&lower)
-            || (regex::Regex::new(r"\b403\b|forbidden").expect("forbidden pattern").is_match(&lower)
-                && regex::Regex::new(r"account|credential|token|api[ _-]?key|organization|subscription").expect("account pattern").is_match(&lower)
-                && !regex::Regex::new(r"\bmodels?\b").expect("model pattern").is_match(&lower)
-                && record.resolved_model.as_ref().is_none_or(|m| !lower.contains(&m.model_id.to_lowercase())));
-        let provider = record
-            .resolved_model
-            .as_ref()
-            .map(|m| m.provider.as_str())
-            .or_else(|| record.model.split_once('/').map(|(p, _)| p));
-        let model_scoped =
-            regex::Regex::new(r"\bmodels?\b|\bpremium\b|\b(?:opus|sonnet|haiku|fable|mythos)\b")
-                .expect("scope pattern")
-                .is_match(&lower.replace("/model", ""));
-        let is_parent = |m: &&crate::state::ResolvedModelRecord| {
-            record.parent_model.as_deref()
-                == Some(format!("{}/{}", m.provider, m.model_id).as_str())
-        };
-        let candidates: Vec<_> = record
-            .fallback_models
-            .as_ref()?
-            .iter()
-            .filter(|m| {
-                (!is_parent(m) || usage || credential)
-                    && !(credential && provider == Some(m.provider.as_str()))
-                    && !(usage
-                        && !model_scoped
-                        && provider == Some(m.provider.as_str())
-                        && is_parent(m))
-            })
-            .collect();
-        let next_model = if usage && !model_scoped {
-            candidates
-                .iter()
-                .find(|m| Some(m.provider.as_str()) != provider)
-                .copied()
-                .or_else(|| candidates.first().copied())
-        } else {
-            candidates.first().copied()
-        }?
-        .clone();
+        let candidates = crate::manager::credential_failure::runtime_fallback_candidates(
+            &record,
+            &input.failure.message,
+        );
+        let next_model = candidates.remaining.first()?.clone();
         let state = lock(&self.state);
         let live = state.live.get(&input.task_id)?;
         if !Arc::ptr_eq(&live.handle, &input.handle) {
@@ -3524,13 +3481,11 @@ impl Inner {
             unsubscribe();
         }
         self.release_slot(&input.task_id, &input.model, input.epoch);
-        let remaining: Vec<_> = record
-            .fallback_models
-            .iter()
-            .flatten()
-            .filter(|m| m.provider != next_model.provider || m.model_id != next_model.model_id)
-            .cloned()
-            .collect();
+        let remaining = crate::manager::credential_failure::runtime_fallback_candidates(
+            &record,
+            &input.failure.message,
+        )
+        .chain_after_hop();
         let mut attempts = record
             .fallback_attempts
             .clone()
@@ -3721,9 +3676,9 @@ impl Inner {
                     .insert(task_id.to_string(), Arc::new(Mutex::new(fresh_tracker)));
             }
         }
-        lock(&self.state)
-            .run_stats_epochs
-            .insert(task_id.to_string(), epoch);
+        if let Some(tracker) = lock(&self.state).run_stats.get(task_id).cloned() {
+            lock(&tracker).run_start_epoch = epoch;
+        }
         track_outcome(self.arc(), task_id.to_string(), handle, model, epoch);
     }
 

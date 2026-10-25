@@ -30,12 +30,12 @@ use crate::manager::manager_tests::fakes::{
 };
 use crate::manager::types::{StartResult, TaskManagerOptions};
 use crate::runners::RunnerOutcome;
-use crate::store::TaskRecordStore;
 use crate::state::{
     IsolationMergeKind, IsolationMergeMode, IsolationRecord, TaskIsolationSpec, TaskRecord,
     TaskStatus,
 };
 use crate::steering::CancelOutcome;
+use crate::store::TaskRecordStore;
 
 /// Records every isolation call. `capture_delta` fails on purpose, so the settle resolves through the
 /// baseline-unavailable path and lands a `retained` merge result without touching the filesystem.
@@ -56,11 +56,15 @@ impl IsolationRuntime for RecordingRuntime {
     }
 
     fn capture_baseline(&self, _repo_root: &Path) -> Result<WorktreeBaseline, IsolationError> {
-        Err(IsolationError::other("unused in the cancellation regression"))
+        Err(IsolationError::other(
+            "unused in the cancellation regression",
+        ))
     }
 
     fn ensure(&self, _input: &EnsureInput) -> Result<IsolationHandle, IsolationError> {
-        Err(IsolationError::other("unused in the cancellation regression"))
+        Err(IsolationError::other(
+            "unused in the cancellation regression",
+        ))
     }
 
     fn capture_delta(
@@ -69,18 +73,27 @@ impl IsolationRuntime for RecordingRuntime {
         _baseline: &WorktreeBaseline,
     ) -> Result<DeltaPatchResult, IsolationError> {
         lock(&self.calls).push("capture_delta".to_string());
-        Err(IsolationError::other("unused in the cancellation regression"))
+        Err(IsolationError::other(
+            "unused in the cancellation regression",
+        ))
     }
 
-    fn merge(&self, _options: IsolationMergeOptions) -> Result<IsolationMergeResult, IsolationError> {
+    fn merge(
+        &self,
+        _options: IsolationMergeOptions,
+    ) -> Result<IsolationMergeResult, IsolationError> {
         lock(&self.calls).push("merge".to_string());
-        Err(IsolationError::other("unused in the cancellation regression"))
+        Err(IsolationError::other(
+            "unused in the cancellation regression",
+        ))
     }
 
     fn cleanup(&self, _handle: &IsolationHandle) {}
 
     fn retain(&self, _handle: &IsolationHandle, _reason: &str) -> Result<PathBuf, IsolationError> {
-        Err(IsolationError::other("unused in the cancellation regression"))
+        Err(IsolationError::other(
+            "unused in the cancellation regression",
+        ))
     }
 
     fn write_owner(&self, _base_dir: &Path, _id: &str, _owner: &IsolationOwner) {}
@@ -144,7 +157,7 @@ fn wait_for_merge_result(
 
 #[test]
 fn given_a_manager_cancel_of_an_isolated_run_when_the_watcher_settles_then_the_merge_result_lands_and_cancelled_stands()
-{
+ {
     let project = Project::new();
     let runner = FakeRunner::new();
     let runtime = Arc::new(RecordingRuntime::default());
@@ -221,14 +234,21 @@ fn given_a_manager_cancel_of_an_isolated_run_when_the_watcher_settles_then_the_m
         .as_ref()
         .and_then(|isolation| isolation.merge_result.as_ref())
         .expect("the cancelled run's merge result");
-    assert_eq!(merge.kind, IsolationMergeKind::Retained, "a cancel never merges");
+    assert_eq!(
+        merge.kind,
+        IsolationMergeKind::Retained,
+        "a cancel never merges"
+    );
     assert!(!merge.changes_applied);
     assert_eq!(merge.reason.as_deref(), Some("child did not complete"));
     // No baseline is persisted for this task, so the settle lands the independent missing-baseline
     // result and never touches the runtime.
     assert!(merge.patch_path.is_none());
     assert!(
-        merge.error.as_deref().is_some_and(|error| error.contains("baseline is unavailable")),
+        merge
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("baseline is unavailable")),
         "expected the missing-baseline retained result, got {:?}",
         merge.error
     );
