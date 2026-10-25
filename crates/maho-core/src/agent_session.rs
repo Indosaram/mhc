@@ -21568,6 +21568,31 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn invalid_tool_barrier_is_rejected_before_arming() {
+        let session = test_session();
+        assert!(
+            session
+                .arm_tool_barrier(crate::session_work_barrier::ToolBarrierSpec {
+                    id: String::new(),
+                    deadline_ms: 1
+                })
+                .is_err()
+        );
+        assert!(session.tool_barrier.id().is_none());
+    }
+
+    #[tokio::test]
+    async fn held_input_request_replay_keeps_one_custody_record() {
+        let session = test_session();
+        let input = json!({"inputId":"request-id","revision":1,"text":"prepared"});
+        let first = session.hold_input(input.clone()).expect("first");
+        let second = session.hold_input(input).expect("replay");
+        assert_eq!(first["entryId"], second["entryId"]);
+        assert_eq!(second["duplicate"], true);
+        assert_eq!(session.held_inputs().len(), 1);
+    }
+
     fn test_session() -> AgentSession {
         test_session_with_stream_function(true)
     }
