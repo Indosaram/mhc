@@ -934,7 +934,6 @@ pub struct AgentSessionInner {
     held_inputs: Mutex<crate::held_inputs::HeldInputs>,
     stop_interrupt: Mutex<Option<Value>>,
     lifecycle_human_pending: std::sync::atomic::AtomicBool,
-    relocation_host: Mutex<Option<Arc<dyn crate::extensions::session_control_types::SessionControlActions>>>,
     settings_manager: Arc<Mutex<SettingsManager>>,
     model_registry: ModelRegistry,
     state: Mutex<AgentSessionState>,
@@ -2787,30 +2786,76 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
         let _ = self.send_message_with_receipt(message, options)?;
         Ok(())
     }
-    fn relocation_offered(&self) -> bool { self.session().is_ok_and(|s|lock(&s.relocation_host).as_ref().is_some_and(|h|h.relocation_offered())) }
-    fn relocation_targets(&self, signal: Option<maho_ext_api::AbortSignal>) -> maho_ext_api::ExtensionFuture<'_, Value> {
+    fn relocation_offered(&self) -> Result<bool, maho_ext_api::ExtensionFailure> {
+        Ok(self.session()?.relocation_offered())
+    }
+    fn relocation_targets(&self) -> maho_ext_api::ExtensionFuture<'_, Value> {
         let session = self.session();
         Box::pin(async move {
             let session = session?;
-            let host = lock(&session.relocation_host).clone();
-            match host { Some(host) => host.relocation_targets(signal).await.map_err(maho_ext_api::ExtensionFailure::new), None => Ok(crate::extensions::session_control_types::relocation_not_offered()) }
+            serde_json::to_value(session.relocation_targets().await)
+                .map_err(|e| maho_ext_api::ExtensionFailure::new(e.to_string()))
         })
     }
-    fn request_relocation(&self, request: Value, signal: Option<maho_ext_api::AbortSignal>) -> maho_ext_api::ExtensionFuture<'_, Value> {
+    fn request_relocation(&self, request: Value) -> maho_ext_api::ExtensionFuture<'_, Value> {
         let session = self.session();
         Box::pin(async move {
             let session = session?;
-            let host = lock(&session.relocation_host).clone();
-            match host { Some(host) => host.request_relocation(request,signal).await.map_err(maho_ext_api::ExtensionFailure::new), None => Ok(crate::extensions::session_control_types::relocation_not_offered()) }
+            let request = serde_json::from_value(request)
+                .map_err(|e| maho_ext_api::ExtensionFailure::new(e.to_string()))?;
+            serde_json::to_value(session.request_relocation(request).await)
+                .map_err(|e| maho_ext_api::ExtensionFailure::new(e.to_string()))
         })
     }
-    fn send_itemized_message<'a>(&'a self, message: maho_ext_api::CustomMessage, options: maho_ext_api::SendMessageOptions, items: Vec<Value>) -> maho_ext_api::ExtensionFuture<'a, Option<Vec<Value>>> {
+    fn arm_tool_barrier(&self, spec: Value) -> Result<(), maho_ext_api::ExtensionFailure> {
+        let spec = serde_json::from_value(spec)
+            .map_err(|e| maho_ext_api::ExtensionFailure::new(e.to_string()))?;
+        self.session()?.arm_tool_barrier(spec);
+        Ok(())
+    }
+    fn release_tool_barrier(&self, id: &str) -> Result<bool, maho_ext_api::ExtensionFailure> {
+        Ok(self.session()?.release_tool_barrier(id))
+    }
+    fn send_itemized_message(
+        &self,
+        message: maho_ext_api::CustomMessage,
+        options: maho_ext_api::SendMessageOptions,
+        items: Vec<maho_ext_api::SendMessageItem>,
+    ) -> maho_ext_api::ExtensionFuture<'_, Option<Vec<maho_ext_api::SendMessageReceipt>>> {
         let session = self.session();
         Box::pin(async move {
             let session = session?;
-            let items = items.into_iter().map(serde_json::from_value).collect::<Result<Vec<crate::extensions::types::SendMessageItem>,_>>().map_err(|e|maho_ext_api::ExtensionFailure::new(e.to_string()))?;
-            let receipts = session.send_itemized_message(message,options,items).await.map_err(maho_ext_api::ExtensionFailure::new)?;
-            receipts.into_iter().map(|r|serde_json::to_value(r).map_err(|e|maho_ext_api::ExtensionFailure::new(e.to_string()))).collect::<Result<Vec<_>,_>>().map(Some)
+            let items = items
+                .into_iter()
+                .map(|i| {
+                    Ok(crate::extensions::types::SendMessageItem {
+                        item_id: i.item_id,
+                        producer: i.producer,
+                        run_ref: i.run_ref,
+                        content: i
+                            .content
+                            .map(serde_json::to_value)
+                            .transpose()
+                            .map_err(|e| maho_ext_api::ExtensionFailure::new(e.to_string()))?,
+                        details: i.details,
+                    })
+                })
+                .collect::<Result<Vec<_>, maho_ext_api::ExtensionFailure>>()?;
+            let receipts = session
+                .send_itemized_message(message, options, items)
+                .await
+                .map_err(maho_ext_api::ExtensionFailure::new)?;
+            Ok(Some(
+                receipts
+                    .into_iter()
+                    .map(|r| maho_ext_api::SendMessageReceipt {
+                        item_id: r.item_id,
+                        disposition: r.disposition,
+                        notice_id: r.notice_id,
+                        entry_id: r.entry_id,
+                    })
+                    .collect(),
+            ))
         })
     }
     fn send_message_with_receipt(
@@ -3661,7 +3706,9 @@ impl AgentSession {
                 let session = upgrade(&append_cell).ok_or_else(|| "session disposed".to_owned())?;
                 let entry = session.with_session_manager_mut(|manager| {
                     let entry = manager.append_custom(kind, Some(data));
-                    if let Some(error) = manager.last_persistence_error() { return Err(error.to_owned()); }
+                    if let Some(error) = manager.last_persistence_error() {
+                        return Err(error.to_owned());
+                    }
                     Ok(entry)
                 })?;
                 if let Some(id) = entry.get("id").and_then(Value::as_str) {
@@ -3853,8 +3900,16 @@ impl AgentSession {
             disposed: false,
         };
         let lifecycle = crate::lifecycle_ledger::LifecycleLedger::new(
-            config.session_manager.session_id(), config.session_manager.header().as_ref().and_then(|h| h.get("spawnedBy")),
-            &config.session_manager.reduce_history(&crate::lifecycle_history::LIFECYCLE_HISTORY));
+            config.session_manager.session_id(),
+            config
+                .session_manager
+                .header()
+                .as_ref()
+                .and_then(|h| h.get("spawnedBy")),
+            &config
+                .session_manager
+                .reduce_history(&crate::lifecycle_history::LIFECYCLE_HISTORY),
+        );
         let held_inputs = crate::held_inputs::HeldInputs::new(&config.session_manager.entries());
         let session = Self {
             inner: Arc::new(AgentSessionInner {
@@ -3864,7 +3919,6 @@ impl AgentSession {
                 external_admission: Default::default(),
                 stop_interrupt: Mutex::new(None),
                 lifecycle_human_pending: std::sync::atomic::AtomicBool::new(false),
-                relocation_host: Mutex::new(None),
                 session_manager: Mutex::new(config.session_manager),
                 settings_manager: Arc::new(Mutex::new(config.settings_manager)),
                 model_registry,
@@ -4057,9 +4111,13 @@ impl AgentSession {
 
         session.install_after_tool_call_hook();
         let weak = Arc::downgrade(&session.inner);
-        session.external_admission.on_inputs_settled(Arc::new(move || {
-            if let Some(inner) = weak.upgrade() { AgentSession { inner }.refresh_lifecycle(); }
-        }));
+        session
+            .external_admission
+            .on_inputs_settled(Arc::new(move || {
+                if let Some(inner) = weak.upgrade() {
+                    AgentSession { inner }.refresh_lifecycle();
+                }
+            }));
         lock(&session.lifecycle).release_restore_barrier();
         session.install_agent_next_turn_refresh();
         Ok(session)
@@ -4101,7 +4159,11 @@ impl AgentSession {
                     self.external_admission.begin_turn();
                     let mut ledger = lock(&self.lifecycle);
                     ledger.release_restore_barrier();
-                    let origin = if self.lifecycle_human_pending.swap(false, Ordering::SeqCst) {"human"} else {"automatic"};
+                    let origin = if self.lifecycle_human_pending.swap(false, Ordering::SeqCst) {
+                        "human"
+                    } else {
+                        "automatic"
+                    };
                     ledger.start_run(origin);
                     ledger.checkpoint(|record| self.persist_lifecycle_record(record));
                     state.required_compaction_turn_error = None;
@@ -4148,24 +4210,54 @@ impl AgentSession {
                 let run_id = lock(&self.lifecycle).run_id.clone();
                 let result = self.with_session_manager_mut(|manager| {
                     let entries = manager.entries();
-                    let mut latest = indexmap::IndexMap::<String,Value>::new();
+                    let mut latest = indexmap::IndexMap::<String, Value>::new();
                     for entry in &entries {
-                        if entry["type"]=="custom" && entry["customType"]=="work-custody" {
-                            if let Some(id)=entry["data"]["id"].as_str() { latest.insert(id.into(),entry["data"].clone()); }
+                        if entry["type"] == "custom" && entry["customType"] == "work-custody" {
+                            if let Some(id) = entry["data"]["id"].as_str() {
+                                latest.insert(id.into(), entry["data"].clone());
+                            }
                         }
                     }
-                    let active = latest.into_values().filter(|r|["open","queued","consumed"].contains(&r["state"].as_str().unwrap_or(""))).collect::<Vec<_>>();
+                    let active = latest
+                        .into_values()
+                        .filter(|r| {
+                            ["open", "queued", "consumed"]
+                                .contains(&r["state"].as_str().unwrap_or(""))
+                        })
+                        .collect::<Vec<_>>();
                     let mut consumed_record = None;
-                    let result = crate::lifecycle_delivery::consume_lifecycle_delivery(manager,&active,run_id.as_deref(),&value,|ticket,run| {
-                        let mut record = active.iter().find(|r|r["ticketId"]==ticket).cloned().ok_or("missing custody")?;
-                        record["state"]=json!("consumed");record["runId"]=run["runId"].clone();record["transcriptEntryId"]=run["transcriptEntryId"].clone();
-                        consumed_record=Some(record);Ok(())
-                    });
-                    if let Some(record)=consumed_record { manager.append_custom("work-custody",Some(record)); }
-                    if let Some(error)=manager.last_persistence_error(){return Err(error.to_owned());}
+                    let result = crate::lifecycle_delivery::consume_lifecycle_delivery(
+                        manager,
+                        &active,
+                        run_id.as_deref(),
+                        &value,
+                        |ticket, run| {
+                            let mut record = active
+                                .iter()
+                                .find(|r| r["ticketId"] == ticket)
+                                .cloned()
+                                .ok_or("missing custody")?;
+                            record["state"] = json!("consumed");
+                            record["runId"] = run["runId"].clone();
+                            record["transcriptEntryId"] = run["transcriptEntryId"].clone();
+                            consumed_record = Some(record);
+                            Ok(())
+                        },
+                    );
+                    if let Some(record) = consumed_record {
+                        manager.append_custom("work-custody", Some(record));
+                    }
+                    if let Some(error) = manager.last_persistence_error() {
+                        return Err(error.to_owned());
+                    }
                     result
                 });
-                if let Err(error)=result { lock(&self.lifecycle).custody_write_failed();self.emit(AgentSessionEvent::ContinuationError{error_message:error}); }
+                if let Err(error) = result {
+                    lock(&self.lifecycle).custody_write_failed();
+                    self.emit(AgentSessionEvent::ContinuationError {
+                        error_message: error,
+                    });
+                }
             }
         }
         if let AgentEvent::MessageEnd { message } = &event
@@ -4313,12 +4405,29 @@ impl AgentSession {
         if let Some(boundary) = &end_boundary {
             self.with_work_obligations(|registry| registry.settle_run(&lock(&self.custody_run_id)));
             self.external_admission.observe_run_settled();
-            let holds = self.holds().into_iter().map(|h| json!({"kind":h.kind.as_str(),"since":h.since})).collect::<Vec<_>>();
+            let holds = self
+                .holds()
+                .into_iter()
+                .map(|h| json!({"kind":h.kind.as_str(),"since":h.since}))
+                .collect::<Vec<_>>();
             let mut ledger = lock(&self.lifecycle);
             ledger.run_active = false;
-            let waits = ledger.current.get("waitingOn").cloned().unwrap_or(json!({"children":0,"background":[],"human":[]}));
-            let state = crate::lifecycle_runtime_facts::lifecycle_state(ledger.current["role"].as_str().unwrap_or("root"), None, &holds, &waits, self.external_admission.has_input_work(), false);
-            ledger.update(state, waits, holds, None, |record| self.persist_lifecycle_record(record));
+            let waits = ledger
+                .current
+                .get("waitingOn")
+                .cloned()
+                .unwrap_or(json!({"children":0,"background":[],"human":[]}));
+            let state = crate::lifecycle_runtime_facts::lifecycle_state(
+                ledger.current["role"].as_str().unwrap_or("root"),
+                None,
+                &holds,
+                &waits,
+                self.external_admission.has_input_work(),
+                false,
+            );
+            ledger.update(&state, waits, holds, None, |record| {
+                self.persist_lifecycle_record(record)
+            });
             drop(ledger);
             // senpi mutates the live agent_end event on a late User join (agent-abort-provenance.ts
             // `join`), so subscribers see the settled owner, not the snapshot taken at begin.
@@ -4359,8 +4468,19 @@ impl AgentSession {
                 match serde_json::to_value(&custom.content) {
                     Ok(content) => {
                         self.with_session_manager_mut(|manager| {
-                            let already = custom.details.as_ref().and_then(|d|d["ticketId"].as_str()).is_some_and(|ticket| crate::lifecycle_delivery::lifecycle_delivery_entries(&manager.entries()).contains_key(ticket));
-                            if already { return Value::Null; }
+                            let already = custom
+                                .details
+                                .as_ref()
+                                .and_then(|d| d["ticketId"].as_str())
+                                .is_some_and(|ticket| {
+                                    crate::lifecycle_delivery::lifecycle_delivery_entries(
+                                        &manager.entries(),
+                                    )
+                                    .contains_key(ticket)
+                                });
+                            if already {
+                                return Value::Null;
+                            }
                             manager.append_custom_message(
                                 &custom.custom_type,
                                 content,
@@ -4369,10 +4489,13 @@ impl AgentSession {
                             )
                         });
                         self.state().message_revision += 1;
-                        let outcome = self.with_session_manager(|manager| manager.last_persistence_error().map(str::to_owned));
+                        let outcome = self.with_session_manager(|manager| {
+                            manager.last_persistence_error().map(str::to_owned)
+                        });
                         let value = json!({"role":"custom","customType":custom.custom_type,"details":custom.details});
                         if let Some(error) = outcome {
-                            self.external_admission.observe_refused(&value,error.clone());
+                            self.external_admission
+                                .observe_refused(&value, error.clone());
                             self.settle_queued_custom_receipt(custom, Err(error));
                         } else {
                             self.external_admission.observe_persisted(&value);
@@ -4605,41 +4728,87 @@ impl AgentSession {
         }
     }
 
-    pub fn set_relocation_host(&self, host: Option<Arc<dyn crate::extensions::session_control_types::SessionControlActions>>) { *lock(&self.relocation_host) = host; }
-
     pub fn admit_external_message(&self, input: &Value, editor: &Value) -> Result<Value, String> {
-        self.external_admission.admit(input, editor, self.is_streaming(), |message, lane| {
-            let custom = serde_json::from_value(message).map_err(|e|format!("invalid external message: {e}"))?;
-            self.send_custom_message_content_inner(custom, maho_ext_api::SendMessageOptions {
-                trigger_turn:lane=="start",
-                deliver_as:Some(if lane=="steer" {maho_ext_api::DeliverAs::Steer} else {maho_ext_api::DeliverAs::FollowUp}),
-            }).map_err(|e|e.message)
-        })
+        self.external_admission
+            .admit(input, editor, self.is_streaming(), |message, lane| {
+                let custom = serde_json::from_value(message)
+                    .map_err(|e| format!("invalid external message: {e}"))?;
+                self.send_custom_message_content_inner(
+                    custom,
+                    maho_ext_api::SendMessageOptions {
+                        trigger_turn: lane == "start",
+                        deliver_as: Some(if lane == "steer" {
+                            maho_ext_api::DeliverAs::Steer
+                        } else {
+                            maho_ext_api::DeliverAs::FollowUp
+                        }),
+                    },
+                )
+                .map_err(|e| e.message)
+            })
     }
 
-    pub fn external_admission(&self) -> &crate::external_admission::ExternalAdmission { &self.external_admission }
+    pub fn external_admission(&self) -> &crate::external_admission::ExternalAdmission {
+        &self.external_admission
+    }
 
-    pub fn lifecycle_snapshot(&self) -> Value { self.refresh_lifecycle(); lock(&self.lifecycle).snapshot().clone() }
+    pub fn lifecycle_snapshot(&self) -> Value {
+        self.refresh_lifecycle();
+        lock(&self.lifecycle).snapshot().clone()
+    }
 
-    pub fn update_lifecycle_facts(&self, human: Vec<Value>, background: Vec<Value>, goal: Option<&Value>, turn_end: Option<&Value>) {
+    pub fn update_lifecycle_facts(
+        &self,
+        human: Vec<Value>,
+        background: Vec<Value>,
+        goal: Option<&Value>,
+        turn_end: Option<&Value>,
+    ) {
         let mut ledger = lock(&self.lifecycle);
-        if let Some(goal) = goal.filter(|g|g["status"]=="complete") {
-            if let Some(id)=goal["id"].as_str() { ledger.mark_goal_completed(id, |record|self.persist_lifecycle_record(record)); }
+        if let Some(goal) = goal.filter(|g| g["status"] == "complete") {
+            if let Some(id) = goal["id"].as_str() {
+                ledger.mark_goal_completed(id, |record| self.persist_lifecycle_record(record));
+            }
         }
-        if let Some(end)=turn_end { ledger.last_turn_end=Some(end.clone()); }
+        if let Some(end) = turn_end {
+            ledger.last_turn_end = Some(end.clone());
+        }
         let mut synthetic = Vec::new();
-        if let Some(goal)=goal {
-            if goal["status"]=="blocked" { synthetic.push((format!("goal:{}",goal["id"].as_str().unwrap_or_default()),"goal_blocked".into())); }
-            else if goal["status"]=="paused" || goal.get("continuationStoppedAt").is_some() { synthetic.push((format!("goal:{}",goal["id"].as_str().unwrap_or_default()),"goal_paused".into())); }
-            else if goal["status"]=="active" && !ledger.run_active && background.is_empty() { synthetic.push((format!("stall:{}",ledger.current["epoch"]),"stalled".into())); }
+        if let Some(goal) = goal {
+            if goal["status"] == "blocked" {
+                synthetic.push((
+                    format!("goal:{}", goal["id"].as_str().unwrap_or_default()),
+                    "goal_blocked".into(),
+                ));
+            } else if goal["status"] == "paused" || goal.get("continuationStoppedAt").is_some() {
+                synthetic.push((
+                    format!("goal:{}", goal["id"].as_str().unwrap_or_default()),
+                    "goal_paused".into(),
+                ));
+            } else if goal["status"] == "active" && !ledger.run_active && background.is_empty() {
+                synthetic.push((
+                    format!("stall:{}", ledger.current["epoch"]),
+                    "stalled".into(),
+                ));
+            }
         }
-        if ledger.interrupted { synthetic.push((format!("interrupted:{}",ledger.current["epoch"]),"interrupted_run".into())); }
-        let mut waits=ledger.current.get("waitingOn").cloned().unwrap_or(json!({"children":0}));
-        let mut human=human;
+        if ledger.interrupted {
+            synthetic.push((
+                format!("interrupted:{}", ledger.current["epoch"]),
+                "interrupted_run".into(),
+            ));
+        }
+        let mut waits = ledger
+            .current
+            .get("waitingOn")
+            .cloned()
+            .unwrap_or(json!({"children":0}));
+        let mut human = human;
         human.extend(ledger.attention.reconcile(&synthetic));
-        waits["human"]=json!(human);waits["background"]=json!(background);
-        ledger.current["waitingOn"]=waits;
-        ledger.current["persisted"]=json!(false);
+        waits["human"] = json!(human);
+        waits["background"] = json!(background);
+        ledger.current["waitingOn"] = waits;
+        ledger.current["persisted"] = json!(false);
         drop(ledger);
         self.refresh_lifecycle();
     }
@@ -4647,13 +4816,21 @@ impl AgentSession {
     pub fn report_child_lifecycle(&self, report: &Value) -> Result<bool, String> {
         let entries = self.with_session_manager(|manager| manager.entries());
         let mut children = crate::lifecycle_children::LifecycleChildren::new(&entries);
-        let changed = children.report(report, |accepted| self.with_session_manager_mut(|manager| {
-            manager.append_custom("child-lifecycle", Some(accepted.clone()));
-            manager.last_persistence_error().map_or(Ok(()), |e|Err(e.into()))
-        }))?;
+        let changed = children.report(report, |accepted| {
+            self.with_session_manager_mut(|manager| {
+                manager.append_custom("child-lifecycle", Some(accepted.clone()));
+                manager
+                    .last_persistence_error()
+                    .map_or(Ok(()), |e| Err(e.into()))
+            })
+        })?;
         if changed {
             let mut ledger = lock(&self.lifecycle);
-            let mut waits = ledger.current.get("waitingOn").cloned().unwrap_or(json!({"children":0,"background":[],"human":[]}));
+            let mut waits = ledger
+                .current
+                .get("waitingOn")
+                .cloned()
+                .unwrap_or(json!({"children":0,"background":[],"human":[]}));
             waits["children"] = json!(children.active_count());
             ledger.current["waitingOn"] = waits;
             ledger.current["persisted"] = json!(false);
@@ -4662,15 +4839,42 @@ impl AgentSession {
         Ok(changed)
     }
 
-    pub async fn emit_session_move(&self, move_id: String, dir: std::path::PathBuf, redelivered: Option<bool>) -> Result<(), String> {
-        let Some(mut runner) = self.extension_runner.lock().await.clone() else { return Ok(()); };
+    pub async fn emit_session_move(
+        &self,
+        move_id: String,
+        dir: std::path::PathBuf,
+        redelivered: Option<bool>,
+    ) -> Result<(), String> {
+        let Some(mut runner) = self.extension_runner.lock().await.clone() else {
+            return Ok(());
+        };
         let signal = maho_ext_api::AbortSignal::default();
         let event = match redelivered {
-            Some(redelivered) => maho_ext_api::ExtensionEvent::SessionMoveImport {move_id,dir,redelivered,signal},
-            None => maho_ext_api::ExtensionEvent::SessionMoveExport {move_id,dir,signal},
+            Some(redelivered) => maho_ext_api::ExtensionEvent::SessionMoveImport {
+                move_id,
+                dir,
+                redelivered,
+                signal,
+            },
+            None => maho_ext_api::ExtensionEvent::SessionMoveExport {
+                move_id,
+                dir,
+                signal,
+            },
         };
-        let failures = runner.emit_session_move(event).await.map_err(|e|e.to_string())?;
-        if failures.is_empty() { Ok(()) } else { Err(failures.into_iter().map(|(path,error)|format!("{path}: {error}")).collect::<Vec<_>>().join("; ")) }
+        let failures = runner
+            .emit_session_move(event)
+            .await
+            .map_err(|e| e.to_string())?;
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures
+                .into_iter()
+                .map(|(path, error)| format!("{path}: {error}"))
+                .collect::<Vec<_>>()
+                .join("; "))
+        }
     }
 
     pub fn request_self_settle(&self) -> Value {
@@ -4683,29 +4887,75 @@ impl AgentSession {
 
     fn refresh_lifecycle(&self) {
         let activity = self.activity_snapshot();
-        let entries = self.with_session_manager(|manager| manager.reduce_history(&crate::lifecycle_history::LIFECYCLE_HISTORY));
+        let entries = self.with_session_manager(|manager| {
+            manager.reduce_history(&crate::lifecycle_history::LIFECYCLE_HISTORY)
+        });
         let children = crate::lifecycle_children::LifecycleChildren::new(&entries);
         let pending = self.pending_message_count();
-        let holds = self.holds().into_iter().map(|h| json!({"kind":h.kind.as_str(),"since":h.since})).collect::<Vec<_>>();
+        let holds = self
+            .holds()
+            .into_iter()
+            .map(|h| json!({"kind":h.kind.as_str(),"since":h.since}))
+            .collect::<Vec<_>>();
         let mut ledger = lock(&self.lifecycle);
-        let mut waits = ledger.current.get("waitingOn").cloned().unwrap_or(json!({"children":0,"background":[],"human":[]}));
-        waits["children"] = json!(children.reports().iter().filter(|r|r["childSessionId"]!=self.session_id() && r.get("terminal").is_none()).count());
-        let synthetic = if ledger.interrupted { vec![(format!("interrupted:{}",ledger.current["epoch"]),"interrupted_run".to_owned())] } else { vec![] };
-        if ledger.interrupted { waits["human"] = json!(ledger.attention.reconcile(&synthetic)); }
-        let running = ledger.run_active || activity.is_streaming || activity.is_compacting || activity.is_bash_running || activity.has_session_work || pending > 0 || self.external_admission.has_input_work();
-        let own = children.reports().into_iter().find(|r|r["childSessionId"]==self.session_id() && ledger.current["taskId"]==r["taskId"]);
-        let terminal = own.as_ref().and_then(|r|r["terminal"].as_str());
-        let state = crate::lifecycle_runtime_facts::lifecycle_state(ledger.current["role"].as_str().unwrap_or("root"),terminal,&holds,&waits,running,false);
-        let changed = ledger.update(state, waits, holds, None, |record| self.persist_lifecycle_record(record));
+        let mut waits = ledger
+            .current
+            .get("waitingOn")
+            .cloned()
+            .unwrap_or(json!({"children":0,"background":[],"human":[]}));
+        waits["children"] = json!(
+            children
+                .reports()
+                .iter()
+                .filter(|r| r["childSessionId"] != self.session_id() && r.get("terminal").is_none())
+                .count()
+        );
+        let synthetic = if ledger.interrupted {
+            vec![(
+                format!("interrupted:{}", ledger.current["epoch"]),
+                "interrupted_run".to_owned(),
+            )]
+        } else {
+            vec![]
+        };
+        if ledger.interrupted {
+            waits["human"] = json!(ledger.attention.reconcile(&synthetic));
+        }
+        let running = ledger.run_active
+            || activity.is_streaming
+            || activity.is_compacting
+            || activity.is_bash_running
+            || activity.has_session_work
+            || pending > 0
+            || self.external_admission.has_input_work();
+        let own = children.reports().into_iter().find(|r| {
+            r["childSessionId"] == self.session_id() && ledger.current["taskId"] == r["taskId"]
+        });
+        let terminal = own.as_ref().and_then(|r| r["terminal"].as_str());
+        let state = crate::lifecycle_runtime_facts::lifecycle_state(
+            ledger.current["role"].as_str().unwrap_or("root"),
+            terminal,
+            &holds,
+            &waits,
+            running,
+            false,
+        );
+        let changed = ledger.update(&state, waits, holds, None, |record| {
+            self.persist_lifecycle_record(record)
+        });
         let snapshot = ledger.snapshot().clone();
         drop(ledger);
-        if changed { self.event_bus.emit("session_lifecycle", &json!({"type":"session_lifecycle","sessionId":self.session_id(),"lifecycle":snapshot})); }
+        if changed {
+            self.event_bus.emit("session_lifecycle", &json!({"type":"session_lifecycle","sessionId":self.session_id(),"lifecycle":snapshot}));
+        }
     }
 
     fn persist_lifecycle_record(&self, record: &Value) -> Result<(), String> {
         self.with_session_manager_mut(|manager| {
             manager.append_custom("session-lifecycle", Some(record.clone()));
-            manager.last_persistence_error().map_or(Ok(()), |e| Err(e.to_owned()))
+            manager
+                .last_persistence_error()
+                .map_or(Ok(()), |e| Err(e.to_owned()))
         })
     }
 
@@ -4713,38 +4963,77 @@ impl AgentSession {
         let pending = self.held_inputs();
         for input in pending {
             let text = input["text"].as_str().ok_or("held input text is missing")?;
-            let images = input.get("images").cloned().map(serde_json::from_value).transpose().map_err(|e|format!("invalid held input images: {e}"))?;
-            Box::pin(self.prompt(text, PromptOptions { images, source:Some(InputSource::Interactive), ..Default::default() })).await?;
-            let id = input["inputId"].as_str().ok_or("held input id is missing")?.to_owned();
+            let images = input
+                .get("images")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| format!("invalid held input images: {e}"))?;
+            Box::pin(self.prompt(
+                text,
+                PromptOptions {
+                    images,
+                    source: Some(InputSource::Interactive),
+                    ..Default::default()
+                },
+            ))
+            .await?;
+            let id = input["inputId"]
+                .as_str()
+                .ok_or("held input id is missing")?
+                .to_owned();
             self.consume_held_inputs(&[id])?;
         }
         Ok(())
     }
 
     pub fn hold_input(&self, input: Value) -> Result<Value, String> {
-        lock(&self.held_inputs).hold(input, |kind, data| self.with_session_manager_mut(|manager| {
-            let entry = manager.append_custom(kind, Some(data.clone()));
-            if let Some(error) = manager.last_persistence_error() { return Err(error.to_owned()); }
-            entry["id"].as_str().map(str::to_owned).ok_or("held input entry has no id".into())
-        }))
+        lock(&self.held_inputs).hold(input, |kind, data| {
+            self.with_session_manager_mut(|manager| {
+                let entry = manager.append_custom(kind, Some(data.clone()));
+                if let Some(error) = manager.last_persistence_error() {
+                    return Err(error.to_owned());
+                }
+                entry["id"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or("held input entry has no id".into())
+            })
+        })
     }
 
     pub fn consume_held_inputs(&self, input_ids: &[String]) -> Result<(), String> {
-        lock(&self.held_inputs).consume(input_ids, |kind, data| self.with_session_manager_mut(|manager| {
-            let entry = manager.append_custom(kind, Some(data.clone()));
-            if let Some(error) = manager.last_persistence_error() { return Err(error.to_owned()); }
-            entry["id"].as_str().map(str::to_owned).ok_or("held input entry has no id".into())
-        }))
+        lock(&self.held_inputs).consume(input_ids, |kind, data| {
+            self.with_session_manager_mut(|manager| {
+                let entry = manager.append_custom(kind, Some(data.clone()));
+                if let Some(error) = manager.last_persistence_error() {
+                    return Err(error.to_owned());
+                }
+                entry["id"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or("held input entry has no id".into())
+            })
+        })
     }
 
-    pub fn held_inputs(&self) -> Vec<Value> { lock(&self.held_inputs).pending() }
+    pub fn held_inputs(&self) -> Vec<Value> {
+        lock(&self.held_inputs).pending()
+    }
 
     pub fn withdraw_held_input(&self, input_id: &str) -> Result<bool, String> {
-        lock(&self.held_inputs).withdraw(input_id, |kind, data| self.with_session_manager_mut(|manager| {
-            let entry = manager.append_custom(kind, Some(data.clone()));
-            if let Some(error) = manager.last_persistence_error() { return Err(error.to_owned()); }
-            entry["id"].as_str().map(str::to_owned).ok_or("held input entry has no id".into())
-        }))
+        lock(&self.held_inputs).withdraw(input_id, |kind, data| {
+            self.with_session_manager_mut(|manager| {
+                let entry = manager.append_custom(kind, Some(data.clone()));
+                if let Some(error) = manager.last_persistence_error() {
+                    return Err(error.to_owned());
+                }
+                entry["id"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or("held input entry has no id".into())
+            })
+        })
     }
 
     fn human_input_admitted(&self, kind: HumanInputKind) {
@@ -4994,7 +5283,10 @@ impl AgentSession {
         text: &str,
         mut options: PromptOptions,
     ) -> Result<PromptDisposition, String> {
-        let input_hold = Arc::new(self.external_admission.begin_input(text.starts_with('/'), options.source == Some(InputSource::Extension)));
+        let input_hold = Arc::new(self.external_admission.begin_input(
+            text.starts_with('/'),
+            options.source == Some(InputSource::Extension),
+        ));
         if is_human_input(options.source) && !options.human_input_reported {
             self.human_input_admitted(prompt_kind(&options));
         }
@@ -5009,7 +5301,10 @@ impl AgentSession {
         }
         let admission = self.engine_admission_hook(options.prompt_admitted.take());
         let accepted_hold = input_hold.clone();
-        options.prompt_admitted = Some(Arc::new(move |disposition| { accepted_hold.accepted(); admission(disposition); }));
+        options.prompt_admitted = Some(Arc::new(move |disposition| {
+            accepted_hold.accepted();
+            admission(disposition);
+        }));
         let admitted = options.prompt_admitted.clone();
         let mut reported = false;
         let result =
@@ -5950,16 +6245,29 @@ impl AgentSession {
     }
 
     pub fn fence_run(&self, run_ref: Value) -> Result<(), String> {
-        let kind=run_ref["kind"].as_str().ok_or("run reference has no kind")?;
-        let id=run_ref["id"].as_str().ok_or("run reference has no id")?;
-        if !["dag","task","workpool","team"].contains(&kind) { return Err("invalid run reference kind".into()); }
-        let key=format!("run:{kind}:{id}");
-        lock(&self.engine_turn_hold).add_hold(crate::engine_turn_hold::HoldKind::RunFence,Some(&key),Some(run_ref));
-        self.refresh_lifecycle();Ok(())
+        let kind = run_ref["kind"]
+            .as_str()
+            .ok_or("run reference has no kind")?;
+        let id = run_ref["id"].as_str().ok_or("run reference has no id")?;
+        if !["dag", "task", "workpool", "team"].contains(&kind) {
+            return Err("invalid run reference kind".into());
+        }
+        let key = format!("run:{kind}:{id}");
+        lock(&self.engine_turn_hold).add_hold(
+            crate::engine_turn_hold::HoldKind::RunFence,
+            Some(&key),
+            Some(run_ref),
+        );
+        self.refresh_lifecycle();
+        Ok(())
     }
 
     pub async fn stop(&self) {
-        lock(&self.engine_turn_hold).add_hold(crate::engine_turn_hold::HoldKind::SessionHold, Some("stop"), None);
+        lock(&self.engine_turn_hold).add_hold(
+            crate::engine_turn_hold::HoldKind::SessionHold,
+            Some("stop"),
+            None,
+        );
         self.abort().await;
         self.dispatch_hold_changed("paused").await;
         self.refresh_lifecycle();
@@ -5968,9 +6276,22 @@ impl AgentSession {
     async fn dispatch_hold_changed(&self, change: &str) {
         let runner = self.extension_runner.lock().await.clone();
         if let Some(mut runner) = runner {
-            let holds = self.holds().into_iter().map(|h|json!({"kind":h.kind.as_str(),"key":h.key,"data":h.data})).collect();
-            if let Err(error) = runner.emit(maho_ext_api::ExtensionEvent::SessionHoldChanged {change:change.into(),pause_seq:self.user_abort_generation.load(Ordering::SeqCst),holds}).await {
-                self.emit(AgentSessionEvent::ContinuationError {error_message:error.to_string()});
+            let holds = self
+                .holds()
+                .into_iter()
+                .map(|h| json!({"kind":h.kind.as_str(),"key":h.key,"data":h.data}))
+                .collect();
+            if let Err(error) = runner
+                .emit(maho_ext_api::ExtensionEvent::SessionHoldChanged {
+                    change: change.into(),
+                    pause_seq: self.user_abort_generation.load(Ordering::SeqCst),
+                    holds,
+                })
+                .await
+            {
+                self.emit(AgentSessionEvent::ContinuationError {
+                    error_message: error.to_string(),
+                });
             }
         }
     }
@@ -5982,7 +6303,9 @@ impl AgentSession {
     }
 
     fn begin_user_abort(&self) -> Option<bool> {
-        *lock(&self.stop_interrupt) = Some(json!({"pauseSeq":self.user_abort_generation.load(Ordering::SeqCst)+1,"at":chrono::Utc::now().to_rfc3339()}));
+        *lock(&self.stop_interrupt) = Some(
+            json!({"pauseSeq":self.user_abort_generation.load(Ordering::SeqCst)+1,"at":chrono::Utc::now().to_rfc3339()}),
+        );
         // senpi abort(): streaming aborts are carried by agent_end provenance; only gaps need session_abort.
         let streaming = self.is_streaming();
         let had_retry_backoff = self.state().retry_abort_controller.is_some();
@@ -9843,7 +10166,11 @@ impl AgentSession {
         self.with_session_manager(|manager| {
             crate::edited_assistant_message::assert_expected_leaf(
                 options.expected_leaf_id.as_deref(),
-                crate::lifecycle_edit_leaf::lifecycle_edit_leaf(manager, options.expected_leaf_id.as_deref()).as_deref(),
+                crate::lifecycle_edit_leaf::lifecycle_edit_leaf(
+                    manager,
+                    options.expected_leaf_id.as_deref(),
+                )
+                .as_deref(),
             )
         })
         .map_err(|error| MessageEditFailure {
@@ -9887,7 +10214,11 @@ impl AgentSession {
         self.with_session_manager(|manager| {
             crate::edited_assistant_message::assert_expected_leaf(
                 options.expected_leaf_id.as_deref(),
-                crate::lifecycle_edit_leaf::lifecycle_edit_leaf(manager, options.expected_leaf_id.as_deref()).as_deref(),
+                crate::lifecycle_edit_leaf::lifecycle_edit_leaf(
+                    manager,
+                    options.expected_leaf_id.as_deref(),
+                )
+                .as_deref(),
             )
         })
         .map_err(|error| MessageEditFailure {
@@ -9957,7 +10288,11 @@ impl AgentSession {
         self.with_session_manager(|manager| {
             crate::edited_user_message::assert_expected_user_leaf(
                 options.expected_leaf_id.as_deref(),
-                crate::lifecycle_edit_leaf::lifecycle_edit_leaf(manager, options.expected_leaf_id.as_deref()).as_deref(),
+                crate::lifecycle_edit_leaf::lifecycle_edit_leaf(
+                    manager,
+                    options.expected_leaf_id.as_deref(),
+                )
+                .as_deref(),
             )
         })
         .map_err(|error| MessageEditFailure {
@@ -10012,7 +10347,12 @@ impl AgentSession {
         if self.is_compacting() {
             return Err(NAVIGATE_WHILE_COMPACTING.to_owned());
         }
-        let old_leaf = self.with_session_manager(|manager| crate::lifecycle_edit_leaf::lifecycle_edit_leaf(manager, options.expected_leaf_id.as_deref()));
+        let old_leaf = self.with_session_manager(|manager| {
+            crate::lifecycle_edit_leaf::lifecycle_edit_leaf(
+                manager,
+                options.expected_leaf_id.as_deref(),
+            )
+        });
         // Stale tokens fail even for a would-be no-op, before any extension hears about the navigation.
         crate::edited_assistant_message::assert_expected_leaf(
             options.expected_leaf_id.as_deref(),
@@ -10104,7 +10444,9 @@ impl AgentSession {
                     });
                 }
             }
-            if self.with_session_manager(|manager| crate::lifecycle_edit_leaf::lifecycle_edit_leaf(manager, old_leaf.as_deref())) != old_leaf
+            if self.with_session_manager(|manager| {
+                crate::lifecycle_edit_leaf::lifecycle_edit_leaf(manager, old_leaf.as_deref())
+            }) != old_leaf
             {
                 return Err("Session leaf changed during tree navigation".to_owned());
             }
@@ -15025,7 +15367,12 @@ impl AgentSession {
         .into_owned();
         let stop = lock(&self.stop_interrupt).clone();
         if rewrite.is_none() && content == original_content {
-            return crate::interrupted_tool_result::mark_interrupted(stop.as_ref(), is_error, &original_details, None);
+            return crate::interrupted_tool_result::mark_interrupted(
+                stop.as_ref(),
+                is_error,
+                &original_details,
+                None,
+            );
         }
         // A hook that replaced the content drops structured content that may no longer match it.
         let structured_content = if rewrite
@@ -15051,7 +15398,12 @@ impl AgentSession {
             usage,
             terminate: None,
         });
-        crate::interrupted_tool_result::mark_interrupted(stop.as_ref(), is_error.unwrap_or(false), &original_details, rewritten)
+        crate::interrupted_tool_result::mark_interrupted(
+            stop.as_ref(),
+            is_error.unwrap_or(false),
+            &original_details,
+            rewritten,
+        )
     }
 
     /// Pinned `emitExecBridgeToolResult`: Cursor exec already ran the tool; still emit
@@ -15821,35 +16173,85 @@ impl AgentSession {
     }
 
     pub async fn send_itemized_message(
-        &self, message: maho_ext_api::CustomMessage, options: maho_ext_api::SendMessageOptions,
+        &self,
+        message: maho_ext_api::CustomMessage,
+        options: maho_ext_api::SendMessageOptions,
         items: Vec<crate::extensions::types::SendMessageItem>,
     ) -> Result<Vec<crate::extensions::types::SendMessageReceipt>, String> {
         let value = json!({"customType":message.custom_type,"content":message.content,"display":message.display,"details":message.details});
         let held = self.holds();
-        let batch_held = held.iter().any(|h| h.kind != crate::engine_turn_hold::HoldKind::RunFence)
-            || held.iter().filter(|h|h.kind==crate::engine_turn_hold::HoldKind::RunFence).any(|h| items.iter().any(|item|item.run_ref.as_ref().is_some_and(|r|h.data.as_ref()==Some(r))));
+        let batch_held = held
+            .iter()
+            .any(|h| h.kind != crate::engine_turn_hold::HoldKind::RunFence)
+            || held
+                .iter()
+                .filter(|h| h.kind == crate::engine_turn_hold::HoldKind::RunFence)
+                .any(|h| {
+                    items.iter().any(|item| {
+                        item.run_ref
+                            .as_ref()
+                            .is_some_and(|r| h.data.as_ref() == Some(r))
+                    })
+                });
         if options.trigger_turn && batch_held {
-            let notices = items.iter().map(|item| json!({
-                "noticeId":uuid::Uuid::new_v4().to_string(), "itemId":item.item_id,
-                "producer":item.producer, "at":chrono::Utc::now().to_rfc3339(),
-                "message":crate::itemized_send::item_notice_message(&value,item)
-            })).collect::<Vec<_>>();
-            lock(&self.engine_turn_hold).note_items(notices.clone())?;
-            let entry_id = self.with_session_manager(|manager| manager.leaf_id().unwrap_or_default().to_owned());
-            return Ok(items.iter().zip(notices).map(|(item,notice)| crate::extensions::types::SendMessageReceipt {
-                item_id:item.item_id.clone(),entry_id:entry_id.clone(),disposition:"notice_persisted".into(),
-                notice_id:notice["noticeId"].as_str().map(str::to_owned)
-            }).collect());
+            let held_items = items
+                .iter()
+                .map(|item| crate::engine_turn_hold_notices::HeldItem {
+                    source: item.producer.clone(),
+                    message: crate::itemized_send::item_notice_message(&value, item),
+                    item_id: item.item_id.clone(),
+                    run_ref: item.run_ref.clone(),
+                })
+                .collect::<Vec<_>>();
+            let receipts = lock(&self.engine_turn_hold).note_items(&held_items, |data| {
+                self.with_session_manager_mut(|manager| {
+                    let entry = manager.append_custom("session-notice", Some(data));
+                    if let Some(error) = manager.last_persistence_error() {
+                        return Err(error.to_owned());
+                    }
+                    entry["id"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .ok_or("notice entry has no id".into())
+                })
+            })?;
+            return Ok(receipts
+                .into_iter()
+                .map(|r| crate::extensions::types::SendMessageReceipt {
+                    item_id: r.item_id,
+                    entry_id: r.entry_id,
+                    notice_id: Some(r.notice_id),
+                    disposition: "notice_persisted".into(),
+                })
+                .collect());
         }
         let receipt = maho_ext_api::ExtensionActions::send_message_with_receipt(
-            &SessionExtensionActions(Arc::downgrade(&self.inner)),message.clone(),options).map_err(|e|e.message)?;
-        let (tx,rx) = tokio::sync::oneshot::channel();
-        receipt.on_settled(move |result| { let _ = tx.send(result); });
-        rx.await.map_err(|e|e.to_string())??;
-        let entry_id = self.with_session_manager(|manager| manager.entries().iter().rev().find(|e|
-            e["type"]=="custom_message" && e["customType"]==message.custom_type && e["content"]==value["content"]
-        ).and_then(|e|e["id"].as_str()).map(str::to_owned)).ok_or("delivered batch has no transcript entry")?;
-        Ok(crate::itemized_send::delivered_receipts(&items,&entry_id))
+            &SessionExtensionActions(Arc::downgrade(&self.inner)),
+            message.clone(),
+            options,
+        )
+        .map_err(|e| e.message)?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        receipt.on_settled(move |result| {
+            let _ = tx.send(result);
+        });
+        rx.await.map_err(|e| e.to_string())??;
+        let entry_id = self
+            .with_session_manager(|manager| {
+                manager
+                    .entries()
+                    .iter()
+                    .rev()
+                    .find(|e| {
+                        e["type"] == "custom_message"
+                            && e["customType"] == message.custom_type
+                            && e["content"] == value["content"]
+                    })
+                    .and_then(|e| e["id"].as_str())
+                    .map(str::to_owned)
+            })
+            .ok_or("delivered batch has no transcript entry")?;
+        Ok(crate::itemized_send::delivered_receipts(&items, &entry_id))
     }
 
     pub async fn send_custom_message(

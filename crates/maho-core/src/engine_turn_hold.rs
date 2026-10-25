@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::engine_turn_hold_notices::{EngineTurnHoldNotices, HeldMessage, HeldItem, HeldItemReceipt};
+use crate::engine_turn_hold_notices::{
+    EngineTurnHoldNotices, HeldItem, HeldItemReceipt, HeldMessage,
+};
 use crate::engine_turn_release::ReleasableHold;
 
 pub const SESSION_HOLD_ENTRY_TYPE: &str = "session-hold";
@@ -78,7 +80,11 @@ pub struct SessionHold {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionHoldEvent {
-    SessionNotice { notice_ids: Vec<String>, notice_count: usize, disposition: &'static str },
+    SessionNotice {
+        notice_ids: Vec<String>,
+        notice_count: usize,
+        disposition: &'static str,
+    },
     SessionPaused {
         pause_seq: u64,
         kind: HoldKind,
@@ -295,12 +301,21 @@ impl EngineTurnHold {
     }
 
     pub fn is_held(&self) -> bool {
-        self.records.iter().any(|(_, hold)| hold.kind != HoldKind::RunFence)
+        self.records
+            .iter()
+            .any(|(_, hold)| hold.kind != HoldKind::RunFence)
     }
 
-    pub fn fences(&self) -> Vec<SessionHold> { self.holds().into_iter().filter(|hold| hold.kind == HoldKind::RunFence).collect() }
+    pub fn fences(&self) -> Vec<SessionHold> {
+        self.holds()
+            .into_iter()
+            .filter(|hold| hold.kind == HoldKind::RunFence)
+            .collect()
+    }
 
-    pub fn current_pause_seq(&self) -> u64 { self.pause_seq }
+    pub fn current_pause_seq(&self) -> u64 {
+        self.pause_seq
+    }
 
     pub fn held(&self) -> bool {
         self.is_held()
@@ -443,26 +458,39 @@ impl EngineTurnHold {
             || (source == "goal" && self.goal_deferred)
     }
 
-    pub fn note_items(&mut self, mut notices: Vec<Value>) -> Result<(), String> {
-        for notice in &mut notices { notice["pauseSeq"] = json!(self.pause_seq); }
-        self.notices.note_items(notices)
-    }
-
     pub fn note(&mut self, source: &str, message: Option<Value>) {
-        let id = self.notices.note_with_stop(source, self.pause_seq, message, self.stopped());
-        (self.emit)(SessionHoldEvent::SessionNotice { notice_ids: vec![id], notice_count: self.notice_count(), disposition: "notice_persisted" });
+        let id = self
+            .notices
+            .note_with_stop(source, self.pause_seq, message, self.stopped());
+        (self.emit)(SessionHoldEvent::SessionNotice {
+            notice_ids: vec![id],
+            notice_count: self.notice_count(),
+            disposition: "notice_persisted",
+        });
         if !self.attended {
             self.show_notice();
         }
     }
 
-    pub fn note_items(&mut self, items: &[HeldItem], append: impl FnOnce(Value) -> Result<String, String>) -> Result<Vec<HeldItemReceipt>, String> {
+    pub fn note_items(
+        &mut self,
+        items: &[HeldItem],
+        append: impl FnOnce(Value) -> Result<String, String>,
+    ) -> Result<Vec<HeldItemReceipt>, String> {
         let stopped = self.stopped();
-        let receipts = self.notices.note_items(self.pause_seq, items, stopped, append)?;
+        let receipts = self
+            .notices
+            .note_items(self.pause_seq, items, stopped, append)?;
         for receipt in &receipts {
-            (self.emit)(SessionHoldEvent::SessionNotice { notice_ids: vec![receipt.notice_id.clone()], notice_count: self.notice_count(), disposition: "notice_persisted" });
+            (self.emit)(SessionHoldEvent::SessionNotice {
+                notice_ids: vec![receipt.notice_id.clone()],
+                notice_count: self.notice_count(),
+                disposition: "notice_persisted",
+            });
         }
-        if !self.attended { self.show_notice(); }
+        if !self.attended {
+            self.show_notice();
+        }
         Ok(receipts)
     }
 
@@ -482,7 +510,12 @@ impl EngineTurnHold {
         self.released = self.holds();
         self.release_barrier = true;
         self.goal_deferred = sources.get("goal").copied().unwrap_or(0) > 0;
-        let keys: Vec<String> = self.records.iter().filter(|(_, hold)| hold.kind != HoldKind::InheritedHold).map(|(key, _)| key.clone()).collect();
+        let keys: Vec<String> = self
+            .records
+            .iter()
+            .filter(|(_, hold)| hold.kind != HoldKind::InheritedHold)
+            .map(|(key, _)| key.clone())
+            .collect();
         self.release(&keys, cause)?;
         Ok(sources)
     }
@@ -513,11 +546,27 @@ impl EngineTurnHold {
     }
 
     pub fn consume(&mut self, source: &str, delivered_ids: Option<&[String]>) -> bool {
-        let ids: Vec<String> = self.notices.sources().iter().find(|(s, _)| s == source).map(|_| {
-            self.notices.notice_ids(source).into_iter().filter(|id| delivered_ids.is_none_or(|ids| ids.contains(id))).collect()
-        }).unwrap_or_default();
-        if !self.notices.consume(source, self.pause_seq, delivered_ids) { return false; }
-        (self.emit)(SessionHoldEvent::SessionNotice { notice_ids: ids, notice_count: self.notice_count(), disposition: "model_consumed" });
+        let ids: Vec<String> = self
+            .notices
+            .sources()
+            .iter()
+            .find(|(s, _)| s == source)
+            .map(|_| {
+                self.notices
+                    .notice_ids(source)
+                    .into_iter()
+                    .filter(|id| delivered_ids.is_none_or(|ids| ids.contains(id)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !self.notices.consume(source, self.pause_seq, delivered_ids) {
+            return false;
+        }
+        (self.emit)(SessionHoldEvent::SessionNotice {
+            notice_ids: ids,
+            notice_count: self.notice_count(),
+            disposition: "model_consumed",
+        });
         true
     }
 
@@ -537,10 +586,18 @@ impl EngineTurnHold {
         sources
     }
 
-    fn stopped(&self) -> bool { self.records.iter().any(|(_, hold)| hold.kind == HoldKind::SessionHold) }
+    fn stopped(&self) -> bool {
+        self.records
+            .iter()
+            .any(|(_, hold)| hold.kind == HoldKind::SessionHold)
+    }
 
     fn show_notice(&self) {
-        (self.notify)(&if self.stopped() { EngineTurnHoldNotices::stopped_notice_text(self.notice_count()) } else { self.notices.notice_text() });
+        (self.notify)(&if self.stopped() {
+            EngineTurnHoldNotices::stopped_notice_text(self.notice_count())
+        } else {
+            self.notices.notice_text()
+        });
     }
 }
 
@@ -648,7 +705,8 @@ mod tests {
         hold.add_hold(HoldKind::SessionHold, None, None);
         hold.release_all(HoldReleaseCause::Input).expect("release");
         assert!(hold.held());
-        hold.release(&["parent".into()], HoldReleaseCause::RunResume).expect("parent resumes");
+        hold.release(&["parent".into()], HoldReleaseCause::RunResume)
+            .expect("parent resumes");
         assert!(!hold.held());
         assert_eq!(events.lock().expect("events").len(), 2);
     }
