@@ -111,6 +111,15 @@ fn to_diagnostic_record(
         record.insert("error_name".into(), error.name.clone().into());
         record.insert("error_message".into(), error.message.clone().into());
     }
+    if let Some(entry_kind) = input.entry_kind {
+        record.insert("entry_kind".into(), entry_kind.as_str().into());
+    }
+    if let Some(error_code) = &input.error_code {
+        record.insert("error_code".into(), error_code.clone().into());
+    }
+    if let Some(count) = input.count {
+        record.insert("count".into(), count.into());
+    }
     record
 }
 
