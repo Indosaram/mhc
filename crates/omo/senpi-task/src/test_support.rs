@@ -74,6 +74,7 @@ pub(crate) fn base_record(task_id: &str, parent_session_id: &str) -> TaskRecord 
         revival_deferred_reason: None,
         recovery_deadline_at: None,
         residency_claim: None,
+        terminal_at: None,
     }
 }
 
