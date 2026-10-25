@@ -190,6 +190,9 @@ impl<R: InProcessRunnerLike, C: InProcessSessionContextProvider> ManagedRunner
                     child,
                     first_prompt,
                     begin: Box::new(move || {
+                        if let Some(turn) = begin_child.start_initial_turn(&prompt) {
+                            return turn;
+                        }
                         let outcome_child = Arc::clone(&begin_child);
                         let sent = begin_child.follow_up(&prompt);
                         crate::pause::ports::ResumedChildTurn {
