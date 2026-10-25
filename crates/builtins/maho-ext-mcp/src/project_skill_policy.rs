@@ -213,7 +213,15 @@ impl ProjectMcpAuthority {
             ));
         }
         let decision = decision_lock(&self.store_path, &self.identity);
-        let (_decision, shared_decision) = join_decision(decision).await;
+        let joined = join_decision(decision);
+        let (_decision, shared_decision) = if let Some(signal) = &signal {
+            tokio::select! { biased; _ = signal.cancelled() => return Err(cancelled()), result = joined => result }
+        } else {
+            joined.await
+        };
+        if signal.as_ref().is_some_and(|signal| signal.aborted()) {
+            return Err(cancelled());
+        }
         let names = effective_grant_names(&read(&self.store_path), &self.identity);
         if !self.first.swap(false, std::sync::atomic::Ordering::AcqRel) {
             let policy = crate::project_env::project_mcp_environment(
@@ -352,6 +360,38 @@ impl ProjectMcpAuthority {
             granted_names: names.to_vec(),
         })
     }
+}
+pub fn reuse_project_skill_server(
+    name: &str,
+    original: &crate::skills::SkillServerDecl,
+    cwd: &Path,
+    agent_dir: &Path,
+    existing: &ResolvedMcpServer,
+) -> Result<bool, McpError> {
+    let Some(authority) = existing.config.as_ref().and_then(get_project_mcp_authority) else {
+        return Ok(false);
+    };
+    let current = current_registration(name, original)?;
+    let root = current
+        .provenance
+        .as_ref()
+        .and_then(|provenance| provenance.project_root.clone())
+        .unwrap_or_else(|| skill_project_root(cwd));
+    let provenance = declaration_digest(
+        &serde_json::json!({"provenance":current.provenance,"allowedSet":current.allowed_set.as_ref().map(|set| &set.digest)}),
+    );
+    if authority.identity
+        != identity_for_roots(name, &current.source_path, &current.raw, &root, cwd)?
+        || authority.store_path != resolve_grants_store_path(Some(agent_dir))
+        || authority.provenance_digest != provenance
+    {
+        return Ok(false);
+    }
+    authority.materialize(&effective_grant_names(
+        &read(&authority.store_path),
+        &authority.identity,
+    ))?;
+    Ok(true)
 }
 pub async fn prepare_project_skill_server(
     name: &str,

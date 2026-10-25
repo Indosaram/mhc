@@ -376,6 +376,19 @@ impl McpService {
                 warnings.push(format!("MCP server '{name}' from skill {} collides with the {} config; system config wins.",decl.source_path.display(),existing.source));
                 continue;
             }
+            let project = decl
+                .provenance
+                .as_ref()
+                .map_or(decl.scope.as_deref() == Some("project"), |provenance| {
+                    provenance.kind != "user"
+                });
+            if project && let Some(existing) = existing {
+                if crate::project_skill_policy::reuse_project_skill_server(
+                    name, decl, &cwd, &agent_dir, existing,
+                )? {
+                    continue;
+                }
+            }
             let resolved = if decl
                 .provenance
                 .as_ref()
