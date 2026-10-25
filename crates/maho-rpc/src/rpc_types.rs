@@ -128,6 +128,12 @@ pub enum RpcCommandBody {
         #[serde(skip_serializing_if = "Option::is_none")]
         deliver_as: Option<DeliveryMode>,
     },
+    ArmToolBarrier {
+        spec: Value,
+    },
+    ReleaseToolBarrier {
+        barrier_id: String,
+    },
     AppendUserMessage {
         content: Value,
     },
