@@ -1121,9 +1121,7 @@ impl TaskManager {
         };
         if let Some(scope) = &spec.admission {
             if let Err(held) = scope.assert_open() {
-                if let Some(lease) = &lease {
-                    lease.release();
-                }
+                lease.release();
                 return (None, Some(StartResult::Held(held.result)));
             }
         }
