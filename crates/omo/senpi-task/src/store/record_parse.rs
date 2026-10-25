@@ -2,11 +2,12 @@ use serde_json::{Map, Value};
 
 use crate::shared::{DagOwnerKind, DagTaskOwner};
 use crate::state::{
-    BackgroundMode, CancelRequest, DeliverAs, EffectiveModelRecord, HostSessionIdentity,
-    IsolationRecord, PendingSteeringEntry, RESIDENCY_STATES, RESOLVED_MODEL_SOURCES,
-    ResidencyState, ResolvedModelRecord, ResolvedModelSource, RunnerKind, SpawnSpecV1,
-    SuspensionReason, TASK_STATUSES, TaskAwaitingInput, TaskIsolationSpec, TaskNotification,
-    TaskRecord, TaskRunStats, TaskSpawnSpec, TaskStatus, parse_task_id,
+    BackgroundMode, CancelRequest, DeliverAs, EffectiveModelRecord, FallbackClosingChild,
+    HostSessionIdentity, IsolationRecord, ParentModelFallback, PendingSteeringEntry,
+    RESIDENCY_STATES, RESOLVED_MODEL_SOURCES, RecordedRunPause, ResidencyState,
+    ResolvedModelRecord, ResolvedModelSource, ReviveDeliveryUncertainty, RunnerKind, SpawnSpecV1,
+    StartQueued, SuspensionReason, TASK_STATUSES, TaskAwaitingInput, TaskIsolationSpec,
+    TaskNotification, TaskRecord, TaskRunStats, TaskSpawnSpec, TaskStatus, parse_task_id,
 };
 
 type Object = Map<String, Value>;
@@ -132,7 +133,109 @@ pub fn parse_task_record(
         runner_kind,
         host_session,
         cancel_requested,
+        parent_model: read_optional_string(record, "parent_model")?,
+        parent_model_fallback: parse_optional_parent_model_fallback(record),
+        fallback_closing_child: parse_optional_closing_child(record)?,
+        start_queued: parse_optional_start_queued(record)?,
+        revive_delivery_uncertain: parse_optional_revive_delivery_uncertainty(record)?,
+        prior_runs_cost_usd: read_optional_prior_runs_cost(record)?,
+        run_pause: parse_optional_run_pause(record)?,
+        resumed_run_epoch: read_optional_number(record, "resumed_run_epoch")?,
+        burnt_epoch: read_optional_number(record, "burnt_epoch")?,
+        fallback_handoff_epoch: read_optional_number(record, "fallback_handoff_epoch")?,
+        revival_deferred_reason: read_optional_string(record, "revival_deferred_reason")?,
+        recovery_deadline_at: read_optional_number(record, "recovery_deadline_at")?,
+        residency_claim: read_optional_string(record, "residency_claim")?,
     })
+}
+
+pub fn parse_optional_parent_model_fallback(record: &Object) -> Option<ParentModelFallback> {
+    let value = record.get("parent_model_fallback")?.as_object()?;
+    let parsed = (|| -> ParseResult<ParentModelFallback> {
+        Ok(ParentModelFallback {
+            from_model: read_string(value, "from_model")?,
+            reason: serde_json::from_value(value.get("reason").cloned().unwrap_or(Value::Null))
+                .map_err(|error| error.to_string())?,
+            at: read_string(value, "at")?,
+            detail: read_optional_string(value, "detail")?,
+            resets: read_optional_string(value, "resets")?,
+            interrupted_tools: read_optional_string_array(value, "interrupted_tools")?
+                .filter(|tools| !tools.is_empty()),
+        })
+    })();
+    parsed.ok()
+}
+
+pub fn parse_optional_closing_child(record: &Object) -> ParseResult<Option<FallbackClosingChild>> {
+    let Some(value) = record.get("fallback_closing_child") else {
+        return Ok(None);
+    };
+    let object = value
+        .as_object()
+        .ok_or("fallback_closing_child is not an object")?;
+    Ok(Some(FallbackClosingChild {
+        pid: read_optional_number(object, "pid")?,
+        host_session: read_optional_host_session(object)?,
+        requires_confirmation: read_optional_bool(object, "requires_confirmation")?,
+    }))
+}
+
+pub fn parse_optional_start_queued(record: &Object) -> ParseResult<Option<StartQueued>> {
+    let Some(value) = record.get("start_queued") else {
+        return Ok(None);
+    };
+    let object = value.as_object().ok_or("start_queued is not an object")?;
+    Ok(Some(StartQueued {
+        model: read_string(object, "model")?,
+        queued_at: read_string(object, "queued_at")?,
+        queue_position: read_number(object, "queue_position")?,
+    }))
+}
+
+pub fn parse_optional_revive_delivery_uncertainty(
+    record: &Object,
+) -> ParseResult<Option<ReviveDeliveryUncertainty>> {
+    let Some(value) = record.get("revive_delivery_uncertain") else {
+        return Ok(None);
+    };
+    let object = value
+        .as_object()
+        .ok_or("revive_delivery_uncertain is not an object")?;
+    Ok(Some(ReviveDeliveryUncertainty {
+        run_epoch: read_number(object, "run_epoch")?,
+        message_sha256: read_string(object, "message_sha256")?,
+    }))
+}
+
+pub fn read_optional_prior_runs_cost(record: &Object) -> ParseResult<Option<f64>> {
+    let cost = read_optional_number(record, "prior_runs_cost_usd")?;
+    if cost.is_some_and(|cost| !cost.is_finite() || cost < 0.0) {
+        return Err("prior_runs_cost_usd must be a finite non-negative number".into());
+    }
+    Ok(cost)
+}
+
+pub fn parse_optional_run_pause(record: &Object) -> ParseResult<Option<RecordedRunPause>> {
+    let Some(value) = record.get("run_pause") else {
+        return Ok(None);
+    };
+    let object = value.as_object().ok_or("run_pause is malformed")?;
+    let seq = read_number(object, "parent_pause_seq")?;
+    if !seq.is_finite() || seq.fract() != 0.0 || !(1.0..=9_007_199_254_740_991.0).contains(&seq) {
+        return Err("run_pause is malformed".into());
+    }
+    let mut value = value.clone();
+    value["parent_pause_seq"] = Value::from(seq as u64);
+    let pause: RecordedRunPause =
+        serde_json::from_value(value).map_err(|_| "run_pause is malformed".to_string())?;
+    if pause.parent_session_id.is_empty()
+        || pause.parent_pause_seq == 0
+        || pause.parent_pause_seq > 9_007_199_254_740_991
+        || pause.run_ref.id.is_empty()
+    {
+        return Err("run_pause is malformed".into());
+    }
+    Ok(Some(pause))
 }
 
 fn read_optional_owner(record: &Object) -> ParseResult<Option<DagTaskOwner>> {
@@ -393,6 +496,9 @@ fn read_notification(record: &Object) -> ParseResult<TaskNotification> {
 
 fn read_task_status(record: &Object) -> ParseResult<TaskStatus> {
     let status = read_string(record, "status")?;
+    if status == "running" && record.get("paused") == Some(&Value::Bool(true)) {
+        return Ok(TaskStatus::Paused);
+    }
     TaskStatus::parse(&status).ok_or_else(|| {
         let expected: Vec<&str> = TASK_STATUSES.iter().map(|status| status.as_str()).collect();
         format!(

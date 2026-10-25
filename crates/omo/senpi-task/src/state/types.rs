@@ -9,6 +9,7 @@ use super::isolation::{IsolationRecord, TaskIsolationSpec};
 pub enum TaskStatus {
     Pending,
     Running,
+    Paused,
     Completed,
     Error,
     Cancelled,
@@ -16,9 +17,10 @@ pub enum TaskStatus {
     Lost,
 }
 
-pub const TASK_STATUSES: [TaskStatus; 7] = [
+pub const TASK_STATUSES: [TaskStatus; 8] = [
     TaskStatus::Pending,
     TaskStatus::Running,
+    TaskStatus::Paused,
     TaskStatus::Completed,
     TaskStatus::Error,
     TaskStatus::Cancelled,
@@ -31,6 +33,7 @@ impl TaskStatus {
         match self {
             Self::Pending => "pending",
             Self::Running => "running",
+            Self::Paused => "paused",
             Self::Completed => "completed",
             Self::Error => "error",
             Self::Cancelled => "cancelled",
@@ -47,7 +50,7 @@ impl TaskStatus {
 
     pub fn is_terminal(self) -> bool {
         match self {
-            Self::Pending | Self::Running => false,
+            Self::Pending | Self::Running | Self::Paused => false,
             Self::Completed | Self::Error | Self::Cancelled | Self::Interrupted | Self::Lost => {
                 true
             }
@@ -269,6 +272,7 @@ pub enum TokenCoverageStatus {
 #[serde(rename_all = "snake_case")]
 pub enum CostReportStatus {
     Reported,
+    Partial,
     Invalid,
     Unavailable,
 }
@@ -563,6 +567,100 @@ pub struct TaskRecord {
     /// revival reads it and finishes the cancel instead of running the child again.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cancel_requested: Option<CancelRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_model_fallback: Option<ParentModelFallback>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_closing_child: Option<FallbackClosingChild>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_queued: Option<StartQueued>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revive_delivery_uncertain: Option<ReviveDeliveryUncertainty>,
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "js_number")]
+    pub prior_runs_cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_pause: Option<RecordedRunPause>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resumed_run_epoch: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub burnt_epoch: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_handoff_epoch: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revival_deferred_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_deadline_at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub residency_claim: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParentModelFallbackReason {
+    UsageLimit,
+    NotSignedIn,
+    Unavailable,
+    Refused,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParentModelFallback {
+    pub from_model: String,
+    pub reason: ParentModelFallbackReason,
+    pub at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interrupted_tools: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FallbackClosingChild {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_session: Option<HostSessionIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires_confirmation: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StartQueued {
+    pub model: String,
+    pub queued_at: String,
+    pub queue_position: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviveDeliveryUncertainty {
+    pub run_epoch: f64,
+    pub message_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunPauseKind {
+    Dag,
+    Task,
+    Workpool,
+    Team,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunPauseRef {
+    pub kind: RunPauseKind,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedRunPause {
+    pub parent_session_id: String,
+    pub parent_pause_seq: u64,
+    pub run_ref: RunPauseRef,
 }
 
 /// A task_cancel accepted while the child was unreachable (TS `CancelRequest`).

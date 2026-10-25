@@ -356,6 +356,7 @@ fn expected_table(status: TaskStatus, event: Event) -> (bool, TaskStatus, &'stat
         (TaskStatus::Running, Event::Cancel) => (true, TaskStatus::Cancelled, APPLIED),
         (TaskStatus::Running, Event::Interrupt) => (true, TaskStatus::Interrupted, APPLIED),
         (TaskStatus::Running, Event::Start | Event::Lose) => (false, TaskStatus::Running, INVALID),
+        (TaskStatus::Paused, _) => (false, TaskStatus::Paused, INVALID),
         (terminal, _) => (false, terminal, LATE),
     }
 }
