@@ -313,3 +313,18 @@ fn fallback_capability_refusal_and_expired_probe_never_prevent_the_prompt() {
         );
     }
 }
+
+#[test]
+fn identity_received_before_listener_is_replayed_without_waiting_for_another_event() {
+    let child = spawn_mode("rpc");
+    let _guard = ChildGuard(child.clone());
+    let client = client_for(&child);
+    client.send(json!({"type":"emit_identity"})).unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    let _listener = client
+        .on_durable_session_id(Arc::new(move |id| {
+            send.send(id.to_owned()).unwrap();
+        }))
+        .unwrap();
+    assert_eq!(receive.recv_timeout(WAIT).unwrap(), "durable-late");
+}
