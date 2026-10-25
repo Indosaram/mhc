@@ -975,7 +975,7 @@ fn task_failure(status: TaskStatus, message: Option<&str>) -> (DagNodeErrorCode,
             DagNodeErrorCode::TaskCancelled,
             message.unwrap_or("task was cancelled").to_string(),
         ),
-        TaskStatus::Completed | TaskStatus::Pending | TaskStatus::Running => (
+        TaskStatus::Completed | TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused => (
             DagNodeErrorCode::TaskError,
             "task in a non-terminal-failure status".to_string(),
         ),
