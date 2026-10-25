@@ -604,7 +604,7 @@ impl SessionSummaryRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_summary_publisher::SummaryPublication;
+    use crate::session_summary_delivery::SummaryPublication;
     use crate::session_summary_store::{Probes, create_summary_storage};
     use futures::FutureExt;
     use futures::future::BoxFuture;

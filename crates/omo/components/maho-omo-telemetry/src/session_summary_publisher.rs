@@ -389,7 +389,7 @@ mod tests {
             session_hash: "a".repeat(64),
             owner: storage.owner.clone(),
             created_at: 1000.0,
-            properties: serde_json::Map::from([("turns".to_string(), json!(1))]),
+            properties: serde_json::Map::from_iter([("turns".to_string(), json!(1))]),
         };
         publisher.deliver(&record).await;
         assert_eq!(seen.lock().unwrap().len(), 2);

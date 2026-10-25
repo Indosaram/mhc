@@ -84,6 +84,7 @@ impl MemoryPromptHandler {
                 MEMORY_PROMPT_TEMPLATE,
                 &CompileMemoryBlockOptions {
                     agent_id: context.identity.clone(),
+                    projection: None,
                 },
             )
             .map(|_| ())

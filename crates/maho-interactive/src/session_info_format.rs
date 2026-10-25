@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn format_session_info_with_unknown_cost() {
-        let theme = Theme::default();
+        let theme = Theme::builtin("dark", crate::theme::ColorMode::Truecolor).unwrap();
         let stats = json!({
             "sessionId": "test-id",
             "sessionFile": "session.json",
@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn format_session_info_without_unknown_cost() {
-        let theme = Theme::default();
+        let theme = Theme::builtin("dark", crate::theme::ColorMode::Truecolor).unwrap();
         let stats = json!({
             "sessionId": "test-id",
             "cost": 0.5,

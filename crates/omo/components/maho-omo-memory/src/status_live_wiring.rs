@@ -46,13 +46,14 @@ impl MemoryFooterProbe for Probe<'_> {
         let session = self.session_id;
         let now = self.now_ms;
         let active = self.active;
+        let sync_status = self.sync_status;
         let repo = self.repo()?;
         let head = repo.head().map_err(|e| e.to_string())?;
         let Some(head) = head else {
             return Ok(Some(format!("none|{active}")));
         };
         let segments =
-            read_memory_status_segments(repo, context, Some(session), now, self.sync_status);
+            read_memory_status_segments(repo, context, Some(session), now, sync_status);
         Ok(Some(format!(
             "{head}|{}|{}|{}|{active}|{}",
             if segments.dirty { "dirty" } else { "clean" },
@@ -72,6 +73,7 @@ impl MemoryFooterProbe for Probe<'_> {
         let context = self.context;
         let session = self.session_id;
         let now = self.now_ms;
+        let sync_status = self.sync_status;
         let repo = self.repo()?;
         if repo.head().map_err(|e| e.to_string())?.is_none() {
             return Ok(None);
@@ -88,7 +90,7 @@ impl MemoryFooterProbe for Probe<'_> {
         Ok(Some(format_memory_status_line(
             identity,
             &age,
-            &read_memory_status_segments(repo, context, Some(session), now, self.sync_status),
+            &read_memory_status_segments(repo, context, Some(session), now, sync_status),
         )))
     }
 }

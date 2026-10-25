@@ -149,7 +149,7 @@ impl ReleasableSession for AgentSessionRelease {
         let Some(file) = self.session.session_file() else {
             return Ok(None);
         };
-        let (attempt, dir) = maho_core::session_move::extension_state::prepare_outgoing_state(
+        let maho_core::session_move::extension_state::OutgoingState { attempt, dir } = maho_core::session_move::extension_state::prepare_outgoing_state(
             std::path::Path::new(&file),
             move_id,
         )?;

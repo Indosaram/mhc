@@ -139,7 +139,7 @@ impl MemoryComponent {
                                 &self.options.env,
                                 None,
                             )
-                            .map_err(ExtensionFailure::new)?;
+                            ?;
                         let pins = PathBuf::from(
                             self.options
                                 .env

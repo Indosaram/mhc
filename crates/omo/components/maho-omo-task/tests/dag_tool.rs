@@ -1499,6 +1499,7 @@ fn amend_without_definition_rejects() {
     let amended_clone = amended.clone();
     let manager_clone = f.manager.clone();
     let with_amend = DagToolDeps {
+        cancel_node: None, guide: None, pause_reason: None,
         manager: f.manager.clone(),
         parent_session_id: Arc::new(|| PARENT_SESSION_ID.into()),
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
@@ -1606,6 +1607,7 @@ fn amend_definition_with_impossible_target_rejects_before_seam() {
     let amended_clone = amended.clone();
     let manager_clone = f.manager.clone();
     let with_amend = DagToolDeps {
+        cancel_node: None, guide: None, pause_reason: None,
         manager: f.manager.clone(),
         parent_session_id: Arc::new(|| PARENT_SESSION_ID.into()),
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
@@ -1896,6 +1898,7 @@ fn amend_seam_receives_compiled_definition() {
     let amended_clone = amended.clone();
     let manager_clone = f.manager.clone();
     let with_amend = DagToolDeps {
+        cancel_node: None, guide: None, pause_reason: None,
         manager: f.manager.clone(),
         parent_session_id: Arc::new(|| PARENT_SESSION_ID.into()),
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
@@ -2345,6 +2348,7 @@ fn amend_refusal_invalid_amendment_surfaces() {
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
 
     let with_error = DagToolDeps {
+        cancel_node: None, guide: None, pause_reason: None,
         manager: f.manager.clone(),
         parent_session_id: Arc::new(|| PARENT_SESSION_ID.into()),
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
@@ -2407,6 +2411,7 @@ fn amend_refusal_amend_running_node_surfaces() {
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
 
     let with_error = DagToolDeps {
+        cancel_node: None, guide: None, pause_reason: None,
         manager: f.manager.clone(),
         parent_session_id: Arc::new(|| PARENT_SESSION_ID.into()),
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),

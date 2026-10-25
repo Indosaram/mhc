@@ -66,6 +66,8 @@ pub async fn degrade_question(
         comment,
         unanswered,
         auto_resolved_after_ms: None,
+        cancel_origin: (status == QuestionStatus::Cancelled).then_some(maho_ext_api::QuestionCancelOrigin::User),
+        resolved_by: Some(maho_ext_api::QuestionResolvedBy::LocalUi),
     })
 }
 struct Pending {
@@ -206,6 +208,8 @@ impl ConnectionQuestionBridge {
             answers: pending.answers,
             comment: pending.comment,
             unanswered,
+            cancel_origin: (status == QuestionStatus::Cancelled).then_some(maho_ext_api::QuestionCancelOrigin::User),
+            resolved_by: matches!(status, QuestionStatus::Answered | QuestionStatus::CommentSubmitted).then_some(maho_ext_api::QuestionResolvedBy::RpcConnection),
             auto_resolved_after_ms: (status == QuestionStatus::TimedOut)
                 .then_some(now.saturating_sub(pending.asked_at)),
         };

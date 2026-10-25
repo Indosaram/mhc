@@ -42,11 +42,11 @@ fn record(parent: &str, own: &str) -> TaskRecord { let mut record = create_task_
     listener(&ManagedChildEvent { event_type: "message_end".into(), ..Default::default() });
     assert_eq!(ui.costs.lock().unwrap().last(), Some(&Some(0.2))); assert_eq!(manager.reads.load(Ordering::SeqCst), 1);
     let mut settled = grandchild.clone(); settled.execution_mode = "in-process".into(); settled.run_stats = Some(stats(0.2));
-    feed.observe(&StoreMutation { task_id: settled.task_id.clone(), record: Some(settled) });
+    feed.observe(&StoreMutation { previous_status: None, task_id: settled.task_id.clone(), record: Some(settled) });
     assert_eq!(manager.listeners.lock().unwrap().len(), 1); assert_eq!(manager.reads.load(Ordering::SeqCst), 1);
     feed.dispose(); assert!(manager.listeners.lock().unwrap().is_empty());
 }
 #[test] fn unsupported_engine_never_scans() {
     let manager = Arc::new(Manager::default()); let context = crate::support::context(); let mut runtime = TaskRuntimeContext::new("/tmp".into()); runtime.capture_from(&context);
-    let feed = TreeCostFeed::new(manager.clone(), Arc::new(Mutex::new(runtime))); feed.ensure_seeded(); feed.observe(&StoreMutation { task_id: "missing".into(), record: None }); assert_eq!(manager.reads.load(Ordering::SeqCst), 0);
+    let feed = TreeCostFeed::new(manager.clone(), Arc::new(Mutex::new(runtime))); feed.ensure_seeded(); feed.observe(&StoreMutation { previous_status: None, task_id: "missing".into(), record: None }); assert_eq!(manager.reads.load(Ordering::SeqCst), 0);
 }

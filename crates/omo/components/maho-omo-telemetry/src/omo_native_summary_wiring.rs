@@ -232,7 +232,7 @@ mod tests {
     fn publication() -> SummaryPublication {
         SummaryPublication {
             uuid: "01234567-89ab-cdef-0123-456789abcdef".into(),
-            properties: Map::from([("turns".to_string(), json!(1))]),
+            properties: Map::from_iter([("turns".to_string(), json!(1))]),
             timestamp_ms: 1000.0,
         }
     }

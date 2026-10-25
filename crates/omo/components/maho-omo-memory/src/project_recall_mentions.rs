@@ -10,20 +10,20 @@ use serde_json::Value;
 
 use memory_core::recall::RecallDocument;
 use crate::recall_transcript_mentions::{
-    create_transcript_mention_index, MentionDocument, TranscriptMentionIndex,
+    create_transcript_mention_index, BranchMentionIndex, MentionDocument, TranscriptMentionIndex,
     TranscriptMentionInput,
 };
 
 pub struct ProjectSourceMentions {
     source_for: Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>,
-    index: Box<dyn TranscriptMentionIndex + Send + Sync>,
+    index: BranchMentionIndex,
 }
 
 impl ProjectSourceMentions {
     pub fn new(source_for: Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>) -> Self {
         Self {
             source_for,
-            index: Box::new(create_transcript_mention_index()),
+            index: create_transcript_mention_index(),
         }
     }
 

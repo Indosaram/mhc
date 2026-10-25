@@ -62,7 +62,7 @@ pub fn read_connected_accounts(
     let auth = read_auth(&agent_dir.join("auth.json"));
     let mut kinds: BTreeMap<String, u64> = BTreeMap::new();
     for (provider, count) in connected_account_counts(&auth, env, tables) {
-        let kind = kind_of(provider, tables);
+        let kind = kind_of(&provider, tables);
         *kinds.entry(kind).or_insert(0) += count;
     }
     kinds

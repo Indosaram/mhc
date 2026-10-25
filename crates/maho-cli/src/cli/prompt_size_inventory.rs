@@ -2,7 +2,8 @@
 
 use maho_core::package_identity::find_nearest_package_identity;
 use maho_core::prompt_size_inventory::PromptSizeInventory;
-use maho_ext_mcp::config::{LoadMcpConfigOptions, load_mcp_config};
+use maho_ext_mcp::config::load_mcp_config;
+use maho_ext_mcp::config_schema::LoadMcpConfigOptions;
 use std::collections::BTreeMap;
 use std::path::Path;
 

@@ -93,6 +93,7 @@ impl SenpiSubprocessRunner {
                 root.to_string_lossy().into_owned(),
             );
         }
+        let admission_memory_root = self.admission_memory_root.clone();
         let execution = super::runner_execution::ReflectionExecutionInput {
             run: input.run,
             resolution: input.resolution,
@@ -111,7 +112,7 @@ impl SenpiSubprocessRunner {
             finalization: &context,
             memory_root: options
                 .memory_root
-                .or(self.admission_memory_root.as_deref()),
+                .or(admission_memory_root.as_deref()),
         };
         let identity = input.identity;
         self.launch(

@@ -452,6 +452,7 @@ impl Extension for OmoNativeTelemetryComponent {
             let client: Arc<Mutex<Option<Arc<telemetry_core::EventTelemetryClient>>>> =
                 Arc::default();
             let shared_client = Arc::clone(&client);
+            let shutdown_state = Arc::clone(&state);
             api.on(EventKind::SessionStart, Arc::new(move |event, ctx| {
                 consent.set_cwd(&ctx.cwd);
                 if consent.is_consented(true)
@@ -586,7 +587,7 @@ impl Extension for OmoNativeTelemetryComponent {
             }));
 
             // The session client's own teardown: clears the facade, then shuts the transport down.
-            let state = Arc::clone(&state);
+            let state = shutdown_state;
             api.on(EventKind::SessionShutdown, Arc::new(move |_, _| {
                 let client = client
                     .lock()
@@ -1199,10 +1200,10 @@ mod tests {
             &api,
             ExtensionEvent::TurnEnd {
                 turn_index: 1,
-                message: maho_ai::providers::faux::faux_assistant_message(
+                message: maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(maho_ai::providers::faux::faux_assistant_message(
                     "hello",
                     Default::default(),
-                ),
+                )))),
                 tool_results: Vec::new(),
             },
             &ctx,
@@ -1236,10 +1237,10 @@ mod tests {
             &api,
             ExtensionEvent::TurnEnd {
                 turn_index: 1,
-                message: maho_ai::providers::faux::faux_assistant_message(
+                message: maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(maho_ai::providers::faux::faux_assistant_message(
                     "hello",
                     Default::default(),
-                ),
+                )))),
                 tool_results: Vec::new(),
             },
             &ctx,

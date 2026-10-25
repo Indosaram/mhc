@@ -554,15 +554,7 @@ async fn claim_and_release(
         Ok(ready) => ready,
         Err(answer) => return Ok(answer),
     };
-    let state_attempt = if command.reason_str() == Some("move") {
-        ready
-            .session
-            .prepare_move_state(command.move_id.as_str().unwrap_or_default())
-            .await
-            .map_err(ReleaseWriteError::Other)?
-    } else {
-        None
-    };
+    let state_attempt = state_attempt.map(str::to_owned);
     let still_busy = busy_signals(port, &command.session_id, ready.session.as_ref());
     if !still_busy.is_empty() {
         let mut data = object(vec![("attachments", json!(ready.attachments))]);
@@ -575,7 +567,7 @@ async fn claim_and_release(
     // it had not admitted stays with its sender and reaches the next owner.
     ready.session.admission_close(RELEASED_ADMISSION_CLOSED);
     let mut entry = object(vec![("reason", command.reason.clone())]);
-    if let Some(attempt) = state_attempt {
+    if let Some(attempt) = &state_attempt {
         entry.insert("state_attempt".into(), json!(attempt));
     }
     if command.reason_str() == Some("move") {

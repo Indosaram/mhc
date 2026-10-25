@@ -89,7 +89,7 @@ mod tests {
                 boot_id: "b".into(),
             },
             created_at: 1000.0,
-            properties: Map::from([("turns".to_string(), json!(2))]),
+            properties: Map::from_iter([("turns".to_string(), json!(2))]),
         }
     }
 
@@ -120,14 +120,14 @@ mod tests {
         storage.write_pending(&record(uuid)).unwrap();
         let dropped = Arc::new(AtomicU64::new(0));
         let observed = Arc::clone(&dropped);
+        let report: DeliveryReporter = Arc::new(|_, _, _| {});
+        let counter: DroppedCounter = Arc::new(move |count| { observed.fetch_add(count, Ordering::SeqCst); });
         let retired = send_summary_record(
             &record(uuid),
             &storage,
             &publish(Ok(())),
-            &Arc::new(|_, _, _| {}),
-            &Arc::new(move |count| {
-                observed.fetch_add(count, Ordering::SeqCst);
-            }),
+            &report,
+            &counter,
         )
         .await;
         assert!(retired);

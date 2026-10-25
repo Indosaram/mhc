@@ -109,10 +109,11 @@ pub fn relocation_channel(options: RelocationChannelOptions) -> RelocationChanne
     let relocation_connection = client_info.relocation_connection.clone();
     let connection_id = Arc::clone(&client_info.connection_id);
     let output = Arc::clone(&output);
+    let can_deliver = deliver_to.is_some();
     RelocationChannel {
-        offerer: Arc::new(move || match &deliver_to {
-            None => None,
-            Some(_) => relocation_connection.as_ref().and_then(|offer| offer()),
+        offerer: Arc::new(move || match can_deliver {
+            false => None,
+            true => relocation_connection.as_ref().and_then(|offer| offer()),
         }),
         current: Arc::new(move || connection_id()),
         send: Arc::new(move |connection, record, _kind| {

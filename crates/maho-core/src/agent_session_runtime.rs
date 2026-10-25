@@ -238,6 +238,19 @@ pub struct AgentSessionLaunchProfile {
         Option<std::sync::Arc<dyn crate::prompt_size_inventory::PromptSizeInventory>>,
 }
 
+impl PartialEq for AgentSessionLaunchProfile {
+    fn eq(&self, other: &Self) -> bool {
+        self.cwd == other.cwd && self.permission_preset == other.permission_preset
+            && self.creation_model == other.creation_model && self.initial_thinking_level == other.initial_thinking_level
+            && self.auto_title == other.auto_title
+            && match (&self.prompt_size_inventory, &other.prompt_size_inventory) {
+                (None, None) => true,
+                (Some(left), Some(right)) => std::sync::Arc::ptr_eq(left, right),
+                _ => false,
+            }
+    }
+}
+
 /// senpi `applyRetryFallbackProfile`: overlays `{ modelFallback, fallbackChains }` on the session's
 /// settings as an in-memory override that is never written to a settings file.
 pub fn apply_retry_fallback_profile(

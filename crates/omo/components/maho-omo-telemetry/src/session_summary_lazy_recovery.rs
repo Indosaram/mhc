@@ -50,7 +50,7 @@ impl LazySummaryRecovery {
 
     pub fn load(&self) -> Arc<RecoveryRuntime> {
         let mut runtime = self.runtime.lock().unwrap_or_else(PoisonError::into_inner);
-        Arc::clone(&runtime).unwrap_or_else(|| {
+        runtime.clone().unwrap_or_else(|| {
             let built = Arc::new(create_recovery_runtime(
                 self.storage.clone(),
                 Arc::clone(&self.publisher),

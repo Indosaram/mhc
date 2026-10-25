@@ -395,7 +395,7 @@ impl RpcSessionRelocation {
     pub fn dispose(&self) {
         drop(lock(&self.unsubscribe).take());
         *lock(&self.scheduled) = None;
-        let waiting: Vec<Pending> = lock(&self.pending).drain().map(|(_, pending)| pending).collect();
+        let waiting: Vec<Pending> = std::mem::take(&mut *lock(&self.pending)).into_values().collect();
         for pending in waiting {
             let _ = pending.finish.send(Answer::Refused(refused(
                 "session_closed",
@@ -657,7 +657,7 @@ impl RelocationSession for AgentSessionRelocation {
 mod tests {
     use super::*;
     use crate::session_relocation_channel::{
-        OutputLane, RelocationChannelOptions, RelocationClientInfo, SOLE_CONNECTION,
+        OutputLane, RelocationChannelOptions, RelocationClientInfo, SOLE_CONNECTION, relocation_channel,
     };
     use std::sync::atomic::AtomicUsize;
 
@@ -1137,7 +1137,7 @@ mod tests {
             output_event,
         }));
         let pending_prompts: PendingPrompts = Arc::new(Vec::new);
-        let dep: Arc<dyn RelocationSession> = Arc::clone(&session);
+        let dep: Arc<dyn RelocationSession> = session.clone();
         let host = RpcSessionRelocation::new(RpcSessionRelocationDeps {
             session: dep,
             pending_prompts,

@@ -282,6 +282,9 @@ async fn qa_outcome_authority(executable: &Path) -> Result<(), String> {
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             run_supervised_child(SupervisedChildInput {
+                queued_at: now,
+                memory_root: root.path().to_string_lossy().into_owned(),
+                max_concurrent_runs: None,
                 run_dir: root.path(),
                 run_id: "authority",
                 attempt: 1,
@@ -817,7 +820,7 @@ async fn qa_facts(executable: &Path) -> Result<(), String> {
     let records = memory_core::facts::extraction::parse_facts_extraction_jsonl(&extraction)
         .map_err(|error| error.to_string())?;
     if records.len() != 1
-        || !matches!(&records[0],memory_core::facts::extraction::FactsExtractionRecord::Project{text,date} if text=="isolated facts extraction"&&date=="2026-10-11")
+        || !matches!(&records[0],memory_core::facts::extraction::FactsExtractionRecord::Project{text,date,..} if text=="isolated facts extraction"&&date=="2026-10-11")
     {
         return Err(
             "native CLI write tool did not persist the expected project extraction record".into(),
