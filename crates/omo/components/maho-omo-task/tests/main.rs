@@ -93,6 +93,10 @@ pub mod skill_invocation_tracker;
 pub mod status_goldens;
 #[path = "status_ui.rs"]
 pub mod status_ui;
+#[path = "subagent_cost_ledger.rs"]
+pub mod subagent_cost_ledger;
+#[path = "subagent_cost_feed.rs"]
+pub mod subagent_cost_feed;
 #[path = "store_mutation_observer.rs"]
 pub mod store_mutation_observer;
 #[path = "task_rpc_bridge.rs"]

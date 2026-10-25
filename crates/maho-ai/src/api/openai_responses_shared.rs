@@ -1963,7 +1963,7 @@ fn finalize_response(
                     .unwrap_or(0)
             })
             .unwrap_or(0);
-        output.usage = Usage {
+        output.usage = Usage { context_usage: None,
             input: field_u64(usage, "input_tokens")
                 .saturating_sub(cached_tokens)
                 .saturating_sub(cache_write_tokens),
@@ -1979,6 +1979,7 @@ fn finalize_response(
             .map(|count| count.max(0.0) as u64),
             total_tokens: field_u64(usage, "total_tokens"),
             cost: Default::default(),
+            ..Default::default()
         };
     }
     calculate_cost(model, &mut output.usage);

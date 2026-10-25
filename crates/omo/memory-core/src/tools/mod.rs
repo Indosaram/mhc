@@ -1,6 +1,7 @@
 //! Tools for interacting with git-backed memory files.
 
 pub mod agreements_write_guard;
+pub mod claim_frontmatter;
 pub mod leaked_arguments;
 pub mod memfs;
 pub mod memory;
@@ -9,6 +10,8 @@ pub mod patch_parser;
 pub mod soul;
 pub mod tool_errors;
 
+pub use agreements_write_guard::*;
+pub use claim_frontmatter::*;
 pub use leaked_arguments::*;
 pub use memfs::*;
 pub use memory::*;

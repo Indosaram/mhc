@@ -10,12 +10,14 @@ autotests = false
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = { version = "=1.0.149", features = ["preserve_order"] }
 thiserror = "=2.0.20"
+notify = "=8.2.0"
 sha2 = "=0.10.9"
 sha1 = "=0.10.6"
 regex = "=1.12.3"
 tokio = { version = "=1.52.3", features = ["full", "test-util"] }
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-ext-tool-search = { path = "../maho-ext-tool-search" }
+maho-ai = { path = "../../maho-ai" }
 maho-core = { path = "../../maho-core" }
 serde_path_to_error = "=0.1.20"
 tempfile = "=3.27.0"
@@ -38,7 +40,6 @@ tempfile = "=3.27.0"
 reqwest = { workspace = true, features = ["rustls-tls", "rustls-tls-native-roots"] }
 maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
 maho-ext-host = { path = "../../maho-ext-host" }
-maho-ai = { path = "../../maho-ai" }
 maho-agent = { path = "../../maho-agent" }
 rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "ring"] }
 rustls = "=0.23.45"

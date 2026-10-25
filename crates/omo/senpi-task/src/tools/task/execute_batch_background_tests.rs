@@ -34,7 +34,12 @@ fn text_of(result: &TaskToolResult) -> String {
     }
 }
 
-fn started(task_id: &str, name: &str, status: TaskStatus, queue_position: Option<usize>) -> StartResult {
+fn started(
+    task_id: &str,
+    name: &str,
+    status: TaskStatus,
+    queue_position: Option<usize>,
+) -> StartResult {
     StartResult::Started(StartedTask {
         task_id: task_id.to_string(),
         status,
@@ -79,7 +84,10 @@ fn item(prompt: &str, load_skills: Option<Vec<&str>>) -> SpawnItemInput {
     }
 }
 
-fn background_params(tasks: Vec<SpawnItemInput>, load_skills: Option<Vec<&str>>) -> SpawnParamsInput {
+fn background_params(
+    tasks: Vec<SpawnItemInput>,
+    load_skills: Option<Vec<&str>>,
+) -> SpawnParamsInput {
     SpawnParamsInput {
         category: Some("quick".to_string()),
         run_in_background: Some(true),
@@ -160,21 +168,28 @@ fn given_inherited_and_item_load_skills_when_background_items_start_then_each_re
         started(IDS[1], "item-2", TaskStatus::Running, None),
     ]);
     let skill_summary_for: &'static SkillSummaryFn =
-        Box::leak(Box::new(|item: &ResolvedSpawnItem| match item.prompt.as_str() {
-            "one" => Some(TaskSkillSummary {
-                requested: strings(&["shared"]),
-                resolved: strings(&["shared"]),
-                missing: Vec::new(),
-            }),
-            "two" => Some(TaskSkillSummary {
-                requested: strings(&["specific", "ghost"]),
-                resolved: strings(&["specific"]),
-                missing: strings(&["ghost"]),
-            }),
-            _ => None,
+        Box::leak(Box::new(|item: &ResolvedSpawnItem| {
+            match item.prompt.as_str() {
+                "one" => Some(TaskSkillSummary {
+                    rejected: None,
+                    requested: strings(&["shared"]),
+                    resolved: strings(&["shared"]),
+                    missing: Vec::new(),
+                }),
+                "two" => Some(TaskSkillSummary {
+                    rejected: None,
+                    requested: strings(&["specific", "ghost"]),
+                    resolved: strings(&["specific"]),
+                    missing: strings(&["ghost"]),
+                }),
+                _ => None,
+            }
         }));
     let params = background_params(
-        vec![item("one", None), item("two", Some(vec!["specific", "ghost"]))],
+        vec![
+            item("one", None),
+            item("two", Some(vec!["specific", "ghost"])),
+        ],
         Some(vec!["shared"]),
     );
 
@@ -198,7 +213,11 @@ fn given_every_background_start_fails_when_results_are_aggregated_then_status_is
         IDS.iter()
             .enumerate()
             .map(|(index, task_id)| {
-                start_failed(task_id, &format!("item-{}", index + 1), &format!("failed:{task_id}"))
+                start_failed(
+                    task_id,
+                    &format!("item-{}", index + 1),
+                    &format!("failed:{task_id}"),
+                )
             })
             .collect(),
     );

@@ -970,7 +970,7 @@ async fn records_adjustment_usage_without_changing_branch_tip() {
         .lane("main", None, &BACKGROUND_CONTEXT)
         .await
         .unwrap();
-    let usage = maho_ai::types::Usage {
+    let usage = maho_ai::types::Usage { context_usage: None,
         input: 7,
         total_tokens: 7,
         ..Default::default()

@@ -210,6 +210,14 @@ impl SteeringEngine {
         if let Some(one_shot) = one_shot_policy_denial(&record) {
             return Ok(one_shot);
         }
+        if let Some(outcome) = self
+            .port
+            .send_while_run_held
+            .as_ref()
+            .and_then(|send| send(&record, &input.message))
+        {
+            return outcome;
+        }
         let deliver_as = input.deliver_as.unwrap_or(DEFAULT_SEND_DELIVERY);
         if record.status == TaskStatus::Pending {
             return self.enqueue_pending(&record, &input.message, deliver_as);
@@ -589,7 +597,7 @@ impl SteeringEngine {
                 previous_status: TaskStatus::Pending,
             });
         }
-        if record.status != TaskStatus::Running {
+        if !matches!(record.status, TaskStatus::Running | TaskStatus::Paused) {
             let reason_text = if record.status == TaskStatus::Cancelled {
                 format!("Task {} is already cancelled.", record.task_id)
             } else {
@@ -662,7 +670,11 @@ impl SteeringEngine {
                 Some(&json!({ "taskId": record.task_id, "error": error.to_string() })),
             );
         }
-        self.event(&record.task_id, "cancelled", cancelled_payload("running"))?;
+        self.event(
+            &record.task_id,
+            "cancelled",
+            cancelled_payload(record.status.as_str()),
+        )?;
         match handle {
             Some(handle) if skip_abort && !handle.has_terminate() => {
                 self.destroy_after_settlement(handle, record.task_id.clone());
@@ -674,7 +686,7 @@ impl SteeringEngine {
         }
         Ok(CancelOutcome::Cancelled {
             task_id: record.task_id,
-            previous_status: TaskStatus::Running,
+            previous_status: record.status,
         })
     }
 
@@ -753,6 +765,7 @@ impl SteeringEngine {
         error_message: Option<String>,
         reason: Option<String>,
     ) -> Result<(), SteeringError> {
+        let previous_status = self.port.store.load(task_id)?.map(|record| record.status).unwrap_or(TaskStatus::Running);
         let run_stats = (self.port.run_stats_snapshot)(task_id);
         let result = self.port.store.transition(
             task_id,
@@ -764,7 +777,7 @@ impl SteeringEngine {
         )?;
         if result.applied {
             self.clear_persisted_queue(task_id, None)?;
-            let mut payload = json!({ "previous_status": "running" });
+            let mut payload = json!({ "previous_status": previous_status.as_str() });
             if let Some(reason) = reason {
                 payload["reason"] = json!(reason);
             }
@@ -800,7 +813,7 @@ impl SteeringEngine {
 fn cancel_pending(record: &TaskRecord) -> CancelOutcome {
     CancelOutcome::CancelPending {
         task_id: record.task_id.clone(),
-        previous_status: TaskStatus::Running,
+        previous_status: record.status,
         reason: CANCEL_PENDING_REASON.to_string(),
     }
 }
@@ -852,15 +865,40 @@ fn not_continuable_reason(record: &TaskRecord) -> String {
     }
 }
 
+fn fold_prior_runs_cost(record: &TaskRecord) -> Option<f64> {
+    let finished = record
+        .run_stats
+        .as_ref()
+        .filter(|stats| {
+            matches!(
+                stats.cost_status,
+                Some(
+                    crate::state::CostReportStatus::Reported
+                        | crate::state::CostReportStatus::Partial
+                )
+            )
+        })
+        .and_then(|stats| stats.cost_usd)
+        .filter(|cost| cost.is_finite() && *cost > 0.0)
+        .unwrap_or(0.0);
+    let total = record.prior_runs_cost_usd.unwrap_or(0.0) + finished;
+    (total > 0.0).then_some(total)
+}
+
 /// run_stats describes the FINISHED run, so it is dropped with the terminal fields.
-fn build_revived(record: &TaskRecord, timestamp: String) -> TaskRecord {
+pub(super) fn build_revived(record: &TaskRecord, timestamp: String) -> TaskRecord {
     let mut revived = record.clone();
     revived.final_response = None;
     revived.error_message = None;
+    revived.prior_runs_cost_usd = fold_prior_runs_cost(record);
     revived.run_stats = None;
+    revived.failure_kind = None;
+    revived.failure_reason = None;
+    revived.awaiting_input = None;
     revived.status = TaskStatus::Running;
     revived.residency_state = ResidencyState::Resident;
     revived.updated_at = timestamp;
     revived.notification.run_epoch += 1;
+    revived.run_start_epoch = revived.notification.run_epoch;
     revived
 }

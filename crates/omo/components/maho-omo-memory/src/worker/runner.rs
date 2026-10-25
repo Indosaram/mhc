@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet,future::Future};
 use memory_core::{identity::resolve::MemoryIdentity,reflection::ReservedRun};
 use super::{resolve_model::ReflectionModelResolution,runner_types::{ExecutionResult,ReflectionRunResult,ReflectionReservationPort},runner_execution::ReflectionExecutionResult,completion_delivery::ReflectionLiveSession};
-#[derive(Default)]pub struct SenpiSubprocessRunner{warned_categories:BTreeSet<String>}
+#[derive(Default)]pub struct SenpiSubprocessRunner{warned_categories:BTreeSet<String>, pub admission_memory_root: Option<std::path::PathBuf>}
 pub struct ReflectionRunnerInput<'a>{
     pub run:&'a ReservedRun,pub identity:&'a MemoryIdentity,pub config:&'a serde_json::Value,
     pub resolution:&'a ReflectionModelResolution,pub reservation:&'a dyn ReflectionReservationPort,
@@ -27,7 +27,9 @@ impl SenpiSubprocessRunner{
         let deadline=match options.deadline_ms{Some(deadline)=>deadline as f64,None=>settings["timeout_minutes"].as_f64().ok_or("reflection timeout missing")?*60_000.0};
         let merge=settings["merge"].as_str().ok_or("reflection merge policy missing")?;
         let context=super::run_finalization_types::RunFinalizationContext{identity:input.identity,reservation:input.reservation,launch:None,now_ms:input.now_ms,receipts:None,warn:None};
-        let execution=super::runner_execution::ReflectionExecutionInput{run:input.run,resolution:input.resolution,identity:input.identity,config:input.config,env:options.env,sources:options.sources,launch:options.launcher,parent_session_file:options.parent_session_file,parent_cwd:options.parent_cwd,route:options.route,sandbox:options.sandbox,merge_policy:merge,hard_deadline_at:(input.now_ms)() as f64+deadline,options:options.child,finalization:&context};
+        let mut execution_env = options.env.clone();
+        if let Some(root) = &self.admission_memory_root { execution_env.insert("OMO_MEMORY_ADMISSION_ROOT".into(), root.to_string_lossy().into_owned()); }
+        let execution=super::runner_execution::ReflectionExecutionInput{run:input.run,resolution:input.resolution,identity:input.identity,config:input.config,env:&execution_env,sources:options.sources,launch:options.launcher,parent_session_file:options.parent_session_file,parent_cwd:options.parent_cwd,route:options.route,sandbox:options.sandbox,merge_policy:merge,hard_deadline_at:(input.now_ms)() as f64+deadline,options:options.child,finalization:&context};
         let identity=input.identity;
         self.launch(input,live,||super::runner_execution::execute_reflection_run(cache,execution,|repo,run|{
             let exec=memory_core::git::exec::create_git_exec(Default::default());

@@ -278,6 +278,9 @@ pub const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = CompactionSettings {
 
 /// Calculate total context tokens from provider usage.
 pub fn calculate_context_tokens(usage: &Usage) -> u64 {
+    if let Some(context) = usage.context_usage {
+        return context.map_or(0, |context| context.input + context.output);
+    }
     if usage.total_tokens > 0 {
         usage.total_tokens
     } else {

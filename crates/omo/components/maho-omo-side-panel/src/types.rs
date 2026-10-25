@@ -13,6 +13,7 @@ pub type Theme = Arc<dyn Fn(PanelColor, &str) -> String + Send + Sync>;
 pub type RowSource = Arc<dyn Fn(usize) -> Vec<PanelRow> + Send + Sync>;
 pub type UrlHook = Arc<dyn Fn(&str) + Send + Sync>;
 pub type ActionHook = Arc<dyn Fn(PanelAction) + Send + Sync>;
+pub type RegularModeFallback = Arc<dyn Fn() + Send + Sync>;
 pub type Stop = Box<dyn FnOnce() + Send>;
 pub type TerminalHandler = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 pub type WidgetFactory = Arc<dyn Fn(Arc<dyn PanelHostTui>, Option<Theme>) -> Component + Send + Sync>;

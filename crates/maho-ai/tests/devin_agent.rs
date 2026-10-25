@@ -389,6 +389,7 @@ fn assistant_message(content: Vec<ContentBlock>) -> maho_ai::types::AssistantMes
         timing: None,
         thinking_level: None,
         provider_diagnostic: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         error_cause: None,
         content,

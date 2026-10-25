@@ -11,6 +11,7 @@ fn test_persona_seed_sha256_when_hashed_matches_pin() {
             read_only: None,
             kind: None,
             aliases: None,
+            extra: None,
         },
         DEFAULT_PERSONA_BODY,
     )

@@ -762,3 +762,30 @@ fn given_unreadable_session_path_when_respawned_then_no_continuation_and_respawn
 
     assert!(lock(&harness.handle.follow_ups).is_empty());
 }
+
+#[test]
+fn paused_respawn_has_no_continuation_prompt_and_reattach_keeps_epoch() {
+    let handle = RpcFake::new(CleanupStage::None, false);
+    let mut setup = Setup::new();
+    setup.rpc = Some(CapturingRpcRunner::new(Arc::clone(&handle)));
+    let mut record = respawn_record();
+    record.status = TaskStatus::Paused;
+    record.notification.run_epoch = 7;
+    record.run_start_epoch = 7;
+    seed(&setup.project, &record);
+    let (manager, project) = setup.build();
+    let restored = expect_ok(manager.respawn(&record, Some(session_path())));
+    assert!(lock(&handle.follow_ups).is_empty());
+    assert!(matches!(
+        manager.reattach(&record, restored),
+        ReattachResult::Ok
+    ));
+    let fresh = project
+        .store()
+        .load(&record.task_id)
+        .expect("load")
+        .expect("record");
+    assert_eq!(fresh.status, TaskStatus::Paused);
+    assert_eq!(fresh.notification.run_epoch, 7);
+    assert_eq!(fresh.run_start_epoch, 7);
+}

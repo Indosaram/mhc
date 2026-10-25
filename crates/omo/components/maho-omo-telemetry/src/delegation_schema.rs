@@ -18,7 +18,7 @@ pub const DELEGATION_REASONING_EFFORTS: &[&str] = &[
 ];
 pub const DELEGATION_MODEL_SOURCES: &[&str] = &["category", "explicit", "agent", "none"];
 pub const DELEGATION_COVERAGE_STATUSES: &[&str] = &["complete", "partial", "unavailable"];
-pub const DELEGATION_COST_STATUSES: &[&str] = &["reported", "unavailable", "invalid"];
+pub const DELEGATION_COST_STATUSES: &[&str] = &["reported", "partial", "unavailable", "invalid"];
 pub const DELEGATION_DURATION_STATUSES: &[&str] = &["monotonic", "wall_clock", "unavailable"];
 use serde_json::{Value, json};
 pub fn build_delegation_completed_schema(providers: &[&str], models: &[&str]) -> Value {

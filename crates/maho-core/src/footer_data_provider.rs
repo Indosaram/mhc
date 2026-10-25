@@ -102,6 +102,7 @@ pub struct FooterDataProvider {
     head_mtime: Mutex<Option<std::time::SystemTime>>,
     branch_change_callbacks: Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>,
     available_provider_count: Mutex<usize>,
+    subagent_cost: Mutex<Option<f64>>,
     disposed: Mutex<bool>,
 }
 
@@ -115,6 +116,7 @@ impl FooterDataProvider {
             head_mtime: Mutex::new(None),
             branch_change_callbacks: Mutex::new(Vec::new()),
             available_provider_count: Mutex::new(0),
+            subagent_cost: Mutex::new(None),
             disposed: Mutex::new(false),
         }
     }
@@ -154,6 +156,13 @@ impl FooterDataProvider {
 
     pub fn clear_extension_statuses(&self) {
         Self::lock(&self.extension_statuses).clear();
+        *Self::lock(&self.subagent_cost) = None;
+    }
+
+    pub fn subagent_cost(&self) -> Option<f64> { *Self::lock(&self.subagent_cost) }
+
+    pub fn set_subagent_cost(&self, cost: Option<f64>) {
+        *Self::lock(&self.subagent_cost) = cost.filter(|value| value.is_finite() && *value >= 0.0);
     }
 
     pub fn available_provider_count(&self) -> usize {
@@ -330,5 +339,25 @@ mod tests {
         provider.refresh_branch();
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert_eq!(provider.git_branch().as_deref(), Some("renamed"));
+    }
+}
+
+#[cfg(test)]
+mod subagent_cost_tests {
+    use super::*;
+    #[test]
+    fn validates_spend_and_clears_on_status_reset() {
+        let provider = FooterDataProvider::new("/tmp");
+        for value in [0.0, 1.27] {
+            provider.set_subagent_cost(Some(value));
+            assert_eq!(provider.subagent_cost(), Some(value));
+        }
+        for value in [-1.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            provider.set_subagent_cost(Some(value));
+            assert_eq!(provider.subagent_cost(), None);
+        }
+        provider.set_subagent_cost(Some(0.38));
+        provider.clear_extension_statuses();
+        assert_eq!(provider.subagent_cost(), None);
     }
 }

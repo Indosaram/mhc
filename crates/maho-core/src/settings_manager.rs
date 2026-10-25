@@ -533,6 +533,10 @@ impl SettingsStorage for FileSettingsStorage {
                 let _ = std::fs::remove_file(&temp_path);
                 format!("Failed to write settings {path}: {error}")
             })?;
+            guard.assert_held().map_err(|error| {
+                let _ = std::fs::remove_file(&temp_path);
+                format!("Failed to write settings {path}: lock lost before publishing ({error})")
+            })?;
             record_self_write(&path, &next);
             std::fs::rename(&temp_path, &path).map_err(|error| {
                 let _ = std::fs::remove_file(&temp_path);

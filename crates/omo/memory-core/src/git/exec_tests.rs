@@ -600,3 +600,74 @@ fn given_stdin_and_windows_fallback_when_bare_git_absent_then_stdin_reaches_fall
         vec![input.clone(), input]
     );
 }
+
+#[test]
+fn early_stdin_close_does_not_mask_git_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let exec = system_git_exec();
+    let options = GitExecOptions {
+        cwd: root.path().to_path_buf(),
+        timeout_ms: 5_000,
+        stdin: Some(vec![b'x'; 4 * 1024 * 1024]),
+        ..Default::default()
+    };
+    let result = exec.run(&["not-a-git-command".into()], &options).unwrap();
+    assert_ne!(result.code, 0);
+    assert!(!result.stderr.contains("stdin:"));
+}
+
+#[cfg(unix)]
+#[test]
+fn normal_exit_is_bounded_when_hook_descendant_holds_pipes() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+    let root = tempfile::tempdir().unwrap();
+    let repo = super::repo::GitMemoryRepo::open(root.path(), "test").unwrap();
+    repo.init(None).unwrap();
+    let fifo = root.path().join("hold.fifo");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let hook = root.path().join(".git/hooks/post-commit");
+    fs_write_hook(
+        &hook,
+        "#!/bin/sh\ncat < hold.fifo &\necho $! > holder.pid\necho hook-output >&2\nexit 0\n",
+    );
+    fn fs_write_hook(path: &std::path::Path, content: &str) {
+        std::fs::write(path, content).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let cwd = root.path().to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let task = std::thread::spawn(move || {
+        let result = system_git_exec().run(
+            &[
+                "commit".into(),
+                "--allow-empty".into(),
+                "-m".into(),
+                "next".into(),
+            ],
+            &GitExecOptions {
+                cwd,
+                timeout_ms: 5_000,
+                ..Default::default()
+            },
+        );
+        tx.send(result).unwrap();
+    });
+    let result = rx.recv_timeout(Duration::from_secs(15));
+    // Cleanup even on a failed assertion: the FIFO reader never needs an arbitrary delay.
+    if let Ok(pid) = std::fs::read_to_string(root.path().join("holder.pid")) {
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", pid.trim()])
+            .status();
+    }
+    let result = result
+        .expect("git result must not await background hook EOF")
+        .unwrap();
+    assert_eq!(result.code, 0);
+    assert!(result.stderr.contains("hook-output"));
+    task.join().unwrap();
+}

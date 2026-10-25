@@ -3738,6 +3738,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "fancy-regex",
+ "filetime",
  "flate2",
  "futures",
  "globset",
@@ -4263,6 +4264,7 @@ dependencies = [
  "maho-ext-host",
  "maho-ext-tool-search",
  "maho-test-support",
+ "notify",
  "rcgen",
  "regex",
  "reqwest 0.12.28",
@@ -5057,10 +5059,13 @@ dependencies = [
 name = "maho-omo-config-core"
 version = "0.0.0"
 dependencies = [
+ "hex",
  "jiff",
  "libc",
+ "regex",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "uuid",
 ]

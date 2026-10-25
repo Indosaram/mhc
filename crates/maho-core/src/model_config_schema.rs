@@ -167,6 +167,7 @@ pub struct ModelsJsonProvider {
     pub auth_header: Option<bool>,
     pub whitelist: Option<Vec<String>>,
     pub blacklist: Option<Vec<String>>,
+    pub hide_free: Option<bool>,
     pub models: Option<Vec<ModelsJsonModel>>,
     pub model_overrides: Option<IndexMap<String, ModelsJsonModelOverride>>,
     pub credentials: Option<ModelsJsonCredentialPolicy>,

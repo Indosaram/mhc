@@ -41,7 +41,7 @@ pub fn register_rule_injection_hooks_with_engine<D:EngineDeps+Send+'static>(api:
             for rule in &loaded.rules{if paths.contains(&rule.candidate.path)||paths.contains(&rule.candidate.real_path){engine.mark_static_injected(rule);}}
             let rules=loaded.rules.into_iter().filter(|rule|!paths.contains(&rule.candidate.path)&&!paths.contains(&rule.candidate.real_path)&&!engine.is_static_injected(rule)).collect::<Vec<_>>();
             if rules.is_empty(){return Ok(EventResult::None);}let block=engine.format_static(&rules);for rule in &rules{engine.mark_static_injected(rule);}
-            Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult{system_prompt:Some(format!("{}{block}",event.system_prompt)),message:None}))
+            Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult{ system_prompt_parts: None,system_prompt:Some(format!("{}{block}",event.system_prompt)),message:None}))
         })
     }));
     let runtime=api.runtime.clone();

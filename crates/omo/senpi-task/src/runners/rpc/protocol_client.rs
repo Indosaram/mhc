@@ -43,9 +43,24 @@ pub enum RpcClientError {
 
 /// The client surface the RPC handle programs against (a fake implements it in tests).
 pub trait RpcClientPort: Send + Sync {
+    fn run_pause(&self) -> Option<&dyn crate::pause::native_child_pause::NativeRunPause> {
+        None
+    }
+    fn publish_task_status(&self, _status: crate::state::TaskStatus) -> Result<(), RpcClientError> {
+        Ok(())
+    }
+    fn on_durable_session_id(
+        &self,
+        _listener: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> Option<Unsubscribe> {
+        None
+    }
     fn pid(&self) -> Option<u32>;
     /// Send one command and block until its correlated response arrives.
     fn send(&self, command: Value) -> Result<Value, RpcClientError>;
+    fn send_task_parent(&self, command: Value) -> Result<Value, RpcClientError> {
+        self.send(command)
+    }
     fn on_event(&self, listener: RpcEventListener) -> Unsubscribe;
     /// Fires once when the child is gone; a listener added afterwards fires immediately.
     fn on_exit(&self, listener: RpcExitListener) -> Unsubscribe;
@@ -251,6 +266,34 @@ impl RpcProtocolClient {
 }
 
 impl RpcClientPort for RpcProtocolClient {
+    fn on_durable_session_id(
+        &self,
+        listener: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> Option<Unsubscribe> {
+        Some(self.on_event(Arc::new(move |event| {
+            if event["type"] == "session_id" || event["type"] == "session_replaced" {
+                if let Some(id) = event
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                {
+                    listener(id);
+                }
+            }
+        })))
+    }
+    fn publish_task_status(&self, status: crate::state::TaskStatus) -> Result<(), RpcClientError> {
+        if self.shared.lock().exit.is_some() {
+            return Ok(());
+        }
+        let response = self
+            .send(json!({"type":"set_session_context", "patch":{"task_status":status.as_str()}}))?;
+        if response["success"] == true {
+            Ok(())
+        } else {
+            Err(command_error(&response, "set_session_context").into())
+        }
+    }
     fn pid(&self) -> Option<u32> {
         self.child.pid()
     }
@@ -408,11 +451,12 @@ fn finalize(shared: &ClientShared, exit: ChildExitInput) {
             ),
         },
     };
-    for (_, sender) in pending {
-        let _ = sender.send(Err(failure.clone()));
-    }
+    // Publish exit facts before waking command waiters so startup classification sees stderr.
     for listener in listeners {
         listener(&exit);
+    }
+    for (_, sender) in pending {
+        let _ = sender.send(Err(failure.clone()));
     }
 }
 

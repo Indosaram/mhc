@@ -274,6 +274,7 @@ impl FactsExtractorRunner {
             crate::facts_people_payload::read_facts_people_payload(&self.identity.paths.repo);
         let envelope = memory_core::facts::FactsPayloadEnvelope {
             version: 1,
+            agreement_event_version: Some(1),
             identity: self.identity.id.clone(),
             today: instant[..10].into(),
             known_people: people.known_people,
@@ -661,6 +662,10 @@ impl FactsExtractorRunner {
 
         let record_tool = Arc::new(crate::facts_record_tool::create_facts_record_tool(
             crate::facts_record_tool::FactsRecordToolInput {
+                exchanges: match input.payload {
+                    crate::worker::spawn_payload::FactsLaunchPayload::Facts(payload) => crate::facts_record_tool::payload_exchanges(payload),
+                    crate::worker::spawn_payload::FactsLaunchPayload::Text(_) => Vec::new(),
+                },
                 extraction_path,
                 max_records: None,
                 max_bytes: None,
@@ -697,6 +702,10 @@ impl FactsExtractorRunner {
             };
             let at = Arc::new(crate::facts_agreement_tool::create_facts_agreement_tool(
                 crate::facts_agreement_tool::FactsAgreementToolInput {
+                    payload: match input.payload {
+                        crate::worker::spawn_payload::FactsLaunchPayload::Facts(payload) => Some(serde_json::to_value(payload).map_err(|error| error.to_string())?),
+                        crate::worker::spawn_payload::FactsLaunchPayload::Text(_) => None,
+                    },
                     extraction_path: agreements_path,
                     known_ids,
                     on_failure: None,
@@ -1248,6 +1257,7 @@ mod tests {
             &dir.join("facts-payload.json"),
             &FactsPayload {
                 version: 1,
+            agreement_event_version: Some(1),
                 identity: "agent".into(),
                 today: "1970-01-01".into(),
                 known_people: vec![],
@@ -1421,6 +1431,7 @@ mod tests {
 
         let payload = FactsPayload {
             version: 1,
+            agreement_event_version: Some(1),
             identity: "agent".into(),
             today: "1970-01-01".into(),
             known_people: vec![],

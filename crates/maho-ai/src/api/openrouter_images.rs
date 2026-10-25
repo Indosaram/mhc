@@ -97,7 +97,7 @@ pub fn parse_usage(raw_usage: &Value, model: &ImagesModel) -> Usage {
         .get("completion_tokens")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let mut usage = Usage {
+    let mut usage = Usage { context_usage: None,
         input,
         output,
         cache_read: cache_read_tokens,
@@ -106,6 +106,7 @@ pub fn parse_usage(raw_usage: &Value, model: &ImagesModel) -> Usage {
         reasoning: None,
         total_tokens: input + output + cache_read_tokens + cache_write_tokens,
         cost: UsageCost::default(),
+        ..Default::default()
     };
     usage.cost.input = (model.cost.input / 1_000_000.0) * input as f64;
     usage.cost.output = (model.cost.output / 1_000_000.0) * output as f64;

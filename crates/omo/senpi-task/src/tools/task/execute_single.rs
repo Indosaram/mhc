@@ -28,7 +28,9 @@ use crate::tools::task::result_details::{
     started_details,
 };
 use crate::tools::task::skill_result::append_missing_skills;
-use crate::tools::task::spawn_policy::{SpawnPolicyDeps, SpawnPolicyVerdict, evaluate_spawn_policy};
+use crate::tools::task::spawn_policy::{
+    SpawnPolicyDeps, SpawnPolicyVerdict, evaluate_spawn_policy,
+};
 use crate::tools::task::start_presentation::{
     StartLabels, StartedView, background_conversion_text, background_start_text,
 };
@@ -404,8 +406,23 @@ pub fn run_spawn(
         &ctx.session_id,
         deps.tool,
         &ctx.cwd,
+        ctx.model.as_ref(),
     );
-    let started = match deps.tool.start_task(deps.manager, &spec, effective_params.tools.as_deref()) {
+    let started = match deps
+        .tool
+        .start_task(deps.manager, &spec, effective_params.tools.as_deref())
+    {
+        StartResult::Held(held) => {
+            return Ok(result(
+                "Task admission is held by your Stop. Resume the run to continue.".to_string(),
+                TaskToolDetails {
+                    task_id: held.task_id,
+                    status: "paused".to_string(),
+                    pause_seq: Some(held.pause_seq),
+                    ..Default::default()
+                },
+            ));
+        }
         StartResult::Started(started) => started,
         StartResult::PlanUnresolved(error) => {
             return Ok(result(
@@ -547,12 +564,7 @@ pub fn run_spawn(
                     TaskToolDetails {
                         status: "cancelled".to_string(),
                         reason: Some(reason.to_string()),
-                        ..started_details(
-                            &started,
-                            &detail_params,
-                            execution_mode,
-                            skills.clone(),
-                        )
+                        ..started_details(&started, &detail_params, execution_mode, skills.clone())
                     },
                 ))
             } else {

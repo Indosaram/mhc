@@ -1,4 +1,4 @@
-//! Port of omo-senpi `components/model-profile/credential-policy.ts` at omo `455dee62`: whether the
+//! Port of omo-senpi `components/model-profile/credential-policy.ts` at omo `v5.1.47`: whether the
 //! engine may rotate a provider's stored credential accounts on the first turn.
 //!
 //! senpi's `ModelRuntime.couldRotateCredentials` never rotates when a runtime API key is set for the
@@ -18,11 +18,17 @@
 //! (`if (typeof registry.getProviderAuthStatus !== "function") return true`); that fallback does NOT
 //! by itself prove the runtime-key case - the host must report `source: "runtime"` for a runtime API
 //! key.
+//!
+//! The file itself is read through [`crate::models_json::read_models_json`], the shared
+//! mtime-and-size-cached reader every consumer of `models.json` uses, so one process parses the file
+//! once per edit instead of once per policy construction.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
 use maho_ext_api::{JsonValue, ModelRegistry};
+
+use crate::models_json::read_models_json;
 
 /// Upstream `credentialRotationPolicy(registry, agentDir)`.
 pub struct CredentialRotationPolicy<'a> {
@@ -55,11 +61,10 @@ fn rotation_disabled_providers(agent_dir: Option<&Path>) -> BTreeSet<String> {
     let Some(agent_dir) = agent_dir else {
         return BTreeSet::new();
     };
-    let parsed = utils::read_jsonc_file(agent_dir.join("models.json"));
-    let Some(JsonValue::Object(root)) = parsed else {
+    let Some(parsed) = read_models_json(agent_dir) else {
         return BTreeSet::new();
     };
-    let Some(JsonValue::Object(providers)) = root.get("providers") else {
+    let Some(JsonValue::Object(providers)) = parsed.get("providers") else {
         return BTreeSet::new();
     };
     let mut disabled = BTreeSet::new();

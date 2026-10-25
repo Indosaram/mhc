@@ -1,11 +1,48 @@
 //! Git hook scripts installed into memory repositories.
 
+/// Descriptor for a secret scanning pattern used in the pre-commit hook.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookSecretPattern {
+    pub class: &'static str,
+    pub ere: &'static str,
+    pub exclude: Option<&'static str>,
+}
+
+pub const HOOK_SECRET_PATTERNS: &[HookSecretPattern] = &[
+    HookSecretPattern {
+        class: "aws_access_key",
+        ere: "(^|[^A-Za-z0-9_])AKIA[0-9A-Z]{16}([^A-Za-z0-9_]|$)",
+        exclude: None,
+    },
+    HookSecretPattern {
+        class: "credential_assignment",
+        ere: "(^|[^A-Za-z0-9_])([Bb][Ee][Aa][Rr][Ee][Rr]|[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii][-_]?[Kk][Ee][Yy]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Pp][Ww][Dd])[[:space:]]*[=:][[:space:]]*[^[:space:]]{1,255}",
+        exclude: Some("^[^A-Za-z0-9_]?[A-Za-z_-]+[[:space:]]*[=:][[:space:]]*(process\\.env\\.[A-Za-z_][A-Za-z0-9_]*|os\\.environ(\\.get\\(|\\[)?(\"[A-Za-z0-9_]*\")?[])]*|env\\.[A-Za-z_][A-Za-z0-9_]*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}|\\$[A-Za-z_][A-Za-z0-9_]*|\\{\\{([^}]*\\}\\})?|\\[(redacted|filtered)\\]|(redacted|filtered)|(bearer|changeme|placeholder|example|none|null|undefined|true|false))[],<>})\"]*$"),
+    },
+    HookSecretPattern {
+        class: "authorization_header",
+        ere: "(^|[^A-Za-z0-9_])[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][[:space:]]*:[[:space:]]*[Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+[^[:space:]]{1,255}",
+        exclude: Some("^[^A-Za-z0-9_]?authorization[[:space:]]*:[[:space:]]*bearer[[:space:]]+([]<>,})\"]|(process\\.env\\.[A-Za-z_][A-Za-z0-9_]*|os\\.environ(\\.get\\(|\\[)?(\"[A-Za-z0-9_]*\")?[])]*|env\\.[A-Za-z_][A-Za-z0-9_]*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}|\\$[A-Za-z_][A-Za-z0-9_]*|\\{\\{([^}]*\\}\\})?|\\[(redacted|filtered)\\]|(redacted|filtered)|(bearer|changeme|placeholder|example|none|null|undefined|true|false))[],<>})\"]*$)"),
+    },
+    HookSecretPattern {
+        class: "openai_key",
+        ere: "(^|[^A-Za-z0-9_])sk-(proj-)?[-_A-Za-z0-9]+([^A-Za-z0-9_-]|$)",
+        exclude: None,
+    },
+    HookSecretPattern {
+        class: "vendor_token",
+        ere: "(^|[^A-Za-z0-9_])(ghp|github_pat|glpat|xox[baprs])[-_][-_A-Za-z0-9]+([^A-Za-z0-9_-]|$)",
+        exclude: None,
+    },
+];
+
 /// Pre-commit validator script for staged memory markdown.
 pub const PRE_COMMIT_HOOK_SCRIPT: &str = r##"#!/bin/sh
 # Validate frontmatter in staged memory .md files.
 # Installed by omo memory-core. Do not edit by hand - regenerated on startup.
 
-ALL_KNOWN_KEYS="description read_only limit kind aliases"
+# provenance is the claim receipt the memory tool stamps (#10488); its value is always a quoted JSON string.
+ALL_KNOWN_KEYS="description read_only limit kind aliases provenance"
 TAB=$(printf '\t')
 
 fm_value() {
@@ -116,14 +153,14 @@ check_file() {
 
 errors=$(
   # Skills must always be directories: skills/<name>/SKILL.md.
-  git diff --cached --name-only --diff-filter=ACMR |
+  git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR |
     grep -E '^(memory/)?skills/[^/]+\.md$' |
     while IFS= read -r skill_file; do
       printf '  %s: invalid skill path (skills must be folders). Use skills/<name>/SKILL.md\n' "$skill_file"
     done
 
   # Memory content keys are an allowlist under system/, reference/ and people/.
-  git diff --cached --name-only --diff-filter=ACM |
+  git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR |
     grep -E '^(memory/)?(system|reference|people)/.*\.md$' |
     while IFS= read -r file; do
       check_file "$file" contract
@@ -131,7 +168,7 @@ errors=$(
 
   # SKILL.md is read by the skill loader as strict YAML: same value rules,
   # description required, any key allowed.
-  git diff --cached --name-only --diff-filter=ACM |
+  git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR |
     grep -E '^(memory/)?skills/.+/SKILL\.md$' |
     while IFS= read -r file; do
       check_file "$file" skill
@@ -165,10 +202,10 @@ secret_failed=$(
       if printf '%s' "$blob" | grep -E -q -e '(^|[^A-Za-z0-9_])AKIA[0-9A-Z]{16}([^A-Za-z0-9_]|$)'; then
         printf 'memory pre-commit: %s contains secret-like content (aws_access_key)\n' "$p"
       fi
-      if printf '%s' "$blob" | grep -E -q -e '(^|[^A-Za-z0-9_])([Bb][Ee][Aa][Rr][Ee][Rr]|[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii][-_]?[Kk][Ee][Yy]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Pp][Ww][Dd])[[:space:]]*[=:][[:space:]]*[^[:space:]]{1,255}'; then
+      if printf '%s' "$blob" | grep -E -o -e '(^|[^A-Za-z0-9_])([Bb][Ee][Aa][Rr][Ee][Rr]|[Tt][Oo][Kk][Ee][Nn]|[Aa][Pp][Ii][-_]?[Kk][Ee][Yy]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Pp][Ww][Dd])[[:space:]]*[=:][[:space:]]*[^[:space:]]{1,255}' | grep -E -v -i -e '^[^A-Za-z0-9_]?[A-Za-z_-]+[[:space:]]*[=:][[:space:]]*(process\.env\.[A-Za-z_][A-Za-z0-9_]*|os\.environ(\.get\(|\[)?("[A-Za-z0-9_]*")?[]\)]*|env\.[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\{\{([^}]*\}\})?|\[(redacted|filtered)\]|(redacted|filtered)|(bearer|changeme|placeholder|example|none|null|undefined|true|false))[],<>})"]*$' | grep -q .; then
         printf 'memory pre-commit: %s contains secret-like content (credential_assignment)\n' "$p"
       fi
-      if printf '%s' "$blob" | grep -E -q -e '(^|[^A-Za-z0-9_])[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][[:space:]]*:[[:space:]]*[Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+[^[:space:]]{1,255}'; then
+      if printf '%s' "$blob" | grep -E -o -e '(^|[^A-Za-z0-9_])[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][[:space:]]*:[[:space:]]*[Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+[^[:space:]]{1,255}' | grep -E -v -i -e '^[^A-Za-z0-9_]?authorization[[:space:]]*:[[:space:]]*bearer[[:space:]]+([]<>,})"]|(process\.env\.[A-Za-z_][A-Za-z0-9_]*|os\.environ(\.get\(|\[)?("[A-Za-z0-9_]*")?[]\)]*|env\.[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\{\{([^}]*\}\})?|\[(redacted|filtered)\]|(redacted|filtered)|(bearer|changeme|placeholder|example|none|null|undefined|true|false))[],<>})"]*$)' | grep -q .; then
         printf 'memory pre-commit: %s contains secret-like content (authorization_header)\n' "$p"
       fi
       if printf '%s' "$blob" | grep -E -q -e '(^|[^A-Za-z0-9_])sk-(proj-)?[-_A-Za-z0-9]+([^A-Za-z0-9_-]|$)'; then

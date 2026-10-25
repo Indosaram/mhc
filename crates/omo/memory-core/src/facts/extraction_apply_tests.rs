@@ -69,6 +69,7 @@ fn fixture() -> (TempDir, PathBuf, GitMemoryRepo) {
 
 fn person_record(name: &str, aliases: &[&str], text: &str, date: &str) -> FactsExtractionRecord {
     FactsExtractionRecord::Person {
+            receipt: None,
         person: FactsPersonReference {
             name: name.to_string(),
             aliases: aliases.iter().map(|a| (*a).to_string()).collect(),
@@ -80,6 +81,7 @@ fn person_record(name: &str, aliases: &[&str], text: &str, date: &str) -> FactsE
 
 fn project(text: &str) -> FactsExtractionRecord {
     FactsExtractionRecord::Project {
+            receipt: None,
         text: text.to_string(),
         date: "2026-08-10".to_string(),
     }
@@ -110,6 +112,7 @@ fn frontmatter(
         read_only: None,
         kind: kind.map(str::to_string),
         aliases: aliases.map(|a| a.iter().map(|s| (*s).to_string()).collect()),
+        extra: None,
     }
 }
 

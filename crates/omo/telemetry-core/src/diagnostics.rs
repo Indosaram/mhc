@@ -91,6 +91,18 @@ fn to_diagnostic_record(
     record.insert("timestamp".into(), to_iso_string(now).into());
     record.insert("event".into(), input.event.as_str().into());
     record.insert("source".into(), input.source.clone().into());
+    if let Some(kind) = input.entry_kind {
+        record.insert(
+            "entry_kind".into(),
+            serde_json::to_value(kind).expect("entry kind serializes"),
+        );
+    }
+    if let Some(code) = &input.error_code {
+        record.insert("error_code".into(), code.clone().into());
+    }
+    if let Some(count) = input.count {
+        record.insert("count".into(), count.into());
+    }
     if let Some(error) = &input.error {
         let kind = input
             .error_kind
@@ -98,6 +110,15 @@ fn to_diagnostic_record(
         record.insert("error_kind".into(), kind.as_str().into());
         record.insert("error_name".into(), error.name.clone().into());
         record.insert("error_message".into(), error.message.clone().into());
+    }
+    if let Some(entry_kind) = input.entry_kind {
+        record.insert("entry_kind".into(), entry_kind.as_str().into());
+    }
+    if let Some(error_code) = &input.error_code {
+        record.insert("error_code".into(), error_code.clone().into());
+    }
+    if let Some(count) = input.count {
+        record.insert("count".into(), count.into());
     }
     record
 }
@@ -141,4 +162,62 @@ fn trim_to_max_bytes<'a>(lines: &[&'a str]) -> Vec<&'a str> {
     }
     retained.reverse();
     retained
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{TelemetryDiagnosticEvent, TelemetrySpoolEntryKind};
+
+    #[test]
+    fn purge_failure_records_only_errno_and_count_metadata() {
+        let directory = tempfile::tempdir().expect("directory");
+        let input = TelemetryDiagnosticInput {
+            event: TelemetryDiagnosticEvent::TelemetrySpoolPurgeFailed,
+            source: "otlp".into(),
+            error: None,
+            error_kind: None,
+            entry_kind: None,
+            error_code: Some("EPERM".into()),
+            count: Some(1),
+        };
+        write_telemetry_diagnostic(
+            &input,
+            &WriteTelemetryDiagnosticOptions {
+                diagnostics_dir: directory.path(),
+                now: None,
+            },
+        );
+        let line = fs::read_to_string(get_telemetry_diagnostics_file_path(directory.path()))
+            .expect("diagnostic");
+        let value: Value = serde_json::from_str(line.trim()).expect("record");
+        assert_eq!(value["event"], "telemetry_spool_purge_failed");
+        assert_eq!(value["error_code"], "EPERM");
+        assert_eq!(value["count"], 1);
+        assert!(value.get("error_message").is_none());
+        assert!(value.get("entry_kind").is_none());
+    }
+
+    #[test]
+    fn skipped_entry_kinds_serialize_without_paths() {
+        for (kind, expected) in [
+            (TelemetrySpoolEntryKind::Directory, "directory"),
+            (TelemetrySpoolEntryKind::Symlink, "symlink"),
+            (TelemetrySpoolEntryKind::ForeignOwner, "foreign_owner"),
+            (TelemetrySpoolEntryKind::Other, "other"),
+        ] {
+            let input = TelemetryDiagnosticInput {
+                event: TelemetryDiagnosticEvent::TelemetrySpoolPurgeSkipped,
+                source: "otlp".into(),
+                error: None,
+                error_kind: None,
+                entry_kind: Some(kind),
+                error_code: None,
+                count: None,
+            };
+            let record = to_diagnostic_record(&input, Utc::now());
+            assert_eq!(record["entry_kind"], expected);
+            assert!(!record.contains_key("path"));
+        }
+    }
 }

@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::engine_turn_hold_notices::{EngineTurnHoldNotices, HeldMessage};
+use crate::engine_turn_hold_notices::{
+    EngineTurnHoldNotices, HeldItem, HeldItemReceipt, HeldMessage,
+};
 use crate::engine_turn_release::ReleasableHold;
 
 pub const SESSION_HOLD_ENTRY_TYPE: &str = "session-hold";
@@ -20,17 +22,29 @@ pub const PAUSE_NOT_SAVED_NOTICE: &str = "Pause could not be saved; it will not 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoldKind {
     Unattended,
+    SessionHold,
+    RunFence,
+    InheritedHold,
 }
 
 impl HoldKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Unattended => "unattended",
+            Self::SessionHold => "session_hold",
+            Self::RunFence => "run_fence",
+            Self::InheritedHold => "inherited_hold",
         }
     }
 
     fn parse(value: &str) -> Option<Self> {
-        (value == "unattended").then_some(Self::Unattended)
+        match value {
+            "unattended" => Some(Self::Unattended),
+            "session_hold" => Some(Self::SessionHold),
+            "run_fence" => Some(Self::RunFence),
+            "inherited_hold" => Some(Self::InheritedHold),
+            _ => None,
+        }
     }
 }
 
@@ -38,6 +52,9 @@ impl HoldKind {
 pub enum HoldReleaseCause {
     Input,
     ResumeSession,
+    RunResume,
+    RunCancelled,
+    NodeCancelled,
 }
 
 impl HoldReleaseCause {
@@ -45,6 +62,9 @@ impl HoldReleaseCause {
         match self {
             Self::Input => "input",
             Self::ResumeSession => "resume_session",
+            Self::RunResume => "run_resume",
+            Self::RunCancelled => "run_cancelled",
+            Self::NodeCancelled => "node_cancelled",
         }
     }
 }
@@ -60,6 +80,11 @@ pub struct SessionHold {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionHoldEvent {
+    SessionNotice {
+        notice_ids: Vec<String>,
+        notice_count: usize,
+        disposition: &'static str,
+    },
     SessionPaused {
         pause_seq: u64,
         kind: HoldKind,
@@ -178,6 +203,7 @@ pub struct EngineTurnHold {
     records: Vec<(String, SessionHold)>,
     notices: EngineTurnHoldNotices,
     pause_seq: u64,
+    pause_open: bool,
     released: Vec<SessionHold>,
     release_barrier: bool,
     goal_deferred: bool,
@@ -206,6 +232,7 @@ impl EngineTurnHold {
             records: Vec::new(),
             notices,
             pause_seq: 0,
+            pause_open: false,
             released: Vec::new(),
             release_barrier: false,
             goal_deferred: false,
@@ -265,6 +292,7 @@ impl EngineTurnHold {
                 _ => {}
             }
         }
+        this.pause_open = this.is_held();
         this
     }
 
@@ -273,7 +301,20 @@ impl EngineTurnHold {
     }
 
     pub fn is_held(&self) -> bool {
-        !self.records.is_empty()
+        self.records
+            .iter()
+            .any(|(_, hold)| hold.kind != HoldKind::RunFence)
+    }
+
+    pub fn fences(&self) -> Vec<SessionHold> {
+        self.holds()
+            .into_iter()
+            .filter(|hold| hold.kind == HoldKind::RunFence)
+            .collect()
+    }
+
+    pub fn current_pause_seq(&self) -> u64 {
+        self.pause_seq
     }
 
     pub fn held(&self) -> bool {
@@ -341,7 +382,6 @@ impl EngineTurnHold {
         if self.records.iter().any(|(existing, _)| *existing == key) {
             return;
         }
-        let was_held = self.is_held();
         let at = now_iso();
         self.pause_seq += 1;
         self.records.push((
@@ -365,7 +405,8 @@ impl EngineTurnHold {
                 false
             }
         };
-        if !was_held {
+        if !self.pause_open && self.is_held() {
+            self.pause_open = true;
             (self.emit)(SessionHoldEvent::SessionPaused {
                 pause_seq: self.pause_seq,
                 kind,
@@ -400,7 +441,8 @@ impl EngineTurnHold {
         for key in &present {
             self.remove_record(key);
         }
-        if !self.is_held() {
+        if self.pause_open && !self.is_held() {
+            self.pause_open = false;
             (self.emit)(SessionHoldEvent::SessionResumed {
                 pause_seq: self.pause_seq,
                 cause,
@@ -417,10 +459,39 @@ impl EngineTurnHold {
     }
 
     pub fn note(&mut self, source: &str, message: Option<Value>) {
-        self.notices.note(source, self.pause_seq, message);
+        let id = self
+            .notices
+            .note_with_stop(source, self.pause_seq, message, self.stopped());
+        (self.emit)(SessionHoldEvent::SessionNotice {
+            notice_ids: vec![id],
+            notice_count: self.notice_count(),
+            disposition: "notice_persisted",
+        });
         if !self.attended {
             self.show_notice();
         }
+    }
+
+    pub fn note_items(
+        &mut self,
+        items: &[HeldItem],
+        append: impl FnOnce(Value) -> Result<String, String>,
+    ) -> Result<Vec<HeldItemReceipt>, String> {
+        let stopped = self.stopped();
+        let receipts = self
+            .notices
+            .note_items(self.pause_seq, items, stopped, append)?;
+        for receipt in &receipts {
+            (self.emit)(SessionHoldEvent::SessionNotice {
+                notice_ids: vec![receipt.notice_id.clone()],
+                notice_count: self.notice_count(),
+                disposition: "notice_persisted",
+            });
+        }
+        if !self.attended {
+            self.show_notice();
+        }
+        Ok(receipts)
     }
 
     pub fn messages(&self) -> Vec<HeldMessage> {
@@ -439,7 +510,12 @@ impl EngineTurnHold {
         self.released = self.holds();
         self.release_barrier = true;
         self.goal_deferred = sources.get("goal").copied().unwrap_or(0) > 0;
-        let keys: Vec<String> = self.records.iter().map(|(key, _)| key.clone()).collect();
+        let keys: Vec<String> = self
+            .records
+            .iter()
+            .filter(|(_, hold)| hold.kind != HoldKind::InheritedHold)
+            .map(|(key, _)| key.clone())
+            .collect();
         self.release(&keys, cause)?;
         Ok(sources)
     }
@@ -470,7 +546,28 @@ impl EngineTurnHold {
     }
 
     pub fn consume(&mut self, source: &str, delivered_ids: Option<&[String]>) -> bool {
-        self.notices.consume(source, self.pause_seq, delivered_ids)
+        let ids: Vec<String> = self
+            .notices
+            .sources()
+            .iter()
+            .find(|(s, _)| s == source)
+            .map(|_| {
+                self.notices
+                    .notice_ids(source)
+                    .into_iter()
+                    .filter(|id| delivered_ids.is_none_or(|ids| ids.contains(id)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !self.notices.consume(source, self.pause_seq, delivered_ids) {
+            return false;
+        }
+        (self.emit)(SessionHoldEvent::SessionNotice {
+            notice_ids: ids,
+            notice_count: self.notice_count(),
+            disposition: "model_consumed",
+        });
+        true
     }
 
     pub fn finish(&mut self) -> BTreeMap<String, usize> {
@@ -489,8 +586,18 @@ impl EngineTurnHold {
         sources
     }
 
+    fn stopped(&self) -> bool {
+        self.records
+            .iter()
+            .any(|(_, hold)| hold.kind == HoldKind::SessionHold)
+    }
+
     fn show_notice(&self) {
-        (self.notify)(&self.notices.notice_text());
+        (self.notify)(&if self.stopped() {
+            EngineTurnHoldNotices::stopped_notice_text(self.notice_count())
+        } else {
+            self.notices.notice_text()
+        });
     }
 }
 
@@ -585,6 +692,23 @@ mod tests {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn fences_do_not_pause_and_inherited_holds_survive_human_resume() {
+        let (mut hold, _, _, events) = harness(&[], false, false);
+        hold.add_hold(HoldKind::RunFence, Some("run"), None);
+        assert!(!hold.held());
+        assert_eq!(hold.fences().len(), 1);
+        assert!(events.lock().expect("events").is_empty());
+        hold.add_hold(HoldKind::InheritedHold, Some("parent"), None);
+        hold.add_hold(HoldKind::SessionHold, None, None);
+        hold.release_all(HoldReleaseCause::Input).expect("release");
+        assert!(hold.held());
+        hold.release(&["parent".into()], HoldReleaseCause::RunResume)
+            .expect("parent resumes");
+        assert!(!hold.held());
+        assert_eq!(events.lock().expect("events").len(), 2);
     }
 
     #[test]

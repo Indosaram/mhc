@@ -18,11 +18,11 @@ fn given_path_segment_values_when_checked_then_only_safe_segments_are_accepted()
 }
 
 #[test]
-fn given_the_journaled_payload_union_when_its_type_tags_are_enumerated_then_it_has_exactly_17_members_and_excludes_live_activity()
+fn given_the_journaled_payload_union_when_its_type_tags_are_enumerated_then_it_includes_durable_paused_controls_and_excludes_live_activity()
  {
     let mut tags = DAG_RUN_EVENT_TYPES.to_vec();
 
-    assert_eq!(tags.len(), 17);
+    assert_eq!(tags.len(), 26);
     assert!(!tags.contains(&"dag.node.activity"));
     tags.sort_unstable();
     let mut expected: Vec<&str> = [
@@ -43,6 +43,15 @@ fn given_the_journaled_payload_union_when_its_type_tags_are_enumerated_then_it_h
         DagRunEventType::DefinitionAmended,
         DagRunEventType::DiagnosticAdded,
         DagRunEventType::StreamOverflow,
+        DagRunEventType::GuidanceAdded,
+        DagRunEventType::GuidanceEdited,
+        DagRunEventType::GuidanceRemoved,
+        DagRunEventType::GuidanceDispatching,
+        DagRunEventType::GuidanceDelivered,
+        DagRunEventType::NodeCancelRequested,
+        DagRunEventType::NodeRetryStaged,
+        DagRunEventType::NodePauseRecovered,
+        DagRunEventType::NodePauseLost,
     ]
     .into_iter()
     .map(DagRunEventType::as_str)
@@ -181,6 +190,7 @@ fn given_the_state_vocabularies_when_enumerated_then_statuses_states_codes_and_r
             "blocked",
             "scheduled",
             "running",
+            "paused",
             "completed",
             "failed",
             "cancelled",
@@ -200,6 +210,7 @@ fn given_the_state_vocabularies_when_enumerated_then_statuses_states_codes_and_r
             "task_cancelled",
             "resume_task_missing",
             "resume_task_orphaned",
+            "lost_while_paused",
             "journal_corrupt"
         ])
     );

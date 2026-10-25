@@ -13,7 +13,7 @@ use maho_ai::types::{
 };
 
 fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64) -> Usage {
-    Usage {
+    Usage { context_usage: None,
         input,
         output,
         cache_read,
@@ -28,6 +28,7 @@ fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64) -> Usage {
             cache_write: 0.0,
             total: 0.0,
         },
+        ..Default::default()
     }
 }
 
@@ -40,6 +41,7 @@ fn user_message(text: &str) -> AgentMessage {
 
 fn assistant_message(text: &str, usage: Usage) -> AgentMessage {
     AgentMessage::Llm(Message::Assistant(Box::new(AssistantMessage { timing: None, failure_source: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,
@@ -90,6 +92,17 @@ fn custom_entry(id: &str, parent_id: Option<&str>, seq: i64) -> Entry {
 fn calculates_total_context_tokens_from_usage() {
     assert_eq!(calculate_context_tokens(&usage(1000, 500, 200, 100)), 1800);
     assert_eq!(calculate_context_tokens(&usage(0, 0, 0, 0)), 0);
+
+    let mut with_context = usage(1000, 500, 200, 100);
+    with_context.context_usage = Some(Some(maho_ai::types::ContextUsage {
+        input: 352_000,
+        output: 200,
+    }));
+    assert_eq!(calculate_context_tokens(&with_context), 352_200);
+
+    let mut with_null_context = usage(1000, 500, 200, 100);
+    with_null_context.context_usage = Some(None);
+    assert_eq!(calculate_context_tokens(&with_null_context), 0);
 }
 
 #[test]

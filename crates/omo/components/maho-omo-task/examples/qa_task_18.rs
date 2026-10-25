@@ -67,7 +67,9 @@ fn main() {
             sent_clone.lock().unwrap().push((run.to_string(), node.to_string(), msg.to_string()));
             Ok(DagToolSendOutcome {
                 node_id: node.to_string(),
-                task_id: format!("task-{node}"),
+                task_id: Some(format!("task-{node}")),
+                guidance_id: None,
+                effect_id: None,
                 delivery: DagToolSendDelivery::Steer,
                 queue_position: None,
             })
@@ -77,6 +79,9 @@ fn main() {
             amended_clone.lock().unwrap().push((run.to_string(), prompts));
             manager_for_amend.snapshot(&run.to_string(), "ses_qa").map_err(|e| maho_ext_api::ToolError::Message(e.to_string()).into())
         })),
+        cancel_node: None,
+        guide: None,
+        pause_reason: None,
     };
 
     let tool = create_dag_tool(DagToolDeps {
@@ -88,6 +93,9 @@ fn main() {
         retry: None,
         send: None,
         amend: None,
+        cancel_node: None,
+        guide: None,
+        pause_reason: None,
     });
     assert_eq!(tool.name, WORKFLOW_TOOL_NAME);
     println!("1. Tool registration verified: name={}", tool.name);
