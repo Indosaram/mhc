@@ -1,6 +1,6 @@
-//! Default (guarded) permission preset end to end over the faux provider: in-project reads pass,
-//! a headless read outside the working directory is refused with an actionable message, and an
-//! explicit `--permission-preset full-access` restores the old behavior.
+//! Default (full-access, as upstream) permission preset end to end over the faux provider: reads
+//! outside the working directory pass, and an explicit `--permission-preset guarded` refuses a
+//! headless read outside the working directory with an actionable message.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -101,9 +101,9 @@ fn outside_file() -> (tempfile::TempDir, String) {
 }
 
 #[tokio::test]
-async fn default_preset_reads_inside_but_refuses_outside_headless() {
+async fn guarded_preset_reads_inside_but_refuses_outside_headless() {
     let (_sibling, outside) = outside_file();
-    let results = run(None, vec![read_call("./a.txt", "inside"), read_call(&outside, "outside"), done()], true).await;
+    let results = run(Some("guarded"), vec![read_call("./a.txt", "inside"), read_call(&outside, "outside"), done()], true).await;
     assert_eq!(results.len(), 2, "{results:?}");
     assert!(!results[0].0 && results[0].1.contains("inside"), "{:?}", results[0]);
     assert!(results[1].0, "{:?}", results[1]);
@@ -112,9 +112,9 @@ async fn default_preset_reads_inside_but_refuses_outside_headless() {
 }
 
 #[tokio::test]
-async fn full_access_preset_reads_outside() {
+async fn default_preset_reads_outside() {
     let (_sibling, outside) = outside_file();
-    let results = run(Some("full-access"), vec![read_call(&outside, "outside"), done()], false).await;
+    let results = run(None, vec![read_call(&outside, "outside"), done()], false).await;
     assert_eq!(results.len(), 1, "{results:?}");
     assert!(!results[0].0 && results[0].1.contains("outside"), "{:?}", results[0]);
 }

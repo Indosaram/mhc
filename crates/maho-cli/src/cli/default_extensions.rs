@@ -754,7 +754,7 @@ impl Extension for Task {
                 let mut native = super::task_runners::native_rpc_options(
                     std::env::current_exe().map_err(|error| ExtensionFailure::new(error.to_string()))?,
                     &maho_core::config::get_agent_dir(), environment.clone(), Vec::new());
-                // Children inherit the parent's effective preset (CLI flag, else project/global `permissionPreset`) only when explicitly non-default; a default parent leaves children on the default (guarded).
+                // Children inherit the parent's effective preset (CLI flag, else project/global `permissionPreset`) only when explicitly non-default; a default parent leaves children on the default (full-access).
                 let explicit_preset = {
                     let cli = match flag_runtime.get_flag("permission-preset") {
                         Some(maho_ext_api::FlagValue::String(value)) => maho_ext_permission_system::cli::parse_permission_preset_flag(&value),
