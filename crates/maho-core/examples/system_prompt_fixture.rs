@@ -43,7 +43,7 @@ fn main() {
         .collect();
 
     let skills = load_skills(&LoadSkillsOptions { cwd: cwd.clone(), agent_dir: agent_dir.clone(), skill_paths: Vec::new(), include_defaults: false });
-    let prompt = build_dynamic_system_prompt(&BuildDynamicSystemPromptOptions {
+    let prompt = build_dynamic_system_prompt(&BuildDynamicSystemPromptOptions { custom_prompt: None, append_system_prompt: None, on_parts: None,
         cwd: cwd.clone(),
         selected_tools: tools.clone(),
         tool_snippets: tool_snippets(&tools),

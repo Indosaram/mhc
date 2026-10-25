@@ -3486,6 +3486,7 @@ impl AgentSession {
                 };
                 // No `AgentSessionEvent` variant exists for the hold events yet, so they ride the session bus.
                 let data = match event {
+                    crate::engine_turn_hold::SessionHoldEvent::SessionNotice { notice_ids, notice_count, disposition } => serde_json::json!({ "type": "session_notice", "noticeIds": notice_ids, "noticeCount": notice_count, "disposition": disposition }),
                     crate::engine_turn_hold::SessionHoldEvent::SessionPaused {
                         pause_seq,
                         kind,
@@ -10291,7 +10292,7 @@ impl AgentSession {
         let (custom_prompt, append) = self.resolved_system_prompt();
         let base_prompt = custom_prompt.unwrap_or_else(|| {
             crate::dynamic_prompt::build::build_dynamic_system_prompt(
-                &crate::dynamic_prompt::build::BuildDynamicSystemPromptOptions {
+                &crate::dynamic_prompt::build::BuildDynamicSystemPromptOptions { custom_prompt: None, append_system_prompt: None, on_parts: None,
                     cwd: self.cwd(),
                     selected_tools: active,
                     tool_snippets: snippets,
@@ -14698,6 +14699,7 @@ impl AgentSession {
             };
         let collision = |resource_type, message: String, winner: &str, loser: &str, name: &str| {
             crate::diagnostics::ResourceDiagnostic {
+                category: None,
                 diagnostic_type: crate::diagnostics::ResourceDiagnosticType::Collision,
                 message,
                 path: Some(loser.to_owned()),
@@ -18484,7 +18486,7 @@ mod tests {
             vec![Arc::new(|_, _| {
                 Box::pin(async {
                     Ok(maho_ext_api::EventResult::BeforeAgentStart(
-                        maho_ext_api::BeforeAgentStartEventResult {
+                        maho_ext_api::BeforeAgentStartEventResult { system_prompt_parts: None,
                             message: Some(maho_ext_api::CustomMessage {
                                 custom_type: "admission-fixture".into(),
                                 content: vec![maho_tools::definition::ToolContent::text(
@@ -30168,6 +30170,7 @@ mod tests {
                 disable_model_invocation: false,
             }],
             vec![crate::diagnostics::ResourceDiagnostic {
+                category: None,
                 diagnostic_type: crate::diagnostics::ResourceDiagnosticType::Warning,
                 message: "warn".to_owned(),
                 path: Some("/tmp/demo/SKILL.md".to_owned()),

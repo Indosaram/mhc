@@ -317,7 +317,7 @@ mod tests {
             response_id: None,
             provider_thinking_level: None,
             diagnostics: None,
-            usage: Usage {
+            usage: Usage { context_usage: None,
                 input: options.input,
                 output: options.output,
                 cache_read: options.cache_read,

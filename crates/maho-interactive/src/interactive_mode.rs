@@ -14060,6 +14060,7 @@ fn get_built_in_command_conflict_diagnostics(
             .map(|command| command.name)
             .collect();
     commands.iter().filter(|command| builtin_names.contains(command.command.name.as_str())).map(|command| maho_core::diagnostics::ResourceDiagnostic {
+        category: None,
         diagnostic_type: maho_core::diagnostics::ResourceDiagnosticType::Warning,
         message: if command.invocation_name == command.command.name {
             format!("Extension command '/{}' conflicts with built-in interactive command. Skipping in autocomplete.", command.command.name)

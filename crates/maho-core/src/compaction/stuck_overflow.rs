@@ -37,7 +37,7 @@ mod tests {
             response_id: None,
             provider_thinking_level: None,
             diagnostics: None,
-            usage: Usage {
+            usage: Usage { context_usage: None,
                 input: 200_000,
                 output,
                 cache_read: 0,

@@ -13,7 +13,7 @@ use maho_ai::types::{
 };
 
 fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64) -> Usage {
-    Usage {
+    Usage { context_usage: None,
         input,
         output,
         cache_read,

@@ -115,7 +115,7 @@ impl Extension for GatewayComponent {
                     && let Some(res) = handler.handle(&payload.system_prompt, &session_id)
                 {
                     return Box::pin(async move {
-                        Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult {
+                        Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt_parts: None,
                             message: None,
                             system_prompt: Some(res.system_prompt),
                         }))

@@ -413,7 +413,7 @@ fn with_usage_estimate(
     }
 
     AssistantMessage {
-        usage: Usage {
+        usage: Usage { context_usage: None,
             input,
             output: output_tokens,
             cache_read,

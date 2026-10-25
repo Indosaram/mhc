@@ -1066,7 +1066,7 @@ fn handle_chunk(
             .get("thoughtsTokenCount")
             .and_then(Value::as_u64)
             .unwrap_or(0);
-        output.usage = Usage {
+        output.usage = Usage { context_usage: None,
             input: prompt_tokens.saturating_sub(cached_tokens),
             output: candidate_tokens + thought_tokens,
             cache_read: cached_tokens,

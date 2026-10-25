@@ -1,7 +1,7 @@
 use maho_core::dynamic_prompt::build::BuildDynamicSystemPromptOptions;
 use maho_ext_prompt_preset::{presets::{ModelMetadata, resolve_preset}, settings::PromptPresetName};
 fn options() -> BuildDynamicSystemPromptOptions<'static> {
-    BuildDynamicSystemPromptOptions { cwd: "/tmp/project".into(), selected_tools: vec!["eval".into(), "read".into()], tool_snippets: Default::default(), prompt_guidelines: Vec::new(), context_files: Vec::new(), skills: Vec::new(), tuning_section: None, core_prompt: None, workstation_dialect: None, surface: maho_core::dynamic_prompt::PromptSurface::Terminal }
+    BuildDynamicSystemPromptOptions { custom_prompt: None, append_system_prompt: None, on_parts: None, cwd: "/tmp/project".into(), selected_tools: vec!["eval".into(), "read".into()], tool_snippets: Default::default(), prompt_guidelines: Vec::new(), context_files: Vec::new(), skills: Vec::new(), tuning_section: None, core_prompt: None, workstation_dialect: None, surface: maho_core::dynamic_prompt::PromptSurface::Terminal }
 }
 #[test]
 fn surface_is_visible_to_core_prompt_overrides() {
