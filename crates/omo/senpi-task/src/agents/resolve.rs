@@ -10,13 +10,13 @@ use crate::delegate_adapter::{
     warm_cache_deps,
 };
 use crate::host::{
-    HostError, ParsedModel, SenpiModelRegistry, parse_available_models, parse_model,
-    parse_registry_model,
+    ParsedModel, SenpiModelRegistry, parse_available_models, parse_model, parse_registry_model,
 };
 use crate::model_chain::{
     BuildModelChainOptions, ChainRungCandidateOptions, RuntimeModelChain,
     build_runtime_model_chain, chain_rung_candidates,
 };
+use crate::model_exclusion::without_excluded_models;
 use crate::state::{ResolvedModelRecord, ResolvedModelSource};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -24,121 +24,6 @@ pub struct ResolveAgentOptions {
     pub model_override: Option<String>,
     /// `omoConfig.exclude_models`: the registry is filtered through it before any candidate is read.
     pub exclude_models: Option<Vec<String>>,
-}
-
-/// `provider/model-id` of one registry entry (`model-exclusion.ts` `modelKey`); `None` when the entry
-/// is not an object carrying both string fields.
-fn registry_model_key(model: &serde_json::Value) -> Option<String> {
-    let object = model.as_object()?;
-    let provider = object.get("provider")?.as_str()?;
-    let id = object.get("id")?.as_str()?;
-    Some(format!("{provider}/{id}"))
-}
-
-/// `excluded-models.ts` `patternExpression`: `*` matches any run of characters (including `/` and
-/// none at all) and every other character is literal; matching ignores case.
-fn wildcard_pattern_matches(pattern: &str, subject: &str) -> bool {
-    let pattern: Vec<char> = pattern.to_lowercase().chars().collect();
-    let subject: Vec<char> = subject.to_lowercase().chars().collect();
-    let (mut p, mut s) = (0usize, 0usize);
-    let mut star: Option<usize> = None;
-    let mut mark = 0usize;
-    while s < subject.len() {
-        if p < pattern.len() && pattern[p] != '*' && pattern[p] == subject[s] {
-            p += 1;
-            s += 1;
-        } else if p < pattern.len() && pattern[p] == '*' {
-            star = Some(p);
-            p += 1;
-            mark = s;
-        } else if let Some(star_at) = star {
-            p = star_at + 1;
-            mark += 1;
-            s = mark;
-        } else {
-            return false;
-        }
-    }
-    while p < pattern.len() && pattern[p] == '*' {
-        p += 1;
-    }
-    p == pattern.len()
-}
-
-/// `excluded-models.ts` `selectorTails`: every tail starting after a `/` is a model id some provider
-/// serves, so an entry is tested against each of them.
-fn selector_tails(model: &str) -> Vec<&str> {
-    let tails: Vec<&str> = model
-        .match_indices('/')
-        .map(|(index, _)| &model[index + 1..])
-        .collect();
-    if tails.is_empty() {
-        vec![model]
-    } else {
-        tails
-    }
-}
-
-/// The entry that keeps `model` out, or `None` (`excluded-models.ts` `excludedModelPattern`).
-pub(crate) fn excluded_model_pattern<'a>(model: &str, patterns: &'a [String]) -> Option<&'a str> {
-    let tails = selector_tails(model);
-    for raw in patterns {
-        let pattern = raw.trim();
-        if pattern.is_empty() {
-            continue;
-        }
-        let matched = if pattern.contains('/') {
-            wildcard_pattern_matches(pattern, model)
-                || tails
-                    .iter()
-                    .any(|tail| wildcard_pattern_matches(pattern, tail))
-        } else {
-            tails
-                .iter()
-                .any(|tail| wildcard_pattern_matches(pattern, tail))
-        };
-        if matched {
-            return Some(raw.as_str());
-        }
-    }
-    None
-}
-
-pub(crate) fn is_excluded_model(model: &str, patterns: &[String]) -> bool {
-    excluded_model_pattern(model, patterns).is_some()
-}
-
-/// The registry as `exclude_models` leaves it (`model-exclusion.ts` `withoutExcludedModels`): an
-/// excluded model is neither available nor found, so every chain walk skips it exactly as it skips a
-/// model whose provider has no login.
-struct ExcludedModelsRegistry<'a> {
-    inner: &'a dyn SenpiModelRegistry,
-    patterns: Vec<String>,
-}
-
-impl SenpiModelRegistry for ExcludedModelsRegistry<'_> {
-    fn get_available(&self) -> Result<serde_json::Value, HostError> {
-        let available = self.inner.get_available()?;
-        let serde_json::Value::Array(models) = available else {
-            return Ok(available);
-        };
-        Ok(serde_json::Value::Array(
-            models
-                .into_iter()
-                .filter(|model| match registry_model_key(model) {
-                    None => true,
-                    Some(key) => !is_excluded_model(&key, &self.patterns),
-                })
-                .collect(),
-        ))
-    }
-
-    fn find(&self, provider: &str, model_id: &str) -> Option<serde_json::Value> {
-        if is_excluded_model(&format!("{provider}/{model_id}"), &self.patterns) {
-            return None;
-        }
-        self.inner.find(provider, model_id)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,10 +99,7 @@ pub fn resolve_agent(
     let filtered;
     let registry = match registry {
         Some(inner) if !excluded.is_empty() => {
-            filtered = ExcludedModelsRegistry {
-                inner,
-                patterns: excluded,
-            };
+            filtered = without_excluded_models(inner, Some(excluded.as_slice()));
             Some(&filtered as &dyn SenpiModelRegistry)
         }
         other => other,
