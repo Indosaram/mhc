@@ -19,6 +19,7 @@ use std::{
     time::Duration,
 };
 
+use maho_ai::types::StopReason;
 use maho_omo_memory::facts_child_spawner::{
     FactsChildSessionResult, FactsChildSessionSpawner, FactsChildSpawnFuture, FactsChildSpawnInput,
 };
@@ -271,6 +272,7 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
                         });
                     }
                     TurnExit::PromptDone(prompt_res) => {
+                        let messages = session.messages();
                         session.dispose().await;
                         if signal.as_ref().is_some_and(|s| s.is_aborted())
                             || cancel_state.load(Ordering::Acquire)
@@ -285,8 +287,40 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
                                 model: last_model,
                             });
                         }
-                        match prompt_res {
+                        let err = match prompt_res {
                             Ok(_) => {
+                                let last_assistant = messages
+                                    .iter()
+                                    .rev()
+                                    .find_map(|message| message.as_assistant());
+                                if let Some(assistant) = last_assistant
+                                    && matches!(
+                                        assistant.stop_reason,
+                                        StopReason::Error | StopReason::Aborted
+                                    )
+                                {
+                                    let msg = assistant
+                                        .error_message
+                                        .as_deref()
+                                        .map(str::trim)
+                                        .filter(|m| !m.is_empty())
+                                        .map(ToOwned::to_owned)
+                                        .unwrap_or_else(|| {
+                                            format!(
+                                                "model turn ended with stop reason: {}",
+                                                assistant.stop_reason.as_str()
+                                            )
+                                        });
+                                    Some(msg)
+                                } else {
+                                    None
+                                }
+                            }
+                            Err(err) => Some(err),
+                        };
+
+                        match err {
+                            None => {
                                 return Ok(FactsChildSessionResult {
                                     completed: true,
                                     timed_out: false,
@@ -296,7 +330,7 @@ impl FactsChildSessionSpawner for CliFactsChildSpawner {
                                     model: last_model,
                                 });
                             }
-                            Err(err) => {
+                            Some(err) => {
                                 let miss =
                                     maho_omo_memory::worker::model_miss::classify_retryable_model_miss(
                                         &maho_omo_memory::worker::model_miss::ModelMissResult {
