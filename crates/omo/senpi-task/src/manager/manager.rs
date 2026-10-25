@@ -77,10 +77,12 @@ type PreparedIsolation = (
     crate::state::TaskIsolationSpec,
 );
 
-struct AdmissionScope(crate::pause::admission_barrier::AdmissionTicket);
+struct AdmissionScope(crate::manager::start_admission::StartAdmission);
 impl Drop for AdmissionScope {
     fn drop(&mut self) {
-        self.0.leave();
+        if !self.0.transferred() {
+            self.0.leave();
+        }
     }
 }
 
@@ -120,6 +122,7 @@ struct State {
     run_stats: HashMap<String, Arc<Mutex<Tracker>>>,
     resume_attempts: HashMap<String, (u64, Sender<()>)>,
     next_resume_attempt: u64,
+    initial_turns: HashMap<String, crate::manager::child_handle::ExactTurnOutcome>,
     resume_receipts: HashMap<(String, i64, String), bool>,
     tracking_generations: HashMap<String, u64>,
     queued_launches: HashMap<String, LaunchContext>,
@@ -252,6 +255,7 @@ struct Inner {
     traceparent_for: Option<crate::manager::types::TraceparentFor>,
     admission_barrier: crate::pause::admission_barrier::AdmissionBarrier,
     child_pause: Arc<dyn crate::pause::ports::ChildPausePort>,
+    held_callback: Option<crate::manager::start_admission::HeldCallback>,
     trusted_respawn_launch: Option<crate::manager::types::TrustedRespawnLaunchResolver>,
     host_pid: i64,
     rpc_respawn_runner: Arc<dyn RpcRespawnRunner>,
@@ -473,6 +477,7 @@ impl TaskManager {
                 admit: options.admit,
                 fallible_admit: options.fallible_admit,
                 traceparent_for: options.traceparent_for,
+                held_callback: options.on_held_admission,
                 admission_barrier: options.admission_barrier.unwrap_or_default(),
                 child_pause: options.child_pause_port.unwrap_or_else(|| {
                     Arc::new(crate::pause::native_child_pause::NativeChildPausePort)
@@ -924,55 +929,24 @@ impl TaskManager {
         if let Some(refusal) = member_kernel_tool_refusal(spec) {
             return refusal;
         }
-        let root = spec
-            .root_session_id
-            .as_deref()
-            .unwrap_or(&spec.parent_session_id);
-        if !matches!(
-            self.inner.admission_barrier.state(root),
-            crate::pause::admission_barrier::AdmissionState::Open
-        ) {
-            return StartResult::ResidencyDenied {
-                reason: "root run admission is held".into(),
-                cause: ResidencyDeniedCause::Lease,
-            };
-        }
-        let ticket = match self.inner.admission_barrier.enter(
-            root,
-            crate::pause::admission_barrier::AdmissionParticipant {
-                key: spec.name.clone().unwrap_or_else(|| "start".into()),
-                run_ref: crate::pause::ports::RunRef::task(spec.name.clone().unwrap_or_default()),
-            },
-            None,
-        ) {
-            crate::pause::admission_barrier::AdmissionEntry::Entered { ticket } => ticket,
-            crate::pause::admission_barrier::AdmissionEntry::Held { .. } => {
-                return StartResult::ResidencyDenied {
-                    reason: "root run admission is held".into(),
-                    cause: ResidencyDeniedCause::Lease,
-                };
-            }
-        };
-        let _scope = AdmissionScope(ticket.clone());
-        let mut admitted_spec = spec.clone();
-        admitted_spec.admission = match crate::manager::start_admission::enter_start_admission(
+        let entered = crate::manager::start_admission::enter_start_admission(
             crate::manager::start_admission::EnterStartAdmissionInput {
                 barrier: &self.inner.admission_barrier,
                 spec,
                 task_id: spec.name.clone().unwrap_or_else(|| "start".into()),
                 run_ref: None,
                 credential: spec.resume_credential.clone(),
-                held: None,
+                held: self.inner.held_callback.clone(),
             },
-        ) {
-            crate::manager::start_admission::StartAdmissionEntry::Entered(entered) => {
-                Some(entered.scope)
-            }
+        );
+        let entered = match entered {
+            crate::manager::start_admission::StartAdmissionEntry::Entered(entered) => entered,
             crate::manager::start_admission::StartAdmissionEntry::Held(held) => {
                 return StartResult::Held(held);
             }
         };
-        let spec = &admitted_spec;
+        let _scope = AdmissionScope(entered.scope);
+        let spec = &entered.spec;
         let plan = match (self.inner.planner)(spec) {
             Ok(plan) => plan,
             Err(error) => return StartResult::PlanUnresolved(*error),
@@ -1004,55 +978,24 @@ impl TaskManager {
     }
 
     pub fn start_owned(&self, spec: &ManagerStartSpec, owner: &DagTaskOwner) -> OwnedStartResult {
-        let root = spec
-            .root_session_id
-            .as_deref()
-            .unwrap_or(&spec.parent_session_id);
-        if !matches!(
-            self.inner.admission_barrier.state(root),
-            crate::pause::admission_barrier::AdmissionState::Open
-        ) {
-            return OwnedStartResult::NotStarted(StartResult::ResidencyDenied {
-                reason: "root run admission is held".into(),
-                cause: ResidencyDeniedCause::Lease,
-            });
-        }
-        let ticket = match self.inner.admission_barrier.enter(
-            root,
-            crate::pause::admission_barrier::AdmissionParticipant {
-                key: owner.node_id.clone(),
-                run_ref: crate::pause::ports::RunRef::task(owner.node_id.clone()),
-            },
-            None,
-        ) {
-            crate::pause::admission_barrier::AdmissionEntry::Entered { ticket } => ticket,
-            crate::pause::admission_barrier::AdmissionEntry::Held { .. } => {
-                return OwnedStartResult::NotStarted(StartResult::ResidencyDenied {
-                    reason: "root run admission is held".into(),
-                    cause: ResidencyDeniedCause::Lease,
-                });
-            }
-        };
-        let _scope = AdmissionScope(ticket.clone());
-        let mut admitted_spec = spec.clone();
-        admitted_spec.admission = match crate::manager::start_admission::enter_start_admission(
+        let entered = crate::manager::start_admission::enter_start_admission(
             crate::manager::start_admission::EnterStartAdmissionInput {
                 barrier: &self.inner.admission_barrier,
                 spec,
                 task_id: owner.node_id.clone(),
                 run_ref: None,
                 credential: spec.resume_credential.clone(),
-                held: None,
+                held: self.inner.held_callback.clone(),
             },
-        ) {
-            crate::manager::start_admission::StartAdmissionEntry::Entered(entered) => {
-                Some(entered.scope)
-            }
+        );
+        let entered = match entered {
+            crate::manager::start_admission::StartAdmissionEntry::Entered(entered) => entered,
             crate::manager::start_admission::StartAdmissionEntry::Held(held) => {
                 return OwnedStartResult::NotStarted(StartResult::Held(held));
             }
         };
-        let spec = &admitted_spec;
+        let _scope = AdmissionScope(entered.scope);
+        let spec = &entered.spec;
         let plan = match (self.inner.planner)(spec) {
             Ok(plan) => plan,
             Err(error) => return OwnedStartResult::NotStarted(StartResult::PlanUnresolved(*error)),
@@ -1108,6 +1051,11 @@ impl TaskManager {
     ) -> (Option<Arc<dyn SessionAdmissionLease>>, Option<StartResult>) {
         if self.inner.admit.is_none() && self.inner.fallible_admit.is_none() {
             return (None, None);
+        }
+        if let Some(admission) = &spec.admission {
+            if let Err(held) = admission.assert_open() {
+                return (None, Some(StartResult::Held(held.result)));
+            }
         }
         let lease = match acquire_session_admission_lease(
             self.inner.store.state_dir(),
@@ -1167,6 +1115,14 @@ impl TaskManager {
         } else {
             return (Some(lease), None);
         };
+        if let Some(scope) = &spec.admission {
+            if let Err(held) = scope.assert_open() {
+                if let Some(lease) = &lease {
+                    lease.release();
+                }
+                return (None, Some(StartResult::Held(held.result)));
+            }
+        }
         match admission {
             SpawnAdmission::Rejected {
                 message,
@@ -2563,6 +2519,9 @@ impl Inner {
                 });
             }
         };
+        if let Some(admission) = &spec.admission {
+            admission.bind(&claimed.task_id);
+        }
         let registration = requested_registration.unwrap_or_else(|| {
             lock(&self.names).register(&spec.parent_session_id, None, Some(&claimed.task_id))
         });
@@ -2953,7 +2912,10 @@ impl Inner {
                         )
                     },
                 ) {
-                    let _turn = (staged.begin)();
+                    let turn = (staged.begin)();
+                    lock(&self.state)
+                        .initial_turns
+                        .insert(context.record.task_id.clone(), turn.outcome);
                 } else {
                     let pause_seq = match self.admission_barrier.state(root) {
                         crate::pause::admission_barrier::AdmissionState::Closed { pause_seq }
@@ -3100,13 +3062,24 @@ impl Inner {
         {
             return;
         }
-        track_outcome(
-            self.arc(),
-            task_id.clone(),
-            Arc::clone(handle),
-            context.model.clone(),
-            context.record.notification.run_epoch,
-        );
+        let exact = lock(&self.state).initial_turns.remove(task_id);
+        match exact {
+            Some(outcome) => crate::manager::outcome::track_exact_outcome(
+                self.arc(),
+                task_id.clone(),
+                Arc::clone(handle),
+                context.model.clone(),
+                context.record.notification.run_epoch,
+                outcome,
+            ),
+            None => track_outcome(
+                self.arc(),
+                task_id.clone(),
+                Arc::clone(handle),
+                context.model.clone(),
+                context.record.notification.run_epoch,
+            ),
+        }
     }
 
     fn attach_child_subscribers(&self, task_id: &str, handle: &Arc<dyn ManagedChildHandle>) {
