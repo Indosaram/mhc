@@ -23,8 +23,14 @@ impl ProjectStdioTransport {
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
     pub async fn start(&self) -> Result<ProjectMcpMaterialization, McpError> {
+        self.start_with_signal(None).await
+    }
+    pub async fn start_with_signal(
+        &self,
+        signal: Option<maho_ext_api::AbortSignal>,
+    ) -> Result<ProjectMcpMaterialization, McpError> {
         let generation = self.generation.load(Ordering::Acquire);
-        let resolved = self.authority.resolve().await?;
+        let resolved = self.authority.resolve_with_signal(signal).await?;
         if self.generation.load(Ordering::Acquire) != generation {
             let mut error = McpError::new(
                 McpErrorKind::Connect,
