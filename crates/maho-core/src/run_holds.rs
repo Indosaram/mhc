@@ -66,6 +66,10 @@ impl<'a> RunHolds<'a> {
             .and_then(|v| serde_json::from_value::<RunRef>(v.clone()).ok())
             .is_some_and(|r| self.ledger.get_hold(&fence_key(&r)).is_some())
     }
+    pub fn pause_seq(&self) -> u64 {
+        self.ledger.current_pause_seq()
+    }
+
     pub fn inherited_owner(&self) -> Option<InheritedData> {
         serde_json::from_value(self.ledger.get_hold("inherited_hold")?.data?).ok()
     }

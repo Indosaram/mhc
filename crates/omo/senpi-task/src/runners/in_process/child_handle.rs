@@ -338,6 +338,8 @@ impl InProcessChildHandle {
             let outcome = {
                 let mut state = tracked.lock();
                 if state.turn != turn {
+                    state.outcomes.insert(turn, RunnerOutcome::Cancelled);
+                    tracked.settled.notify_all();
                     return;
                 }
                 let outcome = match prompted {
@@ -353,6 +355,8 @@ impl InProcessChildHandle {
             session.park_idle_memory();
             let mut state = tracked.lock();
             if state.turn != turn {
+                state.outcomes.insert(turn, outcome);
+                tracked.settled.notify_all();
                 return;
             }
             state.outcome = Some(if state.aborted {
