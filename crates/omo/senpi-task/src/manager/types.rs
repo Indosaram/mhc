@@ -82,6 +82,9 @@ pub trait ManagedRunner: Send + Sync {
     fn resume(&self, _spec: &ManagedStartSpec, _session_path: &str) -> Option<ManagedRunnerResult> {
         None
     }
+    /// Awaited by every wrapper before it reports a child gone: a runner that tears down its own
+    /// children settles them here, and a wrapper must forward the call or the teardown is skipped.
+    fn settle_teardowns(&self) {}
 }
 
 #[derive(Clone)]
@@ -139,6 +142,8 @@ pub struct ManagerStartSpec {
     pub merge: Option<IsolationMergeMode>,
     /// Per-spawn apply flag (TS spec.apply).
     pub apply: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_credential: Option<crate::dag::types::ResumeCredential>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -287,6 +292,9 @@ pub enum OwnedStartResult {
         existing_fingerprint: String,
         requested_fingerprint: String,
     },
+    Held {
+        pause_seq: u64,
+    },
     NotStarted(StartResult),
 }
 
@@ -295,6 +303,7 @@ impl OwnedStartResult {
         match self {
             Self::Started { .. } => "started",
             Self::OwnerConflict { .. } => "owner_conflict",
+            Self::Held { .. } => "held",
             Self::NotStarted(result) => result.kind(),
         }
     }

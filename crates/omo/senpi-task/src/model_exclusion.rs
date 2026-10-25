@@ -61,7 +61,7 @@ fn selector_tails(model: &str) -> Vec<&str> {
 }
 
 /// The entry that keeps `model` out, or `None` (`excluded-models.ts` `excludedModelPattern`).
-pub(crate) fn excluded_model_pattern<'a>(model: &str, patterns: &'a [String]) -> Option<&'a str> {
+pub fn excluded_model_pattern<'a>(model: &str, patterns: &'a [String]) -> Option<&'a str> {
     let tails = selector_tails(model);
     for raw in patterns {
         let pattern = raw.trim();
@@ -85,7 +85,7 @@ pub(crate) fn excluded_model_pattern<'a>(model: &str, patterns: &'a [String]) ->
     None
 }
 
-pub(crate) fn is_excluded_model(model: &str, patterns: &[String]) -> bool {
+pub fn is_excluded_model(model: &str, patterns: &[String]) -> bool {
     excluded_model_pattern(model, patterns).is_some()
 }
 

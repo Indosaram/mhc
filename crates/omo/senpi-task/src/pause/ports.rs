@@ -133,7 +133,7 @@ pub struct EngineHold {
     pub key: String,
     pub data: Option<serde_json::Value>,
 }
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct EnginePauseState {
     pub pause_seq: u64,
     pub holds: Vec<EngineHold>,

@@ -32,7 +32,7 @@ struct Manager(Mutex<Vec<TaskRecord>>);
     let runtime=team_core::team_state_store::create_runtime_state(&spec,Some("parent"),team_core::types::SpecSource::Project,&config).expect("runtime");
     let record=create_task_record(TaskRecordInput { parent_session_id:"parent".into(),name:Some(format!("team:{}:beta",runtime.team_run_id)),..Default::default() },Some(1)).expect("record"); store.save(&record).expect("save");
     let manager=create_task_manager(TaskManagerOptions::new(store,ManagedRunners { in_process:Arc::new(NoLaunch),process:Arc::new(NoLaunch) },Arc::new(|_| Ok(ResolvedChildPlan { model:"faux/faux".into(),..Default::default() })),root.path().to_string_lossy()));
-    let view=TaskResumptionChannelManager { manager:Arc::new(manager),ownership:TeamMemberOwnershipDeps { state_dir,team_bounds:bounds,load_runtime_state:None } };
+    let view=TaskResumptionChannelManager { manager:Arc::new(manager),ownership:TeamMemberOwnershipDeps { state_dir,team_bounds:bounds,load_runtime_state:None },owned_workpool_task_ids:None };
     assert_eq!(view.list("parent"),vec![record.clone()]); assert!(view.list("foreign").is_empty()); assert!(!view.was_background(&record.task_id)); assert!(view.is_owned_team_member(&record,"parent")); assert!(!view.is_owned_team_member(&record,"foreign"));
     let events=EventBus::default(); let received=Arc::new(Mutex::new(vec![])); let sink=received.clone(); let _subscription=events.on(RESUMPTION_CHANNEL_STATE_EVENT,Arc::new(move |event| sink.lock().expect("events").push(event.clone())));
     let mut emitter=ResumptionChannelEmitter::new(events,Arc::new(view),Arc::new(|| Some("parent".into()))); emitter.emit_session_start();
