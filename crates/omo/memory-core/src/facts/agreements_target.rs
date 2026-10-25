@@ -4,7 +4,8 @@ use std::path::Path;
 
 use crate::agreements::{
     AgreementEvent, AgreementExtractionRecord, AgreementsPolicy, agreement_items_of,
-    apply_agreement_records, read_agreements_worktree, render_agreements_file,
+    apply_agreement_records_with_receipts, parse_agreements_ledger, read_agreements_worktree,
+    render_agreements_file_with_receipts,
 };
 
 use super::mutation_plan::MutationPlanError;
@@ -22,9 +23,23 @@ pub fn render_agreements_target(
     policy: &AgreementsPolicy,
 ) -> Result<AgreementsTarget, MutationPlanError> {
     let existing = read_agreements_worktree(repo_dir)?;
-    let mutation =
-        apply_agreement_records(&agreement_items_of(existing.as_deref()), records, policy);
-    let content = render_agreements_file(existing.as_deref(), &mutation.items)?;
+    let prior = existing
+        .as_deref()
+        .map(crate::memfs::parse_memory_file)
+        .transpose()?
+        .map(|file| parse_agreements_ledger(&file.body).receipts)
+        .unwrap_or_default();
+    let mutation = apply_agreement_records_with_receipts(
+        &agreement_items_of(existing.as_deref()),
+        records,
+        policy,
+        &prior,
+    );
+    let content = render_agreements_file_with_receipts(
+        existing.as_deref(),
+        &mutation.items,
+        Some(&mutation.receipts),
+    )?;
     Ok(AgreementsTarget {
         content: (existing.as_deref() != Some(content.as_str())).then_some(content),
         events: mutation.events,
