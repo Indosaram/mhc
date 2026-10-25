@@ -53,11 +53,7 @@ fn selector_tails(model: &str) -> Vec<&str> {
         .match_indices('/')
         .map(|(index, _)| &model[index + 1..])
         .collect();
-    if tails.is_empty() {
-        vec![model]
-    } else {
-        tails
-    }
+    if tails.is_empty() { vec![model] } else { tails }
 }
 
 /// The entry that keeps `model` out, or `None` (`excluded-models.ts` `excludedModelPattern`).
@@ -85,6 +81,7 @@ pub fn excluded_model_pattern<'a>(model: &str, patterns: &'a [String]) -> Option
     None
 }
 
+/// `excluded-models.ts` `isExcludedModel`: whether any pattern keeps `model` out of a registry view.
 pub fn is_excluded_model(model: &str, patterns: &[String]) -> bool {
     excluded_model_pattern(model, patterns).is_some()
 }

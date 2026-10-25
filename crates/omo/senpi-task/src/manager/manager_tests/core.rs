@@ -749,3 +749,217 @@ fn exact_resumed_outcome_settles_without_waiting_for_old_generic_turn() {
         record.notification.run_epoch
     );
 }
+
+#[test]
+fn refused_pause_does_not_trap_ordinary_completion() {
+    let harness = default_manager();
+    let task = started(harness.manager.start(&base_spec()));
+    let record = harness.store.load(&task.task_id).unwrap().unwrap();
+    harness
+        .manager
+        .begin_native_pause(&task.task_id, record.notification.run_epoch);
+    harness
+        .manager
+        .finish_native_pause(&task.task_id, record.notification.run_epoch, false)
+        .unwrap();
+    let handle = harness
+        .in_process
+        .handle(&task.task_id)
+        .or_else(|| harness.process.handle(&task.task_id))
+        .unwrap();
+    handle.settle(crate::runners::RunnerOutcome::completed(
+        "ordinary completion",
+    ));
+    let completed = harness
+        .manager
+        .wait_for(&task.task_id, None, Some(WAIT))
+        .unwrap();
+    assert_eq!(completed.status, TaskStatus::Completed);
+    assert_eq!(
+        completed.final_response.as_deref(),
+        Some("ordinary completion")
+    );
+}
+
+#[test]
+fn late_durable_id_replaces_predecessor_once_and_ignores_later_reports() {
+    let harness = default_manager();
+    let task = started(harness.manager.start(&base_spec()));
+    harness
+        .store
+        .mutate(&task.task_id, &mut |record: &crate::state::TaskRecord| {
+            crate::state::TaskRecord {
+                child_session_id: Some("predecessor".into()),
+                ..record.clone()
+            }
+        })
+        .unwrap();
+    let handle = harness
+        .in_process
+        .handle(&task.task_id)
+        .or_else(|| harness.process.handle(&task.task_id))
+        .unwrap();
+    handle.emit_durable_id("durable-current");
+    handle.emit_durable_id("stale-later");
+    assert_eq!(
+        harness
+            .store
+            .load(&task.task_id)
+            .unwrap()
+            .unwrap()
+            .child_session_id
+            .as_deref(),
+        Some("durable-current")
+    );
+}
+
+#[test]
+fn typed_start_failure_advances_category_without_consuming_parent_rung() {
+    let runner = FakeRunner::new();
+    *lock(&runner.hook) = Some(Arc::new(|_, call| {
+        (call == 1).then(|| {
+            Err(crate::manager::types::ManagedRunnerError::Runner(
+                crate::runners::RunnerFailure::new(
+                    crate::runners::RunnerFailureKind::ModelUnavailable,
+                    "temporary unavailable",
+                ),
+            ))
+        })
+    }));
+    let harness = make_manager(HarnessOptions {
+        in_process: Some(runner.clone()),
+        planner: Some(Arc::new(|_| {
+            Ok(ResolvedChildPlan {
+                model: "first/a".into(),
+                resolved_model: Some(model_record("first", "a", "first/a", None, None)),
+                fallback_models: Some(vec![
+                    model_record("second", "b", "second/b", None, None),
+                    model_record("parent", "c", "parent/c", None, None),
+                ]),
+                ..Default::default()
+            })
+        })),
+        ..Default::default()
+    });
+    let task = started(harness.manager.start(&base_spec()));
+    assert_eq!(runner.started_count(), 2);
+    assert_eq!(runner.specs()[1].model.as_deref(), Some("second/b"));
+    let record = harness.store.load(&task.task_id).unwrap().unwrap();
+    assert_eq!(record.model, "second/b");
+    assert_eq!(record.fallback_models.unwrap()[0].display, "parent/c");
+}
+
+#[test]
+fn fresh_manager_reconstructs_withdrawn_first_launch_with_saved_custody() {
+    let original = make_manager(HarnessOptions {
+        config: Some(config(1, 1)),
+        ..Default::default()
+    });
+    let first = started(original.manager.start(&base_spec()));
+    let waiting = started(original.manager.start(&base_spec()));
+    let record = original.store.load(&waiting.task_id).unwrap().unwrap();
+    original
+        .manager
+        .admission_barrier()
+        .close(&record.root_session_id, 5);
+    original
+        .manager
+        .withdraw_admissions(&record.root_session_id);
+    assert!(
+        original
+            .store
+            .load(&waiting.task_id)
+            .unwrap()
+            .unwrap()
+            .queued_admission
+            .is_some()
+    );
+    drop(original.manager);
+    original
+        .store
+        .mutate(
+            &waiting.task_id,
+            &mut |record: &crate::state::TaskRecord| crate::state::TaskRecord {
+                host_pid: None,
+                ..record.clone()
+            },
+        )
+        .unwrap();
+    let runner = FakeRunner::new();
+    let options = crate::manager::types::TaskManagerOptions::new(
+        original.store.clone(),
+        crate::manager::types::ManagedRunners {
+            in_process: runner.clone(),
+            process: runner.clone(),
+        },
+        category_planner(&[]),
+        original.project.cwd(),
+    );
+    let restored = crate::manager::create_task_manager(options);
+    let record = original.store.load(&waiting.task_id).unwrap().unwrap();
+    restored
+        .admission_barrier()
+        .close(&record.root_session_id, 5);
+    let credential = restored
+        .admission_barrier()
+        .resume(&record.root_session_id, 5, "restart")
+        .unwrap();
+    restored
+        .resume_held_task(&waiting.task_id, &credential)
+        .unwrap();
+    let handle = runner.wait_handle(&waiting.task_id);
+    handle.settle(crate::runners::RunnerOutcome::completed("restored"));
+    assert_eq!(
+        restored
+            .wait_for(&waiting.task_id, None, Some(WAIT))
+            .unwrap()
+            .final_response
+            .as_deref(),
+        Some("restored")
+    );
+    assert_eq!(first.status, TaskStatus::Running);
+}
+
+#[test]
+fn accepted_stop_and_immediate_exact_resume_ignore_the_old_abort() {
+    let harness = default_manager();
+    let task = started(harness.manager.start(&base_spec()));
+    let record = harness.store.load(&task.task_id).unwrap().unwrap();
+    let handle = harness.manager.get_resident_handle(&task.task_id).unwrap();
+    harness
+        .manager
+        .begin_native_pause(&task.task_id, record.notification.run_epoch);
+    harness
+        .manager
+        .finish_native_pause(&task.task_id, record.notification.run_epoch, true)
+        .unwrap();
+    harness
+        .store
+        .mutate(&task.task_id, &mut |fresh: &crate::state::TaskRecord| {
+            crate::state::TaskRecord {
+                status: TaskStatus::Running,
+                ..fresh.clone()
+            }
+        })
+        .unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    harness.manager.track_resumed_turn(
+        &task.task_id,
+        handle,
+        &record.model,
+        record.notification.run_epoch,
+        Box::new(move || receive.recv_timeout(WAIT).unwrap()),
+    );
+    harness
+        .in_process
+        .wait_handle(&task.task_id)
+        .settle(crate::runners::RunnerOutcome::Cancelled);
+    send.send(crate::runners::RunnerOutcome::completed("new turn"))
+        .unwrap();
+    let completed = harness
+        .manager
+        .wait_for(&task.task_id, None, Some(WAIT))
+        .unwrap();
+    assert_eq!(completed.status, TaskStatus::Completed);
+    assert_eq!(completed.final_response.as_deref(), Some("new turn"));
+}

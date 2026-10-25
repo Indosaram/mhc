@@ -155,6 +155,29 @@ fn handle_command(command: &Value) {
         .unwrap_or("unknown");
     let message = command.get("message").cloned().unwrap_or(Value::Null);
     match kind {
+        "emit_identity" => {
+            emit(&json!({"type":"session_info_changed","sessionId":"durable-late"}));
+            respond(kind, &id, None);
+        }
+        "get_protocol_info" => match std::env::var("FAKE_FALLBACK").as_deref() {
+            Ok("silent") => {}
+            Ok("supported") | Ok("refused") => respond(
+                kind,
+                &id,
+                Some(json!({"data":{"capabilities":["retry_fallback_command"]}})),
+            ),
+            _ => respond(kind, &id, Some(json!({"data":{"capabilities":[]}}))),
+        },
+        "set_retry_fallback" => {
+            if std::env::var("FAKE_FALLBACK").as_deref() == Ok("refused") {
+                emit(
+                    &json!({"type":"response","id":id,"command":kind,"success":false,"error":"refused"}),
+                );
+            } else {
+                respond(kind, &id, None);
+                emit(&json!({"type":"fallback_configured","profile":command["retryFallback"]}));
+            }
+        }
         "prompt" => handle_prompt(command, &id),
         "steer" => {
             respond("steer", &id, None);

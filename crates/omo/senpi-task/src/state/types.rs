@@ -293,7 +293,9 @@ pub const COST_REPORT_STATUSES: [CostReportStatus; 4] = [
     CostReportStatus::Invalid,
 ];
 
-pub use crate::completion::{ParentModelFallback, ParentModelFallbackPhase, ParentModelFallbackReason};
+pub use crate::completion::{
+    ParentModelFallback, ParentModelFallbackPhase, ParentModelFallbackReason,
+};
 
 pub const PARENT_MODEL_FALLBACK_REASONS: [ParentModelFallbackReason; 5] = [
     ParentModelFallbackReason::UsageLimit,
@@ -608,6 +610,8 @@ pub struct TaskRecord {
     pub revive_delivery_uncertain: Option<ReviveDeliveryUncertainty>,
     #[serde(skip_serializing_if = "Option::is_none", serialize_with = "js_number")]
     pub prior_runs_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_admission: Option<crate::manager::concurrency::QueuedTaskAdmission>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_pause: Option<RecordedRunPause>,
     #[serde(skip_serializing_if = "Option::is_none")]

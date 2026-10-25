@@ -142,3 +142,98 @@ fn a_private_cache_does_not_share() {
     let b = second.load(&repo).expect("second load");
     assert!(!Arc::ptr_eq(&a, &b));
 }
+
+#[test]
+fn two_shared_caches_report_one_corpus_and_exact_utf16_text_bytes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let repo = GitMemoryRepo::open(dir.path(), "recall-agent").expect("repo");
+    repo.init(Some(InitializeGitRepoOptions {
+        seed_files: vec![
+            GitSeedFile {
+                relative_path: "reference/one.md".into(),
+                content: "---\ndescription: First topic\n---\nFirst body.\n".into(),
+            },
+            GitSeedFile {
+                relative_path: "reference/two.md".into(),
+                content: "---\ndescription: Second topic\n---\nSecond body text. 🌍\n".into(),
+            },
+        ],
+        ..Default::default()
+    }))
+    .expect("init");
+    let options = RecallCorpusCacheOptions {
+        shared: true,
+        ..Default::default()
+    };
+    let mut first = RecallCorpusCache::new(options.clone());
+    let mut second = RecallCorpusCache::new(options);
+    let corpus = first.load(&repo).expect("first load");
+    assert!(Arc::ptr_eq(
+        &corpus,
+        &second.load(&repo).expect("second load")
+    ));
+    assert!(first.held_documents().is_none());
+    assert!(second.held_documents().is_none());
+
+    // Scope the report to this repository's real backing cache: other Rust tests can load
+    // unrelated corpora concurrently, so process-global before/after deltas are not deterministic.
+    let backing = first.held.values().next().expect("shared backing").clone();
+    let accounting = backing.lock().unwrap().accounting.clone();
+    let figures = memory_figures_for_caches(vec![accounting.clone()]);
+    assert_eq!(figures.corpus_caches, 1);
+    assert_eq!(figures.documents, 2);
+    let expected_bytes = corpus
+        .documents
+        .iter()
+        .map(|document| {
+            2 * (document.path.encode_utf16().count()
+                + document.description.encode_utf16().count()
+                + document.body.encode_utf16().count())
+        })
+        .sum::<usize>();
+    assert_eq!(figures.document_text_bytes, expected_bytes);
+    assert_eq!(
+        backing.lock().unwrap().held_documents(),
+        Some(corpus.documents.clone())
+    );
+    assert!(recall_memory_figures().documents >= 2);
+
+    let weak = Arc::downgrade(&accounting);
+    drop(accounting);
+    drop(backing);
+    first.clear();
+    assert!(
+        weak.upgrade().is_some(),
+        "the second facade keeps the backing alive"
+    );
+    second.clear();
+    assert!(
+        weak.upgrade().is_none(),
+        "reporting must not retain the backing state"
+    );
+}
+
+#[test]
+fn private_cache_accounting_survives_moves_and_releases_on_clear_and_drop() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let repo = seeded_repo(dir.path(), "Private accounting");
+    let mut cache = RecallCorpusCache::default();
+    assert!(cache.held_documents().is_none());
+    let corpus = cache.load(&repo).expect("load");
+    let mut moved = Box::new(cache);
+    let accounting = moved.accounting.clone();
+    let figures = memory_figures_for_caches(vec![accounting.clone()]);
+    assert_eq!(figures.corpus_caches, 1);
+    assert_eq!(figures.documents, 1);
+    assert_eq!(moved.held_documents(), Some(corpus.documents.clone()));
+    moved.clear();
+    assert!(moved.held_documents().is_none());
+    assert_eq!(
+        memory_figures_for_caches(vec![accounting.clone()]).corpus_caches,
+        0
+    );
+    let weak = Arc::downgrade(&accounting);
+    drop(accounting);
+    drop(moved);
+    assert!(weak.upgrade().is_none());
+}

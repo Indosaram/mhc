@@ -25,6 +25,35 @@ fn fixture() -> (tempfile::TempDir, GitMemoryRepo) {
 }
 
 #[test]
+fn trusted_claim_receipt_is_stamped_on_a_real_memory_write() {
+    let (_temp, repo) = fixture();
+    let author = test_author();
+    run_memory_tool(
+        &repo,
+        &author,
+        &MemoryToolParams {
+            command: Some("create".into()),
+            reason: "save suggestion".into(),
+            file_path: Some("suggestion.md".into()),
+            description: Some("Suggestion".into()),
+            file_text: Some("Use staged deployment".into()),
+            provenance: Some(MemoryToolProvenanceInput {
+                session_id: "session".into(),
+                user_turns: 1,
+                claim: Some(crate::tools::claim_frontmatter::ClaimReceipt::Agent {
+                    downgraded: true,
+                }),
+            }),
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    let content = fs::read_to_string(repo.dir.join("suggestion.md")).unwrap();
+    assert!(content.contains("agent suggestion, not a user decision"));
+}
+
+#[test]
 fn test_creates_memory_block_and_commits_locally() {
     let (_temp, repo) = fixture();
     let author = test_author();

@@ -33,6 +33,36 @@ pub struct MemoryStaticRegistration {
     pub skills_usage: crate::skills_usage_wiring::SkillsUsageTrackers,
     pub triggers: Arc<crate::trigger_wiring::ReflectionTriggerWiring>,
 }
+pub fn recover_pending_reflection(
+    reflection_dir: &std::path::Path,
+    run_id: String,
+    reconcile: &dyn Fn() -> Result<(), String>,
+) -> crate::commands::types::ReflectionRequestReceipt {
+    let recovery = crate::reflection_stale_active_sync::recover_stale_reflection_holder(
+        crate::reflection_stale_active_sync::StaleHolderRecoveryInput {
+            reflection_dir,
+            reconcile,
+            seams: None,
+            should_reconcile: None,
+        },
+    );
+    let recovered_run_id = if recovery.notice.is_none() {
+        match &recovery.verdict {
+            crate::reflection_stale_active_sync::ActiveHolderVerdict::Dead { run_id } => {
+                Some(run_id.clone())
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    crate::commands::types::ReflectionRequestReceipt {
+        disposition: crate::commands::types::ReflectionDisposition::Pending,
+        run_id,
+        recovered_run_id,
+        stuck: recovery.notice,
+    }
+}
 pub fn register_memory_static(
     api: &mut maho_ext_api::ExtensionApi,
     options: MemoryStaticOptions,
@@ -68,9 +98,9 @@ pub fn register_memory_static(
             Some(device_name) => crate::prompt::MemoryPromptHandler {
                 pins: crate::projection_pin::NativeProjectionPins::new()
                     .with_device_name(device_name),
-                ..Default::default()
+                ..crate::prompt::MemoryPromptHandler::persistent()
             },
-            None => crate::prompt::MemoryPromptHandler::default(),
+            None => crate::prompt::MemoryPromptHandler::persistent(),
         })
     });
     if let Some(load_settings) = options.load_settings {
@@ -192,7 +222,8 @@ mod tests {
                 memory_write: crate::wiring_memory_write::MemoryWriteOptions {
                     resolve_session: Arc::new(|_| None),
                     on_memory_write: Arc::new(|_| Ok(())),
-                    refresh_status: Arc::new(|_, _| panic!("unbound")),
+                    refresh_status: Arc::new(|_, _, _| panic!("unbound")),
+                    sync_status: None,
                 },
                 skills_usage: crate::skills_usage_wiring::SkillsUsageOptions {
                     resolve_context: Arc::new(|_| None),
@@ -288,7 +319,8 @@ mod tests {
                 memory_write: crate::wiring_memory_write::MemoryWriteOptions {
                     resolve_session: Arc::new(|_| None),
                     on_memory_write: Arc::new(|_| Ok(())),
-                    refresh_status: Arc::new(|_, _| panic!("unbound")),
+                    refresh_status: Arc::new(|_, _, _| panic!("unbound")),
+                    sync_status: None,
                 },
                 skills_usage: crate::skills_usage_wiring::SkillsUsageOptions {
                     resolve_context: Arc::new(|_| None),
@@ -448,7 +480,8 @@ mod tests {
                 memory_write: crate::wiring_memory_write::MemoryWriteOptions {
                     resolve_session: Arc::new(|_| None),
                     on_memory_write: Arc::new(|_| Ok(())),
-                    refresh_status: Arc::new(|_, _| panic!("unbound")),
+                    refresh_status: Arc::new(|_, _, _| panic!("unbound")),
+                    sync_status: None,
                 },
                 skills_usage: crate::skills_usage_wiring::SkillsUsageOptions {
                     resolve_context: Arc::new(|_| None),

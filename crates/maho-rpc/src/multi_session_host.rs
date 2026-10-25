@@ -1454,11 +1454,12 @@ impl HostCore {
             }),
             // senpi `SessionEventWriter`'s grant methods: this host's fanout is the connection view, and the settled
             // dialogs and notice snapshots belong to the security presentations the writer holds.
-            security: Some(
-                std::sync::Arc::new(HostSecurityWriter {
-                    fanout: std::sync::Arc::clone(&self.fanout),
-                }) as std::sync::Arc<dyn crate::session_worker_client::WorkerSecurityWriter>,
-            ),
+            security: Some(std::sync::Arc::new(HostSecurityWriter {
+                fanout: std::sync::Arc::clone(&self.fanout),
+            })
+                as std::sync::Arc<
+                    dyn crate::session_worker_client::WorkerSecurityWriter,
+                >),
         }
     }
     /// `open_session` on the worker runtime (senpi `WorkerSessionRegistry.openSession` + the router's
@@ -2528,8 +2529,10 @@ impl crate::session_release::SessionReleasePort for HostReleasePort<'_> {
         &self,
         session_path: &str,
         move_id: &str,
-    ) -> Result<crate::session_release::StagedState, crate::session_release_interrupt::ReleaseWriteError>
-    {
+    ) -> Result<
+        crate::session_release::StagedState,
+        crate::session_release_interrupt::ReleaseWriteError,
+    > {
         crate::session_release::prepare_outgoing_state(session_path, move_id)
             .map_err(crate::session_release_interrupt::ReleaseWriteError::Other)
     }
@@ -2540,7 +2543,7 @@ impl crate::session_release::SessionReleasePort for HostReleasePort<'_> {
         self.core.tear_down_released(session_id, session_path).await
     }
 }
-tokio::task_local! {static CURRENT_CONNECTION:Option<String>;}
+tokio::task_local! {pub(crate) static CURRENT_CONNECTION:Option<String>;}
 /// Routes one session record (senpi `SessionEventWriter.enqueue`): responses, bash updates and
 /// blocking UI requests go to their requester only; content goes to the connections attached to
 /// the session and is remembered for late joiners; lifecycle records follow their visibility

@@ -674,6 +674,7 @@ pub fn managed_event(event: &Value) -> ManagedChildEvent {
         from: string("from"),
         chain_key: string("chainKey"),
         reason: string("reason"),
+        limit: string("limit"),
         last_error: string("lastError"),
         event_type,
     }

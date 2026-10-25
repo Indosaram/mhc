@@ -23,7 +23,21 @@ tokio::task_local! {
     static EXTENSION_COMPACTION_PREPARATION: maho_ext_api::CompactionPreparationDetails;
     static NESTED_TOOL_SCOPE: (String, Arc<Mutex<crate::session_record::NestedCallRecorder>>, Arc<AtomicU64>);
     static NESTED_TOOL_QUEUE_HELD: bool;
+    static HELD_COMMAND_SESSION: String;
 }
+struct HeldInputReservation {
+    session: AgentSession,
+    ids: Vec<String>,
+}
+impl Drop for HeldInputReservation {
+    fn drop(&mut self) {
+        let mut reserved = lock(&self.session.reserved_held_inputs);
+        for id in &self.ids {
+            reserved.remove(id);
+        }
+    }
+}
+
 struct ExtensionEventSignalSubscription {
     signal: maho_ai::utils::abort::AbortSignal,
     listener: maho_ai::utils::abort::ListenerId,
@@ -336,6 +350,10 @@ impl std::error::Error for ExecuteToolError {}
 
 #[derive(Clone, Default)]
 pub struct PromptOptions {
+    pub tool_barrier: Option<crate::session_work_barrier::ToolBarrierSpec>,
+    pub client_message_id: Option<String>,
+    pub observed_pause_seq: Option<u64>,
+    pub hold_after_preparation: bool,
     pub expand_prompt_templates: Option<bool>,
     pub images: Option<Vec<ImageContent>>,
     pub streaming_behavior: Option<StreamingBehavior>,
@@ -935,6 +953,9 @@ pub struct AgentSessionInner {
     external_admission: crate::external_admission::ExternalAdmission,
     held_inputs: Mutex<crate::held_inputs::HeldInputs>,
     delivered_held_inputs: Mutex<Vec<(String, u64)>>,
+    held_preparation: tokio::sync::Mutex<()>,
+    reserved_held_inputs: Mutex<BTreeSet<String>>,
+    observed_held_inputs: Mutex<BTreeSet<String>>,
     stop_interrupt: Mutex<Option<Value>>,
     lifecycle_human_pending: std::sync::atomic::AtomicBool,
     lifecycle_goal: Mutex<Option<Value>>,
@@ -2436,6 +2457,27 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             .skills
             .iter()
             .map(|skill| maho_ext_api::Skill {
+                provenance: skill.provenance.as_ref().map(|provenance| {
+                    maho_ext_api::SkillProvenance {
+                        kind: match provenance.kind {
+                            crate::skill_access::SkillProvenanceKind::User => "user",
+                            crate::skill_access::SkillProvenanceKind::ProjectAuto => "project-auto",
+                            crate::skill_access::SkillProvenanceKind::ProjectSelected => {
+                                "project-selected"
+                            }
+                        }
+                        .into(),
+                        selected_root: provenance.selected_root.clone(),
+                        project_root: provenance.project_root.clone(),
+                    }
+                }),
+                allowed_set: skill.allowed_set.as_ref().map(|allowed| {
+                    maho_ext_api::SkillAllowedSet {
+                        roots: allowed.roots.clone(),
+                        files: allowed.files.clone(),
+                        digest: allowed.digest.clone(),
+                    }
+                }),
                 name: skill.name.clone(),
                 description: skill.description.clone(),
                 file_path: skill.file_path.clone(),
@@ -2815,8 +2857,9 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
     fn arm_tool_barrier(&self, spec: Value) -> Result<(), maho_ext_api::ExtensionFailure> {
         let spec = serde_json::from_value(spec)
             .map_err(|e| maho_ext_api::ExtensionFailure::new(e.to_string()))?;
-        self.session()?.arm_tool_barrier(spec);
-        Ok(())
+        self.session()?
+            .arm_tool_barrier(spec)
+            .map_err(maho_ext_api::ExtensionFailure::new)
     }
     fn release_tool_barrier(&self, id: &str) -> Result<bool, maho_ext_api::ExtensionFailure> {
         Ok(self.session()?.release_tool_barrier(id))
@@ -3757,6 +3800,31 @@ impl AgentSession {
                         "type": "session_resumed", "pauseSeq": pause_seq, "cause": cause.as_str(), "at": at }),
                 };
                 session.emit_extension_event(SESSION_HOLD_CHANNEL, &data);
+                let session_event = match &event {
+                    crate::engine_turn_hold::SessionHoldEvent::SessionPaused {
+                        pause_seq,
+                        kind,
+                        at,
+                        notice_count,
+                        persisted,
+                    } => maho_ext_api::AgentSessionEvent::SessionPaused {
+                        pause_seq: *pause_seq,
+                        kind: kind.as_str().to_string(),
+                        at: at.clone(),
+                        notice_count: *notice_count,
+                        persisted: *persisted,
+                    },
+                    crate::engine_turn_hold::SessionHoldEvent::SessionResumed {
+                        pause_seq,
+                        cause,
+                        at,
+                    } => maho_ext_api::AgentSessionEvent::SessionResumed {
+                        pause_seq: *pause_seq,
+                        cause: cause.as_str().to_string(),
+                        at: at.clone(),
+                    },
+                };
+                session.emit(session_event);
             });
             Arc::new(Mutex::new(crate::engine_turn_hold::EngineTurnHold::new(
                 &engine_hold_entries,
@@ -3922,6 +3990,9 @@ impl AgentSession {
                 lifecycle: Mutex::new(lifecycle),
                 held_inputs: Mutex::new(held_inputs),
                 delivered_held_inputs: Mutex::new(Vec::new()),
+                held_preparation: tokio::sync::Mutex::new(()),
+                reserved_held_inputs: Mutex::new(BTreeSet::new()),
+                observed_held_inputs: Mutex::new(BTreeSet::new()),
                 external_admission: Default::default(),
                 stop_interrupt: Mutex::new(None),
                 lifecycle_human_pending: std::sync::atomic::AtomicBool::new(false),
@@ -3951,7 +4022,14 @@ impl AgentSession {
                 retry_fallback: tokio::sync::Mutex::new(None),
                 work_barrier: Arc::new(crate::session_work_barrier::SessionWorkBarrier::new()),
                 relocation_host: Mutex::new(None),
-                tool_barrier: crate::session_work_barrier::ToolBarrier::new(|_| {}),
+                tool_barrier: crate::session_work_barrier::ToolBarrier::new({
+                    let session_cell = session_cell.clone();
+                    move |spec| {
+                        if let Some(inner) = session_cell.get().and_then(std::sync::Weak::upgrade) {
+                            AgentSession { inner }.emit_extension_event("tool_barrier_expired", &json!({"type":"tool_barrier_expired","id":spec.id,"deadlineMs":spec.deadline_ms}));
+                        }
+                    }
+                }),
                 tool_workspace_effects: Mutex::new(BTreeMap::from_iter([
                     (
                         "find".to_owned(),
@@ -4216,6 +4294,13 @@ impl AgentSession {
         }
         if let AgentEvent::MessageStart { message } = &event {
             if let Ok(value) = session_message_to_value(message) {
+                if let Some(id) = value
+                    .pointer("/details/heldInputId")
+                    .and_then(Value::as_str)
+                {
+                    lock(&self.observed_held_inputs).insert(id.to_owned());
+                }
+
                 let run_id = lock(&self.lifecycle).run_id.clone();
                 let result = self.with_session_manager_mut(|manager| {
                     let entries = manager.entries();
@@ -4303,6 +4388,9 @@ impl AgentSession {
                 }
             };
             if let Some(mode) = removed {
+                if mode == StreamingBehavior::FollowUp {
+                    self.clear_tool_barrier();
+                }
                 self.remove_queued_input(&text, mode);
                 self.emit_queue_update();
             }
@@ -4415,13 +4503,24 @@ impl AgentSession {
             self.with_work_obligations(|registry| registry.settle_run(&lock(&self.custody_run_id)));
             self.external_admission.observe_run_settled();
             let generation = self.user_abort_generation.load(Ordering::SeqCst);
-            let claimed = std::mem::take(&mut *lock(&self.delivered_held_inputs));
-            let ids = claimed
-                .into_iter()
-                .filter(|(_, admitted)| *admitted == generation)
-                .map(|(id, _)| id)
-                .collect::<Vec<_>>();
+            let observed = std::mem::take(&mut *lock(&self.observed_held_inputs));
+            let mut claimed = lock(&self.delivered_held_inputs);
+            let mut ids = Vec::new();
+            claimed.retain(|(id, admitted)| {
+                if observed.contains(id) {
+                    if *admitted == generation {
+                        ids.push(id.clone());
+                    }
+                    false
+                } else {
+                    true
+                }
+            });
+            drop(claimed);
             if let Err(error_message) = self.consume_held_inputs(&ids) {
+                lock(&self.delivered_held_inputs)
+                    .extend(ids.iter().cloned().map(|id| (id, generation)));
+                lock(&self.observed_held_inputs).extend(ids);
                 self.emit(AgentSessionEvent::ContinuationError { error_message });
             }
 
@@ -4443,7 +4542,9 @@ impl AgentSession {
                     json!({"endedBy":ended_by,"willRetry":boundary.will_retry,"expectations":[]}),
                 );
             }
-            self.clear_tool_barrier();
+            if !boundary.will_retry {
+                self.clear_tool_barrier();
+            }
             self.refresh_lifecycle();
             // senpi mutates the live agent_end event on a late User join (agent-abort-provenance.ts
             // `join`), so subscribers see the settled owner, not the snapshot taken at begin.
@@ -5061,6 +5162,13 @@ impl AgentSession {
 
     /// Held commands leave custody before invocation; commands run once, in input order.
     async fn take_held_input_messages(&self) -> Result<(Vec<AgentMessage>, Vec<String>), String> {
+        if HELD_COMMAND_SESSION
+            .try_with(|id| id == &self.session_id())
+            .unwrap_or(false)
+        {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let _preparation = self.held_preparation.lock().await;
         let pending = self.held_inputs();
         let mut commands = Vec::new();
         for input in &pending {
@@ -5088,9 +5196,10 @@ impl AgentSession {
                 .collect::<Vec<_>>(),
         )?;
         for input in commands {
-            if let Err(error) = Box::pin(
+            if let Err(error) = Box::pin(HELD_COMMAND_SESSION.scope(
+                self.session_id(),
                 self.try_execute_extension_command(input["text"].as_str().expect("held command")),
-            )
+            ))
             .await
             {
                 self.session_logger.warn(
@@ -5110,7 +5219,7 @@ impl AgentSession {
             .collect::<Vec<_>>();
         for input in self.held_inputs() {
             let id = input["inputId"].as_str().expect("input id").to_owned();
-            if claimed.contains(&id) {
+            if claimed.contains(&id) || lock(&self.reserved_held_inputs).contains(&id) {
                 continue;
             }
             ids.push(id);
@@ -5136,8 +5245,22 @@ impl AgentSession {
             } else {
                 json!(text)
             };
-            messages.push(session_message_from_value(json!({"role":"custom","customType":crate::held_inputs::HELD_INPUT_ENTRY,"content":content,"display":true,"timestamp":maho_ai::utils::diagnostics::now_ms()}))?);
+            messages.push(session_message_from_value(json!({"role":"custom","customType":crate::held_inputs::HELD_INPUT_ENTRY,"content":content,"display":true,"details":{"heldInputId":input["inputId"]},"timestamp":maho_ai::utils::diagnostics::now_ms()}))?);
         }
+        let held_message_ids = messages
+            .iter()
+            .filter_map(|m| {
+                session_message_to_value(m).ok().and_then(|v| {
+                    v.pointer("/details/heldInputId")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+            })
+            .collect::<BTreeSet<_>>();
+        for id in ids.iter().filter(|id| !held_message_ids.contains(*id)) {
+            messages.push(session_message_from_value(json!({"role":"custom","customType":"held-input-continue","content":"","display":false,"details":{"heldInputId":id},"timestamp":maho_ai::utils::diagnostics::now_ms()}))?);
+        }
+        lock(&self.reserved_held_inputs).extend(ids.iter().cloned());
         Ok((messages, ids))
     }
 
@@ -5152,6 +5275,18 @@ impl AgentSession {
         if matches!(result, crate::run_holds::InheritResult::Inherited { .. }) {
             self.abort().await;
         }
+        self.refresh_lifecycle();
+        Ok(result)
+    }
+
+    pub fn release_run_hold(
+        &self,
+        parent: &str,
+        pause_seq: u64,
+        child_seq_cutoff: u64,
+    ) -> Result<crate::run_holds::ReleaseInheritedResult, String> {
+        let result = crate::run_holds::RunHolds::new(&mut lock(&self.engine_turn_hold))
+            .release_inherited(parent, pause_seq, child_seq_cutoff)?;
         self.refresh_lifecycle();
         Ok(result)
     }
@@ -5273,8 +5408,125 @@ impl AgentSession {
         }
     }
 
+    /// Internal adapter boundary for a validated reply that resumes the current turn.
+    pub fn admit_human_answer(&self) {
+        self.human_input_admitted(HumanInputKind::Answer);
+    }
+
     /// Explicit user Resume; attachment alone must never call this. Reports the human input even when
     /// nothing is paused, then releases every held wake one at a time through full agent_end handling.
+    pub fn pause_seq(&self) -> u64 {
+        lock(&self.engine_turn_hold).current_pause_seq()
+    }
+    pub fn paused_held_input_count(&self) -> usize {
+        self.held_inputs().len()
+    }
+    pub fn security_notices(&self) -> Value {
+        serde_json::to_value(self.security_notice_state()).expect("security state serializes")
+    }
+    pub fn stop_for_run(&self) {
+        crate::run_holds::RunHolds::new(&mut lock(&self.engine_turn_hold)).stamp();
+    }
+    pub fn note_automatic_input(&self, text: &str) -> bool {
+        let mut hold = lock(&self.engine_turn_hold);
+        if !hold.holds().iter().any(|record| {
+            matches!(
+                record.kind,
+                crate::engine_turn_hold::HoldKind::SessionHold
+                    | crate::engine_turn_hold::HoldKind::InheritedHold
+            )
+        }) {
+            return false;
+        }
+        hold.note(&format!("rpc-input:{}",uuid::Uuid::new_v4()),Some(serde_json::json!({"role":"custom","customType":"rpc-automatic-input","content":text,"display":true,"timestamp":maho_ai::utils::diagnostics::now_ms()})));
+        true
+    }
+    pub async fn begin_resume(&self, request: &Value) -> Result<Value, String> {
+        let seq = self.pause_seq();
+        if let Some(effect) = request["effectId"].as_str() {
+            if let Some(mut answer) = self.with_session_manager(|manager| {
+                manager
+                    .entries()
+                    .iter()
+                    .rev()
+                    .find(|entry| {
+                        entry["customType"] == "session-resume-effect"
+                            && entry["data"]["effectId"] == effect
+                    })
+                    .map(|entry| entry["data"]["answer"].clone())
+            }) {
+                answer["replayed"] = true.into();
+                return Ok(answer);
+            }
+        }
+        let idle = serde_json::json!({"resumed":false,"pauseSeq":seq,"turnStarted":false,"deliveredNotices":0,"deliveredHeldInputs":0});
+        if !self.paused() {
+            let mut answer = idle;
+            answer["reason"] = "not_paused".into();
+            return Ok(answer);
+        }
+        if request["expectedSeq"]
+            .as_u64()
+            .is_some_and(|expected| expected != seq)
+        {
+            let mut answer = idle;
+            answer["reason"] = "stale".into();
+            return Ok(answer);
+        }
+        let inherited =
+            crate::run_holds::RunHolds::new(&mut lock(&self.engine_turn_hold)).inherited_owner();
+        if let Some(owner) = inherited.as_ref() {
+            if self
+                .holds()
+                .iter()
+                .all(|hold| hold.kind == crate::engine_turn_hold::HoldKind::InheritedHold)
+            {
+                let mut answer = idle;
+                answer["reason"] = "resume_through_parent".into();
+                answer["parentSessionId"] = owner.parent_session_id.clone().into();
+                return Ok(answer);
+            }
+        }
+        if request["mode"] == "release" || inherited.is_some() {
+            let mut hold = lock(&self.engine_turn_hold);
+            hold.attend();
+            let keys = hold
+                .holds()
+                .iter()
+                .filter(|hold| {
+                    matches!(
+                        hold.kind,
+                        crate::engine_turn_hold::HoldKind::SessionHold
+                            | crate::engine_turn_hold::HoldKind::Unattended
+                    )
+                })
+                .map(|hold| hold.key.clone())
+                .collect::<Vec<_>>();
+            hold.release(
+                &keys,
+                crate::engine_turn_hold::HoldReleaseCause::ResumeSession,
+            )?;
+            let mut answer = idle;
+            answer["resumed"] = true.into();
+            return Ok(answer);
+        }
+        if let Some(message) = request["message"].as_str() {
+            self.hold_input(serde_json::json!({"inputId":format!("resume-{}",request["effectId"].as_str().map(str::to_owned).unwrap_or_else(||uuid::Uuid::new_v4().to_string())),"revision":0,"text":message}))?;
+        }
+        let notices = self.paused_notice_count();
+        let inputs = self.paused_held_input_count();
+        self.resume_session().await?;
+        let answer = serde_json::json!({"resumed":true,"pauseSeq":seq,"turnStarted":notices>0||inputs>0,"deliveredNotices":notices,"deliveredHeldInputs":inputs});
+        if let Some(effect) = request["effectId"].as_str() {
+            self.with_session_manager_mut(|manager| {
+                manager.append_custom(
+                    "session-resume-effect",
+                    Some(serde_json::json!({"effectId":effect,"answer":answer})),
+                )
+            });
+        }
+        Ok(answer)
+    }
     pub async fn resume_session(&self) -> Result<(), String> {
         self.human_input_admitted(HumanInputKind::Resume);
         let mut hold =
@@ -5495,6 +5747,17 @@ impl AgentSession {
         text: &str,
         mut options: PromptOptions,
     ) -> Result<PromptDisposition, String> {
+        options
+            .observed_pause_seq
+            .get_or_insert_with(|| lock(&self.engine_turn_hold).current_pause_seq());
+        options.hold_after_preparation = options
+            .input_origin
+            .unwrap_or_else(|| input_origin_of(options.source))
+            == InputOrigin::Person
+            && self
+                .holds()
+                .iter()
+                .any(|h| h.kind == crate::engine_turn_hold::HoldKind::RunFence);
         let input_hold = Arc::new(self.external_admission.begin_input(
             text.starts_with('/'),
             options.source == Some(InputSource::Extension),
@@ -5512,7 +5775,7 @@ impl AgentSession {
                 .iter()
                 .any(|h| h.kind == crate::engine_turn_hold::HoldKind::InheritedHold)
         {
-            let mut input = json!({"inputId":format!("prompt-{}",uuid::Uuid::new_v4()),"revision":0,"text":text});
+            let mut input = json!({"inputId":options.client_message_id.clone().unwrap_or_else(||format!("prompt-{}",uuid::Uuid::new_v4())),"revision":0,"text":text});
             if let Some(images) = &options.images {
                 if !images.is_empty() {
                     input["images"] = serde_json::to_value(images).map_err(|e| e.to_string())?;
@@ -5533,7 +5796,15 @@ impl AgentSession {
             return Ok(PromptDisposition::Queued);
         }
         // Preparation runs before prompt admission locks; a held command may itself submit input.
-        let (held_messages, held_ids) = Box::pin(self.take_held_input_messages()).await?;
+        let (held_messages, held_ids) = if options.hold_after_preparation {
+            (Vec::new(), Vec::new())
+        } else {
+            Box::pin(self.take_held_input_messages()).await?
+        };
+        let _held_reservation = HeldInputReservation {
+            session: self.clone(),
+            ids: held_ids.clone(),
+        };
         options.held_messages = held_messages;
         options.held_input_ids = held_ids;
 
@@ -5542,7 +5813,7 @@ impl AgentSession {
             .unwrap_or_else(|| input_origin_of(options.source));
         // Counted before any await: an external delivery never overtakes this input.
         self.prompts_in_flight.fetch_add(1, Ordering::SeqCst);
-        if origin == InputOrigin::Person {
+        if origin == InputOrigin::Person && !options.hold_after_preparation {
             self.begin_person_input();
         }
         let admission = self.engine_admission_hook(options.prompt_admitted.take());
@@ -5732,6 +6003,13 @@ impl AgentSession {
 
     pub fn pause_seq(&self) -> u64 {
         lock(&self.engine_turn_hold).current_pause_seq()
+    }
+
+    pub fn run_paused(&self) -> bool {
+        lock(&self.engine_turn_hold)
+            .holds()
+            .iter()
+            .any(|hold| hold.kind == crate::engine_turn_hold::HoldKind::RunFence)
     }
 
     pub fn holds(&self) -> Vec<crate::engine_turn_hold::SessionHold> {
@@ -6220,6 +6498,7 @@ impl AgentSession {
                 return Err(error);
             }
         };
+        let prepared_images = images.clone();
         let user_message = make_user_message(&text, images);
         self.remember_input_source(
             &user_message,
@@ -6241,6 +6520,46 @@ impl AgentSession {
             .await;
             return Err(error);
         }
+        if options.hold_after_preparation
+            || options.observed_pause_seq.is_some_and(|observed| {
+                self.holds().iter().any(|h| {
+                    h.kind != crate::engine_turn_hold::HoldKind::Unattended
+                        && lock(&self.engine_turn_hold).current_pause_seq() > observed
+                })
+            })
+            || (options
+                .input_origin
+                .unwrap_or_else(|| input_origin_of(options.source))
+                == InputOrigin::Person
+                && self.holds().iter().any(|h| {
+                    matches!(
+                        h.kind,
+                        crate::engine_turn_hold::HoldKind::RunFence
+                            | crate::engine_turn_hold::HoldKind::InheritedHold
+                    )
+                }))
+        {
+            let mut held = json!({"inputId":options.client_message_id.clone().unwrap_or_else(||format!("prompt-{}",uuid::Uuid::new_v4())),"revision":0,"text":text});
+            if let Some(images) = prepared_images {
+                if !images.is_empty() {
+                    held["images"] = serde_json::to_value(images).map_err(|e| e.to_string())?;
+                }
+            }
+            self.hold_input(held)?;
+            self.state()
+                .pending_next_turn_messages
+                .splice(0..0, consumed);
+            *disposition_reported = true;
+            if let Some(admitted) = &options.prompt_admitted {
+                admitted(PromptDisposition::Handled);
+            }
+            self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
+                input_id,
+                disposition: maho_ext_api::InputDisposition::Handled,
+            })
+            .await;
+            return Ok(PromptDisposition::Handled);
+        }
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
             input_id,
             disposition: maho_ext_api::InputDisposition::Started,
@@ -6259,6 +6578,9 @@ impl AgentSession {
                 .cloned()
                 .map(|id| (id, generation)),
         );
+        if let Some(spec) = options.tool_barrier.clone() {
+            self.arm_tool_barrier(spec)?;
+        }
         lock(&self.transcript_write_failures).start_run();
         if let Some(kept) = lock(&self.transcript_write_failures).take_refused_out(&self.messages())
         {
@@ -8265,6 +8587,9 @@ impl AgentSession {
                 && self.agent.has_queued_messages();
             // A concurrent prompt already owns the agent: a benign takeover (senpi "taken-over").
             if !allows_queued_continuation || self.agent.signal().is_some() {
+                if self.agent.signal().is_none() {
+                    self.clear_tool_barrier();
+                }
                 return Ok(());
             }
             Box::pin(self.agent.continue_with_queued_messages(Default::default())).await;
@@ -11121,9 +11446,19 @@ impl AgentSession {
         skills: Vec<crate::skills::Skill>,
         diagnostics: Vec<crate::diagnostics::ResourceDiagnostic>,
     ) {
+        let security_diagnostics = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.category.as_deref() == Some("skill-link-blocked"))
+            .map(|diagnostic| {
+                serde_json::json!({
+                    "category": "skill-link-blocked",
+                    "message": diagnostic.message,
+                    "path": diagnostic.path,
+                })
+            })
+            .collect::<Vec<_>>();
+        self.set_resource_security_notices(&security_diagnostics);
         let mut state = self.state();
-        let security_diagnostics = diagnostics.iter().filter(|diagnostic| diagnostic.message.starts_with("Blocked skill link")).map(|diagnostic| serde_json::json!({"category":"skill-link-blocked","message":diagnostic.message,"path":diagnostic.path})).collect::<Vec<_>>();
-        state.security_notices.set_resources(&security_diagnostics);
         state.prompt_templates = templates;
         state.skills = skills;
         state.skill_diagnostics = diagnostics;
@@ -11762,6 +12097,29 @@ impl AgentSession {
                 .skills
                 .iter()
                 .map(|skill| maho_ext_api::Skill {
+                    provenance: skill.provenance.as_ref().map(|provenance| {
+                        maho_ext_api::SkillProvenance {
+                            kind: match provenance.kind {
+                                crate::skill_access::SkillProvenanceKind::User => "user",
+                                crate::skill_access::SkillProvenanceKind::ProjectAuto => {
+                                    "project-auto"
+                                }
+                                crate::skill_access::SkillProvenanceKind::ProjectSelected => {
+                                    "project-selected"
+                                }
+                            }
+                            .into(),
+                            selected_root: provenance.selected_root.clone(),
+                            project_root: provenance.project_root.clone(),
+                        }
+                    }),
+                    allowed_set: skill.allowed_set.as_ref().map(|allowed| {
+                        maho_ext_api::SkillAllowedSet {
+                            roots: allowed.roots.clone(),
+                            files: allowed.files.clone(),
+                            digest: allowed.digest.clone(),
+                        }
+                    }),
                     name: skill.name.clone(),
                     description: skill.description.clone(),
                     file_path: skill.file_path.clone(),
@@ -11973,12 +12331,29 @@ impl AgentSession {
                     );
                     continue;
                 }
-                let body = match std::fs::read_to_string(&skill.file_path)
-                    .map_err(|error| error.to_string())
-                    .and_then(|source| {
-                        crate::frontmatter::strip_frontmatter(&source)
-                            .map_err(|error| error.to_string())
-                    }) {
+                let source = if skill.provenance.as_ref().is_some_and(|provenance| {
+                    provenance.kind != crate::skill_access::SkillProvenanceKind::User
+                }) {
+                    crate::skill_access::read_skill_file_checked(
+                        std::path::Path::new(&skill.file_path),
+                        skill.provenance.as_ref(),
+                        &skill.allowed_set.clone().unwrap_or_default(),
+                    )
+                    .map_err(|error| {
+                        self.accept_security_notice(&serde_json::json!({
+                            "category": "skill-link-blocked",
+                            "message": error.message,
+                            "path": skill.file_path,
+                        }));
+                        error.to_string()
+                    })
+                } else {
+                    std::fs::read_to_string(&skill.file_path).map_err(|error| error.to_string())
+                };
+                let body = match source.and_then(|source| {
+                    crate::frontmatter::strip_frontmatter(&source)
+                        .map_err(|error| error.to_string())
+                }) {
                     Ok(body) => body,
                     Err(error) => {
                         emit_error(&skill.file_path, error);
@@ -13848,6 +14223,20 @@ impl AgentSession {
         tool_call_id: Option<&str>,
         arguments_prepared: bool,
     ) -> Result<AgentToolResult, ExecuteToolError> {
+        self.wait_for_tool_barrier(tool_name, options.signal.as_ref())
+            .await;
+        if options
+            .signal
+            .as_ref()
+            .is_some_and(|signal| signal.aborted())
+        {
+            return Err(ExecuteToolError {
+                code: "aborted".into(),
+                tool_name: tool_name.into(),
+                message: "Tool call aborted before execution".into(),
+                active_tools: self.get_active_tool_names(),
+            });
+        }
         let nested = NESTED_TOOL_SCOPE
             .try_with(|(parent, recorder, sequence)| {
                 (
@@ -14860,7 +15249,7 @@ impl AgentSession {
                     if let Some(inner) = weak.upgrade() {
                         let session = AgentSession { inner };
                         if channel == "security_notice" {
-                            session.state().security_notices.accept(data);
+                            session.accept_security_notice(data);
                         }
                         if channel == "goal_lifecycle_facts"
                             && data["sessionId"] == session.session_id()
@@ -15066,6 +15455,11 @@ impl AgentSession {
                 Box::pin(async move {
                     let inner = weak.upgrade()?;
                     let session = AgentSession { inner };
+                    if let Some(id) = session.tool_barrier.id() {
+                        if session.get_tool_workspace_effect(&context.tool_call.name) != crate::session_work_barrier::ToolWorkspaceEffect::Read {
+                            session.emit_extension_event("tool_barrier_waiting", &json!({"type":"tool_barrier_waiting","id":id,"toolCallId":context.tool_call.id,"toolName":context.tool_call.name}));
+                        }
+                    }
                     session
                         .wait_for_tool_barrier(&context.tool_call.name, signal.as_ref())
                         .await;
@@ -15893,20 +16287,30 @@ impl AgentSession {
             .with_session_manager(|manager| manager.session_file().map(std::path::PathBuf::from))
         {
             let session = self.clone();
-            if let Err(error_message) = crate::session_move::extension_state::restore_moved_state(
-                &file,
-                move |delivery| async move {
-                    session
-                        .emit_session_move(
-                            delivery.move_id,
-                            delivery.dir,
-                            Some(delivery.redelivered),
-                        )
-                        .await
-                        .map(|()| true)
-                },
-            )
-            .await
+            if let Err(error_message) =
+                crate::session_move::extension_state::restore_moved_state_with_mark(
+                    &file,
+                    move |delivery| async move {
+                        session
+                            .emit_session_move(
+                                delivery.move_id,
+                                delivery.dir,
+                                Some(delivery.redelivered),
+                            )
+                            .await
+                            .map(|()| true)
+                    },
+                    |data| {
+                        self.with_session_manager_mut(|manager| {
+                            manager.append_custom(
+                                crate::session_move::extension_state::MOVED_STATE_RESTORED,
+                                Some(data),
+                            );
+                            manager.take_write_error().map_or(Ok(()), Err)
+                        })
+                    },
+                )
+                .await
             {
                 self.emit(AgentSessionEvent::ContinuationError { error_message });
             }
@@ -16292,6 +16696,10 @@ impl AgentSession {
     pub fn security_notice_state(&self) -> crate::security_notices::SecurityNoticeState {
         self.state().security_notices.snapshot()
     }
+    pub fn accept_security_notice(&self, notice: &Value) {
+        self.state().security_notices.accept(notice);
+    }
+
     pub fn set_resource_security_notices(&self, diagnostics: &[Value]) {
         self.state().security_notices.set_resources(diagnostics);
     }
@@ -16304,7 +16712,7 @@ impl AgentSession {
 
     pub fn emit_extension_event(&self, channel: &str, data: &Value) {
         if channel == "security_notice" {
-            self.state().security_notices.accept(data);
+            self.accept_security_notice(data);
         }
         self.event_bus.emit(channel, data);
         if let Some(events) = self.state().extension_events.clone() {
@@ -17052,6 +17460,10 @@ impl AgentSession {
         released: Option<ReleasedWakeAdmit>,
     ) -> Result<bool, String> {
         let (held_messages, held_ids) = Box::pin(self.take_held_input_messages()).await?;
+        let _held_reservation = HeldInputReservation {
+            session: self.clone(),
+            ids: held_ids.clone(),
+        };
         let _admission = self.prompt_admission.lock().await;
         let _work = self.work_barrier.begin();
         let app_message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(
@@ -18723,8 +19135,16 @@ impl AgentSession {
     }
 
     // Session tool barrier (senpi tool-barrier.ts)
-    pub fn arm_tool_barrier(&self, spec: crate::session_work_barrier::ToolBarrierSpec) {
+    pub fn arm_tool_barrier(
+        &self,
+        spec: crate::session_work_barrier::ToolBarrierSpec,
+    ) -> Result<(), String> {
+        let value = serde_json::to_value(&spec).map_err(|e| e.to_string())?;
+        if let Some(error) = crate::session_work_barrier::tool_barrier_spec_error(&value) {
+            return Err(error);
+        }
         self.tool_barrier.arm(spec);
+        Ok(())
     }
 
     pub fn release_tool_barrier(&self, id: &str) -> bool {
@@ -18739,6 +19159,14 @@ impl AgentSession {
         &self,
         tool_name: &str,
     ) -> crate::session_work_barrier::ToolWorkspaceEffect {
+        if let Some(effect) = self
+            .state()
+            .tool_definitions
+            .get(tool_name)
+            .and_then(|entry| entry.definition.workspace_effect)
+        {
+            return effect;
+        }
         lock(&self.tool_workspace_effects)
             .get(tool_name)
             .copied()
@@ -21326,6 +21754,154 @@ mod tests {
         assert!(messages.is_empty());
         assert!(ids.is_empty());
         assert_eq!(session.held_inputs().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_held_preparations_reserve_each_input_once() {
+        let session = test_session();
+        session
+            .hold_input(json!({"inputId":"one","revision":0,"text":"one"}))
+            .expect("hold");
+        let (first, second) = tokio::join!(
+            session.take_held_input_messages(),
+            session.take_held_input_messages()
+        );
+        let (_, a) = first.expect("first");
+        let (_, b) = second.expect("second");
+        assert_eq!(a.len() + b.len(), 1);
+        let ids = if a.is_empty() { b } else { a };
+        drop(HeldInputReservation {
+            session: session.clone(),
+            ids,
+        });
+        assert_eq!(
+            session
+                .take_held_input_messages()
+                .await
+                .expect("retry")
+                .1
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn reentrant_held_command_preparation_does_not_take_sibling_input() {
+        let session = test_session();
+        session
+            .hold_input(json!({"inputId":"one","revision":0,"text":"one"}))
+            .expect("hold");
+        let (messages, ids) = HELD_COMMAND_SESSION
+            .scope(session.session_id(), session.take_held_input_messages())
+            .await
+            .expect("reentrant");
+        assert!(messages.is_empty());
+        assert!(ids.is_empty());
+        assert_eq!(session.held_inputs().len(), 1);
+    }
+
+    #[test]
+    fn custom_read_effect_overrides_conservative_barrier_default() {
+        let session = test_session();
+        let mut definition = test_definition("custom-reader");
+        definition.workspace_effect = Some(crate::session_work_barrier::ToolWorkspaceEffect::Read);
+        session.register_tool_definition(
+            definition,
+            empty_source_info(),
+            test_tool("custom-reader"),
+        );
+        assert_eq!(
+            session.get_tool_workspace_effect("custom-reader"),
+            crate::session_work_barrier::ToolWorkspaceEffect::Read
+        );
+        assert_eq!(
+            session.get_tool_workspace_effect("unregistered"),
+            crate::session_work_barrier::ToolWorkspaceEffect::Write
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_tool_barrier_is_rejected_before_arming() {
+        let session = test_session();
+        assert!(
+            session
+                .arm_tool_barrier(crate::session_work_barrier::ToolBarrierSpec {
+                    id: String::new(),
+                    deadline_ms: 1
+                })
+                .is_err()
+        );
+        assert!(session.tool_barrier.id().is_none());
+    }
+
+    #[tokio::test]
+    async fn held_input_request_replay_keeps_one_custody_record() {
+        let session = test_session();
+        let input = json!({"inputId":"request-id","revision":1,"text":"prepared"});
+        let first = session.hold_input(input.clone()).expect("first");
+        let second = session.hold_input(input).expect("replay");
+        assert_eq!(first["entryId"], second["entryId"]);
+        assert_eq!(second["duplicate"], true);
+        assert_eq!(session.held_inputs().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn run_resume_cutoff_cannot_release_a_newer_stop_or_another_parent() {
+        let session = test_session();
+        let run = crate::run_holds::RunRef {
+            kind: "task".into(),
+            id: "child".into(),
+        };
+        let receipt = session
+            .pause_for_run("parent", 3, run.clone())
+            .await
+            .unwrap();
+        let crate::run_holds::InheritResult::Inherited { child_seq } = receipt else {
+            panic!("inherit refused")
+        };
+        session.with_run_holds(|holds| holds.stamp());
+        assert_eq!(
+            session.resume_for_run("other", 3, child_seq).await.unwrap(),
+            crate::run_holds::ReleaseInheritedResult::WrongParent
+        );
+        assert_eq!(
+            session
+                .resume_for_run("parent", 2, child_seq)
+                .await
+                .unwrap(),
+            crate::run_holds::ReleaseInheritedResult::Stale
+        );
+        assert_eq!(
+            session
+                .resume_for_run("parent", 3, child_seq)
+                .await
+                .unwrap(),
+            crate::run_holds::ReleaseInheritedResult::Released {
+                other_hold_live: true
+            }
+        );
+        assert!(session.paused());
+        assert_eq!(
+            session
+                .resume_for_run("parent", 3, child_seq)
+                .await
+                .unwrap(),
+            crate::run_holds::ReleaseInheritedResult::NotHeld
+        );
+        let latest = session.pause_for_run("parent", 4, run).await.unwrap();
+        let crate::run_holds::InheritResult::Inherited { child_seq } = latest else {
+            panic!("inherit refused")
+        };
+        assert_eq!(
+            session
+                .resume_for_run("parent", 4, child_seq)
+                .await
+                .unwrap(),
+            crate::run_holds::ReleaseInheritedResult::Released {
+                other_hold_live: false
+            }
+        );
+        assert!(!session.paused());
     }
 
     fn test_session() -> AgentSession {
@@ -32014,6 +32590,78 @@ mod tests {
         assert_eq!(loaded.skills[0].name, "demo");
         assert_eq!(loaded.diagnostics.len(), 1);
         assert_eq!(loaded.diagnostics[0].message, "warn");
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn security_notices_follow_resource_replacement_runtime_removal_and_disposal() {
+        let session = test_session();
+        let diagnostic = crate::diagnostics::ResourceDiagnostic {
+            category: Some("skill-link-blocked".into()),
+            diagnostic_type: crate::diagnostics::ResourceDiagnosticType::Warning,
+            message: "blocked".into(),
+            path: Some("/project/skill".into()),
+            collision: None,
+        };
+        session.set_prompt_resources_with_diagnostics(vec![], vec![], vec![diagnostic]);
+        assert_eq!(session.security_notice_state().notices.len(), 1);
+        let runner = ExtensionRunner::new(
+            Vec::new(),
+            Default::default(),
+            EventBus::default(),
+            test_extension_context(&session),
+        );
+        let events = runner.events.clone();
+        session.set_extension_runner(runner).await;
+        events.emit(
+            "security_notice",
+            &serde_json::json!({
+                "category":"mcp-env-withheld", "path":"server", "message":"withheld",
+            }),
+        );
+        assert_eq!(session.security_notice_state().notices.len(), 2);
+        session.set_prompt_resources(vec![], vec![]);
+        assert_eq!(session.security_notice_state().notices.len(), 1);
+        session.accept_security_notice(&serde_json::json!({
+            "category":"mcp-env-withheld", "path":"server", "message":"", "remove":true,
+        }));
+        assert!(session.security_notice_state().notices.is_empty());
+        session.accept_security_notice(&serde_json::json!({
+            "category":"skill-link-blocked", "message":"runtime blocked",
+        }));
+        session.dispose().await;
+        assert!(session.security_notice_state().notices.is_empty());
+    }
+
+    #[tokio::test]
+    async fn blocked_project_skill_expansion_publishes_notice_without_reading_outside_body() {
+        let session = test_session();
+        let project = tempfile::tempdir().expect("project");
+        let outside = tempfile::tempdir().expect("outside");
+        let path = outside.path().join("SKILL.md");
+        std::fs::write(&path, "---\nname: blocked\n---\nPrivate outside body").unwrap();
+        session.state().skills.push(crate::skills::Skill {
+            name: "blocked".into(),
+            file_path: path.to_string_lossy().into_owned(),
+            base_dir: outside.path().to_string_lossy().into_owned(),
+            provenance: Some(crate::skill_access::SkillProvenance {
+                kind: crate::skill_access::SkillProvenanceKind::ProjectAuto,
+                selected_root: project.path().to_string_lossy().into_owned(),
+                project_root: Some(project.path().to_string_lossy().into_owned()),
+            }),
+            ..Default::default()
+        });
+        assert_eq!(
+            session.expand_input("$blocked task", false).unwrap(),
+            "$blocked task"
+        );
+        let notices = session.security_notice_state().notices;
+        assert_eq!(notices.len(), 1);
+        assert_eq!(
+            notices[0].category,
+            crate::security_notices::SecurityNoticeCategory::SkillLinkBlocked
+        );
+        assert_eq!(notices[0].path.as_deref(), path.to_str());
         session.dispose().await;
     }
 

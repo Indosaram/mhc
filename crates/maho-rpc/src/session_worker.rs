@@ -437,8 +437,11 @@ impl WorkerState {
                     return Err("session_closing".into());
                 };
                 self.adopt_roles(connection.as_deref(), roles.as_deref());
-                WORKER_CONNECTION
-                    .scope(connection, binding.handle(&command))
+                crate::multi_session_host::CURRENT_CONNECTION
+                    .scope(
+                        connection.clone(),
+                        WORKER_CONNECTION.scope(connection, binding.handle(&command)),
+                    )
                     .await?;
                 if let Some(session) = self.current() {
                     publish_snapshot(&self.port, session.runtime.session(), false);

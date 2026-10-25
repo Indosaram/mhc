@@ -54,7 +54,12 @@ async fn write_move_bundle(
     }
     let state = match options.resolve_extension_state {
         Some(resolve) => resolve()?,
-        None => options.extension_state_dir.map(Path::to_owned),
+        None => match options.extension_state_dir {
+            Some(dir) => Some(dir.to_owned()),
+            None => {
+                super::extension_state::sealed_outgoing_state_dir(options.session_file, &move_id)?
+            }
+        },
     };
     if let Some(state) = &state {
         if !state.exists() {

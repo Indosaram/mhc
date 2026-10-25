@@ -9,9 +9,19 @@ license = "LicenseRef-SUL-1.0"
 name = "all"
 path = "tests/all/main.rs"
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
 [dependencies]
+libc.workspace = true
+serde = { workspace = true, features = ["derive"] }
+sha2.workspace = true
+regex.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"] }
+maho-ext-mcp = { path = "../../builtins/maho-ext-mcp" }
 claude-code-compat-core = { path = "../claude-code-compat-core" }
 maho-omo-task = { path = "../components/maho-omo-task" }
 senpi-task = { package = "maho-senpi-task", path = "../senpi-task" }
@@ -48,7 +58,7 @@ maho-omo-ultrawork = { path = "../components/maho-omo-ultrawork" }
 maho-omo-ulw-loop = { path = "../components/maho-omo-ulw-loop" }
 indexmap = "=2.14.0"
 serde_json = "=1.0.149"
-tokio = { version = "=1.52.3", features = ["rt", "sync", "time", "macros"] }
+tokio = { version = "=1.52.3", features = ["rt", "sync", "time", "macros", "fs", "io-util", "net", "signal", "process"] }
 
 [dev-dependencies]
 tokio = { version = "=1.52.3", features = ["macros", "rt", "rt-multi-thread", "time"] }

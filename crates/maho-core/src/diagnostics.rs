@@ -29,6 +29,8 @@ pub enum ResourceCollisionType {
 pub struct ResourceDiagnostic {
     #[serde(rename = "type")]
     pub diagnostic_type: ResourceDiagnosticType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<ResourceDiagnosticCategory>,
@@ -36,6 +38,8 @@ pub struct ResourceDiagnostic {
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collision: Option<ResourceCollision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +76,7 @@ mod tests {
         assert_eq!(json["winnerPath"], "/a");
         assert!(json.get("loserSource").is_none());
         let diagnostic = ResourceDiagnostic {
+            category: None,
             diagnostic_type: ResourceDiagnosticType::Collision,
             message: "collision".to_owned(),
             category: None,
