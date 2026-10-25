@@ -123,6 +123,7 @@ struct State {
     resume_attempts: HashMap<String, (u64, Sender<()>)>,
     next_resume_attempt: u64,
     initial_turns: HashMap<String, crate::manager::child_handle::ExactTurnOutcome>,
+    started_contexts: HashMap<String, LaunchContext>,
     failed_turns: HashMap<String, Arc<Mutex<(Option<String>, Vec<String>)>>>,
     resume_receipts: HashMap<(String, i64, String), bool>,
     tracking_generations: HashMap<String, u64>,
@@ -3329,103 +3330,210 @@ impl Inner {
         lock(&self.state)
             .launching
             .insert(context.record.task_id.clone());
-        let started = if let Some(created) = context.runner.start_staged(&context.managed_spec) {
-            created.and_then(|staged| {
-                let root = &context.record.root_session_id;
-                if context.managed_spec.admission.as_ref().map_or_else(
-                    || {
-                        matches!(
-                            self.admission_barrier.state(root),
-                            crate::pause::admission_barrier::AdmissionState::Open
-                        )
-                    },
-                    |ticket| {
-                        matches!(
-                            ticket.check(),
-                            crate::pause::admission_barrier::AdmissionCheck::Allowed
-                        )
-                    },
-                ) {
-                    let turn = (staged.begin)();
-                    lock(&self.state)
-                        .initial_turns
-                        .insert(context.record.task_id.clone(), turn.outcome);
-                } else {
-                    let pause_seq = match self.admission_barrier.state(root) {
-                        crate::pause::admission_barrier::AdmissionState::Closed { pause_seq }
-                        | crate::pause::admission_barrier::AdmissionState::Resuming {
-                            pause_seq,
-                            ..
-                        } => pause_seq,
-                        crate::pause::admission_barrier::AdmissionState::Open => 0,
-                    };
-                    let owner = crate::pause::ports::RunPauseOwner {
-                        parent_session_id: root.clone(),
-                        parent_pause_seq: pause_seq,
-                        run_ref: crate::pause::ports::RunRef::task(context.record.task_id.clone()),
-                    };
-                    let held = self
-                        .child_pause
-                        .pause_for_run(staged.child.as_ref(), &owner)
-                        .and_then(|receipt| match receipt {
-                            crate::pause::ports::EngineInheritReceipt::Inherited { .. } => self
-                                .child_pause
-                                .hold_input(
-                                    staged.child.as_ref(),
-                                    &crate::pause::ports::HoldInput {
-                                        input_id: "initial".into(),
-                                        revision: 0,
-                                        text: staged.first_prompt.clone(),
-                                    },
-                                    root,
-                                )
-                                .map(|_| ()),
-                            crate::pause::ports::EngineInheritReceipt::WrongParent => {
-                                Err(crate::host::HostError {
-                                    message: "wrong_parent".into(),
-                                })
+        let mut attempt = context.clone();
+        let started = loop {
+            let context = &attempt;
+            let started = if let Some(created) = context.runner.start_staged(&context.managed_spec)
+            {
+                created.and_then(|staged| {
+                    let root = &context.record.root_session_id;
+                    if context.managed_spec.admission.as_ref().map_or_else(
+                        || {
+                            matches!(
+                                self.admission_barrier.state(root),
+                                crate::pause::admission_barrier::AdmissionState::Open
+                            )
+                        },
+                        |ticket| {
+                            matches!(
+                                ticket.check(),
+                                crate::pause::admission_barrier::AdmissionCheck::Allowed
+                            )
+                        },
+                    ) {
+                        let turn = (staged.begin)();
+                        lock(&self.state)
+                            .initial_turns
+                            .insert(context.record.task_id.clone(), turn.outcome);
+                    } else {
+                        let pause_seq = match self.admission_barrier.state(root) {
+                            crate::pause::admission_barrier::AdmissionState::Closed {
+                                pause_seq,
                             }
-                        });
-                    if let Err(error) = held {
-                        if let Err(cleanup) = discard_managed_handle(staged.child.as_ref()) {
-                            log(
-                                "senpi-task held creation cleanup failed",
-                                &context.record.task_id,
-                                &cleanup,
-                            );
-                        }
-                        return Err(ManagedRunnerError::Other(error.to_string()));
-                    }
-                    if let Some(mut record) = self.try_load(&context.record.task_id) {
-                        record.status = TaskStatus::Paused;
-                        record.run_pause = Some(crate::state::RecordedRunPause {
+                            | crate::pause::admission_barrier::AdmissionState::Resuming {
+                                pause_seq,
+                                ..
+                            } => pause_seq,
+                            crate::pause::admission_barrier::AdmissionState::Open => 0,
+                        };
+                        let owner = crate::pause::ports::RunPauseOwner {
                             parent_session_id: root.clone(),
                             parent_pause_seq: pause_seq,
-                            run_ref: crate::state::RunPauseRef {
-                                kind: crate::state::RunPauseKind::Task,
-                                id: record.task_id.clone(),
-                            },
-                        });
-                        self.store
-                            .replace(&record)
-                            .map_err(|e| ManagedRunnerError::Other(e.to_string()))?;
+                            run_ref: crate::pause::ports::RunRef::task(
+                                context.record.task_id.clone(),
+                            ),
+                        };
+                        let held = self
+                            .child_pause
+                            .pause_for_run(staged.child.as_ref(), &owner)
+                            .and_then(|receipt| match receipt {
+                                crate::pause::ports::EngineInheritReceipt::Inherited { .. } => self
+                                    .child_pause
+                                    .hold_input(
+                                        staged.child.as_ref(),
+                                        &crate::pause::ports::HoldInput {
+                                            input_id: "initial".into(),
+                                            revision: 0,
+                                            text: staged.first_prompt.clone(),
+                                        },
+                                        root,
+                                    )
+                                    .map(|_| ()),
+                                crate::pause::ports::EngineInheritReceipt::WrongParent => {
+                                    Err(crate::host::HostError {
+                                        message: "wrong_parent".into(),
+                                    })
+                                }
+                            });
+                        if let Err(error) = held {
+                            if let Err(cleanup) = discard_managed_handle(staged.child.as_ref()) {
+                                log(
+                                    "senpi-task held creation cleanup failed",
+                                    &context.record.task_id,
+                                    &cleanup,
+                                );
+                            }
+                            return Err(ManagedRunnerError::Other(error.to_string()));
+                        }
+                        if let Some(mut record) = self.try_load(&context.record.task_id) {
+                            record.status = TaskStatus::Paused;
+                            record.run_pause = Some(crate::state::RecordedRunPause {
+                                parent_session_id: root.clone(),
+                                parent_pause_seq: pause_seq,
+                                run_ref: crate::state::RunPauseRef {
+                                    kind: crate::state::RunPauseKind::Task,
+                                    id: record.task_id.clone(),
+                                },
+                            });
+                            self.store
+                                .replace(&record)
+                                .map_err(|e| ManagedRunnerError::Other(e.to_string()))?;
+                        }
+                        if let Some(lease) = lock(&self.concurrency).park(
+                            &context.record.task_id,
+                            context.record.notification.run_epoch,
+                        ) {
+                            lock(&self.parked).insert(context.record.task_id.clone(), lease);
+                        }
                     }
-                    if let Some(lease) = lock(&self.concurrency).park(
-                        &context.record.task_id,
-                        context.record.notification.run_epoch,
-                    ) {
-                        lock(&self.parked).insert(context.record.task_id.clone(), lease);
-                    }
+                    Ok(staged.child)
+                })
+            } else {
+                context.runner.start(&context.managed_spec)
+            };
+            match started {
+                Ok(handle) => {
+                    lock(&self.state)
+                        .started_contexts
+                        .insert(context.record.task_id.clone(), context.clone());
+                    break Ok(handle);
                 }
-                Ok(staged.child)
-            })
-        } else {
-            context.runner.start(&context.managed_spec)
+                Err(error) => {
+                    let Some(next) = self.advance_start_fallback(context, &error) else {
+                        break Err(error);
+                    };
+                    attempt = next;
+                }
+            }
         };
         if started.is_err() {
             self.end_launch(&context.record.task_id);
         }
         started
+    }
+
+    fn advance_start_fallback(
+        &self,
+        context: &LaunchContext,
+        error: &ManagedRunnerError,
+    ) -> Option<LaunchContext> {
+        let ManagedRunnerError::Runner(failure) = error else {
+            return None;
+        };
+        if !matches!(
+            failure.kind,
+            RunnerFailureKind::ChildPromptFailed
+                | RunnerFailureKind::ChildTurnFailed
+                | RunnerFailureKind::ModelUnavailable
+        ) {
+            return None;
+        }
+        let record = self.try_load(&context.record.task_id)?;
+        if record.status != TaskStatus::Running
+            || record.notification.run_epoch != context.record.notification.run_epoch
+            || record.host_pid != Some(self.host_pid)
+        {
+            return None;
+        }
+        let candidates = crate::manager::credential_failure::runtime_fallback_candidates(
+            &record,
+            &failure.message,
+        );
+        let next = candidates.remaining.first()?.clone();
+        let remaining = candidates.chain_after_hop();
+        let mut attempts = record
+            .fallback_attempts
+            .clone()
+            .unwrap_or_else(|| record.resolved_model.iter().cloned().collect());
+        attempts.push(next.clone());
+        let note = (record.parent_model.as_deref() == Some(next.display.as_str())).then(|| {
+            let reason = crate::manager::parent_model_fallback::reason_of_failure(
+                &failure.message,
+                record
+                    .resolved_model
+                    .as_ref()
+                    .map(|model| model.model_id.as_str()),
+            );
+            let reason = if reason == crate::state::ParentModelFallbackReason::Error {
+                crate::state::ParentModelFallbackReason::Unavailable
+            } else {
+                reason
+            };
+            crate::manager::parent_model_fallback::build(
+                record.model.clone(),
+                reason,
+                Some(&failure.message),
+                &[],
+                self.now_iso(),
+            )
+        });
+        let updated = TaskRecord {
+            model: next.display.clone(),
+            resolved_model: Some(next.clone()),
+            fallback_models: Some(remaining.clone()),
+            fallback_attempts: Some(attempts),
+            parent_model_fallback: note.or(record.parent_model_fallback.clone()),
+            ..record.clone()
+        };
+        if let Err(error) = self.store.replace(&updated) {
+            log(
+                "senpi-task start fallback persistence failed",
+                &record.task_id,
+                &error,
+            );
+            return None;
+        }
+        Some(LaunchContext {
+            model: next.display.clone(),
+            record: updated,
+            runner: Arc::clone(&context.runner),
+            managed_spec: ManagedStartSpec {
+                model: Some(next.display.clone()),
+                resolved_model: Some(next),
+                fallback_models: Some(remaining),
+                ..context.managed_spec.clone()
+            },
+        })
     }
 
     fn end_launch(&self, task_id: &str) {
@@ -3475,6 +3583,10 @@ impl Inner {
     }
 
     fn attach_launched(&self, context: &LaunchContext, handle: &Arc<dyn ManagedChildHandle>) {
+        let started = lock(&self.state)
+            .started_contexts
+            .remove(&context.record.task_id);
+        let context = started.as_ref().unwrap_or(context);
         let task_id = &context.record.task_id;
         let unsubscribe = self.subscribe_child_facts(handle, task_id);
         lock(&self.state).live.insert(
