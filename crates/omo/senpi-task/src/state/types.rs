@@ -429,6 +429,7 @@ pub struct PendingSteeringWorkpoolMetadata {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TaskRecordInput {
+    pub parent_model: Option<String>,
     pub name: Option<String>,
     pub task_summary: Option<String>,
     pub description: Option<String>,
