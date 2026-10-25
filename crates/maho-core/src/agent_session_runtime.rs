@@ -226,13 +226,15 @@ pub struct SwitchSessionOptions {
 }
 
 /// Immutable flags selected when a runtime is first launched.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct AgentSessionLaunchProfile {
     pub cwd: String,
     pub permission_preset: Option<String>,
     pub creation_model: Option<(String, String)>,
     pub initial_thinking_level: Option<String>,
     pub auto_title: Option<bool>,
+    pub prompt_size_inventory:
+        Option<std::sync::Arc<dyn crate::prompt_size_inventory::PromptSizeInventory>>,
 }
 
 /// senpi `applyRetryFallbackProfile`: overlays `{ modelFallback, fallbackChains }` on the session's
@@ -835,7 +837,17 @@ impl AgentSessionRuntime {
                 .report_removed_extensions(&runner, reason)
                 .await;
             created.session.set_extension_runner(runner).await;
-            created.session.bind_extensions(Default::default()).await;
+            let inventory = self
+                .launch_profile
+                .as_ref()
+                .and_then(|p| p.prompt_size_inventory.clone());
+            created
+                .session
+                .bind_extensions(crate::agent_session::ExtensionBindings {
+                    prompt_size_inventory: inventory,
+                    ..Default::default()
+                })
+                .await;
         }
         self.session = created.session;
         *self.lock_hold() = next_hold;

@@ -38,6 +38,7 @@ fn usage() -> Usage {
         reasoning: None,
         total_tokens: 150,
         cost: Default::default(),
+        ..Default::default()
     }
 }
 
