@@ -219,6 +219,7 @@ impl SessionLifecycleController {
             let append = self.options.append.clone();
             self.ledger.mark_goal_completed(id, |r| append(r));
         }
+        self.goal = None;
         if let Some(goal) = shared.goal {
             let mut value = json!({"id":goal.id,"status":goal.status});
             if goal.continuation_stopped {
@@ -465,6 +466,46 @@ mod tests {
         }
         fn changed(&mut self) {}
     }
+    #[test]
+    fn neutral_goal_facts_survive_close_clear_and_drive_waits() {
+        let mut controller = SessionLifecycleController::new(SessionLifecycleOptions {
+            session_id: "neutral-goal-test".into(),
+            spawned_by: None,
+            read_runtime: Arc::new(LifecycleRuntimeFacts::default),
+            append_child: None,
+            entries: vec![],
+            append: Arc::new(|_| Ok(())),
+            custody: Box::new(Store),
+        });
+        let producer = maho_ext_api::goal_lifecycle::goal_lifecycle_service("neutral-goal-test");
+        controller.restore_complete();
+        controller.start_run(None);
+        producer.transition(Some(maho_ext_api::goal_lifecycle::LifecycleGoal {
+            id: "g".into(),
+            status: "blocked".into(),
+            continuation_stopped: false,
+        }));
+        assert_eq!(
+            controller.snapshot().state,
+            SessionLifecycleState::WaitingHuman
+        );
+        producer.transition(Some(maho_ext_api::goal_lifecycle::LifecycleGoal {
+            id: "g".into(),
+            status: "complete".into(),
+            continuation_stopped: false,
+        }));
+        producer.transition(None);
+        controller.idle();
+        assert_eq!(controller.ledger.current["completion"]["goalId"], "g");
+        assert_eq!(controller.snapshot().state, SessionLifecycleState::Done);
+        producer
+            .turn_end(serde_json::json!({"expectations":[{"kind":"wake-source","source":"test"}]}));
+        assert_eq!(
+            controller.snapshot().state,
+            SessionLifecycleState::WaitingBackground
+        );
+    }
+
     fn controller() -> SessionLifecycleController {
         SessionLifecycleController::new(SessionLifecycleOptions {
             session_id: "s".into(),
