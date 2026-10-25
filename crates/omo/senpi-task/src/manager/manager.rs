@@ -2793,7 +2793,7 @@ impl Inner {
     fn launch(&self, context: &LaunchContext) -> Result<(), String> {
         let record = &context.record;
         if let Some(ticket) = &context.managed_spec.admission {
-            ticket.creating(Some(&record.task_id));
+            ticket.creating();
         }
         lock(&self.state).queued_launches.remove(&record.task_id);
         let epoch = record.notification.run_epoch;
