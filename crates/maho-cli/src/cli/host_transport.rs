@@ -28,10 +28,17 @@ const BUSY_CONNECT_TIMEOUT_MS: u64 = 500;
 /// its future on a fresh OS thread that enters `handle` and blocks there, which is safe from any
 /// caller context.
 pub fn create_cli_host_transport(handle: tokio::runtime::Handle) -> Arc<dyn HostTransport> {
-    Arc::new(CliHostTransport { handle })
+    create_cli_host_transport_with_agent_dir(handle, None)
+}
+pub fn create_cli_host_transport_with_agent_dir(
+    handle: tokio::runtime::Handle,
+    agent_dir: Option<std::path::PathBuf>,
+) -> Arc<dyn HostTransport> {
+    Arc::new(CliHostTransport { handle, agent_dir })
 }
 
 struct CliHostTransport {
+    agent_dir: Option<std::path::PathBuf>,
     handle: tokio::runtime::Handle,
 }
 
@@ -111,11 +118,7 @@ impl HostTransport for CliHostTransport {
     }
 
     fn live_session_paths(&self, socket: &str) -> Result<Vec<String>, String> {
-        let socket = socket.to_owned();
-        match self.block_on(async move { live_session_paths(&socket).await }) {
-            Ok(result) => result,
-            Err(error) => Err(error),
-        }
+        self.live_session_paths_with_agent_dir(socket, self.agent_dir.as_deref())
     }
 
     fn close_host_session(

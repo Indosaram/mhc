@@ -794,7 +794,7 @@ impl Extension for Task {
                         let engine = maho_omo_task::engine::compose_task_engine_with_rpc_respawn(maho_omo_task::engine::ComposeTaskEngineDeps {
                             cwd: ctx.cwd.clone(), config: config.clone(), runners, actions: actions.clone(), coordinator: Some(coordinator.clone()),
                             resolve_registry: Arc::new(move || Some(registry.clone())),
-                            host_transport: Some(super::host_transport::create_cli_host_transport(executor.clone())),
+                            host_transport: Some(super::host_transport::create_cli_host_transport_with_agent_dir(executor.clone(), Some(ctx.agent_dir.clone()))),
                         }, Some(maho_omo_task::engine_runners::build_rpc_respawn_runner(process)));
                         *slot = Some((ctx.cwd.clone(), config, engine));
                     }
