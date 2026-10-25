@@ -1220,21 +1220,14 @@ impl senpi_task::pause::native_child_pause::NativeRunPause for NativeChild {
         let session = self.ensure_session().map_err(|error| {
             senpi_task::pause::native_child_pause::NativePauseError::Engine(error.to_string())
         })?;
-        let owner = session.with_run_holds(|holds| holds.inherited_owner());
-        Ok(owner
-            .filter(|owner| owner.parent_session_id == parent)
-            .map(|_| senpi_task::pause::ports::ObservedHold {
-                held: true,
-                child_seq: session
-                    .holds()
-                    .iter()
-                    .filter_map(|hold| {
-                        hold.data
-                            .as_ref()
-                            .and_then(|data| data["localSeq"].as_u64())
-                    })
-                    .max()
-                    .unwrap_or(0),
-            }))
+        Ok(session.with_run_holds(|holds| {
+            holds
+                .inherited_owner()
+                .filter(|owner| owner.parent_session_id == parent)
+                .map(|_| senpi_task::pause::ports::ObservedHold {
+                    held: true,
+                    child_seq: holds.pause_seq(),
+                })
+        }))
     }
 }
