@@ -578,8 +578,14 @@ impl ManagerRunPausePorts {
 }
 
 impl senpi_task::manager::run_pause::TaskRunPausePorts for ManagerRunPausePorts {
-    fn acquire_resume_capacity(&self, task_id: &str, epoch: i64) -> Result<(), String> {
-        self.manager.acquire_resume_capacity(task_id, epoch)
+    fn acquire_resume_capacity(
+        &self,
+        task_id: &str,
+        epoch: i64,
+        allocation: Option<&senpi_task::manager::concurrency::QueuedTaskAdmission>,
+    ) -> Result<(), String> {
+        self.manager
+            .acquire_resume_capacity(task_id, epoch, allocation)
     }
     fn park_capacity(&self, task_id: &str, epoch: i64) {
         self.manager.park_run_capacity(task_id, epoch);
@@ -743,6 +749,7 @@ impl EngineRunPause {
                     let result = run_pause.resume_paused_task(
                         task_id,
                         &senpi_task::manager::run_pause::ResumeTaskRequest {
+                            allocation: None,
                             owner: owner.clone(),
                             resume_credential: credential.cloned(),
                             resume_id: resume_id.to_string(),
