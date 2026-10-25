@@ -4164,6 +4164,7 @@ impl AgentSession {
                     *lock(&self.custody_run_id) = uuid::Uuid::new_v4().to_string();
                     state.queued_input_ages.note_run_started();
                     *lock(&self.stop_interrupt) = None;
+                    *lock(&self.lifecycle_turn_facts) = None;
                     self.external_admission.begin_turn();
                     let mut ledger = lock(&self.lifecycle);
                     ledger.release_restore_barrier();
@@ -4425,6 +4426,23 @@ impl AgentSession {
             }
 
             lock(&self.lifecycle).run_active = false;
+            let last = boundary
+                .messages
+                .iter()
+                .filter_map(AgentMessage::as_assistant)
+                .last();
+            let ended_by = if last.is_some_and(|m| m.stop_reason == StopReason::Error) {
+                "provider-error"
+            } else if boundary.aborted {
+                "unknown-abort"
+            } else {
+                "completed"
+            };
+            if lock(&self.lifecycle_turn_facts).is_none() {
+                *lock(&self.lifecycle_turn_facts) = Some(
+                    json!({"endedBy":ended_by,"willRetry":boundary.will_retry,"expectations":[]}),
+                );
+            }
             self.clear_tool_barrier();
             self.refresh_lifecycle();
             // senpi mutates the live agent_end event on a late User join (agent-abort-provenance.ts
@@ -5482,7 +5500,18 @@ impl AgentSession {
         }
         let admission = self.engine_admission_hook(options.prompt_admitted.take());
         let accepted_hold = input_hold.clone();
+        let queued_held_messages = options.held_messages.clone();
+        let queued_held_ids = options.held_input_ids.clone();
+        let queued_session = self.clone();
         options.prompt_admitted = Some(Arc::new(move |disposition| {
+            if disposition == PromptDisposition::Queued {
+                let generation = queued_session.user_abort_generation.load(Ordering::SeqCst);
+                lock(&queued_session.delivered_held_inputs)
+                    .extend(queued_held_ids.iter().cloned().map(|id| (id, generation)));
+                for message in &queued_held_messages {
+                    queued_session.agent.steer(message.clone());
+                }
+            }
             accepted_hold.accepted();
             admission(disposition);
         }));
@@ -14769,6 +14798,7 @@ impl AgentSession {
             "wake_source_state",
             "goal_store_changed",
             "goal_continuation_timer_state",
+            "turn_end_liveness",
             "security_notice",
         ] {
             let weak = Arc::downgrade(&self.inner);
@@ -14779,6 +14809,14 @@ impl AgentSession {
                         let session = AgentSession { inner };
                         if channel == "security_notice" {
                             session.state().security_notices.accept(data);
+                        }
+                        if channel == "turn_end_liveness"
+                            && data["sessionId"] == session.session_id()
+                        {
+                            *lock(&session.lifecycle_turn_facts) = data.get("input").cloned();
+                            *lock(&session.lifecycle_goal) =
+                                data.get("goal").filter(|v| !v.is_null()).cloned();
+                            session.refresh_lifecycle();
                         }
                         session.event_bus.emit(channel, data);
                     }

@@ -115,7 +115,11 @@ pub fn report_turn_end_liveness(
     let verdict = evaluate_turn_end_liveness(input);
     pi.events.emit(
         TURN_END_LIVENESS_EVENT,
-        &serde_json::json!({"sessionId":ctx.session_manager.session_id(),"verdict":verdict}),
+        &serde_json::json!({"sessionId":ctx.session_manager.session_id(),"verdict":verdict,
+            "goal":crate::lifecycle_facts::session_lifecycle(&crate::store_ref::context_goal_store_ref(ctx)).and_then(|service|service.collect_goal_lifecycle_facts()).and_then(|facts|facts.goal),
+            "input":{"endedBy":input.ended_by,"willRetry":input.will_retry,"deadlineStop":input.deadline_stop,
+            "goalStopped":input.goal_stopped,"openWork":input.open_work,"continuationQueued":input.continuation_queued,
+            "expectations":effective_wakes(input),"budgetSpent":input.budget_spent,"providerRetryAtMs":input.provider_retry_at_ms}}),
     );
     if matches!(verdict, TurnEndLivenessVerdict::Stalled { .. })
         && !repeats_last_stall(&ctx.session_manager.get_branch(), &verdict)
