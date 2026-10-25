@@ -6,6 +6,14 @@ pub trait HostRpcClient: Send + Sync {
         None
     }
     fn transport_lost(&self, _message: String) {}
+    fn get_available_models(
+        &self,
+    ) -> Result<Vec<crate::runners::pinned_model_equivalence::CatalogModelIdentity>, HostError>
+    {
+        Err(HostError {
+            message: "host model catalog unsupported".into(),
+        })
+    }
     fn command(&self, command: Value) -> Result<(), HostError>;
     fn get_state(&self) -> Result<Value, HostError> {
         Err(HostError {

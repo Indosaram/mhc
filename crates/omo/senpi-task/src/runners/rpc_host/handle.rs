@@ -17,6 +17,7 @@ pub struct HostSessionHandle {
     pub listeners: HandleListeners,
     teardown: Arc<HandleTeardown>,
     native_pause: CurrentPortPause,
+    recovering: std::sync::atomic::AtomicBool,
     stopped: std::sync::atomic::AtomicBool,
     settled: std::sync::atomic::AtomicBool,
     event_subscription: Mutex<Option<Unsubscribe>>,
@@ -44,6 +45,7 @@ pub fn create_host_session_handle(
         identity,
         listeners,
         teardown: Arc::new(teardown),
+        recovering: std::sync::atomic::AtomicBool::new(false),
         stopped: std::sync::atomic::AtomicBool::new(false),
         settled: std::sync::atomic::AtomicBool::new(opened.attached),
         event_subscription: Mutex::new(None),
@@ -114,11 +116,22 @@ impl HostSessionHandle {
         socket: String,
         budget: std::time::Duration,
     ) -> Result<bool, HostError> {
+        self.recovering
+            .store(true, std::sync::atomic::Ordering::Release);
         let path = self.identity.current().session_path;
         let recovery = super::handle_recovery::HandleRecovery::default();
-        match recovery.bounded_reattach(budget, move |abandoned| {
+        let result = recovery.bounded_reattach(budget, move |abandoned| {
             super::reattach_port::create_reattach_port(&input, &socket, &path, abandoned.as_ref())
-        }) {
+        });
+        self.recovering
+            .store(false, std::sync::atomic::Ordering::Release);
+        if self.stopped() {
+            if let Some(Ok(Some((port, _)))) = result {
+                port.detach()?;
+            }
+            return Ok(false);
+        }
+        match result {
             Some(Ok(Some((port, identity)))) => {
                 self.recovery_ended(port, identity)?;
                 Ok(true)
@@ -137,6 +150,13 @@ impl HostSessionHandle {
     }
 }
 impl ManagedChildHandle for HostSessionHandle {
+    fn transport_recovering(&self) -> bool {
+        self.recovering.load(std::sync::atomic::Ordering::Acquire)
+    }
+    fn mark_stopping(&self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
     fn on_self_resumed(&self, listener: Arc<dyn Fn() + Send + Sync>) -> Option<Unsubscribe> {
         Some(self.listeners.on_self_resumed(listener))
     }

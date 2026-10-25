@@ -15,6 +15,7 @@ fn error(error: impl std::fmt::Display) -> HostError {
 }
 #[derive(Clone)]
 pub struct HostAssembly {
+    pub session_context: std::collections::BTreeMap<String, String>,
     pub turns: Arc<std::sync::Mutex<std::collections::BTreeMap<String, connection::TurnState>>>,
     pub runtime: tokio::runtime::Handle,
     pub agent_dir: PathBuf,
@@ -38,7 +39,7 @@ impl HostAssembly {
                     let socket = match assembly.socket() {
                         Ok(socket) => socket,
                         Err(error) => {
-                            eprintln!("host recovery routing failed: {error}");
+                            handle.transport_lost(format!("host recovery routing failed: {error}"));
                             break;
                         }
                     };
@@ -91,7 +92,7 @@ impl HostAssembly {
                 .map_err(|e| e.to_string())
             }),
             notice: Arc::new(|notice| eprintln!("task host recovery: {notice}")),
-            attach_only: false,
+            attach_only: self.session_context.contains_key("shard_key"),
         }
     }
     pub fn block<T: Send + 'static>(
@@ -106,10 +107,17 @@ impl HostAssembly {
     pub fn socket(&self) -> Result<String, HostError> {
         let parent =
             (self.parent)().ok_or_else(|| error("task host routing requires a parent session"))?;
-        let key = maho_rpc::host_endpoints::shard_key(
-            maho_rpc::host_endpoints::ShardKind::P,
-            &parent.session_id(),
-        );
+        let key = self
+            .session_context
+            .get("shard_key")
+            .filter(|key| key.len() == 16 && key.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .cloned()
+            .unwrap_or_else(|| {
+                maho_rpc::host_endpoints::shard_key(
+                    maho_rpc::host_endpoints::ShardKind::P,
+                    &parent.session_id(),
+                )
+            });
         Ok(maho_rpc::host_endpoints::shard_socket_path_for_key(
             &self.agent_dir.join("rpc"),
             maho_rpc::host_endpoints::ShardKind::P,
@@ -120,7 +128,25 @@ impl HostAssembly {
     }
     pub fn ensure(&self, socket: String, extensions: Vec<String>) -> Result<String, HostError> {
         let agent_dir = self.agent_dir.clone();
+        let attach_only = self.session_context.contains_key("shard_key");
         self.block(async move {
+            if attach_only {
+                #[cfg(unix)]
+                {
+                    let reply = maho_rpc::host_probe::ask_host_authenticated(
+                        &socket,
+                        &json!({"type":"get_protocol_info","observe":true}),
+                        10_000,
+                        Some(&agent_dir),
+                    )
+                    .await
+                    .map_err(error)?;
+                    if reply.is_none() {
+                        return Err(error("own_host_unreachable"));
+                    }
+                    return Ok(socket);
+                }
+            }
             maho_rpc::host_ensure::ensure_host(maho_rpc::host_ensure::EnsureHostOptions {
                 socket,
                 agent_dir: Some(agent_dir),
@@ -158,6 +184,10 @@ impl HostAssembly {
         ),
         HostError,
     > {
+        let mut context = context;
+        if let Some((_, key)) = maho_rpc::host_endpoints::parse_shard_socket(&socket) {
+            context.context.insert("shard_key".into(), key);
+        }
         self.admit(spec.state_dir.clone())?;
         let turn = self
             .turns
@@ -183,7 +213,7 @@ impl HostAssembly {
                     request["provider"]=provider.into();request["modelId"]=id.into();
                 }
                 if let Some(reasoning)=spec.reasoning.as_ref().or(spec.variant.as_ref()){request["thinkingLevel"]=reasoning.clone().into();}
-                let opened=client.open_session(request).await.map_err(error)?;
+                let opened=match client.open_session(request).await {Ok(opened)=>opened,Err(cause)=>{client.stop().await;return Err(error(cause));}};
                 let routing_id=client.session_id().ok_or_else(||error("host open returned no routing ID"))?;
                 let watch=live.clone();
                 let port=Arc::new(session_client_connection::SessionClientConnection::new(routing_id.clone(),live.clone(),live.clone()).with_turn_watcher(Arc::new(move ||watch.watch())));
@@ -205,6 +235,10 @@ impl maho_omo_task::host_prewarm::HostPrewarmHost for PrewarmHost {
     fn shard_socket(&self) -> String {
         self.0.socket().unwrap_or_default()
     }
+    fn is_own_endpoint(&self, socket: &str) -> bool {
+        self.0.session_context.contains_key("shard_key")
+            && self.0.socket().is_ok_and(|own| own == socket)
+    }
     fn routes_children_to_host(&self) -> bool {
         true
     }
@@ -221,14 +255,37 @@ impl maho_omo_task::host_prewarm::HostPrewarmHost for PrewarmHost {
             .map_err(|e| e.to_string())?;
         let cwd = cwd.to_owned();
         let root = agent_dir.map(PathBuf::from);
-        self.0.block(async move {
-            #[cfg(unix)] {maho_rpc::host_probe::ask_host_authenticated(&socket,&json!({"type":"warm","cwd":cwd,"kind":"worker","context":{"role":"child","host_warmup":"1"}}),60_000,root.as_deref()).await.map_err(error)?.filter(|reply|reply["success"]==true).ok_or_else(||error("host warm refused"))?; Ok(())}
-            #[cfg(not(unix))] {let _=(socket,cwd,root);Err(error("host warm unavailable"))}
-        }).map_err(|e|e.to_string())
+        let state = tempfile::Builder::new()
+            .prefix("omo-host-warmup-")
+            .tempdir()
+            .map_err(|error| error.to_string())?;
+        let assembly = self.0.clone();
+        let ask_assembly = assembly.clone();
+        let fallback_assembly = assembly.clone();
+        host_warmup::warm_task_host(&socket,&cwd,root.as_deref(),state.path(),
+            move |socket,command,timeout,root| {
+                let socket=socket.to_owned();let root=root.map(ToOwned::to_owned);
+                ask_assembly.block(async move {
+                    #[cfg(unix)] { maho_rpc::host_probe::ask_host_authenticated(&socket,&command,timeout,root.as_deref()).await.map_err(error) }
+                    #[cfg(not(unix))] {let _=(socket,command,timeout,root);Err(error("host warm unavailable"))}
+                }).map_err(|error|error.to_string())
+            },
+            |context| {
+                let socket=socket.clone();let root=root.clone();let cwd=cwd.clone();let path=state.path().join("warm.jsonl");
+                fallback_assembly.block(async move {
+                    #[cfg(unix)] {
+                        let (socket,_) = maho_rpc::host_probe::authenticated_host_socket(&socket,&json!({"type":"get_protocol_info","observe":true}),60_000,root.as_deref()).await.map_err(error)?;
+                        let client=maho_rpc::rpc_client::RpcClient::from_stream(socket.into_stream().map_err(error)?,Default::default());
+                        let result=async {client.open_session(json!({"sessionPath":path,"cwd":cwd,"kind":"worker","context":context,"retainOnDisconnect":false,"autoTitle":false})).await.map_err(error)?;client.close_session(None).await.map_err(error)}.await;
+                        client.stop().await;result
+                    }
+                    #[cfg(not(unix))] {let _=(socket,root,cwd,path,context);Err(error("host warm unavailable"))}
+                }).map_err(|error|error.to_string())
+            }).map(|_|())
     }
 }
 
-struct ProductionHostRunner {
+pub struct ProductionHostRunner {
     assembly: HostAssembly,
     configured: ConfiguredRpcHostRunner,
 }
@@ -240,11 +297,45 @@ impl ProductionHostRunner {
             .runner
             .start(&rpc, |spec, context| (self.configured.open)(spec, context))
             .map_err(|e| ManagedRunnerError::Other(e.to_string()))?;
+        let store = senpi_task::store::TaskRecordStore::new(&senpi_task::store::StateDirConfig {
+            project_dir: rpc.cwd.clone().into(),
+            task_state_dir: Some(rpc.state_dir.clone().into()),
+        });
+        let identity = handle.identity.current();
+        let socket = self
+            .assembly
+            .socket()
+            .map_err(|error| ManagedRunnerError::Other(error.to_string()))?;
+        let recorded = store.mutate(&rpc.task_id, |current| {
+            let mut record = current.clone();
+            record.runner_kind = Some(senpi_task::state::RunnerKind::HostSession);
+            record.host_session = Some(senpi_task::state::HostSessionIdentity {
+                socket,
+                routing_id: identity.routing_id,
+                session_path: identity.session_path,
+                instance_id: identity.instance_id,
+                daemon_pid: None,
+                effect_seq: None,
+                adopted_entry_id: None,
+            });
+            record
+        });
+        if let Err(error) = recorded {
+            if let Err(cleanup) = handle.dispose() {
+                eprintln!("host record failure cleanup: {cleanup}");
+            }
+            return Err(ManagedRunnerError::Other(error.to_string()));
+        }
         self.assembly.schedule_recovery(&handle, rpc);
         Ok(handle)
     }
 }
 impl ManagedRunner for ProductionHostRunner {
+    fn resume(&self, spec: &ManagedStartSpec, path: &str) -> Option<ManagedRunnerResult> {
+        let mut rpc = senpi_task::manager::runner::to_rpc_spec(spec);
+        rpc.resume_session_path = Some(path.into());
+        Some(self.start_rpc(rpc))
+    }
     fn start(&self, spec: &ManagedStartSpec) -> ManagedRunnerResult {
         self.start_rpc(senpi_task::manager::runner::to_rpc_spec(spec))
     }
@@ -258,14 +349,22 @@ impl ManagedRunner for ProductionHostRunner {
 pub struct HostRespawn {
     pub assembly: HostAssembly,
     pub settings: serde_json::Value,
+    pub runner: std::sync::OnceLock<ProductionHostRunner>,
     pub fallback: Arc<dyn RpcRespawnRunner>,
 }
 impl RpcRespawnRunner for HostRespawn {
     fn start(&self, spec: &senpi_task::runners::types::RpcRunnerSpec) -> ManagedRunnerResult {
-        if cfg!(windows) || self.settings["task"]["process_runner"].as_str() != Some("host") {
+        if cfg!(windows)
+            || self.settings["task"]["process_runner"]
+                .as_str()
+                .unwrap_or("host")
+                != "host"
+        {
             return self.fallback.start(spec);
         }
-        build_host_runner(self.assembly.clone(), Arc::new(|| Ok(()))).start_rpc(spec.clone())
+        self.runner
+            .get_or_init(|| build_host_runner(self.assembly.clone(), Arc::new(|| Ok(()))))
+            .start_rpc(spec.clone())
     }
 }
 fn build_host_runner(
@@ -308,7 +407,12 @@ pub fn select_runner(
     settings: &serde_json::Value,
     fallback: Arc<dyn ManagedRunner>,
 ) -> Arc<dyn ManagedRunner> {
-    if cfg!(windows) || settings["task"]["process_runner"].as_str() != Some("host") {
+    if cfg!(windows)
+        || settings["task"]["process_runner"]
+            .as_str()
+            .unwrap_or("host")
+            != "host"
+    {
         return fallback;
     }
     let cleanup = fallback.clone();
