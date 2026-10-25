@@ -1,15 +1,19 @@
 use crate::model_vocabulary::{KNOWN_MODELS, KNOWN_PROVIDERS};
 pub use crate::product_identity::BUILTIN_SKILL_NAMES;
+pub use crate::session_role::TELEMETRY_SESSION_ROLES;
+/// The handoff-hint actions the builtin producer can publish.
+pub const HANDOFF_HINT_ACTIONS: [&str; 3] = ["shown", "accepted", "dismissed"];
 pub const EVENT_PROPERTY_ALLOWLISTS: &[(&str, &[&str])] = &[
     ("daily_active", &["$session_id", "day_utc", "reason"]),
-    ("session_started", &["$session_id", "$os", "$os_version", "arch", "cpu_count", "default_model", "default_provider", "memory_bucket", "model_count", "provider_count", "providers", "reason", "timezone"]),
+    ("session_started", &["$session_id", "$os", "$os_version", "arch", "configured_provider_count", "connected_account_count", "cpu_count", "default_model", "default_provider", "memory_bucket", "model_count", "provider_count", "providers", "reason", "session_role", "signed_in_provider_count", "timezone"]),
     ("prompt_submitted", &["$session_id", "input_source", "invocation_stage", "is_effective_ultrawork_invocation", "is_real_user_prompt", "is_turn_start", "keyword_any", "keyword_occurrence_bucket", "keyword_ultrawork_full", "keyword_ulw_abbrev", "keyword_variant", "prompt_length_bucket", "queue_mode", "real_prompt_ordinal_bucket", "suppression_reason"]),
-    ("turn_completed", &["$session_id", "cache_read_tokens", "cache_write_tokens", "cost_usd", "input_tokens", "model_id", "output_tokens", "provider", "reasoning_tokens", "sample_rate", "total_tokens", "turn_index"]),
+    ("turn_completed", &["$session_id", "cache_read_tokens", "cache_write_tokens", "cost_1e4", "cost_usd", "input_tokens", "model_id", "output_tokens", "provider", "reasoning_tokens", "sample_rate", "session_role", "total_tokens", "turn_index"]),
     ("category_config", &["$session_id", "builtin_overridden_count", "cat_architect", "cat_artistry", "cat_deep_high", "cat_deep_low", "cat_quick", "cat_ultrabrain", "cat_unspecified_high", "cat_unspecified_low", "cat_visual_engineering", "cat_writing", "combo_fingerprint", "config_generation", "source", "user_category_count"]),
     ("process_crashed", &["$os", "arch", "crashed_bun_version", "crashed_engine_version", "crashed_omo_version", "detection", "exit_code", "process_kind", "shard_kind", "signal", "uptime_bucket", "uptime_ms"]),
     ("kibitzer_summary", &["$session_id", "buffered_cooldown", "buffered_no_new_candidate", "cache_read_tokens", "cache_write_tokens", "candidates_total", "first_nudge_wake", "generations", "input_tokens", "model_top", "nudge_gap_ms_median", "nudge_gap_ms_p90", "nudges_delivered", "offers_total", "output_tokens", "slot_wait_ms_total", "tool_calls_total", "wake_duration_ms_total", "wake_span_ms", "wakes_deadline", "wakes_failed", "wakes_tool_budget", "wakes_total", "wakes_with_nudge"]),
     ("delegation_completed", &["$session_id", "agent_type", "background_mode", "cache_read_tokens", "cache_write_tokens", "category", "config_generation", "cost_status", "cost_usd", "duration_ms", "duration_status", "execution_mode", "fallback_attempts", "input_tokens", "model_id", "model_source", "output_tokens", "owner_kind", "provider", "reasoning_effort", "run_epoch", "start_reason", "stats_status", "status", "task_send_queued_count", "task_send_running_count", "task_seq", "token_status", "tool_calls", "total_tokens", "turns"]),
-    ("session_summary", &["$session_id", "ended_by", "is_final", "raw_turns_sampled", "session_role", "summary_seq", "sample_rate", "turns", "first_turn_index", "last_turn_index", "window_ms", "total_tokens_p50", "total_tokens_p95", "total_tokens_max", "model_count", "other_turns", "other_total_tokens", "other_cost_usd", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "cost_usd", "tool_result_count", "tool_error_count", "invalid_usage_turns", "error_turns", "aborted_turns", "custom_model_turns", "m1_provider", "m1_model", "m1_turns", "m1_input_tokens", "m1_output_tokens", "m1_total_tokens", "m1_cost_usd", "m2_provider", "m2_model", "m2_turns", "m2_input_tokens", "m2_output_tokens", "m2_total_tokens", "m2_cost_usd", "m3_provider", "m3_model", "m3_turns", "m3_input_tokens", "m3_output_tokens", "m3_total_tokens", "m3_cost_usd"]),
+    ("session_summary", &["$session_id", "cost_1e4", "dropped_events", "ended_by", "is_final", "raw_turns_sampled", "session_role", "summary_epoch", "summary_seq", "sample_rate", "turns", "first_turn_index", "last_turn_index", "window_ms", "total_tokens_p50", "total_tokens_p95", "total_tokens_max", "model_count", "other_turns", "other_total_tokens", "other_cost_usd", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "cost_usd", "tool_result_count", "tool_error_count", "invalid_usage_turns", "error_turns", "aborted_turns", "custom_model_turns", "m1_provider", "m1_model", "m1_turns", "m1_input_tokens", "m1_output_tokens", "m1_total_tokens", "m1_cost_usd", "m2_provider", "m2_model", "m2_turns", "m2_input_tokens", "m2_output_tokens", "m2_total_tokens", "m2_cost_usd", "m3_provider", "m3_model", "m3_turns", "m3_input_tokens", "m3_output_tokens", "m3_total_tokens", "m3_cost_usd"]),
+    ("handoff_hint", &["$session_id", "action", "context_tokens", "fresh_usd", "model_id", "next_reply_usd", "provider", "saving_usd", "subscription"]),
     ("skill_loaded", &["$session_id", "skill_name"]),
     ("delegation_started", &["$session_id", "background", "batch_size_bucket", "kind", "name"]),
     ("feature_used", &["$session_id", "feature"]),
@@ -25,6 +29,8 @@ pub fn omo_native_event_schemas()->serde_json::Value {
         for &key in keys {
             let values:Option<Vec<&str>>=match (event,key) {
                 (_,"default_provider"|"provider")=>Some(KNOWN_MODELS.iter().map(|(p,_)|*p).chain(["custom"]).collect()),
+                (_,"session_role")=>Some(TELEMETRY_SESSION_ROLES.to_vec()),
+                (_,"action")=>Some(HANDOFF_HINT_ACTIONS.to_vec()),
                 (_,"default_model"|"model_id")=>{let mut models=Vec::new();for (_,names) in KNOWN_MODELS {for &name in *names {if !models.contains(&name) {models.push(name);}}}models.push("custom");Some(models)},
                 ("daily_active","reason")=>Some(vec!["session_start"]),
                 ("session_started","reason")=>Some(vec!["startup","reload","new","resume","fork"]),
@@ -44,7 +50,7 @@ pub fn omo_native_event_schemas()->serde_json::Value {
                 (_,"feature")=>Some(vec!["goal_tool","team_create","memory_tool"]),
                 _=>None,
             };
-            let property=if let Some(values)=values {json!({"type":"string","values":values})} else {let kind=if key.starts_with("is_") || matches!(key,"keyword_any"|"keyword_ultrawork_full"|"keyword_ulw_abbrev"|"background") {"boolean"} else if key.ends_with("_count") || key.ends_with("_tokens") || matches!(key,"cost_usd"|"turn_index"|"sample_rate") {"number"} else {"string"};json!({"type":kind})};
+            let property=if let Some(values)=values {json!({"type":"string","values":values})} else {let kind=if key.starts_with("is_") || matches!(key,"keyword_any"|"keyword_ultrawork_full"|"keyword_ulw_abbrev"|"background"|"subscription") {"boolean"} else if key=="connected_account_count" { "string" } else if key.ends_with("_count") || key.ends_with("_tokens") || matches!(key,"cost_usd"|"cost_1e4"|"turn_index"|"sample_rate"|"fresh_usd"|"next_reply_usd"|"saving_usd") {"number"} else {"string"};json!({"type":kind})};
             properties.insert(key.into(),property);
         }
         events.insert(event.into(),Value::Object(properties));
