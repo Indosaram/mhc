@@ -42,7 +42,6 @@ pub const BUILTIN_EXTENSION_IDS: [&str; 45] = [
     "reasoning",
     "model-fallback",
     "recommended-models",
-    "relocate-session",
     "bash-timeout",
     "terminal",
     "tool-pair-guard",
@@ -60,6 +59,7 @@ pub const BUILTIN_EXTENSION_IDS: [&str; 45] = [
     "loop",
     "cache-keepalive",
     "handoff-hint",
+    "relocate-session",
     "ttsr",
     "btw",
     "account",
@@ -263,7 +263,6 @@ static BUILTIN_FACTORIES: [NativeExtension; 27] = [
         crate_name: "maho-ext-model-fallback",
         factory: model_fallback,
     },
-    NativeExtension {id:"relocate-session",crate_name:"maho-ext-relocate-session",factory:relocate_session},
     NativeExtension {
         id: "recommended-models",
         crate_name: "maho-ext-recommended-models",
@@ -329,6 +328,7 @@ static BUILTIN_FACTORIES: [NativeExtension; 27] = [
         crate_name: "maho-ext-loop",
         factory: loop_extension,
     },
+    NativeExtension {id:"relocate-session",crate_name:"maho-ext-relocate-session",factory:relocate_session},
     NativeExtension {
         id: "ttsr",
         crate_name: "maho-ext-ttsr",
