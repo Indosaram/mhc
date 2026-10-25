@@ -419,7 +419,7 @@ impl RpcChildHandle {
 
 impl ManagedChildHandle for RpcChildHandle {
     fn run_pause(&self) -> Option<&dyn crate::pause::native_child_pause::NativeRunPause> {
-        self.client.run_pause()
+        Some(self)
     }
     fn publish_task_status(&self, status: crate::state::TaskStatus) -> Result<(), HostError> {
         self.client
@@ -664,5 +664,144 @@ pub fn managed_event(event: &Value) -> ManagedChildEvent {
         reason: string("reason"),
         last_error: string("lastError"),
         event_type,
+    }
+}
+
+// Normalize RPC wire controls onto the manager's existing native pause seam.
+impl crate::pause::native_child_pause::NativeRunPause for RpcChildHandle {
+    fn pause_for_run(
+        &self,
+        owner: crate::pause::ports::RunPauseOwner,
+    ) -> Result<
+        crate::pause::ports::EngineInheritReceipt,
+        crate::pause::native_child_pause::NativePauseError,
+    > {
+        use crate::runners::rpc::native_run_pause::NativeRunPause;
+        let wire = crate::runners::task_parent_control::RunPauseOwner {
+            parent_session_id: owner.parent_session_id,
+            parent_pause_seq: owner.parent_pause_seq,
+            run_ref: crate::runners::task_parent_control::RunRef {
+                id: owner.run_ref.id,
+                kind: match owner.run_ref.kind {
+                    crate::pause::ports::RunRefKind::Task => "task",
+                    crate::pause::ports::RunRefKind::Dag => "dag",
+                    crate::pause::ports::RunRefKind::Team => "team",
+                    crate::pause::ports::RunRefKind::Workpool => "workpool",
+                }
+                .into(),
+            },
+        };
+        RpcChildHandle::run_pause(self)
+            .pause_for_run(&wire)
+            .map(|receipt| match receipt {
+                crate::runners::task_parent_control::EngineInheritReceipt::Held { child_seq } => {
+                    crate::pause::ports::EngineInheritReceipt::Inherited { child_seq }
+                }
+                crate::runners::task_parent_control::EngineInheritReceipt::WrongParent => {
+                    crate::pause::ports::EngineInheritReceipt::WrongParent
+                }
+            })
+            .map_err(|error| {
+                crate::pause::native_child_pause::NativePauseError::Engine(error.to_string())
+            })
+    }
+    fn resume_for_run(
+        &self,
+        request: crate::pause::ports::ResumeTurnRequest,
+    ) -> Result<
+        crate::pause::native_child_pause::NativeResumeResult,
+        crate::pause::native_child_pause::NativePauseError,
+    > {
+        use crate::runners::rpc::native_run_pause::{NativeResumeReceipt, NativeRunPause};
+        let wire = crate::runners::task_parent_control::ResumeRequest {
+            parent_session_id: request.owner.parent_session_id,
+            parent_pause_seq: request.owner.parent_pause_seq,
+            resume_id: request.resume_id,
+            child_seq_cutoff: request.child_seq_cutoff,
+        };
+        RpcChildHandle::run_pause(self)
+            .resume_for_run(&wire)
+            .map(|receipt| match receipt {
+                NativeResumeReceipt::Refused { reason } => {
+                    crate::pause::native_child_pause::NativeResumeResult::Refused(
+                        match reason.as_str() {
+                            "wrong_parent" => crate::pause::ports::ResumeRefusal::WrongParent,
+                            "not_held" => crate::pause::ports::ResumeRefusal::NotHeld,
+                            _ => crate::pause::ports::ResumeRefusal::Stale,
+                        },
+                    )
+                }
+                NativeResumeReceipt::OtherHoldLive => {
+                    crate::pause::native_child_pause::NativeResumeResult::OtherHoldLive
+                }
+                NativeResumeReceipt::Turn { turn_id, outcome } => {
+                    crate::pause::native_child_pause::NativeResumeResult::Turn(
+                        crate::pause::ports::ResumedChildTurn {
+                            turn_id,
+                            outcome: Box::new(move || outcome()),
+                        },
+                    )
+                }
+            })
+            .map_err(|error| {
+                crate::pause::native_child_pause::NativePauseError::Engine(error.to_string())
+            })
+    }
+    fn hold_input(
+        &self,
+        parent: &str,
+        input: crate::pause::ports::HoldInput,
+    ) -> Result<
+        crate::pause::ports::EngineHoldInputResult,
+        crate::pause::native_child_pause::NativePauseError,
+    > {
+        use crate::runners::rpc::native_run_pause::NativeRunPause;
+        RpcChildHandle::run_pause(self)
+            .hold_input(
+                parent,
+                &crate::runners::task_parent_control::HeldGuidanceInput {
+                    input_id: input.input_id,
+                    revision: input.revision,
+                    text: input.text,
+                },
+            )
+            .map(|receipt| match receipt {
+                crate::runners::task_parent_control::EngineHoldInputResult::Held {
+                    entry_id,
+                    duplicate,
+                } => crate::pause::ports::EngineHoldInputResult::Held {
+                    entry_id,
+                    duplicate,
+                },
+                crate::runners::task_parent_control::EngineHoldInputResult::AlreadyDelivered {
+                    revision,
+                } => crate::pause::ports::EngineHoldInputResult::AlreadyDelivered { revision },
+                crate::runners::task_parent_control::EngineHoldInputResult::InputIdConflict {
+                    held_revision,
+                } => crate::pause::ports::EngineHoldInputResult::InputIdConflict { held_revision },
+            })
+            .map_err(|error| {
+                crate::pause::native_child_pause::NativePauseError::Engine(error.to_string())
+            })
+    }
+    fn observe_hold(
+        &self,
+        parent: &str,
+    ) -> Result<
+        Option<crate::pause::ports::ObservedHold>,
+        crate::pause::native_child_pause::NativePauseError,
+    > {
+        use crate::runners::rpc::native_run_pause::NativeRunPause;
+        RpcChildHandle::run_pause(self)
+            .observe_hold(parent)
+            .map(|hold| {
+                hold.map(|hold| crate::pause::ports::ObservedHold {
+                    held: hold.held,
+                    child_seq: hold.child_seq,
+                })
+            })
+            .map_err(|error| {
+                crate::pause::native_child_pause::NativePauseError::Engine(error.to_string())
+            })
     }
 }
