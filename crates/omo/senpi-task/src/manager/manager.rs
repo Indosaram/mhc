@@ -3994,7 +3994,12 @@ impl Inner {
             let Ok(Some(mut record)) = fallback_store.load(&fallback_id) else {
                 return;
             };
-            if event.to.as_deref() != record.parent_model.as_deref() {
+            if !event.to.as_deref().is_some_and(|to| {
+                record.parent_model.as_deref().is_some_and(|parent| {
+                    to == parent
+                        || crate::manager::parent_model_fallback::base_selector(to) == parent
+                })
+            }) {
                 return;
             }
             let mut facts = lock(&failed);
