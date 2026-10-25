@@ -12,7 +12,13 @@ pub fn is_security_notice_state(value: &Value) -> bool {
     let Some(fields) = value.as_object() else {
         return false;
     };
-    if fields.get("generation").and_then(Value::as_u64).is_none() {
+    // `Number.isSafeInteger(generation) && generation >= 0`: any integral number counts, not only a JSON integer.
+    let safe_generation = fields.get("generation").is_some_and(|generation| {
+        generation.as_f64().is_some_and(|value| {
+            value >= 0. && value.fract() == 0. && value <= 9_007_199_254_740_991.
+        })
+    });
+    if !safe_generation {
         return false;
     }
     let Some(notices) = fields.get("notices").and_then(Value::as_array) else {
@@ -32,7 +38,9 @@ pub fn is_security_notice_state(value: &Value) -> bool {
             return false;
         }
         match notice.get("path") {
-            None | Some(Value::Null) | Some(Value::String(_)) => true,
+            // `!("path" in notice) || notice.path === undefined || typeof notice.path === "string"`: an absent path,
+            // or a string. A JSON `null` is present and not a string, so it is refused.
+            None | Some(Value::String(_)) => true,
             Some(_) => false,
         }
     })
@@ -1135,6 +1143,7 @@ mod tests {
     fn only_a_readable_security_notice_snapshot_crosses_the_worker_wire() {
         for snapshot in [
             serde_json::json!({"generation":0,"notices":[]}),
+            serde_json::json!({"generation":1.0,"notices":[]}),
             serde_json::json!({"generation":2,"notices":[{"category":"skill-link-blocked","message":"m","path":"/p"}]}),
             serde_json::json!({"generation":1,"notices":[{"category":"mcp-env-withheld","message":"m"}]}),
         ] {
@@ -1148,6 +1157,7 @@ mod tests {
             serde_json::json!({"generation":1,"notices":[{"category":"other","message":"m"}]}),
             serde_json::json!({"generation":1,"notices":[{"category":"mcp-env-withheld"}]}),
             serde_json::json!({"generation":1,"notices":[{"category":"mcp-env-withheld","message":"m","path":7}]}),
+            serde_json::json!({"generation":1,"notices":[{"category":"mcp-env-withheld","message":"m","path":null}]}),
             serde_json::json!("snapshot"),
         ] {
             assert!(!is_security_notice_state(&snapshot), "{snapshot}");
