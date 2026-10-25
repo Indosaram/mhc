@@ -59,6 +59,7 @@ pub fn suspend_session(state: &ChaosState) {
         let _ = engine
             .lifecycle
             .suspend_on_session_shutdown(&crate::lifecycle::SuspendInput {
+                own_task_id: None,
                 parent_session_id: CHAOS_SESSION.to_string(),
                 reason: "quit".to_string(),
             });

@@ -225,6 +225,7 @@ impl Drop for AbortWakerGuard<'_> {
 }
 
 struct Inner {
+    admission_barrier: Option<crate::pause::admission_barrier::AdmissionBarrier>,
     store: TaskRecordStore,
     saver: Arc<dyn TaskRecordSaver + Send + Sync>,
     runners: crate::manager::types::ManagedRunners,
@@ -444,6 +445,7 @@ impl TaskManager {
                 now.clone(),
             );
             Inner {
+                admission_barrier: options.admission_barrier,
                 store: store.clone(),
                 saver,
                 runners: options.runners,
@@ -1459,11 +1461,25 @@ impl TaskManager {
         record: &TaskRecord,
         resume_session_path: Option<&Path>,
     ) -> RespawnResult {
+        if self.inner.try_load(&record.task_id).is_some_and(|fresh| fresh.run_pause.is_some()) || self.inner.admission_barrier.as_ref().is_some_and(|barrier| !matches!(barrier.state(&record.root_session_id), crate::pause::admission_barrier::AdmissionState::Open)) {
+            return RespawnResult::Failed {
+                disposition: crate::lifecycle::port::RespawnDisposition::Retryable,
+                code: crate::lifecycle::port::RespawnFailureCode::RunPaused,
+                reason: "run_paused".into(),
+            };
+        }
         // Respawn bypasses start's status transition; persist the same durable launch boundary
         // without changing the status or epoch that lifecycle reattachment owns. It is also the last
         // point before the child runs: a stop, a kill or another owner that landed while the revival
         // was preparing refuses the launch here (TS `beforeLaunch`).
         let before_launch = || -> Result<(), RespawnResult> {
+            if self.inner.try_load(&record.task_id).is_some_and(|fresh| fresh.run_pause.is_some()) || self.inner.admission_barrier.as_ref().is_some_and(|barrier| !matches!(barrier.state(&record.root_session_id), crate::pause::admission_barrier::AdmissionState::Open)) {
+                return Err(RespawnResult::Failed {
+                    disposition: crate::lifecycle::port::RespawnDisposition::Retryable,
+                    code: crate::lifecycle::port::RespawnFailureCode::RunPaused,
+                    reason: "run_paused".into(),
+                });
+            }
             let mut moved = false;
             let timestamp = self.inner.now_iso();
             let stamped = self

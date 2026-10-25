@@ -74,6 +74,17 @@ pub fn reconcile_scoped_revival(
                 .iter()
                 .map(|record| deferred(&record.task_id, "reattach_disabled")),
         );
+        for outcome in &outcomes {
+            if outcome.kind == ReconcileOutcomeKind::Deferred {
+                if let Some(reason) = &outcome.reason {
+                    super::host_session_record::mark_revival_deferred(
+                        context,
+                        &outcome.task_id,
+                        reason,
+                    )?;
+                }
+            }
+        }
         return Ok(outcomes);
     }
     let prior: HashMap<&str, ResidencyState> = candidates
@@ -123,6 +134,17 @@ pub fn reconcile_scoped_revival(
     for candidate in &candidates {
         if !reported.contains(&candidate.task_id) {
             outcomes.push(deferred(&candidate.task_id, "foreign_live_owner"));
+        }
+    }
+    for outcome in &outcomes {
+        if outcome.kind == ReconcileOutcomeKind::Deferred {
+            if let Some(reason) = &outcome.reason {
+                super::host_session_record::mark_revival_deferred(
+                    context,
+                    &outcome.task_id,
+                    reason,
+                )?;
+            }
         }
     }
     Ok(outcomes)
