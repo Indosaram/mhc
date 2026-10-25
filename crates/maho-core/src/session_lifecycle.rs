@@ -336,6 +336,15 @@ pub fn evaluate_turn_facts(
     let mut question = false;
     if let Some(input) = input {
         for wake in input["expectations"].as_array().into_iter().flatten() {
+            if (wake["kind"] == "question-to-user" && input["endedBy"] != "clean")
+                || (input["deadlineStop"] == true
+                    && matches!(
+                        wake["kind"].as_str(),
+                        Some("armed-timer" | "recovery-staged")
+                    ))
+            {
+                continue;
+            }
             match wake["kind"].as_str() {
                 Some("pending-messages") => continuation |= pending > 0,
                 Some("user-input-queued") => continuation = true,
