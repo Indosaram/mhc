@@ -144,6 +144,14 @@ pub struct PendingResponse {
 }
 
 impl PendingResponse {
+    pub fn wait_until(self, deadline: std::time::Instant) -> Result<Value, RpcClientError> {
+        self.receiver
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .map_err(|error| RpcClientError::Write {
+                message: format!("RPC configuration deadline: {error}"),
+            })?
+    }
+
     pub fn wait(self) -> Result<Value, RpcClientError> {
         self.receiver.recv().unwrap_or_else(|_| {
             Err(RpcClientError::Exited {
