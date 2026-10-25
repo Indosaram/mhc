@@ -31,7 +31,7 @@ pub fn run_hold_input(
     if let Some(images) = command.get("images") {
         input["images"] = images.clone();
     }
-    let result = session.hold_input(input);
+    let result = session.hold_input(input)?;
     match result["kind"].as_str() {
         Some("held") => Ok(json!({"entryId":result["entryId"],"duplicate":result["duplicate"]})),
         Some("already_delivered") => Ok(json!({"alreadyDelivered":true})),
