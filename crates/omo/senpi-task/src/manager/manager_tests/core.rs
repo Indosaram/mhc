@@ -749,3 +749,34 @@ fn exact_resumed_outcome_settles_without_waiting_for_old_generic_turn() {
         record.notification.run_epoch
     );
 }
+
+#[test]
+fn refused_pause_does_not_trap_ordinary_completion() {
+    let harness = default_manager();
+    let task = started(harness.manager.start(&base_spec()));
+    let record = harness.store.load(&task.task_id).unwrap().unwrap();
+    harness
+        .manager
+        .begin_native_pause(&task.task_id, record.notification.run_epoch);
+    harness
+        .manager
+        .finish_native_pause(&task.task_id, record.notification.run_epoch, false)
+        .unwrap();
+    let handle = harness
+        .in_process
+        .handle(&task.task_id)
+        .or_else(|| harness.process.handle(&task.task_id))
+        .unwrap();
+    handle.settle(crate::runners::RunnerOutcome::completed(
+        "ordinary completion",
+    ));
+    let completed = harness
+        .manager
+        .wait_for(&task.task_id, None, Some(WAIT))
+        .unwrap();
+    assert_eq!(completed.status, TaskStatus::Completed);
+    assert_eq!(
+        completed.final_response.as_deref(),
+        Some("ordinary completion")
+    );
+}
