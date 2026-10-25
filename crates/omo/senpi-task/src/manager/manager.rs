@@ -1239,29 +1239,110 @@ impl TaskManager {
         task_id: &str,
         credential: &crate::pause::admission_barrier::ResumeCredential,
     ) -> Result<(), String> {
+        self.resume_held_task_with_allocation(task_id, credential, None)
+    }
+
+    pub fn resume_held_task_with_allocation(
+        &self,
+        task_id: &str,
+        credential: &crate::pause::admission_barrier::ResumeCredential,
+        saved: Option<&crate::manager::concurrency::QueuedTaskAdmission>,
+    ) -> Result<(), String> {
         let record = self
             .inner
             .try_load(task_id)
-            .ok_or("task record unavailable")?;
-        if !matches!(self.inner.admission_barrier.state(&record.root_session_id), crate::pause::admission_barrier::AdmissionState::Resuming { pause_seq, ref resume_id } if pause_seq == credential.pause_seq && resume_id == &credential.resume_id)
-        {
-            return Err("stale resume credential".into());
+            .ok_or("held admission record_missing")?;
+        if record.status.is_terminal() {
+            return Ok(());
         }
-        if record.host_pid != Some(self.inner.host_pid) {
-            return Err("launch belongs to another host".into());
+        if record.status != TaskStatus::Pending {
+            return Err("held admission already_started".into());
         }
-        let mut context = lock(&self.inner.state)
+        let admission = saved
+            .cloned()
+            .or_else(|| {
+                lock(&self.inner.state)
+                    .held_admissions
+                    .get(task_id)
+                    .cloned()
+            })
+            .ok_or("held admission allocation_missing")?;
+        if admission.run_epoch != record.notification.run_epoch {
+            return Ok(());
+        }
+        let warm = lock(&self.inner.state).held_launches.get(task_id).cloned();
+        let mut managed_spec = match &warm {
+            Some(context) => context.managed_spec.clone(),
+            None => crate::manager::helpers::build_respawn_managed_spec(
+                &record,
+                self.inner.store.state_dir(),
+            )
+            .map_err(str::to_string)?,
+        };
+        let request = ManagerStartSpec {
+            prompt: managed_spec.prompt.clone(),
+            parent_session_id: record.parent_session_id.clone(),
+            root_session_id: Some(record.root_session_id.clone()),
+            depth: record.depth,
+            ..Default::default()
+        };
+        let entered = crate::manager::start_admission::enter_start_admission(
+            crate::manager::start_admission::EnterStartAdmissionInput {
+                barrier: &self.inner.admission_barrier,
+                spec: &request,
+                task_id: task_id.into(),
+                run_ref: None,
+                credential: Some(credential.clone()),
+                held: None,
+            },
+        );
+        let scope = match entered {
+            crate::manager::start_admission::StartAdmissionEntry::Entered(entered) => entered.scope,
+            crate::manager::start_admission::StartAdmissionEntry::Held(_) => {
+                return Err("run admission held".into());
+            }
+        };
+        let guard = AdmissionScope(scope.clone());
+        let mut claimed = false;
+        let owned = self
+            .inner
+            .store
+            .mutate(task_id, &mut |fresh: &TaskRecord| {
+                if fresh.status != TaskStatus::Pending
+                    || fresh.notification.run_epoch != record.notification.run_epoch
+                    || fresh.host_pid != record.host_pid
+                {
+                    return fresh.clone();
+                }
+                claimed = true;
+                TaskRecord {
+                    host_pid: Some(self.inner.host_pid),
+                    ..fresh.clone()
+                }
+            })
+            .map_err(|error| error.to_string())?
+            .ok_or("held admission record_missing")?;
+        if !claimed {
+            return Err("held admission owner_changed".into());
+        }
+        managed_spec.admission = Some(scope.clone());
+        let mode = if owned.execution_mode == "in-process" {
+            ExecutionMode::InProcess
+        } else {
+            ExecutionMode::Process
+        };
+        let context = LaunchContext {
+            runner: warm.map_or_else(
+                || Arc::clone(self.inner.runners.get(mode)),
+                |warm| warm.runner,
+            ),
+            record: owned,
+            managed_spec,
+            model: admission.model.clone(),
+        };
+        lock(&self.inner.state)
             .held_launches
-            .remove(task_id)
-            .ok_or("held launch unavailable")?;
-        context.managed_spec.admission = None;
-        let admission = lock(&self.inner.state)
-            .held_admissions
-            .remove(task_id)
-            .ok_or("held admission unavailable")?;
-        self.inner
-            .admission_barrier
-            .release(&record.root_session_id, credential);
+            .insert(task_id.into(), context.clone());
         let inner = Arc::clone(&self.inner);
         lock(&self.inner.concurrency).requeue(
             admission,
@@ -1269,8 +1350,9 @@ impl TaskManager {
                 let _ = inner.launch(&context);
             }),
         );
-        let grants = lock(&self.inner.concurrency).drain();
-        for grant in grants {
+        scope.transfer();
+        drop(guard);
+        for grant in lock(&self.inner.concurrency).drain() {
             spawn_grant(grant);
         }
         Ok(())
