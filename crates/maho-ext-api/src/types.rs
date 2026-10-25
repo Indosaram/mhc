@@ -850,8 +850,6 @@ pub enum EventKind {
     SessionCompact,
     SessionCompactFailed,
     SessionShutdown,
-    SessionMoveExport,
-    SessionMoveImport,
     SessionAbort,
     SessionMoveExport,
     SessionMoveImport,
@@ -906,8 +904,6 @@ impl EventKind {
         Self::SessionCompact,
         Self::SessionCompactFailed,
         Self::SessionShutdown,
-        Self::SessionMoveExport,
-        Self::SessionMoveImport,
         Self::SessionAbort,
         Self::SessionMoveExport,
         Self::SessionMoveImport,
@@ -961,8 +957,6 @@ impl EventKind {
             Self::SessionBeforeCompact => "session_before_compact",
             Self::SessionCompact => "session_compact",
             Self::SessionCompactFailed => "session_compact_failed",
-            Self::SessionMoveExport => "session_move_export",
-            Self::SessionMoveImport => "session_move_import",
             Self::SessionShutdown => "session_shutdown",
             Self::SessionAbort => "session_abort",
             Self::SessionMoveExport => "session_move_export",
@@ -1827,7 +1821,7 @@ pub struct QuestionAnswer {
     pub selected: Vec<String>,
     pub text: Option<String>,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QuestionCancelOrigin {
     User,
@@ -1849,7 +1843,7 @@ impl QuestionCancelOrigin {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QuestionResolvedBy {
     LocalUi,
@@ -1867,7 +1861,7 @@ impl QuestionResolvedBy {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuestionResponse {
     pub status: QuestionStatus,
     pub answers: BTreeMap<String, QuestionAnswer>,
@@ -2289,7 +2283,6 @@ pub trait ExtensionUi: Send + Sync {
     ) -> UiFuture<'a, Option<String>>;
     fn notify(&self, message: &str, kind: NotificationType);
     fn set_status(&self, key: &str, text: Option<&str>);
-    fn set_subagent_cost(&self, _cost_usd: Option<f64>) {}
     fn set_widget(
         &self,
         key: &str,
@@ -3091,17 +3084,6 @@ pub enum SessionCompactEvent {
 /// payloads whose upstream contracts are open records or owned by a subsequent session port.
 #[derive(Clone, Debug)]
 pub enum ExtensionEvent {
-    SessionMoveExport {
-        move_id: String,
-        dir: String,
-        signal: AbortSignal,
-    },
-    SessionMoveImport {
-        move_id: String,
-        dir: String,
-        redelivered: bool,
-        signal: AbortSignal,
-    },
     ProjectTrust {
         cwd: PathBuf,
     },
@@ -3287,8 +3269,6 @@ pub enum ExtensionEvent {
 impl ExtensionEvent {
     pub const fn kind(&self) -> EventKind {
         match self {
-            Self::SessionMoveExport { .. } => EventKind::SessionMoveExport,
-            Self::SessionMoveImport { .. } => EventKind::SessionMoveImport,
             Self::ProjectTrust { .. } => EventKind::ProjectTrust,
             Self::ResourcesDiscover(_) => EventKind::ResourcesDiscover,
             Self::SessionStart(_) => EventKind::SessionStart,

@@ -156,7 +156,8 @@ pub fn is_kimi_k31_model(model: &str) -> bool {
     static KIMI_K31: LazyLock<Regex> =
         LazyLock::new(|| regex(r"(?:^|[/._-])(?:kimi-)?k3(?:[._-]|p)1(?:$|[/._:-])"));
     static WHITESPACE_RUN: LazyLock<Regex> = LazyLock::new(|| regex(r"\s+"));
-    let model_name = WHITESPACE_RUN.replace_all(&extract_model_name(model).to_lowercase(), "-");
+    let lowered = extract_model_name(model).to_lowercase();
+    let model_name = WHITESPACE_RUN.replace_all(&lowered, "-");
     KIMI_K31.is_match(&model_name)
 }
 

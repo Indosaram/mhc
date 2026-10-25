@@ -347,7 +347,7 @@ impl MinimalTracerProvider {
             span_id: random_hex_id(8),
             trace_flags: TRACE_FLAG_SAMPLED,
         };
-        let mut span = MinimalSpan {
+        let span = MinimalSpan {
             processor: Some(Arc::clone(&self.processor)),
             clock: Arc::clone(&self.clock),
             span_context,

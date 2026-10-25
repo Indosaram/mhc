@@ -69,9 +69,12 @@ fn legacy_recovery_restores_original_before_publishing_migration() {
                 repo.path_state
                     .set_index(&path.path, &path.post.index)
                     .unwrap();
-                repo.path_state
-                    .write_worktree(&path.path, &path.post.worktree)
-                    .unwrap();
+                let crate::git::path_state::GitWorktreeIdentity::File(worktree) =
+                    &path.post.worktree
+                else {
+                    panic!("published agreement path must have a worktree file");
+                };
+                repo.path_state.write_worktree(&path.path, worktree).unwrap();
             }
             let pre = path.pre.clone();
             let mut published = None;

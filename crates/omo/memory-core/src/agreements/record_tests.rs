@@ -16,7 +16,6 @@ fn parses_new_and_reaffirm_records() {
     assert_eq!(
         new.expect("new"),
         AgreementExtractionRecord::New {
-            source: None,
             applies: AgreementScope::Project,
             text: "Run tests".to_string(),
             date: "2026-02-28".to_string(),
@@ -30,7 +29,6 @@ fn parses_new_and_reaffirm_records() {
     assert_eq!(
         reaffirm.expect("reaffirm"),
         AgreementExtractionRecord::Reaffirm {
-            source: None,
             id: "0123456789".to_string(),
             date: "2026-02-28".to_string(),
             text: None,

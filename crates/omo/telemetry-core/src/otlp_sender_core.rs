@@ -675,22 +675,27 @@ impl OtlpSender {
         self.batches.pump().await;
     }
 
-    async fn flush(self: &Arc<Self>) {
-        if self.stopped() {
-            return;
+    // Boxed so the timer started by `ensure_started` can hold a `Send` future that
+    // re-enters `flush` without forming an infinitely sized async state machine.
+    fn flush(self: &Arc<Self>) -> BoxFuture<'_, ()> {
+        async move {
+            if self.stopped() {
+                return;
+            }
+            if !(self.consent)() {
+                self.purge();
+                return;
+            }
+            self.ensure_started().await;
+            if self.stopped() {
+                return;
+            }
+            self.batches.new_cycle();
+            self.report_drops();
+            self.seal_providers();
+            self.batches.pump().await;
         }
-        if !(self.consent)() {
-            self.purge();
-            return;
-        }
-        self.ensure_started().await;
-        if self.stopped() {
-            return;
-        }
-        self.batches.new_cycle();
-        self.report_drops();
-        self.seal_providers();
-        self.batches.pump().await;
+        .boxed()
     }
 
     async fn shutdown(self: &Arc<Self>) {

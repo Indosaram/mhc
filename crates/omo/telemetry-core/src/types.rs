@@ -138,6 +138,17 @@ pub enum TelemetrySpoolEntryKind {
     Other,
 }
 
+impl TelemetrySpoolEntryKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Directory => "directory",
+            Self::Symlink => "symlink",
+            Self::ForeignOwner => "foreign_owner",
+            Self::Other => "other",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetryDiagnosticInput {
     pub event: TelemetryDiagnosticEvent,

@@ -11,7 +11,7 @@ use crate::sync::{
         trust_pin::{PinLoad, load_trust_anchor},
     },
     engine::{adapters::http_transport::*, error::EngineError, ports::PortFuture},
-    keyring_port::{DeviceKeyring, DeviceKeyringImpl},
+    keyring_port::DeviceKeyringImpl,
     recovery::{
         key_material::{EpochMaterial, WrapAddress, seal_wrap},
         keyring_append::signed_append,

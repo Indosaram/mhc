@@ -11,7 +11,7 @@ pub const SPOOL_CAP_BYTES: u64 = 5 * 1024 * 1024;
 pub const SPOOL_MAX_AGE_MS: u64 = 14 * 24 * 60 * 60 * 1000;
 pub const CLAIM_LEASE_MS: u64 = 5 * 60 * 1000;
 pub const DEAD_OWNER_IDLE_MS: u64 = 300_000;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DropReason {
     Evicted,
     Expired,

@@ -148,7 +148,7 @@ pub fn classify_reflection_lock_holder(
     probe: &ReflectionLockProbe<'_>,
 ) -> ReflectionLockVerdict {
     let default_read: &ReflectionLockReadText<'_> = &default_read_text;
-    let read_text = probe.read_text.copied().unwrap_or(default_read);
+    let read_text = probe.read_text.unwrap_or(default_read);
     let active = read_json(&reflection_dir.join("active.lock"), read_text);
     let value = match active {
         JsonRead::Missing => return ReflectionLockVerdict::None,

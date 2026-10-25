@@ -9,7 +9,7 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use tokio::sync::Notify;
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct AbortState {
     aborted: AtomicBool,
     notify: Notify,

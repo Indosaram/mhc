@@ -74,7 +74,7 @@ pub fn normalize_memory_frontmatter(
         });
     }
 
-    if !repo.status(&[])?.trim().is_empty() {
+    if !repo.status(&[] as &[&str])?.trim().is_empty() {
         return Ok(NormalizeFrontmatterResult::Skipped {
             detail: "memory repository working tree is dirty; frontmatter normalization deferred to the next clean session".to_string(),
             examined: 0,
@@ -245,9 +245,9 @@ fn candidate_paths(
     let paths = match checked_sha {
         Some(from) => match changed_since(repo, from, head) {
             Some(p) => p,
-            None => repo.ls_tree(head, None)?,
+            None => repo.ls_tree(Some(head), None)?,
         },
-        None => repo.ls_tree(head, None)?,
+        None => repo.ls_tree(Some(head), None)?,
     };
     Ok(paths.into_iter().filter(|p| is_memory_content_path(p)).collect())
 }

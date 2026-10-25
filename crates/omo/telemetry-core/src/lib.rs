@@ -72,7 +72,6 @@ pub use otlp_spool_cap::*;
 pub use otlp_spool_dir::*;
 pub use otlp_spool_file::*;
 pub use otlp_spool_lock::*;
-pub use otlp_spool_names::*;
 pub use otlp_spool_purge::*;
 pub use otlp_transport_types::*;
 pub use otlp_wal::*;
