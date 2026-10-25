@@ -100,7 +100,7 @@ fn default_convert_to_llm(messages: Vec<AgentMessage>) -> Vec<Message> {
 }
 
 fn empty_usage() -> Usage {
-    Usage {
+    Usage { context_usage: None,
         input: 0,
         output: 0,
         cache_read: 0,

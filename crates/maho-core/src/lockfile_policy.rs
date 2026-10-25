@@ -104,6 +104,8 @@ fn lock_dir(path: &str) -> PathBuf {
 #[derive(Debug)]
 pub struct LockGuard {
     dir: PathBuf,
+    owner: Option<String>,
+    heartbeat: Option<std::sync::mpsc::Sender<()>>,
     #[cfg(unix)]
     broker: Option<UnixStream>,
     #[cfg(unix)]
@@ -111,6 +113,14 @@ pub struct LockGuard {
 }
 
 impl LockGuard {
+    pub fn assert_held(&self) -> Result<(), String> {
+        if let Some(owner) = &self.owner {
+            let current = std::fs::read_to_string(self.dir.join("owner")).map_err(|error| format!("Lock lost: {error}"))?;
+            if &current != owner { return Err("Lock lost: ownership changed".to_owned()); }
+        }
+        Ok(())
+    }
+
     pub fn path(&self) -> &Path {
         &self.dir
     }
@@ -118,16 +128,20 @@ impl LockGuard {
 
 impl Drop for LockGuard {
     fn drop(&mut self) {
+        self.heartbeat.take();
         #[cfg(unix)]
         if self.broker.is_some() {
             return;
         }
-        let _ = std::fs::remove_dir_all(&self.dir);
+        if self.assert_held().is_ok() {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
     }
 }
 
 impl LockGuard {
     pub fn broker_write(&mut self, content: &str) -> Result<bool, String> {
+        self.assert_held()?;
         #[cfg(unix)]
         if let Some(stream) = &mut self.broker {
             let message = serde_json::json!({"key": self.broker_key.unwrap_or_default(), "write": content});
@@ -181,7 +195,7 @@ fn acquire_broker_lease(path: &str, budget_ms: u64) -> Result<Option<LockGuard>,
     let response: BrokerResponse = serde_json::from_slice(&response)
         .map_err(|error| CredentialStoreBusyError::new(format!("{path}: {error}"), 0))?;
     response.result.map_err(|error| CredentialStoreBusyError::new(format!("{path}: {error}"), started.elapsed().as_millis() as u64))?;
-    Ok(Some(LockGuard { dir: lock_dir(path), broker: Some(stream), broker_key: Some(key) }))
+    Ok(Some(LockGuard { dir: lock_dir(path), owner: None, heartbeat: None, broker: Some(stream), broker_key: Some(key) }))
 }
 
 fn try_acquire(dir: &Path) -> std::io::Result<()> {
@@ -215,7 +229,22 @@ pub fn acquire_host_lock_sync(path: &str, budget_ms: u64) -> Result<LockGuard, C
     let mut delay_ms = FILE_STORAGE_LOCK_RETRY_MIN_DELAY_MS;
     loop {
         match try_acquire(&dir) {
-            Ok(()) => return Ok(LockGuard { dir, #[cfg(unix)] broker: None, #[cfg(unix)] broker_key: None }),
+            Ok(()) => {
+                let owner = uuid::Uuid::new_v4().to_string();
+                std::fs::write(dir.join("owner"), &owner)
+                    .map_err(|error| CredentialStoreBusyError::new(format!("{path}: {error}"), 0))?;
+                let (heartbeat, stopped) = std::sync::mpsc::channel();
+                let heartbeat_dir = dir.clone();
+                let heartbeat_owner = owner.clone();
+                std::thread::spawn(move || {
+                    while matches!(stopped.recv_timeout(Duration::from_millis(FILE_STORAGE_LOCK_UPDATE_MS)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)) {
+                        if std::fs::read_to_string(heartbeat_dir.join("owner")).ok().as_ref() != Some(&heartbeat_owner) { break; }
+                        let tick = heartbeat_dir.join("heartbeat");
+                        if std::fs::write(&tick, "").and_then(|()| std::fs::remove_file(&tick)).is_err() { break; }
+                    }
+                });
+                return Ok(LockGuard { dir, owner: Some(owner), heartbeat: Some(heartbeat), #[cfg(unix)] broker: None, #[cfg(unix)] broker_key: None });
+            }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 let waited = started.elapsed().as_millis() as u64;
                 if waited >= budget_ms {
@@ -246,7 +275,22 @@ pub async fn acquire_lock_async(path: &str, budget_ms: u64) -> Result<LockGuard,
     let mut delay_ms = FILE_STORAGE_LOCK_RETRY_MIN_DELAY_MS;
     loop {
         match try_acquire(&dir) {
-            Ok(()) => return Ok(LockGuard { dir, #[cfg(unix)] broker: None, #[cfg(unix)] broker_key: None }),
+            Ok(()) => {
+                let owner = uuid::Uuid::new_v4().to_string();
+                std::fs::write(dir.join("owner"), &owner)
+                    .map_err(|error| CredentialStoreBusyError::new(format!("{path}: {error}"), 0))?;
+                let (heartbeat, stopped) = std::sync::mpsc::channel();
+                let heartbeat_dir = dir.clone();
+                let heartbeat_owner = owner.clone();
+                std::thread::spawn(move || {
+                    while matches!(stopped.recv_timeout(Duration::from_millis(FILE_STORAGE_LOCK_UPDATE_MS)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)) {
+                        if std::fs::read_to_string(heartbeat_dir.join("owner")).ok().as_ref() != Some(&heartbeat_owner) { break; }
+                        let tick = heartbeat_dir.join("heartbeat");
+                        if std::fs::write(&tick, "").and_then(|()| std::fs::remove_file(&tick)).is_err() { break; }
+                    }
+                });
+                return Ok(LockGuard { dir, owner: Some(owner), heartbeat: Some(heartbeat), #[cfg(unix)] broker: None, #[cfg(unix)] broker_key: None });
+            }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 let waited = started.elapsed().as_millis() as u64;
                 if waited >= budget_ms {
@@ -289,5 +333,22 @@ mod tests {
         let error = acquire_lock_sync(&path, 50).expect_err("busy");
         assert!(error.message().starts_with("Credential store is busy: lock "));
         assert!(error.message().contains("was held for"));
+    }
+}
+
+#[cfg(test)]
+mod loss_tests {
+    use super::*;
+    #[test]
+    fn replacement_owner_is_not_deleted_or_allowed_to_write() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("auth.json").to_string_lossy().into_owned();
+        let guard = acquire_host_lock_sync(&path, 0).expect("lock");
+        assert!(guard.assert_held().is_ok());
+        let lock_path = guard.path().to_path_buf();
+        std::fs::write(lock_path.join("owner"), "replacement").expect("replace");
+        assert!(guard.assert_held().is_err());
+        drop(guard);
+        assert!(lock_path.exists());
     }
 }

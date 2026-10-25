@@ -3,7 +3,7 @@
 use maho_ai::types::{Usage, UsageCost};
 
 pub fn empty_usage() -> Usage {
-    Usage {
+    Usage { context_usage: None,
         input: 0,
         output: 0,
         cache_read: 0,
@@ -22,7 +22,7 @@ pub fn empty_usage() -> Usage {
 }
 
 pub fn add_usage(left: &Usage, right: &Usage) -> Usage {
-    Usage {
+    Usage { context_usage: None,
         input: left.input + right.input,
         output: left.output + right.output,
         cache_read: left.cache_read + right.cache_read,

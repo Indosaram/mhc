@@ -110,7 +110,7 @@ impl ProviderRetryWatchdogAbortError {
 pub const EMPTY_TOOL_USE_DEMOTION_DIAGNOSTIC: &str = "empty_tool_use_terminal_state";
 
 fn empty_usage() -> Usage {
-    Usage {
+    Usage { context_usage: None,
         input: 0,
         output: 0,
         cache_read: 0,

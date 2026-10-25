@@ -8,6 +8,7 @@
 //! summarizationMaxDurationMs) travel together in [`SummarizationRequest`]; message transforms
 //! operate on the session's JSON message values.
 
+use super::overflow_retry::{allow_overflow_retry, bound_summarization_input, shrink_summarization_input_for_overflow_retry, SummarizationOverflowExhaustedError};
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
@@ -115,7 +116,7 @@ pub fn combine_usage(first: &Usage, second: &Usage) -> Usage {
     } else {
         None
     };
-    Usage {
+    Usage { context_usage: None,
         input: first.input + second.input,
         output: first.output + second.output,
         cache_read: first.cache_read + second.cache_read,
@@ -135,6 +136,9 @@ pub fn combine_usage(first: &Usage, second: &Usage) -> Usage {
 
 /// senpi calculateContextTokens.
 pub fn calculate_context_tokens(usage: &Usage) -> u64 {
+    if let Some(context) = usage.context_usage {
+        return context.map(|context| context.input + context.output).unwrap_or(0);
+    }
     if usage.total_tokens != 0 {
         usage.total_tokens
     } else {
@@ -934,20 +938,36 @@ pub async fn generate_summary_with_usage(
         base_prompt = with_focus(if transformed.1.is_some() { update_summarization_prompt() } else { SUMMARIZATION_PROMPT.to_owned() });
     }
 
-    let mut prompt_text = String::new();
-    if source_context.is_none() {
-        let conversation_text = super::utils::serialize_conversation(&crate::messages::convert_to_llm(&transformed.0));
-        prompt_text = format!("<conversation>\n{conversation_text}\n</conversation>\n\n");
-        if let Some(previous_summary) = &transformed.1 {
-            prompt_text.push_str(&format!("<previous-summary>\n{previous_summary}\n</previous-summary>\n\n"));
-        }
+    let bounds_history = source_context.is_none() && model.context_window > 0;
+    let wrappers = "<conversation>\n\n</conversation>\n\n<previous-summary>\n\n</previous-summary>\n\n";
+    let prompt_tokens = (format!("{}{}{}{}", super::utils::SUMMARIZATION_SYSTEM_PROMPT, base_prompt, transformed.1.as_deref().unwrap_or_default(), wrappers).encode_utf16().count() as u64).div_ceil(4);
+    let mut summarized = transformed.0.clone();
+    let serialized = super::utils::serialize_conversation(&crate::messages::convert_to_llm(&summarized));
+    if bounds_history && (serialized.encode_utf16().count() as u64).div_ceil(4) + prompt_tokens + max_tokens > model.context_window {
+        summarized = bound_summarization_input(&summarized, model.context_window, prompt_tokens);
     }
-    prompt_text.push_str(&base_prompt);
-
-    let cached = source_context.is_some();
-    let options = create_summarization_options(model, max_tokens, request, request_options.filter(|_| cached),
-        cached.then_some(CacheRetention::Short));
-    let response = complete_summarization(model, &build_summarization_context(&prompt_text, source_context), options, request).await?;
+    let started = std::time::Instant::now();
+    let mut attempts = 0;
+    let response = loop {
+        let mut prompt_text = String::new();
+        if source_context.is_none() {
+            let text = super::utils::serialize_conversation(&crate::messages::convert_to_llm(&summarized));
+            let omitted = transformed.0.len() - summarized.len();
+            let note = if omitted > 0 { format!("<omitted-history messages=\"{omitted}\" />\n") } else { String::new() };
+            prompt_text = format!("<conversation>\n{note}{text}\n</conversation>\n\n");
+            if let Some(previous) = &transformed.1 { prompt_text.push_str(&format!("<previous-summary>\n{previous}\n</previous-summary>\n\n")); }
+        }
+        prompt_text.push_str(&base_prompt);
+        let cached = source_context.is_some();
+        let options = create_summarization_options(model, max_tokens, request, request_options.filter(|_| cached), cached.then_some(CacheRetention::Short));
+        let response = complete_summarization(model, &build_summarization_context(&prompt_text, source_context), options, request).await?;
+        if !bounds_history || !maho_ai::utils::overflow::is_context_overflow(&response, Some(model.context_window)) { break response; }
+        attempts += 1;
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        summarized = if allow_overflow_retry(attempts, elapsed_ms) {
+            shrink_summarization_input_for_overflow_retry(&summarized, model.context_window, prompt_tokens)
+        } else { None }.ok_or_else(|| SummarizationOverflowExhaustedError { attempts, elapsed_ms }.to_string())?;
+    };
 
     if let Some(failure) = get_summarization_failure(&response, "Summarization") {
         return Err(failure);
@@ -960,20 +980,20 @@ pub async fn generate_summary_with_usage(
 }
 
 /// senpi TURN_PREFIX_SUMMARIZATION_PROMPT (compaction-execution.ts).
-pub const TURN_PREFIX_SUMMARIZATION_PROMPT: &str = "This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+pub const TURN_PREFIX_SUMMARIZATION_PROMPT: &str = "The messages above are earlier context from an ongoing conversation. Later messages are stored separately and do not need to be reconstructed.
 
-Summarize the prefix to provide context for the retained suffix:
+Create a concise checkpoint of the user's request and the progress shown above. This checkpoint will be placed before the later messages so the conversation can continue with the necessary context.
 
 ## Original Request
-[What did the user ask for in this turn?]
+[What did the user ask for?]
 
-## Early Progress
-- [Key decisions and work done in the prefix]
+## Progress So Far
+- [Key decisions and work completed in these messages]
 
-## Context for Suffix
-- [Information needed to understand the retained recent work]
+## Context Needed to Continue
+- [Information from these messages needed to understand the later work]
 
-Be concise. Focus on what's needed to understand the kept suffix.";
+Only summarize information explicitly present above. Do not infer or recreate later messages.";
 
 /// senpi SOURCE_CONTEXT_TURN_PREFIX_SUMMARIZATION_PROMPT (compaction-execution.ts).
 pub const SOURCE_CONTEXT_TURN_PREFIX_SUMMARIZATION_PROMPT: &str = "The final turn in the source conversation was too large to keep in full. Its SUFFIX (recent work) is retained.
@@ -1048,7 +1068,7 @@ pub async fn compact(
 }
 
 /// senpi generateTurnPrefixSummary (compaction-execution.ts).
-async fn generate_turn_prefix_summary(
+pub async fn generate_turn_prefix_summary(
     messages: &[Value],
     reserve_tokens: i64,
     source_context: Option<&Context>,
@@ -1059,21 +1079,38 @@ async fn generate_turn_prefix_summary(
     let max_tokens = summary_max_tokens(model, reserve_tokens, 0.5);
     let source_context = source_context.filter(|source| cache_friendly_context_fits(model,
         &build_summarization_context(SOURCE_CONTEXT_TURN_PREFIX_SUMMARIZATION_PROMPT, Some(*source)), max_tokens));
-    let prompt_text = if source_context.is_some() {
-        SOURCE_CONTEXT_TURN_PREFIX_SUMMARIZATION_PROMPT.to_owned()
-    } else {
-        let provider_messages = match &request.transform_context {
-            Some(transform_context) => transform_context(messages.to_vec(), request.signal.clone()).await?,
+    let bounds_turn = source_context.is_none() && model.context_window > 0;
+    let prompt_tokens = (format!("{}# Conversation\n\n\n# Instructions\n{}", super::utils::SUMMARIZATION_SYSTEM_PROMPT, TURN_PREFIX_SUMMARIZATION_PROMPT).encode_utf16().count() as u64).div_ceil(4);
+    let provider_messages = if source_context.is_none() {
+        match &request.transform_context {
+            Some(transform) => transform(messages.to_vec(), request.signal.clone()).await?,
             None => messages.to_vec(),
+        }
+    } else { Vec::new() };
+    let mut summarized = provider_messages.clone();
+    let serialized = super::utils::serialize_conversation(&crate::messages::convert_to_llm(&summarized));
+    if bounds_turn && (serialized.encode_utf16().count() as u64).div_ceil(4) + prompt_tokens + max_tokens > model.context_window {
+        summarized = bound_summarization_input(&summarized, model.context_window, prompt_tokens);
+    }
+    let started = std::time::Instant::now();
+    let mut attempts = 0;
+    let response = loop {
+        let prompt_text = if source_context.is_some() { SOURCE_CONTEXT_TURN_PREFIX_SUMMARIZATION_PROMPT.to_owned() } else {
+            let text = super::utils::serialize_conversation(&crate::messages::convert_to_llm(&summarized));
+            let omitted = provider_messages.len() - summarized.len();
+            let note = if omitted > 0 { format!("<omitted-history messages=\"{omitted}\" />\n") } else { String::new() };
+            format!("# Conversation\n{note}{text}\n\n# Instructions\n{TURN_PREFIX_SUMMARIZATION_PROMPT}")
         };
-        let conversation_text = super::utils::serialize_conversation(&crate::messages::convert_to_llm(&provider_messages));
-        format!("<conversation>\n{conversation_text}\n</conversation>\n\n{TURN_PREFIX_SUMMARIZATION_PROMPT}")
+        let cached = source_context.is_some();
+        let options = create_summarization_options(model, max_tokens, request, request_options.filter(|_| cached), cached.then_some(CacheRetention::Short));
+        let response = complete_summarization(model, &build_summarization_context(&prompt_text, source_context), options, request).await?;
+        if !bounds_turn || !maho_ai::utils::overflow::is_context_overflow(&response, Some(model.context_window)) { break response; }
+        attempts += 1;
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        summarized = if allow_overflow_retry(attempts, elapsed_ms) {
+            shrink_summarization_input_for_overflow_retry(&summarized, model.context_window, prompt_tokens)
+        } else { None }.ok_or_else(|| SummarizationOverflowExhaustedError { attempts, elapsed_ms }.to_string())?;
     };
-
-    let cached = source_context.is_some();
-    let options = create_summarization_options(model, max_tokens, request, request_options.filter(|_| cached),
-        cached.then_some(CacheRetention::Short));
-    let response = complete_summarization(model, &build_summarization_context(&prompt_text, source_context), options, request).await?;
 
     if let Some(failure) = get_summarization_failure(&response, "Turn prefix summarization") {
         return Err(failure);
@@ -1267,6 +1304,19 @@ mod tests {
             "timestamp": 0
         });
         serde_json::from_value(value).expect("assistant message")
+    }
+
+    #[test]
+    fn request_context_usage_overrides_cumulative_billing_and_preserves_unknown() {
+        let mut usage = Usage { total_tokens: 99999, input: 90000, ..Usage::default() };
+        assert_eq!(calculate_context_tokens(&usage), 99999);
+        usage.context_usage = Some(Some(maho_ai::types::RequestContextUsage { input: 100, output: 20 }));
+        assert_eq!(calculate_context_tokens(&usage), 120);
+        let parsed: Usage = serde_json::from_value(serde_json::to_value(usage).expect("serialize")).expect("parse");
+        assert_eq!(calculate_context_tokens(&parsed), 120);
+        usage.context_usage = Some(None);
+        let parsed: Usage = serde_json::from_value(serde_json::to_value(usage).expect("serialize")).expect("parse");
+        assert_eq!(calculate_context_tokens(&parsed), 0);
     }
 
     #[test]
@@ -1654,6 +1704,40 @@ mod tests {
         assert_eq!(options.stream.max_tokens, Some(100));
         request.thinking_level = Some(ModelThinkingLevel::Off);
         assert_eq!(create_summarization_options(&model, 100, &request, None, None).reasoning, None);
+    }
+
+    #[tokio::test]
+    async fn summary_and_turn_prefix_retry_overflow_with_less_history() {
+        let mut model = summary_model();
+        model.context_window = 4000;
+        for prefix in [false, true] {
+            let captured: Captured = Mutex::new(Vec::new());
+            let count = std::sync::atomic::AtomicUsize::new(0);
+            let stream_fn = |_: &Model, context: &Context, options: SimpleStreamOptions| {
+                captured.lock().expect("captured").push((context.clone(), options));
+                let first = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+                let mut message = assistant_response(if first { "error" } else { "stop" }, if first { Some("maximum context length exceeded") } else { None });
+                message.content = vec![ContentBlock::Text(TextContent { text: "digest".into(), ..Default::default() })];
+                let stream = AssistantMessageEventStream::assistant();
+                if first { stream.push(maho_ai::types::AssistantMessageEvent::Error { reason: maho_ai::types::ErrorReason::Error, error: message }); }
+                else { stream.push(maho_ai::types::AssistantMessageEvent::Done { reason: maho_ai::types::DoneReason::Stop, message }); }
+                stream.end(None);
+                stream
+            };
+            let request = SummarizationRequest {
+                model: &model, api_key: None, headers: None, env: None, signal: None, extra_body: None, thinking_level: None,
+                stream_fn: Some(&stream_fn as &SummarizationStreamFn<'_>), transform_context: None, retry: None, callbacks: None,
+                session_id: None, summarization_max_duration_ms: None,
+            };
+            let messages: Vec<Value> = (0..30).map(|_| assistant_text(&"x".repeat(1000))).collect();
+            let result = if prefix { generate_turn_prefix_summary(&messages, 1000, None, None, &request).await }
+                else { generate_summary_with_usage(&messages, 1000, None, None, None, None, &request).await };
+            assert!(result.is_ok(), "{result:?}");
+            let calls = captured.lock().expect("captured");
+            assert_eq!(calls.len(), 2);
+            assert!(last_prompt(&calls[1].0).len() < last_prompt(&calls[0].0).len());
+            assert!(last_prompt(&calls[0].0).contains("<omitted-history messages="));
+        }
     }
 
     #[tokio::test]

@@ -53,3 +53,6 @@ pub use utils::{
 pub use warm_anchor::{
     WarmAnchorSnapshot, create_warm_anchor_snapshot, is_warm_summary_anchor_valid, latest_compaction_entry_id,
 };
+
+pub mod overflow_retry;
+pub mod compaction_execution;
