@@ -3602,7 +3602,7 @@ impl AgentSession {
                     } => serde_json::json!({
                         "type": "session_resumed", "pauseSeq": pause_seq, "cause": cause.as_str(), "at": at }),
                 };
-                session.event_bus.emit(SESSION_HOLD_CHANNEL, &data);
+                session.emit_extension_event(SESSION_HOLD_CHANNEL, &data);
             });
             Arc::new(Mutex::new(crate::engine_turn_hold::EngineTurnHold::new(
                 &engine_hold_entries,
