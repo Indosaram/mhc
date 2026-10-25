@@ -48,12 +48,15 @@ This is the dream's core duty: make memory smaller, better placed, and less redu
 **Tier rebalance**, driven by evidence from the transcripts and file references, not by guesswork:
 - An external file the agent keeps fetching turn after turn is hot: promote it to `system/` (trimmed to what's needed every turn, verbose detail stays external).
 - A `system/` file nothing recent has needed is stale: demote it to `reference/` so it stops costing context on every turn.
+- Whenever you move a file into the home its content belongs to, carry its frontmatter with it. If the file has no frontmatter at all, add a one-line `description:` frontmatter in the same commit as the move; a bare move of such a file is refused by completion validation and would be dropped. If you cannot write an honest description, leave the file where it is.
 
 **Fact archiving**: entries in `notes/facts/` older than 6 months get summarized into `ARCHIVE.md`, the single non-system root archive file. Compress them into concise dated summary entries, append those to `ARCHIVE.md`, and remove the summarized originals. Keep anything younger, and keep anything old that's still clearly load-bearing. Delete (don't archive) content the user asked to forget, sensitive or wrong content, and junk with no future-reference value.
 
 **Contradiction handling**: when files disagree, never silently pick a winner. Keep both versions, mark the disagreement on each entry (a contradiction comment naming the other file and the evidence dates), and surface the conflict in your final report so a human decides. Identical duplicates may still be deduped; genuinely conflicting content may not.
 
-Throughout, edit surgically. Persona and behavioral files are load-bearing: append, modify specific entries, adjust wording. Never rewrite them wholesale or silently overwrite established identity. Keep description frontmatter and `[[path]]` cross-references accurate as content moves.
+Throughout, edit surgically. Persona and behavioral files are load-bearing: append, modify specific entries, adjust wording. Never rewrite them wholesale or silently overwrite established identity. Keep `[[path]]` cross-references accurate as content moves. A `description` is one line of at most 1024 characters saying what the note is and when to read it. Keep history, changelogs, and topic lists in the body, never append them to the description.
+Never write or copy a `provenance:` frontmatter line; only the memory tool writes one, and the commit hook refuses a hand-written one. When you move or merge a note, leave that line out of the new file. When you edit a note whose `provenance:` line starts with `user said`, delete that line (it is a legacy header that no longer means anything) and add the trailer `Omo-Provenance-Stripped: <path>` to your commit message, one per note.
+
 
 ## Phase 3: Skill Audit
 

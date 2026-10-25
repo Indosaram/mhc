@@ -96,7 +96,7 @@ pub enum WorkpoolItemStatus { Queued, Assigned, Completed, Error, Cancelled }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkpoolBinding { pub task_id: String, pub run_epoch: u32, pub generation: u32 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkpoolDelivery { pub phase: WorkpoolDeliveryPhase, pub message_sha256: Option<String> }
+pub struct WorkpoolDelivery { pub phase: WorkpoolDeliveryPhase, pub message_sha256: Option<String>, #[serde(default, skip_serializing_if = "Option::is_none")] pub entry_ids: Option<Vec<String>> }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkpoolDeliveryPhase { Queued, Dispatching, Acknowledged }
@@ -105,7 +105,7 @@ pub enum WorkpoolDeliveryPhase { Queued, Dispatching, Acknowledged }
 pub struct WorkpoolWorker { pub task_id: String, pub run_epoch: u32, pub status: WorkpoolWorkerStatus, pub completed_turns: u32, pub idle_since: u64 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkpoolWorkerStatus { Busy, Idle }
+pub enum WorkpoolWorkerStatus { Busy, Idle, Paused }
 
 #[derive(Clone)]
 pub struct WorkpoolSpec { pub start: ManagerStartSpec, pub plan: ResolvedChildPlan }
@@ -114,8 +114,16 @@ pub struct WorkpoolRecord {
     pub version: u8, pub pool_id: PoolId, pub name: String, pub parent_session_id: String, pub root_session_id: String,
     pub generation: u32, pub revision: u32, pub mode: WorkpoolMode, pub agent: WorkpoolAgent, pub worker_spec: WorkpoolSpec,
     pub status: WorkpoolStatus, pub kernel_tool_names: Option<Vec<String>>, pub items: Vec<WorkpoolItem>, pub workers: Vec<WorkpoolWorker>,
+    pub hold: Option<WorkpoolHold>,
     pub aggregate: Option<WorkpoolAggregate>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkpoolHold { pub reason: WorkpoolHoldReason, #[serde(rename = "pauseSeq")] pub pause_seq: u64 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkpoolHoldReason { UserStop }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkpoolStatus { Open, Closing, Cancelled }

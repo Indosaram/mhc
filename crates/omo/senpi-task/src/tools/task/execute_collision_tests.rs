@@ -40,6 +40,7 @@ fn run(call_id: &str, params: &SpawnParamsInput) -> TaskToolResult {
     };
     let execute = build_task_execute(deps, ForegroundWaitOptions::default());
     let ctx = TaskToolContext {
+        model: None,
         session_id: "parent-1".to_string(),
         cwd: harness.project.cwd(),
         get_prompt_cache_safe_wait_seconds: None,

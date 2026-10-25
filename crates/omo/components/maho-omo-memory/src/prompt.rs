@@ -249,7 +249,7 @@ pub fn register_memory_prompt_handler_with_cache(
                     Ok(match result {
                         None => EventResult::None,
                         Some(result) => {
-                            EventResult::BeforeAgentStart(BeforeAgentStartEventResult {
+                            EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt_parts: None,
                                 system_prompt: Some(result.system_prompt),
                                 message: Some(CustomMessage {
                                     custom_type: result.message.custom_type.into(),
@@ -312,6 +312,7 @@ impl MemoryPromptHandler {
             .map_err(|error| MemoryPromptError::Compile(CompileError::Git(error.to_string())))?;
         let options = CompileMemoryBlockOptions {
             agent_id: input.identity.to_owned(),
+            projection: None,
         };
         let block = if turn.revision.as_deref() == head.as_deref() {
             self.cache

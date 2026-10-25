@@ -46,11 +46,11 @@ pub async fn create_stdio_client(
         None,
     )
     .map_err(|e| e.to_string())?;
-    McpClient::materialize_stdio_environment(
+    McpClient::materialize_stdio_with_policy(
         &info.server_name,
         &spec,
         Arc::new(Mutex::new(logger)),
-        false,
+        true,
     )
     .await
     .map_err(|e| e.to_string())

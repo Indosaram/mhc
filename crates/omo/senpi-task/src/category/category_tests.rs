@@ -1188,3 +1188,105 @@ fn boundary_prototype_shaped_names_are_not_found() {
         assert!(contains(result.available_categories(), "quick"));
     }
 }
+
+// ---- model-exclusion.test.ts ----
+
+fn fable_and_kimi() -> Vec<Value> {
+    vec![
+        model("anthropic", ""),
+        model("anthropic", ""),
+        model("kimi-for-coding", "k3"),
+        model("openai", "gpt-5.6-sol"),
+    ]
+}
+
+#[test]
+fn excluded_fable_head_rung_leads_with_the_next_rung() {
+    let models = registry(fable_and_kimi());
+    let resolved = expect_resolved(resolve(
+        "artistry",
+        json!({ "exclude_models": ["anthropic/"] }),
+        &models,
+    ));
+    assert_eq!(resolved.spec.provider, "kimi-for-coding");
+    assert_eq!(resolved.spec.model_id, "k3");
+    assert_eq!(resolved.spec.variant.as_deref(), Some("max"));
+    assert!(resolved.selection.matched_fallback);
+    let fallbacks = resolved.spec.fallback_models.unwrap_or_default();
+    assert!(
+        fallbacks.iter().all(|fallback| fallback.provider != "anthropic"),
+        "the excluded Fable rung must never reach the runtime chain: {fallbacks:?}"
+    );
+}
+
+#[test]
+fn excluded_user_pin_is_treated_like_a_model_with_no_login() {
+    let models = registry(fable_and_kimi());
+    let kept = expect_resolved(resolve(
+        "artistry",
+        json!({ "categories": { "artistry": { "model": "openai/gpt-5.6-sol" } } }),
+        &models,
+    ));
+    assert_eq!(kept.spec.provider, "openai");
+    assert_eq!(kept.spec.model_id, "gpt-5.6-sol");
+
+    let alone = resolve(
+        "artistry",
+        json!({
+            "exclude_models": ["openai/gpt-5.6-sol"],
+            "categories": { "artistry": { "model": "openai/gpt-5.6-sol" } }
+        }),
+        &models,
+    );
+    assert_eq!(alone.kind(), "model_unavailable");
+
+    let walked = expect_resolved(resolve(
+        "artistry",
+        json!({
+            "exclude_models": ["openai/gpt-5.6-sol"],
+            "categories": { "artistry": {
+                "model": "openai/gpt-5.6-sol",
+                "fallback_models": ["kimi-for-coding/k3"]
+            } }
+        }),
+        &models,
+    ));
+    assert_eq!(walked.spec.provider, "kimi-for-coding");
+    assert_eq!(walked.spec.model_id, "k3");
+}
+
+#[test]
+fn category_with_every_rung_excluded_is_gone_from_the_listing() {
+    let fable_only = registry(vec![model("anthropic", ""), model("anthropic", "")]);
+    let filtered =
+        resolve_available_category_names(&json!({ "exclude_models": ["*"] }), &fable_only);
+    assert!(!contains(&filtered, "artistry"));
+    let unfiltered = resolve_available_category_names(&json!({}), &fable_only);
+    assert!(contains(&unfiltered, "artistry"));
+}
+
+#[test]
+fn not_found_listing_observes_excluded_models() {
+    let fable_only = registry(vec![model("anthropic", "")]);
+    let filtered = resolve("no-such-category", json!({ "exclude_models": ["*"] }), &fable_only);
+    assert_eq!(filtered.kind(), "not_found");
+    assert!(!contains(filtered.available_categories(), "artistry"));
+    let unfiltered = resolve("no-such-category", json!({}), &fable_only);
+    assert!(contains(unfiltered.available_categories(), "artistry"));
+}
+
+#[test]
+fn empty_exclude_models_list_leaves_the_listing_alone() {
+    let fable_only = registry(vec![model("anthropic", "")]);
+    assert_eq!(
+        resolve_available_category_names(&json!({ "exclude_models": [] }), &fable_only),
+        resolve_available_category_names(&json!({}), &fable_only)
+    );
+}
+
+#[test]
+fn excluded_listing_still_degrades_on_a_malformed_registry() {
+    let malformed = fixed_registry(json!({ "not": "an array" }), None);
+    let names = resolve_available_category_names(&json!({ "exclude_models": ["*"] }), &malformed);
+    assert!(contains(&names, "architect"));
+}

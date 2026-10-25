@@ -62,6 +62,8 @@ impl std::error::Error for FactsPlanParentDirtyError {}
 /// Envelope containing pre-computed hashes and paths for atomic application and recovery.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FactsApplyRecovery {
+    #[serde(rename = "agreementEventVersion", default, skip_serializing_if = "Option::is_none")]
+    pub agreement_event_version: Option<u32>,
     pub version: u32,
     #[serde(rename = "batchId")]
     pub batch_id: String,
@@ -182,6 +184,7 @@ pub fn render_facts_note(
                     read_only: None,
                     kind: None,
                     aliases: None,
+                    extra: None,
                 },
                 String::new(),
             )
@@ -197,7 +200,7 @@ pub fn render_facts_note(
         if index > 0 {
             bullets.push('\n');
         }
-        bullets.push_str(&format!("- [{}] {}", record.date(), record.text()));
+        bullets.push_str(&format!("- [{}] {}", record.date(), record.rendered_text()));
     }
     let body = format!("{existing_body}{prefix}{bullets}\n");
     Ok(render_memory_file(&frontmatter, &body)?)
@@ -320,6 +323,7 @@ pub fn plan_facts_mutation(
     }
 
     Ok(FactsApplyRecovery {
+        agreement_event_version: Some(1),
         version: 1,
         batch_id: batch.batch_id.clone(),
         head_before_apply,

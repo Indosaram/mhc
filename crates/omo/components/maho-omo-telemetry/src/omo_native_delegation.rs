@@ -71,6 +71,9 @@ pub fn create_omo_native_delegation_capture(
                         "delegation capture panicked",
                     )),
                     error_kind: Some(telemetry_core::TelemetryDiagnosticErrorKind::Error),
+                    entry_kind: None,
+                    error_code: None,
+                    count: None,
                 });
             } else {
                 maho_ext_api::diagnostic("telemetry_capture_failed: omo-native-delegation");
@@ -106,7 +109,9 @@ fn start_reason_of(
         Some(TaskStatus::Cancelled) => "revive_after_cancelled",
         Some(TaskStatus::Interrupted) => "revive_after_interrupted",
         Some(TaskStatus::Lost) => "revive_after_lost",
-        Some(TaskStatus::Pending | TaskStatus::Running) | None => "session_resume",
+        // A previous paused task resumed by this run: the epoch proves a resume, and a paused prior run
+        // was never terminal, so the reason is `session_resume` exactly as for pending and running.
+        Some(TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused) | None => "session_resume",
     }
 }
 

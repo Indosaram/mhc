@@ -86,6 +86,7 @@ pub mod opencode_go_models;
 pub mod opencode_headers;
 pub mod opencode_models;
 pub mod opengateway;
+pub mod opengateway_catalog;
 pub mod opengateway_models;
 pub mod openrouter;
 pub mod openrouter_images;

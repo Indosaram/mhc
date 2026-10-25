@@ -43,6 +43,8 @@ impl LifecycleUi {
     }
 }
 impl ExtensionUi for LifecycleUi {
+    fn supports_subagent_cost(&self) -> bool { self.active(); self.inner.supports_subagent_cost() }
+    fn set_subagent_cost(&self, cost: Option<f64>) { self.active(); self.inner.set_subagent_cost(cost); }
     fn actions(&self) -> Option<&dyn ExtensionUiActions> { self.active(); self.inner.actions().map(|_| self as &dyn ExtensionUiActions) }
     fn factories(&self) -> Option<&dyn ExtensionUiFactories> { self.active(); self.inner.factories().map(|_| self as &dyn ExtensionUiFactories) }
     fn select<'a>(&'a self, title: &'a str, options: &'a [String], dialog: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
@@ -67,6 +69,7 @@ impl ExtensionUi for LifecycleUi {
         Box::pin(async move { let _guard = self.begin(UiPromptKind::Custom, None)?; let result = self.inner.custom_factory(factory, options).await?; self.runtime.assert_active()?; Ok(result) })
     }
     fn notify(&self, message: &str, kind: NotificationType) { self.active(); self.inner.notify(message, kind); }
+    fn set_subagent_cost(&self, cost_usd: Option<f64>) { self.active(); self.inner.set_subagent_cost(cost_usd); }
     fn set_status(&self, key: &str, text: Option<&str>) { self.active(); self.inner.set_status(key, text); }
     fn set_widget(&self, key: &str, content: Option<WidgetContent>, options: ExtensionWidgetOptions) { self.active(); self.inner.set_widget(key, content, options); }
     fn set_header(&self, factory: Option<ComponentFactory>) { self.active(); self.inner.set_header(factory); }

@@ -16,9 +16,9 @@ mod runner;
 mod spawn_facts;
 mod start_failure_security;
 mod start_owned;
-mod stop_settlement;
 mod steering_race;
-#[path = "../workpool_rebind_tests.rs"]
-mod workpool_rebind;
+mod stop_settlement;
 mod transcript_log;
 mod wiring_seams;
+#[path = "../workpool_rebind_tests.rs"]
+mod workpool_rebind;

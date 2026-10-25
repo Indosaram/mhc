@@ -110,7 +110,7 @@ impl Extension for HooksExtension {
                     ExtensionEvent::BeforeAgentStart(event)=> {
                         let Some(context)=pending.lock().map_err(|_|ExtensionFailure::new("hooks pending state poisoned"))?.prompts.pop_front() else {return Ok(EventResult::None);};
                         let message=format_prompt_context_message(&context).map(|text|CustomMessage {custom_type:HOOK_CUSTOM_MESSAGE_TYPE.to_owned(),content:vec![ToolContent::text(text)],display:false,details:Some(serde_json::json!({"event":"UserPromptSubmit","diagnostics":context.diagnostics.iter().map(safe_diagnostic_details).collect::<Vec<_>>()}))});
-                        let system_prompt=append_system_messages(&event.system_prompt,&context.system_messages);Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult {message,system_prompt:if system_prompt!=event.system_prompt {Some(system_prompt)} else {None}}))
+                        let system_prompt=append_system_messages(&event.system_prompt,&context.system_messages);Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt_parts: None,message,system_prompt:if system_prompt!=event.system_prompt {Some(system_prompt)} else {None}}))
                     },
                     ExtensionEvent::ToolCall(event)=> {
                         pending.lock().map_err(|_|ExtensionFailure::new("hooks pending state poisoned"))?.pre_tools.remove(&event.tool_call_id);

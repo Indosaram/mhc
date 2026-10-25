@@ -525,6 +525,7 @@ fn create_output(model: &Model) -> AssistantMessage {
         failure_source: None,
         timing: None,
         error_cause: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,
@@ -1058,7 +1059,7 @@ fn handle_chunk(
             .get("thoughtsTokenCount")
             .and_then(Value::as_u64)
             .unwrap_or(0);
-        output.usage = Usage {
+        output.usage = Usage { context_usage: None,
             input: prompt_tokens.saturating_sub(cached_tokens),
             output: candidate_tokens + thought_tokens,
             cache_read: cached_tokens,
@@ -1073,6 +1074,7 @@ fn handle_chunk(
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
             cost: Default::default(),
+            ..Default::default()
         };
         calculate_cost(model, &mut output.usage);
     }

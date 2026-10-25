@@ -1,5 +1,13 @@
 //! Git repository layer for MemFS storage.
 
+pub mod commit_outcome;
+pub mod stable_log_output;
+pub mod git_activity_lock;
+pub mod local_filesystem;
+pub mod repo_commit_times;
+pub mod repo_config_defaults;
+pub mod repo_lock_sweep;
+pub mod lock_scans;
 pub mod config_lock;
 pub mod errors;
 pub mod exec;

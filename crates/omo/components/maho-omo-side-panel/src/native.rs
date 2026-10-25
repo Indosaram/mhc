@@ -14,7 +14,10 @@ use maho_ext_api::*;
 use std::sync::{Arc, Mutex};
 
 pub struct NativeSidePanel;
-fn panel_enabled(settings: &crate::settings::OmoSidePanelSettings, flag: Option<FlagValue>) -> bool {
+fn panel_enabled(
+    settings: &crate::settings::OmoSidePanelSettings,
+    flag: Option<FlagValue>,
+) -> bool {
     match flag {
         Some(FlagValue::Boolean(value)) => value,
         Some(FlagValue::String(_)) | None => settings.enabled,
@@ -118,11 +121,26 @@ impl Extension for NativeSidePanel {
                                 }
                             };
                             let agent_dir = ctx.agent_dir.clone();
-                            let usage = Arc::new(move |ms, on_change| {
-                                crate::usage::NativeUsage::create(agent_dir.clone(), ms, on_change)
+                            let usage_runtime = runtime.clone();
+                            let usage = Arc::new(move |on_change| {
+                                let get_runtime = usage_runtime.clone();
+                                let subscribe_runtime = usage_runtime.clone();
+                                crate::usage::NativeUsage::create(
+                                    agent_dir.clone(),
+                                    Arc::new(move || match get_runtime.message_actions() {
+                                        Ok(actions) => actions.get_subscription_limits(),
+                                        Err(error) => { eprintln!("side panel: subscription limits unavailable: {error}"); Vec::new() }
+                                    }),
+                                    Arc::new(move |listener| match subscribe_runtime.message_actions() {
+                                        Ok(actions) => actions.on_subscription_limits(Arc::new(move |_| listener())),
+                                        Err(error) => { eprintln!("side panel: subscription listener unavailable: {error}"); None }
+                                    }),
+                                    on_change,
+                                )
                             });
                             let current = create_side_panel_controller(SidePanelRuntimeOptions {
                                 cwd,
+                                regular_notice_state_dir: None,
                                 now: Arc::new(now),
                                 readers: Arc::new(NativeReaders::new(exec.clone())),
                                 exec,

@@ -37,9 +37,11 @@ pub fn bind_liveness_store_markers(mut deps:TeamMemberLivenessDeps,store:senpi_t
 #[derive(Default)] struct State { delivered: BTreeSet<String>, pending: BTreeMap<String, TaskRecord>, retries: BTreeMap<String, usize>, persistence_active: bool, session_file: Option<Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>> }
 pub struct TeamMemberLivenessNotifier { deps: TeamMemberLivenessDeps, state: Mutex<State>, markers: SessionMarkerIndex }
 pub fn liveness_details(record: &TaskRecord) -> Option<Value> {
-    let member = parse_team_member_task_identity(record.name.as_deref())?.member_name;
+    let identity = parse_team_member_task_identity(record.name.as_deref())?;
+    let member = identity.member_name;
     if (!matches!(record.status, TaskStatus::Error | TaskStatus::Lost) && record.killed != Some(true)) || matches!(record.residency_state, ResidencyState::PersistedOnly | ResidencyState::RpcDetached) { return None; }
-    let mut details = json!({"memberName":member,"lastKnownState":record.status.as_str()});
+    // The owning team run travels with the notice so a receiver can place the member's death.
+    let mut details = json!({"memberName":member,"lastKnownState":record.status.as_str(),"runRef":{"kind":"team","id":identity.team_run_id}});
     if let Some(reason) = &record.error_message { details["reason"] = json!(reason); }
     if record.killed == Some(true) { details["killed"] = json!(true); } Some(details)
 }

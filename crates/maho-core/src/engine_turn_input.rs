@@ -14,6 +14,7 @@ struct Pending {
     sources: BTreeMap<String, usize>,
     wakes: Vec<HeldMessage>,
     admitted: bool,
+    consume_at_settlement: bool,
 }
 
 #[derive(Default)]
@@ -31,6 +32,10 @@ impl EngineTurnInput {
     }
 
     pub fn begin(&mut self, hold: &mut EngineTurnHold) {
+        self.begin_with_options(hold, false);
+    }
+
+    pub fn begin_with_options(&mut self, hold: &mut EngineTurnHold, consume_at_settlement: bool) {
         hold.attend();
         if hold.releasing() || self.pending.is_some() || !hold.held() {
             return;
@@ -43,6 +48,7 @@ impl EngineTurnInput {
             sources,
             wakes,
             admitted: false,
+            consume_at_settlement,
         });
     }
 
@@ -69,6 +75,11 @@ impl EngineTurnInput {
         if pending.admitted {
             return;
         }
+        if pending.consume_at_settlement {
+            if queued { for wake in &pending.wakes { enqueue(wake.message.clone()); } }
+            pending.admitted = true;
+            return;
+        }
         for wake in &pending.wakes {
             if hold.consume(&wake.source, Some(wake.notice_ids.as_slice())) && queued {
                 enqueue(wake.message.clone());
@@ -84,10 +95,22 @@ impl EngineTurnInput {
         &mut self,
         hold: &mut EngineTurnHold,
     ) -> Option<BTreeMap<String, usize>> {
+        self.take_settlement_with_options(hold, false)
+    }
+
+    pub fn reject(&mut self, hold: &mut EngineTurnHold) {
+        if self.pending.take().is_some() { hold.reject_input(); }
+    }
+
+    pub fn take_settlement_with_options(&mut self, hold: &mut EngineTurnHold, newer_stop: bool) -> Option<BTreeMap<String, usize>> {
         let pending = self.pending.take()?;
         if !pending.admitted {
             hold.abandon_release();
             return None;
+        }
+        if pending.consume_at_settlement {
+            if newer_stop { hold.reject_input(); return None; }
+            for wake in &pending.wakes { hold.consume(&wake.source, Some(&wake.notice_ids)); }
         }
         let mut merged = pending.sources;
         merged.extend(hold.finish());
@@ -127,6 +150,23 @@ mod tests {
         hold.start();
         hold.note("monitor", Some(json!({"content": "ev"})));
         hold
+    }
+
+    #[test]
+    fn settlement_keeps_notices_when_a_newer_stop_intervenes() {
+        let mut hold = hold();
+        let mut input = EngineTurnInput::new();
+        input.begin_with_options(&mut hold, true);
+        input.admit(&mut hold, true, |_| {});
+        assert_eq!(hold.notice_count(), 1);
+        hold.add_hold(crate::engine_turn_hold::HoldKind::SessionHold, None, None);
+        assert!(input.take_settlement_with_options(&mut hold, true).is_none());
+        assert_eq!(hold.notice_count(), 1);
+        assert!(hold.held());
+        input.begin_with_options(&mut hold, true);
+        input.admit(&mut hold, false, |_| {});
+        assert!(input.take_settlement_with_options(&mut hold, false).is_some());
+        assert_eq!(hold.notice_count(), 0);
     }
 
     #[tokio::test]

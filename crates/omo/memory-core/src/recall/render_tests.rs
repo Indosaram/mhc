@@ -8,6 +8,7 @@ fn nudge(path: &str, hint: &str) -> RecallNudge {
     RecallNudge {
         path: path.to_string(),
         hint: hint.to_string(),
+        source: None,
     }
 }
 
@@ -34,6 +35,14 @@ fn given_a_korean_hint_when_rendered_then_the_korean_header_is_used() {
     ));
     assert!(block.contains(RECALL_HINT_HEADER_KO));
     assert!(!block.contains(RECALL_HINT_HEADER));
+}
+
+#[test]
+fn given_a_nudge_with_source_when_rendered_then_source_is_used_as_display_path() {
+    let mut n = nudge("a.md", "hint");
+    n.source = Some("/repo/sub/a.md".to_string());
+    let block = render_nudge_block(&n);
+    assert!(block.contains("<recalled-memory source=\"[[/repo/sub/a.md]]\">"));
 }
 
 #[test]

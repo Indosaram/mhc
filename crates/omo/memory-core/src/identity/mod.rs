@@ -1,6 +1,14 @@
 //! Memory identity resolution: layout paths plus the deterministic id builder.
 
+pub mod git_layout;
 pub mod layout;
+pub mod project_scope;
+pub mod project_scope_fs;
+pub use project_scope::{
+    ProjectIdentity, ProjectIdentityResolver, ProjectIdentityResolverOptions,
+    create_project_identity_resolver,
+};
+pub use resolve::{AutoIdentityMode, resolve_auto_identity, resolve_auto_identity_with_probe};
 pub mod resolve;
 
 pub use layout::{

@@ -12,7 +12,8 @@ impl EvalImageSdk for ImageSdk {
 
 #[test]
 fn webp_model_rules_match_provider_and_api() {
-    for provider in ["ollama","ollama-cloud","llama.cpp","lm-studio","local-server"] {assert!(webp_exclusion_for_model(Some(provider),None));}
+    for provider in ["ollama","ollama-cloud","lm-studio","local-server"] {assert!(webp_exclusion_for_model(Some(provider),None));}
+    assert!(!webp_exclusion_for_model(Some("llama.cpp"),None));
     assert!(webp_exclusion_for_model(Some("other"),Some("ollama-chat")));
     assert!(!webp_exclusion_for_model(None,None));
     assert!(!webp_exclusion_for_model(Some("openai"),Some("responses")));

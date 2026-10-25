@@ -102,14 +102,83 @@ fn join(base: &str, child: &str) -> String {
     Path::new(base).join(child).to_string_lossy().into_owned()
 }
 
+const KNOWN_BRAND_CONFIG_DIRS: &[&str] = &[".senpi", ".omo", ".pi"];
+
+/// A test run resolved the real user's agent directory, where its writes would land in live state (#3867).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "Refusing to use the real agent directory {agent_dir} from a test run. \
+     Point <BRAND>_CODING_AGENT_DIR at a temp dir, or set SENPI_TEST_USE_REAL_AGENT_DIR=1 to opt in."
+)]
+pub struct RealAgentDirInTestError {
+    pub agent_dir: String,
+}
+
+fn is_guarded_test_run(env: &HashMap<String, String>) -> bool {
+    env.get("SENPI_TEST_AGENT_DIR_GUARD").map(|v| v.as_str()) == Some("1")
+}
+
+fn real_home_dir() -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        if let Ok(Some(user)) = nix::unistd::User::from_uid(nix::unistd::getuid()) {
+            return Some(user.dir);
+        }
+    }
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .map(PathBuf::from)
+}
+
+/// Throws `RealAgentDirInTestError` when a test run (`SENPI_TEST_AGENT_DIR_GUARD=1`) resolves an agent
+/// directory inside the real user's brand config directory.
+pub fn assert_agent_dir_allowed_in_tests(
+    agent_dir: &str,
+    active_config_dir_name: &str,
+    env: &HashMap<String, String>,
+) -> Result<(), RealAgentDirInTestError> {
+    if !is_guarded_test_run(env)
+        || env.get("SENPI_TEST_USE_REAL_AGENT_DIR").map(|v| v.as_str()) == Some("1")
+    {
+        return Ok(());
+    }
+    let Some(home) = real_home_dir() else {
+        return Ok(());
+    };
+    let target = Path::new(agent_dir);
+    let target_canonical = target
+        .canonicalize()
+        .unwrap_or_else(|_| target.to_path_buf());
+    let mut brand_dirs = KNOWN_BRAND_CONFIG_DIRS.to_vec();
+    if !brand_dirs.contains(&active_config_dir_name) {
+        brand_dirs.push(active_config_dir_name);
+    }
+    for config_dir in brand_dirs {
+        let root = home.join(config_dir);
+        let root_canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+        if target_canonical == root_canonical || target_canonical.starts_with(&root_canonical) {
+            return Err(RealAgentDirInTestError {
+                agent_dir: agent_dir.to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// `getAgentDir()`: resolves against the process cwd, `$HOME` and the env override.
 pub fn get_agent_dir() -> String {
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| ".".to_owned());
     let home = home_dir();
-    let env = env_value("CODING_AGENT_DIR", &current_env());
-    resolve_agent_dir(&cwd, &home, env.as_deref())
+    let env = current_env();
+    let env_override = env_value("CODING_AGENT_DIR", &env);
+    let agent_dir = resolve_agent_dir(&cwd, &home, env_override.as_deref());
+    if let Err(error) = assert_agent_dir_allowed_in_tests(&agent_dir, &config_dir_name(), &env) {
+        panic!("{}", error);
+    }
+    agent_dir
 }
 
 /// `getBinDir()`: managed helper binaries live under the agent dir.
@@ -303,5 +372,23 @@ mod tests {
     #[test]
     fn agent_dir_label_follows_the_layout() {
         assert_eq!(agent_dir_label(), "~/.omo/agent");
+    }
+
+    #[test]
+    fn assert_agent_dir_allowed_in_tests_blocks_brand_config_dir_when_guarded() {
+        let mut env = HashMap::new();
+        env.insert("SENPI_TEST_AGENT_DIR_GUARD".to_owned(), "1".to_owned());
+        if let Some(home) = real_home_dir() {
+            let forbidden = home.join(".senpi").join("agent");
+            let result =
+                assert_agent_dir_allowed_in_tests(&forbidden.to_string_lossy(), ".senpi", &env);
+            assert!(result.is_err());
+
+            // Opt in allows it
+            env.insert("SENPI_TEST_USE_REAL_AGENT_DIR".to_owned(), "1".to_owned());
+            let result =
+                assert_agent_dir_allowed_in_tests(&forbidden.to_string_lossy(), ".senpi", &env);
+            assert!(result.is_ok());
+        }
     }
 }

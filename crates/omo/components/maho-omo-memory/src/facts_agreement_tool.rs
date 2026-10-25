@@ -21,18 +21,20 @@ pub fn facts_agreement_parameters() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["action", "date"],
+        "required": ["action", "date", "source"],
         "properties": {
             "action": {"type": "string", "enum": ["new", "reaffirm"]},
             "id": {"type": "string"},
             "applies": {"type": "string", "enum": ["global", "project"]},
             "text": {"type": "string"},
+            "source": {"type":"object", "additionalProperties":false, "required":["sessionId","messageId"], "properties":{"sessionId":{"type":"string","minLength":1},"messageId":{"type":"string","minLength":1}}},
             "date": {"type": "string"}
         }
     })
 }
 
 pub struct FactsAgreementToolInput {
+    pub payload: Option<serde_json::Value>,
     pub extraction_path: PathBuf,
     /// Ids of the agreements the payload showed the extractor; `reaffirm` may name only these.
     pub known_ids: BTreeSet<String>,
@@ -47,6 +49,7 @@ struct Counters {
 }
 
 pub struct FactsAgreementTool {
+    payload: Option<serde_json::Value>,
     active: AtomicBool,
     counters: Mutex<Counters>,
     extraction_path: PathBuf,
@@ -57,6 +60,7 @@ pub struct FactsAgreementTool {
 
 pub fn create_facts_agreement_tool(input: FactsAgreementToolInput) -> FactsAgreementTool {
     FactsAgreementTool {
+        payload: input.payload,
         active: AtomicBool::new(true),
         counters: Mutex::new(Counters::default()),
         extraction_path: input.extraction_path,
@@ -109,6 +113,14 @@ impl FactsAgreementTool {
             Ok(record) => record,
             Err(error) => return self.reject(&error.message),
         };
+        if let Some(payload) = &self.payload {
+            if params.get("source").is_none() {
+                return self.reject("source user-message identity is required");
+            }
+            if let Err(error) = memory_core::agreements::validate_agreement_source(&record, payload, counters.count) {
+                return self.reject(&error.to_string());
+            }
+        }
         if let AgreementExtractionRecord::Reaffirm { id, .. } = &record
             && !self.known_ids.contains(id)
         {
@@ -166,11 +178,27 @@ mod tests {
 
     fn tool(path: PathBuf, known: &[&str]) -> FactsAgreementTool {
         create_facts_agreement_tool(FactsAgreementToolInput {
+            payload: None,
             extraction_path: path,
             known_ids: known.iter().map(|id| (*id).to_owned()).collect(),
             on_failure: None,
             state: None,
         })
+    }
+
+    #[test]
+    fn source_must_name_an_actual_user_not_lead_assistant_or_foreign_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agreements.jsonl");
+        let payload = serde_json::json!({"entries":[{"sessionId":"session-a","lead":{"kind":"user","source_message_id":"lead"},"entries":[{"kind":"user","source_message_id":"u1"},{"kind":"assistant","source_message_id":"a1"}]}]});
+        let tool = create_facts_agreement_tool(FactsAgreementToolInput { extraction_path:path.clone(), payload:Some(payload), known_ids:Default::default(), on_failure:None, state:None });
+        for (message, session) in [("a1","session-a"),("lead","session-a"),("missing","session-a"),("u1","foreign")] {
+            assert!(tool.execute("call", &serde_json::json!({"action":"new","applies":"global","text":"Use fixtures","date":"2026-10-01","source":{"sessionId":session,"messageId":message}})).is_error);
+        }
+        assert!(!path.exists());
+        assert!(!tool.execute("call", &serde_json::json!({"action":"new","applies":"global","text":"Use fixtures","date":"2026-10-01","source":{"sessionId":"session-a","messageId":"u1"}})).is_error);
+        let record:serde_json::Value = serde_json::from_str(std::fs::read_to_string(path).unwrap().trim()).unwrap();
+        assert_eq!(record["source"]["messageId"], "u1");
     }
 
     #[test]

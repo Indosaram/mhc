@@ -33,7 +33,7 @@ fn metadata() -> SessionMetadata {
 }
 
 fn zero_usage() -> Usage {
-    Usage {
+    Usage { context_usage: None,
         input: 0,
         output: 0,
         cache_read: 0,
@@ -48,6 +48,7 @@ fn zero_usage() -> Usage {
             cache_write: 0.0,
             total: 0.0,
         },
+        ..Default::default()
     }
 }
 
@@ -180,7 +181,7 @@ async fn composes_bound_values_and_lists_atomically_with_entries_and_usage() {
                                     Write::List(append_list(&events, serde_json::json!("event"))),
                                     insert_usage(NewUsageRow {
                                         id: "usage".to_owned(),
-                                        usage: Usage {
+                                        usage: Usage { context_usage: None,
                                             input: 1,
                                             output: 1,
                                             total_tokens: 2,
@@ -669,6 +670,7 @@ async fn rejects_pending_assistant_entries_at_the_durable_session_write_boundary
     let storage = Arc::new(InstrumentedStorage::new(memory()));
     let session = session_with(storage.clone());
     let pending = AgentMessage::Llm(Message::Assistant(Box::new(AssistantMessage { timing: None, failure_source: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,

@@ -250,6 +250,7 @@ pub fn render_card_skeleton(target: &FactsPersonTarget) -> Result<String, Frontm
             read_only: None,
             kind: Some("person".to_string()),
             aliases: Some(person.aliases.clone()),
+            extra: None,
         },
         "",
     )
@@ -321,6 +322,7 @@ fn render_explicit_observations(
                 read_only: None,
                 kind: None,
                 aliases: None,
+                extra: None,
             },
             String::new(),
         ),
@@ -353,7 +355,7 @@ fn render_explicit_observations(
             }
             None => explicit.push(ObservationEntry {
                 date: record.date().to_string(),
-                content: record.text().to_string(),
+                content: record.rendered_text(),
                 ..ObservationEntry::default()
             }),
         }

@@ -76,7 +76,7 @@ pub fn engine_turn_limit_notice(stop: &EngineTurnStop) -> String {
 
 /// A `.` manual continue or a continue-from-leaf is the user's own request, not an automatic turn.
 pub fn is_user_directed_turn(custom_type: &str) -> bool {
-    custom_type == MANUAL_CONTINUE_CUSTOM_TYPE || custom_type == CONTINUE_FROM_LEAF_CUSTOM_TYPE
+    custom_type == MANUAL_CONTINUE_CUSTOM_TYPE || custom_type == CONTINUE_FROM_LEAF_CUSTOM_TYPE || custom_type == "session-resumed"
 }
 
 fn entry_type(entry: &Value) -> Option<&str> {

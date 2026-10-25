@@ -185,6 +185,10 @@ fn hold_session_file_with_identity(
     endpoint: Option<&SessionHolderEndpoint>,
 ) -> Result<SessionHold> {
     let directory = session_holders_dir(session_file, session_id)?;
+    ensure_dir(&directory)?;
+    let admission = fs::OpenOptions::new().create(true).truncate(false).read(true).write(true)
+        .open(directory.join("move-admission"))?;
+    admission.try_lock_shared().map_err(|error| ScheduleError::Invalid(format!("session is being moved: {error}")))?;
     let path = directory.join(format!("{}.json", identity.pid));
     let mut records = holder_records()
         .lock()
@@ -219,12 +223,12 @@ fn hold_session_file_with_identity(
     drop(records);
     let hold = SessionHold { _record: record };
     if let Some(raw) = read_lease_text(&directory.join("move.lock"))? {
-        let age = lock_age(&directory.join("move.lock"), now)?;
+        let _age = lock_age(&directory.join("move.lock"), now)?;
         let pid = serde_json::from_str::<serde_json::Value>(&raw)
             .ok()
             .and_then(|value| value["pid"].as_u64())
             .and_then(|pid| u32::try_from(pid).ok());
-        if age <= 30_000 && pid.is_none_or(native_pid_alive) {
+        if pid.is_none_or(native_pid_alive) {
             return Err(ScheduleError::Invalid("session is being moved".into()));
         }
     }
@@ -237,7 +241,7 @@ fn hold_session_file_with_identity(
     Ok(hold)
 }
 
-fn native_pid_alive(pid: u32) -> bool {
+pub(crate) fn native_pid_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
         let Ok(pid) = i32::try_from(pid) else {
@@ -690,7 +694,7 @@ mod holder_tests {
             hold_session_file_with_identity(&file, "session", "/work", true, identity(), 0, None);
         // Then
         assert!(result.is_err());
-        assert!(names(&session_holders_dir(&file, "session")?)?.is_empty());
+        assert!(!session_holders_dir(&file, "session")?.join("101.json").exists());
         Ok(())
     }
 

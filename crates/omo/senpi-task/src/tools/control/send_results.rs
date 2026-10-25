@@ -21,7 +21,11 @@ pub fn invalid_arguments(reason: &str) -> SendToolResult {
     )
 }
 
-pub fn not_found(manager: &dyn SendManager, reason: &str, caller_session_id: Option<&str>) -> SendToolResult {
+pub fn not_found(
+    manager: &dyn SendManager,
+    reason: &str,
+    caller_session_id: Option<&str>,
+) -> SendToolResult {
     let known = known_task_names(manager, caller_session_id);
     let list_text = if known.is_empty() {
         String::new()
@@ -111,9 +115,31 @@ pub fn map_send_outcome(outcome: SendOutcome) -> Result<SendToolResult, SendInva
             &format!("Revived {task_id} (run epoch {run_epoch})."),
             SendResultDetails::Revived { task_id, run_epoch },
         ),
-        SendOutcome::Stale { task_id, run_epoch, reason } => tool_result(
+        SendOutcome::Stale {
+            task_id,
+            run_epoch,
+            reason,
+        } => tool_result(
             &reason,
-            SendResultDetails::Stale { task_id, run_epoch, reason: reason.clone() },
+            SendResultDetails::Stale {
+                task_id,
+                run_epoch,
+                reason: reason.clone(),
+            },
+        ),
+        SendOutcome::Held {
+            task_id,
+            pause_seq,
+            entry_id,
+        } => tool_result(
+            &format!(
+                "Held for {task_id}: its run is stopped, and the message is delivered when the run resumes."
+            ),
+            SendResultDetails::Held {
+                task_id,
+                pause_seq,
+                entry_id,
+            },
         ),
         SendOutcome::Queued {
             task_id,
@@ -169,4 +195,23 @@ pub fn map_send_outcome(outcome: SendOutcome) -> Result<SendToolResult, SendInva
             },
         ),
     })
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    #[test]
+    fn held_send_preserves_wire_identity() {
+        let result = map_send_outcome(SendOutcome::Held {
+            task_id: "task-one".into(),
+            pause_seq: 4,
+            entry_id: "entry-one".into(),
+        })
+        .expect("map held");
+        let value = serde_json::to_value(&result.details).expect("serialize");
+        assert_eq!(value["kind"], "held");
+        assert_eq!(value["task_id"], "task-one");
+        assert_eq!(value["pause_seq"], 4);
+        assert_eq!(value["entry_id"], "entry-one");
+    }
 }

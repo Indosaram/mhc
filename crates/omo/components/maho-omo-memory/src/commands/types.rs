@@ -204,7 +204,7 @@ pub fn require_identity(
 }
 
 /// The reflection runner the command layer calls: `(status, run_id)`.
-pub type Reflect = Arc<dyn Fn(&str, ReflectionEvent) -> Result<(String, String), String> + Send + Sync>;
+pub type Reflect = Arc<dyn Fn(String, ReflectionEvent) -> BoxFuture<'static, Result<ReflectionRequestReceipt, String>> + Send + Sync>;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ManualReflectionRequest {
@@ -223,6 +223,8 @@ pub enum ReflectionDisposition {
 pub struct ReflectionRequestReceipt {
     pub disposition: ReflectionDisposition,
     pub run_id: String,
+    pub recovered_run_id: Option<String>,
+    pub stuck: Option<String>,
 }
 
 pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
