@@ -21,6 +21,27 @@ pub struct TaskEngine {
     pub store: TaskRecordStore,
     pub config: Value,
     pub agents: std::collections::BTreeMap<String, senpi_task::agents::AgentDefinition>,
+    /// The task-record half of a run's pause custody (`createTaskRunPause`).
+    pub run_pause: Arc<senpi_task::manager::run_pause::TaskRunPause>,
+    /// The parent-run pause controller over the owned subtree (`createEngineRunPause`).
+    pub pause: Arc<crate::engine_run_pause::EngineRunPause>,
+    /// The on-demand memory report's task section.
+    pub memory: Arc<dyn crate::memory_reporter::TaskMemorySource>,
+}
+
+/// The task section's figures, read only when a report is requested.
+struct EngineMemorySource {
+    manager: Arc<TaskManager>,
+    store: TaskRecordStore,
+}
+
+impl crate::memory_reporter::TaskMemorySource for EngineMemorySource {
+    fn resident_task_ids(&self) -> Vec<String> {
+        self.manager.resident_task_ids()
+    }
+    fn resident_figures(&self) -> senpi_task::store::TaskRecordStoreResidentFigures {
+        self.store.resident_figures()
+    }
 }
 
 pub fn compose_task_engine(deps: ComposeTaskEngineDeps) -> TaskEngine {
@@ -83,7 +104,19 @@ pub fn compose_task_engine_with_clock(deps: ComposeTaskEngineDeps, rpc_respawn: 
     options.fallible_admit = Some(Arc::new(move |session| admit_lifecycle(&admission, session).map_err(|error| senpi_task::host::HostError { message: error.to_string() })));
     let manager = Arc::new(TaskManager::new(options));
     let _ = manager_ref.set(Arc::downgrade(&manager));
-    TaskEngine { manager, lifecycle, notifier, runtime, store, config: deps.config, agents }
+    // The pause controller owns the durable Stop/Resume transaction; the DAG pause source joins it
+    // once the DAG runtime exists, so the composition starts with the task side only.
+    let (pause, run_pause) = crate::engine_run_pause::EngineRunPause::compose(
+        manager.clone(),
+        store.clone(),
+        None,
+        store.state_dir().to_path_buf(),
+    );
+    let memory: Arc<dyn crate::memory_reporter::TaskMemorySource> = Arc::new(EngineMemorySource {
+        manager: manager.clone(),
+        store: store.clone(),
+    });
+    TaskEngine { manager, lifecycle, notifier, runtime, store, config: deps.config, agents, run_pause, pause, memory }
 }
 
 /// The `--extension` entry a team member process loads the native member extension through

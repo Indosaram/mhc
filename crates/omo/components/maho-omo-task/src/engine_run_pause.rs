@@ -147,7 +147,11 @@ pub struct EngineRunPause {
 
 impl EngineRunPause {
     pub fn new(state_dir: impl Into<std::path::PathBuf>, effects: Arc<EngineRunPauseEffects>) -> Self {
-        let barrier = AdmissionBarrier::new();
+        Self::new_with_barrier(state_dir, effects, AdmissionBarrier::new())
+    }
+
+    /// Compose over a barrier the caller already owns (the task run pause shares it).
+    pub fn new_with_barrier(state_dir: impl Into<std::path::PathBuf>, effects: Arc<EngineRunPauseEffects>, barrier: AdmissionBarrier) -> Self {
         let registry = Arc::new(PauseRegistry::new(state_dir, barrier.clone()));
         let sources = effects.sources.clone();
         let controller = Arc::new(RunPauseController::new(Arc::clone(&registry), effects));
@@ -214,5 +218,184 @@ impl EngineRunPause {
     /// Mark one participant held after an observed child hold (the bridge's reconcile path).
     pub fn record_observed_hold(&self, parent_session_id: &str, pause_seq: u64, key: &str, child_seq: u64) -> bool {
         self.registry.update(parent_session_id, pause_seq, key, &ParticipantPatch { state: Some(PauseParticipantState::Held), observed_child_seq: Some(Some(child_seq)), ..ParticipantPatch::default() }).unwrap_or(false)
+    }
+}
+
+/// `createTaskRunPause`'s ports over the live manager and store: the task-record side of custody.
+///
+/// The Rust task record has no `pause`/`unpause` transition, so the pause is written straight onto
+/// the record (`status: paused`, which the store encodes additively as `running` + `paused: true`),
+/// exactly the shape `to_storable_task_record` expects.
+pub struct ManagerRunPausePorts {
+    pub manager: Arc<senpi_task::manager::TaskManager>,
+    pub store: senpi_task::store::TaskRecordStore,
+    pub barrier: AdmissionBarrier,
+    /// The child engine's native pause controls. The Rust runners expose none yet, so this is `None`
+    /// and a Stop records its participants as lost instead of pretending they were held.
+    pub child: Option<Arc<dyn senpi_task::manager::run_pause::ChildPausePort>>,
+}
+
+impl ManagerRunPausePorts {
+    fn now_ms(&self) -> i64 {
+        chrono::Utc::now().timestamp_millis()
+    }
+}
+
+impl senpi_task::manager::run_pause::TaskRunPausePorts for ManagerRunPausePorts {
+    fn store(&self) -> &senpi_task::store::TaskRecordStore {
+        &self.store
+    }
+
+    fn now(&self) -> i64 {
+        self.now_ms()
+    }
+
+    fn live_handle(&self, task_id: &str) -> Option<Arc<dyn senpi_task::manager::ManagedChildHandle>> {
+        self.manager.get_resident_handle(task_id)
+    }
+
+    fn child(&self) -> Option<Arc<dyn senpi_task::manager::run_pause::ChildPausePort>> {
+        self.child.clone()
+    }
+
+    fn barrier(&self) -> Option<AdmissionBarrier> {
+        Some(self.barrier.clone())
+    }
+
+    fn remember_owner(&self, task_id: &str, owner: &RunPauseOwner) -> Result<(), senpi_task::store::StoreError> {
+        let kind = match owner.run_ref.kind {
+            senpi_task::pause::ports::RunRefKind::Dag => senpi_task::state::RunPauseKind::Dag,
+            senpi_task::pause::ports::RunRefKind::Task => senpi_task::state::RunPauseKind::Task,
+            senpi_task::pause::ports::RunRefKind::Workpool => senpi_task::state::RunPauseKind::Workpool,
+            senpi_task::pause::ports::RunRefKind::Team => senpi_task::state::RunPauseKind::Team,
+        };
+        let recorded = senpi_task::state::RecordedRunPause {
+            parent_session_id: owner.parent_session_id.clone(),
+            parent_pause_seq: owner.parent_pause_seq,
+            run_ref: senpi_task::state::RunPauseRef { kind, id: owner.run_ref.id.clone() },
+        };
+        self.store.mutate(task_id, move |fresh| {
+            let mut next = fresh.clone();
+            next.run_pause = Some(recorded.clone());
+            next
+        })?;
+        Ok(())
+    }
+
+    fn forget_owner(&self, task_id: &str) -> Result<(), senpi_task::store::StoreError> {
+        self.store.mutate(task_id, |fresh| {
+            let mut next = fresh.clone();
+            next.run_pause = None;
+            next
+        })?;
+        Ok(())
+    }
+
+    fn apply_pause(&self, task_id: &str, timestamp: &str) -> bool {
+        let applied = self.store.mutate(task_id, |fresh| {
+            let mut next = fresh.clone();
+            if next.status == senpi_task::state::TaskStatus::Running {
+                next.status = senpi_task::state::TaskStatus::Paused;
+                next.updated_at = timestamp.to_string();
+            }
+            next
+        });
+        matches!(applied, Ok(Some(record)) if record.status == senpi_task::state::TaskStatus::Paused)
+    }
+
+    fn apply_unpause(&self, task_id: &str, timestamp: &str) -> bool {
+        let applied = self.store.mutate(task_id, |fresh| {
+            let mut next = fresh.clone();
+            if next.status == senpi_task::state::TaskStatus::Paused {
+                next.status = senpi_task::state::TaskStatus::Running;
+                next.updated_at = timestamp.to_string();
+            }
+            next
+        });
+        matches!(applied, Ok(Some(record)) if record.status == senpi_task::state::TaskStatus::Running)
+    }
+
+    fn restore(&self, _record: &senpi_task::state::TaskRecord) -> Option<Result<Arc<dyn senpi_task::manager::ManagedChildHandle>, String>> {
+        // No Rust runner rebuilds a paused child without starting a turn, so there is no restore port.
+        None
+    }
+
+    fn track(&self, _task_id: &str, _handle: Arc<dyn senpi_task::manager::ManagedChildHandle>, _model: &str, _epoch: i64, _turn: senpi_task::manager::run_pause::ResumedChildTurn) {
+        // The resumed turn's outcome is already subscribed by the handle; nothing to re-track.
+    }
+
+    fn revive(&self, record: &senpi_task::state::TaskRecord, timestamp: String) -> senpi_task::state::TaskRecord {
+        let mut revived = record.clone();
+        revived.status = senpi_task::state::TaskStatus::Running;
+        revived.updated_at = timestamp;
+        revived.notification.run_epoch = record.notification.run_epoch.saturating_add(1);
+        revived
+    }
+}
+
+impl EngineRunPause {
+    /// Compose the engine's pause controller over the live manager and store.
+    pub fn compose(
+        manager: Arc<senpi_task::manager::TaskManager>,
+        store: senpi_task::store::TaskRecordStore,
+        dag: Option<Arc<dyn RunPauseSource>>,
+        state_dir: impl Into<std::path::PathBuf>,
+    ) -> (Self, Arc<senpi_task::manager::run_pause::TaskRunPause>) {
+        let barrier = AdmissionBarrier::new();
+        let ports = Arc::new(ManagerRunPausePorts {
+            manager: manager.clone(),
+            store: store.clone(),
+            barrier: barrier.clone(),
+            child: None,
+        });
+        let run_pause = Arc::new(senpi_task::manager::run_pause::TaskRunPause::new(ports));
+        let pause_task = {
+            let run_pause = run_pause.clone();
+            Arc::new(move |task_id: &str, owner: &RunPauseOwner| run_pause.pause_task(task_id, owner))
+        };
+        let resume_task = {
+            let run_pause = run_pause.clone();
+            Arc::new(move |task_id: &str, owner: &RunPauseOwner, resume_id: &str, cutoff: Option<u64>, credential: Option<&ResumeCredential>| {
+                let result = run_pause.resume_paused_task(task_id, &senpi_task::manager::run_pause::ResumeTaskRequest {
+                    owner: owner.clone(),
+                    resume_credential: credential.cloned(),
+                    resume_id: resume_id.to_string(),
+                    child_seq_cutoff: cutoff.unwrap_or(0),
+                })?;
+                Ok(match result {
+                    senpi_task::manager::run_pause::ResumeTaskResult::Resumed { turn_id } => ResumeEffect::Resumed { turn_id: Some(turn_id) },
+                    senpi_task::manager::run_pause::ResumeTaskResult::OtherHoldLive { child_seq } => ResumeEffect::HeldByUser { child_seq: child_seq.unwrap_or(0) },
+                })
+            })
+        };
+        let observe = {
+            let run_pause = run_pause.clone();
+            Arc::new(move |task_id: &str, parent: &str| run_pause.observe_task_hold(task_id, parent))
+        };
+        let cancel_task = {
+            let manager = manager.clone();
+            Arc::new(move |task_id: &str| {
+                manager
+                    .cancel_task(task_id, Some("run_cancelled"), senpi_task::steering::CancelOptions::default())
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+        };
+        let effects = Arc::new(EngineRunPauseEffects {
+            sources: dag.into_iter().collect(),
+            pause_task,
+            resume_task,
+            observe_task_hold: observe,
+            hold_task_input: Arc::new(
+                |_task_id: &str, _input: &senpi_task::manager::run_pause::HeldTaskInput| {
+                    Err("no child pause port is installed".into())
+                },
+            ),
+            fence_run: Arc::new(|_run: &RunRef| {}),
+            release_fences: Arc::new(|_run: &RunRef| {}),
+            cancel_task,
+        });
+        let engine = EngineRunPause::new_with_barrier(state_dir, effects, barrier);
+        (engine, run_pause)
     }
 }

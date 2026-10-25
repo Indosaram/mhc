@@ -197,6 +197,7 @@ impl TeamLeadPoller {
             key: format!("team-message:{message_id}"),
             source: LEAD_INJECTION_SOURCE,
             content,
+            run_ref: Some(crate::pause::ports::RunRef::new(crate::pause::ports::RunRefKind::Team, self.deps.team_run_id.clone())),
             on_flushed: Some(Box::new(move || {
                 let mut pending = state.pending.lock().unwrap_or_else(PoisonError::into_inner);
                 if let Some(current) = pending.get_mut(&flushed_id)
