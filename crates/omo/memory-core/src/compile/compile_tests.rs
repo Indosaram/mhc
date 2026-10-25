@@ -17,6 +17,7 @@ fn compile(repo: &GitMemoryRepo, agent_id: &str) -> String {
         repo,
         &CompileMemoryBlockOptions {
             agent_id: agent_id.to_string(),
+            projection: None,
         },
     )
     .expect("compile memory block")
@@ -306,4 +307,47 @@ fn given_an_unreadable_committed_system_file_when_compiled_then_its_structural_t
     assert_eq!(parsed.sections, strings(&["self", "memory_metadata"]));
     assert_eq!(parsed.projection_paths, strings(&["system/persona.md"]));
     assert!(block.contains("READABLE_BODY_SENTINEL"));
+}
+
+struct FailedSystemRead {
+    inner: Arc<dyn GitExec>,
+}
+impl GitExec for FailedSystemRead {
+    fn run(&self, argv: &[String], options: &GitExecOptions) -> std::io::Result<GitExecResult> {
+        if argv.first().is_some_and(|a| a == "show")
+            && argv.iter().any(|a| a.ends_with(":system/persona.md"))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "read timed out",
+            ));
+        }
+        self.inner.run(argv, options)
+    }
+}
+#[test]
+fn failed_git_read_is_degraded_but_invalid_frontmatter_is_not() {
+    let (_temp, repo) = repo_with(vec![
+        ("system/persona.md", &memory("persona", "body")),
+        ("system/broken.md", "not frontmatter"),
+    ])
+    .unwrap();
+    let revision = repo.head().unwrap();
+    let failing = GitMemoryRepo::new(GitMemoryRepoOptions {
+        dir: repo.dir.clone(),
+        agent_id: "test".into(),
+        exec: Some(Arc::new(FailedSystemRead {
+            inner: system_git_exec(),
+        })),
+        install_hooks: None,
+    })
+    .unwrap();
+    let options = CompileMemoryBlockOptions {
+        agent_id: "test".into(),
+        projection: None,
+    };
+    let result =
+        super::compile_memory_block_with_reads(&failing, revision.as_deref(), &options).unwrap();
+    assert_eq!(result.degraded.len(), 1);
+    assert!(result.degraded[0].starts_with("system/persona.md unread:"));
 }

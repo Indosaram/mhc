@@ -44,8 +44,8 @@ mod tests {
                 Some("anthropic/claude-3.5-sonnet"),
                 Some(("anthropic", "claude-3-5-sonnet")),
             ),
-            (Some("sonnet"), Some(("anthropic", "claude-sonnet-4-6"))),
-            (Some("Sonnet"), Some(("anthropic", "claude-sonnet-4-6"))),
+            (Some("sonnet"), Some(("anthropic", "claude-sonnet-5-5"))),
+            (Some("Sonnet"), Some(("anthropic", "claude-sonnet-5-5"))),
             (Some("opus"), Some(("anthropic", "claude-opus-5-5"))),
             (Some("haiku"), Some(("anthropic", "claude-haiku-5-5"))),
             (
@@ -56,7 +56,7 @@ mod tests {
             (Some("gpt-5.5"), None),
             (Some("gemini-3-flash"), None),
             (Some("constructor"), None),
-            (Some("  sonnet  "), Some(("anthropic", "claude-sonnet-4-6"))),
+            (Some("  sonnet  "), Some(("anthropic", "claude-sonnet-5-5"))),
             (Some("toString"), None),
             (Some("valueOf"), None),
             (Some("/gpt-5.5"), None),
@@ -104,7 +104,7 @@ mod tests {
     #[test]
     fn anthropic_provider_override_does_not_rewrite_explicit_providers() {
         for (input, provider, model) in [
-            ("sonnet", "kiro", "claude-sonnet-4-6"),
+            ("sonnet", "kiro", "claude-sonnet-5-5"),
             ("opus", "kiro", "claude-opus-5-5"),
             ("haiku", "kiro", "claude-haiku-5-5"),
             ("claude-sonnet-4-6", "kiro", "claude-sonnet-4-6"),

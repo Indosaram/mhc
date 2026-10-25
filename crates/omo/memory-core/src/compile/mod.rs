@@ -1,9 +1,11 @@
 //! Prompt compilation, memory rendering, and revision caching.
 
+pub mod block_persist;
 pub mod cache;
 pub mod changes;
 #[allow(clippy::module_inception)] // mirrors the TS compile/compile.ts layout
 pub mod compile;
+pub mod external_projection;
 pub mod render;
 
 #[cfg(test)]
@@ -12,11 +14,12 @@ pub mod compile_test_support;
 
 pub use cache::{MEMORY_TEMPLATE_STRUCTURE_VERSION, MemoryBlockCache, hash_memory_template};
 pub use changes::{
-    MEMORY_SESSION_TRAILER, ProjectedChanges, ProjectedChangesOptions,
-    is_empty_projected_changes, projected_changes_between, revision_exists,
+    MEMORY_SESSION_TRAILER, ProjectedChanges, ProjectedChangesOptions, is_empty_projected_changes,
+    projected_changes_between, revision_exists,
 };
 pub use compile::{
-    CompileError, CompileMemoryBlockOptions, compile_memory_block, compile_memory_block_at_revision,
+    CompileError, CompileMemoryBlockOptions, CompiledMemoryBlock, compile_memory_block,
+    compile_memory_block_at_revision, compile_memory_block_with_reads,
 };
 pub use render::{
     CompiledSystemFile, RenderError, mark_memory_block, render_external_projection,
