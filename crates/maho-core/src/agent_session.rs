@@ -353,6 +353,7 @@ pub struct PromptOptions {
     pub tool_barrier: Option<crate::session_work_barrier::ToolBarrierSpec>,
     pub client_message_id: Option<String>,
     pub observed_pause_seq: Option<u64>,
+    pub hold_after_preparation: bool,
     pub expand_prompt_templates: Option<bool>,
     pub images: Option<Vec<ImageContent>>,
     pub streaming_behavior: Option<StreamingBehavior>,
@@ -4341,6 +4342,9 @@ impl AgentSession {
                 }
             };
             if let Some(mode) = removed {
+                if mode == StreamingBehavior::FollowUp {
+                    self.clear_tool_barrier();
+                }
                 self.remove_queued_input(&text, mode);
                 self.emit_queue_update();
             }
@@ -5348,28 +5352,117 @@ impl AgentSession {
 
     /// Explicit user Resume; attachment alone must never call this. Reports the human input even when
     /// nothing is paused, then releases every held wake one at a time through full agent_end handling.
-    pub fn pause_seq(&self)->u64{lock(&self.engine_turn_hold).current_pause_seq()}
-    pub fn paused_held_input_count(&self)->usize{self.held_inputs().len()}
-    pub fn security_notices(&self)->Value{serde_json::to_value(self.security_notice_state()).expect("security state serializes")}
-    pub fn stop_for_run(&self){crate::run_holds::RunHolds::new(&mut lock(&self.engine_turn_hold)).stamp();}
-    pub fn note_automatic_input(&self,text:&str)->bool{
-        let mut hold=lock(&self.engine_turn_hold);
-        if !hold.holds().iter().any(|record|matches!(record.kind,crate::engine_turn_hold::HoldKind::SessionHold|crate::engine_turn_hold::HoldKind::InheritedHold)){return false;}
-        hold.note(&format!("rpc-input:{}",uuid::Uuid::new_v4()),Some(serde_json::json!({"role":"custom","customType":"rpc-automatic-input","content":text,"display":true,"timestamp":maho_ai::utils::diagnostics::now_ms()})));true
+    pub fn pause_seq(&self) -> u64 {
+        lock(&self.engine_turn_hold).current_pause_seq()
     }
-    pub async fn begin_resume(&self,request:&Value)->Result<Value,String>{
-        let seq=self.pause_seq();
-        if let Some(effect)=request["effectId"].as_str(){if let Some(mut answer)=self.with_session_manager(|manager|manager.entries().iter().rev().find(|entry|entry["customType"]=="session-resume-effect"&&entry["data"]["effectId"]==effect).map(|entry|entry["data"]["answer"].clone())){answer["replayed"]=true.into();return Ok(answer);}}
-        let idle=serde_json::json!({"resumed":false,"pauseSeq":seq,"turnStarted":false,"deliveredNotices":0,"deliveredHeldInputs":0});
-        if !self.paused(){let mut answer=idle;answer["reason"]="not_paused".into();return Ok(answer);}
-        if request["expectedSeq"].as_u64().is_some_and(|expected|expected!=seq){let mut answer=idle;answer["reason"]="stale".into();return Ok(answer);}
-        let inherited=crate::run_holds::RunHolds::new(&mut lock(&self.engine_turn_hold)).inherited_owner();
-        if let Some(owner)=inherited.as_ref(){if self.holds().iter().all(|hold|hold.kind==crate::engine_turn_hold::HoldKind::InheritedHold){let mut answer=idle;answer["reason"]="resume_through_parent".into();answer["parentSessionId"]=owner.parent_session_id.clone().into();return Ok(answer);}}
-        if request["mode"]=="release"||inherited.is_some(){let mut hold=lock(&self.engine_turn_hold);hold.attend();let keys=hold.holds().iter().filter(|hold|matches!(hold.kind,crate::engine_turn_hold::HoldKind::SessionHold|crate::engine_turn_hold::HoldKind::Unattended)).map(|hold|hold.key.clone()).collect::<Vec<_>>();hold.release(&keys,crate::engine_turn_hold::HoldReleaseCause::ResumeSession)?;let mut answer=idle;answer["resumed"]=true.into();return Ok(answer);}
-        if let Some(message)=request["message"].as_str(){self.hold_input(serde_json::json!({"inputId":format!("resume-{}",request["effectId"].as_str().map(str::to_owned).unwrap_or_else(||uuid::Uuid::new_v4().to_string())),"revision":0,"text":message}))?;}
-        let notices=self.paused_notice_count();let inputs=self.paused_held_input_count();self.resume_session().await?;
-        let answer=serde_json::json!({"resumed":true,"pauseSeq":seq,"turnStarted":notices>0||inputs>0,"deliveredNotices":notices,"deliveredHeldInputs":inputs});
-        if let Some(effect)=request["effectId"].as_str(){self.with_session_manager_mut(|manager|manager.append_custom("session-resume-effect",Some(serde_json::json!({"effectId":effect,"answer":answer}))));}Ok(answer)
+    pub fn paused_held_input_count(&self) -> usize {
+        self.held_inputs().len()
+    }
+    pub fn security_notices(&self) -> Value {
+        serde_json::to_value(self.security_notice_state()).expect("security state serializes")
+    }
+    pub fn stop_for_run(&self) {
+        crate::run_holds::RunHolds::new(&mut lock(&self.engine_turn_hold)).stamp();
+    }
+    pub fn note_automatic_input(&self, text: &str) -> bool {
+        let mut hold = lock(&self.engine_turn_hold);
+        if !hold.holds().iter().any(|record| {
+            matches!(
+                record.kind,
+                crate::engine_turn_hold::HoldKind::SessionHold
+                    | crate::engine_turn_hold::HoldKind::InheritedHold
+            )
+        }) {
+            return false;
+        }
+        hold.note(&format!("rpc-input:{}",uuid::Uuid::new_v4()),Some(serde_json::json!({"role":"custom","customType":"rpc-automatic-input","content":text,"display":true,"timestamp":maho_ai::utils::diagnostics::now_ms()})));
+        true
+    }
+    pub async fn begin_resume(&self, request: &Value) -> Result<Value, String> {
+        let seq = self.pause_seq();
+        if let Some(effect) = request["effectId"].as_str() {
+            if let Some(mut answer) = self.with_session_manager(|manager| {
+                manager
+                    .entries()
+                    .iter()
+                    .rev()
+                    .find(|entry| {
+                        entry["customType"] == "session-resume-effect"
+                            && entry["data"]["effectId"] == effect
+                    })
+                    .map(|entry| entry["data"]["answer"].clone())
+            }) {
+                answer["replayed"] = true.into();
+                return Ok(answer);
+            }
+        }
+        let idle = serde_json::json!({"resumed":false,"pauseSeq":seq,"turnStarted":false,"deliveredNotices":0,"deliveredHeldInputs":0});
+        if !self.paused() {
+            let mut answer = idle;
+            answer["reason"] = "not_paused".into();
+            return Ok(answer);
+        }
+        if request["expectedSeq"]
+            .as_u64()
+            .is_some_and(|expected| expected != seq)
+        {
+            let mut answer = idle;
+            answer["reason"] = "stale".into();
+            return Ok(answer);
+        }
+        let inherited =
+            crate::run_holds::RunHolds::new(&mut lock(&self.engine_turn_hold)).inherited_owner();
+        if let Some(owner) = inherited.as_ref() {
+            if self
+                .holds()
+                .iter()
+                .all(|hold| hold.kind == crate::engine_turn_hold::HoldKind::InheritedHold)
+            {
+                let mut answer = idle;
+                answer["reason"] = "resume_through_parent".into();
+                answer["parentSessionId"] = owner.parent_session_id.clone().into();
+                return Ok(answer);
+            }
+        }
+        if request["mode"] == "release" || inherited.is_some() {
+            let mut hold = lock(&self.engine_turn_hold);
+            hold.attend();
+            let keys = hold
+                .holds()
+                .iter()
+                .filter(|hold| {
+                    matches!(
+                        hold.kind,
+                        crate::engine_turn_hold::HoldKind::SessionHold
+                            | crate::engine_turn_hold::HoldKind::Unattended
+                    )
+                })
+                .map(|hold| hold.key.clone())
+                .collect::<Vec<_>>();
+            hold.release(
+                &keys,
+                crate::engine_turn_hold::HoldReleaseCause::ResumeSession,
+            )?;
+            let mut answer = idle;
+            answer["resumed"] = true.into();
+            return Ok(answer);
+        }
+        if let Some(message) = request["message"].as_str() {
+            self.hold_input(serde_json::json!({"inputId":format!("resume-{}",request["effectId"].as_str().map(str::to_owned).unwrap_or_else(||uuid::Uuid::new_v4().to_string())),"revision":0,"text":message}))?;
+        }
+        let notices = self.paused_notice_count();
+        let inputs = self.paused_held_input_count();
+        self.resume_session().await?;
+        let answer = serde_json::json!({"resumed":true,"pauseSeq":seq,"turnStarted":notices>0||inputs>0,"deliveredNotices":notices,"deliveredHeldInputs":inputs});
+        if let Some(effect) = request["effectId"].as_str() {
+            self.with_session_manager_mut(|manager| {
+                manager.append_custom(
+                    "session-resume-effect",
+                    Some(serde_json::json!({"effectId":effect,"answer":answer})),
+                )
+            });
+        }
+        Ok(answer)
     }
     pub async fn resume_session(&self) -> Result<(), String> {
         self.human_input_admitted(HumanInputKind::Resume);
@@ -5591,6 +5684,13 @@ impl AgentSession {
         text: &str,
         mut options: PromptOptions,
     ) -> Result<PromptDisposition, String> {
+        options
+            .observed_pause_seq
+            .get_or_insert_with(|| lock(&self.engine_turn_hold).current_pause_seq());
+        options.hold_after_preparation = self
+            .holds()
+            .iter()
+            .any(|h| h.kind == crate::engine_turn_hold::HoldKind::RunFence);
         let input_hold = Arc::new(self.external_admission.begin_input(
             text.starts_with('/'),
             options.source == Some(InputSource::Extension),
@@ -5642,7 +5742,7 @@ impl AgentSession {
             .unwrap_or_else(|| input_origin_of(options.source));
         // Counted before any await: an external delivery never overtakes this input.
         self.prompts_in_flight.fetch_add(1, Ordering::SeqCst);
-        if origin == InputOrigin::Person {
+        if origin == InputOrigin::Person && !options.hold_after_preparation {
             self.begin_person_input();
         }
         let admission = self.engine_admission_hook(options.prompt_admitted.take());
@@ -6338,22 +6438,24 @@ impl AgentSession {
             .await;
             return Err(error);
         }
-        if options.observed_pause_seq.is_some_and(|observed| {
-            self.holds().iter().any(|h| {
-                h.kind != crate::engine_turn_hold::HoldKind::Unattended
-                    && lock(&self.engine_turn_hold).current_pause_seq() > observed
+        if options.hold_after_preparation
+            || options.observed_pause_seq.is_some_and(|observed| {
+                self.holds().iter().any(|h| {
+                    h.kind != crate::engine_turn_hold::HoldKind::Unattended
+                        && lock(&self.engine_turn_hold).current_pause_seq() > observed
+                })
             })
-        }) || (options
-            .input_origin
-            .unwrap_or_else(|| input_origin_of(options.source))
-            == InputOrigin::Person
-            && self.holds().iter().any(|h| {
-                matches!(
-                    h.kind,
-                    crate::engine_turn_hold::HoldKind::RunFence
-                        | crate::engine_turn_hold::HoldKind::InheritedHold
-                )
-            }))
+            || (options
+                .input_origin
+                .unwrap_or_else(|| input_origin_of(options.source))
+                == InputOrigin::Person
+                && self.holds().iter().any(|h| {
+                    matches!(
+                        h.kind,
+                        crate::engine_turn_hold::HoldKind::RunFence
+                            | crate::engine_turn_hold::HoldKind::InheritedHold
+                    )
+                }))
         {
             let mut held = json!({"inputId":options.client_message_id.clone().unwrap_or_else(||format!("prompt-{}",uuid::Uuid::new_v4())),"revision":0,"text":text});
             if let Some(images) = prepared_images {
