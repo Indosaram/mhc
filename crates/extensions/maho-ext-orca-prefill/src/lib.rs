@@ -34,7 +34,11 @@ impl Extension for OrcaPrefill {
             Box::pin(async move {
                 if !matches!(event, ExtensionEvent::SessionStart(start) if start.reason == SessionReason::Startup) { return Ok(EventResult::None); }
                 if environment.pane_key().is_none_or(|key| key.is_empty()) { return Ok(EventResult::None); }
-                if let Some(prefill) = environment.take_prefill().filter(|value| !value.is_empty()) { ctx.ui.set_editor_text(&prefill); }
+                // Keys typed since the prompt painted stay: an empty editor is prefilled, a draft
+                // gets the prefill inserted at the cursor instead of being replaced.
+                if let Some(prefill) = environment.take_prefill().filter(|value| !value.is_empty()) {
+                    if ctx.ui.get_editor_text().is_empty() { ctx.ui.set_editor_text(&prefill); } else { ctx.ui.paste_to_editor(&prefill); }
+                }
                 Ok(EventResult::None)
             })
         }));

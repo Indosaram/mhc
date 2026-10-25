@@ -722,14 +722,15 @@ fn ctrl_c_clear_then_second_press_requests_shutdown_without_timing_luck() {
 }
 
 #[test]
-fn question_opens_shortcut_overlay_and_next_key_dismisses_without_typing() {
+fn question_opens_shortcut_overlay_and_next_key_dismisses_while_typing() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
     let before = mode.render(80).len();
     mode.handle_input_at("?", 0);
+    assert_eq!(mode.editor.editor.get_text(), "?");
     assert!(mode.render(80).len() > before);
     mode.handle_input_at("a", 1);
-    assert!(mode.editor.editor.get_text().is_empty());
+    assert_eq!(mode.editor.editor.get_text(), "?a");
     assert_eq!(mode.render(80).len(), before);
 }
 
