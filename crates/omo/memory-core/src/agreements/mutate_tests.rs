@@ -11,7 +11,6 @@ use crate::agreements::types::{
 
 fn new_record(text: &str, date: &str) -> AgreementExtractionRecord {
     AgreementExtractionRecord::New {
-        source: None,
         applies: AgreementScope::Global,
         text: text.to_string(),
         date: date.to_string(),
@@ -71,21 +70,18 @@ fn reaffirm_rewords_agent_items_only_and_stale_ids_are_events() {
         &existing,
         &[
             AgreementExtractionRecord::Reaffirm {
-                source: None,
                 id: human.id.clone(),
                 date: "2026-02-01".to_string(),
                 text: Some("changed".to_string()),
                 source: None,
             },
             AgreementExtractionRecord::Reaffirm {
-                source: None,
                 id: existing[1].id.clone(),
                 date: "2026-02-01".to_string(),
                 text: Some("Be very brief".to_string()),
                 source: None,
             },
             AgreementExtractionRecord::Reaffirm {
-                source: None,
                 id: "ffffffffff".to_string(),
                 date: "2026-02-02".to_string(),
                 text: None,

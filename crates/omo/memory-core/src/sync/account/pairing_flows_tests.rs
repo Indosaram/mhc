@@ -12,7 +12,6 @@ use crate::sync::{
         trust_pin::pin_trust_anchor,
     },
     engine::{adapters::http_transport::*, error::EngineError, ports::PortFuture},
-    keyring_port::DeviceKeyring,
     recovery::testing::{ACCOUNT, Server, device},
 };
 use serde_json::{Value, json};

@@ -47,7 +47,6 @@ pub use recall_wake_domain::{
     RecallWakeLeaseOptions, acquire_recall_wake_lease, recall_wake_lock_path,
     recall_wake_ticket_directory, with_recall_wake_lease,
 };
-pub use reflection_run_domain::acquire_counting_reflection_run_lease;
 pub use reflection_run_lease::{
     REFLECTION_RUN_DEFAULT_SLOTS, ReflectionRunLease, ReflectionRunLeaseError,
     ReflectionRunLeaseOptions, acquire_reflection_run_lease, reflection_run_lock_path,

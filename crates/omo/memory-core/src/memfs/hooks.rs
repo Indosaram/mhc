@@ -4,9 +4,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::memfs::hooks_commit_msg::{
-    COMMIT_MSG_HOOK_SCRIPT, MemoryHookChecker, with_memory_hook_checker,
-};
+use crate::memfs::hooks_commit_msg::{COMMIT_MSG_HOOK_SCRIPT, with_memory_hook_checker};
 use crate::memfs::hooks_scripts::{POST_COMMIT_HOOK_SCRIPT, PRE_COMMIT_HOOK_SCRIPT};
 
 pub use crate::memfs::hooks_commit_msg::MemoryHookChecker;

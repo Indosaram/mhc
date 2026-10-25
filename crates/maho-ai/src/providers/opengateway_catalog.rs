@@ -12,10 +12,6 @@ pub struct PriceRoute {
     pub cache_write: Option<f64>,
 }
 
-fn is_record(value: &Value) -> bool {
-    value.as_object().is_some()
-}
-
 fn is_price_route_entry(value: &Value) -> bool {
     value.as_object().is_some_and(|entry| {
         entry.get("provider").and_then(Value::as_str).is_some()

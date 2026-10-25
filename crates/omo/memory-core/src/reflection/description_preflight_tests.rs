@@ -39,6 +39,7 @@ fn memory_file(description: &str, body: &str) -> String {
             read_only: None,
             kind: None,
             aliases: None,
+            extra: None,
         },
         body,
     )
