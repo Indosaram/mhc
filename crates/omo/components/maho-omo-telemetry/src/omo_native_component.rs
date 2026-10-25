@@ -324,6 +324,9 @@ mod tests {
         };
         let component =
             OmoNativeTelemetryComponent::with_default_config(options, t.path().join("skills"));
+        // Telemetry is opt-in (see docs/divergences.md): no config file means disabled.
+        assert!(!(component.is_config_enabled)(t.path()));
+        std::fs::write(&config, "{\"telemetry\":{\"enabled\":true}}").unwrap();
         assert!((component.is_config_enabled)(t.path()));
         std::fs::write(&config, "{\"telemetry\":{\"enabled\":false}}").unwrap();
         assert!(!(component.is_config_enabled)(t.path()));

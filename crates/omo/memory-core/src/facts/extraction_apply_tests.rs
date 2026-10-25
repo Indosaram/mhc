@@ -794,8 +794,10 @@ fn given_seeded_human_card_when_routing_disabled_then_self_reference_kept_and_th
 fn given_no_human_card_when_routing_disabled_then_only_self_references_are_kept() {
     let (_tmp, dir, repo) = fixture();
     std::fs::remove_file(dir.join("system/human.md")).expect("remove human card");
+    repo.commit_write(&["system/human.md"], "test: drop the human card", &author())
+        .expect("commit removal");
 
-    apply_facts_batch(
+    let result = apply_facts_batch(
         &repo,
         batch(
             "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5",
@@ -809,6 +811,12 @@ fn given_no_human_card_when_routing_disabled_then_only_self_references_are_kept(
         ApplyFactsBatchOptions::default(),
     )
     .expect("apply");
+    // A dirty worktree makes the planner refuse (ParentDirty) and write nothing, so a silent
+    // no-op would otherwise look like success.
+    assert!(
+        matches!(result, ApplyFactsBatchResult::Committed { .. }),
+        "expected a commit, got {result:?}"
+    );
 
     let body = monthly_notes_body(&dir);
     assert!(body.contains("I prefer dark themes."), "{body}");
