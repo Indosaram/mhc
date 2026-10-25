@@ -5730,6 +5730,10 @@ impl AgentSession {
         lock(&self.engine_turn_hold).notice_count()
     }
 
+    pub fn pause_seq(&self) -> u64 {
+        lock(&self.engine_turn_hold).current_pause_seq()
+    }
+
     pub fn holds(&self) -> Vec<crate::engine_turn_hold::SessionHold> {
         lock(&self.engine_turn_hold).holds()
     }

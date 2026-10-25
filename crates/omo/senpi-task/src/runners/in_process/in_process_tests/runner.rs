@@ -1,8 +1,8 @@
 //! `in-process.test.ts`, `in-process-model-runtime.test.ts`, `shared-tool-filter.test.ts`,
 //! `runtime-fallback-settings.test.ts`, `in-process-runtime-fallback.test.ts`, `marker-suppression.test.ts`.
 
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 
@@ -215,14 +215,18 @@ fn given_a_started_child_when_the_session_is_constructed_then_a_persisted_sessio
 
 #[test]
 fn given_workpool_identity_on_child_spec_when_session_options_are_built_then_task_state_directory_and_fixed_epoch_are_preserved()
-{
+ {
     let dir = tmp();
     let fake = FakeSession::immediate("workpool-child", None);
     let session = fake.clone();
     let (runner, captured) = capturing_runner(Vec::new(), &[], None, move || session.clone());
     let mut spec = base_spec(&dir.path().to_string_lossy());
     spec.task_id = "st_00000042".into();
-    spec.state_dir = dir.path().join("children/st_00000042").to_string_lossy().into_owned();
+    spec.state_dir = dir
+        .path()
+        .join("children/st_00000042")
+        .to_string_lossy()
+        .into_owned();
     spec.session_dir = Some(
         dir.path()
             .join("children/st_00000042/sessions/st_00000042")
@@ -233,19 +237,27 @@ fn given_workpool_identity_on_child_spec_when_session_options_are_built_then_tas
     let handle = runner.start(&spec).expect("start");
     fake.resolve_prompt();
     handle.wait_for_idle();
-    assert_eq!(last_options(&captured).workpool_identity, Some(crate::runners::in_process::child_options::WorkpoolChildIdentity {
-        task_id: "st_00000042".into(), state_dir: spec.state_dir.clone(), run_epoch: 9,
-    }));
+    assert_eq!(
+        last_options(&captured).workpool_identity,
+        Some(
+            crate::runners::in_process::child_options::WorkpoolChildIdentity {
+                task_id: "st_00000042".into(),
+                state_dir: spec.state_dir.clone(),
+                run_epoch: 9,
+            }
+        )
+    );
 }
 
 #[test]
-fn given_no_workpool_epoch_when_child_session_options_are_built_then_identity_is_absent()
-{
+fn given_no_workpool_epoch_when_child_session_options_are_built_then_identity_is_absent() {
     let dir = tmp();
     let fake = FakeSession::immediate("ordinary-child", None);
     let session = fake.clone();
     let (runner, captured) = capturing_runner(Vec::new(), &[], None, move || session.clone());
-    let handle = runner.start(&base_spec(&dir.path().to_string_lossy())).expect("start");
+    let handle = runner
+        .start(&base_spec(&dir.path().to_string_lossy()))
+        .expect("start");
     fake.resolve_prompt();
     handle.wait_for_idle();
     assert_eq!(last_options(&captured).workpool_identity, None);
@@ -482,7 +494,7 @@ fn child_retry(max_retries: Option<u32>, base_delay_ms: Option<u64>) -> ChildRet
 
 #[test]
 fn given_a_child_retry_budget_beside_the_chain_when_settings_are_created_then_the_budget_is_set_and_the_chain_stays_enabled()
-{
+ {
     let settings = create_runtime_fallback_settings(
         Some("vendor/primary"),
         Some(&[record("vendor", "fallback", None, None)]),
@@ -499,7 +511,7 @@ fn given_a_child_retry_budget_beside_the_chain_when_settings_are_created_then_th
 
 #[test]
 fn given_a_child_retry_budget_without_a_chain_when_settings_are_created_then_the_budget_is_kept_while_model_fallback_stays_disabled()
-{
+ {
     let settings = create_runtime_fallback_settings(
         Some("vendor/primary"),
         None,
@@ -513,7 +525,7 @@ fn given_a_child_retry_budget_without_a_chain_when_settings_are_created_then_the
 
 #[test]
 fn given_only_a_base_delay_override_when_settings_are_created_then_the_delay_is_set_independently_of_max_retries()
-{
+ {
     let settings = create_runtime_fallback_settings(
         Some("vendor/primary"),
         Some(&[record("vendor", "fallback", None, None)]),
@@ -526,7 +538,7 @@ fn given_only_a_base_delay_override_when_settings_are_created_then_the_delay_is_
 
 #[test]
 fn given_a_zero_max_retries_override_when_settings_are_created_then_zero_is_kept_distinct_from_absent()
-{
+ {
     let settings = create_runtime_fallback_settings(
         Some("vendor/primary"),
         None,
@@ -680,7 +692,7 @@ fn given_a_builtin_category_resolving_to_a_chain_rung_when_the_child_session_is_
 
 #[test]
 fn given_no_runtime_fallbacks_when_the_child_session_is_created_then_global_model_fallback_is_disabled()
-{
+ {
     let settings = retry_settings_for_spec(None, None);
     assert_eq!(settings, RetryFallbackSettings::default());
     assert!(!settings.model_fallback);
@@ -704,7 +716,7 @@ fn given_no_child_system_prompt_when_the_child_session_is_created_then_the_optio
 
 #[test]
 fn given_a_supplied_system_prompt_beside_instructions_when_the_child_session_is_created_then_the_options_carry_the_exact_separate_persona()
-{
+ {
     let dir = tmp();
     let persona = "# Kibitzer\n\nYou judge turns.";
     let (runner, captured) = capturing_runner(Vec::new(), &[], None, || {
@@ -718,12 +730,14 @@ fn given_a_supplied_system_prompt_beside_instructions_when_the_child_session_is_
     runner.start(&spec).expect("start").wait_for_idle();
     let options = last_options(&captured);
     assert_eq!(options.system_prompt.as_deref(), Some(persona));
-    assert_ne!(options.system_prompt.as_deref(), spec.instructions.as_deref());
+    assert_ne!(
+        options.system_prompt.as_deref(),
+        spec.instructions.as_deref()
+    );
 }
 
 #[test]
-fn given_a_supplied_system_prompt_when_the_child_is_resumed_then_the_options_carry_it_unchanged()
-{
+fn given_a_supplied_system_prompt_when_the_child_is_resumed_then_the_options_carry_it_unchanged() {
     let dir = tmp();
     let persona = "# Kibitzer\n\nYou judge turns.";
     let (runner, captured) = capturing_runner(Vec::new(), &[], None, || {
@@ -822,7 +836,7 @@ fn subagent_renderer(spec: &ChildSpec) -> String {
 
 #[test]
 fn given_an_absent_prompt_envelope_when_the_child_starts_then_the_delivered_prompt_equals_the_subagent_renderer()
-{
+ {
     let dir = tmp();
     let spec = ChildSpec {
         prompt: "framed payload".to_string(),
@@ -836,7 +850,7 @@ fn given_an_absent_prompt_envelope_when_the_child_starts_then_the_delivered_prom
 
 #[test]
 fn given_an_explicit_subagent_envelope_when_the_child_starts_then_the_delivered_prompt_equals_the_absent_case_and_the_renderer()
-{
+ {
     let dir = tmp();
     let absent = ChildSpec {
         prompt: "framed payload".to_string(),
@@ -863,7 +877,7 @@ fn given_an_explicit_subagent_envelope_when_the_child_starts_then_the_delivered_
 
 #[test]
 fn given_a_bare_prompt_envelope_when_the_child_starts_then_the_initial_user_message_is_the_prompt_byte_for_byte_without_instructions()
-{
+ {
     let dir = tmp();
     let sentinel = "\n  <kibitzer-input>\npayload line\n</kibitzer-input>\n  ".to_string();
     let spec = ChildSpec {
@@ -880,8 +894,7 @@ fn given_a_bare_prompt_envelope_when_the_child_starts_then_the_initial_user_mess
 }
 
 #[test]
-fn given_a_bare_prompt_envelope_when_the_child_is_resumed_then_no_new_prompt_is_delivered()
-{
+fn given_a_bare_prompt_envelope_when_the_child_is_resumed_then_no_new_prompt_is_delivered() {
     let dir = tmp();
     let spec = ChildSpec {
         prompt: "self-contained block".to_string(),
@@ -902,11 +915,12 @@ fn textless_turn_end() -> serde_json::Value {
 
 #[test]
 fn given_a_child_spec_with_the_turn_completion_policy_when_its_textless_turn_settles_then_the_runner_handle_reports_a_completed_empty_turn()
-{
+ {
     let dir = tmp();
     let fake = FakeSession::new("completion-child");
     let returned: Arc<dyn ChildSession> = fake.clone();
-    let (runner, _captured) = capturing_runner(Vec::new(), &[], None, move || Arc::clone(&returned));
+    let (runner, _captured) =
+        capturing_runner(Vec::new(), &[], None, move || Arc::clone(&returned));
     let spec = ChildSpec {
         completion: Some(ChildCompletionPolicy::Turn),
         ..base_spec(&dir.path().to_string_lossy())
@@ -920,11 +934,12 @@ fn given_a_child_spec_with_the_turn_completion_policy_when_its_textless_turn_set
 
 #[test]
 fn given_a_child_spec_without_a_completion_policy_when_its_textless_turn_settles_then_the_runner_handle_reports_a_child_turn_failed_error()
-{
+ {
     let dir = tmp();
     let fake = FakeSession::new("completion-child");
     let returned: Arc<dyn ChildSession> = fake.clone();
-    let (runner, _captured) = capturing_runner(Vec::new(), &[], None, move || Arc::clone(&returned));
+    let (runner, _captured) =
+        capturing_runner(Vec::new(), &[], None, move || Arc::clone(&returned));
     let spec = ChildSpec {
         completion: None,
         ..base_spec(&dir.path().to_string_lossy())
@@ -943,19 +958,52 @@ fn given_a_child_spec_without_a_completion_policy_when_its_textless_turn_settles
 
 #[test]
 fn given_a_child_spec_with_the_turn_completion_policy_when_the_child_is_resumed_then_the_restored_handle_drains_a_completed_empty_turn()
-{
+ {
     let dir = tmp();
     let fake = FakeSession::new("completion-child");
     let returned: Arc<dyn ChildSession> = fake.clone();
-    let (runner, _captured) = capturing_runner(Vec::new(), &[], None, move || Arc::clone(&returned));
+    let (runner, _captured) =
+        capturing_runner(Vec::new(), &[], None, move || Arc::clone(&returned));
     let spec = ChildSpec {
         completion: Some(ChildCompletionPolicy::Turn),
         ..base_spec(&session_dir_in(&dir, "task-completion-resume"))
     };
     let session_file_dir = tmp();
-    let session_path =
-        write_session_file(&session_file_dir, &session_header("completion-resume-session"));
+    let session_path = write_session_file(
+        &session_file_dir,
+        &session_header("completion-resume-session"),
+    );
     let handle = runner.resume(&spec, &session_path).expect("resume");
     assert_eq!(fake.prompt_calls(), 0);
     assert_eq!(handle.wait_for_idle(), RunnerOutcome::completed(""));
+}
+
+#[test]
+fn engine_watch_ignores_previous_end_and_observes_its_own_turn() {
+    let fake = FakeSession::new("engine-resume");
+    let watch = crate::runners::in_process::child_handle::InProcessChildHandle::watch_engine_turn(
+        fake.clone(),
+        ChildCompletionPolicy::FinalText,
+    );
+    fake.emit(&json!({"type":"agent_end"}));
+    fake.emit(&json!({"type":"agent_start"}));
+    fake.emit(&json!({"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"own outcome"}],"stopReason":"stop"}}));
+    fake.emit(&json!({"type":"agent_end"}));
+    assert_eq!((watch.outcome)(), RunnerOutcome::completed("own outcome"));
+}
+
+#[test]
+fn staged_launch_does_not_prompt_until_begin() {
+    let dir = tmp();
+    let fake = FakeSession::new("staged");
+    let (runner, _) = fake_runner(&fake);
+    let staged = runner
+        .start_staged(&base_spec(&dir.path().to_string_lossy()))
+        .expect("stage");
+    assert_eq!(fake.prompt_calls(), 0);
+    let handle = staged.begin().expect("begin");
+    fake.wait_prompt_calls(1);
+    fake.set_last_text("done");
+    fake.resolve_prompt();
+    assert_eq!(handle.wait_for_idle(), RunnerOutcome::completed("done"));
 }

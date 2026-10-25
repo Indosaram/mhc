@@ -1,8 +1,11 @@
+#[path = "task_run_hold.rs"]
+mod task_run_hold;
 use senpi_task::{
     host::HostError,
     runners::in_process::child_handle::{ChildSession, ChildSessionListener},
 };
 use std::sync::Arc;
+use task_run_hold::NativeRunHold;
 
 pub struct TeamManager(pub Arc<senpi_task::manager::TaskManager>);
 impl senpi_task::team::runtime_types::TeamMemberReadPort for TeamManager {
@@ -477,6 +480,29 @@ where
 }
 
 impl ChildSession for NativeChild {
+    fn hold_session(
+        &self,
+    ) -> Option<Arc<dyn senpi_task::runners::in_process::native_run_pause::RunHoldSession>> {
+        Some(Arc::new(NativeRunHold {
+            session: self.ensure_session().ok()?,
+            executor: self.executor.clone(),
+        }))
+    }
+    fn priority_pairing_registry(
+        &self,
+    ) -> Option<&dyn senpi_task::runners::pinned_model_equivalence::PriorityPairingRegistry> {
+        Some(self)
+    }
+    fn model(&self) -> Option<senpi_task::runners::pinned_model_equivalence::ModelIdentity> {
+        let session = self.ensure_session().ok()?;
+        let model = session.model();
+        Some(
+            senpi_task::runners::pinned_model_equivalence::ModelIdentity::new(
+                model.provider,
+                model.id,
+            ),
+        )
+    }
     fn rebind_workpool_identity(
         &self,
         identity: senpi_task::runners::in_process::child_handle::WorkpoolChildIdentity,
@@ -1005,5 +1031,39 @@ mod tests {
             "child"
         );
         assert!(!parent_cwd.join("child-only.txt").exists());
+    }
+}
+
+impl senpi_task::runners::pinned_model_equivalence::PriorityPairingRegistry for NativeChild {
+    fn get_service_tier(
+        &self,
+        identity: &senpi_task::runners::pinned_model_equivalence::ModelIdentity,
+    ) -> Option<String> {
+        let session = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .session
+            .clone()?;
+        let registry = session.model_registry();
+        let model = registry.find(&identity.provider, &identity.id)?;
+        registry
+            .get_service_tier(&model)
+            .and_then(|tier| serde_json::to_value(tier).ok())
+            .and_then(|value| value.as_str().map(str::to_string))
+    }
+    fn get_upstream_model_id(
+        &self,
+        identity: &senpi_task::runners::pinned_model_equivalence::ModelIdentity,
+    ) -> Option<String> {
+        let session = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .session
+            .clone()?;
+        let registry = session.model_registry();
+        let model = registry.find(&identity.provider, &identity.id)?;
+        registry.get_upstream_model_id(&model)
     }
 }
