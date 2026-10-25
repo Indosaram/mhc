@@ -175,7 +175,10 @@ impl ManagedChildHandle for HostSessionHandle {
         self.listeners.on_event(listener)
     }
     fn wait_for_outcome(&self) -> RunnerOutcome {
-        let outcome = (self.outcome)();
+        let outcome = self
+            .current_port()
+            .wait_for_outcome()
+            .unwrap_or_else(|| (self.outcome)());
         self.settled
             .store(true, std::sync::atomic::Ordering::Release);
         outcome
