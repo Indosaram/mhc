@@ -96,7 +96,8 @@ impl LazySummaryRecovery {
         if !self.has_work() {
             return;
         }
-        self.load().recovery.sweep().await;
+        let runtime = self.load();
+        runtime.recovery.sweep().await;
     }
 
 }

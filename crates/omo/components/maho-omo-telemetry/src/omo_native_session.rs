@@ -165,13 +165,12 @@ pub fn is_inside_temp_dir(
     {
         return false;
     }
-    let mut candidates = vec![deps
+    let tmpdir = deps
         .tmpdir
         .as_ref()
         .map(|tmpdir| tmpdir())
-        .unwrap_or_else(std::env::temp_dir)
-        .to_string_lossy()
-        .into_owned()];
+        .unwrap_or_else(|| std::env::temp_dir().to_string_lossy().into_owned());
+    let mut candidates = vec![tmpdir];
     if !windows {
         candidates.extend(
             deps.posix_temp_roots

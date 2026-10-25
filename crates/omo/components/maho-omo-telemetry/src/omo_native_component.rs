@@ -208,21 +208,17 @@ impl Extension for OmoNativeTelemetryComponent {
         let consented_at_registration = consent.is_consented(true);
         // An opted-out process deletes what dead processes left for it at once, not only when it quits.
         if !consented_at_registration {
+            // Consent here is the persisted setting only: an env opt-out is this process's own and must not
+            // delete what consented sessions queued.
             let purge_consent = Arc::clone(&consent);
-            let purge_options = self.options.clone();
-            let purge_state = state_dir.clone();
             let persisted_opt_out = consent.persisted_opt_out();
-            tokio::spawn(async move {
-                start_opt_out_purge(StartOptOutPurgeInput {
-                    state_dir: purge_state,
-                    is_scope_consented: Arc::new(move |scope| {
-                        purge_consent.is_queue_scope_consented(scope)
-                    }),
-                    persisted_opt_out,
-                    is_pid_alive: purge_options.is_pid_alive.clone(),
-                    diagnostics: purge_options.diagnostics.clone(),
-                })
-                .await;
+            start_opt_out_purge(StartOptOutPurgeInput {
+                state_dir: state_dir.clone(),
+                is_scope_consented: Arc::new(move |scope| {
+                    purge_consent.is_queue_scope_consented(scope)
+                }),
+                persisted_opt_out,
+                is_pid_alive: self.options.is_pid_alive.clone(),
             });
         }
 
@@ -348,12 +344,6 @@ impl Extension for OmoNativeTelemetryComponent {
                 diagnostics: self.options.diagnostics.clone(),
             })
         });
-        if let Some(summary) = &summary {
-            let summary = Arc::clone(summary);
-            tokio::spawn(async move {
-                summary.recover().await;
-            });
-        }
 
         // The final summary window must be captured before the session component's shutdown handler clears
         // the capture facade.
@@ -390,16 +380,15 @@ impl Extension for OmoNativeTelemetryComponent {
                                 settle_within(Box::pin(work), SUMMARY_SHUTDOWN_WAIT_MS).await;
                             }
                             None => {
+                                let persisted_opt_out = consent.persisted_opt_out();
                                 start_opt_out_purge(StartOptOutPurgeInput {
                                     state_dir: purge_state,
                                     is_scope_consented: Arc::new(move |scope| {
                                         consent.is_queue_scope_consented(scope)
                                     }),
-                                    persisted_opt_out: consent.persisted_opt_out(),
+                                    persisted_opt_out,
                                     is_pid_alive: options.is_pid_alive.clone(),
-                                    diagnostics: options.diagnostics.clone(),
-                                })
-                                .await;
+                                });
                             }
                         }
                         Ok(EventResult::None)
@@ -459,6 +448,7 @@ impl Extension for OmoNativeTelemetryComponent {
             let categories = Arc::new(Mutex::new(
                 crate::omo_native_category_config::CategoryConfigCapture::default(),
             ));
+            let summary = summary.clone();
             let client: Arc<Mutex<Option<Arc<telemetry_core::EventTelemetryClient>>>> =
                 Arc::default();
             let shared_client = Arc::clone(&client);
@@ -575,6 +565,14 @@ impl Extension for OmoNativeTelemetryComponent {
                             *shared_client
                                 .lock()
                                 .unwrap_or_else(PoisonError::into_inner) = session;
+                            // The first capture is when recovery runs: the capture path is installed by
+                            // now, so a recovered window can actually be published.
+                            if let Some(summary) = summary.as_ref() {
+                                let summary = Arc::clone(summary);
+                                tokio::spawn(async move {
+                                    summary.recover().await;
+                                });
+                            }
                         }
                         Err(error) => {
                             warn(
