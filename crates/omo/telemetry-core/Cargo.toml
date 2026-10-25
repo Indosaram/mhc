@@ -21,7 +21,9 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 sha2.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 sys-locale.workspace = true
-tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "fs"] }
+uuid = { workspace = true, features = ["v4"] }
+libc.workspace = true
 maho-utils.workspace = true
 
 [dev-dependencies]
@@ -32,7 +34,7 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-mu
 # Imported from COMP 93b78ac: this crate does not opt into `[lints] workspace = true`.
 # The table mirrors the workspace lints; "allow" entries are the lints it trips (todo 2 allow list).
 [lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 
 [lints.clippy]
 unwrap_used = "deny"
