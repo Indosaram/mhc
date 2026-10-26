@@ -7,7 +7,7 @@ description: Save a multi-agent workflow graph under a name and start it again l
 
 A small personal/team library of `workflow` definitions. Each entry is one JSON file; running it means "read the file, give it a fresh key, fill placeholders, call `workflow` start".
 
-This skill only stores and replays graphs. To design a new graph from scratch, use the harness's graph-authoring skill (in mhc that is `mass-ulw`, or whatever authoring skill your build ships). Come back here once the graph exists and the user wants to keep it.
+This skill only stores and replays graphs. To design a new graph from scratch, compose it with the harness's `workflow` tool (or whatever graph-authoring skill your build ships). Come back here once the graph exists and the user wants to keep it.
 
 ## When to use
 

@@ -152,28 +152,28 @@ pub fn lint_dag_definition_nodes(nodes: &[NodeInput]) -> Vec<String> {
     for node in nodes {
         if !node.prompt.contains("TASK:") {
             warnings.push(format!(
-                "node \"{}\": prompt is missing the TASK: marker from the mass-ulw node prompt contract (TASK/DELIVERABLE/SCOPE/VERIFY/STOP WHEN)",
+                "node \"{}\": prompt is missing the TASK: marker from the workflow node prompt contract (TASK/DELIVERABLE/SCOPE/VERIFY/STOP WHEN)",
                 node.id
             ));
         }
         for marker in ["DELIVERABLE:", "SCOPE:", "VERIFY:"] {
             if !node.prompt.contains(marker) {
                 warnings.push(format!(
-                    "node \"{}\": prompt is missing the {marker} marker from the mass-ulw node prompt contract (TASK/DELIVERABLE/SCOPE/VERIFY/STOP WHEN)",
+                    "node \"{}\": prompt is missing the {marker} marker from the workflow node prompt contract (TASK/DELIVERABLE/SCOPE/VERIFY/STOP WHEN)",
                     node.id
                 ));
             }
         }
         if !node.prompt.contains("STOP WHEN") {
             warnings.push(format!(
-                "node \"{}\": prompt is missing a STOP WHEN condition from the mass-ulw node prompt contract",
+                "node \"{}\": prompt is missing a STOP WHEN condition from the workflow node prompt contract",
                 node.id
             ));
         }
     }
     if nodes.len() >= 2 && !nodes.iter().any(|node| [node.id.as_str(), node.prompt.as_str()].iter().any(|text| text.split(|character: char| !character.is_ascii_alphanumeric()).any(|word| matches!(word.to_ascii_lowercase().as_str(), "verify" | "verification" | "verifier" | "audit" | "validate" | "validation" | "qa")))) {
         warnings.push(format!(
-            "run has {} nodes but no verification node; a graph that produces work ends with a verification wave (mass-ulw planning reference)",
+            "run has {} nodes but no verification node; a graph that produces work ends with a verification wave",
             nodes.len()
         ));
     }

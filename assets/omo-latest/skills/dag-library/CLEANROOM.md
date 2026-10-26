@@ -34,3 +34,6 @@
 
 Node: 11/11 tests pass. Python twin: all checks pass.
 Mock limitation: checks 2/3/9/10 model the spec's documented `start` idempotency, `wait detach:false`, and `retry`; they must be re-run in a live mhc code-mode session. Also unverified live: whether Python-cell `tool.*` helpers are sync or coroutines (SKILL.md covers both).
+
+## Integrator edits
+- 2026-10-27: `SKILL.md` no longer points at `mass-ulw` for graph authoring (that skill was retired from the bundle); it now says to compose the graph with the `workflow` tool, or whatever graph-authoring skill the build ships.

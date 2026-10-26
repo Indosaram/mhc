@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use maho_core::frontmatter::parse_frontmatter;
 use maho_omo_skill_commands::read_bundled_skill_names;
 
-const ARGUMENT_READING_SKILLS: [&str; 9] =
-    ["adversarial-plan", "init-deep", "mass-ulw", "refactor", "remove-ai-slops", "ulw-execute", "ulw-loop", "ulw-plan", "ulw-research"];
+const ARGUMENT_READING_SKILLS: [&str; 8] =
+    ["adversarial-plan", "init-deep", "refactor", "remove-ai-slops", "ulw-execute", "ulw-loop", "ulw-plan", "ulw-research"];
 
 /// The selected overlay is the packaging lane's deliverable. A checkout that has not staged it must
 /// fail loudly rather than pass on a substitute.
