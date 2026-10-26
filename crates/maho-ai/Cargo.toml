@@ -58,7 +58,7 @@ unicode-normalization = { workspace = true }
 unicode-segmentation = "=1.13.3"
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4", "v7"] }
-zstd = "=0.13.3"
+zstd = "=0.14.3"
 tokio-tungstenite = { version = "=0.28.0", features = ["rustls-tls-webpki-roots"] }
 
 [dev-dependencies]
