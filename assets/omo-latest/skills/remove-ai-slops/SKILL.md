@@ -4,7 +4,7 @@ description: "Removes AI-generated code smells from branch changes or an explici
 argument-hint: "[file ...]"
 ---
 
-# Remove AI Slops Skill
+# Remove AI Slops
 
 ## Inputs
 
