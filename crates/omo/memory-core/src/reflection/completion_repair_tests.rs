@@ -243,6 +243,8 @@ fn given_a_dropped_rename_destination_when_squashed_then_the_source_is_restored(
     assert_ne!(moved_back.code, 0);
 }
 
+// Unix only: the fixture path contains `|`, which Windows forbids in file names.
+#[cfg(unix)]
 #[test]
 fn given_a_recorded_drop_when_the_tip_is_read_back_then_the_entries_round_trip_verbatim() {
     let fixture = fixture(&[("reference/keep.md", GOOD)]);
