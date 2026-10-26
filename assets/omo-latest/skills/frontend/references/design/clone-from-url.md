@@ -49,7 +49,7 @@ Build primitives against the contract, not the screenshot. One component per cyc
 
 ## Phase 4 — Reference-fidelity QA (mandatory, motion included)
 
-Verify through `/visual-qa` in reference-fidelity mode against the source captures, for every page and every breakpoint. Interaction states and animations are IN SCOPE: drive hover/focus/click/scroll, then compare the settled states AND the motion itself against the source. You are not done until the dual-oracle gate passes on fresh evidence.
+Verify through `/visual-qa` in reference-fidelity mode against the source captures, for every page and every breakpoint. Interaction states and animations are IN SCOPE: drive hover/focus/click/scroll, then compare the settled states AND the motion itself against the source. You are not done until the dual-reviewer gate passes on fresh evidence.
 
 ## Anti-patterns
 
