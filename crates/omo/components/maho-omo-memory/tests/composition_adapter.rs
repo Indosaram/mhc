@@ -66,7 +66,8 @@ fn static_options() -> MemoryStaticOptions {
         memory_write: maho_omo_memory::wiring_memory_write::MemoryWriteOptions {
             resolve_session: Arc::new(|_| None),
             on_memory_write: Arc::new(|_| Ok(())),
-            refresh_status: Arc::new(|_, _| panic!("unbound")),
+            refresh_status: Arc::new(|_, _, _| panic!("unbound")),
+            sync_status: None,
         },
         skills_usage: maho_omo_memory::skills_usage_wiring::SkillsUsageOptions {
             resolve_context: Arc::new(|_| None),

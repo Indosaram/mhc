@@ -65,11 +65,11 @@ pub fn format_session_info(stats: &Value, name: Option<&str>, theme: &Theme) -> 
             let used = ctx
                 .get("tokens")
                 .and_then(Value::as_f64)
-                .map_or_else(|| "—".into(), grouped);
+                .map_or_else(|| "-".into(), grouped);
             let percent = ctx
                 .get("percent")
                 .and_then(Value::as_f64)
-                .map_or_else(|| "—".into(), |v| format!("{}%", v.round()));
+                .map_or_else(|| "-".into(), |v| format!("{}%", v.round()));
             info += &format!(
                 "\n{}\n{} {used} / {} ({percent})",
                 theme.bold("Context Window"),
@@ -83,8 +83,17 @@ pub fn format_session_info(stats: &Value, name: Option<&str>, theme: &Theme) -> 
         let amount = format!("{cost:.2}");
         let mut parts = amount.split('.');
         let whole = parts.next().unwrap_or("0").parse::<f64>().unwrap_or(0.);
+        let cost_unknown = stats
+            .get("costUnknown")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let unpriced = if cost_unknown {
+            format!(" {}", label("+ unpriced turns"))
+        } else {
+            String::new()
+        };
         info += &format!(
-            "\n\n{}\n{} ${}.{}",
+            "\n\n{}\n{} ${}.{}{unpriced}",
             theme.bold("Cost"),
             label("Total:"),
             grouped(whole),
@@ -92,4 +101,43 @@ pub fn format_session_info(stats: &Value, name: Option<&str>, theme: &Theme) -> 
         );
     }
     info
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn format_session_info_with_unknown_cost() {
+        let theme = Theme::builtin("dark", crate::theme::ColorMode::Truecolor).unwrap();
+        let stats = json!({
+            "sessionId": "test-id",
+            "sessionFile": "session.json",
+            "userMessages": 1,
+            "assistantMessages": 1,
+            "toolCalls": 0,
+            "toolResults": 0,
+            "totalMessages": 2,
+            "tokens": { "input": 100, "output": 20, "cacheRead": 0, "cacheWrite": 0, "total": 120 },
+            "cost": 0.5,
+            "costUnknown": true
+        });
+        let output = format_session_info(&stats, Some("Test"), &theme);
+        assert!(output.contains("+ unpriced turns"));
+        assert!(output.contains("$0.50"));
+    }
+
+    #[test]
+    fn format_session_info_without_unknown_cost() {
+        let theme = Theme::builtin("dark", crate::theme::ColorMode::Truecolor).unwrap();
+        let stats = json!({
+            "sessionId": "test-id",
+            "cost": 0.5,
+            "costUnknown": false
+        });
+        let output = format_session_info(&stats, None, &theme);
+        assert!(!output.contains("+ unpriced turns"));
+        assert!(output.contains("$0.50"));
+    }
 }

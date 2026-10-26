@@ -8,10 +8,6 @@ use utils::process_sweep::{create_default_process_killer, default_is_process_ali
 
 use isolation_core::OwnerProbe;
 
-use super::port::{
-    LifecycleReattachPorts, OrphanSignal, ProcessSignaller, ReattachPort, ResidencyRegistry,
-    RespawnPort,
-};
 use super::host_session::{
     HostEndpointPort, HostSessionProbe, HostSessionRetryPolicy, NoHostEndpoint,
     default_host_session_retry_policy,
@@ -19,6 +15,10 @@ use super::host_session::{
 use super::host_session_close::HostSessionCloser;
 use super::host_session_default::{
     HostTransport, NoHostTransport, default_host_session_closer, default_host_session_probe,
+};
+use super::port::{
+    LifecycleReattachPorts, OrphanSignal, ProcessSignaller, ReattachPort, ResidencyRegistry,
+    RespawnPort,
 };
 use super::residency::BatchAdmissionOptions;
 use super::settings::TaskSettings;
@@ -31,9 +31,13 @@ const DEFAULT_HOST_CLOSE_TIMEOUT_MS: u64 = 10_000;
 
 pub type NowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
 pub type DequeuePendingFn = Arc<dyn Fn(&str) + Send + Sync>;
+pub type MutationSubscription =
+    Arc<dyn Fn(Arc<dyn Fn() + Send + Sync>) -> Box<dyn FnOnce() + Send> + Send + Sync>;
 
 /// Caller-supplied lifecycle dependencies; unset optionals take production defaults.
 pub struct LifecycleDeps {
+    pub on_store_mutation: Option<MutationSubscription>,
+    pub teardown_step_deadline_ms: Option<u64>,
     pub store: Arc<dyn LifecycleStore>,
     pub registry: Arc<dyn ResidencyRegistry>,
     pub config: TaskSettings,
@@ -67,6 +71,8 @@ impl LifecycleDeps {
         config: TaskSettings,
     ) -> Self {
         Self {
+            on_store_mutation: None,
+            teardown_step_deadline_ms: None,
             store,
             registry,
             config,
@@ -92,6 +98,9 @@ impl LifecycleDeps {
 
 #[derive(Clone)]
 pub struct LifecycleContext {
+    pub on_store_mutation: Option<MutationSubscription>,
+    pub teardown_step_deadline_ms: u64,
+    pub live_parents: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     pub store: Arc<dyn LifecycleStore>,
     pub registry: Arc<dyn ResidencyRegistry>,
     pub config: TaskSettings,
@@ -151,6 +160,9 @@ pub fn resolve_context(deps: LifecycleDeps) -> LifecycleContext {
         .clone()
         .unwrap_or_else(|| Arc::new(NoHostTransport));
     LifecycleContext {
+        on_store_mutation: deps.on_store_mutation,
+        teardown_step_deadline_ms: deps.teardown_step_deadline_ms.unwrap_or(10_000),
+        live_parents: Arc::default(),
         store: deps.store,
         registry: deps.registry,
         config: deps.config,
@@ -171,9 +183,9 @@ pub fn resolve_context(deps: LifecycleDeps) -> LifecycleContext {
         isolation_probe: deps
             .isolation_probe
             .unwrap_or_else(|| Arc::new(isolation_core::process_owner_probe())),
-        host_session_probe: deps.host_session_probe.unwrap_or_else(|| {
-            default_host_session_probe(host_transport.clone())
-        }),
+        host_session_probe: deps
+            .host_session_probe
+            .unwrap_or_else(|| default_host_session_probe(host_transport.clone())),
         host_session_close: deps
             .host_session_close
             .or_else(|| Some(default_host_session_closer(host_transport))),

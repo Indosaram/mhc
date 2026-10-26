@@ -34,6 +34,12 @@ pub type ResumeSessionContextResult = Result<InProcessSessionContext, String>;
 
 /// `InProcessSessionContextProvider` with its optional `resolveResumeContext`.
 pub trait InProcessSessionContextProvider: Send + Sync {
+    fn excluded_models(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn validate_start(&self, _spec: &ManagedStartSpec) -> Result<(), String> {
+        Ok(())
+    }
     fn provide(&self, spec: &ManagedStartSpec) -> InProcessSessionContext;
     fn resolve_resume_context(
         &self,
@@ -61,10 +67,52 @@ where
     }
 }
 
+pub fn without_excluded_fallbacks(
+    spec: &ManagedStartSpec,
+    patterns: &[String],
+) -> ManagedStartSpec {
+    let mut filtered = spec.clone();
+    if let Some(models) = &mut filtered.fallback_models {
+        models.retain(|m| {
+            !crate::model_exclusion::is_excluded_model(
+                &format!("{}/{}", m.provider, m.model_id),
+                patterns,
+            )
+        });
+    }
+    filtered
+}
+
+pub fn without_excluded_selectors(selectors: &[String], patterns: &[String]) -> Vec<String> {
+    selectors
+        .iter()
+        .filter(|s| {
+            let base = s
+                .rsplit_once(':')
+                .filter(|(_, suffix)| {
+                    matches!(
+                        *suffix,
+                        "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+                    )
+                })
+                .map_or(s.as_str(), |(base, _)| base);
+            !crate::model_exclusion::is_excluded_model(base, patterns)
+        })
+        .cloned()
+        .collect()
+}
+
+pub type InProcessCreation = Result<(Arc<dyn ManagedChildHandle>, String), RunnerError>;
 pub type InProcessHandleResult = Result<Arc<dyn ManagedChildHandle>, RunnerError>;
 
 /// `InProcessRunnerLike`.
 pub trait InProcessRunnerLike: Send + Sync {
+    fn create(
+        &self,
+        _spec: &ChildSpec,
+    ) -> Option<InProcessCreation> {
+        None
+    }
     fn start(&self, spec: &ChildSpec) -> InProcessHandleResult;
     /// `None` when the runner cannot resume.
     fn resume(&self, _spec: &ChildSpec, _session_path: &str) -> Option<InProcessHandleResult> {
@@ -77,6 +125,12 @@ fn erase(handle: Arc<InProcessChildHandle>) -> Arc<dyn ManagedChildHandle> {
 }
 
 impl InProcessRunnerLike for InProcessRunner {
+    fn create(
+        &self,
+        spec: &ChildSpec,
+    ) -> Option<InProcessCreation> {
+        Some(InProcessRunner::create(self, spec).map(|(handle, prompt)| (erase(handle), prompt)))
+    }
     fn start(&self, spec: &ChildSpec) -> InProcessHandleResult {
         InProcessRunner::start(self, spec).map(erase)
     }
@@ -88,10 +142,17 @@ impl InProcessRunnerLike for InProcessRunner {
 
 /// `RpcRunnerLike`.
 pub trait RpcRunnerLike: Send + Sync {
+    fn wait_for_teardown_settlement(&self) -> Result<(), RunnerFailure> {
+        Ok(())
+    }
     fn start(&self, spec: &RpcRunnerSpec) -> Result<Arc<dyn ManagedChildHandle>, RunnerFailure>;
 }
 
 impl RpcRunnerLike for RpcProcessRunner {
+    fn wait_for_teardown_settlement(&self) -> Result<(), RunnerFailure> {
+        RpcProcessRunner::settle_teardowns(self);
+        Ok(())
+    }
     fn start(&self, spec: &RpcRunnerSpec) -> Result<Arc<dyn ManagedChildHandle>, RunnerFailure> {
         RpcProcessRunner::start(self, spec)
             .map(|handle: Arc<RpcChildHandle>| handle as Arc<dyn ManagedChildHandle>)
@@ -110,12 +171,62 @@ struct InProcessManagedRunner<R, C> {
 impl<R: InProcessRunnerLike, C: InProcessSessionContextProvider> ManagedRunner
     for InProcessManagedRunner<R, C>
 {
+    fn start_staged(
+        &self,
+        spec: &ManagedStartSpec,
+    ) -> Option<Result<crate::manager::types::StagedManagedChild, ManagedRunnerError>> {
+        if let Err(reason) = self.context.validate_start(spec) {
+            return Some(Err(ManagedRunnerError::Runner(RunnerFailure::new(
+                RunnerFailureKind::ModelUnavailable,
+                reason,
+            ))));
+        }
+        let spec = without_excluded_fallbacks(spec, &self.context.excluded_models());
+        let child = to_child_spec(&spec, self.context.provide(&spec));
+        self.runner.create(&child).map(|result| {
+            result.map_err(runner_error).map(|(child, prompt)| {
+                let begin_child = Arc::clone(&child);
+                let first_prompt = prompt.clone();
+                crate::manager::types::StagedManagedChild {
+                    child,
+                    first_prompt,
+                    begin: Box::new(move || {
+                        if let Some(turn) = begin_child.start_initial_turn(&prompt) {
+                            return turn;
+                        }
+                        let outcome_child = Arc::clone(&begin_child);
+                        let sent = begin_child.follow_up(&prompt);
+                        crate::pause::ports::ResumedChildTurn {
+                            turn_id: String::new(),
+                            outcome: Box::new(move || match sent {
+                                Ok(()) => outcome_child.wait_for_outcome(),
+                                Err(error) => crate::runners::RunnerOutcome::error(
+                                    RunnerFailureKind::ChildPromptFailed,
+                                    error.to_string(),
+                                ),
+                            }),
+                        }
+                    }),
+                }
+            })
+        })
+    }
+
     fn start(&self, spec: &ManagedStartSpec) -> ManagedRunnerResult {
-        let child = to_child_spec(spec, self.context.provide(spec));
+        let spec = without_excluded_fallbacks(spec, &self.context.excluded_models());
+        self.context.validate_start(&spec).map_err(|reason| {
+            ManagedRunnerError::Runner(RunnerFailure::new(
+                RunnerFailureKind::ModelUnavailable,
+                reason,
+            ))
+        })?;
+        let child = to_child_spec(&spec, self.context.provide(&spec));
         self.runner.start(&child).map_err(runner_error)
     }
 
     fn resume(&self, spec: &ManagedStartSpec, session_path: &str) -> Option<ManagedRunnerResult> {
+        let filtered = without_excluded_fallbacks(spec, &self.context.excluded_models());
+        let spec = &filtered;
         let resolved = match self.context.resolve_resume_context(spec) {
             Some(Err(reason)) => {
                 return Some(Err(ManagedRunnerError::Runner(RunnerFailure::new(
@@ -150,6 +261,11 @@ struct RpcManagedRunner<R> {
 }
 
 impl<R: RpcRunnerLike> ManagedRunner for RpcManagedRunner<R> {
+    fn settle_teardowns(&self) -> Result<(), ManagedRunnerError> {
+        self.runner
+            .wait_for_teardown_settlement()
+            .map_err(ManagedRunnerError::Runner)
+    }
     fn start(&self, spec: &ManagedStartSpec) -> ManagedRunnerResult {
         self.runner
             .start(&to_rpc_spec(spec))
@@ -165,6 +281,20 @@ pub fn create_rpc_managed_runner<R: RpcRunnerLike + 'static>(runner: R) -> Arc<d
 /// spec onto the child's command line.
 pub fn to_rpc_spec(spec: &ManagedStartSpec) -> RpcRunnerSpec {
     RpcRunnerSpec {
+        fallback_models: spec.fallback_models.as_ref().map(|models| {
+            models
+                .iter()
+                .map(|model| {
+                    let base = format!("{}/{}", model.provider, model.model_id);
+                    model
+                        .reasoning
+                        .as_ref()
+                        .or(model.variant.as_ref())
+                        .map_or(base.clone(), |reasoning| format!("{base}:{reasoning}"))
+                })
+                .collect()
+        }),
+        traceparent: spec.traceparent.clone(),
         task_id: spec.task_id.clone(),
         cwd: spec.cwd.clone(),
         state_dir: spec.state_dir.clone(),
@@ -180,9 +310,10 @@ pub fn to_rpc_spec(spec: &ManagedStartSpec) -> RpcRunnerSpec {
 /// `stateDir` is already `children/<taskId>`; the session dir nests `sessions/<taskId>/` under
 /// it, the same layout as an RPC child.
 pub fn to_child_spec(spec: &ManagedStartSpec, context: InProcessSessionContext) -> ChildSpec {
-    let workpool_state_dir = spec.workpool_state_dir.clone().or_else(|| {
-        spec.workpool_run_epoch.map(|_| spec.state_dir.clone())
-    });
+    let workpool_state_dir = spec
+        .workpool_state_dir
+        .clone()
+        .or_else(|| spec.workpool_run_epoch.map(|_| spec.state_dir.clone()));
     ChildSpec {
         task_id: spec.task_id.clone(),
         cwd: spec.cwd.clone(),
@@ -241,5 +372,53 @@ impl RpcRespawnRunner for DefaultRpcRespawnRunner {
             .start(spec)
             .map(|handle| handle as Arc<dyn ManagedChildHandle>)
             .map_err(ManagedRunnerError::Runner)
+    }
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    #[test]
+    fn exclusions_apply_to_resolved_pairs_and_decorated_selectors() {
+        let blocked = crate::state::ResolvedModelRecord::new(
+            crate::state::ResolvedModelSource::Category,
+            "blocked",
+            "family/model",
+        );
+        let allowed = crate::state::ResolvedModelRecord::new(
+            crate::state::ResolvedModelSource::Category,
+            "allowed",
+            "model-v2:0",
+        );
+        let spec = ManagedStartSpec {
+            fallback_models: Some(vec![blocked, allowed.clone()]),
+            ..Default::default()
+        };
+        let patterns = vec!["blocked/*".into()];
+        assert_eq!(
+            without_excluded_fallbacks(&spec, &patterns).fallback_models,
+            Some(vec![allowed])
+        );
+        assert_eq!(
+            without_excluded_selectors(
+                &[
+                    "blocked/family/model:high".into(),
+                    "allowed/model-v2:0".into()
+                ],
+                &patterns
+            ),
+            vec!["allowed/model-v2:0"]
+        );
+    }
+    #[test]
+    fn rpc_spec_carries_traceparent_without_persisting_it_in_spawn_spec() {
+        let spec = ManagedStartSpec {
+            traceparent: Some("00-abc-def-01".into()),
+            ..Default::default()
+        };
+        assert_eq!(to_rpc_spec(&spec).traceparent, spec.traceparent);
+        let persisted = serde_json::to_value(crate::state::TaskSpawnSpec::V1(crate::manager::helpers::build_spawn_spec_v1(&spec)))
+            .expect("spawn spec");
+        assert!(persisted.get("traceparent").is_none());
     }
 }

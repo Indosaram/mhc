@@ -1,6 +1,8 @@
 //! Execution mode precedence (`manager/execution-mode.ts`).
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum ExecutionMode {
     #[default]
@@ -70,7 +72,11 @@ pub fn resolve_configured_execution_mode(
         Some(ConfiguredExecutionMode::Auto) => auto_mode,
         None => sources.config_mode,
     };
-    sources.spec_mode.or(sources.agent_mode).or(config_mode).unwrap_or_default()
+    sources
+        .spec_mode
+        .or(sources.agent_mode)
+        .or(config_mode)
+        .unwrap_or_default()
 }
 
 pub fn resolve_execution_mode(sources: ExecutionModeSources) -> ExecutionMode {

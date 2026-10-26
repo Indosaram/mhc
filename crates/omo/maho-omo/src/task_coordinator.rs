@@ -30,7 +30,7 @@ impl TaskCoordinator {
 }
 
 impl CompletionCoordinator for TaskCoordinator {
-    fn enqueue(&self, key: &str, source: &str, message: &ParentNotifierMessage, callbacks: DeliveryCallbacks) -> Result<(), HostError> {
+    fn enqueue(&self, key: &str, source: &str, message: &ParentNotifierMessage, callbacks: DeliveryCallbacks) -> Result<bool, HostError> {
         if source != "task-completion" {
             return Err(HostError { message: format!("invalid task completion source: {source}") });
         }
@@ -44,10 +44,9 @@ impl CompletionCoordinator for TaskCoordinator {
             on_flushed: Some(Arc::new(move || callbacks.delivered())),
             on_delivery_failed: Some(Arc::new(move |error| failed.failed(HostError { message: error.into() }))),
         });
-        if !queued {
-            return Err(HostError { message: crate::coordinator::RETIRED_ERROR_MESSAGE.to_owned() });
-        }
-        Ok(())
+        // A refused enqueue is reported, not thrown: the caller still owns the notification and
+        // fails it durably so the post-reload reconcile can redeliver it.
+        Ok(queued)
     }
     fn schedule_flush(&self) { self.0.schedule_flush(); }
     fn flush_soon(&self) { self.0.flush_soon(); }
@@ -55,7 +54,7 @@ impl CompletionCoordinator for TaskCoordinator {
 
 impl LeadInjectionCoordinator for TaskCoordinator {
     fn enqueue(&self, injection: LeadInjection, custom_type: &str, display: bool) {
-        let LeadInjection { key, content, on_flushed, on_delivery_failed, .. } = injection;
+        let LeadInjection { key, source: _, content, run_ref, on_flushed, on_delivery_failed } = injection;
         let callbacks = DeliveryCallbacks::new(move |result| match result {
             Ok(()) => { if let Some(callback) = on_flushed { callback(); } }
             Err(error) => { if let Some(callback) = on_delivery_failed { callback(&error.message); } }
@@ -65,7 +64,9 @@ impl LeadInjectionCoordinator for TaskCoordinator {
         let queued = self.0.enqueue(IdleInjection {
             key, source: IdleInjectionSource::TeamMessage,
             custom_type: Some(custom_type.into()), content,
-            display: Some(display), details: None,
+            display: Some(display),
+            // The run reference rides the injection's details so a receiver can place the delivery.
+            details: run_ref.map(|run| serde_json::json!({"runRef": run})),
             passive: Some(false),
             on_flushed: Some(Arc::new(move || callbacks.delivered())),
             on_delivery_failed: Some(Arc::new(move |error| failed.failed(HostError { message: error.into() }))),

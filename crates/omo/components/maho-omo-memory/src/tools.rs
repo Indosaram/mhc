@@ -46,12 +46,12 @@ pub fn create_memory_tools_with_options(resolve: MemoryContextResolver, options:
     let exposure = options.exposure;
     let memory_resolve = Arc::clone(&resolve);
     let memory_options = options.clone();
-    let mut memory = ToolDefinition::new(MEMORY_TOOL_NAME, MEMORY_TOOL_DESCRIPTION, serde_json::json!({"type":"object","required":["command","reason"],"properties":{"command":{"enum":["create","str_replace","insert","delete","rename","update_description"]},"reason":{"type":"string"},"file_path":{"type":"string"},"old_path":{"type":"string"},"new_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"insert_line":{"type":"number"},"insert_text":{"type":"string"},"description":{"type":"string"},"file_text":{"type":"string"}}}), Arc::new(move |call| {
+    let mut memory = ToolDefinition::new(MEMORY_TOOL_NAME, MEMORY_TOOL_DESCRIPTION, serde_json::json!({"type":"object","required":["command","reason"],"properties":{"command":{"enum":["create","str_replace","insert","delete","rename","update_description"]},"reason":{"type":"string"},"file_path":{"type":"string"},"old_path":{"type":"string"},"new_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"insert_line":{"type":"number"},"insert_text":{"type":"string"},"description":{"type":"string"},"file_text":{"type":"string"},"source":{"type":"string","enum":["user","agent","inferred"]},"user_quote":{"type":"string"}}}), Arc::new(move |call| {
         let resolve = Arc::clone(&memory_resolve);
         let options = memory_options.clone();
         Box::pin(async move {
             let context = resolve().ok_or_else(|| ToolError::Message("memory: no memory identity bound to this session; enable omo memory and restart the session so the memory tools can initialize".into()))?;
-            let engine = prepare_memory_engine_session(&context.identity, &context.identity_paths, MemoryEngineSessionOptions { lock_wait_timeout_ms: options.lock_wait_timeout_ms, lock_retry_delay_ms: options.lock_retry_delay_ms }).map_err(|e| ToolError::Message(e.message))?;
+            let engine = prepare_memory_engine_session(&context.identity, &context.identity_paths, MemoryEngineSessionOptions { lock_wait_timeout_ms: options.lock_wait_timeout_ms, lock_retry_delay_ms: options.lock_retry_delay_ms, ..Default::default() }).map_err(|e| ToolError::Message(e.message))?;
             let params: MemoryToolParams = serde_json::from_value(call.params)?;
             let repaired = memory_core::tools::leaked_arguments::repair_leaked_arguments(params);
             let repair_note = memory_core::tools::leaked_arguments::describe_repairs(&repaired.repairs);
@@ -81,12 +81,12 @@ pub fn create_memory_tools_with_options(resolve: MemoryContextResolver, options:
     memory.execution_mode = Some(ToolExecutionMode::Sequential);
     memory.prompt_snippet = Some("memory - edit omo memory blocks (create/str_replace/insert/delete/rename/update_description); auto-commits each change".into());
     memory.prompt_guidelines = Some(vec!["Record durable facts, preferences, and decisions with the memory tool as you learn them; every change is committed with the reason you provide.".into(), "Memory files are markdown with YAML frontmatter; keep each block's description accurate because the memory index surfaces it.".into(), "When creating, renaming, or deleting memory files, update [[path]] references in other memory files so they stay discoverable.".into()]);
-    let mut patch = ToolDefinition::new(MEMORY_APPLY_PATCH_TOOL_NAME, MEMORY_APPLY_PATCH_DESCRIPTION, serde_json::json!({"type":"object","required":["reason","input"],"properties":{"reason":{"type":"string"},"input":{"type":"string"}}}), Arc::new(move |call| {
+    let mut patch = ToolDefinition::new(MEMORY_APPLY_PATCH_TOOL_NAME, MEMORY_APPLY_PATCH_DESCRIPTION, serde_json::json!({"type":"object","required":["reason","input"],"properties":{"reason":{"type":"string"},"input":{"type":"string"},"source":{"type":"string","enum":["user","agent","inferred"]},"user_quote":{"type":"string"}}}), Arc::new(move |call| {
         let resolve = Arc::clone(&resolve);
         let options = options.clone();
         Box::pin(async move {
             let context = resolve().ok_or_else(|| ToolError::Message("memory_apply_patch: no memory identity bound to this session; enable omo memory and restart the session so the memory tools can initialize".into()))?;
-            let engine = prepare_memory_engine_session(&context.identity, &context.identity_paths, MemoryEngineSessionOptions { lock_wait_timeout_ms: options.lock_wait_timeout_ms, lock_retry_delay_ms: options.lock_retry_delay_ms }).map_err(|e| ToolError::Message(e.message))?;
+            let engine = prepare_memory_engine_session(&context.identity, &context.identity_paths, MemoryEngineSessionOptions { lock_wait_timeout_ms: options.lock_wait_timeout_ms, lock_retry_delay_ms: options.lock_retry_delay_ms, ..Default::default() }).map_err(|e| ToolError::Message(e.message))?;
             let reason = call.params.get("reason").and_then(serde_json::Value::as_str).ok_or_else(|| ToolError::Message("memory_apply_patch: reason must be a string".into()))?;
             let input = call.params.get("input").and_then(serde_json::Value::as_str).ok_or_else(|| ToolError::Message("memory_apply_patch: input must be a string".into()))?;
             // The registered ToolCall hook writes the trusted provenance object into the call

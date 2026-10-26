@@ -170,7 +170,7 @@ fn nearest_existing_directory_inside_context(directory: &str, cwd: &str) -> Opti
 fn format_install_options(server_id: &str, install_hint: &str) -> Vec<String> {
     if let Some((_, local_hint)) = LSP_LOCAL_INSTALL_HINTS.iter().find(|(id, _)| *id == server_id) {
         vec![
-            "To install in THIS repository (preferred \u{2014} no global install needed):".to_string(),
+            "To install in THIS repository (preferred, no global install needed):".to_string(),
             format!("  {local_hint}"),
             String::new(),
             "Or install it globally:".to_string(),
@@ -233,7 +233,7 @@ pub fn format_server_lookup_error(result: &FailedServerLookupResult) -> Result<S
             let decision = load_install_decision(&server.id)?.map(|record| record.decision);
             if decision == Some(InstallDecision::Declined) {
                 return Ok(format!(
-                    "LSP server '{}' ({extensions}) is NOT INSTALLED; user previously declined installation \u{2014} proceed without LSP.",
+                    "LSP server '{}' ({extensions}) is NOT INSTALLED; user previously declined installation: proceed without LSP.",
                     server.id
                 ));
             }
@@ -260,7 +260,7 @@ pub fn format_server_lookup_error(result: &FailedServerLookupResult) -> Result<S
             lines.extend(format_install_options(&server.id, install_hint));
             lines.push(String::new());
             lines.push(
-                "ACTION REQUIRED \u{2014} ASK THE USER whether to install this LSP server."
+                "ACTION REQUIRED: ASK THE USER whether to install this LSP server."
                     .to_string(),
             );
             if !context.capabilities.install_decision_tool {

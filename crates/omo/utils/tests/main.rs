@@ -15,6 +15,8 @@ mod codegraph_workspace;
 mod config_files;
 #[path = "migration.rs"]
 mod migration;
+#[path = "path_containment.rs"]
+mod path_containment;
 #[path = "process_sweep.rs"]
 mod process_sweep;
 #[path = "processes.rs"]

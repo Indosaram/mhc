@@ -20,8 +20,8 @@ pub use parse::{
     parse_permission, parse_session_opened, HelloHandshake, SessionOpened,
 };
 pub use rpc_client::{
-    CallOptions, DesktopEngineRpcError, DesktopError, DesktopServiceError,
-    DesktopServiceErrorCode, RpcClient, RpcClientHooks,
+    CallOptions, DesktopEngineRpcError, DesktopError, DesktopLaunchContextError,
+    DesktopServiceError, DesktopServiceErrorCode, RpcClient, RpcClientHooks,
 };
 pub use service::{DesktopService, DesktopServiceOptions, DesktopSessionOpenParams};
 pub use timeouts::{

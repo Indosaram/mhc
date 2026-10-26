@@ -9,6 +9,7 @@ use super::isolation::{IsolationRecord, TaskIsolationSpec};
 pub enum TaskStatus {
     Pending,
     Running,
+    Paused,
     Completed,
     Error,
     Cancelled,
@@ -16,9 +17,10 @@ pub enum TaskStatus {
     Lost,
 }
 
-pub const TASK_STATUSES: [TaskStatus; 7] = [
+pub const TASK_STATUSES: [TaskStatus; 8] = [
     TaskStatus::Pending,
     TaskStatus::Running,
+    TaskStatus::Paused,
     TaskStatus::Completed,
     TaskStatus::Error,
     TaskStatus::Cancelled,
@@ -31,6 +33,7 @@ impl TaskStatus {
         match self {
             Self::Pending => "pending",
             Self::Running => "running",
+            Self::Paused => "paused",
             Self::Completed => "completed",
             Self::Error => "error",
             Self::Cancelled => "cancelled",
@@ -47,7 +50,7 @@ impl TaskStatus {
 
     pub fn is_terminal(self) -> bool {
         match self {
-            Self::Pending | Self::Running => false,
+            Self::Pending | Self::Running | Self::Paused => false,
             Self::Completed | Self::Error | Self::Cancelled | Self::Interrupted | Self::Lost => {
                 true
             }
@@ -181,6 +184,7 @@ pub enum SuspensionReason {
     IdleEvicted,
     OwnHostUnreachable,
     RevivalDeferred,
+    SessionQuit,
     StoreIndexUnavailable,
 }
 
@@ -269,9 +273,37 @@ pub enum TokenCoverageStatus {
 #[serde(rename_all = "snake_case")]
 pub enum CostReportStatus {
     Reported,
+    Partial,
     Invalid,
     Unavailable,
 }
+
+/// In-flight stats tagged with the start epoch of the run they describe.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiveRunStats {
+    #[serde(rename = "runStartEpoch")]
+    pub run_start_epoch: i64,
+    pub stats: TaskRunStats,
+}
+
+pub const COST_REPORT_STATUSES: [CostReportStatus; 4] = [
+    CostReportStatus::Reported,
+    CostReportStatus::Partial,
+    CostReportStatus::Unavailable,
+    CostReportStatus::Invalid,
+];
+
+pub use crate::completion::{
+    ParentModelFallback, ParentModelFallbackPhase, ParentModelFallbackReason,
+};
+
+pub const PARENT_MODEL_FALLBACK_REASONS: [ParentModelFallbackReason; 5] = [
+    ParentModelFallbackReason::UsageLimit,
+    ParentModelFallbackReason::NotSignedIn,
+    ParentModelFallbackReason::Unavailable,
+    ParentModelFallbackReason::Refused,
+    ParentModelFallbackReason::Error,
+];
 
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
@@ -439,6 +471,7 @@ pub struct TaskRecordInput {
     pub fallback_models: Option<Vec<ResolvedModelRecord>>,
     pub fallback_attempts: Option<Vec<ResolvedModelRecord>>,
     pub resolved_model: Option<ResolvedModelRecord>,
+    pub parent_model: Option<String>,
     pub tool_allow: Option<Vec<String>>,
     pub tool_deny: Option<Vec<String>>,
     pub notify_on_terminal: bool,
@@ -481,8 +514,10 @@ pub struct TaskRecord {
     pub updated_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_at: Option<String>,
     pub notification: TaskNotification,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "super::run_fence::is_legacy_run_start_epoch")]
     pub run_start_epoch: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_run_id: Option<String>,
@@ -563,6 +598,79 @@ pub struct TaskRecord {
     /// revival reads it and finishes the cancel instead of running the child again.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cancel_requested: Option<CancelRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_model_fallback: Option<ParentModelFallback>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_closing_child: Option<FallbackClosingChild>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_queued: Option<StartQueued>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revive_delivery_uncertain: Option<ReviveDeliveryUncertainty>,
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "js_number")]
+    pub prior_runs_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_admission: Option<crate::manager::concurrency::QueuedTaskAdmission>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_pause: Option<RecordedRunPause>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resumed_run_epoch: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub burnt_epoch: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_handoff_epoch: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revival_deferred_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_deadline_at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub residency_claim: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FallbackClosingChild {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_session: Option<HostSessionIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires_confirmation: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StartQueued {
+    pub model: String,
+    pub queued_at: String,
+    pub queue_position: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviveDeliveryUncertainty {
+    pub run_epoch: f64,
+    pub message_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunPauseKind {
+    Dag,
+    Task,
+    Workpool,
+    Team,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunPauseRef {
+    pub kind: RunPauseKind,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedRunPause {
+    pub parent_session_id: String,
+    pub parent_pause_seq: u64,
+    pub run_ref: RunPauseRef,
 }
 
 /// A task_cancel accepted while the child was unreachable (TS `CancelRequest`).
@@ -575,6 +683,12 @@ pub struct CancelRequest {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskTransition {
+    Pause {
+        timestamp: String,
+    },
+    Unpause {
+        timestamp: String,
+    },
     Start {
         timestamp: String,
         pid: Option<i64>,
@@ -625,7 +739,9 @@ pub enum TaskTransition {
 impl TaskTransition {
     pub fn timestamp(&self) -> &str {
         match self {
-            Self::Start { timestamp, .. }
+            Self::Pause { timestamp }
+            | Self::Unpause { timestamp }
+            | Self::Start { timestamp, .. }
             | Self::Complete { timestamp, .. }
             | Self::Fail { timestamp, .. }
             | Self::Cancel { timestamp, .. }

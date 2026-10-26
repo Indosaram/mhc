@@ -23,7 +23,7 @@ fn input() -> WorkpoolCreate {
 fn spec() -> WorkpoolSpec { WorkpoolSpec { start: Default::default(), plan: Default::default() } }
 
 fn record() -> WorkpoolRecord {
-    WorkpoolRecord { version: 1, pool_id: "wp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(), name: "pool".into(), parent_session_id: "session".into(), root_session_id: "root".into(), generation: 1, revision: 0, mode: WorkpoolMode::Fresh, agent: input().agent, worker_spec: spec(), status: WorkpoolStatus::Open, kernel_tool_names: None, items: vec![], workers: vec![], aggregate: None }
+    WorkpoolRecord { hold: None, version: 1, pool_id: "wp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(), name: "pool".into(), parent_session_id: "session".into(), root_session_id: "root".into(), generation: 1, revision: 0, mode: WorkpoolMode::Fresh, agent: input().agent, worker_spec: spec(), status: WorkpoolStatus::Open, kernel_tool_names: None, items: vec![], workers: vec![], aggregate: None }
 }
 
 #[test]

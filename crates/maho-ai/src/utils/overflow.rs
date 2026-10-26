@@ -137,20 +137,31 @@ pub fn is_context_overflow(message: &AssistantMessage, context_window: Option<u6
     let Some(window) = context_window.filter(|w| *w > 0) else {
         return false;
     };
-    let input_tokens = message.usage.input + message.usage.cache_read;
+    let (context_input, context_output) = match message.usage.context_usage {
+        None => (
+            message.usage.input + message.usage.cache_read,
+            message.usage.output,
+        ),
+        Some(context) => (
+            context.map_or(0, |c| c.input),
+            context.map_or(0, |c| c.output),
+        ),
+    };
     match message.stop_reason {
-        StopReason::Stop => input_tokens > window,
-        StopReason::Length => {
-            message.usage.output == 0 && input_tokens as f64 >= window as f64 * 0.99
-        }
+        StopReason::Stop => context_input > window,
+        StopReason::Length => context_output == 0 && context_input as f64 >= window as f64 * 0.99,
         _ => false,
     }
 }
 
 pub fn is_recoverable_length(message: &AssistantMessage, desired_max_output: u64) -> bool {
+    let output = match message.usage.context_usage {
+        Some(Some(c)) => c.output,
+        _ => message.usage.output,
+    };
     message.stop_reason == StopReason::Length
         && desired_max_output > 0
-        && message.usage.output < desired_max_output
+        && output < desired_max_output
 }
 
 pub fn get_overflow_patterns() -> Vec<Regex> {
@@ -251,6 +262,7 @@ mod tests {
     fn error_message(error_message: &str) -> AssistantMessage {
         AssistantMessage {
             error_cause: None,
+            prompt_cache_breakpoint: None,
             prompt_cache_diagnostics: None,
             thinking_level: None,
             provider_diagnostic: None,
@@ -306,6 +318,7 @@ mod tests {
     fn length_stop_message(options: LengthStopOptions) -> AssistantMessage {
         AssistantMessage {
             error_cause: None,
+            prompt_cache_breakpoint: None,
             prompt_cache_diagnostics: None,
             thinking_level: None,
             provider_diagnostic: None,
@@ -317,7 +330,7 @@ mod tests {
             response_id: None,
             provider_thinking_level: None,
             diagnostics: None,
-            usage: Usage {
+            usage: Usage { context_usage: None,
                 input: options.input,
                 output: options.output,
                 cache_read: options.cache_read,
@@ -329,6 +342,7 @@ mod tests {
                     + options.cache_write
                     + options.output,
                 cost: Default::default(),
+                ..Default::default()
             },
             stop_reason: StopReason::Length,
             stop_details: None,
@@ -738,6 +752,73 @@ mod tests {
     #[test]
     fn get_overflow_patterns_count() {
         assert_eq!(get_overflow_patterns().len(), 30);
+    }
+
+    #[test]
+    fn inspects_request_context_usage_for_overflow_and_recovery() {
+        use crate::types::ContextUsage;
+        let mut message = length_stop_message(LengthStopOptions {
+            input: 702_000,
+            cache_read: 0,
+            cache_write: 0,
+            output: 300,
+        });
+
+        message.stop_reason = StopReason::Stop;
+        message.usage.context_usage = Some(Some(ContextUsage {
+            input: 352_000,
+            output: 200,
+        }));
+        assert!(!is_context_overflow(&message, Some(600_000)));
+
+        message.usage.context_usage = Some(Some(ContextUsage {
+            input: 600_001,
+            output: 200,
+        }));
+        assert!(is_context_overflow(&message, Some(600_000)));
+
+        message.stop_reason = StopReason::Length;
+        message.usage.context_usage = Some(Some(ContextUsage {
+            input: 600_000,
+            output: 0,
+        }));
+        assert!(is_context_overflow(&message, Some(600_000)));
+
+        message.usage.context_usage = Some(Some(ContextUsage {
+            input: 352_000,
+            output: 0,
+        }));
+        assert!(!is_context_overflow(&message, Some(600_000)));
+
+        let mut rec_msg = length_stop_message(LengthStopOptions {
+            input: 2_000,
+            cache_read: 0,
+            cache_write: 0,
+            output: 2_048,
+        });
+        rec_msg.usage.context_usage = Some(Some(ContextUsage {
+            input: 1_000,
+            output: 16,
+        }));
+        assert!(is_recoverable_length(&rec_msg, 1_024));
+
+        rec_msg.usage.context_usage = Some(Some(ContextUsage {
+            input: 1_000,
+            output: 1_024,
+        }));
+        assert!(!is_recoverable_length(&rec_msg, 1_024));
+
+        rec_msg.usage.context_usage = Some(None);
+        assert!(!is_recoverable_length(&rec_msg, 1_024));
+
+        let mut rec_msg2 = length_stop_message(LengthStopOptions {
+            input: 2_000,
+            cache_read: 0,
+            cache_write: 0,
+            output: 16,
+        });
+        rec_msg2.usage.context_usage = Some(None);
+        assert!(is_recoverable_length(&rec_msg2, 1_024));
     }
 
     #[test]

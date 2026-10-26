@@ -14,12 +14,16 @@ pub struct GoalDelivery {
     reference: crate::accounting_hooks::GoalStoreReference,
     now: Arc<dyn Fn() -> f64 + Send + Sync>,
     api: Arc<ExtensionApi>,
-    pending: AtomicBool,
+    pending: Arc<AtomicBool>,
     admission: tokio::sync::Mutex<()>,
     timer: tokio::sync::Mutex<crate::monitor_timer::GoalContinuationTimer>,
     wait: tokio::sync::Mutex<crate::wait_ticker::GoalWaitTicker>,
     context: Mutex<Option<ExtensionContext>>,
     subscriptions: Mutex<Vec<maho_ext_api::BusSubscription>>,
+    todo_backstop: Mutex<crate::todo_owed_backstop::TodoOwedBackstop>,
+    pub lifecycle: Arc<crate::lifecycle_facts::GoalLifecycleCollector>,
+    neutral_lifecycle: Mutex<Option<Arc<maho_ext_api::goal_lifecycle::GoalLifecycleService>>>,
+    last_facts: Arc<Mutex<Option<crate::lifecycle_facts::GoalLifecycleFacts>>>,
 }
 impl GoalDelivery {
     pub fn new(
@@ -38,7 +42,7 @@ impl GoalDelivery {
                 api.events.clone(),
                 api.runtime.clone(),
             )),
-            pending: AtomicBool::new(false),
+            pending: Arc::new(AtomicBool::new(false)),
             admission: Default::default(),
             timer: Default::default(),
             wait: tokio::sync::Mutex::new(crate::wait_ticker::GoalWaitTicker::new(
@@ -53,6 +57,10 @@ impl GoalDelivery {
             )),
             context: Mutex::new(None),
             subscriptions: Mutex::new(Vec::new()),
+            todo_backstop: Default::default(),
+            lifecycle: Default::default(),
+            neutral_lifecycle: Default::default(),
+            last_facts: Default::default(),
         }
     }
     pub fn queue_callback(self: &Arc<Self>) -> crate::command_registration::QueueGoalContinuation {
@@ -182,14 +190,18 @@ impl GoalDelivery {
             1800000.0
         };
         // PERF-DIVERGENCE(senpi goal delivery): upstream clones the whole branch to find the last assistant message; we fetch only the branch tail up to the newest parseable assistant message. The selected message is identical.
-        let (_, tail) = ctx.session_manager.get_branch_tail(0, &mut |data: &serde_json::Value| {
-            data.get("type").and_then(serde_json::Value::as_str) == Some("message")
-                && data.get("message").is_some_and(|message| {
-                message.get("role").and_then(serde_json::Value::as_str) == Some("assistant")
-                    && serde_json::from_value::<maho_ai::types::AssistantMessage>(message.clone())
-                        .is_ok()
-                })
-        });
+        let (_, tail) = ctx
+            .session_manager
+            .get_branch_tail(0, &mut |data: &serde_json::Value| {
+                data.get("type").and_then(serde_json::Value::as_str) == Some("message")
+                    && data.get("message").is_some_and(|message| {
+                        message.get("role").and_then(serde_json::Value::as_str) == Some("assistant")
+                            && serde_json::from_value::<maho_ai::types::AssistantMessage>(
+                                message.clone(),
+                            )
+                            .is_ok()
+                    })
+            });
         let usage = crate::lifecycle_helpers::last_assistant_from_entries(&tail).map(|message| {
             (
                 message.usage.cache_read as f64,
@@ -362,6 +374,54 @@ impl GoalDelivery {
     ) -> Result<(), ExtensionFailure> {
         match event {
             ExtensionEvent::SessionStart(start) => {
+                let neutral = maho_ext_api::goal_lifecycle::goal_lifecycle_service(
+                    ctx.session_manager.session_id(),
+                );
+                let publish = neutral.clone();
+                self.lifecycle
+                    .on_goal_lifecycle_change(Arc::new(move |goal| {
+                        publish.transition(goal.map(|goal| {
+                            maho_ext_api::goal_lifecycle::LifecycleGoal {
+                                id: goal.id.clone(),
+                                status: match goal.status {
+                                    GoalStatus::Active => "active",
+                                    GoalStatus::Paused => "paused",
+                                    GoalStatus::Blocked => "blocked",
+                                    GoalStatus::Complete => "complete",
+                                }
+                                .into(),
+                                continuation_stopped: goal.continuation_stopped_at.is_some(),
+                            }
+                        }));
+                    }));
+                *self.neutral_lifecycle.lock().map_err(failure)? = Some(neutral);
+                self.lifecycle.goal_lifecycle_changed(goal);
+                crate::lifecycle_facts::bind_session_lifecycle(
+                    &(self.reference)(ctx),
+                    &self.lifecycle,
+                );
+                let events = self.api.events.clone();
+                let session_id = ctx.session_manager.session_id().to_owned();
+                self.lifecycle
+                    .on_goal_lifecycle_change(Arc::new(move |goal| {
+                        events.emit(
+                            "goal_lifecycle_facts",
+                            &serde_json::json!({"sessionId":session_id,"goal":goal}),
+                        );
+                    }));
+                self.todo_backstop.lock().map_err(failure)?.reset_chain();
+                let facts = self.last_facts.clone();
+                self.lifecycle
+                    .register_goal_lifecycle_collector(Arc::new(move || {
+                        facts
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone()
+                            .unwrap_or(crate::lifecycle_facts::GoalLifecycleFacts {
+                                goal: None,
+                                input: None,
+                            })
+                    }));
                 self.pending.store(false, Ordering::Release);
                 self.subscribe(ctx);
                 if let Some(goal) = goal {
@@ -428,6 +488,13 @@ impl GoalDelivery {
                     abort_source: *abort_source,
                     will_retry: will_retry.unwrap_or(false),
                 };
+                if ended.aborted
+                    && ended.abort_source == Some(maho_ext_api::AbortSource::User)
+                    && crate::stop_pause::stop_hold_live(ctx)
+                    && let Some(goal) = goal.filter(|goal| goal.status == GoalStatus::Paused)
+                {
+                    crate::stop_pause::mark_stop_paused(&self.api, &goal.id)?;
+                }
                 if crate::agent_end_continuation::goal_agent_end_route(goal, &ended)
                     == crate::agent_end_continuation::GoalAgentEndRoute::AgentEnd
                     && should_queue_goal_continuation_after_agent_end(
@@ -489,8 +556,96 @@ impl GoalDelivery {
                             .await?;
                     }
                 }
+                let sources = self
+                    .runtime
+                    .monitor
+                    .lock()
+                    .map_err(failure)?
+                    .live_wake_sources();
+                let outcome = self
+                    .todo_backstop
+                    .lock()
+                    .map_err(failure)?
+                    .after_agent_end(
+                        &self.api,
+                        ctx,
+                        &ended,
+                        goal,
+                        (self.pending.load(Ordering::Acquire), &sources),
+                        ctx.todo_turn_end_backstop_enabled()?,
+                    )?;
+                let input = crate::turn_end_liveness_report::collect_turn_end_liveness_input(
+                    ctx,
+                    &ended,
+                    goal,
+                    Some(&outcome),
+                    (crate::turn_end_liveness_report::deadline_stop_pending(ctx),
+                    self.pending.load(Ordering::Acquire)),
+                    &*self.runtime.monitor.lock().map_err(failure)?,
+                    (self.now)() as i64,
+                )?;
+                crate::turn_end_liveness_report::report_turn_end_liveness(&self.api, ctx, &input);
+                if let Some(service) = self.neutral_lifecycle.lock().map_err(failure)?.as_ref() {
+                    service.turn_end(serde_json::to_value(&input).map_err(failure)?);
+                }
+                *self.last_facts.lock().map_err(failure)? =
+                    Some(crate::lifecycle_facts::GoalLifecycleFacts {
+                        goal: goal.cloned(),
+                        input: Some(input),
+                    });
+                let reference = self.reference.clone();
+                let context = ctx.clone();
+                let monitor = self.runtime.monitor.clone();
+                let pending = self.pending.clone();
+                let now = self.now.clone();
+                let ended_live = ended.clone();
+                let outcome_live = outcome.clone();
+                self.lifecycle
+                    .register_goal_lifecycle_collector(Arc::new(move || {
+                        let goal =
+                            crate::store::read_goal(&reference(&context)).unwrap_or_else(|error| {
+                                maho_ext_api::diagnostic(&format!(
+                                    "goal lifecycle read failed: {error}"
+                                ));
+                                None
+                            });
+                        let input = {
+                            let monitor = monitor
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            match crate::turn_end_liveness_report::collect_turn_end_liveness_input(
+                                &context,
+                                &ended_live,
+                                goal.as_ref(),
+                                Some(&outcome_live),
+                                (crate::turn_end_liveness_report::deadline_stop_pending(&context),
+                                pending.load(Ordering::Acquire)),
+                                &monitor,
+                                now() as i64,
+                            ) {
+                                Ok(input) => Some(input),
+                                Err(error) => {
+                                    maho_ext_api::diagnostic(&format!(
+                                        "goal lifecycle collection failed: {error}"
+                                    ));
+                                    None
+                                }
+                            }
+                        };
+                        crate::lifecycle_facts::GoalLifecycleFacts { goal, input }
+                    }));
+                self.lifecycle.goal_lifecycle_changed(goal);
             }
             ExtensionEvent::HeldWakesReleased { sources } => {
+                if let Some(goal) = goal.filter(|goal| {
+                    goal.status == GoalStatus::Active
+                        && crate::stop_pause::paused_by_stop(ctx, &goal.id)
+                }) {
+                    crate::stop_pause::mark_stop_resumed(&self.api, &goal.id)?;
+                    self.queue(ctx, goal, GoalContinuationPath::SessionStart)
+                        .await?;
+                    return self.reconcile(ctx).await;
+                }
                 if !sources.contains_key("goal") {
                     return Ok(());
                 }
@@ -522,12 +677,21 @@ impl GoalDelivery {
                     maho_ext_api::InputDisposition::Started | maho_ext_api::InputDisposition::Queued,
                 ..
             } => {
+                self.todo_backstop.lock().map_err(failure)?.reset_chain();
                 self.pending.store(false, Ordering::Release);
             }
             ExtensionEvent::SessionAbort => {
+                if let Some(goal) = goal.filter(|goal| goal.status == GoalStatus::Paused)
+                    && crate::stop_pause::stop_hold_live(ctx)
+                {
+                    crate::stop_pause::mark_stop_paused(&self.api, &goal.id)?;
+                }
                 self.pending.store(false, Ordering::Release);
             }
             ExtensionEvent::SessionShutdown(_) => {
+                self.lifecycle.retire();
+                self.neutral_lifecycle.lock().map_err(failure)?.take();
+                *self.last_facts.lock().map_err(failure)? = None;
                 self.pending.store(false, Ordering::Release);
                 self.subscriptions.lock().map_err(failure)?.clear();
                 *self.context.lock().map_err(failure)? = None;
@@ -573,6 +737,146 @@ mod tests {
         fn get_all_tools(&self) -> Result<Vec<maho_ext_api::ToolInfo>, ExtensionFailure> {
             Ok(Vec::new())
         }
+    }
+    #[tokio::test]
+    async fn backstop_real_branch_delivers_caps_and_resets_on_progress() {
+        use maho_ext_api::*;
+        struct Branch {
+            entries: Mutex<Vec<SessionEntry>>,
+            actions: Arc<dyn ExtensionContextActions>,
+        }
+        impl ToolSessionManager for Branch {
+            fn session_id(&self) -> &str {
+                "backstop"
+            }
+            fn session_file(&self) -> Option<&std::path::Path> {
+                None
+            }
+        }
+        impl SessionManager for Branch {
+            fn get_entries(&self) -> Vec<SessionEntry> {
+                self.entries.lock().unwrap().clone()
+            }
+            fn get_branch(&self) -> Vec<SessionEntry> {
+                self.get_entries()
+            }
+            fn get_leaf_id(&self) -> Option<String> {
+                None
+            }
+            fn get_session_name(&self) -> Option<String> {
+                None
+            }
+            fn extension_context_actions(&self) -> Option<&dyn ExtensionContextActions> {
+                Some(self.actions.as_ref())
+            }
+        }
+        let mut ctx = crate::test_context::context();
+        let session = crate::test_context::bind_session(&mut ctx);
+        let entry = |remaining: bool| SessionEntry {
+            id: "todo".into(),
+            parent_id: None,
+            timestamp: String::new(),
+            kind: "message".into(),
+            data: serde_json::json!({"message":{"role":"toolResult","toolName":"todo","details":{"op":"init","phases":[{"name":"Build","tasks":[{"content":"Write parser","status":if remaining {"in_progress"}else{"completed"}},{"content":"Wire parser","status":"pending"}]}],"storage":"memory"}}}),
+        };
+        let branch = Arc::new(Branch {
+            entries: Mutex::new(vec![entry(true)]),
+            actions: session.extension_context_actions(),
+        });
+        ctx.session_manager = branch.clone();
+        let capture = Arc::new(Capture(Mutex::new(Vec::new())));
+        let transport = ExtensionRuntime::default();
+        transport.bind(capture.clone());
+        let api = ExtensionApi::new(
+            LoadedExtension::new("goal", "/tmp".into(), Default::default()),
+            Default::default(),
+            Default::default(),
+            transport,
+        );
+        let event = maho_core::agent_abort_provenance::AgentEndEvent {
+            messages: vec![maho_agent::types::AgentMessage::Llm(
+                maho_ai::types::Message::Assistant(Box::new(
+                    maho_ai::providers::faux::faux_assistant_message(
+                        "Continuing parser work.",
+                        Default::default(),
+                    ),
+                )),
+            )],
+            aborted: false,
+            abort_source: None,
+            will_retry: false,
+        };
+        let mut backstop = crate::todo_owed_backstop::TodoOwedBackstop::default();
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &event, None, (false, &["child".into()]), true)
+                .unwrap(),
+            "waiting"
+        );
+        assert!(capture.0.lock().unwrap().is_empty());
+        for expected in ["delivered", "delivered", "capped", "cap"] {
+            assert_eq!(
+                backstop
+                    .after_agent_end(&api, &ctx, &event, None, (false, &[]), true)
+                    .unwrap(),
+                expected
+            );
+        }
+        assert_eq!(capture.0.lock().unwrap().len(), 2);
+        branch.entries.lock().unwrap()[0] = entry(false);
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &event, None, (false, &[]), true)
+                .unwrap(),
+            "delivered"
+        );
+        assert_eq!(capture.0.lock().unwrap().len(), 3);
+        backstop.reset_chain();
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &event, None, (false, &[]), false)
+                .unwrap(),
+            "disabled"
+        );
+        let mut aborted = event.clone();
+        aborted.aborted = true;
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &aborted, None, (false, &[]), true)
+                .unwrap(),
+            "not-clean"
+        );
+        let mut question = event.clone();
+        question.messages = vec![maho_agent::types::AgentMessage::Llm(
+            maho_ai::types::Message::Assistant(Box::new(
+                maho_ai::providers::faux::faux_assistant_message(
+                    "Which parser?",
+                    Default::default(),
+                ),
+            )),
+        )];
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &question, None, (false, &[]), true)
+                .unwrap(),
+            "question"
+        );
+        ctx.mode = ExtensionMode::Print;
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &event, None, (false, &[]), true)
+                .unwrap(),
+            "non-interactive"
+        );
+        ctx.mode = ExtensionMode::Tui;
+        branch.entries.lock().unwrap().clear();
+        assert_eq!(
+            backstop
+                .after_agent_end(&api, &ctx, &event, None, (false, &[]), true)
+                .unwrap(),
+            "no-open-tasks"
+        );
+        session.dispose().await;
     }
     #[tokio::test]
     async fn concurrent_admission_delivers_once_and_records_before_followup() {

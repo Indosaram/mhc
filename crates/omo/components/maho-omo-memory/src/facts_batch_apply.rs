@@ -10,7 +10,7 @@ use memory_core::{
         },
         mutation_plan::{MutationPlanError, plan_facts_mutation},
         person_routing::FactsPeopleRouting,
-        recovery::{FactsRecoveryResult, apply_facts_recovery, find_facts_batch_receipt},
+        recovery::{FactsRecoveryResult, find_facts_batch_receipt},
     },
     git::{GitCommitAuthor, GitLogOptions, GitMemoryRepo, errors::GitError},
 };
@@ -208,7 +208,11 @@ pub fn apply_claimed(
             .map_err(FactsApplyError::Artifact)?;
         recovery
     };
-    match apply_facts_recovery(
+    let mut publish = |effective: &memory_core::facts::mutation_plan::FactsApplyRecovery| {
+        let fields = serde_json::Map::from_iter([("applyRecovery".into(), serde_json::to_value(effective).map_err(|error| error.to_string())?)]);
+        update_run_ledger(&run_dir.join("ledger.json"), &fields).map_err(|error| error.to_string())
+    };
+    match memory_core::facts::recovery::apply_facts_recovery_with_agreements(
         repo,
         &recovery,
         records.len() + agreements.len(),
@@ -217,6 +221,7 @@ pub fn apply_claimed(
             author_name: "Facts Extractor".into(),
             author_email: None,
         },
+        Some(memory_core::facts::recovery::AgreementRecoveryInput { batch: &batch, policy: agreements_policy, publish: &mut publish }),
     )
     .map_err(FactsApplyError::Recovery)?
     {
@@ -348,6 +353,7 @@ mod tests {
         )
         .unwrap();
         let records = vec![FactsExtractionRecord::Project {
+            receipt: None,
             text: "Project uses a durable journal".into(),
             date: "2026-08-12".into(),
         }];
@@ -397,6 +403,19 @@ mod tests {
         );
     }
     #[test]
+    fn legacy_agreement_recovery_is_published_before_commit() {
+        let root=tempfile::tempdir().unwrap();let paths=memory_core::identity::layout::build_identity_paths(root.path(),"agent");
+        let engine=crate::engine_session::prepare_memory_engine_session("agent",&paths,Default::default()).unwrap();
+        let run=root.path().join("run");std::fs::create_dir(&run).unwrap();let mut ledger=ledger();
+        let agreements=vec![memory_core::agreements::parse_agreement_record(&serde_json::json!({"action":"new","applies":"global","text":"Use fixtures","date":"2026-10-01","source":{"sessionId":"session","messageId":"user"}}),0).unwrap()];
+        let batch=FactsBatch{batch_id:ledger.batch_id.clone(),records:vec![],agreements:Some(agreements.clone())};
+        let policy=AgreementsPolicy::default();let mut recovery=plan_facts_mutation(&engine.repo,&batch,None,None,&policy,None).unwrap();recovery.agreement_event_version=None;ledger.apply_recovery=Some(recovery);
+        crate::worker::run_artifacts::write_run_json_atomic(&run.join("ledger.json"),&ledger,0o600).unwrap();
+        let people=FactsPeopleRouting{enabled:true,max_entries:40,max_entry_chars:200};
+        assert!(matches!(apply_claimed(&run,&ledger,&engine.repo,&[],&agreements,&policy,&people,"agent",&mut |_|{}).unwrap(),Applied::Committed{..}));
+        let persisted:FactsRunLedger=crate::worker::run_artifacts::read_run_json(&run.join("ledger.json")).unwrap();assert_eq!(persisted.apply_recovery.unwrap().agreement_event_version,Some(1));
+    }
+    #[test]
     fn foreign_dirty_worktree_is_retained() {
         let root = tempfile::tempdir().unwrap();
         let paths = memory_core::identity::layout::build_identity_paths(root.path(), "agent");
@@ -409,6 +428,7 @@ mod tests {
         let foreign = paths.repo.join("foreign.txt");
         std::fs::write(&foreign, "user change").unwrap();
         let records = vec![FactsExtractionRecord::Project {
+            receipt: None,
             text: "fact".into(),
             date: "2026-08-12".into(),
         }];

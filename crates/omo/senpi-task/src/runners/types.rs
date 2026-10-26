@@ -2,6 +2,11 @@
 
 use std::collections::BTreeMap;
 
+pub use crate::runners::rpc::native_run_pause::{NativeResumeReceipt, NativeRunPause};
+pub use crate::runners::task_parent_control::{
+    EngineHoldInputResult, EngineInheritReceipt, EngineResumeReceipt, HeldGuidanceInput,
+    ObservedHold, ResumeRequest, RunPauseOwner,
+};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +97,8 @@ pub struct RpcTerminalAssistantMessage {
 /// `RpcRunnerSpec`: everything needed to launch (or resume) one RPC child.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RpcRunnerSpec {
+    pub fallback_models: Option<Vec<String>>,
+    pub traceparent: Option<String>,
     pub task_id: String,
     pub cwd: String,
     pub state_dir: String,

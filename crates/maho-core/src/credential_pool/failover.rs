@@ -65,6 +65,23 @@ pub fn is_available(slot: &RunSlot, now: u64) -> bool {
     true
 }
 
+pub fn no_slots_message(slots: &[RunSlot], now: u64) -> String {
+    let blocked: Vec<String> = slots.iter().map(|slot| {
+        let reason = slot.block_reason.as_deref().unwrap_or("blocked");
+        if let Some(until) = slot.blocked_until.filter(|until| *until > now)
+            && let Some(date) = i64::try_from(until).ok().and_then(chrono::DateTime::from_timestamp_millis) {
+                return format!("{} ({reason} until {})", slot.name, date.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+            }
+        if reason == "account_disabled" {
+            format!("{} (account_disabled until re-login)", slot.name)
+        } else {
+            format!("{} ({reason})", slot.name)
+        }
+    }).collect();
+    if blocked.is_empty() { "No credential slots available".to_owned() }
+    else { format!("No credential slots available: {}", blocked.join(", ")) }
+}
+
 pub fn soonest_retry_at(slots: &[RunSlot], now: u64) -> Option<u64> {
     slots
         .iter()
@@ -218,7 +235,7 @@ pub async fn run_credential_failover<H: FailoverHost>(
                 (None, Some(original)) => (CredentialAction::FailRequest, original.to_string()),
                 (None, None) => (
                     CredentialAction::FailRequest,
-                    "No credential slots available".to_owned(),
+                    no_slots_message(&slots, now),
                 ),
             };
             return Err(CredentialFailoverError {
@@ -639,7 +656,7 @@ mod tests {
         };
         let error = run_credential_failover(&mut host).await.expect_err("error");
         assert_eq!(error.retry_at, Some(500));
-        assert_eq!(error.detail, "No credential slots available");
+        assert_eq!(error.detail, "No credential slots available: a (blocked until 1970-01-01T00:00:00.500Z)");
     }
 
     #[tokio::test]

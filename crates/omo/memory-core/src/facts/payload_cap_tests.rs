@@ -12,6 +12,7 @@ const T0_MILLIS: i64 = 1786838400000;
 fn test_envelope() -> FactsPayloadEnvelope {
     FactsPayloadEnvelope {
         version: 1,
+        agreement_event_version: Some(1),
         identity: "facts-agent".to_string(),
         today: "2026-08-16".to_string(),
         known_people: Vec::new(),
@@ -43,6 +44,7 @@ fn sample_entry(
     .expect("valid transcript entry");
 
     FactsQueueEntry {
+        lead: None,
         version: FACTS_QUEUE_VERSION,
         identity: "facts-agent".to_string(),
         session_id: conversation_id.to_string(),
@@ -395,7 +397,12 @@ fn test_two_conversations_with_oversized_first_entries_retain_empty_entries_head
             },
         ]
     );
-    assert!(selection.oversized.iter().all(|o| o.header.entries.is_empty()));
+    assert!(
+        selection
+            .oversized
+            .iter()
+            .all(|o| o.header.entries.is_empty())
+    );
 }
 
 #[test]
@@ -481,4 +488,29 @@ fn test_measure_entries_bytes_agreements_parity() {
     let empty_serialized = serialize_facts_payload(&empty_payload);
     assert_eq!(empty_measured, empty_serialized.len());
     assert_eq!(empty_measured, measure_facts_payload_bytes(&empty_payload));
+}
+
+#[test]
+fn lead_context_never_counts_toward_model_payload_bytes() {
+    let mut entry = sample_entry(
+        "conversation",
+        "m1",
+        1,
+        Some("fact"),
+        Some("2026-01-01T00:00:00.000Z"),
+    );
+    let envelope = test_envelope();
+    let base = serialize_facts_payload(&envelope.to_payload(vec![entry.clone()]));
+    entry.lead = Some(crate::journal::entries::TranscriptEntry::Text(
+        crate::journal::entries::TextTranscriptEntry::new(
+            "assistant",
+            "x".repeat(MAX_FACTS_PAYLOAD_BYTES),
+            "now",
+            "line",
+            "proposal",
+        ),
+    ));
+    let payload = envelope.to_payload(vec![entry]);
+    assert_eq!(serialize_facts_payload(&payload), base);
+    assert_eq!(measure_facts_payload_bytes(&payload), base.len());
 }

@@ -10,3 +10,14 @@ use serde_json::Value;
         for render in case["renders"].as_array().expect("renders") { let width=usize::try_from(render["width"].as_u64().expect("width")).expect("width"); let expected:Vec<String>=serde_json::from_value(render["rows"].clone()).expect("rows"); assert_eq!(background_widget_rows(&records,&activity,2250,&|_| stats.clone(),Some(width)),expected,"{} width {width}",case["name"]); }
     }
 }
+
+#[test] fn parent_fallback_status_distinguishes_selected_from_observed() {
+    use senpi_task::state::*;
+    let mut record = create_task_record(TaskRecordInput::default(), Some(1)).unwrap();
+    record.parent_model = Some("provider/parent".into());
+    record.parent_model_fallback = Some(ParentModelFallback { phase: None, from_model: "provider/child".into(), reason: ParentModelFallbackReason::UsageLimit, at: "now".into(), detail: None, resets: Some("2 days".into()), interrupted_tools: None });
+    record.resolved_model = Some(ResolvedModelRecord { provider: "provider".into(), model_id: "parent".into(), display: "provider/parent".into(), source: ResolvedModelSource::Category, variant: None, reasoning_effort: None, reasoning: None, service_tier: None });
+    let switching = format_task_row(&record); assert!(switching.contains("parent-model:switching, usage limit, resets 2 days"));
+    record.effective_model = Some(EffectiveModelRecord { provider: "provider".into(), model_id: "parent".into(), display: "provider/parent".into(), source: EffectiveModelSource::Fallback, switched_by_operator: None, variant: None, reasoning_effort: None, reasoning: None, service_tier: None });
+    let observed = format_task_row(&record); assert!(observed.contains("parent-model:usage limit, resets 2 days")); assert!(!observed.contains("switching"));
+}

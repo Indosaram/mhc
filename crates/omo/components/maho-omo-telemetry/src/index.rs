@@ -19,6 +19,18 @@ pub struct SenpiTelemetryOptions {
     pub set_timeout_fn: Option<telemetry_core::EventTelemetrySetTimeout>,
     pub diagnostics: Option<telemetry_core::TelemetryDiagnostics>,
     pub inventory_diagnostics: Option<crate::omo_native_session::InventoryDiagnostics>,
+    /// The persisted-config telemetry gate for a cwd; defaults to reading `omo.json`.
+    pub is_config_enabled: Option<crate::omo_native_component::ConfigEnabled>,
+    /// Device-reported IANA zone; `None` reads `TZ` from the environment.
+    pub time_zone: Option<Arc<dyn Fn() -> String + Send + Sync>>,
+    /// The account home the shared-queue purge reads the persisted setting from.
+    pub account_home_dir: Option<PathBuf>,
+    /// Share of sessions that also send every raw `turn_completed`; tests pin it to 0 or 1.
+    pub raw_turn_sample_rate: Option<f64>,
+    /// Liveness probe for summary-window owners; injected by tests that simulate dead processes.
+    pub is_pid_alive: Option<Arc<dyn Fn(u32) -> bool + Send + Sync>>,
+    /// Clock for the consent cache. Injected in tests.
+    pub consent_now: Option<Arc<dyn Fn() -> f64 + Send + Sync>>,
 }
 pub fn create_senpi_telemetry_product_config() -> TelemetryProductConfig {
     TelemetryProductConfig {
@@ -227,7 +239,18 @@ mod tests {
         });
         client.flush().await.unwrap();
         client.shutdown().await;
-        assert_eq!(*m.lock().unwrap(), *expected.lock().unwrap());
+        let actual = m.lock().unwrap();
+        let expected = expected.lock().unwrap();
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected.iter()) {
+            // Each capture gets its own UUID and wall-clock timestamp in the Rust
+            // transport envelope; compare the payload constructed by trackActive.
+            assert!(uuid::Uuid::parse_str(actual.uuid.as_deref().unwrap()).is_ok());
+            assert!(DateTime::parse_from_rfc3339(actual.timestamp.as_deref().unwrap()).is_ok());
+            assert_eq!(actual.distinct_id, expected.distinct_id);
+            assert_eq!(actual.event, expected.event);
+            assert_eq!(actual.properties, expected.properties);
+        }
     }
     struct Hanging {
         captured: Arc<tokio::sync::Notify>,

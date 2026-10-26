@@ -297,7 +297,7 @@ async fn live_lifecycle(shutdown_live: bool, peer_live: bool) {
         },
         actions: Arc::new(Actions),
         coordinator: None,
-        resolve_registry: Arc::new(|| None),
+        resolve_registry: support::fake_resolve_registry(),
         host_transport: None,
     });
     let mut api = support::api();

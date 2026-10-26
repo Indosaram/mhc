@@ -107,6 +107,8 @@ impl TelemetryClient {
         properties.insert("day_utc".into(), input.day_utc.clone().into());
         properties.insert("reason".into(), input.reason.clone().into());
         let message = TelemetryCaptureMessage {
+            uuid: Some(uuid::Uuid::new_v4().to_string()),
+            timestamp: Some(crate::diagnostics::to_iso_string(chrono::Utc::now())),
             distinct_id: input.distinct_id.clone(),
             event: client.event_name.clone(),
             properties,

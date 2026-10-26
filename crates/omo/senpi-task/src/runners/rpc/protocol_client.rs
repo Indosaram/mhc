@@ -5,6 +5,7 @@
 //! malformed line is reported and skipped; the connection survives. The client itself never
 //! signals the process: [`RpcClientPort::terminate`] delegates to `terminate.rs`.
 
+pub type DurableListenersCallback = Vec<(u64, Arc<dyn Fn(&str) + Send + Sync>)>;
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,9 +44,24 @@ pub enum RpcClientError {
 
 /// The client surface the RPC handle programs against (a fake implements it in tests).
 pub trait RpcClientPort: Send + Sync {
+    fn run_pause(&self) -> Option<&dyn crate::pause::native_child_pause::NativeRunPause> {
+        None
+    }
+    fn publish_task_status(&self, _status: crate::state::TaskStatus) -> Result<(), RpcClientError> {
+        Ok(())
+    }
+    fn on_durable_session_id(
+        &self,
+        _listener: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> Option<Unsubscribe> {
+        None
+    }
     fn pid(&self) -> Option<u32>;
     /// Send one command and block until its correlated response arrives.
     fn send(&self, command: Value) -> Result<Value, RpcClientError>;
+    fn send_task_parent(&self, command: Value) -> Result<Value, RpcClientError> {
+        self.send(command)
+    }
     fn on_event(&self, listener: RpcEventListener) -> Unsubscribe;
     /// Fires once when the child is gone; a listener added afterwards fires immediately.
     fn on_exit(&self, listener: RpcExitListener) -> Unsubscribe;
@@ -99,6 +115,8 @@ type PendingSender = Sender<Result<Value, RpcClientError>>;
 
 #[derive(Default)]
 struct ClientState {
+    durable_id: Option<String>,
+    durable_listeners: DurableListenersCallback,
     pending: HashMap<String, PendingSender>,
     event_listeners: Vec<(u64, RpcEventListener)>,
     exit_listeners: Vec<(u64, RpcExitListener)>,
@@ -126,9 +144,26 @@ pub struct RpcProtocolClient {
 /// One in-flight request; [`Self::wait`] blocks until the correlated response or the exit.
 pub struct PendingResponse {
     receiver: Receiver<Result<Value, RpcClientError>>,
+    id: String,
+    shared: Weak<ClientShared>,
+}
+impl Drop for PendingResponse {
+    fn drop(&mut self) {
+        if let Some(shared) = self.shared.upgrade() {
+            shared.lock().pending.remove(&self.id);
+        }
+    }
 }
 
 impl PendingResponse {
+    pub fn wait_until(self, deadline: std::time::Instant) -> Result<Value, RpcClientError> {
+        self.receiver
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .map_err(|error| RpcClientError::Write {
+                message: format!("RPC configuration deadline: {error}"),
+            })?
+    }
+
     pub fn wait(self) -> Result<Value, RpcClientError> {
         self.receiver.recv().unwrap_or_else(|_| {
             Err(RpcClientError::Exited {
@@ -246,11 +281,45 @@ impl RpcProtocolClient {
                 message: error.to_string(),
             });
         }
-        Ok(PendingResponse { receiver })
+        Ok(PendingResponse {
+            receiver,
+            id,
+            shared: Arc::downgrade(&self.shared),
+        })
     }
 }
 
 impl RpcClientPort for RpcProtocolClient {
+    fn on_durable_session_id(
+        &self,
+        listener: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> Option<Unsubscribe> {
+        let id = self.shared.next_listener_id.fetch_add(1, Ordering::SeqCst);
+        let known = {
+            let mut state = self.shared.lock();
+            state.durable_listeners.push((id, listener.clone()));
+            state.durable_id.clone()
+        };
+        if let Some(known) = known {
+            listener(&known);
+        }
+        let weak = Arc::downgrade(&self.shared);
+        Some(Box::new(move || {
+            remove_listener(&weak, id, |state| &mut state.durable_listeners)
+        }))
+    }
+    fn publish_task_status(&self, status: crate::state::TaskStatus) -> Result<(), RpcClientError> {
+        if self.shared.lock().exit.is_some() {
+            return Ok(());
+        }
+        let response = self
+            .send(json!({"type":"set_session_context", "patch":{"task_status":status.as_str()}}))?;
+        if response["success"] == true {
+            Ok(())
+        } else {
+            Err(command_error(&response, "set_session_context").into())
+        }
+    }
     fn pid(&self) -> Option<u32> {
         self.child.pid()
     }
@@ -292,6 +361,7 @@ impl RpcClientPort for RpcProtocolClient {
     fn detach(&self) {
         let mut state = self.shared.lock();
         state.event_listeners.clear();
+        state.durable_listeners.clear();
         state.exit_listeners.clear();
     }
 
@@ -370,6 +440,24 @@ fn handle_line(
             }
         }
         _ => {
+            if matches!(
+                parsed["type"].as_str(),
+                Some("session_id" | "session_replaced" | "session_info_changed")
+            )
+                && let Some(id) = parsed["sessionId"].as_str().filter(|id| !id.is_empty()) {
+                    let listeners = {
+                        let mut state = shared.lock();
+                        state.durable_id = Some(id.to_owned());
+                        state
+                            .durable_listeners
+                            .iter()
+                            .map(|(_, listener)| listener.clone())
+                            .collect::<Vec<_>>()
+                    };
+                    for listener in listeners {
+                        listener(id);
+                    }
+                }
             let listeners: Vec<RpcEventListener> = shared
                 .lock()
                 .event_listeners
@@ -408,11 +496,12 @@ fn finalize(shared: &ClientShared, exit: ChildExitInput) {
             ),
         },
     };
-    for (_, sender) in pending {
-        let _ = sender.send(Err(failure.clone()));
-    }
+    // Publish exit facts before waking command waiters so startup classification sees stderr.
     for listener in listeners {
         listener(&exit);
+    }
+    for (_, sender) in pending {
+        let _ = sender.send(Err(failure.clone()));
     }
 }
 

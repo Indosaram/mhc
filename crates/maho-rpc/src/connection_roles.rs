@@ -4,11 +4,14 @@
 use crate::custom_capability::INTERACTIVE_USER_CAPABILITY;
 use std::collections::HashMap;
 
-pub const CONNECTION_ROLE_CAPABILITIES: [&str; 1] = [INTERACTIVE_USER_CAPABILITY];
+pub const CONNECTION_ROLE_CAPABILITIES: [&str; 2] = [
+    INTERACTIVE_USER_CAPABILITY,
+    crate::custom_capability::TASK_PARENT_CAPABILITY,
+];
 /// The one connection of a single-session `--mode rpc` process.
 pub const SOLE_CONNECTION: &str = "sole-connection";
 pub const CONNECTION_ROLE_FIXED: &str =
-    "connection_role_fixed: interactive_user cannot change after it is declared";
+    "connection_role_fixed: interactive_user and task_parent cannot change after they are declared";
 
 pub fn role_connection(connection_id: Option<&str>) -> &str {
     connection_id.unwrap_or(SOLE_CONNECTION)

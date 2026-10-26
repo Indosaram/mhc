@@ -183,7 +183,7 @@ type HeaderSlot = Rc<RefCell<dyn Component>>;
 type FooterStatsKey = (u64, usize, Option<String>, String, String, String, u64);
 type FooterStatsEntry = (
     FooterStatsKey,
-    (u64, u64, f64),
+    (u64, u64, f64, bool),
     Option<maho_core::agent_session::ContextUsage>,
 );
 type FooterSubscriptionKey = (u64, Option<u64>, String);
@@ -996,6 +996,8 @@ pub struct InteractiveMode {
     >,
     mounted_renderer: Option<std::rc::Weak<RefCell<crate::tui_renderer::InteractiveTui>>>,
     side_column: Option<maho_ext_api::ExtensionSideColumn>,
+    detach_mcp_grant_presentation: Option<Box<dyn FnOnce() + Send + 'static>>,
+    unsubscribe_security_notices: Option<Box<dyn FnOnce() + Send + 'static>>,
     side_column_widget_bounds: Option<(usize, usize)>,
     mounted_side_column: Option<crate::side_column::MountedSideColumn>,
     terminal_dimensions: Rc<std::cell::Cell<(u16, u16)>>,
@@ -2156,7 +2158,14 @@ impl InteractiveMode {
                     source_info: Some(skill.source_info),
                 })
                 .collect(),
-            skill_diagnostics: skills_result.diagnostics,
+            skill_diagnostics: skills_result
+                .diagnostics
+                .into_iter()
+                .filter(|diagnostic| {
+                    diagnostic.category.as_deref() != Some("size-limit")
+                        && diagnostic.category.as_deref() != Some("skill-link-blocked")
+                })
+                .collect(),
             prompts: self
                 .session
                 .prompt_templates()
@@ -2677,6 +2686,8 @@ impl InteractiveMode {
         Self {
             side_column_widget_bounds: None,
             side_column: None,
+            detach_mcp_grant_presentation: None,
+            unsubscribe_security_notices: None,
             mounted_side_column: None,
             ulw_turn_glow: false,
             theme_rebuild_pending: false,
@@ -4675,6 +4686,43 @@ impl InteractiveMode {
     }
 
     pub async fn bind_extensions(&mut self) {
+        if let Some(detach) = self.detach_mcp_grant_presentation.take() {
+            detach();
+        }
+        let ui_mcp = self.extension_ui.clone();
+        let session_id = self.session.session_id();
+        let select_fn: maho_core::mcp_grant_presentations::Select =
+            Arc::new(move |title, choices, opts| {
+                let ui = ui_mcp.clone();
+                Box::pin(async move {
+                    use maho_ext_api::ExtensionUi;
+                    let signal = maho_ext_api::AbortSignal::default();
+                    let selection = ui.select(&title, &choices, maho_ext_api::ExtensionUiDialogOptions { signal: Some(signal.clone()), timeout_ms: None });
+                    tokio::select! {
+                        answer = selection => Ok(answer),
+                        () = opts.cancelled() => { signal.abort(); Ok(None) }
+                    }
+                })
+            });
+        let attachment = maho_core::mcp_grant_presentations::attach_mcp_grant_presentation(
+                &session_id, select_fn,
+            );
+        self.detach_mcp_grant_presentation = Some(Box::new(move || drop(attachment)));
+
+        if let Some(unsubscribe) = self.unsubscribe_security_notices.take() {
+            unsubscribe();
+        }
+        let ui_sec = self.extension_ui.clone();
+        let subscription = self.session.subscribe_security_notices(
+            Arc::new(move |snapshot| {
+                for notice in &snapshot.notices {
+                    use maho_ext_api::ExtensionUi;
+                    ui_sec.notify(&notice.message, maho_ext_api::NotificationType::Warning);
+                }
+            }),
+        );
+        self.unsubscribe_security_notices = Some(Box::new(move || drop(subscription)));
+
         let binding = self.start_extension_binding();
         tokio::pin!(binding);
         loop {
@@ -8037,7 +8085,7 @@ impl InteractiveMode {
             None => {
                 let session = self.session.clone();
                 Box::pin(async move {
-                    session.abort().await;
+                    session.stop().await;
                 })
             }
         };
@@ -8457,6 +8505,20 @@ impl InteractiveMode {
             return Ok(true);
         }
         if text == "/resume" {
+            let view = crate::pause_footer::PauseView {
+                paused: self.session.paused(),
+                paused_notice_count: self.session.paused_notice_count(),
+                run_paused: self.session.run_paused(),
+            };
+            if crate::pause_footer::resume_command_target(&view)
+                == crate::pause_footer::ResumeCommandTarget::ResumeSession
+            {
+                let session = self.session.clone();
+                self.park_action(async move {
+                    session.resume_session().await
+                }, |mode, result| { if let Err(error) = result { mode.show_status(error); } });
+                return Ok(true);
+            }
             use crate::components::session_selector::SessionSelectorComponent;
             let (cwd, directory, default_directory) =
                 self.session.with_session_manager(|manager| {
@@ -9771,16 +9833,26 @@ impl InteractiveMode {
                 count(tokens.total)
             );
             if stats.cost > 0.0 || waste.missed_tokens > 0.0 {
+                let unpriced = if stats.cost_unknown {
+                    format!(" {}", label("+ unpriced turns"))
+                } else {
+                    String::new()
+                };
                 info += &format!(
-                    "\n{}\n{} ${:.3}",
+                    "\n{}\n{} ${:.3}{unpriced}",
                     theme.bold("Cost"),
                     label("Total:"),
                     stats.cost
                 );
                 if breakdown.len() > 1 {
                     for entry in breakdown {
+                        let row_unpriced = if entry.cost_unknown {
+                            format!(" {}", label("+ unpriced turns"))
+                        } else {
+                            String::new()
+                        };
                         info += &format!(
-                            "\n  {} ${:.3} {}",
+                            "\n  {} ${:.3}{row_unpriced} {}",
                             label(&format!("{}:", entry.key)),
                             entry.cost,
                             label(&format!(
@@ -11466,6 +11538,17 @@ impl InteractiveMode {
             AgentSessionEvent::SettingsSourceSelected { selection } => self.show_settings_source_selected(selection),
             // senpi `queue_update`: the pending-messages rows are derived per frame; repaint.
             AgentSessionEvent::QueueUpdate { .. } => self.editor_host.request_render(),
+            AgentSessionEvent::SessionPaused { .. }
+            | AgentSessionEvent::SessionResumed { .. }
+            | AgentSessionEvent::SessionNotice { .. } => {
+                let view = crate::pause_footer::PauseView {
+                    paused: self.session.paused(),
+                    paused_notice_count: self.session.paused_notice_count(),
+                    run_paused: self.session.run_paused(),
+                };
+                let text = crate::pause_footer::pause_footer_text(&view);
+                self.set_extension_status(crate::pause_footer::PAUSE_STATUS_KEY, text.as_deref());
+            }
             // senpi `retry_fallback_applied` / `_succeeded` / `_reverted` / `_exhausted` / `server_fallback_aborted`.
             AgentSessionEvent::RetryFallbackApplied { from, to, reason, .. } => {
                 self.show_notice_box(crate::components::earendil_announcement::NoticeSpec {
@@ -11808,6 +11891,7 @@ impl InteractiveMode {
     /// editor, autocomplete wrappers, the extension and active-tool terminal titles, and the working
     /// indicator state. Statuses and terminal-input listeners were cleared by the hook itself.
     fn reset_extension_ui(&mut self) {
+        self.footer_data.clear_extension_statuses();
         use crate::interactive_extension_ui::UiRequest;
         self.handle_ui_request(UiRequest::SideColumn(None));
         self.footer = None;
@@ -11870,6 +11954,10 @@ impl InteractiveMode {
                     ));
                 }
                 self.side_column = column;
+                self.editor_host.request_render();
+            }
+            UiRequest::SubagentCost(cost) => {
+                self.footer_data.set_subagent_cost(cost);
                 self.editor_host.request_render();
             }
             UiRequest::WidgetFrame => self.editor_host.request_render(),
@@ -12245,43 +12333,21 @@ impl InteractiveMode {
                         })
                     }) as crate::components::ask_user_question::ProgressCallback
                 });
+                let session_question = self.session.clone();
+                let wait_for_answer = request.wait_for_answer;
+                let deliver = options.deliver;
                 self.question = Some(
                     crate::components::ask_user_question::AskUserQuestionComponent::new(
                         request,
                         Box::new(move |response| {
-                            let status = match response.status {
-                                state::QuestionStatus::Answered => {
-                                    maho_ext_api::QuestionStatus::Answered
-                                }
-                                state::QuestionStatus::CommentSubmitted => {
-                                    maho_ext_api::QuestionStatus::CommentSubmitted
-                                }
-                                state::QuestionStatus::Cancelled => {
-                                    maho_ext_api::QuestionStatus::Cancelled
-                                }
-                                state::QuestionStatus::TimedOut => {
-                                    maho_ext_api::QuestionStatus::TimedOut
-                                }
-                            };
-                            let response = maho_ext_api::QuestionResponse {
-                                status,
-                                comment: response.comment,
-                                unanswered: response.unanswered,
-                                auto_resolved_after_ms: response.auto_resolved_after_ms,
-                                answers: response
-                                    .answers
-                                    .into_iter()
-                                    .map(|(id, value)| {
-                                        (
-                                            id,
-                                            maho_ext_api::QuestionAnswer {
-                                                selected: value.selected,
-                                                text: value.text,
-                                            },
-                                        )
-                                    })
-                                    .collect(),
-                            };
+                            let response = to_extension_response(response);
+                            if wait_for_answer
+                                && deliver != maho_ext_api::QuestionDelivery::UserMessage
+                                && response.resolved_by
+                                    == Some(maho_ext_api::QuestionResolvedBy::LocalUi)
+                            {
+                                session_question.admit_human_answer();
+                            }
                             if let Some(reply) = answer.borrow_mut().take() {
                                 drop(reply.send(response));
                             }
@@ -12306,10 +12372,12 @@ impl InteractiveMode {
                 *self.ui_reply.borrow_mut() = Some(reply);
                 let selected = self.ui_reply.clone();
                 let cancelled = selected.clone();
+                let session_editor = self.session.clone();
                 self.ui_dialog = Some(self.extension_editor_dialog_component(
                     &title,
                     prefill.as_deref(),
                     Box::new(move |text| {
+                        session_editor.admit_human_answer();
                         if let Some(reply) = selected.borrow_mut().take() {
                             drop(reply.send(Some(text.into())));
                         }
@@ -12453,6 +12521,7 @@ impl InteractiveMode {
                 let selected = self.ui_reply.clone();
                 let cancelled = self.ui_reply.clone();
                 let keys = self.keybindings();
+                let session_select = self.session.clone();
                 let component = Rc::new(RefCell::new(
                     crate::components::extension_selector::ExtensionSelectorComponent::new(
                         &self.theme,
@@ -12460,6 +12529,7 @@ impl InteractiveMode {
                         &title,
                         options,
                         Box::new(move |text| {
+                            session_select.admit_human_answer();
                             if let Some(reply) = selected.borrow_mut().take() {
                                 drop(reply.send(Some(text.into())));
                             }
@@ -12491,11 +12561,13 @@ impl InteractiveMode {
                 *self.ui_reply.borrow_mut() = Some(reply);
                 let selected = self.ui_reply.clone();
                 let cancelled = self.ui_reply.clone();
+                let session_input = self.session.clone();
                 let component = Rc::new(RefCell::new(
                     crate::components::extension_input::ExtensionInputComponent::new(
                         &self.theme,
                         &title,
                         Box::new(move |text| {
+                            session_input.admit_human_answer();
                             if let Some(reply) = selected.borrow_mut().take() {
                                 drop(reply.send(Some(text.into())));
                             }
@@ -12865,6 +12937,8 @@ impl InteractiveMode {
                 comment: None,
                 unanswered: Vec::new(),
                 auto_resolved_after_ms: None,
+                cancel_origin: None,
+                resolved_by: None,
             },
             |entry| {
                 to_extension_response(
@@ -12916,10 +12990,17 @@ impl InteractiveMode {
         };
         let request_id = shown.request.request_id.clone();
         if argument == "skip" {
-            let response = self.cancelled_question_response(&request_id);
+            let mut response = self.cancelled_question_response(&request_id);
+            response.cancel_origin = Some(maho_ext_api::QuestionCancelOrigin::User);
             let frame = self.question_frame(&request_id, &response);
-            self.finish_question(&request_id, response);
+            self.finish_question(&request_id, response.clone());
             self.show_status("The user dismissed the question.".into());
+            // The builtin delivers the partial answers of a cancel the user chose; sending them here too
+            // would reach the model twice. With nothing answered the builtin stays silent, so this
+            // explicit command acknowledges the dismissal.
+            if maho_ext_api::shows_partial_answers(&response) {
+                return;
+            }
             if let Some(frame) = frame {
                 let streaming = self.host_is_streaming();
                 let session = self.session.clone();
@@ -13034,16 +13115,18 @@ impl InteractiveMode {
 
     pub fn footer_snapshot(&self) -> crate::components::footer::FooterSnapshot {
         let model = self.host_model();
-        let (cache_read, cache_write, cost, usage) =
+        let (cache_read, cache_write, cost, cost_unknown, usage) =
             if self.session_host.is_none() && self.remote_stats.is_none() {
-                let ((cache_read, cache_write, cost), usage) = self.local_footer_usage(&model);
-                (cache_read, cache_write, cost, usage)
+                let ((cache_read, cache_write, cost, cost_unknown), usage) =
+                    self.local_footer_usage(&model);
+                (cache_read, cache_write, cost, cost_unknown, usage)
             } else {
                 let stats = self.host_session_stats();
                 (
                     stats.tokens.cache_read,
                     stats.tokens.cache_write,
                     stats.cost,
+                    stats.cost_unknown,
                     self.host_context_usage(),
                 )
             };
@@ -13086,6 +13169,8 @@ impl InteractiveMode {
             cache_read: cache_read as f64,
             cache_write: cache_write as f64,
             cost,
+            cost_unknown,
+            subagent_cost: self.footer_data.subagent_cost(),
             latest_cache_hit_rate,
             context_window: model.context_window as f64,
             context_percent: usage.and_then(|usage| usage.percent),
@@ -13108,7 +13193,7 @@ impl InteractiveMode {
         &self,
         model: &maho_ai::model::Model,
     ) -> (
-        (u64, u64, f64),
+        (u64, u64, f64, bool),
         Option<maho_core::agent_session::ContextUsage>,
     ) {
         let (entry_count, leaf_id, session_id) = self.session.with_session_manager(|manager| {
@@ -13137,6 +13222,7 @@ impl InteractiveMode {
             stats.tokens.cache_read,
             stats.tokens.cache_write,
             stats.cost,
+            stats.cost_unknown,
         );
         *self.footer_stats_cache.borrow_mut() = Some((key, totals, stats.context_usage));
         (totals, stats.context_usage)
@@ -13975,6 +14061,7 @@ fn session_stats_from_wire(value: &serde_json::Value) -> maho_core::agent_sessio
             .get("cost")
             .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.0),
+        cost_unknown: value.get("costUnknown").and_then(serde_json::Value::as_bool).unwrap_or(false),
         context_usage: value.get("contextUsage").and_then(context_usage_from_wire),
     }
 }
@@ -14076,6 +14163,7 @@ fn get_built_in_command_conflict_diagnostics(
             .map(|command| command.name)
             .collect();
     commands.iter().filter(|command| builtin_names.contains(command.command.name.as_str())).map(|command| maho_core::diagnostics::ResourceDiagnostic {
+        category: None,
         diagnostic_type: maho_core::diagnostics::ResourceDiagnosticType::Warning,
         message: if command.invocation_name == command.command.name {
             format!("Extension command '/{}' conflicts with built-in interactive command. Skipping in autocomplete.", command.command.name)
@@ -14121,6 +14209,8 @@ fn question_empty_response() -> maho_ext_api::QuestionResponse {
         comment: None,
         unanswered: Vec::new(),
         auto_resolved_after_ms: None,
+        cancel_origin: Some(maho_ext_api::QuestionCancelOrigin::User),
+        resolved_by: None,
     }
 }
 
@@ -14134,11 +14224,27 @@ fn to_extension_response(
         state::QuestionStatus::Cancelled => maho_ext_api::QuestionStatus::Cancelled,
         state::QuestionStatus::TimedOut => maho_ext_api::QuestionStatus::TimedOut,
     };
+    let cancel_origin = response.cancel_origin.as_deref().and_then(|c| match c {
+        "user" => Some(maho_ext_api::QuestionCancelOrigin::User),
+        "ui_failure" => Some(maho_ext_api::QuestionCancelOrigin::UiFailure),
+        "turn_abort" => Some(maho_ext_api::QuestionCancelOrigin::TurnAbort),
+        "session_closed" => Some(maho_ext_api::QuestionCancelOrigin::SessionClosed),
+        "ask_user_disabled" => Some(maho_ext_api::QuestionCancelOrigin::AskUserDisabled),
+        _ => None,
+    });
+    let resolved_by = response.resolved_by.as_deref().and_then(|r| match r {
+        "local_ui" => Some(maho_ext_api::QuestionResolvedBy::LocalUi),
+        "rpc_connection" => Some(maho_ext_api::QuestionResolvedBy::RpcConnection),
+        "control_endpoint" => Some(maho_ext_api::QuestionResolvedBy::ControlEndpoint),
+        _ => None,
+    });
     maho_ext_api::QuestionResponse {
         status,
         comment: response.comment,
         unanswered: response.unanswered,
         auto_resolved_after_ms: response.auto_resolved_after_ms,
+        cancel_origin,
+        resolved_by,
         answers: response
             .answers
             .into_iter()
@@ -14226,6 +14332,12 @@ impl Component for InteractiveMode {
         self.editor.invalidate();
     }
     fn dispose(&mut self) {
+        if let Some(detach) = self.detach_mcp_grant_presentation.take() {
+            detach();
+        }
+        if let Some(unsubscribe) = self.unsubscribe_security_notices.take() {
+            unsubscribe();
+        }
         self.handle_ui_request(crate::interactive_extension_ui::UiRequest::SideColumn(None));
         for (_, widget, _) in &mut self.widgets {
             widget.dispose();

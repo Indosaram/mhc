@@ -8,7 +8,7 @@ use crate::state::{
 use crate::tools::control::tool_result::tool_result;
 use crate::tools::output::output::TaskOutputInput;
 use crate::tools::output::renderers::{
-    ToolRenderResultOptions, render_task_output_call, render_task_output_result,
+    ToolRenderResultOptions, render_task_output_call, render_task_output_result, task_output_model_text,
 };
 use crate::tools::output::types::{
     SuspendedDetails, TaskOutputDetails, TaskSnapshot, TranscriptMode, TranscriptSource,
@@ -79,6 +79,9 @@ fn call_input(value: serde_json::Value) -> TaskOutputInput {
 
 fn snapshot() -> TaskSnapshot {
     TaskSnapshot {
+        parent_model: None,
+        parent_model_fallback: None,
+        effective_model: None,
         task_id: "st_done".to_string(),
         name: None,
         description: None,
@@ -183,6 +186,7 @@ fn given_every_result_detail_kind_when_rendering_compact_rows_then_rows_are_exha
     let details = vec![
         TaskOutputDetails::Status {
             snapshot: TaskSnapshot {
+                parent_model_fallback: None,
                 status: running(),
                 ..snapshot()
             },
@@ -511,4 +515,21 @@ fn given_a_resident_snapshot_when_the_status_row_renders_then_the_status_label_i
     // then
     assert!(line.contains("running"), "{line}");
     assert!(!line.contains("suspended"), "{line}");
+}
+
+#[test]
+fn parent_fallback_preserves_route_and_serialized_metadata() {
+    use crate::completion::{ParentModelFallback, ParentModelFallbackReason};
+    let mut snap = snapshot();
+    snap.parent_model = Some("openai/parent".into());
+    snap.parent_model_fallback = Some(ParentModelFallback { from_model: "provider/exhausted".into(), reason: ParentModelFallbackReason::UsageLimit, detail: None, resets: Some("tomorrow".into()), interrupted_tools: Some(vec!["bash".into()]), at: "now".into(), phase: None });
+    let value = serde_json::to_value(&snap).expect("snapshot");
+    assert_eq!(value["parent_model"], "openai/parent");
+    assert_eq!(value["parent_model_fallback"]["from_model"], "provider/exhausted");
+    assert_eq!(value["parent_model_fallback"]["resets"], "tomorrow");
+    assert_eq!(value["parent_model_fallback"]["interrupted_tools"][0], "bash");
+    let text = task_output_model_text(&snap);
+    assert!(text.starts_with("model raw-model"));
+    snap.parent_model_fallback = None;
+    assert!(!serde_json::to_value(&snap).expect("snapshot").as_object().expect("object").contains_key("parent_model_fallback"));
 }

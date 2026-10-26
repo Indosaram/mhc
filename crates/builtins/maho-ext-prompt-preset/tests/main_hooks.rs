@@ -138,7 +138,7 @@ async fn prompt_main_hooks_match_pinned_reference() {
     maho_ext_prompt_preset::PromptPreset.register(&mut api);
     let mut actual = Vec::new();
     let families = [
-        "gpt-6-sol",
+        "gpt-6-astra",
         "claude-opus-5",
         "kimi-k3",
         "deepseek-v4-1-flash",

@@ -112,7 +112,7 @@ fn first_non_empty_line(body: &str) -> Option<&str> {
 }
 
 fn warning(message: String, path: &str) -> ResourceDiagnostic {
-    ResourceDiagnostic { diagnostic_type: ResourceDiagnosticType::Warning, message, path: Some(path.into()), collision: None }
+    ResourceDiagnostic { category: None, diagnostic_type: ResourceDiagnosticType::Warning, message, path: Some(path.into()), collision: None }
 }
 /// `loadTemplateFromFile`: returns diagnostics when a file cannot be read or parsed.
 pub fn load_template_from_file(file_path: &str, source_info: SourceInfo) -> (Option<PromptTemplate>, Vec<ResourceDiagnostic>) {

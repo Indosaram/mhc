@@ -34,6 +34,28 @@ fn model_record(
 }
 
 #[test]
+fn stale_resume_allocation_is_rejected_even_when_capacity_is_already_held() {
+    let harness = default_manager();
+    let task = started(harness.manager.start(&base_spec()));
+    let record = harness.store.load(&task.task_id).unwrap().unwrap();
+    let allocation = crate::manager::concurrency::QueuedTaskAdmission {
+        model: record.model.clone(),
+        lane_key: record.model.clone(),
+        task_id: task.task_id.clone(),
+        run_epoch: record.notification.run_epoch + 1,
+        sequence: 0,
+    };
+    assert_eq!(
+        harness.manager.acquire_resume_capacity(
+            &task.task_id,
+            record.notification.run_epoch,
+            Some(&allocation)
+        ),
+        Err("stale resume allocation".into()),
+    );
+}
+
+#[test]
 fn given_valid_spec_when_started_then_returns_st_id_and_running_status_with_persisted_record() {
     let harness = default_manager();
 
@@ -75,8 +97,15 @@ fn given_team_member_with_parent_kernel_tools_when_started_then_refused_before_r
     let StartResult::PlanUnresolved(error) = result else {
         panic!("expected plan_unresolved");
     };
-    assert_eq!(error.code, crate::manager::types::PlanResolutionCode::InvalidTarget);
-    assert!(error.message.contains("cannot reach a parent JavaScript kernel"));
+    assert_eq!(
+        error.code,
+        crate::manager::types::PlanResolutionCode::InvalidTarget
+    );
+    assert!(
+        error
+            .message
+            .contains("cannot reach a parent JavaScript kernel")
+    );
     assert!(harness.store.list().expect("list").records.is_empty());
 }
 
@@ -422,9 +451,11 @@ fn given_pending_task_when_slot_promoted_then_deferred_child_listener_attaches_t
     assert!(runner.handle(&queued.task_id).is_none());
     runner.wait_handle(&first.task_id).complete("done");
     let promoted = runner.wait_handle(&queued.task_id);
-    wait_until("three subscriptions", || promoted.subscribe_count() == 3);
+    // Four native event observers: transcript, statistics, host identity, and fallback facts.
+    // Self-resumption uses its dedicated hook rather than an extra event subscription.
+    promoted.wait_subscriptions(5);
 
-    // The third subscribe is the manager's deferred child listener: FakeHandle records the call
+    // The fifth subscribe is the manager's deferred child listener: FakeHandle records the call
     // before the launch thread installs the returned detach closure. Waiting on the count alone
     // races that install, so `unsubscribe` can land in the manager's missing-slot branch and run
     // the detach on the launch thread after the assertion. Arm a per-handle detach watcher first,
@@ -613,7 +644,10 @@ fn given_cancel_lands_while_runner_start_awaits_when_handle_arrives_then_destroy
     // TS `await flush()`: destruction disposes the handle, then forgets it in its `finally`.
     wait_until("delayed handle disposed and forgotten", || {
         delayed.dispose_calls() >= 1
-            && !harness.manager.resident_task_ids().contains(&queued.task_id)
+            && !harness
+                .manager
+                .resident_task_ids()
+                .contains(&queued.task_id)
     });
 
     assert!(matches!(cancelled, CancelOutcome::Cancelled { .. }));
@@ -665,4 +699,290 @@ fn given_running_task_with_one_queued_when_running_cancelled_then_queued_receive
     wait_until("queued running", || {
         status_of(&harness.store, &queued.task_id) == Some(TaskStatus::Running)
     });
+}
+
+#[test]
+fn fallback_walk_retains_parent_for_later_and_drops_spent_parent() {
+    use crate::manager::credential_failure::runtime_fallback_candidates;
+    let harness = default_manager();
+    let task = started(harness.manager.start(&base_spec()));
+    let mut record = harness
+        .store
+        .load(&task.task_id)
+        .expect("load")
+        .expect("record");
+    let category = model_record("other", "category", "other/category", None, None);
+    let sibling = model_record("current", "sibling", "current/sibling", None, None);
+    let parent = model_record("current", "parent", "current/parent", None, None);
+    record.model = "current/first".into();
+    record.resolved_model = Some(model_record(
+        "current",
+        "first",
+        "current/first",
+        None,
+        None,
+    ));
+    record.parent_model = Some("current/parent".into());
+    record.fallback_models = Some(vec![sibling.clone(), category.clone(), parent.clone()]);
+    let ordinary = runtime_fallback_candidates(&record, "temporary unavailable");
+    assert_eq!(ordinary.remaining, vec![sibling.clone(), category.clone()]);
+    assert_eq!(
+        ordinary.chain_after_hop(),
+        vec![category.clone(), parent.clone()]
+    );
+    let spent = runtime_fallback_candidates(&record, "weekly limit exhausted; switch with /model");
+    assert_eq!(spent.remaining, vec![category.clone(), sibling.clone()]);
+    assert_eq!(spent.skipped, vec![parent.clone()]);
+    let rejected = runtime_fallback_candidates(&record, "401 unauthorized");
+    assert_eq!(rejected.remaining, vec![category]);
+    assert_eq!(rejected.skipped, vec![sibling, parent]);
+}
+
+#[test]
+fn exact_resumed_outcome_settles_without_waiting_for_old_generic_turn() {
+    let harness = default_manager();
+    let task = started(harness.manager.start(&base_spec()));
+    let record = harness
+        .store
+        .load(&task.task_id)
+        .expect("load")
+        .expect("record");
+    let handle = harness
+        .manager
+        .get_resident_handle(&task.task_id)
+        .expect("live handle");
+    let (settle, exact) = std::sync::mpsc::channel();
+    harness.manager.track_resumed_turn(
+        &task.task_id,
+        handle,
+        &record.model,
+        record.notification.run_epoch,
+        Box::new(move || exact.recv_timeout(WAIT).expect("exact outcome")),
+    );
+    settle
+        .send(crate::runners::RunnerOutcome::completed("resumed result"))
+        .expect("settle");
+    let completed = harness
+        .manager
+        .wait_for(&task.task_id, None, Some(WAIT))
+        .expect("terminal record");
+    assert_eq!(completed.status, TaskStatus::Completed);
+    assert_eq!(completed.final_response.as_deref(), Some("resumed result"));
+    assert_eq!(
+        completed.notification.run_epoch,
+        record.notification.run_epoch
+    );
+}
+
+#[test]
+fn refused_pause_does_not_trap_ordinary_completion() {
+    let harness = default_manager();
+    let task = started(harness.manager.start(&base_spec()));
+    let record = harness.store.load(&task.task_id).unwrap().unwrap();
+    harness
+        .manager
+        .begin_native_pause(&task.task_id, record.notification.run_epoch);
+    harness
+        .manager
+        .finish_native_pause(&task.task_id, record.notification.run_epoch, false)
+        .unwrap();
+    let handle = harness
+        .in_process
+        .handle(&task.task_id)
+        .or_else(|| harness.process.handle(&task.task_id))
+        .unwrap();
+    handle.settle(crate::runners::RunnerOutcome::completed(
+        "ordinary completion",
+    ));
+    let completed = harness
+        .manager
+        .wait_for(&task.task_id, None, Some(WAIT))
+        .unwrap();
+    assert_eq!(completed.status, TaskStatus::Completed);
+    assert_eq!(
+        completed.final_response.as_deref(),
+        Some("ordinary completion")
+    );
+}
+
+#[test]
+fn late_durable_id_replaces_predecessor_once_and_ignores_later_reports() {
+    let harness = default_manager();
+    let task = started(harness.manager.start(&base_spec()));
+    harness
+        .store
+        .mutate(&task.task_id, |record: &crate::state::TaskRecord| {
+            crate::state::TaskRecord {
+                child_session_id: Some("predecessor".into()),
+                ..record.clone()
+            }
+        })
+        .unwrap();
+    let handle = harness
+        .in_process
+        .handle(&task.task_id)
+        .or_else(|| harness.process.handle(&task.task_id))
+        .unwrap();
+    handle.emit_durable_id("durable-current");
+    handle.emit_durable_id("stale-later");
+    assert_eq!(
+        harness
+            .store
+            .load(&task.task_id)
+            .unwrap()
+            .unwrap()
+            .child_session_id
+            .as_deref(),
+        Some("durable-current")
+    );
+}
+
+#[test]
+fn typed_start_failure_advances_category_without_consuming_parent_rung() {
+    let runner = FakeRunner::new();
+    *lock(&runner.hook) = Some(Arc::new(|_, call| {
+        (call == 1).then(|| {
+            Err(crate::manager::types::ManagedRunnerError::Runner(
+                crate::runners::RunnerFailure::new(
+                    crate::runners::RunnerFailureKind::ModelUnavailable,
+                    "temporary unavailable",
+                ),
+            ))
+        })
+    }));
+    let harness = make_manager(HarnessOptions {
+        in_process: Some(runner.clone()),
+        planner: Some(Arc::new(|_| {
+            Ok(ResolvedChildPlan {
+                model: "first/a".into(),
+                resolved_model: Some(model_record("first", "a", "first/a", None, None)),
+                fallback_models: Some(vec![
+                    model_record("second", "b", "second/b", None, None),
+                    model_record("parent", "c", "parent/c", None, None),
+                ]),
+                ..Default::default()
+            })
+        })),
+        ..Default::default()
+    });
+    let task = started(harness.manager.start(&base_spec()));
+    assert_eq!(runner.started_count(), 2);
+    assert_eq!(runner.specs()[1].model.as_deref(), Some("second/b"));
+    let record = harness.store.load(&task.task_id).unwrap().unwrap();
+    assert_eq!(record.model, "second/b");
+    assert_eq!(record.fallback_models.unwrap()[0].display, "parent/c");
+}
+
+#[test]
+fn fresh_manager_reconstructs_withdrawn_first_launch_with_saved_custody() {
+    let original = make_manager(HarnessOptions {
+        config: Some(config(1, 1)),
+        ..Default::default()
+    });
+    let first = started(original.manager.start(&base_spec()));
+    let waiting = started(original.manager.start(&base_spec()));
+    let record = original.store.load(&waiting.task_id).unwrap().unwrap();
+    original
+        .manager
+        .admission_barrier()
+        .close(&record.root_session_id, 5);
+    original
+        .manager
+        .withdraw_admissions(&record.root_session_id);
+    assert!(
+        original
+            .store
+            .load(&waiting.task_id)
+            .unwrap()
+            .unwrap()
+            .queued_admission
+            .is_some()
+    );
+    drop(original.manager);
+    original
+        .store
+        .mutate(&waiting.task_id, |record: &crate::state::TaskRecord| {
+            crate::state::TaskRecord {
+                host_pid: None,
+                ..record.clone()
+            }
+        })
+        .unwrap();
+    let runner = FakeRunner::new();
+    let options = crate::manager::types::TaskManagerOptions::new(
+        original.store.clone(),
+        crate::manager::types::ManagedRunners {
+            in_process: runner.clone(),
+            process: runner.clone(),
+        },
+        category_planner(&[]),
+        original.project.cwd(),
+    );
+    let restored = crate::manager::create_task_manager(options);
+    let record = original.store.load(&waiting.task_id).unwrap().unwrap();
+    restored
+        .admission_barrier()
+        .close(&record.root_session_id, 5);
+    let credential = restored
+        .admission_barrier()
+        .resume(&record.root_session_id, 5, "restart")
+        .unwrap();
+    restored
+        .resume_held_task(&waiting.task_id, &credential)
+        .unwrap();
+    let handle = runner.wait_handle(&waiting.task_id);
+    handle.settle(crate::runners::RunnerOutcome::completed("restored"));
+    assert_eq!(
+        restored
+            .wait_for(&waiting.task_id, None, Some(WAIT))
+            .unwrap()
+            .final_response
+            .as_deref(),
+        Some("restored")
+    );
+    assert_eq!(first.status, TaskStatus::Running);
+}
+
+#[test]
+fn accepted_stop_and_immediate_exact_resume_ignore_the_old_abort() {
+    let harness = default_manager();
+    let task = started(harness.manager.start(&base_spec()));
+    let record = harness.store.load(&task.task_id).unwrap().unwrap();
+    let handle = harness.manager.get_resident_handle(&task.task_id).unwrap();
+    harness
+        .manager
+        .begin_native_pause(&task.task_id, record.notification.run_epoch);
+    harness
+        .manager
+        .finish_native_pause(&task.task_id, record.notification.run_epoch, true)
+        .unwrap();
+    harness
+        .store
+        .mutate(&task.task_id, |fresh: &crate::state::TaskRecord| {
+            crate::state::TaskRecord {
+                status: TaskStatus::Running,
+                ..fresh.clone()
+            }
+        })
+        .unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    harness.manager.track_resumed_turn(
+        &task.task_id,
+        handle,
+        &record.model,
+        record.notification.run_epoch,
+        Box::new(move || receive.recv_timeout(WAIT).unwrap()),
+    );
+    harness
+        .in_process
+        .wait_handle(&task.task_id)
+        .settle(crate::runners::RunnerOutcome::Cancelled);
+    send.send(crate::runners::RunnerOutcome::completed("new turn"))
+        .unwrap();
+    let completed = harness
+        .manager
+        .wait_for(&task.task_id, None, Some(WAIT))
+        .unwrap();
+    assert_eq!(completed.status, TaskStatus::Completed);
+    assert_eq!(completed.final_response.as_deref(), Some("new turn"));
 }

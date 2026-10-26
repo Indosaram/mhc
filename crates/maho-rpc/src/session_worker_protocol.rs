@@ -22,6 +22,19 @@ pub const SESSION_WORKER_LIMITS: SessionWorkerLimits = SessionWorkerLimits {
     open_ms: 30000,
     control_ms: 5000,
 };
+/// Whether an open step failed only because its worker died: the worker's request channel rejects what is pending
+/// with a plain `session_closing` / `session_worker_exited`, and the claims and grants it held report a typed
+/// `session_closing` (senpi#4037).
+pub fn closed_by_worker_death(cause: &(dyn std::error::Error + 'static)) -> bool {
+    if let Some(typed) = cause.downcast_ref::<crate::session_registry::RpcSessionRegistryError>() {
+        return typed.code == crate::rpc_types::RPC_ERROR_SESSION_CLOSING;
+    }
+    matches!(
+        cause.to_string().as_str(),
+        "session_closing" | "session_worker_exited"
+    )
+}
+
 pub const fn worker_credit_code(grant: SessionWriteGrant) -> i32 {
     match grant {
         SessionWriteGrant::Granted => 1,
@@ -108,6 +121,7 @@ pub enum HostToSessionWorker {
         display: WorkerDisplay,
     },
     CancelUi,
+    CancelGrant { id: String },
     Close,
     /// The host's answer to one blocking worker exchange (native stand-in for senpi's
     /// `SharedArrayBuffer` wait signal: the worker is a process, so the grant crosses the pipe).
@@ -333,6 +347,7 @@ pub fn profile_from_wire(
             creation_model,
             initial_thinking_level: text("initialThinkingLevel"),
             auto_title: value.get("autoTitle").and_then(serde_json::Value::as_bool),
+                prompt_size_inventory: None,
         },
         session_path: text("sessionPath"),
         durable_session_id: text("durableSessionId"),
@@ -380,6 +395,30 @@ pub struct WorkerActivity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn worker_death_is_a_closing_channel_not_a_generic_failure() {
+        let closing = crate::session_registry::RpcSessionRegistryError::new(
+            crate::rpc_types::RPC_ERROR_SESSION_CLOSING,
+            None,
+            None,
+        );
+        assert!(closed_by_worker_death(&closing));
+        // A typed error with any other code is a real refusal, not a death.
+        let refused = crate::session_registry::RpcSessionRegistryError::new(
+            "session_path_in_use",
+            None,
+            None,
+        );
+        assert!(!closed_by_worker_death(&refused));
+        // The request channel rejects with plain messages.
+        for message in ["session_closing", "session_worker_exited"] {
+            let plain = std::io::Error::other(message);
+            assert!(closed_by_worker_death(&plain));
+        }
+        assert!(!closed_by_worker_death(&std::io::Error::other(
+            "session_worker_protocol_error"
+        )));
+    }
     #[test]
     fn credit_codes_struct_matches_the_grant_encoding() {
         assert_eq!(
@@ -464,6 +503,7 @@ mod tests {
                 creation_model: Some(("faux".into(), "m".into())),
                 initial_thinking_level: Some("high".into()),
                 auto_title: Some(false),
+                prompt_size_inventory: None,
             },
             session_path: Some("/w/s.jsonl".into()),
             durable_session_id: Some("d".into()),

@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use crate::host::HostError;
+pub type ExactTurnOutcome = Box<dyn FnOnce() -> crate::runners::RunnerOutcome + Send>;
 use crate::runners::RunnerOutcome;
 use crate::runners::types::{RpcEntriesResult, RpcSpawnSpec, RpcSwitchSessionResult};
 
@@ -21,13 +22,28 @@ pub struct WorkpoolChildIdentity {
 
 /// Blocking handle surface. `wait_for_outcome` blocks until the current turn settles.
 pub trait ManagedChildHandle: Send + Sync {
+    fn on_self_resumed(&self, _listener: Arc<dyn Fn() + Send + Sync>) -> Option<Unsubscribe> {
+        None
+    }
+    fn on_durable_session_id(
+        &self,
+        _listener: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> Option<Unsubscribe> {
+        None
+    }
     fn task_id(&self) -> &str;
+    fn run_pause(&self) -> Option<&dyn crate::pause::native_child_pause::NativeRunPause> {
+        None
+    }
     fn session_id(&self) -> Option<String>;
     fn pid(&self) -> Option<i64>;
     fn spawn_spec(&self) -> Option<RpcSpawnSpec> {
         None
     }
     fn steer(&self, text: &str) -> Result<(), HostError>;
+    fn start_initial_turn(&self, _text: &str) -> Option<crate::pause::ports::ResumedChildTurn> {
+        None
+    }
     fn follow_up(&self, text: &str) -> Result<(), HostError>;
     fn rebind_workpool_identity(
         &self,
@@ -74,6 +90,12 @@ pub trait ManagedChildHandle: Send + Sync {
     }
     /// From here no transport recovery may bring the child back (TS `markStopping`).
     fn mark_stopping(&self) {}
+    fn is_host_session(&self) -> bool {
+        false
+    }
+    fn publish_task_status(&self, _status: crate::state::TaskStatus) -> Result<(), HostError> {
+        Ok(())
+    }
 }
 
 /// Terminate (when supported) then always dispose.
