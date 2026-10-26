@@ -20,11 +20,11 @@ maho-omo-config-resolution = { path = "../maho-omo-config-resolution" }
 maho-tools = { version = "=0.0.0", path = "../../../maho-tools" }
 maho-tui = { path = "../../../maho-tui" }
 omo-config-core = { package = "maho-omo-config-core", path = "../../omo-config-core" }
-senpi-desktop-core = { package = "maho-senpi-desktop-core", path = "../../senpi-desktop-core" }
-senpi-desktop-protocol = { package = "maho-senpi-desktop-protocol", path = "../../senpi-desktop-protocol" }
-senpi-desktop-run = { package = "maho-senpi-desktop-run", path = "../../senpi-desktop-run" }
-senpi-desktop-service = { package = "maho-senpi-desktop-service", path = "../../senpi-desktop-service" }
-senpi-desktop-tool = { package = "maho-senpi-desktop-tool", path = "../../senpi-desktop-tool" }
+senpi-desktop-core = { package = "maho-senpi-desktop-core", path = "../../../desktop/senpi-desktop-core" }
+senpi-desktop-protocol = { package = "maho-senpi-desktop-protocol", path = "../../../desktop/senpi-desktop-protocol" }
+senpi-desktop-run = { package = "maho-senpi-desktop-run", path = "../../../desktop/senpi-desktop-run" }
+senpi-desktop-service = { package = "maho-senpi-desktop-service", path = "../../../desktop/senpi-desktop-service" }
+senpi-desktop-tool = { package = "maho-senpi-desktop-tool", path = "../../../desktop/senpi-desktop-tool" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 sha2 = { workspace = true }

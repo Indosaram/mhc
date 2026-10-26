@@ -140,16 +140,25 @@ export function auditCrates(repoRoot) {
 			if (!name) continue;
 
 			const relCrate = relative(cratesDir, dirname(cargoPath)).replaceAll("\\", "/");
-			const isDesktop = relCrate.startsWith("omo/senpi-desktop-") || name.startsWith("senpi-desktop-");
+			if (license !== "LicenseRef-SUL-1.0") {
+				errors.push(`crate ${name} (${relCrate}) under crates/omo/ must have license = "LicenseRef-SUL-1.0", found "${license ?? "<none>"}" (MIT crates live outside crates/omo, e.g. crates/desktop)`);
+			}
+		}
+	}
 
-			if (isDesktop) {
-				if (license !== "MIT") {
-					errors.push(`crate ${name} (${relCrate}) under crates/omo/senpi-desktop-* must have license = "MIT", found "${license ?? "<none>"}"`);
-				}
-			} else {
-				if (license !== "LicenseRef-SUL-1.0") {
-					errors.push(`crate ${name} (${relCrate}) under crates/omo/ must have license = "LicenseRef-SUL-1.0", found "${license ?? "<none>"}"`);
-				}
+	// crates/desktop/** holds the MIT senpi-desktop-* ports (moved out of crates/omo so path-based
+	// SUL checks over crates/omo stay exact).
+	const desktopDir = join(cratesDir, "desktop");
+	if (existsSync(desktopDir)) {
+		const desktopCargoFiles = collectFiles(desktopDir, (_, name) => name === "Cargo.toml");
+		for (const cargoPath of desktopCargoFiles) {
+			const content = readFileSync(cargoPath, "utf8");
+			const { name, license } = parseCargoPackage(content);
+			if (!name) continue;
+
+			const relCrate = relative(cratesDir, dirname(cargoPath)).replaceAll("\\", "/");
+			if (license !== "MIT") {
+				errors.push(`crate ${name} (${relCrate}) under crates/desktop/ must have license = "MIT", found "${license ?? "<none>"}"`);
 			}
 		}
 	}
@@ -258,9 +267,9 @@ export async function runSelfTest() {
 			join(happyRepo, "crates/omo/some-sul-crate/Cargo.toml"),
 			`[package]\nname = "some-sul-crate"\nversion = "0.1.0"\nlicense = "LicenseRef-SUL-1.0"\n`
 		);
-		mkdirSync(join(happyRepo, "crates/omo/senpi-desktop-core"), { recursive: true });
+		mkdirSync(join(happyRepo, "crates/desktop/senpi-desktop-core"), { recursive: true });
 		writeFileSync(
-			join(happyRepo, "crates/omo/senpi-desktop-core/Cargo.toml"),
+			join(happyRepo, "crates/desktop/senpi-desktop-core/Cargo.toml"),
 			`[package]\nname = "senpi-desktop-core"\nversion = "0.1.0"\nlicense = "MIT"\n`
 		);
 		mkdirSync(join(happyRepo, "crates/builtins/maho-ext-webfetch"), { recursive: true });
@@ -291,9 +300,9 @@ export async function runSelfTest() {
 
 		// Fixture 3: senpi-desktop crate with non-MIT license fails
 		const badDesktopRepo = join(testDir, "bad-desktop-repo");
-		mkdirSync(join(badDesktopRepo, "crates/omo/senpi-desktop-tool"), { recursive: true });
+		mkdirSync(join(badDesktopRepo, "crates/desktop/senpi-desktop-tool"), { recursive: true });
 		writeFileSync(
-			join(badDesktopRepo, "crates/omo/senpi-desktop-tool/Cargo.toml"),
+			join(badDesktopRepo, "crates/desktop/senpi-desktop-tool/Cargo.toml"),
 			`[package]\nname = "senpi-desktop-tool"\nversion = "0.1.0"\nlicense = "LicenseRef-SUL-1.0"\n`
 		);
 		const badDesktopErrors = auditCrates(badDesktopRepo);
