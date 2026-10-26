@@ -211,8 +211,15 @@ fn any_value(value: &Value) -> Vec<u8> {
                 varint(&mut out, 3 * 8);
                 varint(&mut out, i as u64);
             } else if let Some(f) = n.as_f64() {
-                varint(&mut out, 4 * 8 + 1);
-                out.extend_from_slice(&f.to_le_bytes());
+                if f.fract() == 0.0
+                    && (crate::otlp_encode::INT64_MIN..crate::otlp_encode::INT64_LIMIT).contains(&f)
+                {
+                    varint(&mut out, 3 * 8);
+                    varint(&mut out, (f as i64) as u64);
+                } else {
+                    varint(&mut out, 4 * 8 + 1);
+                    out.extend_from_slice(&f.to_le_bytes());
+                }
             }
         }
         Value::Array(values) => {

@@ -190,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_start_time_and_missing_entry_are_ambiguous_and_alive() {
+    fn unreadable_start_time_is_ambiguous_but_missing_entry_is_dead() {
         let dir = tempfile::tempdir().unwrap();
         write_entry(dir.path(), 88, "boot-win", Some("proc:100"), 0.0);
         let alive = create_owner_liveness(
@@ -203,7 +203,8 @@ mod tests {
             Some(Arc::new(|_| true)),
         );
         assert!(alive(&owner(88, "boot-win")));
-        assert!(alive(&owner(999, "boot-unknown")));
+        // session-summary-liveness.ts requires a matching registry entry even for a live pid.
+        assert!(!alive(&owner(999, "boot-unknown")));
         assert!(!owner_entry_path(dir.path(), 999).exists());
     }
 

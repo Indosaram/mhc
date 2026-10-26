@@ -18,6 +18,11 @@ fn claude_rung_label() -> String {
     format!("{}/{}", rung.providers[0], rung.model)
 }
 
+fn kimi_rung_label() -> String {
+    let rung = &builtin_model_profiles()["daily-normal"].models[1];
+    format!("{}/{}", rung.providers[0], rung.model)
+}
+
 #[test]
 fn the_unset_walk_picks_the_first_resolving_lane_and_reports_its_rung_states() {
     let view = describe_model_profile(&json!({}), &available(&[KIMI, GLM]));
@@ -43,7 +48,7 @@ fn the_unset_walk_picks_the_first_resolving_lane_and_reports_its_rung_states() {
 fn an_exclude_entry_marks_its_rung_excluded_and_removes_the_selector_before_resolving() {
     let view = describe_model_profile(&json!({"exclude_models": ["kimi-*"]}), &available(&[KIMI, GLM]));
     assert_eq!(view.applied.as_deref(), Some(GLM));
-    let excluded = view.rungs.iter().find(|rung| rung.model == KIMI).expect("the kimi rung");
+    let excluded = view.rungs.iter().find(|rung| rung.model == kimi_rung_label()).expect("the kimi rung");
     assert_eq!(excluded.state, ModelProfileRungState::Excluded);
     assert_eq!(excluded.excluded_by.as_deref(), Some("kimi-*"));
     assert_eq!(view.rungs[2].state, ModelProfileRungState::Applied);

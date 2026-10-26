@@ -456,7 +456,16 @@ impl OtlpSender {
         for (key, value) in &record.attributes {
             let value = match value {
                 TurnSpanAttribute::String(text) => Value::String(text.clone()),
-                TurnSpanAttribute::Number(number) => Value::from(*number),
+                TurnSpanAttribute::Number(number) => {
+                    if *number >= crate::otlp_encode::INT64_MIN
+                        && *number < crate::otlp_encode::INT64_LIMIT
+                        && number.fract() == 0.0
+                    {
+                        Value::from(*number as i64)
+                    } else {
+                        Value::from(*number)
+                    }
+                }
                 TurnSpanAttribute::Boolean(flag) => Value::Bool(*flag),
             };
             attributes.insert(key.clone(), value);

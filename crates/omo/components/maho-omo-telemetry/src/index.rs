@@ -239,7 +239,18 @@ mod tests {
         });
         client.flush().await.unwrap();
         client.shutdown().await;
-        assert_eq!(*m.lock().unwrap(), *expected.lock().unwrap());
+        let actual = m.lock().unwrap();
+        let expected = expected.lock().unwrap();
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected.iter()) {
+            // Each capture gets its own UUID and wall-clock timestamp in the Rust
+            // transport envelope; compare the payload constructed by trackActive.
+            assert!(uuid::Uuid::parse_str(actual.uuid.as_deref().unwrap()).is_ok());
+            assert!(DateTime::parse_from_rfc3339(actual.timestamp.as_deref().unwrap()).is_ok());
+            assert_eq!(actual.distinct_id, expected.distinct_id);
+            assert_eq!(actual.event, expected.event);
+            assert_eq!(actual.properties, expected.properties);
+        }
     }
     struct Hanging {
         captured: Arc<tokio::sync::Notify>,

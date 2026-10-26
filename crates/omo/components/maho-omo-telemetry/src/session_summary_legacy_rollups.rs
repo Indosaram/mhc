@@ -74,6 +74,7 @@ pub fn legacy_rollup_dir(state_dir: &Path) -> PathBuf {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EntryKind {
     Directory,
+    File,
     Link,
     Other,
 }
@@ -91,6 +92,8 @@ fn identity(path: &Path) -> Option<Identity> {
         EntryKind::Link
     } else if metadata.is_dir() {
         EntryKind::Directory
+    } else if metadata.is_file() {
+        EntryKind::File
     } else {
         EntryKind::Other
     };
@@ -193,6 +196,8 @@ fn list(dir: &Path) -> Vec<(String, EntryKind)> {
                     EntryKind::Link
                 } else if file_type.is_dir() {
                     EntryKind::Directory
+                } else if file_type.is_file() {
+                    EntryKind::File
                 } else {
                     EntryKind::Other
                 }

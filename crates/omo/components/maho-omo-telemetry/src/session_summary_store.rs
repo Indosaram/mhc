@@ -633,7 +633,8 @@ mod tests {
         assert_eq!(storage.window_keys(), vec![key.clone()]);
         let read = storage.read_window(&key);
         assert_eq!(read, ReadResult::Value(window_record()));
-        assert!(dir.path().join("owners/1.json").exists());
+        // session-summary-storage.ts nests the owner registry inside summaryDir(stateDir).
+        assert!(storage.dir.join("owners/1.json").exists());
 
         let pending = PendingRecord {
             consent: RecordConsent::Enabled,
@@ -718,23 +719,22 @@ mod tests {
             dir.path(),
             owner(1, "boot-self"),
             Probes::default(),
-            Some(Arc::new(move || {
-                let mut value = clock.lock().unwrap();
-                *value += 30_000.0;
-                *value
-            })),
+            Some(Arc::new(move || *clock.lock().unwrap())),
         );
         storage.register();
         let first: Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("session-summary/owners/1.json")).unwrap(),
         )
         .unwrap();
+        // A clock read must not advance time: registration itself also reads the clock.
+        *ticks.lock().unwrap() = 30_000.0;
         storage.register();
         let second: Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("session-summary/owners/1.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(first["heartbeatAt"], second["heartbeatAt"]);
+        *ticks.lock().unwrap() = 60_000.0;
         storage.register();
         let third: Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("session-summary/owners/1.json")).unwrap(),

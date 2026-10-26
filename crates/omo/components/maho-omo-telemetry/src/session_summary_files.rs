@@ -113,7 +113,8 @@ pub fn is_safe_name(name: &str) -> bool {
 }
 
 pub fn is_safe_uuid(value: &str) -> bool {
-    value.len() == 36 && value.bytes().all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+    value.len() == 36
+        && value.bytes().all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f' | b'-'))
 }
 
 #[cfg(test)]
@@ -191,7 +192,10 @@ mod tests {
         assert!(!is_safe_name(""));
         assert!(!is_safe_name("a/b"));
         assert!(!is_safe_name(&"a".repeat(129)));
-        assert!(is_safe_uuid("0123456789ab-cdef-0123-456789abcdef"));
+        // session-summary-storage.ts: SAFE_UUID accepts exactly 36 lowercase hex/hyphen bytes.
+        assert!(is_safe_uuid("01234567-89ab-cdef-0123-456789abcdef"));
+        assert!(!is_safe_uuid("0123456789ab-cdef-0123-456789abcdef"));
+        assert!(!is_safe_uuid("01234567-89AB-cdef-0123-456789abcdef"));
         assert!(!is_safe_uuid("0123456789abcdef"));
         assert!(!is_safe_uuid("z123456789ab-cdef-0123-456789abcdef"));
     }
