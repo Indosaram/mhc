@@ -348,6 +348,11 @@ fn apply_dag_scheduler_event_with_results(
     pending_terminal_results: Option<&Mutex<BTreeMap<DagNodeId, TaskRecord>>>,
     now: Option<&Arc<dyn Fn() -> i64 + Send + Sync>>,
 ) -> DagRunRecordV1 {
+    if let Some(updated) = crate::dag::manager::apply_paused_dag_event(record, event)
+        .or_else(|| crate::dag::manager::apply_run_pause(record, event))
+    {
+        return updated;
+    }
     match &event.payload {
         DagRunEventPayload::RunPaused { .. } => DagRunRecordV1 {
             status: crate::dag::types::DagRunStatus::Paused,

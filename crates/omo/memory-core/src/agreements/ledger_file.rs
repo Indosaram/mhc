@@ -74,7 +74,7 @@ pub fn render_agreements_file_with_receipts(
             prior
         }
     });
-    let previous_body = parsed.as_ref().map(|file| file.body.clone());
+    let previous = parsed.clone();
     let (frontmatter, mut unparsed) = match parsed {
         None => (
             MemoryFrontmatter {
@@ -98,33 +98,13 @@ pub fn render_agreements_file_with_receipts(
     } else {
         format!("{serialized}\n")
     };
-    let rendered = render_memory_file(&frontmatter, &body)?;
-    // The shared frontmatter model predates extra fields. Preserve and stamp the provenance
-    // header here without widening that model for unrelated writers.
-    let header = existing
-        .and_then(|content| {
-            content
-                .lines()
-                .skip(1)
-                .take_while(|line| *line != "---")
-                .filter_map(|line| line.split_once(':'))
-                .find_map(|(key, value)| (key.trim() == "provenance").then(|| value.trim()))
-        })
-        .map(crate::memfs::decode_scalar_source);
-    match header.filter(|header| !header.starts_with("user said ")) {
-        None => Ok(rendered),
-        Some(header) => {
-            let header = if previous_body.as_deref() != Some(body.as_str())
-                && header.starts_with("user replied ")
-            {
-                "mixed: parts of this note are not the user's recorded words".to_string()
-            } else {
-                header
-            };
-            let encoded = serde_json::Value::String(header).to_string();
-            Ok(rendered.replacen("---\n", &format!("---\nprovenance: {encoded}\n"), 1))
-        }
-    }
+    let frontmatter = crate::tools::claim_frontmatter::stamp_receipt(
+        previous.as_ref(),
+        &frontmatter,
+        &body,
+        None,
+    );
+    render_memory_file(&frontmatter, &body)
 }
 
 pub fn known_agreements_of(items: &[AgreementItem]) -> Vec<FactsKnownAgreement> {

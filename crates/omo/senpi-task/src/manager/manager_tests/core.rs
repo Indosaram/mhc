@@ -451,9 +451,11 @@ fn given_pending_task_when_slot_promoted_then_deferred_child_listener_attaches_t
     assert!(runner.handle(&queued.task_id).is_none());
     runner.wait_handle(&first.task_id).complete("done");
     let promoted = runner.wait_handle(&queued.task_id);
-    wait_until("three subscriptions", || promoted.subscribe_count() == 3);
+    // Four native event observers: transcript, statistics, host identity, and fallback facts.
+    // Self-resumption uses its dedicated hook rather than an extra event subscription.
+    promoted.wait_subscriptions(5);
 
-    // The third subscribe is the manager's deferred child listener: FakeHandle records the call
+    // The fifth subscribe is the manager's deferred child listener: FakeHandle records the call
     // before the launch thread installs the returned detach closure. Waiting on the count alone
     // races that install, so `unsubscribe` can land in the manager's missing-slot branch and run
     // the detach on the launch thread after the assertion. Arm a per-handle detach watcher first,
@@ -899,13 +901,12 @@ fn fresh_manager_reconstructs_withdrawn_first_launch_with_saved_custody() {
     drop(original.manager);
     original
         .store
-        .mutate(
-            &waiting.task_id,
-            |record: &crate::state::TaskRecord| crate::state::TaskRecord {
+        .mutate(&waiting.task_id, |record: &crate::state::TaskRecord| {
+            crate::state::TaskRecord {
                 host_pid: None,
                 ..record.clone()
-            },
-        )
+            }
+        })
         .unwrap();
     let runner = FakeRunner::new();
     let options = crate::manager::types::TaskManagerOptions::new(

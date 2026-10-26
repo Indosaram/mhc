@@ -4076,13 +4076,7 @@ impl Inner {
         let resumed_manager = self.this.clone();
         let resumed_id = task_id.to_string();
         let resumed_handle = Arc::downgrade(handle);
-        let self_resumed = handle.subscribe(Arc::new(move |event| {
-            if !matches!(
-                event.event_type.as_str(),
-                "host_turn_resumed" | "self_resumed"
-            ) {
-                return;
-            }
+        let self_resumed = handle.on_self_resumed(Arc::new(move || {
             let (Some(inner), Some(handle)) = (resumed_manager.upgrade(), resumed_handle.upgrade())
             else {
                 return;
@@ -4135,7 +4129,9 @@ impl Inner {
             transcript();
             stats();
             fallback();
-            self_resumed();
+            if let Some(self_resumed) = self_resumed {
+                self_resumed();
+            }
             if let Some(durable) = durable {
                 durable();
             }

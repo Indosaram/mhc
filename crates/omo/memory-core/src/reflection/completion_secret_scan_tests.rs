@@ -280,7 +280,7 @@ fn given_a_secret_like_name_renamed_away_before_the_tip_when_scanned_then_the_in
     let tip = commit_paths(
         fixture.exec.as_ref(),
         &fixture.dir,
-        &[bad_name.as_str(), "reference/clean.md"],
+        &["reference/clean.md"],
         "rename to clean",
     );
 

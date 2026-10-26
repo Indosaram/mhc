@@ -379,7 +379,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         actions: actions.clone(),
         coordinator: None,
-        resolve_registry: Arc::new(|| None),
+        resolve_registry: support::fake_resolve_registry(),
         host_transport: None,
     });
     let mut api = support::api();
@@ -615,7 +615,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         actions: Arc::new(Actions(mpsc::channel().0)),
         coordinator: None,
-        resolve_registry: Arc::new(|| None),
+        resolve_registry: support::fake_resolve_registry(),
         host_transport: None,
     });
     let dag = maho_omo_task::dag_engine::TaskDagEngine::compose(&dag_task_engine, None)?;

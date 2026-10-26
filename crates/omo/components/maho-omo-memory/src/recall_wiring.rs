@@ -297,21 +297,13 @@ impl MemoryRecallWiring {
             .load(&repo)
             .ok()?;
         let mut documents = corpus.documents.clone();
-        let project_documents = if (self.options.resolve_settings)()
-            .ok()
-            .and_then(|value| value["project_scope"]["recall"].as_bool())
-            .unwrap_or(true)
-        {
-            self.project_scope.recall_corpora(
-                &snapshot.id,
-                &mut self
-                    .corpus_cache
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-            )
-        } else {
-            Vec::new()
-        };
+        let project_documents = self.project_scope.recall_corpora(
+            &snapshot.id,
+            &mut self
+                .corpus_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         documents.extend(crate::project_recall_seats::project_documents_of(
             &project_documents,
         ));
@@ -384,15 +376,7 @@ impl MemoryRecallWiring {
             .project_scope
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            if (self.options.resolve_settings)()
-                .ok()
-                .and_then(|value| value["project_scope"]["recall"].as_bool())
-                .unwrap_or(true)
-            {
-                Some(self.project_scope.clone())
-            } else {
-                None
-            };
+            Some(self.project_scope.clone());
         let sidecar = KibitzerSidecar::new(KibitzerSidecarOptions {
             session_id: session_id.to_string(),
             resources,

@@ -268,7 +268,7 @@ mod tests {
     fn heredoc_bodies_are_dropped_even_with_a_quoted_terminator_and_a_comment() {
         assert_eq!(
             shell_segments("cat > f <<'EOF' # it's the script\nbun test x\nEOF"),
-            vec![vec!["cat", "f", "<<EOF"]]
+            vec![vec!["cat", ">", "f", "<<EOF"]]
         );
         assert_eq!(
             heredoc_terminator("cat > f <<'EOF'"),

@@ -413,7 +413,7 @@ impl Extension for SkillPointersComponent {
                     let mass_mode = invoked.iter().any(|target| target.skill_name == "mass-ulw" && binds(target, &visible));
                     let mut pointers: Vec<SkillPointerMessage> = invoked
                         .iter()
-                        .filter(|target| binds(target, &visible) || !already_loaded(target.skill_name, &target.expanded_block_pattern))
+                        .filter(|target| !already_loaded(target.skill_name, &target.expanded_block_pattern))
                         .map(|target| SkillPointerMessage {
                             custom_type: target.custom_type,
                             content: if binds(target, &visible) { skill_mode(target, mass_mode, session_scope.as_deref(), &skills_root) } else { skill_pointer(target, session_scope.as_deref(), &skills_root) },

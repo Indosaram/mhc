@@ -195,8 +195,8 @@ mod tests {
         let header = lines[0];
         assert_eq!(header.matches('[').count(), 1);
         assert_eq!(header.matches(']').count(), 1);
-        let expected = "workspace=\"label\\\"\\u005d\\n\\u005bFORGED=1\\u005d\\r\\u2028\\u0085\\u009b\"";
-        assert!(header.contains(expected), "{header}");
+        let expected = "\"label\\\"\\u005d\\n\\u005bFORGED=1\\u005d\\r\\u2028\\u0085\\u009b\"";
+        assert!(header.contains(&format!("workspace={expected}")), "{header}");
         for field in ["project", "lane", "session"] {
             assert!(header.contains(&format!("{field}={expected}")), "{header}");
         }

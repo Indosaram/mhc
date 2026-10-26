@@ -246,7 +246,9 @@ fn given_a_dropped_rename_destination_when_squashed_then_the_source_is_restored(
 #[test]
 fn given_a_recorded_drop_when_the_tip_is_read_back_then_the_entries_round_trip_verbatim() {
     let fixture = fixture(&[("reference/keep.md", GOOD)]);
-    write_files(&fixture.dir, &[("reference/a | b.md", LEAK)]);
+    // Match upstream completion-validation-partial.test.ts: keep a valid change so the
+    // repaired tip has a commit on which the dropped-entry trailer can be recorded.
+    write_files(&fixture.dir, &[("reference/a | b.md", LEAK), ("reference/good.md", GOOD)]);
     let tip = commit_all(fixture.exec.as_ref(), &fixture.dir, "add leak");
     let dropped = BTreeSet::from(["reference/a | b.md".to_string()]);
     let record = vec![DroppedEntry {

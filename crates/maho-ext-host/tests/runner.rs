@@ -1654,7 +1654,14 @@ fn clone_taken_before_binding_observes_later_mode_and_ui() {
     let context = tool_runner.create_context().expect("context");
     assert_eq!(context.mode, ExtensionMode::Tui);
     assert!(context.has_ui);
-    assert!(Arc::ptr_eq(&context.ui, &ui));
+    // Binding installs the lifecycle wrapper; pre-existing clones must see that
+    // same wrapper, rather than retaining their original UI.
+    let bound = runner.create_context().expect("bound context");
+    assert!(Arc::ptr_eq(&context.ui, &bound.ui));
+    assert!(std::ptr::eq(
+        context.ui.factories().expect("bound UI factories"),
+        bound.ui.factories().expect("runner UI factories"),
+    ));
 }
 
 #[tokio::test]

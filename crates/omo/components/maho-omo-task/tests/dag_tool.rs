@@ -30,7 +30,7 @@ fn given_workflow_schema_when_parameters_are_registered_then_only_latest_actions
     let schema = create_dag_tool(deps(&f.manager)).parameters;
     let properties = schema["properties"].as_object().expect("schema properties");
     let actions = properties["action"]["anyOf"].as_array().expect("action choices");
-    assert_eq!(actions.len(), 8);
+    assert_eq!(actions.len(), 11);
     assert!(actions.iter().all(|action| action["const"] != "detach"));
     assert!(properties.get("detach").is_none());
 }
@@ -2533,7 +2533,7 @@ fn workflow_tool_schema_offers_control_verbs() {
         .collect();
     assert_eq!(
         members,
-        vec!["start", "attach", "snapshot", "wait", "cancel", "retry", "send", "amend"]
+        vec!["start", "attach", "snapshot", "wait", "cancel", "retry", "send", "amend", "resume", "cancel_node", "guide"]
     );
     let desc = action_schema["description"].as_str().unwrap();
     assert!(desc.contains("retry"));

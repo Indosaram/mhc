@@ -222,6 +222,10 @@ mod tests {
         let mut covered = std::collections::BTreeSet::new();
         for (rule, label, overrides, expected) in rows {
             let mut i = input();
+            // goal-turn-end-liveness.test.ts starts each table row with an active goal.
+            i.open_work = OpenWork::ActiveGoal {
+                goal_id: "goal-1".into(),
+            };
             for (key, value) in overrides.as_object().unwrap() {
                 match key.as_str() {
                     "isChildSession" => i.is_child_session = value.as_bool().unwrap(),
@@ -249,9 +253,11 @@ mod tests {
                     other => panic!("untranslated upstream input {other}"),
                 }
             }
+            // The upstream decision table compares JavaScript numbers. Deserialize
+            // the fixture so integer JSON and f64 retry timestamps compare numerically.
             assert_eq!(
-                serde_json::to_value(evaluate_turn_end_liveness(&i)).unwrap(),
-                expected,
+                evaluate_turn_end_liveness(&i),
+                serde_json::from_value::<TurnEndLivenessVerdict>(expected).unwrap(),
                 "{rule}: {label}"
             );
             covered.insert(rule);

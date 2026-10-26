@@ -161,13 +161,10 @@ fn test_legacy_record_anchored_at_zero_still_gates() {
     let selection = select_launchable(&entries, Some(&failures), T0);
 
     // then
-    assert_eq!(selection.selected.is_empty(), true);
+    // Upstream facts/failures-selection.test.ts (#10918): parked endpoints do not block successors.
+    assert_eq!(endpoints(&selection), vec!["alpha/m2"]);
     let mut expected_skipped = BTreeMap::new();
     expected_skipped.insert(facts_selection_key("alpha", "m1"), FactsSkipReason::Parked);
-    expected_skipped.insert(
-        facts_selection_key("alpha", "m2"),
-        FactsSkipReason::BlockedByPredecessor,
-    );
     assert_eq!(selection.skipped, expected_skipped);
 }
 
@@ -195,13 +192,10 @@ fn test_out_of_order_pending_list_follows_snapshot_boundary() {
     let selection = select_launchable(&entries, Some(&failures), T0);
 
     // then
-    assert_eq!(selection.selected.is_empty(), true);
+    // Upstream facts/failures-selection.test.ts (#10918): parked endpoints do not block successors.
+    assert_eq!(endpoints(&selection), vec!["alpha/m2"]);
     let mut expected_skipped = BTreeMap::new();
     expected_skipped.insert(facts_selection_key("alpha", "m1"), FactsSkipReason::Parked);
-    expected_skipped.insert(
-        facts_selection_key("alpha", "m2"),
-        FactsSkipReason::BlockedByPredecessor,
-    );
     assert_eq!(selection.skipped, expected_skipped);
 }
 

@@ -11,6 +11,9 @@ const INVOCATION_ALLOWLIST: &[&str] = &[
     "src/runners/rpc/handle.rs",
     "src/runners/rpc/start_cleanup.rs",
     "src/runners/in_process/child_handle.rs",
+    // Hosted runner handle delegation and pre-admission cleanup equivalents.
+    "src/runners/rpc_host/handle.rs",
+    "src/runners/rpc_host/session_open.rs",
     "src/manager/child_handle.rs",
 ];
 const FORBIDDEN_PATTERNS: &[&str] = &[".dispose(", ".terminate(", "libc::kill(", ".kill("];

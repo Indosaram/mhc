@@ -153,6 +153,20 @@ impl FakeHandle {
         }
     }
 
+    pub fn wait_subscriptions(&self, expected: usize) {
+        let state = lock(&self.state);
+        let (state, result) = self
+            .detach_done
+            .wait_timeout_while(state, WAIT, |state| state.subscribe_calls < expected)
+            .unwrap_or_else(PoisonError::into_inner);
+        assert!(
+            !result.timed_out(),
+            "timed out waiting for subscriptions on {}",
+            self.task_id
+        );
+        assert_eq!(state.subscribe_calls, expected);
+    }
+
     pub fn subscribe_count(&self) -> usize {
         lock(&self.state).subscribe_calls
     }
@@ -292,6 +306,7 @@ impl ManagedChildHandle for FakeHandle {
             state.listeners.push((id, listener));
             id
         };
+        self.detach_done.notify_all();
         notify();
         let state = Arc::clone(&self.state);
         let detach_done = Arc::clone(&self.detach_done);

@@ -150,7 +150,9 @@ mod regression_tests {
             .unwrap();
         let mut ctx = crate::test_context::context();
         let session = crate::test_context::bind_session(&mut ctx);
-        session.abort().await;
+        // Match issue-3811-goal-stop-pause.test.ts: a Stop adds a live hold;
+        // abort alone is a plain interrupt and correctly blocks the goal.
+        session.stop().await;
         let history = Arc::new(History(
             Mutex::new(vec![entry(
                 "custom",
@@ -171,6 +173,7 @@ mod regression_tests {
             serde_json::json!({"customType":GOAL_STOP_PAUSED_ENTRY,"data":{"goalId":goal.id}}),
         ));
         history.0.lock().unwrap().push(entry("custom",serde_json::json!({"customType":"session-hold","data":{"op":"release","keys":["stop"]}})));
+        session.resume_session().await.unwrap();
         let resumed = runtime
             .event(
                 &maho_ext_api::ExtensionEvent::HeldWakesReleased {

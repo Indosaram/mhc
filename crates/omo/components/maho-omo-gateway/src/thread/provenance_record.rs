@@ -13,7 +13,7 @@ pub fn is_provenance(value: &Value) -> bool {
     };
     let non_empty = |key: &str| object.get(key).and_then(Value::as_str).is_some_and(|text| !text.trim().is_empty());
     let optional_non_empty = |key: &str| match object.get(key) {
-        None | Some(Value::Null) => true,
+        None => true,
         Some(Value::String(text)) => !text.trim().is_empty(),
         Some(_) => false,
     };

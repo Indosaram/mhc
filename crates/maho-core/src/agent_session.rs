@@ -19607,6 +19607,20 @@ impl AgentSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn conversation_entries(entries: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+        entries
+            .into_iter()
+            .filter(|e| {
+                e.get("type").and_then(serde_json::Value::as_str) != Some("custom")
+                    || !matches!(
+                        e.get("customType").and_then(serde_json::Value::as_str),
+                        Some("session-lifecycle" | "work-custody" | "child-lifecycle")
+                    )
+            })
+            .collect()
+    }
 
     #[test]
     fn extension_message_update_event_omits_partial_but_keeps_tool_block_name() {
@@ -24707,7 +24721,7 @@ mod tests {
             assert!(session.messages().is_empty());
             assert!(
                 session
-                    .with_session_manager(|manager| manager.entries())
+                    .with_session_manager(|manager| conversation_entries(manager.entries()))
                     .is_empty()
             );
             let state = session.state();
@@ -27460,7 +27474,7 @@ mod tests {
         }
         session.rebuild_session_context().expect("context");
         let messages = session.messages();
-        let entries = session.with_session_manager(|manager| manager.entries());
+        let entries = session.with_session_manager(|manager| conversation_entries(manager.entries()));
         let (started, entered) = tokio::sync::oneshot::channel();
         let started = Arc::new(Mutex::new(Some(started)));
         let mut extension = maho_ext_api::LoadedExtension::new(
@@ -27530,7 +27544,7 @@ mod tests {
         assert!(provider.get_call_log().is_empty());
         assert_eq!(session.messages(), messages);
         assert_eq!(
-            session.with_session_manager(|manager| manager.entries()),
+            session.with_session_manager(|manager| conversation_entries(manager.entries())),
             entries
         );
         assert_eq!(session.compaction_state().status(), "aborted");
@@ -29080,7 +29094,7 @@ mod tests {
         assert!(session.messages().is_empty());
         assert!(
             session
-                .with_session_manager(|manager| manager.entries())
+                .with_session_manager(|manager| conversation_entries(manager.entries()))
                 .is_empty()
         );
         let cleared = session.clear_queue(false);
@@ -29870,7 +29884,7 @@ mod tests {
         assert!(!session.is_retrying());
         assert_eq!(session.messages().len(), 2);
         assert_eq!(
-            session.with_session_manager(|manager| manager.entries().len()),
+            session.with_session_manager(|manager| conversation_entries(manager.entries()).len()),
             3
         );
         assert!(lock(&events).iter().any(|event| matches!(
@@ -31791,10 +31805,10 @@ mod tests {
         .expect("prompt");
         assert!(!session.is_retrying());
         assert_eq!(
-            session.with_session_manager(|manager| manager.entries().len()),
+            session.with_session_manager(|manager| conversation_entries(manager.entries()).len()),
             4
         );
-        let branch = session.with_session_manager(|manager| manager.current_branch());
+        let branch = session.with_session_manager(|manager| conversation_entries(manager.current_branch()));
         assert_eq!(branch.len(), 2);
         assert_eq!(branch[0]["message"]["role"], "user");
         assert_eq!(branch[1]["message"]["stopReason"], "error");
@@ -31916,7 +31930,7 @@ mod tests {
         .expect("prompt");
         assert!(!session.is_retrying());
         assert_eq!(
-            session.with_session_manager(|manager| manager.entries().len()),
+            session.with_session_manager(|manager| conversation_entries(manager.entries()).len()),
             2
         );
         let terminals = lock(&terminals);

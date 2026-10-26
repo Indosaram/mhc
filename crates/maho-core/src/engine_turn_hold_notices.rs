@@ -337,21 +337,14 @@ impl EngineTurnHoldNotices {
     }
 
     fn remember(&mut self, notice: &Value) {
-        let Some(producer) = notice.get("producer").and_then(Value::as_str) else {
-            return;
-        };
+        let producer = notice.get("producer").and_then(Value::as_str).unwrap_or("unknown");
         let Some(id) = notice.get("noticeId").and_then(Value::as_str) else {
             return;
         };
-        let custody_key = notice
-            .get("itemId")
-            .and_then(Value::as_str)
-            .map(|id| format!("{producer}:item:{id}:{}", id.len()))
-            .unwrap_or_else(|| producer.to_owned());
-        let index = match self.wakes.iter().position(|(s, _)| s == &custody_key) {
+        let index = match self.wakes.iter().position(|(s, _)| s == producer) {
             Some(index) => index,
             None => {
-                self.wakes.push((custody_key, HeldWake::default()));
+                self.wakes.push((producer.to_owned(), HeldWake::default()));
                 self.wakes.len() - 1
             }
         };

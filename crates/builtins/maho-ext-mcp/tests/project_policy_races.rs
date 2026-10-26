@@ -88,12 +88,8 @@ async fn real_service_reauthorization_disable_cancels_prompt_and_prevents_spawn(
         .attach_skill_mcp_servers(&declarations)
         .await
         .unwrap();
-    let config = service.config.as_ref().unwrap().servers["probe"]
-        .config
-        .as_ref()
-        .unwrap();
-    let authority = maho_ext_mcp::project_skill_policy::get_project_mcp_authority(config).unwrap();
-    authority.resolve().await.unwrap();
+    // The cold service attach has already consumed the first materialization
+    // while racing its startup connect. Reconnect itself must reauthorize.
     let connection = service.connections["probe"]
         .entry
         .lock()
@@ -109,6 +105,8 @@ async fn real_service_reauthorization_disable_cancels_prompt_and_prevents_spawn(
         .unwrap()
         .unwrap();
     connection.disable().await.unwrap();
+    // Disable must synchronously abort the same signal supplied to the UI,
+    // without waiting for the pending connect task to be scheduled again.
     assert!(signal.is_aborted());
     assert!(
         tokio::time::timeout(Duration::from_secs(3), pending)

@@ -61,16 +61,13 @@ impl SyncStatusNotifier {
     }
 
     pub fn changed(&self, repo: &Path, ui: Option<&dyn SyncNoticeUi>) {
-        // A failed read says nothing about sync, so it changes no notice; the next change reads again.
-        let Some(status) = (self.read)(repo) else {
-            return;
-        };
+        let status = (self.read)(repo);
         let key_repo = repo.to_string_lossy().into_owned();
         let mut announced = self
             .announced
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let failure = status.failure();
+        let failure = status.as_ref().and_then(|s| s.failure());
         let previous = announced.get(&key_repo).cloned();
         let Some(failure) = failure else {
             announced.remove(&key_repo);
