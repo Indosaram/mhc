@@ -1,3 +1,6 @@
+// Modules marked `#[cfg(feature = "omo")]` host the oh-my-openagent port (crates/omo/**,
+// LicenseRef-SUL-1.0) or are ports of its host side; the MIT profile (`--no-default-features`)
+// compiles them out. See docs/MIT-PROFILE.md.
 pub mod app_server;
 pub mod args;
 pub mod auth_check;
@@ -8,6 +11,10 @@ pub mod credential_print;
 pub mod credentials;
 pub mod default_extensions;
 pub mod deferred_commands;
+#[cfg(feature = "omo")]
+pub mod doctor;
+#[cfg(not(feature = "omo"))]
+#[path = "doctor_mit.rs"]
 pub mod doctor;
 pub mod experimental;
 pub mod extension_registry;
@@ -15,6 +22,7 @@ pub mod file_processor;
 pub mod global_default_shims;
 pub mod gpt_account_host;
 pub mod grok_neo_gate;
+#[cfg(feature = "omo")]
 pub mod facts_child;
 pub mod help_extension_flags;
 pub mod help_fast_path;
@@ -24,29 +32,39 @@ pub mod host_command;
 pub mod host_handover_args;
 pub mod host_request;
 pub mod host_runtime;
+#[cfg(feature = "omo")]
 pub mod host_transport;
 pub mod initial_message;
 pub mod interactive_entry;
+#[cfg(feature = "omo")]
 pub mod kernel_tools_host;
+#[cfg(feature = "omo")]
 pub mod kibitzer_budget;
+#[cfg(feature = "omo")]
 pub mod kibitzer_child;
+#[cfg(feature = "omo")]
 pub mod kibitzer_coordinator;
+#[cfg(feature = "omo")]
 pub mod kibitzer_tools;
 pub mod list_models;
 pub mod list_tips;
 pub mod memory_report_build;
 pub mod memory_report_registry;
 pub mod memory_report_write;
+#[cfg(feature = "omo")]
 pub mod memory_runtime;
 pub mod model_discovery;
 pub mod model_discovery_url;
 pub mod models_command;
 pub mod oauth_providers;
+#[cfg(feature = "omo")]
 pub mod omo_mount;
+#[cfg(feature = "omo")]
 pub mod omo_shipped;
 pub mod piped_stdin_options;
 pub mod project_trust;
 pub mod reasoning_host;
+#[cfg(feature = "omo")]
 pub mod recall_wiring;
 pub mod runtime;
 pub mod session_picker;
@@ -56,7 +74,9 @@ pub mod startup;
 pub mod startup_loading_indicator;
 pub mod startup_ui;
 pub mod stdout_guard;
+#[cfg(feature = "omo")]
 pub mod task_runners;
+#[cfg(feature = "omo")]
 pub mod task_session;
 pub mod tool_runtime;
 pub mod tool_search;

@@ -160,34 +160,13 @@ fn run() -> Result<(), String> {
     // senpi loads its prebuilt native platform addon on demand; the Rust ports are registered once.
     maho_tui::native_platform::register_builtin_native_platform_helper();
     maho_tools::managed_tools::set_managed_tool_resolver(std::sync::Arc::new(ensure_managed_tool));
-    if argv.first().is_some_and(|arg| arg == "ulw-loop") {
-        let code = ulw_loop_core::cli::main_cli(&argv);
-        if code != 0 {
-            std::process::exit(code);
-        }
-        return Ok(());
+    #[cfg(feature = "omo")]
+    if let Some(result) = run_omo_entry(&argv) {
+        return result;
     }
-    let memory_role = argv.first().map(String::as_str);
-    if memory_role == Some(maho_omo_memory::mcp_memory_server::MEMORY_MCP_ENTRY_FLAG) {
-        return maho_omo_memory::mcp_memory_server::run_memory_mcp_stdio_entry();
-    }
-    if memory_role == Some("--memory-supervisor") || memory_role == Some("--child-bootstrap") {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| error.to_string())?;
-        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-        let args: &[String] = if memory_role == Some("--memory-supervisor") {
-            &argv[1..]
-        } else {
-            &argv
-        };
-        return runtime.block_on(maho_omo_memory::worker::memory_run_supervisor::run_entry(
-            args,
-            &executable,
-            &[],
-            memory_terminal_gate,
-        ));
+    #[cfg(not(feature = "omo"))]
+    if let Some(code) = omo_entry_unavailable(&argv) {
+        std::process::exit(code);
     }
     use maho_cli::experimental::process::{
         INTERNAL_PROCESS_ENV, InternalProcessRole, parse_internal_process_role,
@@ -952,6 +931,62 @@ fn report_startup_settings_diagnostics(cwd: &std::path::Path) -> Result<(), Stri
     maho_cli::cli::runtime::report_startup_settings_diagnostics(&settings);
     Ok(())
 }
+/// Entries served by the oh-my-openagent port (crates/omo, `omo` feature): `mhc ulw-loop`, the
+/// memory MCP stdio server, and the memory supervisor / child-bootstrap roles. `None` means argv
+/// names none of them.
+#[cfg(feature = "omo")]
+fn run_omo_entry(argv: &[String]) -> Option<Result<(), String>> {
+    if argv.first().is_some_and(|arg| arg == "ulw-loop") {
+        let code = ulw_loop_core::cli::main_cli(argv);
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Some(Ok(()));
+    }
+    let memory_role = argv.first().map(String::as_str);
+    if memory_role == Some(maho_omo_memory::mcp_memory_server::MEMORY_MCP_ENTRY_FLAG) {
+        return Some(maho_omo_memory::mcp_memory_server::run_memory_mcp_stdio_entry());
+    }
+    if memory_role == Some("--memory-supervisor") || memory_role == Some("--child-bootstrap") {
+        return Some((|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())?;
+            let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+            let args: &[String] = if memory_role == Some("--memory-supervisor") {
+                &argv[1..]
+            } else {
+                argv
+            };
+            runtime.block_on(maho_omo_memory::worker::memory_run_supervisor::run_entry(
+                args,
+                &executable,
+                &[],
+                memory_terminal_gate,
+            ))
+        })());
+    }
+    None
+}
+
+/// The MIT profile (no `omo` feature) links none of the omo entries; asking for one prints why and
+/// exits non-zero instead of falling through to an interactive session.
+#[cfg(not(feature = "omo"))]
+fn omo_entry_unavailable(argv: &[String]) -> Option<i32> {
+    let entry = argv.first().map(String::as_str)?;
+    let name = match entry {
+        "ulw-loop" => "mhc ulw-loop",
+        "--omo-memory-mcp" => "the memory MCP server",
+        "--memory-supervisor" | "--child-bootstrap" => "the memory supervisor",
+        _ => return None,
+    };
+    maho_core::output_guard::maho_write_stderr(&format!(
+        "{name} is not available in this build (MIT profile, built without the `omo` feature).\n"
+    ));
+    Some(1)
+}
+#[cfg(feature = "omo")]
 fn memory_terminal_gate(
     directory: &std::path::Path,
     operation: &mut dyn FnMut() -> Result<(), String>,

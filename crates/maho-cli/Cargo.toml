@@ -6,6 +6,29 @@ publish.workspace = true
 license = "MIT"
 autotests = false
 
+# `omo` links the oh-my-openagent port under crates/omo/** (LicenseRef-SUL-1.0) and the maho-cli
+# modules that host it. It is on by default so the shipped binary keeps every feature; the MIT
+# profile is `--no-default-features`, which links no crate under crates/omo/** (docs/MIT-PROFILE.md;
+# enforced by the `mit-profile` CI job).
+[features]
+default = ["omo"]
+omo = [
+    "dep:maho-omo",
+    "dep:maho-omo-task",
+    "dep:maho-omo-config-resolution",
+    "dep:maho-omo-config-core",
+    "dep:maho-omo-memory",
+    "dep:maho-omo-telemetry",
+    "dep:maho-omo-lsp",
+    "dep:ulw-loop-core",
+    "dep:memory-core",
+    "dep:lsp-daemon",
+    "dep:senpi-task",
+    "dep:delegate-core",
+    "dep:maho-ext-pi-comment-checker",
+    "maho-ext-hooks/claude-plugins",
+]
+
 [dependencies]
 maho-chord = { path = "../maho-chord" }
 maho-ai = { path = "../maho-ai" }
@@ -49,10 +72,10 @@ maho-ext-host = { path = "../maho-ext-host" }
 maho-ext-mcp = { path = "../builtins/maho-ext-mcp" }
 maho-ext-permission-system = { path = "../builtins/maho-ext-permission-system" }
 maho-ext-recommended-models = { path = "../builtins/maho-ext-recommended-models" }
-maho-omo-task = { path = "../omo/components/maho-omo-task" }
+maho-omo-task = { path = "../omo/components/maho-omo-task", optional = true }
 maho-server = { path = "../maho-server" }
 maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }
-maho-ext-hooks = { path = "../builtins/maho-ext-hooks" }
+maho-ext-hooks = { path = "../builtins/maho-ext-hooks", default-features = false }
 maho-ext-prompt-preset = { path = "../builtins/maho-ext-prompt-preset" }
 maho-ext-anthropic-bash = { path = "../builtins/maho-ext-anthropic-bash" }
 maho-ext-bash-timeout = { path = "../builtins/maho-ext-bash-timeout" }
@@ -66,7 +89,7 @@ maho-ext-pi-webfetch = { path = "../extensions/maho-ext-pi-webfetch" }
 maho-ext-pi-rules = { path = "../extensions/maho-ext-pi-rules" }
 maho-ext-pi-websearch = { path = "../extensions/maho-ext-pi-websearch" }
 maho-ext-pi-goal = { path = "../extensions/maho-ext-pi-goal" }
-maho-ext-pi-comment-checker = { path = "../extensions/maho-ext-pi-comment-checker" }
+maho-ext-pi-comment-checker = { path = "../extensions/maho-ext-pi-comment-checker", optional = true }
 maho-ext-pi-ast-grep = { path = "../extensions/maho-ext-pi-ast-grep" }
 maho-ext-pi-nested-agents-md = { path = "../extensions/maho-ext-pi-nested-agents-md" }
 maho-ext-omo-zcode-oauth = { path = "../extensions/maho-ext-omo-zcode-oauth" }
@@ -75,17 +98,17 @@ maho-ext-ferryx-agent-state = { path = "../extensions/maho-ext-ferryx-agent-stat
 maho-ext-herdr-agent-state = { path = "../extensions/maho-ext-herdr-agent-state" }
 maho-ext-orca-agent-status = { path = "../extensions/maho-ext-orca-agent-status" }
 maho-ext-orca-titlebar-spinner = { path = "../extensions/maho-ext-orca-titlebar-spinner" }
-maho-omo = { path = "../omo/maho-omo" }
-ulw-loop-core = { path = "../omo/ulw-loop-core" }
-maho-omo-config-resolution = { path = "../omo/components/maho-omo-config-resolution" }
-maho-omo-config-core = { path = "../omo/omo-config-core" }
-maho-omo-memory = { path = "../omo/components/maho-omo-memory" }
-maho-omo-telemetry = { path = "../omo/components/maho-omo-telemetry" }
-memory-core = { package = "maho-memory-core", path = "../omo/memory-core" }
-maho-omo-lsp = { path = "../omo/components/maho-omo-lsp" }
-lsp-daemon = { package = "maho-lsp-daemon", path = "../omo/lsp-daemon" }
-senpi-task = { package = "maho-senpi-task", path = "../omo/senpi-task" }
-delegate-core = { package = "maho-delegate-core", path = "../omo/delegate-core" }
+maho-omo = { path = "../omo/maho-omo", optional = true }
+ulw-loop-core = { path = "../omo/ulw-loop-core", optional = true }
+maho-omo-config-resolution = { path = "../omo/components/maho-omo-config-resolution", optional = true }
+maho-omo-config-core = { path = "../omo/omo-config-core", optional = true }
+maho-omo-memory = { path = "../omo/components/maho-omo-memory", optional = true }
+maho-omo-telemetry = { path = "../omo/components/maho-omo-telemetry", optional = true }
+memory-core = { package = "maho-memory-core", path = "../omo/memory-core", optional = true }
+maho-omo-lsp = { path = "../omo/components/maho-omo-lsp", optional = true }
+lsp-daemon = { package = "maho-lsp-daemon", path = "../omo/lsp-daemon", optional = true }
+senpi-task = { package = "maho-senpi-task", path = "../omo/senpi-task", optional = true }
+delegate-core = { package = "maho-delegate-core", path = "../omo/delegate-core", optional = true }
 indexmap.workspace = true
 maho-ext-anthropic-subscription = { path = "../builtins/maho-ext-anthropic-subscription" }
 maho-ext-cursor-cli-oauth = { path = "../builtins/maho-ext-cursor-cli-oauth" }
