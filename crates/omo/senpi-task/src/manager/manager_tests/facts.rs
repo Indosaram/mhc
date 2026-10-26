@@ -139,7 +139,7 @@ fn given_running_task_with_transcript_subscription_when_forgotten_then_subscript
     let harness = default_manager();
     let task = started(harness.manager.start(&named("a")));
     let fake = harness.in_process.wait_handle(&task.task_id);
-    wait_until("owned subscriptions", || fake.subscribe_count() == 2);
+    fake.wait_subscriptions(4);
     assert_eq!(fake.unsubscribe_count(), 0);
 
     harness.manager.forget(&task.task_id);
@@ -174,7 +174,7 @@ fn given_live_child_mid_run_when_run_stats_read_then_in_flight_accumulator_expos
     let harness = default_manager();
     let task = started(harness.manager.start(&base_spec()));
     let fake = harness.in_process.wait_handle(&task.task_id);
-    wait_until("owned subscriptions", || fake.subscribe_count() == 2);
+    fake.wait_subscriptions(4);
     fake.emit(&ManagedChildEvent {
         message: Some(json!({
             "role": "assistant",

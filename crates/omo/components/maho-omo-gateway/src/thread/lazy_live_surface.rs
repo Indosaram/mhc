@@ -40,7 +40,7 @@ impl LazyLiveThreadSurface {
                 }
                 Ok(surface)
             }
-            Err(error) => Err(format!("host_unavailable:{}:{error}", self.socket)),
+            Err(_error) => Err(format!("host_unavailable:{}", self.socket)),
         }
     }
 

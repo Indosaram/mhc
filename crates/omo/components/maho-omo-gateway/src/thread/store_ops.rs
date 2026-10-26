@@ -1404,8 +1404,10 @@ mod tests {
     #[test]
     fn a_cycle_is_closed_when_the_target_reaches_the_sender() {
         let edges = vec![("a".to_owned(), "b".to_owned()), ("b".to_owned(), "c".to_owned())];
-        assert!(closes_cycle(&edges, "a", "c"));
-        assert!(!closes_cycle(&edges, "c", "a"));
+        assert!(closes_cycle(&edges, "c", "a"));
+        assert!(closes_cycle(&edges, "a", "a"));
+        assert!(closes_cycle(&edges, "b", "a"));
+        assert!(!closes_cycle(&edges, "a", "c"));
         assert!(!closes_cycle(&[], "a", "b"));
     }
 }

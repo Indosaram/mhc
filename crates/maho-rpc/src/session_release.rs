@@ -496,13 +496,14 @@ pub async fn release_session(
         let state_attempt = if command.reason_str() == Some("move") {
             let move_id = command.move_id.as_str().unwrap_or_default();
             let staged_state = port.prepare_outgoing_state(&first.session_path, move_id)?;
+            let state_attempt = staged_state.attempt.clone();
+            let dir = staged_state.dir.clone();
+            staged = Some(staged_state);
             first
                 .session
-                .emit_session_move(move_id, &staged_state.dir)
+                .emit_session_move(move_id, &dir)
                 .await
                 .map_err(ReleaseWriteError::Other)?;
-            let state_attempt = staged_state.attempt.clone();
-            staged = Some(staged_state);
             Some(state_attempt)
         } else {
             None

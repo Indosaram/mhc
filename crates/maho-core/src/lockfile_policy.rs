@@ -466,7 +466,7 @@ mod loss_tests {
         let guard = acquire_host_lock_sync(&path, 0).expect("lock");
         assert!(guard.assert_held().is_ok());
         let lock_path = guard.path().to_path_buf();
-        std::fs::write(lock_path.join("owner"), "replacement").expect("replace");
+        std::fs::write(lock_path.join("owner-token"), "replacement").expect("replace");
         assert!(guard.assert_held().is_err());
         drop(guard);
         assert!(lock_path.exists());

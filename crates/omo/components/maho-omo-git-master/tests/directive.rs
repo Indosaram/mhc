@@ -41,7 +41,7 @@ fn the_builtin_footer_emits_the_shipped_footer_text_without_a_co_author_trailer(
 }
 
 #[test]
-fn the_deprecated_co_author_flag_never_emits_a_trailer() {
+fn the_co_author_flag_emits_the_trailer_alongside_the_footer() {
     let settings = GitMasterSettings {
         commit_footer: GitMasterCommitFooter::Builtin,
         include_co_authored_by: true,
@@ -49,7 +49,7 @@ fn the_deprecated_co_author_flag_never_emits_a_trailer() {
     };
     let directive = build_git_master_attribution_directive(&settings, "").expect("directive");
     assert!(directive.contains(BUILTIN_FOOTER));
-    assert!(!directive.to_lowercase().contains(CO_AUTHOR_TRAILER));
+    assert!(directive.contains("--trailer \"Co-authored-by: sisyphus-dev-ai <sisyphus-dev-ai@users.noreply.github.com>\""));
 }
 
 #[test]

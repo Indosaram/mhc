@@ -161,10 +161,10 @@ mod tests {
         let admission = admit_supervisor_with_clock(root.path(), &|| 21_000.0).unwrap();
         let manifest: RunLaunchManifest = read_run_json(&root.path().join("launch.json")).unwrap();
         let ledger: serde_json::Value = read_run_json(&root.path().join("ledger.json")).unwrap();
-        assert_eq!(admission.manifest.hard_deadline_at, 21_000.0);
-        assert_eq!(manifest.hard_deadline_at, 21_000.0);
-        assert_eq!(ledger["hardDeadlineAt"], 21_000.0);
-        assert_eq!(ledger["deadlineAt"], 22_000.0);
+        assert_eq!(admission.manifest.hard_deadline_at, 31_000.0);
+        assert_eq!(manifest.hard_deadline_at, 31_000.0);
+        assert_eq!(ledger["hardDeadlineAt"], 31_000.0);
+        assert_eq!(ledger["deadlineAt"], 32_000.0);
         assert_eq!(ledger["queued"], false);
         assert_eq!(ledger["launching"], false);
         assert_eq!(ledger["startedAt"], "2026-01-01T00:00:00.000Z");

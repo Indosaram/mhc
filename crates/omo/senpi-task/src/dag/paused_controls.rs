@@ -417,7 +417,13 @@ pub fn cancel_paused_dag_node_with_store(
     ) {
         return Ok(());
     }
-    let _ = journal_guidance(options, record.clone())?;
+    journal_guidance(options, record.clone())?
+        .append(crate::dag::types::DagRunEventPayload::NodeCancelRequested {
+            node_id: node_id.clone(),
+        })
+        .map_err(|error| {
+            DagNodeControlError::new(DagNodeControlErrorCode::InvalidArguments, error.to_string())
+        })?;
     if let Some(task_id) = &node.task_id {
         let task = options.task_manager.get(task_id);
         let outcome = options
@@ -468,7 +474,17 @@ pub fn cancel_paused_dag_node_with_store(
         )
         .with_run_id(run_id.clone()));
     }
-    let _ = journal_guidance(options, fresh)?;
+    let from = current.expect("node checked above").state;
+    journal_guidance(options, fresh)?
+        .append(crate::dag::types::DagRunEventPayload::NodeTransitioned {
+            node_id: node_id.clone(),
+            from,
+            to: crate::dag::types::DagNodeState::Cancelled,
+            reason: crate::dag::types::DagNodeTransitionReason::Cancelled,
+        })
+        .map_err(|error| {
+            DagNodeControlError::new(DagNodeControlErrorCode::InvalidArguments, error.to_string())
+        })?;
     Ok(())
 }
 
@@ -499,24 +515,19 @@ pub fn cancel_paused_dag_node(
         .map_err(|error| {
             DagNodeControlError::new(DagNodeControlErrorCode::InvalidArguments, error.to_string())
         })?
-        && let Some(pause) = record.pause {
-            let mut state = pauses.read(run_id).map_err(|error| {
-                DagNodeControlError::new(
-                    DagNodeControlErrorCode::InvalidArguments,
-                    error.to_string(),
-                )
-            })?;
-            state.pause = Some(DagRunPause {
-                reason: DagRunPauseReason::UserStop,
-                pause_seq: Some(pause.pause_seq),
-            });
-            pauses.write(run_id, &state).map_err(|error| {
-                DagNodeControlError::new(
-                    DagNodeControlErrorCode::InvalidArguments,
-                    error.to_string(),
-                )
-            })?;
-        }
+        && let Some(pause) = record.pause
+    {
+        let mut state = pauses.read(run_id).map_err(|error| {
+            DagNodeControlError::new(DagNodeControlErrorCode::InvalidArguments, error.to_string())
+        })?;
+        state.pause = Some(DagRunPause {
+            reason: DagRunPauseReason::UserStop,
+            pause_seq: Some(pause.pause_seq),
+        });
+        pauses.write(run_id, &state).map_err(|error| {
+            DagNodeControlError::new(DagNodeControlErrorCode::InvalidArguments, error.to_string())
+        })?;
+    }
     cancel_paused_dag_node_with_store(options, run_id, node_id, &Close(close), &pauses)
 }
 

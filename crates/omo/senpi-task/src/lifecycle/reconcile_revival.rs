@@ -76,13 +76,18 @@ pub fn reconcile_scoped_revival(
         );
         for outcome in &outcomes {
             if outcome.kind == ReconcileOutcomeKind::Deferred
-                && let Some(reason) = &outcome.reason {
-                    super::host_session_record::mark_revival_deferred(
-                        context,
-                        &outcome.task_id,
-                        reason,
-                    )?;
-                }
+                && let Some(reason) = &outcome.reason
+                && let Err(error) = super::host_session_record::mark_revival_deferred(
+                    context,
+                    &outcome.task_id,
+                    reason,
+                )
+            {
+                eprintln!(
+                    "senpi-task revival deferral not recorded: {}: {error}",
+                    outcome.task_id
+                );
+            }
         }
         return Ok(outcomes);
     }
@@ -137,13 +142,15 @@ pub fn reconcile_scoped_revival(
     }
     for outcome in &outcomes {
         if outcome.kind == ReconcileOutcomeKind::Deferred
-            && let Some(reason) = &outcome.reason {
-                super::host_session_record::mark_revival_deferred(
-                    context,
-                    &outcome.task_id,
-                    reason,
-                )?;
-            }
+            && let Some(reason) = &outcome.reason
+            && let Err(error) =
+                super::host_session_record::mark_revival_deferred(context, &outcome.task_id, reason)
+        {
+            eprintln!(
+                "senpi-task revival deferral not recorded: {}: {error}",
+                outcome.task_id
+            );
+        }
     }
     Ok(outcomes)
 }

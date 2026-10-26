@@ -19,7 +19,9 @@ try {
   results.push(await handlers.get('before_agent_start')({ ...event, systemPromptOptions: { ...options, customPrompt: 'custom' } }, ctx) ?? null);
   results.push(await handlers.get('model_select')({ ...event, systemPromptOptions: { ...options, customPrompt: 'custom' } }, ctx));
   results.push(await handlers.get('model_select')({ ...event, model: { ...model, id: 'unknown', name: 'unknown' } }, ctx));
-  for (const id of ['gpt-6-sol', 'claude-opus-5', 'kimi-k3', 'deepseek-v4-1-flash', 'grok-4.7', 'glm-5.3']) {
+  // f2354d970 renamed the preset to gpt-6-astra (settings.ts/presets.ts).
+  // Model aliases still resolve, but golden payloads carry the canonical name.
+  for (const id of ['gpt-6-astra', 'claude-opus-5', 'kimi-k3', 'deepseek-v4-1-flash', 'grok-4.7', 'glm-5.3']) {
    results.push(await handlers.get('model_select')({ ...event, model: { ...model, id, name: id } }, ctx));
   }
   // The shared builder has no clock injection in Rust. Compare the hook payload

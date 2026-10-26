@@ -69,9 +69,6 @@ impl ProjectMemoryScope {
         session: &str,
         cache: &mut memory_core::recall::RecallCorpusCache,
     ) -> Vec<ProjectRecallCorpus> {
-        if !(self.switches)().recall {
-            return Vec::new();
-        }
         let sessions = self
             .sessions
             .lock()
@@ -79,6 +76,9 @@ impl ProjectMemoryScope {
         let Some(scope) = sessions.get(session) else {
             return Vec::new();
         };
+        if scope.touched.is_empty() || !(self.switches)().recall {
+            return Vec::new();
+        }
         scope
             .touched
             .iter()

@@ -463,9 +463,9 @@ mod tests {
         fs::create_dir_all(&tickets).unwrap();
         // A head ticket whose owner pid cannot be alive: the queue reaps it on the next pass.
         let dead = serde_json::json!({
-            "pid": 4_294_967_295u32,
+            "pid": 2_147_483_647u32,
             "process_start": "gone",
-            "hostname": "fixture-host",
+            "hostname": crate::support::host::hostname(),
             "nonce": "dead-nonce",
             "created_at": "2026-01-01T00:00:00.000Z",
             "purpose": TICKET_PURPOSE,
@@ -475,6 +475,9 @@ mod tests {
             format!("{dead}\n").as_bytes(),
         )
         .unwrap();
+        assert!(
+            reap_dead_head(&tickets, "0000000000000001-000000-0000000001-dead.ticket").unwrap()
+        );
         let lease =
             acquire_reflection_run_lease(root.path(), &ReflectionRunLeaseOptions::default())
                 .unwrap();

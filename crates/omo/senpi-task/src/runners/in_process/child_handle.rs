@@ -540,6 +540,10 @@ impl InProcessChildHandle {
     }
 }
 
+pub fn dispose_rejected_session(session: &dyn ChildSession) {
+    session.dispose();
+}
+
 impl ManagedChildHandle for InProcessChildHandle {
     fn start_initial_turn(&self, text: &str) -> Option<crate::pause::ports::ResumedChildTurn> {
         Some(self.begin_turn(text))

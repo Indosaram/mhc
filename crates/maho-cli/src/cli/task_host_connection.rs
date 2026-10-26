@@ -1,14 +1,18 @@
 //! Production hosted session connection and exact-turn tracking.
+#[cfg(unix)]
 use senpi_task::runners::rpc_host::{
     host_command_dispatch::HostRpcClient, task_parent_wire::HostRunHoldClient,
 };
+#[cfg(unix)]
 use senpi_task::{
     host::HostError,
     runners::{RunnerFailureKind, RunnerOutcome},
 };
+#[cfg(unix)]
 use serde_json::{Value, json};
 use std::sync::{Arc, Condvar, Mutex};
 
+#[cfg(unix)]
 fn failure(error: impl std::fmt::Display) -> HostError {
     HostError {
         message: error.to_string(),
@@ -16,19 +20,25 @@ fn failure(error: impl std::fmt::Display) -> HostError {
 }
 #[derive(Default)]
 pub struct TurnData {
+    #[cfg(unix)]
     generation: u64,
+    #[cfg(unix)]
     outcome: Option<RunnerOutcome>,
+    #[cfg(unix)]
     next_watch: u64,
+    #[cfg(unix)]
     watches: std::collections::BTreeMap<u64, (bool, std::sync::mpsc::SyncSender<RunnerOutcome>)>,
 }
 pub type TurnState = Arc<(Mutex<TurnData>, Condvar)>;
 
+#[cfg(unix)]
 pub struct LiveClient {
     pub client: Arc<maho_rpc::rpc_client::RpcClient>,
     pub runtime: tokio::runtime::Handle,
     turn: TurnState,
     subscription: Mutex<Option<maho_rpc::rpc_client::RpcClientUnsubscribe>>,
 }
+#[cfg(unix)]
 impl LiveClient {
     pub fn new(
         client: Arc<maho_rpc::rpc_client::RpcClient>,
@@ -114,6 +124,7 @@ impl LiveClient {
         }
     }
 }
+#[cfg(unix)]
 impl HostRpcClient for LiveClient {
     fn get_available_models(
         &self,
@@ -198,6 +209,7 @@ impl HostRpcClient for LiveClient {
             .map_err(|_| failure("host detach panicked"))
     }
 }
+#[cfg(unix)]
 impl HostRunHoldClient for LiveClient {
     fn set_client_info(&self, _: &Value) -> Option<Result<Value, String>> {
         let client = self.client.clone();
@@ -268,6 +280,7 @@ impl HostRunHoldClient for LiveClient {
         )
     }
 }
+#[cfg(unix)]
 impl Drop for LiveClient {
     fn drop(&mut self) {
         self.subscription.get_mut().expect("host subscription lock poisoned").take();

@@ -2009,23 +2009,24 @@ fn build_params(
         params.insert("betas".into(), json!(beta_features));
     }
 
+    let initial_system_text = context.system_prompt.as_deref().unwrap_or_default();
     if is_oauth_token {
         let mut system: Vec<Value> = Vec::new();
         let mut identity = Map::new();
         identity.insert("type".into(), Value::from("text"));
         identity.insert("text".into(), Value::from(""));
-        if context.system_prompt.is_none()
+        if initial_system_text.is_empty()
             && let Some(cache_control) = cache_control.as_ref()
         {
             identity.insert("cache_control".into(), cache_control.clone());
         }
         system.push(Value::Object(identity));
-        if let Some(system_prompt) = &context.system_prompt {
+        if !initial_system_text.is_empty() {
             let mut block = Map::new();
             block.insert("type".into(), Value::from("text"));
             block.insert(
                 "text".into(),
-                Value::from(sanitize_surrogates(system_prompt)),
+                Value::from(sanitize_surrogates(initial_system_text)),
             );
             if let Some(cache_control) = cache_control.as_ref() {
                 block.insert("cache_control".into(), cache_control.clone());
@@ -2033,12 +2034,12 @@ fn build_params(
             system.push(Value::Object(block));
         }
         params.insert("system".into(), Value::Array(system));
-    } else if let Some(system_prompt) = &context.system_prompt {
+    } else if !initial_system_text.is_empty() {
         let mut block = Map::new();
         block.insert("type".into(), Value::from("text"));
         block.insert(
             "text".into(),
-            Value::from(sanitize_surrogates(system_prompt)),
+            Value::from(sanitize_surrogates(initial_system_text)),
         );
         if let Some(cache_control) = cache_control.as_ref() {
             block.insert("cache_control".into(), cache_control.clone());

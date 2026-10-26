@@ -152,6 +152,16 @@ pub fn claim_receipt_trailers(receipt: &ClaimReceipt) -> Vec<String> {
     }
 }
 pub fn parse_claim_receipt(value: &Value) -> Option<ClaimReceipt> {
+    let object = value.as_object()?;
+    let allowed: &[&str] = match object.get("source")?.as_str()? {
+        "user" => &["source", "userQuote", "approves"],
+        "agent" => &["source", "downgraded"],
+        "inferred" => &["source"],
+        _ => return None,
+    };
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return None;
+    }
     let receipt: ClaimReceipt = serde_json::from_value(value.clone()).ok()?;
     match &receipt {
         ClaimReceipt::User {

@@ -64,8 +64,8 @@ mod tests {
             (Some("opencode/   "), None),
             (Some(" /model"), None),
             (
-                Some("claude-sonnet-4-6"),
-                Some(("anthropic", "claude-sonnet-4-6")),
+                Some("claude-sonnet-5-5"),
+                Some(("anthropic", "claude-sonnet-5-5")),
             ),
             (
                 Some("claude-opus-5-5"),
@@ -76,16 +76,16 @@ mod tests {
                 Some(("anthropic", "claude-3-opus-20240229")),
             ),
             (
-                Some("claude-sonnet-4.6"),
-                Some(("anthropic", "claude-sonnet-4-6")),
+                Some("claude-sonnet-5.5"),
+                Some(("anthropic", "claude-sonnet-5-5")),
             ),
             (
-                Some("anthropic/claude-sonnet-4.6"),
-                Some(("anthropic", "claude-sonnet-4-6")),
+                Some("anthropic/claude-sonnet-5.5"),
+                Some(("anthropic", "claude-sonnet-5-5")),
             ),
             (
-                Some("anthropic/claude-sonnet-4-6"),
-                Some(("anthropic", "claude-sonnet-4-6")),
+                Some("anthropic/claude-sonnet-5-5"),
+                Some(("anthropic", "claude-sonnet-5-5")),
             ),
             (
                 Some("claude-haiku-5-5-20251001"),
@@ -107,11 +107,11 @@ mod tests {
             ("sonnet", "kiro", "claude-sonnet-5-5"),
             ("opus", "kiro", "claude-opus-5-5"),
             ("haiku", "kiro", "claude-haiku-5-5"),
-            ("claude-sonnet-4-6", "kiro", "claude-sonnet-4-6"),
+            ("claude-sonnet-5-5", "kiro", "claude-sonnet-5-5"),
             (
-                "anthropic/claude-sonnet-4-6",
+                "anthropic/claude-sonnet-5-5",
                 "anthropic",
-                "claude-sonnet-4-6",
+                "claude-sonnet-5-5",
             ),
         ] {
             assert_eq!(

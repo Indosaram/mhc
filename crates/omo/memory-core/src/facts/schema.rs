@@ -366,6 +366,7 @@ impl<'de> serde::de::Visitor<'de> for QueueHeaderVisitor {
         let mut conversation_id: Option<String> = None;
         let mut range: Option<FactsQueueRange> = None;
         let mut enqueued_at: Option<String> = None;
+        let mut lead = None;
         let mut seen_entries = false;
 
         while let Some(key) = access.next_key::<String>()? {
@@ -443,11 +444,13 @@ impl<'de> serde::de::Visitor<'de> for QueueHeaderVisitor {
                 }
                 "lead" => {
                     let value: serde_json::Value = access.next_value()?;
-                    if !is_transcript_entry_json(&value)
-                        || <TranscriptEntry as Deserialize>::deserialize(&value).is_err()
-                    {
+                    if !is_transcript_entry_json(&value) {
                         return Err(serde::de::Error::custom("invalid lead"));
                     }
+                    lead = Some(
+                        <TranscriptEntry as Deserialize>::deserialize(&value)
+                            .map_err(serde::de::Error::custom)?,
+                    );
                 }
                 "entries" => {
                     access.next_value::<ValidatedEntries>()?;
@@ -489,7 +492,7 @@ impl<'de> serde::de::Visitor<'de> for QueueHeaderVisitor {
             range,
             enqueued_at,
             entries: Vec::new(),
-            lead: None,
+            lead,
         })
     }
 }

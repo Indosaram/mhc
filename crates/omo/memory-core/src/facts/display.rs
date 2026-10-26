@@ -18,6 +18,7 @@ pub enum ClaimReceipt {
 }
 
 pub fn parse_claim_receipt(value: &serde_json::Value) -> Option<ClaimReceipt> {
+    crate::provenance::claim::parse_claim_receipt(value)?;
     let obj = value.as_object()?;
     if obj
         .get("downgraded")
@@ -117,14 +118,17 @@ mod tests {
         let rendered = "---\ndescription: fact\n---\nnew\n".to_string();
         assert_eq!(
             stamp_receipt(
-                Some("---\nprovenance: user said yes\n---\n"),
+                Some("---\ndescription: fact\nprovenance: user said yes\n---\n"),
                 rendered.clone()
             ),
             rendered
         );
         assert!(
-            stamp_receipt(Some("---\nprovenance: user replied yes\n---\n"), rendered)
-                .contains("provenance: \"mixed:")
+            stamp_receipt(
+                Some("---\ndescription: fact\nprovenance: user replied yes\n---\n"),
+                rendered
+            )
+            .contains("provenance: \"mixed:")
         );
     }
 }

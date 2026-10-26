@@ -768,7 +768,9 @@ fn paused_respawn_has_no_continuation_prompt_and_reattach_keeps_epoch() {
     let handle = RpcFake::new(CleanupStage::None, false);
     let mut setup = Setup::new();
     setup.rpc = Some(CapturingRpcRunner::new(Arc::clone(&handle)));
+    setup.host_pid = Some(HOST_PID);
     let mut record = respawn_record();
+    record.host_pid = Some(HOST_PID);
     record.status = TaskStatus::Paused;
     record.notification.run_epoch = 7;
     record.run_start_epoch = 7;

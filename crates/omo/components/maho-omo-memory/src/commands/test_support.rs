@@ -256,10 +256,28 @@ pub fn seeded_repo(identity: &MemoryCommandIdentity, seed_files: Vec<GitSeedFile
     let repo = open_repo(identity);
     repo.init(Some(InitializeGitRepoOptions {
         author_name: None,
-        seed_files,
+        seed_files: Vec::new(),
         install_hooks: Some(hook_installer()),
     }))
     .expect("init");
+    if !seed_files.is_empty() {
+        let mut paths = Vec::new();
+        for seed in &seed_files {
+            let full = repo.dir.join(&seed.relative_path);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent).expect("mkdir");
+            }
+            std::fs::write(&full, &seed.content).expect("write seed");
+            paths.push(seed.relative_path.clone());
+        }
+        let author = memory_core::git::GitCommitAuthor {
+            agent_id: identity.identity.clone(),
+            author_name: "Omo Agent".to_string(),
+            author_email: None,
+        };
+        repo.commit_write(&paths, "seed files\n\nOmo-Writer: memory-tool", &author)
+            .expect("commit seed");
+    }
     repo
 }
 

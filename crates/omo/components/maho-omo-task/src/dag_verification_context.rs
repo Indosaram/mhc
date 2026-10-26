@@ -86,9 +86,8 @@ pub fn select_directives(
         let found = DAG_VERIFICATION_DIRECTIVES
             .iter()
             .filter_map(|directive| {
-
                 content
-                    .get(..cursor.saturating_sub(directive.len()))
+                    .get(..cursor)
                     .and_then(|head| head.rfind(directive))
                     .map(|index| (index, *directive))
             })

@@ -43,7 +43,7 @@ impl CompletionCoordinator for Coordinator {
         message: &ParentNotifierMessage,
         _callbacks: senpi_task::completion::DeliveryCallbacks,
     ) -> Result<bool, HostError> {
-        assert_eq!(key, "task-completion");
+        assert_eq!(key, "task-completion:st_completed");
         assert_eq!(source, "task-completion");
         self.messages
             .lock()
@@ -67,6 +67,30 @@ fn message() -> ParentNotifierMessage {
         details: vec![],
         trigger_turn: Some(true),
     }
+}
+fn completion_message(ids: &[&str]) -> ParentNotifierMessage {
+    let mut message = message();
+    message.details = ids.iter().map(|id| senpi_task::completion::CompletionDetails {
+        parent_model: None,
+        parent_model_fallback: None,
+        run_ref: None,
+        task_id: (*id).into(),
+        name: (*id).into(),
+        status: senpi_task::state::TaskStatus::Completed,
+        category: None,
+        agent_type: None,
+        model: "faux/faux".into(),
+        requested_model: None,
+        fallback_models: None,
+        resolved_model: None,
+        duration_ms: 1000,
+        tokens: None,
+        run_stats: None,
+        final_response: "finished".into(),
+        final_response_file: None,
+        continuation_hint: "continue".into(),
+    }).collect();
+    message
 }
 #[test]
 fn direct_fallback_preserves_hidden_renderer_channel_and_steers() {
@@ -95,13 +119,15 @@ fn streaming_parent_schedules_coordinator_without_direct_delivery() {
         is_streaming: Arc::new(|| true),
         on_delivery_failed: None,
     };
-    notifier.enqueue(&message()).expect("enqueue");
+    notifier
+        .enqueue(&completion_message(&["st_completed"]))
+        .expect("enqueue");
     assert!(
         actions.0.lock().expect("messages").is_empty(),
         "a coordinated delivery never steers directly"
-    ); /* An empty batch enqueues nothing; the flush request still goes out so other queued work drains. */
-    assert_eq!(*coordinator.calls.lock().expect("calls"), ["schedule"]);
-    assert!(coordinator.messages.lock().expect("messages").is_empty());
+    );
+    assert_eq!(*coordinator.calls.lock().expect("calls"), ["enqueue", "schedule"]);
+    assert_eq!(coordinator.messages.lock().expect("messages").len(), 1);
 }
 #[test]
 fn idle_parent_requests_soon_flush_after_enqueue() {
@@ -112,8 +138,11 @@ fn idle_parent_requests_soon_flush_after_enqueue() {
         is_streaming: Arc::new(|| false),
         on_delivery_failed: None,
     };
-    notifier.enqueue(&message()).expect("enqueue");
-    assert_eq!(*coordinator.calls.lock().expect("calls"), ["soon"]);
+    notifier
+        .enqueue(&completion_message(&["st_completed"]))
+        .expect("enqueue");
+    assert_eq!(*coordinator.calls.lock().expect("calls"), ["enqueue", "soon"]);
+    assert_eq!(coordinator.messages.lock().expect("messages").len(), 1);
 }
 #[test]
 fn structured_completion_ids_form_stable_coordinator_key_and_preserve_details() {
@@ -145,30 +174,7 @@ fn structured_completion_ids_form_stable_coordinator_key_and_preserve_details() 
         is_streaming: Arc::new(|| true),
         on_delivery_failed: None,
     };
-    let mut message = message();
-    message.details = ["st_first", "st_second"]
-        .into_iter()
-        .map(|id| senpi_task::completion::CompletionDetails {
-            parent_model: None,
-            parent_model_fallback: None,
-            run_ref: None,
-            task_id: id.into(),
-            name: id.into(),
-            status: senpi_task::state::TaskStatus::Completed,
-            category: None,
-            agent_type: None,
-            model: "faux/faux".into(),
-            requested_model: None,
-            fallback_models: None,
-            resolved_model: None,
-            duration_ms: 1000,
-            tokens: None,
-            run_stats: None,
-            final_response: "finished".into(),
-            final_response_file: None,
-            continuation_hint: "continue".into(),
-        })
-        .collect();
+    let message = completion_message(&["st_first", "st_second"]);
     notifier.enqueue(&message).expect("enqueue");
     let captured = coordinator.0.lock().expect("captured");
     assert_eq!(captured.len(), 2, "one keyed injection per completion");
@@ -227,7 +233,7 @@ fn direct_and_coordinated_delivery_settle_the_callback_exactly_once() {
         on_delivery_failed: None,
     };
     notifier
-        .enqueue_with_callbacks(&message(), forwarded.clone())
+        .enqueue_with_callbacks(&completion_message(&["st_completed"]), forwarded.clone())
         .expect("coordinated enqueue");
     assert_eq!(forwarded.state(), DeliveryState::Delivered);
     assert_eq!(

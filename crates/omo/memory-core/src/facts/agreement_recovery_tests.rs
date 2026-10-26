@@ -35,6 +35,17 @@ fn legacy_recovery_restores_original_before_publishing_migration() {
                 ApplyFactsBatchOptions::default(),
             )
             .unwrap();
+            // Upstream facts/agreement-recovery.test.ts starts from a pre-event ledger.
+            let ledger = std::fs::read_to_string(dir.path().join(AGREEMENTS_PATH)).unwrap();
+            let legacy = ledger
+                .lines()
+                .filter(|line| !line.starts_with("<!-- agreement-event: "))
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n";
+            std::fs::write(dir.path().join(AGREEMENTS_PATH), legacy).unwrap();
+            repo.commit_write(&[AGREEMENTS_PATH], "seed legacy ledger", &author)
+                .unwrap();
             let id = agreement_items_of(Some(
                 &std::fs::read_to_string(dir.path().join(AGREEMENTS_PATH)).unwrap(),
             ))[0]
@@ -74,7 +85,9 @@ fn legacy_recovery_restores_original_before_publishing_migration() {
                 else {
                     panic!("published agreement path must have a worktree file");
                 };
-                repo.path_state.write_worktree(&path.path, worktree).unwrap();
+                repo.path_state
+                    .write_worktree(&path.path, worktree)
+                    .unwrap();
             }
             let pre = path.pre.clone();
             let mut published = None;

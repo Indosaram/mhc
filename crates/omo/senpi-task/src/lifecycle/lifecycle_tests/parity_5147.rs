@@ -4,15 +4,15 @@ use crate::state::SuspensionReason;
 
 #[test]
 fn session_quit_deferral_is_replaced_but_specific_markers_survive() {
-    let temp = temp_store();
-    let registry = Arc::new(FakeRegistry::default());
-    let lifecycle = lifecycle(&temp.store, &registry, default_settings());
     for reason in [
         None,
         Some(SuspensionReason::SessionQuit),
         Some(SuspensionReason::RevivalDeferred),
         Some(SuspensionReason::HostDraining),
     ] {
+        let temp = temp_store();
+        let registry = Arc::new(FakeRegistry::default());
+        let lifecycle = lifecycle(&temp.store, &registry, default_settings());
         let mut record = seed_record(
             &temp.store,
             Seed {

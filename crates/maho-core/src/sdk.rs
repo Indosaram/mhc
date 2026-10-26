@@ -370,7 +370,7 @@ pub async fn create_agent_session(
                 .flatten()
                 .and_then(|value| serde_json::from_value(value).ok())
         });
-    if thinking_selection.is_none() && !has_thinking_entry && configured_thinking.is_some() {
+    if thinking_selection.is_none() && !has_thinking_entry && (configured_thinking.is_some() || settings.get_string("defaultThinkingLevel").is_some()) {
         thinking_selection = Some(ThinkingSelection {
             level: thinking_level,
             source: maho_ai::types::ThinkingSelectionSource::Explicit,

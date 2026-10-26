@@ -183,7 +183,7 @@ impl InProcessRunner {
         );
         let session = (self.create_session)(options).map_err(create_failed)?;
         if let Err(error) = super::pin_check::assert_pinned_model_honoured(spec, session.as_ref()) {
-            session.dispose();
+            super::child_handle::dispose_rejected_session(session.as_ref());
             return Err(error);
         }
         // `"bare"` is the opt-out from the subagent ancestry wrapper: the spec's prompt is the whole

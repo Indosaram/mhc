@@ -330,8 +330,9 @@ mod tests {
     #[test]
     fn the_composed_tool_name_is_namespaced_and_bounded() {
         assert_eq!(registered_tool_name("alpha", "open"), "ext_alpha_open");
-        let long = "a".repeat(60);
-        assert!(declaration_problem(&descriptor("alpha", vec![tool_entry(&long)]), None).is_some_and(|problem| problem.contains("is longer than")));
+        let long_extension = "x".repeat(32);
+        let long_tool = "t".repeat(30);
+        assert!(declaration_problem(&descriptor(&long_extension, vec![tool_entry(&long_tool)]), None).is_some_and(|problem| problem.contains("is longer than")));
         assert!(declaration_problem(&descriptor("alpha", vec![tool_entry("Bad-Name")]), None).is_some_and(|problem| problem.contains("must match")));
     }
 
@@ -362,6 +363,7 @@ mod tests {
         assert_eq!(declaration_problem(&descriptor("alpha", vec![entry.clone()]), None), None);
         entry.await_spec = Some(super::super::store_extensions::AwaitSpec { status_op: "status".into(), expire_op: "expire".into(), timeout_ms: AWAIT_TIMEOUT_MAX_MS + 1 });
         assert!(declaration_problem(&descriptor("alpha", vec![entry.clone()]), None).is_some_and(|problem| problem.contains("await.timeoutMs")));
+        entry.await_spec.as_mut().expect("await spec").timeout_ms = 1_000;
         let mut without_wake_dir = descriptor("alpha", vec![entry]);
         without_wake_dir.wake_dir = None;
         assert!(declaration_problem(&without_wake_dir, None).is_some_and(|problem| problem.contains("wakeDir")));
@@ -382,16 +384,14 @@ mod tests {
             crate::thread::store_ops::StoreContext::test_config(),
             crate::thread::store_ops::StoreContext::test_identity(),
         );
-        for statement in crate::thread::schema::GATEWAY_MIGRATIONS[8] {
-            ctx.exec(statement).expect("migration step");
-        }
-        let registration = descriptor("alpha", vec![tool_entry("open")]);
+        crate::thread::store_ops::migrate(&ctx).expect("migrations");
+        let registration = descriptor("alpha_beta", vec![tool_entry("open")]);
         assert_eq!(persist_descriptor(&ctx, &registration, 1, None).expect("persist"), None);
         let listed = list_session_ops(&ctx);
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].registered_name, "ext_alpha_open");
-        assert_eq!(read_descriptor(&ctx, "alpha").map(|descriptor| descriptor.module_url), Some("file:///ext/alpha.mjs".into()));
-        assert!(tool_name_taken(&ctx, &descriptor("beta", vec![tool_entry("open")])).is_some_and(|taken| taken.contains("already declared")));
+        assert_eq!(listed[0].registered_name, "ext_alpha_beta_open");
+        assert_eq!(read_descriptor(&ctx, "alpha_beta").map(|descriptor| descriptor.module_url), Some("file:///ext/alpha.mjs".into()));
+        assert!(tool_name_taken(&ctx, &descriptor("alpha", vec![tool_entry("beta_open")])).is_some_and(|taken| taken.contains("already declared")));
     }
 
     #[test]
@@ -401,11 +401,14 @@ mod tests {
             crate::thread::store_ops::StoreContext::test_config(),
             crate::thread::store_ops::StoreContext::test_identity(),
         );
-        for statement in crate::thread::schema::GATEWAY_MIGRATIONS[8] {
-            ctx.exec(statement).expect("migration step");
-        }
-        ctx.run("INSERT INTO extension_registrations (name, descriptor_json, updated_at) VALUES ('alpha', ?, 1)", &[v_str("{\"moduleUrl\":\"file:///x.mjs\"}")]).expect("insert");
+        crate::thread::store_ops::migrate(&ctx).expect("migrations");
+        let registration = descriptor("alpha", vec![tool_entry("open")]);
+        assert_eq!(persist_descriptor(&ctx, &registration, 1, None).expect("persist"), None);
         assert!(read_descriptor(&ctx, "alpha").is_some());
+        let mut invalid = PersistedDescriptor::of(&registration);
+        invalid.session_callable.as_mut().expect("entries")[0].tool_name = Some("Bad-Name".into());
+        ctx.run("UPDATE extension_registrations SET descriptor_json = ? WHERE name = 'alpha'", &[v_str(serde_json::to_string(&invalid).expect("descriptor json"))]).expect("update");
+        assert!(read_descriptor(&ctx, "alpha").is_none());
         ctx.run("UPDATE extension_registrations SET descriptor_json = ? WHERE name = 'alpha'", &[v_str("not json")]).expect("update");
         assert!(read_descriptor(&ctx, "alpha").is_none());
     }

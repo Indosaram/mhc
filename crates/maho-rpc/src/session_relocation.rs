@@ -536,10 +536,8 @@ impl RpcSessionRelocation {
             "display":false,
             "details":{"status":"dropped","reason":reason.as_str(),"moveId":due.move_id,"target":due.target}
         });
-        let session = Arc::clone(&self.deps.session);
-        tokio::spawn(async move {
-            session.send_custom_message(message, false).await;
-        });
+        let send = self.deps.session.send_custom_message(message, false);
+        tokio::spawn(send);
     }
 
     fn ask(

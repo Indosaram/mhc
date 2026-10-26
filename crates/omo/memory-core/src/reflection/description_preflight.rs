@@ -102,7 +102,8 @@ fn trim_descriptions(
     rewritten: &mut Vec<String>,
 ) -> Result<Vec<TrimmedDescription>, String> {
     // Leave dirty or tampered runs to the gate; never commit their unrelated changes.
-    let git_file = std::fs::read_to_string(&worktree.git_file_path).map_err(|err| err.to_string())?;
+    let git_file =
+        std::fs::read_to_string(&worktree.git_file_path).map_err(|err| err.to_string())?;
     if git_file != worktree.git_file_snapshot {
         return Ok(Vec::new());
     }
@@ -263,7 +264,12 @@ fn trim_description(original: &str) -> String {
         prefix.push(code_point);
         units += code_point.len_utf16();
     }
-    match prefix.rfind(' ') {
+    let boundary = if original[prefix.len()..].starts_with(' ') {
+        Some(prefix.len())
+    } else {
+        prefix.rfind(' ')
+    };
+    match boundary {
         Some(index) if index > 0 => format!("{}…", original[..index].trim_end()),
         _ => format!("{}…", prefix.trim_end()),
     }
@@ -343,9 +349,7 @@ fn restore_paths(exec: &dyn GitExec, dir: &Path, paths: &[String]) -> Result<(),
     if !tracked.is_empty() {
         let mut argv = vec!["restore", "--source=HEAD", "--staged", "--worktree", "--"];
         argv.extend(tracked);
-        let restored = exec
-            .run_in(dir, &argv)
-            .map_err(|error| error.to_string())?;
+        let restored = exec.run_in(dir, &argv).map_err(|error| error.to_string())?;
         if restored.code != 0 {
             let stderr = restored.stderr.trim();
             return Err(if stderr.is_empty() {
@@ -357,7 +361,10 @@ fn restore_paths(exec: &dyn GitExec, dir: &Path, paths: &[String]) -> Result<(),
     }
     for path in untracked {
         let removed = exec
-            .run_in(dir, &["rm", "-q", "--cached", "--ignore-unmatch", "--", path])
+            .run_in(
+                dir,
+                &["rm", "-q", "--cached", "--ignore-unmatch", "--", path],
+            )
             .map_err(|error| error.to_string())?;
         if removed.code != 0 {
             let stderr = removed.stderr.trim();

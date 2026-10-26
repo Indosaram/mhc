@@ -109,7 +109,7 @@ async fn owned_worker_disposal_cancels_pending_resolution_and_joins_before_clear
     std::future::poll_fn(|context| { assert!(start.as_mut().poll(context).is_pending()); std::task::Poll::Ready(()) }).await;
     observing.recv_timeout(std::time::Duration::from_secs(5)).expect("worker ownership resolution");
     owner.dispose();
-    assert_eq!(values.lock().expect("events").as_slice(), &[serde_json::json!({"source":"senpi-task","activeCount":0,"channels":[]})]);
+    assert_eq!(values.lock().expect("events").as_slice(), &[serde_json::json!({"source":"senpi-task","kind":"children","activeCount":0,"items":[],"channels":[]})]);
     std::future::poll_fn(|context| { assert!(matches!(start.as_mut().poll(context), std::task::Poll::Ready(Err(_)))); std::task::Poll::Ready(()) }).await;
     drop(start); drop(owner); drop(subscription);
 }

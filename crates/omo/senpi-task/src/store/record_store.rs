@@ -725,6 +725,7 @@ mod write_observer_tests {
             count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         })));
         record.status = TaskStatus::Lost;
+        record.terminal_at = Some(record.updated_at.clone());
         // When
         store.clone().replace(&record).expect("replace");
         // Then

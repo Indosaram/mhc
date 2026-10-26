@@ -294,7 +294,9 @@ mod tests {
 
     #[tokio::test]
     async fn stripped_legacy_header_is_recorded_in_commit_provenance() {
-        let (_root,identity)=temp_identity();seeded_repo(&identity,vec![seed("system/agreements.md","---\ndescription: Agreements\nprovenance: 'user said yes'\n---\n\n")]);
+        // Legacy receipts use JSON-encoded string scalars, as in upstream
+        // memory-core/src/facts/extraction-legacy-header.test.ts.
+        let (_root,identity)=temp_identity();seeded_repo(&identity,vec![seed("system/agreements.md","---\ndescription: Agreements\nprovenance: \"user said yes\"\n---\n\n")]);
         let fake=fake_deps(Some(identity.clone()),FakeDepsOverrides::default());let context=fake_command_context(FakeContextOptions::default());
         let response=handle_agreements(&fake.deps,&context.ctx,"add never force push").await;assert!(!response.is_error(),"{}",response.text);
         let repo=super::open_repo(&fake.deps,&identity).unwrap();let history=repo.log(None).unwrap();assert_eq!(history[0].trailers.get("Omo-Provenance-Stripped").map(String::as_str),Some(AGREEMENTS_PATH));

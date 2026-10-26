@@ -15,7 +15,7 @@ use std::{
 use tokio::sync::{broadcast, watch};
 type ConnectResult = Option<Result<Arc<McpClient>, McpError>>;
 struct ConnectionInner {
-    authorization: maho_ai::utils::abort::AbortController,
+    authorization: maho_ext_api::AbortSignal,
     state: ServerConnectionState,
     generation: u64,
     last_error: Option<McpError>,
@@ -56,7 +56,7 @@ impl ServerConnection {
             logger,
             inner: Mutex::new(ConnectionInner {
                 state,
-                authorization: maho_ai::utils::abort::AbortController::new(),
+                authorization: maho_ext_api::AbortSignal::default(),
                 generation: 0,
                 last_error: None,
                 transport: None,
@@ -246,22 +246,15 @@ impl ServerConnection {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .authorization
-            .signal();
+            .clone();
         let materialized =
             match crate::project_skill_policy::get_project_mcp_authority(&self.config) {
                 Some(authority) => {
-                    let ui_signal = maho_ext_api::AbortSignal::default();
-                    let transport = crate::project_stdio_transport::ProjectStdioTransport::new(authority);
-                    let started = tokio::select! {
-                        biased;
-                        () = signal.cancelled() => {
-                            ui_signal.abort();
-                            return Err(McpError::new(crate::errors::McpErrorKind::Connect, "Project MCP authorization cancelled"));
-                        }
-                        result = transport.start_with_signal(Some(ui_signal.clone())) => result?,
-                    };
+                    let transport =
+                        crate::project_stdio_transport::ProjectStdioTransport::new(authority);
+                    let started = transport.start_with_signal(Some(signal)).await?;
                     Some(started)
-                },
+                }
                 None => None,
             };
         let (config, env) = materialized
@@ -438,8 +431,8 @@ impl ServerConnection {
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            inner.authorization.abort(None);
-            inner.authorization = maho_ai::utils::abort::AbortController::new();
+            inner.authorization.abort();
+            inner.authorization = maho_ext_api::AbortSignal::default();
             inner.generation += 1;
             inner.pending = None;
             if clear_error {

@@ -433,7 +433,7 @@ fn builtin_defaults_pin_machine_routing_fields() {
         defaults,
         vec![
             ("visual-engineering", "anthropic/claude-opus-5", Some("max")),
-            ("artistry", "anthropic/claude-fable-5", Some("xhigh")),
+            ("artistry", "anthropic/claude-fable-5-1", Some("max")),
             ("ultrabrain", "openai/gpt-5.6-sol", Some("max")),
             ("deep", "openai/gpt-5.6-sol", Some("medium")),
             ("quick", "kimi-coding/kimi-for-coding-highspeed", None),
@@ -981,7 +981,7 @@ fn gating_artistry_fable_is_primary_hit() {
     let resolved = expect_resolved(resolve(
         "artistry",
         json!({}),
-        &registry(vec![model("anthropic", "claude-fable-5")]),
+        &registry(vec![model("anthropic", "claude-fable-5-1")]),
     ));
     assert!(!resolved.selection.matched_fallback);
 }
@@ -1193,8 +1193,8 @@ fn boundary_prototype_shaped_names_are_not_found() {
 
 fn fable_and_kimi() -> Vec<Value> {
     vec![
-        model("anthropic", ""),
-        model("anthropic", ""),
+        model("anthropic", "claude-fable-5-1"),
+        model("anthropic", "claude-opus-5-5"),
         model("kimi-for-coding", "k3"),
         model("openai", "gpt-5.6-sol"),
     ]
@@ -1205,16 +1205,18 @@ fn excluded_fable_head_rung_leads_with_the_next_rung() {
     let models = registry(fable_and_kimi());
     let resolved = expect_resolved(resolve(
         "artistry",
-        json!({ "exclude_models": ["anthropic/"] }),
+        json!({ "exclude_models": ["claude-fable-*"] }),
         &models,
     ));
-    assert_eq!(resolved.spec.provider, "kimi-for-coding");
-    assert_eq!(resolved.spec.model_id, "k3");
+    assert_eq!(resolved.spec.provider, "anthropic");
+    assert_eq!(resolved.spec.model_id, "claude-opus-5-5");
     assert_eq!(resolved.spec.variant.as_deref(), Some("max"));
     assert!(resolved.selection.matched_fallback);
     let fallbacks = resolved.spec.fallback_models.unwrap_or_default();
     assert!(
-        fallbacks.iter().all(|fallback| fallback.provider != "anthropic"),
+        fallbacks
+            .iter()
+            .all(|fallback| fallback.model_id != "claude-fable-5-1"),
         "the excluded Fable rung must never reach the runtime chain: {fallbacks:?}"
     );
 }
@@ -1257,9 +1259,14 @@ fn excluded_user_pin_is_treated_like_a_model_with_no_login() {
 
 #[test]
 fn category_with_every_rung_excluded_is_gone_from_the_listing() {
-    let fable_only = registry(vec![model("anthropic", ""), model("anthropic", "")]);
-    let filtered =
-        resolve_available_category_names(&json!({ "exclude_models": ["*"] }), &fable_only);
+    let fable_only = registry(vec![
+        model("anthropic", "claude-fable-5-1"),
+        model("anthropic", "claude-fable-5"),
+    ]);
+    let filtered = resolve_available_category_names(
+        &json!({ "exclude_models": ["claude-fable-*"] }),
+        &fable_only,
+    );
     assert!(!contains(&filtered, "artistry"));
     let unfiltered = resolve_available_category_names(&json!({}), &fable_only);
     assert!(contains(&unfiltered, "artistry"));
@@ -1267,8 +1274,12 @@ fn category_with_every_rung_excluded_is_gone_from_the_listing() {
 
 #[test]
 fn not_found_listing_observes_excluded_models() {
-    let fable_only = registry(vec![model("anthropic", "")]);
-    let filtered = resolve("no-such-category", json!({ "exclude_models": ["*"] }), &fable_only);
+    let fable_only = registry(vec![model("anthropic", "claude-fable-5-1")]);
+    let filtered = resolve(
+        "no-such-category",
+        json!({ "exclude_models": ["*"] }),
+        &fable_only,
+    );
     assert_eq!(filtered.kind(), "not_found");
     assert!(!contains(filtered.available_categories(), "artistry"));
     let unfiltered = resolve("no-such-category", json!({}), &fable_only);

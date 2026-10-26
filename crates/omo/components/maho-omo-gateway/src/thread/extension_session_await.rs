@@ -153,8 +153,12 @@ mod tests {
     fn a_missing_wake_directory_expires_at_once() {
         let directory = tempfile::tempdir().expect("temp dir");
         let file = directory.path().join("missing").join("tor_0123456789abcdef0123456789abcdef");
-        let status = || ok(serde_json::json!({ "status": "pending" }));
-        let expire = || ok(serde_json::json!({ "status": "expired" }));
+        let expired = std::cell::Cell::new(false);
+        let status = || ok(serde_json::json!({ "status": if expired.get() { "expired" } else { "pending" } }));
+        let expire = || {
+            expired.set(true);
+            ok(serde_json::json!({ "expired": true }))
+        };
         let result = await_session_request(SessionAwait { file, timeout_ms: 60_000, status: &status, expire: &expire, on_armed: None });
         assert_eq!(result, ok(serde_json::json!({ "status": "expired" })));
     }

@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(agents["duplicate"].prompt.as_deref(), Some("Second."));
         assert_eq!(
             agents["duplicate"].model,
-            Some(AgentModel::String("kiro/claude-sonnet-4-6".into()))
+            Some(AgentModel::String("kiro/claude-sonnet-5-5".into()))
         );
         assert_eq!(agents["json-agent"].prompt.as_deref(), Some("JSON prompt."));
         assert!(load_agent_definitions(&[], AgentScope::DefinitionFile, None).is_empty());

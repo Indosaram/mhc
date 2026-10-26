@@ -19,12 +19,20 @@ use crate::workpool::types::{
 };
 
 struct Request {
+    finished: std::sync::mpsc::Sender<()>,
+    store: WorkpoolStore,
     pool: WorkpoolRecord,
     item: WorkpoolItem,
     worker: Option<WorkpoolWorker>,
     current: Arc<std::sync::atomic::AtomicBool>,
     events: Arc<Mutex<Vec<WorkpoolEvent>>>,
     binds: Arc<Mutex<Vec<(String, u32)>>>,
+}
+impl Drop for Request {
+    fn drop(&mut self) {
+        // The dispatch closure drops its admission guard before releasing this request.
+        let _receiver_closed = self.finished.send(());
+    }
 }
 impl WorkpoolRequest for Request {
     fn pool(&self) -> &WorkpoolRecord {
@@ -47,6 +55,28 @@ impl WorkpoolRequest for Request {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((task_id.into(), epoch));
+        self.store
+            .mutate(&self.pool.pool_id, |pool| {
+                let mut pool = pool.clone();
+                let item = pool
+                    .items
+                    .iter_mut()
+                    .find(|item| item.item_id == self.item.item_id)
+                    .expect("assigned item");
+                item.status = WorkpoolItemStatus::Assigned;
+                item.binding = Some(crate::workpool::types::WorkpoolBinding {
+                    task_id: task_id.into(),
+                    run_epoch: epoch,
+                    generation: pool.generation,
+                });
+                item.delivery = Some(WorkpoolDelivery {
+                    phase: WorkpoolDeliveryPhase::Queued,
+                    message_sha256: None,
+                    entry_ids: None,
+                });
+                pool
+            })
+            .expect("persist binding");
         true
     }
     fn event(&self, event: WorkpoolEvent) {
@@ -164,17 +194,22 @@ type RequestFixture = (
     Arc<std::sync::atomic::AtomicBool>,
     Arc<Mutex<Vec<WorkpoolEvent>>>,
     Arc<Mutex<Vec<(String, u32)>>>,
+    std::sync::mpsc::Receiver<()>,
 );
 fn request(
+    h: &Harness,
     pool: WorkpoolRecord,
     item: WorkpoolItem,
     worker: Option<WorkpoolWorker>,
 ) -> RequestFixture {
+    let (finished, completion) = std::sync::mpsc::channel();
     let current = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let events = Arc::new(Mutex::new(Vec::new()));
     let binds = Arc::new(Mutex::new(Vec::new()));
     (
         Box::new(Request {
+            finished,
+            store: WorkpoolStore::new(h.store.state_dir()),
             pool,
             item,
             worker,
@@ -185,6 +220,7 @@ fn request(
         current,
         events,
         binds,
+        completion,
     )
 }
 
@@ -222,7 +258,7 @@ fn queued_cancel_removes_waiter_and_releasing_head_does_not_run_cancelled_reques
     assert!(h.manager.reserve_slot("test/model", "st_00000001", 0));
     let (mut pool, item) = pool(&h, "", None);
     save_pool(&h, &mut pool);
-    let (request, _current, _events, _binds) = request(pool, item, None);
+    let (request, _current, _events, _binds, _finished) = request(&h, pool, item, None);
     let handle = h.admission.request(request);
     assert!(handle.held.is_none());
     (handle.cancel)();
@@ -289,7 +325,7 @@ fn valid_reuse_binds_next_epoch_and_uses_real_manager_revival_path() {
     });
     save_pool(&h, &mut pool);
     let item = pool.items[0].clone();
-    let (request, _current, events, binds) = request(pool, item, Some(worker));
+    let (request, _current, events, binds, _finished) = request(&h, pool, item, Some(worker));
     let _handle = h.admission.request(request);
     wait_until("real worker revival", || {
         events
@@ -421,7 +457,7 @@ fn burnt_worker_epoch_is_not_reused() {
     });
     save_pool(&h, &mut pool);
     let item = pool.items[0].clone();
-    let (request, _current, events, binds) = request(pool, item, Some(worker));
+    let (request, _current, events, binds, _finished) = request(&h, pool, item, Some(worker));
     let _handle = h.admission.request(request);
     wait_until("burnt epoch denial", || {
         events
@@ -450,7 +486,7 @@ fn a_paused_root_holds_the_turn_without_dispatching_or_acknowledging() {
     h.admission.barrier().close("root", 3);
     let (mut pool, item) = pool(&h, "", None);
     save_pool(&h, &mut pool);
-    let (request, _current, events, binds) = request(pool, item, None);
+    let (request, _current, events, binds, _finished) = request(&h, pool, item, None);
     let handle = h.admission.request(request);
     let held = handle.held.clone().expect("held custody");
     assert_eq!(held.pause_seq, 3);
@@ -486,11 +522,12 @@ fn an_open_root_admission_dispatches_and_leaves_no_ticket() {
     assert!(h.manager.reserve_slot("test/model", "st_00000001", 0));
     let (mut pool, item) = pool(&h, "", None);
     save_pool(&h, &mut pool);
-    let (request, _current, _events, _binds) = request(pool, item, None);
+    let (request, _current, _events, _binds, finished) = request(&h, pool, item, None);
     let handle = h.admission.request(request);
     assert!(handle.held.is_none());
     h.manager
         .release_reserved_slot("st_00000001", "test/model", 0);
-    wait_until("worker launched", || !h.runner.specs().is_empty());
+    finished.recv_timeout(std::time::Duration::from_secs(30)).expect("admission dispatch finished");
+    assert!(!h.runner.specs().is_empty());
     assert!(h.admission.barrier().in_flight("root").is_empty());
 }

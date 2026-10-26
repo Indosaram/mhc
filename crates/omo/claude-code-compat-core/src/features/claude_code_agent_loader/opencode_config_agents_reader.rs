@@ -223,7 +223,7 @@ mod tests {
         assert_eq!(agents["all"].mode, Some(AgentMode::All));
         assert_eq!(
             agents["all"].model,
-            Some(AgentModel::String("anthropic/claude-sonnet-4-6".into()))
+            Some(AgentModel::String("anthropic/claude-sonnet-5-5".into()))
         );
         assert_eq!(agents["default"].mode, Some(AgentMode::Subagent));
         assert_eq!(agents["default"].prompt.as_deref(), Some(""));
