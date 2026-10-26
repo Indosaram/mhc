@@ -1,0 +1,24 @@
+{
+  "key": "nightly-check",
+  "name": "Nightly repository check",
+  "nodes": [
+    {
+      "id": "scan",
+      "label": "Scan for regressions",
+      "category": "deep",
+      "prompt": "TASK: Run the full test suite and the linter on the current branch and list every failure.\nDELIVERABLE: A markdown list of failures with file:line, written to reports/{{key}}/scan.md.\nSCOPE: Read-only. Do not edit source files.\nVERIFY: The report file exists and each entry has a file:line reference.\nSTOP WHEN the report is written."
+    },
+    {
+      "id": "triage",
+      "category": "unspecified-high",
+      "dependsOn": ["scan"],
+      "prompt": "TASK: Read reports/{{key}}/scan.md and group the failures by probable root cause.\nDELIVERABLE: reports/{{key}}/triage.md with one section per cause, ranked by impact.\nSCOPE: Read-only. Use only the scan report and the repository.\nVERIFY: Every failure from the scan report appears in exactly one group.\nSTOP WHEN the triage file is written."
+    },
+    {
+      "id": "verify-report",
+      "category": "quick",
+      "dependsOn": ["triage"],
+      "prompt": "TASK: Audit reports/{{key}}/scan.md and reports/{{key}}/triage.md for consistency.\nDELIVERABLE: reports/{{key}}/verify.md stating PASS or FAIL with reasons. Run date {{date}}.\nSCOPE: Read-only.\nVERIFY: Counts of failures match between the two files.\nSTOP WHEN the verdict file is written."
+    }
+  ]
+}

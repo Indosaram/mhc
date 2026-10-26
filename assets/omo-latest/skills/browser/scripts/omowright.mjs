@@ -12,6 +12,7 @@ export {
   BrowserNotConnectedError,
   BrowserUserStoppedError,
   guardOmowright,
+  isIrreversibleLabel,
 } from "./browser-engine-guard.mjs"
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))

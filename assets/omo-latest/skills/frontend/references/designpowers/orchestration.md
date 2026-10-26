@@ -4,7 +4,7 @@ This reference defines shared state and prompt semantics for designpowers guidan
 
 ## Shared State
 
-Use `.omo/frontend-design/state.md` as the design operating ledger when the active workflow is allowed to write OpenAgent state. If the current task forbids editing `.omo`, read it as context only and report any needed updates in the handoff.
+Use `.omo/frontend-design/state.md` as the design operating ledger when the active workflow is allowed to write harness state. If the current task forbids editing `.omo`, read it as context only and report any needed updates in the handoff.
 
 Recommended sections:
 
@@ -28,8 +28,8 @@ Direct and Auto are prompt-only semantics:
 
 | Mode | Meaning | Required pauses |
 |---|---|---|
-| Direct | OpenAgent proceeds through known frontend/OpenAgent routes using the user's brief, repo evidence, and reversible defaults. | Pause for destructive changes, public product choices, missing objective, or accessibility/persona tradeoffs that cannot be resolved from evidence. |
-| Auto | OpenAgent may choose defensible defaults for low-risk design details and continue through the frontend workflow. | Pause for prohibited tooling, new external integrations, irreversible design-system changes, unresolved critical accessibility gaps, or conflicting owner decisions. |
+| Direct | harness proceeds through known frontend/harness routes using the user's brief, repo evidence, and reversible defaults. | Pause for destructive changes, public product choices, missing objective, or accessibility/persona tradeoffs that cannot be resolved from evidence. |
+| Auto | harness may choose defensible defaults for low-risk design details and continue through the frontend workflow. | Pause for prohibited tooling, new external integrations, irreversible design-system changes, unresolved critical accessibility gaps, or conflicting owner decisions. |
 
 Neither mode may create hooks, background schedulers, fake direct calls, or a separate planner/build harness. Modes affect prompts and escalation behavior only.
 
@@ -45,13 +45,13 @@ Neither mode may create hooks, background schedulers, fake direct calls, or a se
 
 ## designpowers Role References
 
-designpowers agent names are role references for prompt composition only. They can help phrase an OpenAgent-native assignment such as "act as a design critic" or "act as an accessibility reviewer", but they are not installed agents, selectable agent types, or a separate agent runtime.
+designpowers agent names are role references for prompt composition only. They can help phrase an harness-native assignment such as "act as a design critic" or "act as an accessibility reviewer", but they are not installed agents, selectable agent types, or a separate agent runtime.
 
 When using a designpowers role reference:
 
 - name the role in the prompt text;
 - include a self-contained task, deliverable, scope, and verification expectation;
-- route actual phase ownership to frontend design/perfection, `/ulw-plan`, `/ulw-execute`, `/visual-qa`, or `/review-work`;
+- route actual phase ownership to frontend design/perfection, the harness's plan command, the harness's execute command, `/visual-qa`, or `/review-work`;
 - record findings in the state file or review packet only when backed by artifacts or located observations.
 
 ## Reconciliation Ladder
@@ -71,7 +71,7 @@ If two higher-order requirements cannot both be satisfied, pause and ask the use
 
 Before final handoff, the workflow should be able to name:
 
-- which frontend references and OpenAgent skills were loaded or instructed;
+- which frontend references and harness skills were loaded or instructed;
 - the current state path or why it was read-only;
 - the plan or execution artifact path;
 - the frontend and visual QA evidence paths;
