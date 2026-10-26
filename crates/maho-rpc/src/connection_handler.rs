@@ -457,14 +457,7 @@ async fn handle_input_line_with_login_state(
         }
     };
     // Boxed: this command future is very large and would otherwise sit on the caller's stack.
-    Box::pin(handle_session_command_with_sink(
-        session,
-        &command,
-        sink,
-        active_logins,
-        ui,
-        last_abort_source,
-    ))
+    dispatch_session_command(session, &command, sink, active_logins, ui, last_abort_source)
     .await
     .map(|response| crate::jsonl::serialize_json_line(&response))
     .transpose()
@@ -630,8 +623,27 @@ pub async fn handle_session_command(
     session: &AgentSession,
     command: &RpcCommand,
 ) -> Option<RpcResponse> {
+    dispatch_session_command(session, command, None, None, None, None).await
+}
+/// Prompts run in their own boxed future so the large generic command future is not polled beneath the agent run.
+async fn dispatch_session_command(
+    session: &AgentSession,
+    command: &RpcCommand,
+    sink: Option<RpcRecordSink>,
+    active_logins: Option<ActiveLogins>,
+    ui: Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,
+    last_abort_source: Option<&LastAbortSource>,
+) -> Option<RpcResponse> {
+    if matches!(command.body, RpcCommandBody::Prompt { .. }) {
+        return Box::pin(run_prompt_command(session, command, sink)).await;
+    }
     Box::pin(handle_session_command_with_sink(
-        session, command, None, None, None, None,
+        session,
+        command,
+        sink,
+        active_logins,
+        ui,
+        last_abort_source,
     ))
     .await
 }
@@ -713,25 +725,15 @@ fn reload_veto_json(decision: &maho_ext_api::ReloadVetoDecision) -> serde_json::
     }
     value
 }
-async fn handle_session_command_with_sink(
+/// The prompt command runs outside `handle_session_command_with_sink`: that function's poll frame is hundreds of KiB
+/// in an unoptimized build, and keeping it on the stack beneath the whole agent run overflows a 2 MiB test thread.
+async fn run_prompt_command(
     session: &AgentSession,
     command: &RpcCommand,
     sink: Option<RpcRecordSink>,
-    active_logins: Option<ActiveLogins>,
-    ui: Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,
-    last_abort_source: Option<&LastAbortSource>,
 ) -> Option<RpcResponse> {
-    let (kind,result)=match &command.body{
-        RpcCommandBody::HoldInput{..}|RpcCommandBody::WithdrawHeldInput{..}|RpcCommandBody::PauseForRun{..}|RpcCommandBody::ResumeForRun{..}=>{
-            let value=serde_json::to_value(command).unwrap_or(serde_json::Value::Null);
-            let kind=match &command.body{RpcCommandBody::HoldInput{..}=>"hold_input",RpcCommandBody::WithdrawHeldInput{..}=>"withdraw_held_input",RpcCommandBody::PauseForRun{..}=>"pause_for_run",_=>"resume_for_run"};
-            let result=match kind{"hold_input"=>crate::held_input_commands::run_hold_input(session,&value,false,false),"pause_for_run"=>crate::run_hold_commands::run_pause_for_run(session,&value,false).await,"resume_for_run"=>crate::run_hold_commands::run_resume_for_run(session,&value,false).await,_=>Err("withdraw_held_input_requires_interactive_client".into())};
-            (kind,result.map(Some))
-        },
-        RpcCommandBody::HostResponse{..}=>("host_response",Err("unknown_host_request".into())),
-        RpcCommandBody::ArmToolBarrier { spec } => ("arm_tool_barrier",serde_json::from_value(spec.clone()).map_err(|e|e.to_string()).and_then(|spec|session.arm_tool_barrier(spec)).map(|()|None)),
-        RpcCommandBody::ReleaseToolBarrier { barrier_id } => ("release_tool_barrier",Ok(Some(serde_json::json!({"released":session.release_tool_barrier(barrier_id)})))),
-        RpcCommandBody::Prompt{message,images,streaming_behavior,thinking_level,session_title_prompt,expand_prompt_templates}=>{
+    let RpcCommandBody::Prompt{message,images,streaming_behavior,thinking_level,session_title_prompt,expand_prompt_templates}=&command.body else{unreachable!("only prompt commands are routed here")};
+    {
             let options=(||{
                 if thinking_level.is_some()&&session.is_streaming()&&streaming_behavior.is_some(){return Err("Cannot set thinkingLevel on a queued prompt; set it after the current turn completes.".to_owned());}
                 let images=images.as_ref().map(|images|images.iter().cloned().map(serde_json::from_value).collect::<Result<Vec<maho_ai::types::ImageContent>,_>>()).transpose().map_err(|error|error.to_string())?;
@@ -756,8 +758,44 @@ async fn handle_session_command_with_sink(
                 Box::pin(session.prompt(message,options)).await.map(|disposition|Some(serde_json::json!({"disposition":match disposition{maho_core::agent_session::PromptDisposition::Started=>"started",maho_core::agent_session::PromptDisposition::Queued=>"queued",maho_core::agent_session::PromptDisposition::Handled=>"handled"}})))
             }};
             if admitted.load(std::sync::atomic::Ordering::SeqCst){return None;}
-            ("prompt",result)
+            Some(command_response(session,command,"prompt",result))
+    }
+}
+fn command_response(session: &AgentSession, command: &RpcCommand, kind: &str, result: Result<Option<serde_json::Value>,String>) -> RpcResponse {
+    RpcResponse {
+        id: command.id.clone(),
+        record_type: ResponseRecordType::Response,
+        command: kind.into(),
+        session_id: command.session_id.clone(),
+        result: match result {
+            Ok(data) => RpcResponseResult::Success { data },
+            Err(error) => RpcResponseResult::Error {
+                error,
+                error_code: None,
+                error_data: default_error_data(session, kind),
+            },
         },
+    }
+}
+async fn handle_session_command_with_sink(
+    session: &AgentSession,
+    command: &RpcCommand,
+    sink: Option<RpcRecordSink>,
+    active_logins: Option<ActiveLogins>,
+    ui: Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,
+    last_abort_source: Option<&LastAbortSource>,
+) -> Option<RpcResponse> {
+    let (kind,result)=match &command.body{
+        RpcCommandBody::HoldInput{..}|RpcCommandBody::WithdrawHeldInput{..}|RpcCommandBody::PauseForRun{..}|RpcCommandBody::ResumeForRun{..}=>{
+            let value=serde_json::to_value(command).unwrap_or(serde_json::Value::Null);
+            let kind=match &command.body{RpcCommandBody::HoldInput{..}=>"hold_input",RpcCommandBody::WithdrawHeldInput{..}=>"withdraw_held_input",RpcCommandBody::PauseForRun{..}=>"pause_for_run",_=>"resume_for_run"};
+            let result=match kind{"hold_input"=>crate::held_input_commands::run_hold_input(session,&value,false,false),"pause_for_run"=>crate::run_hold_commands::run_pause_for_run(session,&value,false).await,"resume_for_run"=>crate::run_hold_commands::run_resume_for_run(session,&value,false).await,_=>Err("withdraw_held_input_requires_interactive_client".into())};
+            (kind,result.map(Some))
+        },
+        RpcCommandBody::HostResponse{..}=>("host_response",Err("unknown_host_request".into())),
+        RpcCommandBody::ArmToolBarrier { spec } => ("arm_tool_barrier",serde_json::from_value(spec.clone()).map_err(|e|e.to_string()).and_then(|spec|session.arm_tool_barrier(spec)).map(|()|None)),
+        RpcCommandBody::ReleaseToolBarrier { barrier_id } => ("release_tool_barrier",Ok(Some(serde_json::json!({"released":session.release_tool_barrier(barrier_id)})))),
+        RpcCommandBody::Prompt{..}=>unreachable!("prompt commands are routed to run_prompt_command"),
         RpcCommandBody::SwitchSession{session_path,cwd_override}=>match session.switch_session_with_cwd_coded(session_path,cwd_override.as_deref()).await{
             Ok(switched)=>("switch_session",Ok(Some(serde_json::json!({"cancelled":!switched})))),
             Err(error)=>return Some(session_switch_failure(command,"switch_session",error)),

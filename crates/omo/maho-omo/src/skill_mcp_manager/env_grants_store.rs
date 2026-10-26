@@ -98,6 +98,49 @@ pub fn revision(metadata: &fs::Metadata) -> String {
         format!("{:?}:{}", metadata.created(), metadata.len())
     }
 }
+/// Identity of the lock directory itself. Windows metadata exposes no file id on stable Rust, and a
+/// replacement directory created right after a rename can share the creation time and zero length
+/// of the one it replaced, so the volume serial and file index are read from an opened handle.
+#[cfg(unix)]
+fn lock_revision(path: &Path) -> std::io::Result<String> {
+    fs::metadata(path).map(|metadata| revision(&metadata))
+}
+#[cfg(windows)]
+fn open_lock_directory(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
+    };
+    OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+}
+#[cfg(not(windows))]
+fn open_lock_directory(path: &Path) -> std::io::Result<File> {
+    File::open(path)
+}
+#[cfg(windows)]
+fn lock_revision(path: &Path) -> std::io::Result<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+    let file = open_lock_directory(path)?;
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    #[allow(unsafe_code)]
+    // SAFETY: the handle is owned by `file`, which outlives the call; `info` is a valid out pointer.
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(format!(
+        "{}:{}:{}",
+        info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow
+    ))
+}
 fn state(path: &Path) -> StoreState {
     let result = (|| {
         let mut file = File::open(path).ok()?;
@@ -144,7 +187,7 @@ fn acquire_lock(path: &Path) -> super::Result<GrantsLock> {
     for attempt in 0..=100 {
         match fs::create_dir(&lock_path) {
             Ok(()) => {
-                let inode = revision(&fs::metadata(&lock_path).map_err(|e| e.to_string())?);
+                let inode = lock_revision(&lock_path).map_err(|e| e.to_string())?;
                 let lost = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let thread_path = lock_path.clone();
@@ -158,10 +201,10 @@ fn acquire_lock(path: &Path) -> super::Result<GrantsLock> {
                             break;
                         }
                         let result = (|| -> std::io::Result<()> {
-                            let file = File::open(&thread_path)?;
-                            if revision(&file.metadata()?) != expected {
+                            if lock_revision(&thread_path)? != expected {
                                 return Err(std::io::Error::other("MCP grants lock reclaimed"));
                             }
+                            let file = open_lock_directory(&thread_path)?;
                             file.set_times(
                                 fs::FileTimes::new().set_modified(std::time::SystemTime::now()),
                             )
@@ -215,8 +258,8 @@ struct GrantsLock {
 impl GrantsLock {
     fn ensure_owned(&self) -> super::Result<()> {
         if self.lost.load(std::sync::atomic::Ordering::Acquire)
-            || fs::metadata(&self.path)
-                .map(|m| revision(&m) != self.inode)
+            || lock_revision(&self.path)
+                .map(|revision| revision != self.inode)
                 .unwrap_or(true)
         {
             self.lost.store(true, std::sync::atomic::Ordering::Release);
@@ -236,9 +279,10 @@ impl Drop for GrantsLock {
             }
         }
         if self.ensure_owned().is_ok()
-            && let Err(error) = fs::remove_dir(&self.path) {
-                eprintln!("MCP grants lock release: {error}");
-            }
+            && let Err(error) = fs::remove_dir(&self.path)
+        {
+            eprintln!("MCP grants lock release: {error}");
+        }
     }
 }
 fn replace_with_retry(
@@ -313,9 +357,10 @@ fn update(
         Ok(next)
     })();
     if let Err(error) = fs::remove_file(&temporary)
-        && error.kind() != std::io::ErrorKind::NotFound {
-            eprintln!("MCP grants temporary cleanup: {error}");
-        }
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        eprintln!("MCP grants temporary cleanup: {error}");
+    }
     result
 }
 pub fn add_grant(

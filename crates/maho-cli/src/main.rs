@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 #[path = "cli/schedule_command.rs"]
 mod schedule_command;
 

@@ -10,7 +10,23 @@ pub fn real_session_path(path: &Path) -> PathBuf {
     } else {
         std::env::current_dir().unwrap_or_default().join(path)
     };
-    std::fs::canonicalize(&absolute).unwrap_or(absolute)
+    // Canonicalize the deepest existing ancestor so the result is identical before and after the
+    // path (or its parent directories) is created; otherwise symlinked temp roots (macOS /var) and
+    // Windows short names / verbatim prefixes make the same target spell two different ways.
+    let mut tail = Vec::new();
+    let mut base = absolute.as_path();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(base) {
+            return tail.iter().rev().fold(real, |acc, part| acc.join(part));
+        }
+        match (base.parent(), base.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_owned());
+                base = parent;
+            }
+            _ => return absolute,
+        }
+    }
 }
 pub fn move_lock_key(file: &Path) -> String {
     format!("session-move:{}", real_session_path(file).display())

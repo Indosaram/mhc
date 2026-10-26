@@ -25,6 +25,9 @@ fn info() -> SkillMcpClientInfo {
         ..Default::default()
     }
 }
+// The shared upstream fixture hashes POSIX path spellings; Windows resolves `/fixture/...` against
+// the current drive, so the digest is only comparable on Unix.
+#[cfg(unix)]
 #[test]
 fn declaration_identity_shared_fixture() {
     let identity = json!({"sourcePath":"/fixture/project/skills/a/mcp.json","sourceKind":"sidecar","projectRoot":"/fixture/project","serverName":"probe","raw":{"type":"stdio","command":"tool","args":["--serve"],"cwd":"./work","env":{"TOKEN":"${TOKEN}","NODE_OPTIONS":"--no-warnings"}},"cwdBase":"/fixture/project"});

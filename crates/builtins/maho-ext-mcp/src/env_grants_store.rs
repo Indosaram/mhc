@@ -185,7 +185,7 @@ pub fn list(path: &Path) -> Vec<(String, Grant)> {
 /// Latest-snapshot reconciliation. Counter resets, missed generations and invalid reads revoke conservatively.
 #[derive(Default)]
 pub struct GrantObserver {
-    previous: Option<(GrantSnapshot, Option<std::time::SystemTime>)>,
+    previous: Option<(GrantSnapshot, Option<std::time::SystemTime>, Option<Vec<u8>>)>,
 }
 impl GrantObserver {
     pub fn reconcile(&mut self, path: &Path) -> Option<GrantObservation> {
@@ -196,18 +196,19 @@ impl GrantObserver {
         let modified = std::fs::metadata(path)
             .ok()
             .and_then(|metadata| metadata.modified().ok());
-        let conservative = self.previous.as_ref().is_some_and(|(old, stamp)| {
+        let conservative = self.previous.as_ref().is_some_and(|(old, stamp, _)| {
             !valid
                 || snapshot.generation > old.generation.saturating_add(1)
                 || snapshot.generation < old.generation
                 || (modified != *stamp && snapshot.generation <= old.generation)
         });
-        let unchanged = self.previous.as_ref().is_some_and(|(old, stamp)| {
-            *stamp == modified
-                && declaration_digest(&serde_json::to_value(old).expect("snapshot"))
-                    == declaration_digest(&serde_json::to_value(&snapshot).expect("snapshot"))
-        });
-        self.previous = Some((snapshot.clone(), modified));
+        // Compare the raw bytes, not the parsed snapshot: an invalid file parses to the same empty
+        // snapshot as a reset, and two writes can share one mtime on coarse-timestamp filesystems.
+        let unchanged = self
+            .previous
+            .as_ref()
+            .is_some_and(|(_, stamp, old_bytes)| *stamp == modified && *old_bytes == bytes);
+        self.previous = Some((snapshot.clone(), modified, bytes));
         if unchanged {
             None
         } else {
