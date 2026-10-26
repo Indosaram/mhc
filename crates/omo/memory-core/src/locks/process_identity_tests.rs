@@ -99,12 +99,13 @@ fn bsd_start_identity_preserves_the_ps_probe_until_a_safe_binding_exists() {
     assert!(value.starts_with("ps-lstart:"));
 }
 
-/// Windows keeps its pre-existing unavailable identity: the pinned `kernel32` `GetProcessTimes`
-/// replacement is FFI with no safe binding in the workspace.
+/// Windows resolves the creation FILETIME in process via `GetProcessTimes`.
 #[cfg(target_os = "windows")]
 #[test]
-fn windows_start_identity_stays_unavailable_without_a_safe_binding() {
-    assert_eq!(get_process_start_identity(std::process::id()), None);
+fn windows_start_identity_resolves_the_creation_filetime() {
+    let value = get_process_start_identity(std::process::id())
+        .expect("GetProcessTimes resolves the current process");
+    assert!(value.starts_with("windows-process-creation-filetime:"));
 }
 
 #[cfg(target_os = "linux")]

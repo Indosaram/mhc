@@ -333,16 +333,22 @@ pub fn resolve_provenance(runtime: &ProvenanceRuntime) -> Provenance {
 mod tests {
     use super::*;
 
+    // A rooted path without a drive is not absolute on Windows, so the fixture root carries one there.
+    #[cfg(windows)]
+    const FIXTURE_ROOT: &str = "C:/tmp";
+    #[cfg(not(windows))]
+    const FIXTURE_ROOT: &str = "/tmp";
+
     fn workspace_table() -> Vec<ProvenanceWorkspace> {
         vec![
-            ProvenanceWorkspace { name: "Path workspace".into(), paths: vec!["/tmp".into()], git_owners: vec![] },
+            ProvenanceWorkspace { name: "Path workspace".into(), paths: vec![FIXTURE_ROOT.into()], git_owners: vec![] },
             ProvenanceWorkspace { name: "Owner workspace".into(), paths: vec![], git_owners: vec!["example-owner".into()] },
         ]
     }
 
     fn runtime(remote: Option<&'static str>) -> ProvenanceRuntime {
         ProvenanceRuntime {
-            cwd: PathBuf::from("/tmp/example-project"),
+            cwd: PathBuf::from(format!("{FIXTURE_ROOT}/example-project")),
             env: BTreeMap::new(),
             workspaces: Some(workspace_table()),
             load_workspaces: None,

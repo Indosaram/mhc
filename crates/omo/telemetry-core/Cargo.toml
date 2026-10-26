@@ -27,6 +27,9 @@ url.workspace = true
 uuid = { workspace = true, features = ["v4", "v7"] }
 maho-utils.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 filetime.workspace = true
 pretty_assertions.workspace = true
