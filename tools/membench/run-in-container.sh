@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs inside one benchmark container: one agent CLI, one fixed mass-ulw DAG, one result.
+# Runs inside one benchmark container: one agent CLI, one fixed workflow DAG, one result.
 # Usage: run-in-container.sh <mhc|omo> <tag>
 # The container's own cgroup is /sys/fs/cgroup, so every process the agent spawns is counted.
 # Writes /out/<tag>.samples (every 0.2s: epoch memory.current anon file nprocs),
@@ -19,7 +19,7 @@ for f in a b c; do seq 1 40 | sed "s/^/$f line /" > "$W/work/$f.txt"; done
 ) &
 SAMPLER=$!
 
-PROMPT="mass-ulw 스킬을 사용해서 workflow 도구로 아래 고정 DAG를 정확히 한 번 실행해. 노드를 추가하거나 바꾸지 마.
+PROMPT="workflow 도구로 아래 고정 DAG를 정확히 한 번 실행해. 노드를 추가하거나 바꾸지 마.
 - a: $W/work/a.txt 를 읽고 한 문장으로 요약 (category quick)
 - b: $W/work/b.txt 를 읽고 한 문장으로 요약 (category quick)
 - c: $W/work/c.txt 를 읽고 한 문장으로 요약 (category quick)

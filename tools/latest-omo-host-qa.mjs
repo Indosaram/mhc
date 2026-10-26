@@ -56,10 +56,10 @@
 //                   EMPTY isolated agent dir, so `<agent_dir>/skills` contributes nothing; the
 //                   packaged root is the only possible source. On the host socket:
 //                     {"id":1,"type":"open_session","cwd":"<home>/project"}
-//                     {"id":2,"type":"prompt","sessionId":"<sid>","message":"mass ulw: ..."}
+//                     {"id":2,"type":"prompt","sessionId":"<sid>","message":"ulw-plan: ..."}
 //                     {"id":3,"type":"get_entries","sessionId":"<sid>"}
-//     observable  a session entry with `customType == "omo-mass-ulw:skill-pointer"` whose text
-//                 names `<install>/skills/mass-ulw/SKILL.md` - the OMO component's own pointer,
+//     observable  a session entry with `customType == "omo-ulw-plan:skill-pointer"` whose text
+//                 names `<install>/skills/ulw-plan/SKILL.md` - the OMO component's own pointer,
 //                 emitted from the root `omo_mount.rs` resolved. A generic `skills/list` line is
 //                 NOT this proof (it reads the app-server loader, a different seam).
 //     cleanup     the driver owns the host as a child (await its exit); rm -rf the isolated home;
@@ -584,8 +584,8 @@ async function scenarioMountedSkills(ctx) {
 		return { status: "blocked", blocker: "mounted-skills: --install <staged tree> is required (tools/package-native.mjs --skill-source latest)", artifacts, cleanup_ok: true };
 	}
 	const skillsRoot = join(ctx.install, "skills");
-	if (!existsSync(join(skillsRoot, "mass-ulw", "SKILL.md"))) {
-		return { status: "blocked", blocker: `mounted-skills: ${skillsRoot}/mass-ulw/SKILL.md is absent from the staged tree`, artifacts, cleanup_ok: true };
+	if (!existsSync(join(skillsRoot, "ulw-plan", "SKILL.md"))) {
+		return { status: "blocked", blocker: `mounted-skills: ${skillsRoot}/ulw-plan/SKILL.md is absent from the staged tree`, artifacts, cleanup_ok: true };
 	}
 	const home = newHome();
 	const env = isolatedEnv(home);
@@ -633,12 +633,12 @@ async function scenarioMountedSkills(ctx) {
 		receipt.openResponse = opened;
 		receipt.session = opened?.data?.sessionId ?? null;
 		if (receipt.session) {
-			await client.request({ type: "prompt", sessionId: receipt.session, message: "mass ulw: add a tiny feature" });
+			await client.request({ type: "prompt", sessionId: receipt.session, message: "ulw-plan: add a tiny feature" });
 			const entries = await client.request({ type: "get_entries", sessionId: receipt.session });
-			const pointer = (entries?.data?.entries ?? []).find((entry) => entry?.customType === "omo-mass-ulw:skill-pointer");
+			const pointer = (entries?.data?.entries ?? []).find((entry) => entry?.customType === "omo-ulw-plan:skill-pointer");
 			receipt.pointer = pointer ? JSON.stringify(pointer).slice(0, 2000) : null;
 			const text = pointer ? JSON.stringify(pointer) : "";
-			ok = text.includes(`${skillsRoot}/mass-ulw/SKILL.md`) && existsSync(join(skillsRoot, "mass-ulw", "SKILL.md"));
+			ok = text.includes(`${skillsRoot}/ulw-plan/SKILL.md`) && existsSync(join(skillsRoot, "ulw-plan", "SKILL.md"));
 			detail = `session=${receipt.session} pointer=${pointer ? "present" : "absent"} namesRoot=${ok}`;
 		} else {
 			detail = "the host answered no sessionId to open_session";
@@ -668,7 +668,7 @@ async function scenarioMountedSkills(ctx) {
 	const cleanupOk = receipt.cleanup.gracefulExit === true && receipt.cleanup.socketGone === true && receipt.cleanup.homeRemoved === true && receipt.streamsComplete === true;
 	return {
 		status: ok && cleanupOk ? "pass" : "blocked",
-		blocker: ok && cleanupOk ? null : `mounted-skills: ${detail} cleanup=${JSON.stringify(receipt.cleanup)} (the OMO mount must emit its mass-ulw pointer from OMO_SENPI_SKILLS_ROOT)`,
+		blocker: ok && cleanupOk ? null : `mounted-skills: ${detail} cleanup=${JSON.stringify(receipt.cleanup)} (the OMO mount must emit its ulw-plan pointer from OMO_SENPI_SKILLS_ROOT)`,
 		artifacts,
 		cleanup_ok: cleanupOk,
 	};

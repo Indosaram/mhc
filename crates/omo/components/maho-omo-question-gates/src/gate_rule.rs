@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-/// Headers agreed with ulw-plan and mass-ulw; all fit the host's 12-character limit.
+/// Headers agreed with ulw-plan and the workflow-graph planners; all fit the host's 12-character limit.
 pub const PINNED_GATE_HEADERS: [&str; 4] = ["Approval", "Authorize", "승인", "권한"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

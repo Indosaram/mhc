@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mhc vs OmO memory benchmark: the same fixed mass-ulw DAG, each run alone in a fresh container.
+# mhc vs OmO memory benchmark: the same fixed workflow DAG, each run alone in a fresh container.
 # Usage: tools/membench/bench.sh            (1 warm-up + 3 measured runs per agent, alternating)
 # Env:   RUNS=3          measured runs per agent
 #        AGENTS="mhc omo"

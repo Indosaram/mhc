@@ -21,7 +21,7 @@
 - **Your existing setup just works.** mhc reads the same `~/.omo` config, models, auth and agents as OmO.
 - **Everything included.** Subagents, `ultrawork` / `ulw-loop` workflows, long-term memory, LSP, ast-grep, MCP, web search and builtin skills ship in the release.
 - **Any model.** Anthropic, OpenAI, Gemini, DeepSeek, Qwen, Kimi, ZAI, MiniMax, OpenRouter, Ollama, Bedrock, Azure and more.
-- **A fraction of the memory.** On the same `mass-ulw` workflow (3 parallel child agents + join), mhc peaked at 83-86 MB of anonymous memory and OmO at 1356-1398 MB, about 16x less, in the same wall time. Method, raw numbers and how to rerun it: [docs/memory-benchmark.md](docs/memory-benchmark.md).
+- **A fraction of the memory.** On the same fixed workflow DAG (3 parallel child agents + join), in a historical measurement, mhc peaked at 83-86 MB of anonymous memory and OmO at 1356-1398 MB, about 16x less, in the same wall time. Method, raw numbers and how to rerun it: [docs/memory-benchmark.md](docs/memory-benchmark.md).
 
 ## Privacy and safety defaults
 
