@@ -170,7 +170,9 @@ mod tests {
         assert_eq!(properties["provider"], "openai");
         assert_eq!(properties["model_id"], "gpt-5.6-sol");
         assert_eq!(properties["subscription"], true);
-        assert!(!properties.to_string().contains("raw-session"));
+        // Upstream omo-native-handoff-hint.test.ts rejects the raw JSON value,
+        // not the substring deliberately retained by its injected fake hasher.
+        assert!(!properties.to_string().contains("\"raw-session\""));
     }
 
     #[test]

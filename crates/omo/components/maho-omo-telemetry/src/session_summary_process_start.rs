@@ -64,38 +64,43 @@ fn ps_start_time(pid: u32) -> Option<String> {
 
 /// Seconds since the epoch of a `ps -o lstart=` line: `Sat Oct 18 05:00:00 2026`.
 fn parse_lstart(text: &str) -> Option<i64> {
-    let parts: Vec<&str> = text.split_whitespace().collect();
-    let [_weekday, month, day, clock, year] = parts.as_slice() else {
+    // Match thread/gateway/process-identity.ts: weekday is a shape, not a calendar check.
+    let (weekday, rest) = text.trim().split_once(' ')?;
+    let weekday = weekday.as_bytes();
+    if weekday.len() != 3
+        || !weekday[0].is_ascii_uppercase()
+        || !weekday[1..].iter().all(u8::is_ascii_lowercase)
+    {
         return None;
+    }
+    let (month, rest) = rest.split_once(' ')?;
+    let (day, rest) = rest.trim_start_matches(' ').split_once(' ')?;
+    let (clock, year) = rest.split_once(' ')?;
+    let digits = |value: &str, min: usize, max: usize| {
+        (min..=max).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_digit())
     };
+    if !digits(day, 1, 2) || !digits(year, 4, 4) {
+        return None;
+    }
     let month = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ]
     .iter()
-    .position(|name| name == month)? as i64
+    .position(|name| *name == month)? as u32
         + 1;
     let day: i64 = day.parse().ok()?;
-    let year: i64 = year.parse().ok()?;
-    let mut clock = clock.split(':');
-    let hour: i64 = clock.next()?.parse().ok()?;
-    let minute: i64 = clock.next()?.parse().ok()?;
-    let second: i64 = clock.next()?.parse().ok()?;
-    if clock.next().is_some()
-        || !(1..=31).contains(&day)
-        || !(0..=23).contains(&hour)
-        || !(0..=59).contains(&minute)
-        || !(0..=60).contains(&second)
-    {
+    let year: i32 = year.parse().ok()?;
+    let parts: Vec<&str> = clock.split(':').collect();
+    if parts.len() != 3 || !parts.iter().all(|part| digits(part, 2, 2)) {
         return None;
     }
-    // Days from civil (Howard Hinnant).
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
+    let hour: i64 = parts[0].parse().ok()?;
+    let minute: i64 = parts[1].parse().ok()?;
+    let second: i64 = parts[2].parse().ok()?;
+    // Date.UTC normalizes overflow and interprets years 00..99 as 1900..1999.
+    let year = if year < 100 { year + 1900 } else { year };
+    let start = chrono::NaiveDate::from_ymd_opt(year, month, 1)?.and_hms_opt(0, 0, 0)?;
+    Some(start.and_utc().timestamp() + (day - 1) * 86_400 + hour * 3_600 + minute * 60 + second)
 }
 
 #[cfg(test)]
@@ -131,13 +136,17 @@ mod tests {
     fn lstart_parsing_is_utc_and_strict() {
         assert_eq!(parse_lstart("Sun Oct 18 05:00:00 2026\n"), Some(1_792_299_600));
         assert_eq!(parse_lstart("  Thu Oct  8 05:00:00 2026  "), Some(1_791_435_600));
+        // Upstream thread/gateway/process-identity.ts uses Date.UTC normalization.
+        assert_eq!(parse_lstart("Xyz Oct 18 05:00:00 2026"), Some(1_792_299_600));
+        assert_eq!(parse_lstart("Sat Oct 18 25:00:00 2026"), Some(1_792_371_600));
+        assert_eq!(parse_lstart("Sat Oct 32 05:00:00 2026"), Some(1_793_509_200));
         for invalid in [
             "",
             "Sat Oct 18 05:00:00",
-            "Xyz Oct 18 05:00:00 2026",
-            "Sat Oct 18 25:00:00 2026",
+            "xyz Oct 18 05:00:00 2026",
+            "Sat Xxx 18 05:00:00 2026",
             "Sat Oct 18 05:00 2026",
-            "Sat Oct 32 05:00:00 2026",
+            "Sat Oct 18 5:00:00 2026",
         ] {
             assert_eq!(parse_lstart(invalid), None, "{invalid:?}");
         }

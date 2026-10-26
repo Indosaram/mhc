@@ -265,7 +265,7 @@ mod tests {
                 "$session_id":"hashed-session","provider":"openai","model_id":"gpt-5.6-sol",
                 "input_tokens":11.0,"output_tokens":22.0,"cache_read_tokens":3.0,"cache_write_tokens":4.0,
                 "reasoning_tokens":5.0,"total_tokens":40.0,"cost_1e4":1235.0,"cost_usd":0.1235,
-                "turn_index":7,"sample_rate":0.05,"session_role":"root"
+                "turn_index":7.0,"sample_rate":0.05,"session_role":"root"
             })
         );
         assert_eq!(turn.cost_1e4, 1235.0);

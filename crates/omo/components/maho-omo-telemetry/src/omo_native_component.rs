@@ -915,6 +915,12 @@ mod tests {
             .filter(|key| *key != "timezone")
             .collect();
         expected.extend([
+            // Common attribution keys from upstream event-schemas.ts (schema v4).
+            "ci",
+            "event_id",
+            "install_hash",
+            "machine_hash",
+            "surface",
             "$process_person_profile",
             "package_version",
             "platform",
@@ -1155,6 +1161,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let (mut component, messages) = component(t.path());
         component.is_config_enabled = Arc::new(|_| false);
+        component.options.is_config_enabled = Some(Arc::clone(&component.is_config_enabled));
         let mut api = api();
         component.register(&mut api);
         dispatch(&api, start(), &context(t.path(), "disabled")).await;

@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::internal::validate::{Field, Node, boolean, defaulted, number, number_between, strict_object};
+use crate::internal::validate::{Field, Node, boolean, defaulted, number_between, strict_object};
 
 pub const TELEMETRY_HARNESS_SUPPORT: [(&str, &[&str]); 2] = [
     ("telemetry.enabled", &["native"]),
@@ -34,7 +34,7 @@ pub fn omo_telemetry_settings_schema() -> Node {
         defaulted("enabled", boolean(), default_false),
         Field {
             key: "rawTurnSampleRate",
-            node: number(),
+            node: number_between(0.0, 1.0),
             default: None,
             required: false,
         },

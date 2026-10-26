@@ -180,9 +180,13 @@ async fn checkpoint_reload_and_opt_out_preserve_sequence_without_sending_revoked
     let rows = rows.lock().unwrap();
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[1]["ended_by"], "reload");
-    assert_eq!(rows[1]["summary_seq"], 1);
+    // Upstream omo-native-session-summary.test.ts starts a new epoch after opt-out;
+    // uniqueness is the (epoch, seq) pair, not a process-global sequence number.
+    assert_eq!(rows[1]["summary_seq"], 0);
     assert_eq!(rows[2]["ended_by"], "shutdown");
-    assert_eq!(rows[2]["summary_seq"], 2);
+    assert_eq!(rows[2]["summary_seq"], 1);
+    assert_ne!(rows[0]["summary_epoch"], rows[1]["summary_epoch"]);
+    assert_eq!(rows[1]["summary_epoch"], rows[2]["summary_epoch"]);
     assert_eq!(rows[2]["is_final"], true);
 }
 
@@ -246,7 +250,10 @@ async fn live_opt_out_gates_feature_and_summary_emissions() {
     let captured = Arc::clone(&rows);
     let opted_in = Arc::new(AtomicBool::new(true));
     let enabled = Arc::clone(&opted_in);
+    let consent_clock = Arc::new(std::sync::atomic::AtomicU64::new(10_000));
+    let read_clock = Arc::clone(&consent_clock);
     let options = SenpiTelemetryOptions {
+        consent_now: Some(Arc::new(move || read_clock.load(Ordering::SeqCst) as f64)),
         env: Some(env(dir.path())),
         state_dir: Some(dir.path().join("native")),
         transport_factory: Some(Arc::new(move |_, _| {
@@ -275,6 +282,8 @@ async fn live_opt_out_gates_feature_and_summary_emissions() {
     .await;
     let before = rows.lock().unwrap().len();
     opted_in.store(false, Ordering::SeqCst);
+    // Upstream omo-native-component.test.ts advances the injected clock past the consent cache.
+    consent_clock.fetch_add(crate::omo_native_consent::CONSENT_CACHE_MS as u64 + 1, Ordering::SeqCst);
     dispatch(
         &api,
         ExtensionEvent::ToolResult(ToolResultEvent {

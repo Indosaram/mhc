@@ -522,8 +522,9 @@ mod tests {
         assert_eq!(props["aborted_turns"], 1.0);
         assert_eq!(props["custom_model_turns"], 2.0);
         assert_eq!(props["model_count"], 5);
-        assert_eq!(props["other_turns"], 1.0);
-        assert_eq!(props["other_cost_usd"], 0.0001);
+        // session-summary-window.ts keeps the top three models, leaving two one-turn models.
+        assert_eq!(props["other_turns"], 2.0);
+        assert_eq!(props["other_cost_usd"], 0.0002);
     }
 
     #[test]

@@ -166,6 +166,9 @@ fn sendable(
 
 fn names(dir: &Path) -> Vec<String> {
     crate::session_summary_files::list_names(dir)
+        .into_iter()
+        .filter(|name| name.ends_with(".json"))
+        .collect()
 }
 
 fn read(path: &Path) -> Option<Value> {

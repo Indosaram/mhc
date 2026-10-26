@@ -275,14 +275,18 @@ async fn two_concurrent_turns_never_share_an_id_and_each_event_keeps_its_own_pai
     );
     let first = start(&transport, None);
     let second = start(&transport, None);
-    let (open, gate) = tokio::sync::oneshot::channel::<()>();
+    // Upstream: packages/telemetry-core/src/otel-turn-span.test.ts lines 168-196
+    let (open1, gate1) = tokio::sync::oneshot::channel::<()>();
+    let (open2, gate2) = tokio::sync::oneshot::channel::<()>();
 
     let first_run = first.run_async(async {
-        let _ = gate.await;
+        let _ = gate1.await;
         capture(&transport, "feature_used", json!({ "feature": "f0" }));
+        let _ = open2.send(());
     });
     let second_run = second.run_async(async {
-        let _ = open.send(());
+        let _ = open1.send(());
+        let _ = gate2.await;
         capture(&transport, "feature_used", json!({ "feature": "f1" }));
     });
     let joined = tokio::time::timeout(std::time::Duration::from_secs(5), async {

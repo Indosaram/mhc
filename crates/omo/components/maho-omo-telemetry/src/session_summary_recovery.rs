@@ -381,8 +381,8 @@ impl SummaryRecovery {
     /// One pass over the summary directory; safe to run concurrently from any number of processes.
     pub async fn sweep(&self) {
         self.sweep_leftovers();
-        self.sweep_pending().await;
         self.sweep_windows().await;
+        self.sweep_pending().await;
     }
 
     pub fn adopt(
@@ -612,7 +612,7 @@ mod tests {
             .unwrap();
         let recovery = recovery(&fixture);
         recovery.sweep().await;
-        assert_eq!(fixture.published.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.published.load(Ordering::SeqCst), 1);
         assert!(matches!(
             fixture.storage.read_window("session"),
             ReadResult::Value(record) if record.seq == 1 && record.window.is_none()

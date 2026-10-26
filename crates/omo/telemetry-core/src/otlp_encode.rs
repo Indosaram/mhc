@@ -39,8 +39,8 @@ fn hex_digit(byte: u8) -> u8 {
     }
 }
 
-const INT64_MIN: f64 = -9_223_372_036_854_775_808.0;
-const INT64_LIMIT: f64 = 9_223_372_036_854_775_808.0;
+pub const INT64_MIN: f64 = -9_223_372_036_854_775_808.0;
+pub const INT64_LIMIT: f64 = 9_223_372_036_854_775_808.0;
 
 /// `ApiAnyValue` -> proto `AnyValue`; an integer outside int64 has no `int_value` form.
 pub fn any_value(value: &Value) -> AnyValue {
