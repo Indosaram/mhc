@@ -49,9 +49,10 @@ pub fn statfs(path: &Path) -> std::io::Result<FileSystemStatistics> {
             if libc::statfs(path.as_ptr(), info.as_mut_ptr()) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            Ok(FileSystemStatistics {
-                filesystem_type: info.assume_init().f_type,
-            })
+            // `statfs.f_type` is i64 on Linux but u32 on macOS; the conversion is a no-op only on Linux.
+            #[allow(clippy::useless_conversion)]
+            let filesystem_type = i64::from(info.assume_init().f_type);
+            Ok(FileSystemStatistics { filesystem_type })
         }
     })
 }
