@@ -2146,14 +2146,30 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             {
                 return Ok(maho_ext_api::ApplyCompactionResult::Stale);
             }
+            // The extension treats `Rejected` as terminal and sends no feedback end of its own, so
+            // a rejection before execution must close a running feedback operation here; otherwise
+            // its `compaction_start` never gets a `compaction_end` and the TUI keeps showing
+            // "Compacting...".
+            let reject_before_execution = |error_message: &str| {
+                maho_ext_api::ExtensionContextActions::end_compaction(
+                    self,
+                    maho_ext_api::EndCompactionOptions {
+                        reason: options.reason,
+                        signal: options.signal.clone(),
+                        aborted: None,
+                        error_message: Some(error_message.to_owned()),
+                    },
+                );
+                Ok(maho_ext_api::ApplyCompactionResult::Rejected)
+            };
             if options
                 .signal
                 .as_ref()
                 .is_some_and(maho_ext_api::AbortSignal::is_aborted)
             {
-                return Ok(maho_ext_api::ApplyCompactionResult::Rejected);
+                return reject_before_execution("Compaction cancelled");
             }
-            if let Some(anchor) = options.expected_warm_anchor {
+            if let Some(anchor) = options.expected_warm_anchor.clone() {
                 let snapshot = crate::compaction::warm_anchor::WarmAnchorSnapshot {
                     first_kept_entry_id: anchor.first_kept_entry_id,
                     prefix_entry_ids: anchor.prefix_entry_ids,
@@ -2169,10 +2185,10 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
                 }
             }
             let Ok(_admission) = session.prompt_admission.try_lock() else {
-                return Ok(maho_ext_api::ApplyCompactionResult::Rejected);
+                return reject_before_execution("Compaction did not apply: session busy");
             };
             if session.is_streaming() {
-                return Ok(maho_ext_api::ApplyCompactionResult::Rejected);
+                return reject_before_execution("Compaction did not apply: session busy");
             }
             let _work = session.work_barrier.begin();
             let model = session.model();
@@ -21132,6 +21148,50 @@ mod tests {
                 .with_session_manager(|manager| manager.entries())
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn rejected_extension_compaction_ends_its_feedback_operation() {
+        use maho_ext_api::ExtensionContextActions;
+        let session = test_session();
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        let ends = Arc::new(Mutex::new(Vec::new()));
+        let observed = ends.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::CompactionEnd { error_message, .. } = event {
+                lock(&observed).push(error_message.clone());
+            }
+        }));
+        let signal = actions
+            .begin_compaction(maho_ext_api::BeginCompactionOptions {
+                reason: maho_ext_api::CompactionReason::Extension,
+            })
+            .unwrap();
+        let admission = session.prompt_admission.lock().await;
+        let result = actions
+            .apply_compaction(
+                maho_ext_api::CompactionResult {
+                    summary: "summary".into(),
+                    first_kept_entry_id: String::new(),
+                    tokens_before: 100,
+                    details: None,
+                },
+                maho_ext_api::ApplyCompactionOptions {
+                    reason: maho_ext_api::CompactionReason::Extension,
+                    expected_revision: None,
+                    expected_warm_anchor: None,
+                    signal: Some(signal),
+                },
+            )
+            .await
+            .unwrap();
+        drop(admission);
+        assert_eq!(result, maho_ext_api::ApplyCompactionResult::Rejected);
+        assert_eq!(
+            *lock(&ends),
+            [Some("Compaction did not apply: session busy".to_owned())]
+        );
+        assert!(!session.is_compacting());
     }
 
     #[tokio::test]
