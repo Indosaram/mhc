@@ -851,9 +851,45 @@
       },
       {
         "path": "scripts/perfection/check-accent-stripes.ts",
-        "bytes": 2163,
-        "sha256": "ea8164a2f73ae4fa74a25c8a222c841f7d2754f0984302a88cdce2df83dc1b28",
+        "bytes": 1567,
+        "sha256": "ef85ce285202f52649637512b433b1f054be262f577a43f6196715ba9bde9b41",
         "source": "packages/shared-skills/skills/frontend/scripts/perfection/check-accent-stripes.ts"
+      },
+      {
+        "path": "scripts/perfection/check-draft-guard.ts",
+        "bytes": 1894,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/check-draft-guard.ts"
+      },
+      {
+        "path": "scripts/perfection/collect-files.ts",
+        "bytes": 1612,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/collect-files.ts"
+      },
+      {
+        "path": "scripts/perfection/draft-guard/findings.ts",
+        "bytes": 789,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/draft-guard/findings.ts"
+      },
+      {
+        "path": "scripts/perfection/draft-guard/lint.ts",
+        "bytes": 1447,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/draft-guard/lint.ts"
+      },
+      {
+        "path": "scripts/perfection/draft-guard/rules.ts",
+        "bytes": 3010,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/draft-guard/rules.ts"
+      },
+      {
+        "path": "scripts/perfection/draft-guard/text-nodes.ts",
+        "bytes": 5819,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/draft-guard/text-nodes.ts"
       },
       {
         "path": "scripts/perfection/fixtures/accent-stripes/negative/exempt-states.css",
@@ -1010,6 +1046,96 @@
         "bytes": 157,
         "sha256": "9c6a6baca6cfa60307b7d74df70c3c4bf1576141b326bb6aa2fd4549e7fc000c",
         "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/accent-stripes/positive/tailwind-pseudo.html"
+      },
+      {
+        "path": "scripts/perfection/fixtures/draft-guard/negative/attr-lookalikes.tsx",
+        "bytes": 292,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/draft-guard/negative/attr-lookalikes.tsx"
+      },
+      {
+        "path": "scripts/perfection/fixtures/draft-guard/negative/bound-values.tsx",
+        "bytes": 496,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/draft-guard/negative/bound-values.tsx"
+      },
+      {
+        "path": "scripts/perfection/fixtures/draft-guard/negative/const-generics.tsx",
+        "bytes": 119,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/draft-guard/negative/const-generics.tsx"
+      },
+      {
+        "path": "scripts/perfection/fixtures/draft-guard/negative/generics.tsx",
+        "bytes": 330,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/draft-guard/negative/generics.tsx"
+      },
+      {
+        "path": "scripts/perfection/fixtures/draft-guard/negative/measured-stats.html",
+        "bytes": 249,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/draft-guard/negative/measured-stats.html"
+      },
+      {
+        "path": "scripts/perfection/fixtures/draft-guard/negative/plain-copy.html",
+        "bytes": 373,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/draft-guard/negative/plain-copy.html"
+      },
+      {
+        "path": "scripts/perfection/fixtures/draft-guard/negative/state-copy.html",
+        "bytes": 388,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/draft-guard/negative/state-copy.html"
+      },
+      {
+        "path": "scripts/perfection/fixtures/draft-guard/positive/attribute-edges.html",
+        "bytes": 319,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/draft-guard/positive/attribute-edges.html"
+      },
+      {
+        "path": "scripts/perfection/fixtures/draft-guard/positive/components.tsx",
+        "bytes": 512,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/draft-guard/positive/components.tsx"
+      },
+      {
+        "path": "scripts/perfection/fixtures/draft-guard/positive/decorative-badge.vue",
+        "bytes": 158,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/draft-guard/positive/decorative-badge.vue"
+      },
+      {
+        "path": "scripts/perfection/fixtures/draft-guard/positive/emoji-icons.tsx",
+        "bytes": 169,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/draft-guard/positive/emoji-icons.tsx"
+      },
+      {
+        "path": "scripts/perfection/fixtures/draft-guard/positive/jsx-edges.tsx",
+        "bytes": 54,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/draft-guard/positive/jsx-edges.tsx"
+      },
+      {
+        "path": "scripts/perfection/fixtures/draft-guard/positive/promo-copy.html",
+        "bytes": 191,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/draft-guard/positive/promo-copy.html"
+      },
+      {
+        "path": "scripts/perfection/fixtures/draft-guard/positive/promo-copy.tsx",
+        "bytes": 149,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/draft-guard/positive/promo-copy.tsx"
+      },
+      {
+        "path": "scripts/perfection/fixtures/draft-guard/positive/vanity-stats.html",
+        "bytes": 193,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/fixtures/draft-guard/positive/vanity-stats.html"
       },
       {
         "path": "scripts/perfection/lighthouse-audit.py",
@@ -1562,6 +1688,12 @@
         "source": "packages/shared-skills/skills/programming/references/typescript/error-handling.md"
       },
       {
+        "path": "references/typescript/oxc-lint.md",
+        "bytes": 7814,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/typescript/oxc-lint.md"
+      },
+      {
         "path": "references/typescript/tsconfig-strict.md",
         "bytes": 4921,
         "sha256": null,
@@ -1686,6 +1818,48 @@
         "bytes": 4486,
         "sha256": null,
         "source": "packages/shared-skills/skills/programming/scripts/typescript/new-project.ts"
+      },
+      {
+        "path": "scripts/typescript/oxc/.oxfmtrc.json",
+        "bytes": 256,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/typescript/oxc/.oxfmtrc.json"
+      },
+      {
+        "path": "scripts/typescript/oxc/.oxlintrc.json",
+        "bytes": 1702,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/typescript/oxc/.oxlintrc.json"
+      },
+      {
+        "path": "scripts/typescript/oxc/lint/oxlint-plugin/LICENSE",
+        "bytes": 1070,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/typescript/oxc/lint/oxlint-plugin/LICENSE"
+      },
+      {
+        "path": "scripts/typescript/oxc/lint/oxlint-plugin/index.js",
+        "bytes": 288,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/typescript/oxc/lint/oxlint-plugin/index.js"
+      },
+      {
+        "path": "scripts/typescript/oxc/lint/oxlint-plugin/no-em-dash-copy.js",
+        "bytes": 785,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/typescript/oxc/lint/oxlint-plugin/no-em-dash-copy.js"
+      },
+      {
+        "path": "scripts/typescript/oxc/lint/oxlint-plugin/require-suppression-reason.js",
+        "bytes": 2381,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/typescript/oxc/lint/oxlint-plugin/require-suppression-reason.js"
+      },
+      {
+        "path": "scripts/typescript/oxc/tsconfig.json",
+        "bytes": 794,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/typescript/oxc/tsconfig.json"
       }
     ],
     "refactor": [

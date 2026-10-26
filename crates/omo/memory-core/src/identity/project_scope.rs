@@ -198,8 +198,14 @@ impl ProjectIdentityResolver {
                 if self.mode == AutoIdentityMode::Git {
                     self.probe.prepare_git_layout(current).await;
                 }
+                // Path-mode ids hash the raw (session-relative) path, like the session's own
+                // identity; `current` is canonical, which differs under a symlinked cwd (macOS /var).
+                let id_dir = match current.strip_prefix(&scope.session) {
+                    Ok(rest) if self.mode == AutoIdentityMode::Path => self.cwd.join(rest),
+                    _ => current.to_path_buf(),
+                };
                 let found = match resolve_auto_identity_with_probe(
-                    current,
+                    &id_dir,
                     &self.env,
                     self.mode,
                     self.probe.as_ref(),

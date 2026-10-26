@@ -156,12 +156,11 @@ impl GitLockScans for ProductionLockScans {
                     let value = value.parse::<u32>().ok()?;
                     saw_self |= value == std::process::id();
                     pid = Some(value);
-                } else if let Some(name) = line.strip_prefix('n') {
-                    if let Some(pid) = pid.filter(|pid| *pid != std::process::id()) {
-                        if Path::new(name).starts_with(&root) {
-                            users.push(pid);
-                        }
-                    }
+                } else if let Some(name) = line.strip_prefix('n')
+                    && let Some(pid) = pid.filter(|pid| *pid != std::process::id())
+                    && Path::new(name).starts_with(&root)
+                {
+                    users.push(pid);
                 }
             }
             saw_self.then_some(users)

@@ -39,7 +39,7 @@ pub fn offered_toolkits(context: &BTreeMap<String, String>) -> BTreeSet<String> 
 pub fn parse_grant(value: &Value) -> Option<Value> {
     let endpoint = value.get("endpoint")?.as_str()?;
     let token_file = value.get("tokenFile")?.as_str()?;
-    if !Path::new(token_file).is_absolute() {
+    if !Path::new(token_file).has_root() {
         return None;
     }
     let url = url::Url::parse(endpoint).ok()?;
