@@ -19,6 +19,6 @@
 
 ## Left as-is (flag)
 
-- Pre-existing base issue: the scaffold's `bun run check` ends with `bun test`, which exits 1 when there are no tests ("No tests found"). Not changed (out of scope); a one-word fix would be `bun test --pass-with-no-tests`.
+- Pre-existing base issue: the scaffold's `bun run check` ended with `bun test`, which exits 1 when there are no tests ("No tests found"). *(Integrator, 2026-10-27: fixed; the scaffold's `check` and `test` scripts now run `bun test --pass-with-no-tests`, verified with Bun 1.4.4.)*
 - `scripts/typescript/oxc/lint/oxlint-plugin/require-suppression-reason.js` line 2 provenance comment names an intermediate repo (`sisyphuslabs/omo-relay`). Kept, because it is attribution for MIT-licensed third-party code, not product text; remove only if counsel agrees.
 - `references/go/backend-stack.md` mentions "Codex APIs" describing a third-party proxy; incidental, kept. `references/rust-ub` "Miri is the oracle" is generic English.

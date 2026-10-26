@@ -71,9 +71,9 @@ const pkg = {
     fmt: "oxfmt",
     "fmt:check": "oxfmt --check",
     typecheck: "tsc --noEmit",
-    check: "bun run lint && bun run fmt:check && bun run typecheck && bun test",
+    check: "bun run lint && bun run fmt:check && bun run typecheck && bun test --pass-with-no-tests",
     "check:fix": "oxlint --type-aware --fix && oxfmt",
-    test: "bun test",
+    test: "bun test --pass-with-no-tests",
   },
   dependencies: {
     hono: "^4.12.5",
