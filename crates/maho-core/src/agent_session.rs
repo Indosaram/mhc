@@ -8571,7 +8571,10 @@ impl AgentSession {
     async fn finish_provider_turn(&self) -> Result<(), String> {
         loop {
             let mut retry_owned_deferred_queue = false;
-            Box::pin(self.finish_provider_turn_retrying(&mut retry_owned_deferred_queue)).await?;
+            let outcome =
+                Box::pin(self.finish_provider_turn_retrying(&mut retry_owned_deferred_queue)).await;
+            self.end_unhandled_retry();
+            outcome?;
             // senpi `retryExhaustionAllowsQueuedContinuation`: provider-timeout retries skip their
             // first queue poll so steering cannot be consumed by another doomed retry request. Once
             // the retry owner stops retrying, hand that retained queue back to the continuation
@@ -8595,6 +8598,32 @@ impl AgentSession {
             }
             Box::pin(self.agent.continue_with_queued_messages(Default::default())).await;
         }
+    }
+
+    /// senpi `retryOutcome === "not-handled" && _retryAttempt > 0`: a retried attempt that failed
+    /// with an error the retry loop did not take over (no longer retryable, overflow, user abort)
+    /// still closes the retry episode; without it the TUI keeps showing "Retrying (n/m)".
+    fn end_unhandled_retry(&self) {
+        let attempt = self.state().retry_attempt;
+        if attempt == 0 {
+            return;
+        }
+        let Some(final_error) = self
+            .messages()
+            .iter()
+            .rev()
+            .find_map(AgentMessage::as_assistant)
+            .and_then(|message| message.error_message.clone())
+        else {
+            return;
+        };
+        self.state().retry_attempt = 0;
+        self.reset_hint_tier_state();
+        self.emit(AgentSessionEvent::AutoRetryEnd {
+            success: false,
+            attempt,
+            final_error: Some(final_error),
+        });
     }
 
     /// The retry loop of senpi's `agent_end` handling. `retry_owned_deferred_queue` reports whether
@@ -31873,6 +31902,42 @@ mod tests {
         assert_eq!(branch[0]["message"]["role"], "user");
         assert_eq!(branch[1]["message"]["stopReason"], "error");
         assert_eq!(session.messages().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn non_retryable_failure_after_retry_ends_the_retry() {
+        let options = |error: &str| maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Error),
+            error_message: Some(error.to_owned()),
+            ..Default::default()
+        };
+        let session = retry_session(
+            vec![
+                maho_ai::providers::faux::faux_assistant_message("", options("overloaded_error")),
+                maho_ai::providers::faux::faux_assistant_message("", options("Permission denied")),
+            ],
+            3,
+        );
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if matches!(event, AgentSessionEvent::AutoRetryEnd { .. }) {
+                lock(&observed).push(event.clone());
+            }
+        }));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            session.prompt("input", Default::default()),
+        )
+        .await
+        .expect("bounded prompt")
+        .expect("prompt");
+        assert!(matches!(
+            lock(&events).as_slice(),
+            [AgentSessionEvent::AutoRetryEnd { success: false, attempt: 1, final_error: Some(error) }]
+                if error == "Permission denied"
+        ));
+        assert!(!session.is_retrying());
     }
 
     #[tokio::test]
