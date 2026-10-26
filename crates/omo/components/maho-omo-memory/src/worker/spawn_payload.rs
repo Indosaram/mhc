@@ -28,6 +28,8 @@ pub struct PrepareReflectionSpawnInput<'a> {
     pub load_extensions: Option<bool>,
     pub attempt: Option<u32>,
     pub hard_deadline_at: Option<f64>,
+    pub memory_root: Option<PathBuf>,
+    pub max_concurrent_runs: Option<usize>,
     pub next_attempt: Option<RunAttempt>,
     pub env: BTreeMap<String, String>,
     pub merge_policy: &'a str,
@@ -360,6 +362,8 @@ pub fn prepare_reflection_spawn(
         run_id: Some(input.run.run_id.clone()),
         attempt: input.attempt.unwrap_or(1),
         hard_deadline_at: input.hard_deadline_at.unwrap_or(input.now_ms + 900_000.0),
+        memory_root: input.memory_root,
+        max_concurrent_runs: input.max_concurrent_runs,
         category: input.category.into(),
         conversation_ids: input.run.request.conversation_ids.clone(),
         model: input.model.into(),
@@ -650,6 +654,8 @@ mod tests {
             load_extensions: None,
             attempt: None,
             hard_deadline_at: None,
+            memory_root: None,
+            max_concurrent_runs: None,
             next_attempt: None,
             env: Default::default(),
             merge_policy: "auto",
@@ -665,6 +671,26 @@ mod tests {
             },
             now_ms: 42.0,
         }
+    }
+    #[test]
+    fn reflection_spawn_copies_the_admission_metadata_into_its_arguments() {
+        let root = tempfile::tempdir().unwrap();
+        let (run, worktree, policy) = reflection_fixture(root.path());
+        let mut input = reflection_input(root.path(), &run, &worktree, &policy);
+        assert_eq!(
+            prepare_reflection_spawn(reflection_input(root.path(), &run, &worktree, &policy))
+                .unwrap()
+                .memory_root,
+            None
+        );
+        input.memory_root = Some(root.path().join("memory"));
+        input.max_concurrent_runs = Some(3);
+        let args = prepare_reflection_spawn(input).unwrap();
+        assert_eq!(
+            args.memory_root.as_deref(),
+            Some(root.path().join("memory").as_path())
+        );
+        assert_eq!(args.max_concurrent_runs, Some(3));
     }
     #[test]
     fn reflection_payload_metadata_and_retry() {
@@ -885,6 +911,7 @@ mod tests {
     fn payload() -> FactsPayload {
         FactsPayload {
             version: 1,
+            agreement_event_version: Some(1),
             identity: "agent".into(),
             today: "2026-10-02".into(),
             known_people: vec![],

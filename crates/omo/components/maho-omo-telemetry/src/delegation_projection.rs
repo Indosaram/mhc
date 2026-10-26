@@ -73,10 +73,17 @@ fn token_totals(props: &mut DelegationProperties, stats: Option<&TaskRunStats>) 
     }
 }
 
+/// A reported zero cost is a fact; an absent cost is not a zero. `cost_usd` therefore ships only
+/// alongside `cost_status: "reported"` or `"partial"` (a lower bound: some turns reported no cost),
+/// and a non-finite figure degrades to `invalid`.
 fn cost_of(props: &mut DelegationProperties, stats: Option<&TaskRunStats>) {
     let status = match stats.and_then(|s| s.cost_status) {
         Some(CostReportStatus::Reported) => match stats.and_then(|s| s.cost_usd) {
             Some(cost) if cost.is_finite() && cost >= 0.0 => { props.insert("cost_usd".into(), json!(cost)); "reported" }
+            Some(_) | None => "invalid",
+        },
+        Some(CostReportStatus::Partial) => match stats.and_then(|s| s.cost_usd) {
+            Some(cost) if cost.is_finite() && cost >= 0.0 => { props.insert("cost_usd".into(), json!(cost)); "partial" }
             Some(_) | None => "invalid",
         },
         Some(CostReportStatus::Invalid) => "invalid",
@@ -215,6 +222,36 @@ mod tests {
         record.run_stats.as_mut().expect("fixture stats").cost_usd = Some(0.0);
         let props = project(&record);
         assert_eq!(props["cost_usd"], 0.0); assert_eq!(props["cost_status"], "reported");
+    }
+    #[test]
+    fn partial_cost_ships_as_a_lower_bound() {
+        let mut record = record();
+        {
+            let stats = record.run_stats.as_mut().expect("fixture stats");
+            stats.cost_status = Some(CostReportStatus::Partial);
+            stats.cost_usd = Some(0.25);
+        }
+        let props = project(&record);
+        assert_eq!(props["cost_status"], "partial");
+        assert_eq!(props["cost_usd"], 0.25);
+        assert!(crate::delegation_schema::DELEGATION_COST_STATUSES.contains(&"partial"));
+    }
+    #[test]
+    fn invalid_partial_figure_degrades_to_invalid() {
+        let mut record = record();
+        {
+            let stats = record.run_stats.as_mut().expect("fixture stats");
+            stats.cost_status = Some(CostReportStatus::Partial);
+            stats.cost_usd = Some(f64::NAN);
+        }
+        let props = project(&record);
+        assert_eq!(props["cost_status"], "invalid");
+        assert!(!props.contains_key("cost_usd"));
+        let mut missing = super::tests::record();
+        let stats = missing.run_stats.as_mut().expect("fixture stats");
+        stats.cost_status = Some(CostReportStatus::Partial);
+        stats.cost_usd = None;
+        assert_eq!(project(&missing)["cost_status"], "invalid");
     }
     #[test]
     fn missing_stats_falls_back_to_wall_clock() {

@@ -187,19 +187,19 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 8793,
-        "sha256": "8ffc0504459d6fbc1cbc03e4203b2f5c8da63c241ff775f61dc4806e3396e8cf",
+        "bytes": 8551,
+        "sha256": "85ce606a8bb285c42ef756667986cff9fde414993bb254e6ee3519eb772bcaec",
         "source": "packages/shared-skills/skills/browser/SKILL.md"
       },
       {
         "path": "references/commands.md",
-        "bytes": 6304,
+        "bytes": 6118,
         "sha256": null,
         "source": "packages/shared-skills/skills/browser/references/commands.md"
       },
       {
         "path": "references/install.md",
-        "bytes": 5957,
+        "bytes": 5853,
         "sha256": null,
         "source": "packages/shared-skills/skills/browser/references/install.md"
       },
@@ -241,25 +241,25 @@
       },
       {
         "path": "scripts/browser-doctor.mjs",
-        "bytes": 4224,
+        "bytes": 4219,
         "sha256": null,
         "source": "packages/shared-skills/skills/browser/scripts/browser-doctor.mjs"
       },
       {
         "path": "scripts/browser-engine-guard.mjs",
-        "bytes": 20543,
+        "bytes": 3548,
         "sha256": null,
         "source": "packages/shared-skills/skills/browser/scripts/browser-engine-guard.mjs"
       },
       {
         "path": "scripts/browser-install.mjs",
-        "bytes": 2872,
+        "bytes": 2870,
         "sha256": null,
         "source": "packages/shared-skills/skills/browser/scripts/browser-install.mjs"
       },
       {
         "path": "scripts/omowright.mjs",
-        "bytes": 1861,
+        "bytes": 1725,
         "sha256": null,
         "source": "packages/shared-skills/skills/browser/scripts/omowright.mjs"
       }
@@ -2133,15 +2133,33 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 59187,
+        "bytes": 72981,
         "sha256": null,
         "source": "packages/shared-skills/skills/ulw-research/SKILL.md"
       },
       {
         "path": "references/deliverable-phase.md",
-        "bytes": 18176,
+        "bytes": 36050,
         "sha256": null,
         "source": "packages/shared-skills/skills/ulw-research/references/deliverable-phase.md"
+      },
+      {
+        "path": "references/fact-ledger-grammar.md",
+        "bytes": 6421,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/references/fact-ledger-grammar.md"
+      },
+      {
+        "path": "references/fact-ledger.md",
+        "bytes": 12524,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/references/fact-ledger.md"
+      },
+      {
+        "path": "references/fidelity-claim-kinds.md",
+        "bytes": 3846,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/references/fidelity-claim-kinds.md"
       },
       {
         "path": "references/latex-report.md",
@@ -2151,25 +2169,43 @@
       },
       {
         "path": "references/report-gates.md",
-        "bytes": 7658,
+        "bytes": 24030,
         "sha256": null,
         "source": "packages/shared-skills/skills/ulw-research/references/report-gates.md"
       },
       {
         "path": "references/report-visualization.md",
-        "bytes": 15093,
-        "sha256": "f4305c64f122c4a776564755f3c2ca1d91ef5d13f8484cdd3fdd9d249d168ffd",
+        "bytes": 15603,
+        "sha256": "e3ea103136975c0a46c482b0ecea15640ec49988ee84b5d1de47fd9c4baee48c",
         "source": "packages/shared-skills/skills/ulw-research/references/report-visualization.md"
       },
       {
+        "path": "references/unit-rules.md",
+        "bytes": 16592,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/references/unit-rules.md"
+      },
+      {
+        "path": "scripts/claim-kinds.mjs",
+        "bytes": 7286,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/claim-kinds.mjs"
+      },
+      {
+        "path": "scripts/claims-index.mjs",
+        "bytes": 5160,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/claims-index.mjs"
+      },
+      {
         "path": "scripts/cli-support.mjs",
-        "bytes": 3553,
+        "bytes": 4025,
         "sha256": null,
         "source": "packages/shared-skills/skills/ulw-research/scripts/cli-support.mjs"
       },
       {
         "path": "scripts/contracts.mjs",
-        "bytes": 11535,
+        "bytes": 21884,
         "sha256": null,
         "source": "packages/shared-skills/skills/ulw-research/scripts/contracts.mjs"
       },
@@ -2198,6 +2234,132 @@
         "source": "packages/shared-skills/skills/ulw-research/scripts/entry-guard.mjs"
       },
       {
+        "path": "scripts/fact-commands-meaning.mjs",
+        "bytes": 12057,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fact-commands-meaning.mjs"
+      },
+      {
+        "path": "scripts/fact-commands-polish.mjs",
+        "bytes": 7791,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fact-commands-polish.mjs"
+      },
+      {
+        "path": "scripts/fact-commands-verify.mjs",
+        "bytes": 10226,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fact-commands-verify.mjs"
+      },
+      {
+        "path": "scripts/fact-commands.mjs",
+        "bytes": 14182,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fact-commands.mjs"
+      },
+      {
+        "path": "scripts/fact-derive.mjs",
+        "bytes": 4263,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fact-derive.mjs"
+      },
+      {
+        "path": "scripts/fact-expr.mjs",
+        "bytes": 4434,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fact-expr.mjs"
+      },
+      {
+        "path": "scripts/fact-fill.mjs",
+        "bytes": 10674,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fact-fill.mjs"
+      },
+      {
+        "path": "scripts/fact-ledger-kinds.mjs",
+        "bytes": 15572,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fact-ledger-kinds.mjs"
+      },
+      {
+        "path": "scripts/fact-ledger-schema.mjs",
+        "bytes": 11405,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fact-ledger-schema.mjs"
+      },
+      {
+        "path": "scripts/fact-ledger.mjs",
+        "bytes": 5497,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fact-ledger.mjs"
+      },
+      {
+        "path": "scripts/fact-locate.mjs",
+        "bytes": 11571,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fact-locate.mjs"
+      },
+      {
+        "path": "scripts/fact-pairs.mjs",
+        "bytes": 8206,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fact-pairs.mjs"
+      },
+      {
+        "path": "scripts/fact-recompute.mjs",
+        "bytes": 4580,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fact-recompute.mjs"
+      },
+      {
+        "path": "scripts/fidelity-binding.mjs",
+        "bytes": 6486,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fidelity-binding.mjs"
+      },
+      {
+        "path": "scripts/fidelity-brief.mjs",
+        "bytes": 6390,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fidelity-brief.mjs"
+      },
+      {
+        "path": "scripts/fidelity-claims.mjs",
+        "bytes": 4746,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fidelity-claims.mjs"
+      },
+      {
+        "path": "scripts/fidelity-lexicon.mjs",
+        "bytes": 8040,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fidelity-lexicon.mjs"
+      },
+      {
+        "path": "scripts/fidelity-records.mjs",
+        "bytes": 9222,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fidelity-records.mjs"
+      },
+      {
+        "path": "scripts/fidelity-state.mjs",
+        "bytes": 2070,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fidelity-state.mjs"
+      },
+      {
+        "path": "scripts/fidelity-trace.mjs",
+        "bytes": 5092,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fidelity-trace.mjs"
+      },
+      {
+        "path": "scripts/fidelity-values.mjs",
+        "bytes": 14019,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/fidelity-values.mjs"
+      },
+      {
         "path": "scripts/format-extract-css.mjs",
         "bytes": 5150,
         "sha256": null,
@@ -2208,6 +2370,12 @@
         "bytes": 10219,
         "sha256": null,
         "source": "packages/shared-skills/skills/ulw-research/scripts/format-extract.mjs"
+      },
+      {
+        "path": "scripts/gates-fidelity.mjs",
+        "bytes": 5848,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/gates-fidelity.mjs"
       },
       {
         "path": "scripts/gates-figures.mjs",
@@ -2223,27 +2391,33 @@
       },
       {
         "path": "scripts/gates-static.mjs",
-        "bytes": 6922,
+        "bytes": 7662,
         "sha256": null,
         "source": "packages/shared-skills/skills/ulw-research/scripts/gates-static.mjs"
       },
       {
         "path": "scripts/gates-structure.mjs",
-        "bytes": 4438,
+        "bytes": 4445,
         "sha256": null,
         "source": "packages/shared-skills/skills/ulw-research/scripts/gates-structure.mjs"
       },
       {
         "path": "scripts/gates-text.mjs",
-        "bytes": 8140,
+        "bytes": 6556,
         "sha256": null,
         "source": "packages/shared-skills/skills/ulw-research/scripts/gates-text.mjs"
       },
       {
         "path": "scripts/html-lite.mjs",
-        "bytes": 8868,
+        "bytes": 8915,
         "sha256": null,
         "source": "packages/shared-skills/skills/ulw-research/scripts/html-lite.mjs"
+      },
+      {
+        "path": "scripts/html-markup.mjs",
+        "bytes": 6950,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/html-markup.mjs"
       },
       {
         "path": "scripts/layout-probe.mjs",
@@ -2252,10 +2426,76 @@
         "source": "packages/shared-skills/skills/ulw-research/scripts/layout-probe.mjs"
       },
       {
+        "path": "scripts/lexicon.mjs",
+        "bytes": 2522,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/lexicon.mjs"
+      },
+      {
+        "path": "scripts/md-lite.mjs",
+        "bytes": 7650,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/md-lite.mjs"
+      },
+      {
+        "path": "scripts/meaning-check.mjs",
+        "bytes": 9608,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/meaning-check.mjs"
+      },
+      {
+        "path": "scripts/numerals.mjs",
+        "bytes": 11085,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/numerals.mjs"
+      },
+      {
         "path": "scripts/outcome.mjs",
-        "bytes": 10363,
+        "bytes": 10784,
         "sha256": null,
         "source": "packages/shared-skills/skills/ulw-research/scripts/outcome.mjs"
+      },
+      {
+        "path": "scripts/particles-ko.mjs",
+        "bytes": 4857,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/particles-ko.mjs"
+      },
+      {
+        "path": "scripts/placeholder.mjs",
+        "bytes": 8254,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/placeholder.mjs"
+      },
+      {
+        "path": "scripts/polish-apply.mjs",
+        "bytes": 6730,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/polish-apply.mjs"
+      },
+      {
+        "path": "scripts/polish-diff.mjs",
+        "bytes": 1675,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/polish-diff.mjs"
+      },
+      {
+        "path": "scripts/polish-project.mjs",
+        "bytes": 5829,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/polish-project.mjs"
+      },
+      {
+        "path": "scripts/polish-rules.mjs",
+        "bytes": 9824,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/polish-rules.mjs"
+      },
+      {
+        "path": "scripts/rational.mjs",
+        "bytes": 5226,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/rational.mjs"
       },
       {
         "path": "scripts/repair-tracker.mjs",
@@ -2265,15 +2505,93 @@
       },
       {
         "path": "scripts/report-tools-commands.mjs",
-        "bytes": 11132,
+        "bytes": 12182,
         "sha256": null,
         "source": "packages/shared-skills/skills/ulw-research/scripts/report-tools-commands.mjs"
       },
       {
         "path": "scripts/report-tools.mjs",
-        "bytes": 1837,
+        "bytes": 2224,
         "sha256": null,
         "source": "packages/shared-skills/skills/ulw-research/scripts/report-tools.mjs"
+      },
+      {
+        "path": "scripts/sentence-split.mjs",
+        "bytes": 2979,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/sentence-split.mjs"
+      },
+      {
+        "path": "scripts/source-commands.mjs",
+        "bytes": 7730,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/source-commands.mjs"
+      },
+      {
+        "path": "scripts/source-snapshot.mjs",
+        "bytes": 8042,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/source-snapshot.mjs"
+      },
+      {
+        "path": "scripts/text-normalize.mjs",
+        "bytes": 2568,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/text-normalize.mjs"
+      },
+      {
+        "path": "scripts/text-similarity.mjs",
+        "bytes": 986,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/text-similarity.mjs"
+      },
+      {
+        "path": "scripts/unit-algebra.mjs",
+        "bytes": 4838,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/unit-algebra.mjs"
+      },
+      {
+        "path": "scripts/unit-errors.mjs",
+        "bytes": 841,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/unit-errors.mjs"
+      },
+      {
+        "path": "scripts/unit-metadata.mjs",
+        "bytes": 1531,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/unit-metadata.mjs"
+      },
+      {
+        "path": "scripts/unit-pairs.mjs",
+        "bytes": 3569,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/unit-pairs.mjs"
+      },
+      {
+        "path": "scripts/unit-precision.mjs",
+        "bytes": 2478,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/unit-precision.mjs"
+      },
+      {
+        "path": "scripts/unit-rules-shapes.mjs",
+        "bytes": 3957,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/unit-rules-shapes.mjs"
+      },
+      {
+        "path": "scripts/unit-rules.mjs",
+        "bytes": 10693,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/unit-rules.mjs"
+      },
+      {
+        "path": "scripts/units.mjs",
+        "bytes": 6301,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/units.mjs"
       }
     ],
     "visual-qa": [
@@ -2507,8 +2825,8 @@
         },
         {
           "path": "browser/SKILL.md",
-          "bytes": 8793,
-          "sha256": "8ffc0504459d6fbc1cbc03e4203b2f5c8da63c241ff775f61dc4806e3396e8cf"
+          "bytes": 8551,
+          "sha256": "85ce606a8bb285c42ef756667986cff9fde414993bb254e6ee3519eb772bcaec"
         },
         {
           "path": "browser/references/commands.md",
@@ -4092,12 +4410,27 @@
         },
         {
           "path": "ulw-research/SKILL.md",
-          "bytes": 59187,
+          "bytes": 72981,
           "sha256": null
         },
         {
           "path": "ulw-research/references/deliverable-phase.md",
-          "bytes": 18176,
+          "bytes": 36050,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/references/fact-ledger-grammar.md",
+          "bytes": 6421,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/references/fact-ledger.md",
+          "bytes": 12524,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/references/fidelity-claim-kinds.md",
+          "bytes": 3846,
           "sha256": null
         },
         {
@@ -4107,22 +4440,37 @@
         },
         {
           "path": "ulw-research/references/report-gates.md",
-          "bytes": 7658,
+          "bytes": 24030,
           "sha256": null
         },
         {
           "path": "ulw-research/references/report-visualization.md",
-          "bytes": 15093,
-          "sha256": "f4305c64f122c4a776564755f3c2ca1d91ef5d13f8484cdd3fdd9d249d168ffd"
+          "bytes": 15603,
+          "sha256": "e3ea103136975c0a46c482b0ecea15640ec49988ee84b5d1de47fd9c4baee48c"
+        },
+        {
+          "path": "ulw-research/references/unit-rules.md",
+          "bytes": 16592,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/claim-kinds.mjs",
+          "bytes": 7286,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/claims-index.mjs",
+          "bytes": 5160,
+          "sha256": null
         },
         {
           "path": "ulw-research/scripts/cli-support.mjs",
-          "bytes": 3553,
+          "bytes": 4025,
           "sha256": null
         },
         {
           "path": "ulw-research/scripts/contracts.mjs",
-          "bytes": 11535,
+          "bytes": 21884,
           "sha256": null
         },
         {
@@ -4146,6 +4494,111 @@
           "sha256": null
         },
         {
+          "path": "ulw-research/scripts/fact-commands-meaning.mjs",
+          "bytes": 12057,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fact-commands-polish.mjs",
+          "bytes": 7791,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fact-commands-verify.mjs",
+          "bytes": 10226,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fact-commands.mjs",
+          "bytes": 14182,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fact-derive.mjs",
+          "bytes": 4263,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fact-expr.mjs",
+          "bytes": 4434,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fact-fill.mjs",
+          "bytes": 10674,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fact-ledger-kinds.mjs",
+          "bytes": 15572,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fact-ledger-schema.mjs",
+          "bytes": 11405,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fact-ledger.mjs",
+          "bytes": 5497,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fact-locate.mjs",
+          "bytes": 11571,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fact-pairs.mjs",
+          "bytes": 8206,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fact-recompute.mjs",
+          "bytes": 4580,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fidelity-binding.mjs",
+          "bytes": 6486,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fidelity-brief.mjs",
+          "bytes": 6390,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fidelity-claims.mjs",
+          "bytes": 4746,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fidelity-lexicon.mjs",
+          "bytes": 8040,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fidelity-records.mjs",
+          "bytes": 9222,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fidelity-state.mjs",
+          "bytes": 2070,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fidelity-trace.mjs",
+          "bytes": 5092,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/fidelity-values.mjs",
+          "bytes": 14019,
+          "sha256": null
+        },
+        {
           "path": "ulw-research/scripts/format-extract-css.mjs",
           "bytes": 5150,
           "sha256": null
@@ -4153,6 +4606,11 @@
         {
           "path": "ulw-research/scripts/format-extract.mjs",
           "bytes": 10219,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/gates-fidelity.mjs",
+          "bytes": 5848,
           "sha256": null
         },
         {
@@ -4167,22 +4625,27 @@
         },
         {
           "path": "ulw-research/scripts/gates-static.mjs",
-          "bytes": 6922,
+          "bytes": 7662,
           "sha256": null
         },
         {
           "path": "ulw-research/scripts/gates-structure.mjs",
-          "bytes": 4438,
+          "bytes": 4445,
           "sha256": null
         },
         {
           "path": "ulw-research/scripts/gates-text.mjs",
-          "bytes": 8140,
+          "bytes": 6556,
           "sha256": null
         },
         {
           "path": "ulw-research/scripts/html-lite.mjs",
-          "bytes": 8868,
+          "bytes": 8915,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/html-markup.mjs",
+          "bytes": 6950,
           "sha256": null
         },
         {
@@ -4191,8 +4654,63 @@
           "sha256": null
         },
         {
+          "path": "ulw-research/scripts/lexicon.mjs",
+          "bytes": 2522,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/md-lite.mjs",
+          "bytes": 7650,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/meaning-check.mjs",
+          "bytes": 9608,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/numerals.mjs",
+          "bytes": 11085,
+          "sha256": null
+        },
+        {
           "path": "ulw-research/scripts/outcome.mjs",
-          "bytes": 10363,
+          "bytes": 10784,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/particles-ko.mjs",
+          "bytes": 4857,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/placeholder.mjs",
+          "bytes": 8254,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/polish-apply.mjs",
+          "bytes": 6730,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/polish-diff.mjs",
+          "bytes": 1675,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/polish-project.mjs",
+          "bytes": 5829,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/polish-rules.mjs",
+          "bytes": 9824,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/rational.mjs",
+          "bytes": 5226,
           "sha256": null
         },
         {
@@ -4202,12 +4720,77 @@
         },
         {
           "path": "ulw-research/scripts/report-tools-commands.mjs",
-          "bytes": 11132,
+          "bytes": 12182,
           "sha256": null
         },
         {
           "path": "ulw-research/scripts/report-tools.mjs",
-          "bytes": 1837,
+          "bytes": 2224,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/sentence-split.mjs",
+          "bytes": 2979,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/source-commands.mjs",
+          "bytes": 7730,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/source-snapshot.mjs",
+          "bytes": 8042,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/text-normalize.mjs",
+          "bytes": 2568,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/text-similarity.mjs",
+          "bytes": 986,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/unit-algebra.mjs",
+          "bytes": 4838,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/unit-errors.mjs",
+          "bytes": 841,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/unit-metadata.mjs",
+          "bytes": 1531,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/unit-pairs.mjs",
+          "bytes": 3569,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/unit-precision.mjs",
+          "bytes": 2478,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/unit-rules-shapes.mjs",
+          "bytes": 3957,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/unit-rules.mjs",
+          "bytes": 10693,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/units.mjs",
+          "bytes": 6301,
           "sha256": null
         },
         {
@@ -4295,8 +4878,8 @@
         },
         {
           "path": "browser/SKILL.md",
-          "bytes": 8793,
-          "sha256": "8ffc0504459d6fbc1cbc03e4203b2f5c8da63c241ff775f61dc4806e3396e8cf"
+          "bytes": 8551,
+          "sha256": "85ce606a8bb285c42ef756667986cff9fde414993bb254e6ee3519eb772bcaec"
         },
         {
           "path": "browser/references/commands.md",
@@ -5406,9 +5989,9 @@
     "invocation": "bun tools/package-native.mjs --binary <mhc> --output <install> --skill-source latest --git-bash-binary <omo-git-bash> --omowright-runtime <materialized runtime dir>; the installed tree is then exercised through the native app-server: `mhc app-server --listen stdio://` with MAHO_CODING_AGENT_DIR=<install> and JSON-RPC `skills/list` (crates/maho-server/src/app_server/skills.rs). The OMO packaged root itself (OMO_SENPI_SKILLS_ROOT -> builtin_skills_root()) is consumed by the onboarding/init-deep-advisor/mass-ulw skill pointers and by the telemetry skill_loaded event (crates/omo/components/maho-omo-telemetry/src/omo_native_tools.rs::builtin_skill_name); it has no CLI/RPC list surface of its own."
   },
   "contentBinding": {
-    "files": 373,
+    "files": 426,
     "declaredSha256": 45,
-    "unbound": 328,
+    "unbound": 381,
     "mechanism": "The overlay declares each selected skill's complete file set; staging refuses a set that differs (a missing or extra file is `latest overlay is incomplete`). Every staged file is hashed into the package manifest at stage time, and every non-null declared sha256 is checked against the overlay bytes before staging. The declared bindings for the remaining files are completed at the global final gate (the authoring window forbids hash computation)."
   }
 }

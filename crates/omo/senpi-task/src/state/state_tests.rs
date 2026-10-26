@@ -356,6 +356,8 @@ fn expected_table(status: TaskStatus, event: Event) -> (bool, TaskStatus, &'stat
         (TaskStatus::Running, Event::Cancel) => (true, TaskStatus::Cancelled, APPLIED),
         (TaskStatus::Running, Event::Interrupt) => (true, TaskStatus::Interrupted, APPLIED),
         (TaskStatus::Running, Event::Start | Event::Lose) => (false, TaskStatus::Running, INVALID),
+        (TaskStatus::Paused, Event::Cancel) => (true, TaskStatus::Cancelled, APPLIED),
+        (TaskStatus::Paused, _) => (false, TaskStatus::Paused, INVALID),
         (terminal, _) => (false, terminal, LATE),
     }
 }
@@ -915,7 +917,7 @@ fn model_messageability_table_is_exhaustive() {
             count += 1;
         }
     }
-    assert_eq!(count, 35);
+    assert_eq!(count, TASK_STATUSES.len() * RESIDENCY_STATES.len());
 }
 
 #[test]
@@ -1263,4 +1265,110 @@ fn run_stats_non_numeric_cost_rejects_record() {
     record["run_stats"] =
         json!({ "runtime_ms": 10, "turns": 1, "tool_calls": 0, "cost_usd": "0.42" });
     assert!(parse_task_record(&record, "/tmp/record.json", &mut Vec::new()).is_err());
+}
+
+// ---- state/run-pause.test.ts ----
+#[test]
+fn pause_and_unpause_preserve_identity_epoch_and_started_at() {
+    let before = running();
+    let paused = transition_task_record(&before, &TaskTransition::Pause { timestamp: ts("pause") });
+    assert!(paused.applied);
+    assert_eq!(paused.record.status, TaskStatus::Paused);
+    assert!(!paused.record.status.is_terminal());
+    assert_eq!(paused.record.terminal_at, None);
+    assert_eq!(paused.record.notification, before.notification);
+    assert_eq!(paused.record.task_id, before.task_id);
+    let resumed = transition_task_record(&paused.record, &TaskTransition::Unpause { timestamp: ts("resume") });
+    assert!(resumed.applied);
+    assert_eq!(resumed.record.status, TaskStatus::Running);
+    assert_eq!(resumed.record.started_at, before.started_at);
+}
+
+#[test]
+fn paused_cancel_is_terminal_but_stale_turns_cannot_end_pause() {
+    let paused = transition_task_record(&running(), &TaskTransition::Pause { timestamp: ts("pause") }).record;
+    for transition in [complete("old", None), fail("aborted"), interrupt("old"), start(), lose("old"), TaskTransition::Pause { timestamp: ts("again") }] {
+        let result = transition_task_record(&paused, &transition);
+        assert!(!result.applied);
+        assert_eq!(result.record, paused);
+        assert_eq!(result.audit.type_name(), "invalid_transition_ignored");
+    }
+    let cancelled = transition_task_record(&paused, &cancel(None));
+    assert!(cancelled.applied);
+    assert_eq!(cancelled.record.status, TaskStatus::Cancelled);
+    assert_eq!(cancelled.record.terminal_at.as_deref(), Some("2026-07-06T00:00:01.000Z"));
+    assert!(!transition_task_record(&cancelled.record, &TaskTransition::Unpause { timestamp: ts("resume") }).applied);
+    for residency in RESIDENCY_STATES {
+        assert_eq!(messageability(TaskStatus::Paused, residency), Messageability::NotContinuable);
+    }
+}
+
+#[test]
+fn legacy_run_start_is_fixed_across_notification_epoch_moves() {
+    assert_eq!(current_run_start_epoch(None), None);
+    let mut value = serde_json::to_value(pending_record()).expect("json");
+    value.as_object_mut().expect("object").remove("run_start_epoch");
+    let mut record = parse_task_record(&value, "legacy.json", &mut Vec::new()).expect("parse");
+    for epoch in [0, 1, 7] {
+        record.notification.run_epoch = epoch;
+        assert_eq!(current_run_start_epoch(Some(&record)), Some(LEGACY_RUN_START_EPOCH));
+        assert!(serde_json::to_value(&record).expect("json").get("run_start_epoch").is_none());
+    }
+    record.run_start_epoch = 8;
+    assert_eq!(current_run_start_epoch(Some(&record)), Some(8));
+}
+
+#[test]
+fn fallback_provenance_round_trips_but_derived_phase_is_not_persisted() {
+    let mut record = pending_record();
+    record.parent_model = Some("parent/model".into());
+    record.parent_model_fallback = Some(ParentModelFallback {
+        from_model: "category/model".into(), reason: ParentModelFallbackReason::UsageLimit,
+        detail: Some("limit".into()), resets: Some("tomorrow".into()),
+        interrupted_tools: Some(vec!["bash".into()]), at: "now".into(),
+        phase: Some(ParentModelFallbackPhase::Switching),
+    });
+    let value = crate::store::to_storable_task_record(&record).expect("json");
+    assert!(value["parent_model_fallback"].get("phase").is_none());
+    let parsed = parse_task_record(&value, "fallback.json", &mut Vec::new()).expect("parse");
+    record.parent_model_fallback.as_mut().expect("fallback").phase = None;
+    assert_eq!(parsed, record);
+    for reason in PARENT_MODEL_FALLBACK_REASONS {
+        let mut value = value.clone();
+        value["parent_model_fallback"]["reason"] = serde_json::to_value(reason).expect("json");
+        assert_eq!(parse_task_record(&value, "fallback.json", &mut Vec::new()).expect("parse").parent_model_fallback.expect("fallback").reason, reason);
+    }
+    for malformed in [json!(false), json!({"reason":"future"}), json!({"from_model":"x", "reason":"error", "at":3})] {
+        let mut value = value.clone();
+        value["parent_model_fallback"] = malformed;
+        assert!(parse_task_record(&value, "fallback.json", &mut Vec::new()).expect("task survives").parent_model_fallback.is_none());
+    }
+}
+
+#[test]
+fn partial_cost_and_run_tagged_live_stats_round_trip() {
+    let mut record = running();
+    record.run_stats = Some(TaskRunStats { cost_status: Some(CostReportStatus::Partial), cost_usd: Some(0.42), ..Default::default() });
+    let value = serde_json::to_value(&record).expect("json");
+    assert_eq!(value["run_stats"]["cost_status"], json!("partial"));
+    let parsed = parse_task_record(&value, "stats.json", &mut Vec::new()).expect("parse");
+    assert_eq!(parsed.run_stats, record.run_stats);
+    let live = LiveRunStats { run_start_epoch: 7, stats: record.run_stats.expect("stats") };
+    let value = serde_json::to_value(&live).expect("json");
+    assert_eq!(value["runStartEpoch"], json!(7));
+    assert_eq!(serde_json::from_value::<LiveRunStats>(value).expect("parse"), live);
+}
+
+#[test]
+fn session_quit_suspension_round_trips_and_has_readable_presentation() {
+    let mut record = running();
+    record.suspension_reason = Some(SuspensionReason::SessionQuit);
+    let value = serde_json::to_value(&record).expect("json");
+    assert_eq!(value["suspension_reason"], json!("session_quit"));
+    assert_eq!(parse_task_record(&value, "quit.json", &mut Vec::new()).expect("parse").suspension_reason, record.suspension_reason);
+    let presentation = recovery_presentation::recovery_presentation(&recovery_presentation::RecoveryRecord {
+        status: "running", suspension_reason: Some("session_quit"), ..Default::default()
+    }).expect("presentation");
+    assert_eq!(presentation.cause, "session quit");
+    assert_eq!(presentation.text, "resuming (session quit)");
 }

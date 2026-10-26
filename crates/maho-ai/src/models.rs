@@ -426,10 +426,10 @@ impl ModelsAuth for ProviderModelsAuth {
                             .as_ref()
                             .filter(|method| method.has_login())
                             .ok_or_else(unsupported)?;
-                        method
-                            .login(&provider_interaction)
-                            .await
-                            .map(Credential::ApiKey)
+                        method.login(&provider_interaction).await.map(|mut credential| {
+                            if method.key_optional() && credential.key.as_ref().is_some_and(|key| key.trim().is_empty()) { credential.key = None; }
+                            Credential::ApiKey(credential)
+                        })
                     }
                     AuthType::OAuth => {
                         let method = auth.oauth.as_ref().ok_or_else(unsupported)?;
@@ -447,9 +447,18 @@ impl ModelsAuth for ProviderModelsAuth {
                     )
                 })
             };
-            let credential = race_with_abort_signal(login, &signal)
+            let logged_in = race_with_abort_signal(login, &signal)
                 .await
                 .map_err(abort_error)??;
+            let key_optional = auth_type == AuthType::ApiKey
+                && auth.api_key.as_ref().is_some_and(|k| k.key_optional());
+            let credential = if key_optional {
+                crate::auth::pool::slots::without_blank_key(logged_in)
+            } else {
+                logged_in
+            };
+            crate::auth::pool::slots::assert_login_key_present(&credential)
+                .map_err(|err| ModelsError::new(ModelsErrorCode::Auth, err.to_string()))?;
             let flat = PooledCredential::from(credential.clone());
             let (receipt_tx, receipt_rx) = tokio::sync::oneshot::channel();
             self.credentials
@@ -1294,7 +1303,11 @@ fn merge_headers(
     let mut merged = base.cloned().unwrap_or_default();
     for (name, value) in overrides.into_iter().flatten() {
         // PERF-DIVERGENCE(senpi models.ts): upstream lowercases every existing key per override; this port compares ASCII names case-insensitively without allocating and keeps Unicode lowercasing only for non-ASCII names. The merged map is identical.
-        let lower = if name.is_ascii() { None } else { Some(name.to_lowercase()) };
+        let lower = if name.is_ascii() {
+            None
+        } else {
+            Some(name.to_lowercase())
+        };
         merged.retain(|existing, _| match &lower {
             None if existing.is_ascii() => !existing.eq_ignore_ascii_case(name),
             None => existing.to_lowercase() != name.to_lowercase(),
@@ -2138,6 +2151,15 @@ pub fn calculate_cost(model: &Model, usage: &mut Usage) -> UsageCost {
 
 /// Fills `usage.cost` using the cost card in force at a supplied Unix millisecond timestamp.
 pub fn calculate_cost_at(model: &Model, usage: &mut Usage, at_ms: i64) -> UsageCost {
+    if model.cost.unknown == Some(true) {
+        usage.cost.input = 0.0;
+        usage.cost.output = 0.0;
+        usage.cost.cache_read = 0.0;
+        usage.cost.cache_write = 0.0;
+        usage.cost.total = 0.0;
+        usage.cost_unknown = Some(true);
+        return usage.cost;
+    }
     let input_tokens = usage.input + usage.cache_read + usage.cache_write;
     let card = model_cost::cost_card_at(&model.cost, at_ms);
     let mut rates = ModelCostRates {

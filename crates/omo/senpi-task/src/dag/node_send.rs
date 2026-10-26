@@ -17,7 +17,8 @@ use crate::steering::{SendInput, SendOutcome};
 
 pub struct DagNodeSendResult {
     pub node_id: DagNodeId,
-    pub task_id: String,
+    pub task_id: Option<String>,
+    pub guidance_id: Option<String>,
     pub delivery: DagNodeDeliveryResult,
     pub queue_position: Option<usize>,
     pub settled: Option<std::thread::JoinHandle<Result<(), String>>>,
@@ -25,6 +26,7 @@ pub struct DagNodeSendResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DagNodeDeliveryResult {
+    Guidance,
     Steer,
     Revive,
     Queued,
@@ -69,6 +71,13 @@ pub fn send_to_dag_node(
             run_id,
             node_id,
         ));
+    }
+    if record.status == crate::dag::types::DagRunStatus::Paused
+        && record.pause.as_ref().is_some_and(|pause| pause.reason == "user_stop")
+    {
+        let pauses = crate::dag::paused_controls::DagPauseStore::from_store(options.store.clone());
+        let guidance = crate::dag::paused_controls::guide_paused_dag(options, run_id, message, Some(node_id.clone()), &pauses)?;
+        return Ok(DagNodeSendResult { node_id: node_id.clone(), task_id: None, guidance_id: Some(guidance.id), delivery: DagNodeDeliveryResult::Guidance, queue_position: None, settled: None });
     }
     let task_id = node.task_id.clone().ok_or_else(|| {
         control_error(
@@ -116,9 +125,18 @@ pub fn fold_send_outcome(
     let node_id = node.id.clone();
     let run_id = record.run_id.clone();
     match outcome {
+        SendOutcome::Held { .. } => Ok(DagNodeSendResult {
+            node_id,
+            task_id: Some(task_id.into()),
+            guidance_id: None,
+            delivery: DagNodeDeliveryResult::Queued,
+            queue_position: None,
+            settled: None,
+        }),
         SendOutcome::Queued { queue_position, .. } => Ok(DagNodeSendResult {
             node_id,
-            task_id: task_id.into(),
+            task_id: Some(task_id.into()),
+            guidance_id: None,
             delivery: DagNodeDeliveryResult::Queued,
             queue_position: Some(queue_position),
             settled: None,
@@ -144,7 +162,8 @@ pub fn fold_send_outcome(
                 })?;
             Ok(DagNodeSendResult {
                 node_id,
-                task_id: task_id.into(),
+                task_id: Some(task_id.into()),
+                guidance_id: None,
                 delivery: DagNodeDeliveryResult::Steer,
                 queue_position: None,
                 settled: None,
@@ -198,7 +217,8 @@ pub fn fold_send_outcome(
                 })?;
             Ok(DagNodeSendResult {
                 node_id,
-                task_id: task_id.into(),
+                task_id: Some(task_id.into()),
+                guidance_id: None,
                 delivery: DagNodeDeliveryResult::Revive,
                 queue_position: None,
                 settled: Some(settled),
@@ -259,6 +279,7 @@ fn clone_scheduler_options(options: &DagSchedulerOptions) -> DagSchedulerOptions
             }
         }),
         ancestry: options.ancestry,
+        resume_credential: options.resume_credential.clone(),
         node_spawn_policy: options.node_spawn_policy.clone(),
         subscriber_ring: options.subscriber_ring,
         pre_attached_tasks: None,
@@ -289,7 +310,10 @@ pub fn watch_revived_task(
             return Ok(());
         }
     };
-    if matches!(task.status, TaskStatus::Pending | TaskStatus::Running) {
+    if matches!(
+        task.status,
+        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused
+    ) {
         fail_revived_node(
             &options,
             &node_id,
@@ -377,7 +401,7 @@ fn revived_failure(status: TaskStatus, message: Option<&str>) -> (DagNodeErrorCo
             DagNodeErrorCode::TaskCancelled,
             message.unwrap_or("task was cancelled").into(),
         ),
-        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Completed => (
+        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused | TaskStatus::Completed => (
             DagNodeErrorCode::TaskError,
             "task in a non-terminal-failure status".into(),
         ),

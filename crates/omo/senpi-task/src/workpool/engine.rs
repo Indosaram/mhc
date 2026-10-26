@@ -9,6 +9,7 @@ pub struct WorkpoolEngine {
     pub store: WorkpoolStore,
     pub admission: std::sync::Arc<dyn WorkpoolAdmission + Send + Sync>,
     pub dispatcher: WorkpoolDispatcher,
+    attached_sessions: std::sync::Mutex<std::collections::BTreeSet<String>>,
     events: std::sync::Arc<dyn Fn(super::types::WorkpoolEvent) + Send + Sync>,
     aggregate_port: Option<std::sync::Arc<dyn super::aggregate::WorkpoolAggregatePort>>,
 }
@@ -28,11 +29,37 @@ impl WorkpoolEngine {
         let dispatcher = WorkpoolDispatcher::new(store.clone(), admission.clone(), emit.clone(), std::sync::Arc::new(move |pool| {
             policy.authorize_spawn(&pool.agent, &pool.parent_session_id)
         }));
-        Self { store, admission, dispatcher, events: emit, aggregate_port: None }
+        Self { store, admission, dispatcher, attached_sessions: Default::default(), events: emit, aggregate_port: None }
     }
 
+    pub fn attach(&self, session_id: &str, credential: Option<crate::pause::admission_barrier::ResumeCredential>) -> Result<(), WorkpoolError> {
+        let fresh = self.attached_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(session_id.into());
+        for pool in self.store.list_result()?.into_iter().filter(|pool| pool.parent_session_id == session_id) {
+            if fresh && pool.aggregate.is_some_and(|aggregate| aggregate.accepted == Some(true) && !aggregate.delivered) {
+                self.store.mutate(&pool.pool_id, |record| { let mut next = record.clone(); if let Some(aggregate) = &mut next.aggregate { aggregate.accepted = None; } next })?;
+            }
+            if pool.hold.is_none() { self.dispatcher.attach_with_credential(&pool.pool_id, credential.clone())?; }
+            self.flush_aggregate(&pool.pool_id)?;
+        }
+        Ok(())
+    }
     pub fn recover(&self) -> Result<(), WorkpoolError> {
         self.dispatcher.attach_all()
+    }
+
+    pub fn owned_task_ids(&self) -> Result<std::collections::BTreeSet<String>, WorkpoolError> {
+        Ok(self.store.list_result()?.into_iter().flat_map(|pool| {
+            pool.workers.into_iter().map(|worker| worker.task_id)
+                .chain(pool.items.into_iter().filter_map(|item| item.binding.map(|binding| binding.task_id))).collect::<Vec<_>>()
+        }).collect())
+    }
+
+    pub fn pause_for_run(&self, caller: &WorkpoolCaller, pool_id: &str, pause_seq: u64) -> Result<(), WorkpoolError> {
+        super::run_pause::PoolRunPause { store: &self.store, admission: self.admission.as_ref(), dispatcher: &self.dispatcher }.pause_for_run(caller, pool_id, pause_seq)
+    }
+
+    pub fn resume_for_run(&self, caller: &WorkpoolCaller, pool_id: &str, pause_seq: u64, credential: Option<crate::pause::admission_barrier::ResumeCredential>) -> Result<super::run_pause::ResumePoolResult, WorkpoolError> {
+        super::run_pause::PoolRunPause { store: &self.store, admission: self.admission.as_ref(), dispatcher: &self.dispatcher }.resume_for_run(caller, pool_id, pause_seq, credential)
     }
 
     pub fn dispose(&self) {
@@ -48,6 +75,10 @@ impl WorkpoolEngine {
 
     pub fn flush_aggregate(&self, pool_id: &str) -> Result<bool, WorkpoolError> {
         let pool = self.store.load(pool_id)?;
+        // A paused run holds its aggregate until Resume (`workpool/engine.ts` `flushAggregate`).
+        if pool.hold.is_some() || self.admission.delivery_held(&pool.root_session_id) {
+            return Ok(false);
+        }
         if pool.aggregate.is_some_and(|state| state.generation == pool.generation && (state.delivered || state.accepted == Some(true))) {
             return Ok(false);
         }
@@ -227,7 +258,7 @@ mod tests {
             if self.denied { Err(WorkpoolAdmissionError("spawn denied".into())) } else { Ok(()) }
         }
         fn has_free_slot(&self, _model: &str) -> bool { true }
-        fn request(&self, _input: Box<dyn WorkpoolRequest>) -> Box<dyn FnOnce() + Send> { Box::new(|| {}) }
+        fn request(&self, _input: Box<dyn WorkpoolRequest>) -> crate::workpool::ports::WorkpoolRequestHandle { crate::workpool::ports::WorkpoolRequestHandle::dispatched(Box::new(|| {})) }
         fn drain(&self) {}
         fn get(&self, _task_id: &str) -> Option<TaskRecord> { None }
         fn task_run_epoch(&self, _task_id: &str) -> Option<u32> { None }
@@ -302,6 +333,33 @@ mod tests {
         assert!(!engine.flush_aggregate(&pool.pool_id).expect("already delivered"));
     }
 
+    #[tokio::test]
+    async fn run_pause_persists_hold_and_rejects_stale_resume() {
+        let root = tempfile::tempdir().expect("state");
+        let mut engine = WorkpoolEngine::new(root.path(), std::sync::Arc::new(admission(false)));
+        let pool = engine.create(&caller(), &input()).expect("pool");
+        engine.pause_for_run(&caller(), &pool.pool_id, 4).expect("pause");
+        assert_eq!(engine.store.load(&pool.pool_id).expect("record").hold.expect("hold").pause_seq, 4);
+        let barrier = crate::pause::admission_barrier::AdmissionBarrier::new();
+        barrier.close("parent", 4);
+        let credential = barrier.resume("parent", 4, "resume").expect("credential");
+        assert_eq!(engine.resume_for_run(&caller(), &pool.pool_id, 3, Some(credential.clone())).expect("stale"), super::super::run_pause::ResumePoolResult::Stale);
+        assert_eq!(engine.resume_for_run(&caller(), &pool.pool_id, 4, Some(credential)).expect("resume"), super::super::run_pause::ResumePoolResult::Released);
+        assert!(engine.store.load(&pool.pool_id).expect("record").hold.is_none());
+    }
+    #[tokio::test]
+    async fn fresh_engine_attachment_redelivers_only_accepted_not_delivered_aggregate() {
+        let root = tempfile::tempdir().expect("state");
+        let mut engine = WorkpoolEngine::new(root.path(), std::sync::Arc::new(admission(false)));
+        engine.set_aggregate_port(std::sync::Arc::new(|_, _| Ok(())));
+        let pool = engine.create(&caller(), &input()).expect("pool");
+        engine.close(&caller(), &pool.pool_id).expect("close");
+        let mut resumed = WorkpoolEngine::new(root.path(), std::sync::Arc::new(admission(false)));
+        let deliveries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)); let count = deliveries.clone();
+        resumed.set_aggregate_port(std::sync::Arc::new(move |_, receipts: super::super::aggregate::WorkpoolAggregateReceipts| { count.fetch_add(1, Ordering::SeqCst); (receipts.ack)(); Ok(()) }));
+        resumed.attach("parent", None).expect("attach"); resumed.attach("parent", None).expect("attach delivered");
+        assert_eq!(deliveries.load(Ordering::SeqCst), 1);
+    }
     #[test]
     fn create_denies_before_resolving_or_storing_pool() {
         let admission = admission(true);

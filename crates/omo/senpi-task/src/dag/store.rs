@@ -417,6 +417,10 @@ pub fn create_dag_file_store(
 }
 
 impl DagFileStore {
+    /// The DAG state dir this store was built over, so sibling sidecars land beside the runs.
+    pub fn state_dir(&self) -> &Path {
+        &self.paths.root
+    }
     pub fn set_checkpoint_listener(&self, listener: Option<Arc<dyn Fn() + Send + Sync>>) {
         *guard(&self.checkpoint_listener) = listener;
     }
@@ -460,8 +464,9 @@ impl DagFileStore {
     ) -> Result<u64, DagStoreError> {
         assert_safe_segment(&event.run_id, "run id")?;
         let path = self.paths.event(&event.run_id);
-        // PERF-DIVERGENCE(senpi dag-store.ts): upstream stringifies the event once; this port serializes the typed event straight to text instead of building a `Value` tree, copying it again and re-running the schema probe (`schemaVersion` is the typed literal 1). `preserve_order` keeps field order, so the bytes are identical.
-        let mut line = serde_json::to_string(event)?;
+        let mut value = serde_json::to_value(event)?;
+        encode_paused_transition(&mut value);
+        let mut line = serde_json::to_string(&value)?;
         line.push('\n');
         let tail = tail_seq(&path)?;
         let expected = tail.as_u64().and_then(|seq| seq.checked_add(1));
@@ -594,10 +599,11 @@ impl DagFileStore {
     ) -> Result<Option<T>, DagStoreError> {
         assert_safe_segment(run_id, "run id")?;
         let path = self.paths.run(run_id);
-        let Some(value) = read_json_file(&path, Some(run_id), self.clock())? else {
+        let Some(mut value) = read_json_file(&path, Some(run_id), self.clock())? else {
             return Ok(None);
         };
         assert_supported_schema(&value, &path, Some(run_id), self.clock())?;
+        decode_paused_nodes(&mut value);
         Ok(Some(serde_json::from_value(value)?))
     }
 
@@ -720,10 +726,12 @@ impl DagFileStore {
         run_id: &str,
         checkpoint: &Value,
     ) -> Result<(), DagStoreError> {
-            let path = self.paths.run(run_id);
-        let parent_session_id = match read_optional_string(checkpoint, "parentSessionId") {
+        let mut encoded = checkpoint.clone();
+        encode_paused_nodes(&mut encoded);
+        let path = self.paths.run(run_id);
+        let parent_session_id = match read_optional_string(&encoded, "parentSessionId") {
             Some(parent) if !path.exists() => parent,
-            _ => return self.write_json_atomic(&path, checkpoint),
+            _ => return self.write_json_atomic(&path, &encoded),
         };
         let capacity_lock = self
             .paths
@@ -731,7 +739,7 @@ impl DagFileStore {
             .join(format!("session-runs-{}.lock", sha256(&parent_session_id)));
         self.with_lock(&capacity_lock, None, || -> Result<(), DagStoreError> {
             if path.exists() {
-                return self.write_json_atomic(&path, checkpoint);
+                return self.write_json_atomic(&path, &encoded);
             }
             let mut run_count = 0usize;
             for name in list_files(&self.paths.runs, ".json")? {
@@ -787,7 +795,7 @@ impl DagFileStore {
                     self.max_runs_per_session
                 )));
             }
-            self.write_json_atomic(&path, checkpoint)
+            self.write_json_atomic(&path, &encoded)
         })?
     }
 
@@ -1314,14 +1322,79 @@ fn parse_event_envelope(
 }
 
 fn parse_event(
-    value: Value,
+    mut value: Value,
     path: &Path,
     run_id: &str,
     now: &dyn Fn() -> i64,
 ) -> Result<DagRunEvent, DagJournalCorruptError> {
     parse_event_envelope(&value, path, run_id, now)?;
+    decode_paused_transition(&mut value);
     serde_json::from_value(value)
         .map_err(|_| corrupt(path, Some(run_id), "invalid DAG event envelope", now))
+}
+
+pub fn encode_paused_nodes(checkpoint: &mut Value) {
+    if let Some(nodes) = checkpoint.get_mut("nodes").and_then(Value::as_array_mut) {
+        for node in nodes {
+            if let Some(obj) = node.as_object_mut()
+                && obj.get("state").and_then(Value::as_str) == Some("paused") {
+                    obj.insert("state".to_string(), Value::String("running".to_string()));
+                    obj.insert("paused".to_string(), Value::Bool(true));
+                }
+        }
+    }
+}
+
+pub fn decode_paused_nodes(checkpoint: &mut Value) {
+    if let Some(nodes) = checkpoint.get_mut("nodes").and_then(Value::as_array_mut) {
+        for node in nodes {
+            if let Some(obj) = node.as_object_mut()
+                && obj.get("paused").and_then(Value::as_bool) == Some(true) {
+                    obj.remove("paused");
+                    obj.insert("state".to_string(), Value::String("paused".to_string()));
+                }
+        }
+    }
+}
+
+pub fn encode_paused_transition(event: &mut Value) {
+    let Some(obj) = event.as_object_mut() else { return };
+    if obj.get("type").and_then(Value::as_str) != Some("dag.node.transitioned") {
+        return;
+    }
+    let from_paused = obj.get("from").and_then(Value::as_str) == Some("paused");
+    let to_paused = obj.get("to").and_then(Value::as_str) == Some("paused");
+    if !from_paused && !to_paused {
+        return;
+    }
+    if from_paused {
+        obj.insert("from".to_string(), Value::String("running".to_string()));
+        obj.insert("fromPaused".to_string(), Value::Bool(true));
+    }
+    if to_paused {
+        obj.insert("to".to_string(), Value::String("running".to_string()));
+        obj.insert("toPaused".to_string(), Value::Bool(true));
+    }
+}
+
+pub fn decode_paused_transition(event: &mut Value) {
+    let Some(obj) = event.as_object_mut() else { return };
+    if obj.get("type").and_then(Value::as_str) != Some("dag.node.transitioned") {
+        return;
+    }
+    let from_paused = obj.get("fromPaused").and_then(Value::as_bool) == Some(true);
+    let to_paused = obj.get("toPaused").and_then(Value::as_bool) == Some(true);
+    if !from_paused && !to_paused {
+        return;
+    }
+    obj.remove("fromPaused");
+    obj.remove("toPaused");
+    if from_paused {
+        obj.insert("from".to_string(), Value::String("paused".to_string()));
+    }
+    if to_paused {
+        obj.insert("to".to_string(), Value::String("paused".to_string()));
+    }
 }
 
 fn parse_json(

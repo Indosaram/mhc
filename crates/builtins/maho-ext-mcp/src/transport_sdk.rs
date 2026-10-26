@@ -62,9 +62,12 @@ struct AuthRetry { step_up_attempted: bool, refresh_attempted: bool }
 enum ChallengeRetry { None, Retry, Reconnected(Arc<McpClient>) }
 impl McpClient {
     pub async fn materialize_stdio(server:&str,spec:&McpTransportSpec,logger:Arc<Mutex<McpLogger>>)->Result<Arc<Self>,McpError> {
+        Self::materialize_stdio_with_policy(server,spec,logger,false).await
+    }
+    pub async fn materialize_stdio_with_policy(server:&str,spec:&McpTransportSpec,logger:Arc<Mutex<McpLogger>>,project_policy:bool)->Result<Arc<Self>,McpError> {
         let McpTransportSpec::Stdio {command,args,cwd,env}=spec else{return Err(failure(server,McpErrorKind::Connect,"HTTP transport not materialized","create"));};
         let mut process=Command::new(command);process.args(args).env_clear();
-        for key in ["HOME","LOGNAME","PATH","SHELL","TERM","USER","USERPROFILE","SystemRoot","ComSpec","PATHEXT","TEMP","TMP","USERNAME"] {if let Some(value)=std::env::var_os(key) && !value.to_string_lossy().starts_with("()"){process.env(key,value);}}
+        if !project_policy {for key in ["HOME","LOGNAME","PATH","SHELL","TERM","USER","USERPROFILE","SystemRoot","ComSpec","PATHEXT","TEMP","TMP","USERNAME"] {if let Some(value)=std::env::var_os(key) && !value.to_string_lossy().starts_with("()"){process.env(key,value);}}}
         process.envs(env).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         if let Some(cwd)=cwd {process.current_dir(cwd);}
         let mut child=process.spawn().map_err(|e|failure(server,McpErrorKind::Connect,e.to_string(),"create"))?;let root_pid=child.id();
@@ -95,8 +98,11 @@ impl McpClient {
         Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Stdio {input:tokio::sync::Mutex::new(Some(input)),child:Box::new(tokio::sync::Mutex::new(child)),reader,stderr},pending,next_id:AtomicU64::new(1),notifications,closed,root_pid,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),protocol_version:std::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),step_up:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default())}))
     }
     pub async fn materialize(server:&str,spec:&McpTransportSpec,logger:Arc<Mutex<McpLogger>>)->Result<Arc<Self>,McpError> {
+        Self::materialize_with_policy(server,spec,logger,false).await
+    }
+    pub async fn materialize_with_policy(server:&str,spec:&McpTransportSpec,logger:Arc<Mutex<McpLogger>>,project_policy:bool)->Result<Arc<Self>,McpError> {
         match spec {
-            McpTransportSpec::Stdio {..}=>Self::materialize_stdio(server,spec,logger).await,
+            McpTransportSpec::Stdio {..}=>Self::materialize_stdio_with_policy(server,spec,logger,project_policy).await,
             McpTransportSpec::Http {url,headers}=>{
                 let client=reqwest::Client::builder().build().map_err(|e|failure(server,McpErrorKind::Connect,e.to_string(),"create"))?;
                 let (notifications,_)=broadcast::channel(256);

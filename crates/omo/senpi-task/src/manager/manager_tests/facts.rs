@@ -139,7 +139,7 @@ fn given_running_task_with_transcript_subscription_when_forgotten_then_subscript
     let harness = default_manager();
     let task = started(harness.manager.start(&named("a")));
     let fake = harness.in_process.wait_handle(&task.task_id);
-    wait_until("owned subscriptions", || fake.subscribe_count() == 2);
+    fake.wait_subscriptions(4);
     assert_eq!(fake.unsubscribe_count(), 0);
 
     harness.manager.forget(&task.task_id);
@@ -174,7 +174,7 @@ fn given_live_child_mid_run_when_run_stats_read_then_in_flight_accumulator_expos
     let harness = default_manager();
     let task = started(harness.manager.start(&base_spec()));
     let fake = harness.in_process.wait_handle(&task.task_id);
-    wait_until("owned subscriptions", || fake.subscribe_count() == 2);
+    fake.wait_subscriptions(4);
     fake.emit(&ManagedChildEvent {
         message: Some(json!({
             "role": "assistant",
@@ -222,4 +222,154 @@ fn given_listener_registered_before_promotion_when_cleanup_runs_then_handle_unsu
     wait_terminal(&harness.manager, &task.task_id);
 
     assert!(fake.unsubscribe_count() <= 1);
+}
+
+#[test]
+fn streamed_failed_tool_facts_survive_next_message_start_but_clear_after_parent_hop() {
+    let harness = default_manager();
+    let task = started(harness.manager.start(&base_spec()));
+    harness
+        .store
+        .mutate(&task.task_id, |fresh: &crate::state::TaskRecord| {
+            crate::state::TaskRecord {
+                parent_model: Some("parent/model".into()),
+                ..fresh.clone()
+            }
+        })
+        .unwrap();
+    let fake = harness.in_process.wait_handle(&task.task_id);
+    fake.emit(&ManagedChildEvent {
+        event_type: "message_update".into(),
+        message: Some(json!({"role":"assistant","content":[{"type":"toolCall","name":"write"}]})),
+        ..Default::default()
+    });
+    fake.emit(&ManagedChildEvent { event_type:"message_end".into(), message:Some(json!({"role":"assistant","content":[],"stopReason":"error","errorMessage":"weekly limit exhausted (resets 3:20am)"})), ..Default::default() });
+    fake.emit(&ManagedChildEvent::of("message_start"));
+    let event = ManagedChildEvent {
+        event_type: "retry_fallback_applied".into(),
+        from: Some("child/model:high".into()),
+        to: Some("parent/model".into()),
+        reason: Some("transient".into()),
+        ..Default::default()
+    };
+    fake.emit(&event);
+    let note = harness
+        .store
+        .load(&task.task_id)
+        .unwrap()
+        .unwrap()
+        .parent_model_fallback
+        .unwrap();
+    assert_eq!(
+        note.reason,
+        crate::state::ParentModelFallbackReason::UsageLimit
+    );
+    assert_eq!(note.resets.as_deref(), Some("3:20am"));
+    assert_eq!(note.from_model, "child/model");
+    assert_eq!(note.interrupted_tools, Some(vec!["write".into()]));
+    fake.emit(&event);
+    let second = harness
+        .store
+        .load(&task.task_id)
+        .unwrap()
+        .unwrap()
+        .parent_model_fallback
+        .unwrap();
+    assert_eq!(
+        second.reason,
+        crate::state::ParentModelFallbackReason::Unavailable
+    );
+    assert!(second.interrupted_tools.is_none());
+    assert!(second.detail.is_none());
+}
+
+#[test]
+fn concrete_host_lookup_stamps_durable_identity_not_predecessor_route() {
+    use crate::lifecycle::{HostSessionCloseError, HostSessionCloseRequest, HostTransport};
+    struct Transport(std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>);
+    impl HostTransport for Transport {
+        fn daemon_reachable(&self, _: &str) -> bool {
+            true
+        }
+        fn live_session_paths(&self, _: &str) -> Result<Vec<String>, String> {
+            Ok(vec![])
+        }
+        fn close_host_session(
+            &self,
+            _: &HostSessionCloseRequest,
+        ) -> Result<(), HostSessionCloseError> {
+            Ok(())
+        }
+        fn durable_session_id(
+            &self,
+            _: &crate::state::HostSessionIdentity,
+        ) -> Result<Option<String>, String> {
+            Ok(Some("durable-id".into()))
+        }
+        fn publish_task_status(
+            &self,
+            _: &crate::state::HostSessionIdentity,
+            _: TaskStatus,
+        ) -> Result<(), String> {
+            if let Some(sender) = self.0.lock().unwrap().take() {
+                sender.send(()).unwrap();
+            }
+            Ok(())
+        }
+    }
+    let (sent, received) = std::sync::mpsc::channel();
+    let transport = Arc::new(Transport(std::sync::Mutex::new(Some(sent))));
+    let harness = super::fakes::make_manager(super::fakes::HarnessOptions {
+        customize: Some(Box::new(move |options| {
+            options.host_transport = Some(transport)
+        })),
+        ..Default::default()
+    });
+    let task = started(harness.manager.start(&base_spec()));
+    harness
+        .store
+        .mutate(&task.task_id, |fresh: &crate::state::TaskRecord| {
+            crate::state::TaskRecord {
+                child_session_id: Some("predecessor".into()),
+                host_session: Some(crate::state::HostSessionIdentity {
+                    socket: "/host".into(),
+                    routing_id: "route-not-id".into(),
+                    session_path: "/session".into(),
+                    instance_id: "host".into(),
+                    daemon_pid: None,
+                    effect_seq: None,
+                    adopted_entry_id: None,
+                }),
+                ..fresh.clone()
+            }
+        })
+        .unwrap();
+    let (identity_sent, identity_received) = std::sync::mpsc::channel();
+    let identity_store = harness.store.clone();
+    let identity_task = task.task_id.clone();
+    harness.store.set_mutation_listener(Some(Arc::new(move || {
+        if identity_store
+            .load(&identity_task)
+            .unwrap()
+            .is_some_and(|record| record.child_session_id.as_deref() == Some("durable-id"))
+        {
+            let _ = identity_sent.send(());
+        }
+    })));
+    let fake = harness.in_process.wait_handle(&task.task_id);
+    fake.emit(&ManagedChildEvent::of("session_info_changed"));
+    identity_received.recv_timeout(super::fakes::WAIT).unwrap();
+    harness.store.set_mutation_listener(None);
+    assert_eq!(
+        harness
+            .store
+            .load(&task.task_id)
+            .unwrap()
+            .unwrap()
+            .child_session_id
+            .as_deref(),
+        Some("durable-id")
+    );
+    fake.complete("done");
+    received.recv_timeout(super::fakes::WAIT).unwrap();
 }

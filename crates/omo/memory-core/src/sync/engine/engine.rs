@@ -12,7 +12,8 @@ use std::rc::{Rc, Weak};
 
 use super::apply::{advance, apply_verified, capture};
 use super::engine_deps::EngineDeps;
-use super::error::EngineResult;
+use super::error::{EngineError, EngineResult};
+use super::failure::{SyncFailure, describe_sync_failure, is_failure_shown};
 use super::journal::{CycleStage, EngineState, SyncJournal};
 use super::local_signal::{Generation, Signal};
 use super::ports::{Cancel, RefusalCode, StreamHandlers, Unsubscribe};
@@ -27,9 +28,20 @@ const PUSH_ATTEMPTS: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineStatus {
+    Failing {
+        failure: SyncFailure,
+        since: i64,
+        attempts: u64,
+    },
     NeverSynced,
-    Synced { at: i64, updated_while_offline: u64 },
-    Paused { seq: u64, code: RefusalCode },
+    Synced {
+        at: i64,
+        updated_while_offline: u64,
+    },
+    Paused {
+        seq: u64,
+        code: RefusalCode,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,9 +50,21 @@ pub struct CycleReport {
     pub refused: u64,
     pub pushed: bool,
     pub snapshot: Option<u64>,
+    pub waiting: bool,
+}
+
+#[derive(Clone)]
+struct Failing {
+    failure: SyncFailure,
+    since: i64,
+    attempts: u64,
 }
 
 struct Inner {
+    stopped: Cell<bool>,
+    failing: RefCell<Option<Failing>>,
+    shown: RefCell<Option<Failing>>,
+    last_error: RefCell<Option<String>>,
     deps: EngineDeps,
     journal: SyncJournal,
     cycles_run: Cell<u64>,
@@ -69,6 +93,10 @@ impl SyncEngine {
         Self {
             inner: Rc::new(Inner {
                 deps,
+                stopped: Cell::new(false),
+                failing: RefCell::new(None),
+                shown: RefCell::new(None),
+                last_error: RefCell::new(None),
                 journal,
                 cycles_run: Cell::new(0),
                 loaded: Cell::new(false),
@@ -100,6 +128,13 @@ impl SyncEngine {
 
     /// What a UI shows: paused at a refused entry, else the last successful sync.
     pub fn status(&self) -> EngineResult<EngineStatus> {
+        if let Some(failing) = self.inner.shown.borrow().as_ref() {
+            return Ok(EngineStatus::Failing {
+                failure: failing.failure.clone(),
+                since: failing.since,
+                attempts: failing.attempts,
+            });
+        }
         let s = self.inner.journal.state()?;
         if let Some(p) = s.paused {
             return Ok(EngineStatus::Paused {
@@ -117,6 +152,7 @@ impl SyncEngine {
     }
 
     pub fn start(&self) {
+        self.inner.stopped.set(false);
         let advanced = Rc::downgrade(&self.inner);
         let connected = Rc::downgrade(&self.inner);
         let unsubscribe = self.inner.deps.transport.subscribe(StreamHandlers {
@@ -144,6 +180,8 @@ impl SyncEngine {
 
     /// Stops the triggers and waits for a running cycle to settle.
     pub async fn stop(&self) {
+        self.inner.stopped.set(true);
+        self.inner.rerun.set(false);
         if let Some(unsubscribe) = self.inner.unsubscribe.borrow_mut().take() {
             unsubscribe();
         }
@@ -158,6 +196,9 @@ impl SyncEngine {
     }
 
     pub fn notify_local_commit(&self) {
+        if self.inner.stopped.get() {
+            return;
+        }
         if let Some(cancel) = self.inner.cancel_debounce.borrow_mut().take() {
             cancel();
         }
@@ -175,13 +216,16 @@ impl SyncEngine {
     }
 
     /// The next successful cycle's report (the running cycle's when one is running).
-    pub async fn next_cycle(&self) -> CycleReport {
+    pub async fn next_cycle(&self) -> EngineResult<CycleReport> {
         let mut seen = self.inner.reports.current();
         loop {
             self.inner.reports.changed(seen).await;
             seen = self.inner.reports.current();
+            if let Some(error) = self.inner.last_error.borrow().as_ref() {
+                return Err(EngineError::Other(error.clone()));
+            }
             if let Some(report) = self.inner.last_report.borrow().clone() {
-                return report;
+                return Ok(report);
             }
         }
     }
@@ -198,15 +242,52 @@ impl Inner {
             let seen = this.settled.current();
             this.settled.changed(seen).await;
         }
+        if this.stopped.get() {
+            return Ok(CycleReport {
+                applied: 0,
+                refused: 0,
+                pushed: false,
+                snapshot: None,
+                waiting: true,
+            });
+        }
         this.running.set(true);
         let outcome = this.cycle().await;
         this.running.set(false);
-        if let Ok(report) = &outcome {
-            *this.last_report.borrow_mut() = Some(report.clone());
-            this.reports.bump();
+        let before = this.shown_key();
+        match &outcome {
+            Ok(report) => {
+                *this.failing.borrow_mut() = None;
+                *this.shown.borrow_mut() = None;
+                *this.last_error.borrow_mut() = None;
+                *this.last_report.borrow_mut() = Some(report.clone());
+            }
+            Err(error) => {
+                let failure = describe_sync_failure(error);
+                let previous = this.failing.borrow().clone();
+                let (since, attempts) = previous
+                    .filter(|p| p.failure.kind == failure.kind)
+                    .map_or((this.deps.clock.now(), 1), |p| (p.since, p.attempts + 1));
+                let failing = Failing {
+                    failure,
+                    since,
+                    attempts,
+                };
+                if is_failure_shown(failing.failure.kind, attempts) {
+                    *this.shown.borrow_mut() = Some(failing.clone());
+                }
+                *this.failing.borrow_mut() = Some(failing);
+                *this.last_error.borrow_mut() = Some(error.to_string());
+            }
         }
+        if before != this.shown_key()
+            && let Some(notify) = &this.deps.on_status_change {
+                notify();
+            }
+        this.reports.bump();
         this.settled.bump();
-        if outcome.is_ok() && this.rerun.get() && this.event_head.get() > this.applied_mirror.get()
+        if this.rerun.get()
+            && (outcome.is_err() || this.event_head.get() > this.applied_mirror.get())
         {
             this.rerun.set(false);
             Self::request(this);
@@ -214,7 +295,17 @@ impl Inner {
         outcome
     }
 
+    fn shown_key(&self) -> Option<(super::failure::SyncFailureKind, String)> {
+        self.shown
+            .borrow()
+            .as_ref()
+            .map(|f| (f.failure.kind, f.failure.action.clone()))
+    }
+
     fn request(this: &Rc<Self>) {
+        if this.stopped.get() {
+            return;
+        }
         if this.running.get() {
             this.rerun.set(true);
             return;
@@ -255,6 +346,9 @@ impl Inner {
     }
 
     fn poll(this: &Rc<Self>) {
+        if this.stopped.get() {
+            return;
+        }
         this.stop_polling();
         let weak: Weak<Self> = Rc::downgrade(this);
         let cancel = this.deps.clock.after(
@@ -354,6 +448,7 @@ impl Inner {
             refused,
             pushed,
             snapshot,
+            waiting: false,
         })
     }
 }

@@ -47,12 +47,112 @@ pub fn prune_old_messages_to_budget(messages:&[Value],target_tokens:u64)->Vec<Va
 pub fn summarization_history_budget(context_window:u64,prompt_tokens:u64)->u64 {
     context_window.saturating_mul(3).div_euclid(5).saturating_sub(prompt_tokens).max(256)
 }
+const TRUNCATED_REQUEST_MIN_CHARS: usize = 200;
+
+fn last_user_like_index(messages: &[Value]) -> usize {
+    messages.iter().rposition(|message|matches!(role(message),Some("user"|"bashExecution"))).unwrap_or(messages.len())
+}
+
+fn truncate_request_to_budget(messages: &[Value], target_tokens: u64) -> Option<Vec<Value>> {
+    let index = last_user_like_index(messages);
+    let request = messages.get(index)?;
+    if role(request) != Some("user") { return None; }
+    let request_tokens = estimate_wire_tokens(request);
+    if request_tokens <= target_tokens { return None; }
+    let full_text = match &request["content"] {
+        Value::String(text) => text.clone(),
+        Value::Array(blocks) => blocks.iter().map(|block| if block["type"] == "text" {block["text"].as_str().unwrap_or_default()} else {""}).collect::<Vec<_>>().join("\n"),
+        _ => String::new(),
+    };
+    let (text, already_cut) = full_text.rsplit_once("\n\n[... ")
+        .and_then(|(text,note)|note.strip_suffix(" more characters truncated]")?.parse::<usize>().ok().map(|count|(text,count)))
+        .unwrap_or((&full_text,0));
+    // JS measures/slices UTF-16 code units. Lossy conversion only affects the
+    // unusual case of a cut between a surrogate pair, as JSON also replaces it.
+    let units: Vec<u16> = text.encode_utf16().collect();
+    if units.len() <= TRUNCATED_REQUEST_MIN_CHARS {return None;}
+    let available = target_tokens.saturating_sub(estimate_total_tokens(messages).saturating_sub(request_tokens));
+    let mut text_request = request.clone(); text_request["content"] = Value::String(text.into());
+    let text_tokens = estimate_wire_tokens(&text_request).max(1);
+    let mut keep = (units.len().saturating_sub(1)).min(TRUNCATED_REQUEST_MIN_CHARS.max(((units.len() as u128 * u128::from(available))/u128::from(text_tokens)) as usize));
+    loop {
+        let mut truncated = request.clone();
+        truncated["content"] = Value::String(format!("{}\n\n[... {} more characters truncated]",String::from_utf16_lossy(&units[..keep]),units.len()-keep+already_cut));
+        if estimate_wire_tokens(&truncated) <= available || keep <= TRUNCATED_REQUEST_MIN_CHARS {
+            let mut result = messages.to_vec();result[index]=truncated;return Some(result);
+        }
+        keep = TRUNCATED_REQUEST_MIN_CHARS.max(keep*4/5);
+    }
+}
+
+fn prune_summarization_input_to_budget(messages: &[Value], target: u64) -> Vec<Value> {
+    let mut pruned=prune_old_messages_to_budget(messages,target);
+    while estimate_total_tokens(&pruned)>target {
+        let boundary=last_user_like_index(&pruned);
+        let index=pruned.iter().enumerate().skip(boundary.saturating_add(1)).find(|(_,message)|!tool_call_ids(message).is_empty()).map(|(index,_)|index);
+        let Some(index)=index else {break;};
+        let ids:HashSet<String>=tool_call_ids(&pruned[index]).into_iter().map(str::to_owned).collect();
+        pruned=pruned.into_iter().enumerate().filter_map(|(candidate,message)| {
+            if candidate==index || (role(&message)==Some("toolResult") && message["toolCallId"].as_str().is_some_and(|id|ids.contains(id))) {None} else {Some(message)}
+        }).collect();
+    }
+    pruned
+}
+
 pub fn bound_summarization_input(messages:&[Value],context_window:u64,prompt_tokens:u64)->Vec<Value> {
-    prune_old_messages_to_budget(messages,summarization_history_budget(context_window,prompt_tokens))
+    let budget=summarization_history_budget(context_window,prompt_tokens);
+    let pruned=prune_summarization_input_to_budget(messages,budget);
+    if pruned.is_empty() {return messages.last().cloned().into_iter().collect();}
+    if estimate_total_tokens(&pruned)<=budget {return pruned;}
+    truncate_request_to_budget(&pruned,budget).unwrap_or(pruned)
 }
 pub fn shrink_summarization_input_for_overflow_retry(messages:&[Value],context_window:u64,prompt_tokens:u64)->Option<Vec<Value>> {
-    if messages.len()<=1 {return None;}
-    let shrunk=prune_old_messages_to_budget(messages,(estimate_total_tokens(messages)/2).min(summarization_history_budget(context_window,prompt_tokens)));
-    if shrunk.len()<messages.len() {Some(shrunk)} else {Some(messages[1..].to_vec())}
+    let target=(estimate_total_tokens(messages)/2).min(summarization_history_budget(context_window,prompt_tokens));
+    if messages.len()<=1 {return truncate_request_to_budget(messages,target);}
+    let shrunk=prune_summarization_input_to_budget(messages,target);
+    if shrunk.len()<messages.len() {return Some(shrunk);}
+    let boundary=last_user_like_index(messages);
+    let remove=if boundary<messages.len()-1 {boundary+1} else {0};
+    Some(messages.iter().enumerate().filter(|(index,_)|*index!=remove).map(|(_,message)|message.clone()).collect())
 }
 pub fn allow_overflow_retry(attempts:u32,elapsed_ms:f64)->bool {attempts<MAX_SUMMARIZATION_OVERFLOW_RETRIES && elapsed_ms<SUMMARIZATION_OVERFLOW_TOTAL_BUDGET_MS}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn oversized_request_fits_and_retry_folds_truncation_note() {
+        let messages=vec![json!({"role":"user","content":"x".repeat(40000),"timestamp":1})];
+        let bounded=bound_summarization_input(&messages,8000,100);
+        assert!(estimate_total_tokens(&bounded)<=4700);
+        let text=bounded[0]["content"].as_str().expect("text");
+        assert!(text.starts_with(&"x".repeat(200)));
+        assert!(text.ends_with(" more characters truncated]"));
+        let retry=shrink_summarization_input_for_overflow_retry(&bounded,8000,100).expect("cut");
+        let text=retry[0]["content"].as_str().expect("text");
+        assert_eq!(text.matches("more characters truncated]").count(),1);
+        assert!(estimate_total_tokens(&retry)<estimate_total_tokens(&bounded));
+        assert_eq!(messages[0]["content"].as_str().expect("original").len(),40000);
+    }
+    #[test]
+    fn minimum_prefix_survives_and_images_do_not_deepen_cut() {
+        let request=json!({"role":"user","content":"a".repeat(40000)});
+        let image=json!({"role":"user","content":[{"type":"text","text":"a".repeat(40000)},{"type":"image","data":"z".repeat(1000000)}]});
+        let text=bound_summarization_input(&[request],8000,100);
+        let image=bound_summarization_input(&[image],8000,100);
+        let text_content=text[0]["content"].as_str().expect("text");
+        let image_content=image[0]["content"].as_str().expect("text");
+        assert!(text_content.len().abs_diff(image_content.len()) <= 2);
+        let minimum=truncate_request_to_budget(&text,0).expect("cut");
+        assert!(minimum[0]["content"].as_str().expect("content").starts_with(&"a".repeat(200)));
+        assert!(truncate_request_to_budget(&[json!({"role":"user","content":"a".repeat(200)})],0).is_none());
+    }
+    #[test]
+    fn last_turn_tool_steps_are_removed_as_pairs_but_request_is_kept() {
+        let messages=vec![json!({"role":"user","content":"request"}), json!({"role":"assistant","content":[{"type":"toolCall","id":"a","arguments":{}}]}),json!({"role":"toolResult","toolCallId":"a","content":"x".repeat(40000)})];
+        assert_eq!(bound_summarization_input(&messages,8000,0),messages[..1]);
+        let custom=vec![json!({"role":"custom","content":"x".repeat(40000)})];
+        assert_eq!(bound_summarization_input(&custom,8000,0),custom);
+    }
+}

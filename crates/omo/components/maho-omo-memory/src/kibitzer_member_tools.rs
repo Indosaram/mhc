@@ -60,7 +60,7 @@ use crate::kibitzer_nudge_tool::KibitzerNudgeParams;
 use crate::kibitzer_session_resources::KibitzerSessionResources;
 use crate::kibitzer_tools_caps::KibitzerToolCaps;
 use crate::kibitzer_tools_memory::{
-    KIBITZER_MEMORY_TOOL_NAME, MEMORY_EXPANSION_BOUNDS, execute_memory,
+    KIBITZER_MEMORY_TOOL_NAME, MEMORY_EXPANSION_BOUNDS, execute_memory_with_projects,
 };
 use crate::kibitzer_tools_nudge::{
     KIBITZER_NUDGE_DESCRIPTION, KIBITZER_NUDGE_TOOL_NAME, create_kibitzer_sidecar_nudge_tool,
@@ -99,12 +99,10 @@ pub struct KibitzerMemberToolsInput {
 
 /// Upstream `SEARCH_ONLY_DESCRIPTION` (`kibitzer/tools/memory.ts`): the description when
 /// `memory.recall.query_expansion` is off.
-const MEMORY_TOOL_DESCRIPTION: &str =
-    "Read-only access to committed memories: search by query or read one path. This tool cannot write.";
+const MEMORY_TOOL_DESCRIPTION: &str = "Read-only access to committed memories: search by query or read one path. This tool cannot write.";
 
 /// Upstream `EXPANSION_DESCRIPTION`: the description when `memory.recall.query_expansion` is on.
-const MEMORY_TOOL_EXPANSION_DESCRIPTION: &str =
-    "Read-only access to committed memories: search by query or read one path. This tool cannot write. Search matches words, not meaning: when a memory may be worded differently from the query, also pass synonyms / keywords / related / note_line. Each of their terms counts for less than a word of the query, and a memory that holds every word of the query still ranks first.";
+const MEMORY_TOOL_EXPANSION_DESCRIPTION: &str = "Read-only access to committed memories: search by query or read one path. This tool cannot write. Search matches words, not meaning: when a memory may be worded differently from the query, also pass synonyms / keywords / related / note_line. Each of their terms counts for less than a word of the query, and a memory that holds every word of the query still ranks first.";
 
 /// Builds the `memory` and `nudge` tools, in registry order after the three host tools.
 pub fn kibitzer_member_tools(input: KibitzerMemberToolsInput) -> Vec<ToolDefinition> {
@@ -146,9 +144,31 @@ fn memory_tool(input: &KibitzerMemberToolsInput) -> ToolDefinition {
                     .map_err(|error| ToolError::Message(error.to_string()))?;
                 // Both guards are held only for the synchronous executor call below: no `await`, no
                 // callback, and no other lock is taken while they are held.
-                let mut cache = resources.corpus_cache.lock().unwrap_or_else(PoisonError::into_inner);
-                let mut searched = resources.searched.lock().unwrap_or_else(PoisonError::into_inner);
-                match execute_memory(&repo, &mut cache, caps, query_expansion, &mut searched, &params) {
+                let mut cache = resources
+                    .corpus_cache
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                let mut searched = resources
+                    .searched
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                let scope = resources
+                    .project_scope
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+                let projects = scope
+                    .map(|scope| scope.recall_corpora(&session_id, &mut cache))
+                    .unwrap_or_default();
+                match execute_memory_with_projects(
+                    &repo,
+                    &mut cache,
+                    caps,
+                    query_expansion,
+                    &mut searched,
+                    &params,
+                    &projects,
+                ) {
                     Ok(result) => tool_result_of(result),
                     // Upstream awaits `corpus()` and lets the rejection propagate; a real repository
                     // failure is not a refusal code and must not be flattened into one.
@@ -210,9 +230,18 @@ fn nudge_tool(input: &KibitzerMemberToolsInput) -> ToolDefinition {
 /// failure becomes a typed `Err(ToolError::Message(..))`.
 fn tool_result_of(result: KibitzerToolResult) -> Result<ToolResult, ToolError> {
     let mut details = serde_json::Map::new();
-    details.insert("message".to_owned(), serde_json::Value::String(result.text.clone()));
-    details.insert("terminate".to_owned(), serde_json::Value::Bool(result.terminate));
-    details.insert("is_error".to_owned(), serde_json::Value::Bool(result.is_error));
+    details.insert(
+        "message".to_owned(),
+        serde_json::Value::String(result.text.clone()),
+    );
+    details.insert(
+        "terminate".to_owned(),
+        serde_json::Value::Bool(result.terminate),
+    );
+    details.insert(
+        "is_error".to_owned(),
+        serde_json::Value::Bool(result.is_error),
+    );
     // The machine refusal code, taken from the SAME `rejection` producer's body
     // (`{"rejected": <code>, ...}`); a prose refusal (the base nudge rejection) has none.
     details.insert(
@@ -231,7 +260,12 @@ fn tool_result_of(result: KibitzerToolResult) -> Result<ToolResult, ToolError> {
 fn refusal_code(text: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(text)
         .ok()
-        .and_then(|value| value.get("rejected").and_then(serde_json::Value::as_str).map(str::to_owned))
+        .and_then(|value| {
+            value
+                .get("rejected")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
 }
 
 /// The shared exhausted-budget refusal (`KibitzerRejectionCode::ToolBudgetExceeded`,
@@ -246,7 +280,11 @@ fn budget_refusal(limit: usize) -> KibitzerToolResult {
 
 /// The `memory` description; upstream selects it from `memory.recall.query_expansion`.
 fn kibitzer_memory_description(query_expansion: bool) -> &'static str {
-    if query_expansion { MEMORY_TOOL_EXPANSION_DESCRIPTION } else { MEMORY_TOOL_DESCRIPTION }
+    if query_expansion {
+        MEMORY_TOOL_EXPANSION_DESCRIPTION
+    } else {
+        MEMORY_TOOL_DESCRIPTION
+    }
 }
 
 /// The `memory` parameter schema (upstream `KibitzerMemoryParams`; the expansion variant adds the
@@ -259,23 +297,31 @@ fn kibitzer_memory_parameters(query_expansion: bool) -> serde_json::Value {
         "enum": ["search", "read"],
         "description": "search: find committed memories by query. read: return one committed memory body."
     }));
-    properties.insert("query".into(), serde_json::json!({
-        "type": "string",
-        "description": "Search terms (double quotes group a phrase). Required by search."
-    }));
-    properties.insert("path".into(), serde_json::json!({
-        "type": "string",
-        "description": "Memory path relative to the memory repo. Required by read."
-    }));
+    properties.insert(
+        "query".into(),
+        serde_json::json!({
+            "type": "string",
+            "description": "Search terms (double quotes group a phrase). Required by search."
+        }),
+    );
+    properties.insert(
+        "path".into(),
+        serde_json::json!({
+            "type": "string",
+            "description": "Memory path relative to the memory repo. Required by read."
+        }),
+    );
     if query_expansion {
         let terms = MEMORY_EXPANSION_BOUNDS.terms;
         let term_chars = MEMORY_EXPANSION_BOUNDS.term_chars;
-        let tier = |description: &str| serde_json::json!({
-            "type": "array",
-            "maxItems": terms,
-            "items": { "type": "string", "minLength": 1, "maxLength": term_chars },
-            "description": description
-        });
+        let tier = |description: &str| {
+            serde_json::json!({
+                "type": "array",
+                "maxItems": terms,
+                "items": { "type": "string", "minLength": 1, "maxLength": term_chars },
+                "description": description
+            })
+        };
         properties.insert("synonyms".into(), tier(
             "search only: 4-8 close synonyms or other wordings of the query's key words, in the query's language; not words already in it."
         ));
@@ -317,7 +363,13 @@ mod tests {
     const OBSERVATION: &str = "The rollout note records that nodes are drained before a rollout.";
 
     fn call(params: serde_json::Value) -> maho_ext_api::ToolCall<'static> {
-        maho_ext_api::ToolCall { id: "call", params, signal: Default::default(), on_update: None, context: None }
+        maho_ext_api::ToolCall {
+            id: "call",
+            params,
+            signal: Default::default(),
+            on_update: None,
+            context: None,
+        }
     }
 
     /// One bound session's shared resources, resolved through the real registry getter.
@@ -328,7 +380,8 @@ mod tests {
     /// The registered member tools for one session. `resolve_context` PANICS if consulted, so any
     /// case that refuses before the repository proves it performed no identity/repository work.
     fn tools_without_identity(resources: KibitzerSessionResources) -> Vec<ToolDefinition> {
-        let resolve_context: PromptContextResolver = Arc::new(|_| panic!("resolve_context must not run"));
+        let resolve_context: PromptContextResolver =
+            Arc::new(|_| panic!("resolve_context must not run"));
         kibitzer_member_tools(KibitzerMemberToolsInput {
             session_id: "session".into(),
             resolve_context,
@@ -349,9 +402,11 @@ mod tests {
 
         // The registered `memory` tool; the panicking resolver proves the refusal precedes any
         // identity resolution or repository open.
-        let result = (tools[0].execute)(call(serde_json::json!({ "operation": "search", "query": "x" })))
-            .await
-            .expect("a refusal rides the Ok arm with metadata");
+        let result = (tools[0].execute)(call(
+            serde_json::json!({ "operation": "search", "query": "x" }),
+        ))
+        .await
+        .expect("a refusal rides the Ok arm with metadata");
         let details = result.details.expect("refusal carries details");
         assert_eq!(details["refusal"], "tool_budget_exceeded");
         assert_eq!(details["is_error"], true);
@@ -359,7 +414,13 @@ mod tests {
 
         // No charge was spent, and the shared searched set is untouched (no repository effect).
         assert_eq!(resources.budget_slot.current().used(), 0);
-        assert!(resources.searched.lock().unwrap_or_else(PoisonError::into_inner).is_empty());
+        assert!(
+            resources
+                .searched
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -367,7 +428,11 @@ mod tests {
         let resources = resources();
         resources.budget_slot.reset(8);
         resources.bind_max_items(5);
-        resources.offered.lock().unwrap_or_else(PoisonError::into_inner).insert("reference/fact.md".into());
+        resources
+            .offered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert("reference/fact.md".into());
         let tools = tools_without_identity(resources.clone());
 
         // The registered `nudge` tool: the wrapper owns the single charge for an admitted call.
@@ -383,7 +448,15 @@ mod tests {
 
         // EXACTLY one charge (never zero, never two) and one recorded nudge.
         assert_eq!(resources.budget_slot.current().used(), 1);
-        assert_eq!(resources.accepted.current().lock().unwrap_or_else(PoisonError::into_inner).len(), 1);
+        assert_eq!(
+            resources
+                .accepted
+                .current()
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -391,7 +464,11 @@ mod tests {
         let resources = resources();
         resources.budget_slot.reset(0);
         resources.bind_max_items(5);
-        resources.offered.lock().unwrap_or_else(PoisonError::into_inner).insert("reference/fact.md".into());
+        resources
+            .offered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert("reference/fact.md".into());
         let tools = tools_without_identity(resources.clone());
 
         // Built ONCE; the exhausted current budget refuses the first call.
@@ -401,7 +478,10 @@ mod tests {
         })))
         .await
         .expect("Ok arm");
-        assert_eq!(refused.details.expect("details")["refusal"], "tool_budget_exceeded");
+        assert_eq!(
+            refused.details.expect("details")["refusal"],
+            "tool_budget_exceeded"
+        );
 
         // New-turn admission swaps the budget; the SAME retained closure resolves it at call time.
         resources.budget_slot.reset(8);
@@ -435,7 +515,8 @@ mod tests {
     }
 
     fn tools_for_schema(query_expansion: bool) -> Vec<ToolDefinition> {
-        let resolve_context: PromptContextResolver = Arc::new(|_| panic!("resolve_context must not run"));
+        let resolve_context: PromptContextResolver =
+            Arc::new(|_| panic!("resolve_context must not run"));
         kibitzer_member_tools(KibitzerMemberToolsInput {
             session_id: "session".into(),
             resolve_context,
@@ -449,7 +530,10 @@ mod tests {
 
     fn memory_properties(query_expansion: bool) -> serde_json::Map<String, serde_json::Value> {
         let tools = tools_for_schema(query_expansion);
-        tools[0].parameters["properties"].as_object().expect("properties is an object").clone()
+        tools[0].parameters["properties"]
+            .as_object()
+            .expect("properties is an object")
+            .clone()
     }
 
     #[test]
@@ -467,18 +551,35 @@ mod tests {
     #[test]
     fn query_expansion_on_adds_the_bounded_added_term_keys() {
         let properties = memory_properties(true);
-        for key in ["operation", "query", "path", "synonyms", "keywords", "related", "note_line"] {
+        for key in [
+            "operation",
+            "query",
+            "path",
+            "synonyms",
+            "keywords",
+            "related",
+            "note_line",
+        ] {
             assert!(properties.get(key).is_some(), "missing property {key}");
         }
         for tier in ["synonyms", "keywords", "related"] {
             let field = &properties[tier];
             assert_eq!(field["type"], "array", "{tier}.type");
-            assert_eq!(field["maxItems"], MEMORY_EXPANSION_BOUNDS.terms, "{tier}.maxItems");
+            assert_eq!(
+                field["maxItems"], MEMORY_EXPANSION_BOUNDS.terms,
+                "{tier}.maxItems"
+            );
             assert_eq!(field["items"]["type"], "string", "{tier}.items.type");
             assert_eq!(field["items"]["minLength"], 1, "{tier}.items.minLength");
-            assert_eq!(field["items"]["maxLength"], MEMORY_EXPANSION_BOUNDS.term_chars, "{tier}.items.maxLength");
+            assert_eq!(
+                field["items"]["maxLength"], MEMORY_EXPANSION_BOUNDS.term_chars,
+                "{tier}.items.maxLength"
+            );
         }
         assert_eq!(properties["note_line"]["type"], "string", "note_line.type");
-        assert_eq!(properties["note_line"]["maxLength"], MEMORY_EXPANSION_BOUNDS.note_line_chars, "note_line.maxLength");
+        assert_eq!(
+            properties["note_line"]["maxLength"], MEMORY_EXPANSION_BOUNDS.note_line_chars,
+            "note_line.maxLength"
+        );
     }
 }

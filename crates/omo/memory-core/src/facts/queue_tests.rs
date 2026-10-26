@@ -364,17 +364,56 @@ fn claims_reclaim_only_stale_claims_and_release_is_owner_checked() {
     queue.enqueue(request(journal(1), None)).expect("enqueue");
     let pending = queue.list_pending().expect("pending");
 
-    assert_eq!(queue.claim(&pending, "worker-a").expect("first claim").len(), 1);
-    assert!(queue.claim(&pending, "worker-b").expect("active claim").is_empty());
-    queue.release_claim(&pending, "worker-b").expect("wrong owner release");
-    assert!(queue.claim(&pending, "worker-c").expect("still claimed").is_empty());
+    assert_eq!(
+        queue
+            .claim(&pending, "worker-a")
+            .expect("first claim")
+            .len(),
+        1
+    );
+    assert!(
+        queue
+            .claim(&pending, "worker-b")
+            .expect("active claim")
+            .is_empty()
+    );
+    queue
+        .release_claim(&pending, "worker-b")
+        .expect("wrong owner release");
+    assert!(
+        queue
+            .claim(&pending, "worker-c")
+            .expect("still claimed")
+            .is_empty()
+    );
 
     tick.store(15 * 60_000 + 1, Ordering::SeqCst);
-    assert_eq!(queue.claim(&pending, "worker-c").expect("stale reclaim").len(), 1);
-    queue.release_claim(&pending, "worker-a").expect("stale owner release");
-    assert!(queue.claim(&pending, "worker-d").expect("owner retained").is_empty());
-    queue.release_claim(&pending, "worker-c").expect("current owner release");
-    assert_eq!(queue.claim(&pending, "worker-d").expect("reclaim released").len(), 1);
+    assert_eq!(
+        queue
+            .claim(&pending, "worker-c")
+            .expect("stale reclaim")
+            .len(),
+        1
+    );
+    queue
+        .release_claim(&pending, "worker-a")
+        .expect("stale owner release");
+    assert!(
+        queue
+            .claim(&pending, "worker-d")
+            .expect("owner retained")
+            .is_empty()
+    );
+    queue
+        .release_claim(&pending, "worker-c")
+        .expect("current owner release");
+    assert_eq!(
+        queue
+            .claim(&pending, "worker-d")
+            .expect("reclaim released")
+            .len(),
+        1
+    );
 }
 
 struct CountingWaker(AtomicUsize);
@@ -454,4 +493,88 @@ async fn test_aborted_future_created_after_abort_resolves_immediately_in_async()
     tokio::time::timeout(std::time::Duration::from_millis(100), aborted_fut)
         .await
         .expect("immediate resolution within bounded timeout");
+}
+
+#[test]
+fn parked_endpoints_anchor_enqueue_and_manual_retry_restores_files() {
+    use crate::facts::failures_backoff::{FactsFailureFilter, FactsFailureTarget};
+    use crate::facts::failures_schema::FactsFailureReason;
+    use crate::facts::failures_store::{
+        FactsFailureStore, FactsFailureStoreOptions, RecordFailureRequest,
+    };
+    let (_dir, paths) = identity_fixture();
+    let queue = FactsQueue::new(FactsQueueOptions {
+        identity_paths: paths.clone(),
+        now: Some(clock_from(0)),
+        on_publish: None,
+    });
+    let first = queue
+        .enqueue(request(journal(1), None))
+        .unwrap()
+        .entry()
+        .unwrap()
+        .clone();
+    let store = FactsFailureStore::new(FactsFailureStoreOptions {
+        identity_paths: paths.clone(),
+        now: Some(clock_from(0)),
+        lock_wait_ms: None,
+    });
+    store
+        .record_failure(RecordFailureRequest {
+            targets: vec![FactsFailureTarget {
+                conversation_id: first.conversation_id.clone(),
+                end_message_id: first.range.end_message_id.clone(),
+                end_snapshot_line: first.range.end_snapshot_line,
+            }],
+            failure_id: "oversize".into(),
+            reason: FactsFailureReason::PayloadEntryOversize,
+            detail: None,
+        })
+        .unwrap();
+    assert!(queue.list_pending().unwrap().is_empty());
+    // Losing cursor state cannot cause the parked range to be published again.
+    let layout = crate::facts::schema::facts_queue_paths(&paths);
+    fs::remove_file(layout.cursor_path(CONVERSATION)).unwrap();
+    assert!(
+        !queue
+            .enqueue(request(journal(1), None))
+            .unwrap()
+            .is_enqueued()
+    );
+    let second = queue
+        .enqueue(request(journal(2), None))
+        .unwrap()
+        .entry()
+        .unwrap()
+        .clone();
+    assert_eq!(second.range.start_message_id, "m2");
+    assert_eq!(second.lead, Some(entry_assistant("m1", "answer 1")));
+    assert_eq!(queue.claim(std::slice::from_ref(&first), "worker").unwrap().len(), 0);
+    assert_eq!(
+        store
+            .clear_for_retry(&FactsFailureFilter::default())
+            .unwrap(),
+        1
+    );
+    assert_eq!(queue.list_pending().unwrap().len(), 2);
+    assert_eq!(
+        queue
+            .claim(&[first.clone(), first], "worker")
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn queue_scan_surfaces_directory_errors() {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("not-a-directory");
+    fs::write(&file, "x").unwrap();
+    assert!(crate::facts::queue_scan::scan_queue_entries(&file, None).is_err());
+    assert!(
+        crate::facts::queue_scan::scan_queue_entries(&dir.path().join("absent"), None)
+            .unwrap()
+            .is_empty()
+    );
 }

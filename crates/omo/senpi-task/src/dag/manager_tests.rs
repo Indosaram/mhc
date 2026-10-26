@@ -330,6 +330,7 @@ fn node_state_str(state: DagNodeState) -> &'static str {
         DagNodeState::Pending => "pending",
         DagNodeState::Blocked => "blocked",
         DagNodeState::Scheduled => "scheduled",
+        DagNodeState::Paused => "paused",
         DagNodeState::Running => "running",
         DagNodeState::Completed => "completed",
         DagNodeState::Failed => "failed",
@@ -795,7 +796,7 @@ fn given_journaled_events_when_history_pages_with_an_exclusive_since_and_a_throu
             at: "2026-01-01T00:00:03.000Z".to_string(),
             lane: DagEventLane::Boundary,
             payload: DagRunEventPayload::RunPaused {
-                reason: Some("session_shutdown".to_string()),
+                reason: Some("session_shutdown".to_string()), pause_seq: None,
             },
         })
         .expect("append paused");

@@ -4,6 +4,7 @@ use crate::{
     status_active_runs::{ActiveReflectionRun, ActiveReflectionRunDetails, ActiveReflectionRuns},
     status_live::MemoryFooterUi,
     status_live_wiring::MemoryFooterStatusLive,
+    sync_status_cached::{SyncStatusNotifier, SyncStatusReader},
 };
 use std::{
     collections::BTreeMap,
@@ -17,6 +18,10 @@ pub struct MemoryReflectionLiveWiring {
     session: Option<String>,
     contexts: BTreeMap<String, MemoryIdentityContext>,
     health_once: std::collections::BTreeSet<String>,
+    /// The repository sync-status reader every footer snapshot and notice consults.
+    pub sync_status: Option<SyncStatusReader>,
+    /// The transition-only notifier built from that reader; a repo that keeps failing the same way stays silent.
+    pub sync_notifier: Option<std::sync::Arc<SyncStatusNotifier>>,
 }
 /// Host live session for bind-time delivery (pin `wiring-reflection-live.ts` bind: liveSession +
 /// refreshInitialStatus). One host object serves both the completion and the health seams.
@@ -90,9 +95,22 @@ impl MemoryReflectionLiveWiring {
     pub fn attach(&mut self, session: &str) {
         if self.footer.is_disposed() {
             self.footer = MemoryFooterStatusLive::default();
+            self.footer.set_sync_status(self.sync_status.clone());
         }
         self.session = Some(session.into());
         lock(&self.rpc).attach(session);
+    }
+    /// Installs the sync-status reader the footer snapshots and the notices read (`MemoryWiringOptions.syncStatus`).
+    pub fn set_sync_status(&mut self, sync_status: Option<SyncStatusReader>) {
+        self.footer.set_sync_status(sync_status.clone());
+        self.sync_notifier = sync_status
+            .clone()
+            .map(|read| std::sync::Arc::new(SyncStatusNotifier::new(read)));
+        self.sync_status = sync_status;
+    }
+    /// The session whose footer and notices the live wiring currently serves.
+    pub fn session(&self) -> Option<&str> {
+        self.session.as_deref()
     }
     pub fn bind(
         &mut self,

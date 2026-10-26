@@ -144,9 +144,9 @@ pub fn stream_anthropic_subscription(
                 let result = registry.turn(crate::session_stream::ResidentInput { session, account: &account, model: &model.id, context: &context_json, options: &configuration, executable: &deps.executable, environment: &environment, auth_lane: lane_name, custom: &resolved.to_sdk, tool_note: tool_note.as_deref(), now: (deps.now)() as u64, transcript_available: true, signal: signal.as_ref() }, |message| {
                     if !started { events.push(Event::Start { partial: mapper.output.clone() }); started = true; }
                     if message["type"] == "stream_event" { saw_stream = true; visible |= matches!(message["event"]["type"].as_str(), Some("content_block_start" | "content_block_delta" | "content_block_stop")); if let Some(event) = mapper.apply_stream_event(&message["event"]) { events.push(event); } }
-                    else if message["type"] == "assistant" { mapper.note_response_id(message["message"]["id"].as_str()); }
+                    else if message["type"] == "assistant" { mapper.note_response_id(message["message"]["id"].as_str()); if !saw_stream && message["message"]["usage"].is_object() { crate::stream_protocol::update_usage(&model, &mut mapper.output, &message["message"]["usage"], crate::stream_protocol::UsageScope::RequestStart); } }
                     else if message["type"] == "result" {
-                        crate::stream_protocol::update_usage(&model, &mut mapper.output, &message["usage"]);
+                        crate::stream_protocol::update_usage(&model, &mut mapper.output, &message["usage"], crate::stream_protocol::UsageScope::Query);
                         if mapper.output.stop_reason != StopReason::ToolUse && !message["stop_reason"].is_null() { mapper.output.stop_reason = crate::stream_protocol::map_stop_reason(message["stop_reason"].as_str()); }
                         if !saw_stream { mapper.output.content.push(ContentBlock::Text(TextContent { text: message["result"].as_str().unwrap_or_default().into(), ..Default::default() })); }
                     }
@@ -156,12 +156,12 @@ pub fn stream_anthropic_subscription(
                     registry.reapers.insert(session.into(), crate::session_reaper::schedule(&deps.registry, session.into(), generation, deps.now.clone()));
                 }
                 if let Some(observation) = registry.last_decisions.get(session) {
-                    mapper.output.diagnostics.get_or_insert_with(Vec::new).push(maho_ai::utils::diagnostics::AssistantMessageDiagnostic { kind: "claude_sdk_oauth_session_continuity".into(), timestamp: (deps.now)(), error: None, details: Some(json!({"kind":observation.kind,"reason":observation.reason,"deltaMessages":observation.delta_messages,"payloadBytes":observation.payload_bytes,"collapsedDirectives":observation.collapsed_directives}).as_object().expect("details").clone()) });
+                    mapper.output.diagnostics.get_or_insert_with(Vec::new).push(maho_ai::utils::diagnostics::AssistantMessageDiagnostic { kind: "claude_sdk_oauth_session_continuity".into(), timestamp: (deps.now)(), error: None, details: Some(serde_json::to_value(observation).expect("observation serialization").as_object().expect("details").clone()) });
                 }
                 if let Err(error) = &result
                     && let Some(failure) = error.downcast_ref::<crate::errors::SdkResultFailure>()
                     && let Some(usage) = &failure.usage {
-                    crate::stream_protocol::update_usage(&model, &mut mapper.output, usage);
+                    crate::stream_protocol::update_usage(&model, &mut mapper.output, usage, crate::stream_protocol::UsageScope::Query);
                 }
                 let result = result?;
                 if result.aborted { anyhow::bail!("Operation aborted"); }
@@ -188,7 +188,7 @@ pub fn stream_anthropic_subscription(
                 if let Some(refusal) = crate::refusal::refusal_error(&message) { return Err(refusal.into()); }
                 if message["type"] == "assistant" && let Some(failure) = crate::errors::sdk_assistant_failure(&message) { anyhow::bail!(failure); }
                 if message["type"] == "result" && let Some(failure) = crate::errors::sdk_result_failure(&message) {
-                    if let Some(usage) = &failure.usage { crate::stream_protocol::update_usage(&model, &mut mapper.output, usage); }
+                    if let Some(usage) = &failure.usage { crate::stream_protocol::update_usage(&model, &mut mapper.output, usage, crate::stream_protocol::UsageScope::Query); }
                     return Err(failure.into());
                 }
                 if !started { events.push(Event::Start { partial: mapper.output.clone() }); started = true; }
@@ -198,8 +198,9 @@ pub fn stream_anthropic_subscription(
                     if let Some(event) = mapper.apply_stream_event(&message["event"]) { events.push(event); }
                 } else if message["type"] == "assistant" {
                     mapper.note_response_id(message["message"]["id"].as_str());
+                    if !saw_stream && message["message"]["usage"].is_object() { crate::stream_protocol::update_usage(&model, &mut mapper.output, &message["message"]["usage"], crate::stream_protocol::UsageScope::RequestStart); }
                 } else if message["type"] == "result" && message["subtype"] == "success" {
-                    crate::stream_protocol::update_usage(&model, &mut mapper.output, &message["usage"]);
+                    crate::stream_protocol::update_usage(&model, &mut mapper.output, &message["usage"], crate::stream_protocol::UsageScope::Query);
                     if mapper.output.stop_reason != StopReason::ToolUse && !message["stop_reason"].is_null() { mapper.output.stop_reason = crate::stream_protocol::map_stop_reason(message["stop_reason"].as_str()); }
                     if !saw_stream { mapper.output.content.push(ContentBlock::Text(TextContent { text: message["result"].as_str().unwrap_or_default().into(), ..Default::default() })); }
                     break;

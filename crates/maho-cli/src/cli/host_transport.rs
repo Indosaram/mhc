@@ -28,10 +28,17 @@ const BUSY_CONNECT_TIMEOUT_MS: u64 = 500;
 /// its future on a fresh OS thread that enters `handle` and blocks there, which is safe from any
 /// caller context.
 pub fn create_cli_host_transport(handle: tokio::runtime::Handle) -> Arc<dyn HostTransport> {
-    Arc::new(CliHostTransport { handle })
+    create_cli_host_transport_with_agent_dir(handle, None)
+}
+pub fn create_cli_host_transport_with_agent_dir(
+    handle: tokio::runtime::Handle,
+    agent_dir: Option<std::path::PathBuf>,
+) -> Arc<dyn HostTransport> {
+    Arc::new(CliHostTransport { handle, agent_dir })
 }
 
 struct CliHostTransport {
+    agent_dir: Option<std::path::PathBuf>,
     handle: tokio::runtime::Handle,
 }
 
@@ -48,25 +55,127 @@ impl CliHostTransport {
     }
 }
 
+async fn authenticated_client(
+    socket: &str,
+    agent_dir: Option<&Path>,
+) -> Result<maho_rpc::rpc_client::RpcClient, String> {
+    #[cfg(unix)]
+    {
+        let (socket, _) = maho_rpc::host_probe::authenticated_host_socket(
+            socket,
+            &serde_json::json!({"type":"get_protocol_info","observe":true}),
+            LIST_TIMEOUT_MS,
+            agent_dir,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        Ok(maho_rpc::rpc_client::RpcClient::from_stream(
+            socket.into_stream().map_err(|error| error.to_string())?,
+            Default::default(),
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = agent_dir;
+        maho_rpc::rpc_client::RpcClient::connect(Path::new(socket))
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
 impl HostTransport for CliHostTransport {
+    fn publish_task_status(
+        &self,
+        identity: &senpi_task::state::HostSessionIdentity,
+        status: senpi_task::state::TaskStatus,
+    ) -> Result<(), String> {
+        let socket = identity.socket.clone();
+        let path = identity.session_path.clone();
+        let agent_dir = self.agent_dir.clone();
+        self.block_on(async move {
+            let client = authenticated_client(&socket,agent_dir.as_deref()).await?;
+            let result = async {
+                client.open_session(serde_json::json!({"sessionPath":path,"kind":"worker","context":{},"retainOnDisconnect":true,"autoTitle":false})).await.map_err(|error| error.to_string())?;
+                client.set_session_context(std::collections::BTreeMap::from([("task_status".into(),Some(status.as_str().into()))])).await.map_err(|error| error.to_string())?;
+                Ok(())
+            }.await;
+            client.stop().await;
+            result
+        })?
+    }
+    fn durable_session_id(
+        &self,
+        identity: &senpi_task::state::HostSessionIdentity,
+    ) -> Result<Option<String>, String> {
+        let socket = identity.socket.clone();
+        let path = identity.session_path.clone();
+        let agent_dir = self.agent_dir.clone();
+        self.block_on(async move {
+            #[cfg(unix)]
+            let reply = maho_rpc::host_probe::ask_host_authenticated(
+                &socket,
+                &serde_json::json!({"type":"list_sessions","include_workers":true}),
+                LIST_TIMEOUT_MS,
+                agent_dir.as_deref(),
+            )
+            .await
+            .map_err(|error| error.to_string())?
+            .and_then(|reply| reply.get("data").cloned())
+            .ok_or("host identity listing unanswered")?;
+            #[cfg(not(unix))]
+            let reply = {
+                let _ = &agent_dir;
+                maho_rpc::host_probe::request_on_socket(
+                    &socket,
+                    &serde_json::json!({"type":"list_sessions","include_workers":true}),
+                    LIST_TIMEOUT_MS,
+                )
+                .await
+                .ok_or("host identity listing unanswered")?
+            };
+            let sessions = reply["sessions"]
+                .as_array()
+                .ok_or("host identity listing malformed")?;
+            Ok(sessions
+                .iter()
+                .find(|session| session["sessionPath"].as_str() == Some(path.as_str()))
+                .and_then(|session| session["durableSessionId"].as_str())
+                .map(str::to_owned))
+        })?
+    }
+
     fn daemon_reachable(&self, socket: &str) -> bool {
         let socket = socket.to_owned();
-        self.block_on(async move { daemon_reachable(&socket).await }).unwrap_or(false)
+        self.block_on(async move { daemon_reachable(&socket).await })
+            .unwrap_or(false)
+    }
+
+    fn live_session_paths_with_agent_dir(
+        &self,
+        socket: &str,
+        agent_dir: Option<&Path>,
+    ) -> Result<Vec<String>, String> {
+        let socket = socket.to_owned();
+        let agent_dir = agent_dir.map(ToOwned::to_owned);
+        self.block_on(async move {
+            live_session_paths_with_agent_dir(&socket, agent_dir.as_deref()).await
+        })?
     }
 
     fn live_session_paths(&self, socket: &str) -> Result<Vec<String>, String> {
-        let socket = socket.to_owned();
-        match self.block_on(async move { live_session_paths(&socket).await }) {
-            Ok(result) => result,
-            Err(error) => Err(error),
-        }
+        self.live_session_paths_with_agent_dir(socket, self.agent_dir.as_deref())
     }
 
-    fn close_host_session(&self, request: &HostSessionCloseRequest) -> Result<(), HostSessionCloseError> {
+    fn close_host_session(
+        &self,
+        request: &HostSessionCloseRequest,
+    ) -> Result<(), HostSessionCloseError> {
         let socket = request.host_session.socket.clone();
         let session_path = request.host_session.session_path.clone();
         let cwd = request.cwd.clone();
-        match self.block_on(async move { close_host_session(&socket, &session_path, cwd.as_deref()).await }) {
+        let agent_dir = self.agent_dir.clone();
+        match self.block_on(async move {
+            close_host_session(&socket, &session_path, cwd.as_deref(), agent_dir.as_deref()).await
+        }) {
             Ok(result) => result,
             Err(error) => Err(HostSessionCloseError { message: error }),
         }
@@ -78,9 +187,12 @@ impl HostTransport for CliHostTransport {
 /// counts too (omo#9069). Both go through the ported `host_probe`, the same probe the ensure path
 /// uses.
 async fn daemon_reachable(socket: &str) -> bool {
-    if maho_rpc::host_probe::probe_protocol_info(socket, maho_rpc::host_probe::DEFAULT_PROBE_TIMEOUT_MS)
-        .await
-        .is_some()
+    if maho_rpc::host_probe::probe_protocol_info(
+        socket,
+        maho_rpc::host_probe::DEFAULT_PROBE_TIMEOUT_MS,
+    )
+    .await
+    .is_some()
     {
         return true;
     }
@@ -92,57 +204,93 @@ async fn daemon_reachable(socket: &str) -> bool {
 /// and be claimed by the next reconciling session - #8932). An unanswered or malformed listing is an
 /// ERROR, never an empty list: "could not ask" must stay distinguishable from "holds nothing"
 /// (omo#9450).
-async fn live_session_paths(socket: &str) -> Result<Vec<String>, String> {
-    let reply = maho_rpc::host_probe::request_on_socket(
+async fn live_session_paths_with_agent_dir(
+    socket: &str,
+    agent_dir: Option<&Path>,
+) -> Result<Vec<String>, String> {
+    #[cfg(unix)]
+    let reply = maho_rpc::host_probe::ask_host_authenticated(
         socket,
         &serde_json::json!({ "type": "list_sessions", "include_workers": true }),
         LIST_TIMEOUT_MS,
+        agent_dir,
     )
-    .await;
+    .await
+    .map_err(|error| error.to_string())?
+    .and_then(|reply| reply.get("data").cloned());
+    #[cfg(not(unix))]
+    let reply = {
+        let _ = agent_dir;
+        maho_rpc::host_probe::request_on_socket(
+            socket,
+            &serde_json::json!({ "type": "list_sessions", "include_workers": true }),
+            LIST_TIMEOUT_MS,
+        )
+        .await
+    };
     let Some(reply) = reply else {
         return Err(format!("list_sessions failed on {socket}"));
     };
     let Some(sessions) = reply.get("sessions").and_then(serde_json::Value::as_array) else {
-        return Err(format!("list_sessions on {socket} answered without a session list"));
+        return Err(format!(
+            "list_sessions on {socket} answered without a session list"
+        ));
     };
     Ok(sessions
         .iter()
-        .filter_map(|row| row.get("sessionPath").and_then(serde_json::Value::as_str).map(str::to_owned))
+        .filter_map(|row| {
+            row.get("sessionPath")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
         .collect())
 }
 
 /// `close.closeHostSession`: attach to the recorded session path, abort whatever turn is in flight,
 /// then `close_session`. `Ok` ONLY when the daemon confirmed the close; a refused attach or
 /// close_session is `Err`. It NEVER signals a pid - the only pid on the other end is the daemon's.
-async fn close_host_session(socket: &str, session_path: &str, cwd: Option<&str>) -> Result<(), HostSessionCloseError> {
+async fn close_host_session(
+    socket: &str,
+    session_path: &str,
+    cwd: Option<&str>,
+    agent_dir: Option<&Path>,
+) -> Result<(), HostSessionCloseError> {
     let cwd = cwd.map(str::to_owned).unwrap_or_else(|| {
-        std::env::current_dir().map(|dir| dir.to_string_lossy().into_owned()).unwrap_or_default()
+        std::env::current_dir()
+            .map(|dir| dir.to_string_lossy().into_owned())
+            .unwrap_or_default()
     });
-    let mut client = maho_rpc::rpc_client::RpcSocketClient::connect(Path::new(socket))
+    let client = authenticated_client(socket, agent_dir)
         .await
-        .map_err(|error| HostSessionCloseError { message: format!("could not attach: {error}") })?;
+        .map_err(|error| HostSessionCloseError {
+            message: format!("could not attach: {error}"),
+        })?;
     // Re-attaching to close: `retainOnDisconnect` false so a failure mid-teardown cannot leave the
     // session pinned, and the worker kind keeps it out of every interactive session list.
     client
-        .open_session(
-            serde_json::json!({
-                "sessionPath": session_path,
-                "cwd": cwd,
-                "kind": "worker",
-                "context": {},
-                "retainOnDisconnect": false,
-                "autoTitle": false,
-            }),
-            |_| {},
-        )
+        .open_session(serde_json::json!({
+            "sessionPath": session_path,
+            "cwd": cwd,
+            "kind": "worker",
+            "context": {},
+            "retainOnDisconnect": false,
+            "autoTitle": false,
+        }))
         .await
-        .map_err(|error| HostSessionCloseError { message: format!("could not attach: {error}") })?;
+        .map_err(|error| HostSessionCloseError {
+            message: format!("could not attach: {error}"),
+        })?;
     // The abort carries the just-opened session's id (the frame's `sessionId`); a rejection is the
     // caller's to log, not fatal.
-    let _ = client.send(serde_json::json!({ "type": "abort" }), true, false).await;
-    client
-        .close_session(None, |_| {})
+    if let Err(error) = client.abort().await {
+        eprintln!("host close abort refused: {error}");
+    }
+    let result = client
+        .close_session(None)
         .await
-        .map_err(|error| HostSessionCloseError { message: format!("close_session rejected: {error}") })?;
-    Ok(())
+        .map_err(|error| HostSessionCloseError {
+            message: format!("close_session rejected: {error}"),
+        });
+    client.stop().await;
+    result
 }

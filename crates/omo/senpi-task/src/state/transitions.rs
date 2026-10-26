@@ -16,19 +16,34 @@ pub fn messageability_with_runner(
     host_session: Option<&super::types::HostSessionIdentity>,
     daemon_reachable: bool,
 ) -> Messageability {
+    if status == TaskStatus::Paused {
+        return Messageability::NotContinuable;
+    }
     match residency_state {
         ResidencyState::Disposed | ResidencyState::PersistedOnly => {
             return Messageability::NotContinuable;
         }
         ResidencyState::RpcDetached => {
             if runner_kind == Some(super::types::RunnerKind::HostSession)
-                && host_session.is_some() && daemon_reachable
-                && matches!(status, TaskStatus::Running | TaskStatus::Completed | TaskStatus::Error | TaskStatus::Interrupted) {
+                && host_session.is_some()
+                && daemon_reachable
+                && matches!(
+                    status,
+                    TaskStatus::Running
+                        | TaskStatus::Completed
+                        | TaskStatus::Error
+                        | TaskStatus::Interrupted
+                )
+            {
                 return Messageability::Revive;
             }
             if execution_mode == Some("process")
                 && runner_kind != Some(super::types::RunnerKind::HostSession)
-                && matches!(status, TaskStatus::Completed | TaskStatus::Error | TaskStatus::Interrupted) {
+                && matches!(
+                    status,
+                    TaskStatus::Completed | TaskStatus::Error | TaskStatus::Interrupted
+                )
+            {
                 return Messageability::Revive;
             }
             return Messageability::NotContinuable;
@@ -37,12 +52,15 @@ pub fn messageability_with_runner(
     }
     let resident = residency_state == ResidencyState::Resident;
     match status {
-        TaskStatus::Pending | TaskStatus::Running if resident => Messageability::Steer,
+        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused if resident => {
+            Messageability::Steer
+        }
         TaskStatus::Completed | TaskStatus::Error | TaskStatus::Interrupted if resident => {
             Messageability::Revive
         }
         TaskStatus::Pending
         | TaskStatus::Running
+        | TaskStatus::Paused
         | TaskStatus::Completed
         | TaskStatus::Error
         | TaskStatus::Interrupted
@@ -68,6 +86,8 @@ pub fn resolved_reasoning_fields(model: &ResolvedModelRecord) -> (Option<String>
 
 fn transition_status(transition: &TaskTransition, current: TaskStatus) -> TaskStatus {
     match transition {
+        TaskTransition::Pause { .. } => TaskStatus::Paused,
+        TaskTransition::Unpause { .. } => TaskStatus::Running,
         TaskTransition::Start { .. } => TaskStatus::Running,
         TaskTransition::Complete { .. } => TaskStatus::Completed,
         TaskTransition::Fail { .. } => TaskStatus::Error,
@@ -89,7 +109,9 @@ fn transition_residency(transition: &TaskTransition, current: ResidencyState) ->
         TaskTransition::PersistOnly { .. } => ResidencyState::PersistedOnly,
         TaskTransition::DetachRpc { .. } => ResidencyState::RpcDetached,
         TaskTransition::MarkResident { .. } => ResidencyState::Resident,
-        TaskTransition::Start { .. }
+        TaskTransition::Pause { .. }
+        | TaskTransition::Unpause { .. }
+        | TaskTransition::Start { .. }
         | TaskTransition::Complete { .. }
         | TaskTransition::Fail { .. }
         | TaskTransition::Cancel { .. }
@@ -105,7 +127,9 @@ fn changes_only_residency(transition: &TaskTransition) -> bool {
         | TaskTransition::PersistOnly { .. }
         | TaskTransition::DetachRpc { .. }
         | TaskTransition::MarkResident { .. } => true,
-        TaskTransition::Start { .. }
+        TaskTransition::Pause { .. }
+        | TaskTransition::Unpause { .. }
+        | TaskTransition::Start { .. }
         | TaskTransition::Complete { .. }
         | TaskTransition::Fail { .. }
         | TaskTransition::Cancel { .. }
@@ -116,9 +140,11 @@ fn changes_only_residency(transition: &TaskTransition) -> bool {
 
 fn is_status_transition_allowed(current: TaskStatus, transition: &TaskTransition) -> bool {
     match transition {
+        TaskTransition::Pause { .. } => current == TaskStatus::Running,
+        TaskTransition::Unpause { .. } => current == TaskStatus::Paused,
         TaskTransition::Start { .. } => current == TaskStatus::Pending,
         TaskTransition::Cancel { .. } => {
-            current == TaskStatus::Running || current == TaskStatus::Pending
+            matches!(current, TaskStatus::Running | TaskStatus::Pending | TaskStatus::Paused)
         }
         TaskTransition::Complete { .. }
         | TaskTransition::Fail { .. }
@@ -203,7 +229,9 @@ fn apply_transition_fields(record: &TaskRecord, transition: &TaskTransition) -> 
         }
         TaskTransition::Evict { .. }
         | TaskTransition::Dispose { .. }
-        | TaskTransition::MarkResident { .. } => {}
+        | TaskTransition::MarkResident { .. }
+        | TaskTransition::Pause { .. }
+        | TaskTransition::Unpause { .. } => {}
     }
     next
 }
@@ -237,6 +265,9 @@ pub fn transition_task_record(
     next.status = next_status;
     next.residency_state = transition_residency(transition, record.residency_state);
     next.updated_at = transition.timestamp().to_string();
+    if next_status.is_terminal() && !record.status.is_terminal() {
+        next.terminal_at = Some(transition.timestamp().to_string());
+    }
     let audit = TaskTransitionAudit::TransitionApplied {
         status: next.status,
         residency_state: next.residency_state,
@@ -277,6 +308,9 @@ pub fn mark_record_lost_for_reconciliation(
     }
     let mut next = record.clone();
     next.status = TaskStatus::Lost;
+    if !record.status.is_terminal() {
+        next.terminal_at = Some(timestamp.to_string());
+    }
     next.error_message = Some(error_message.to_string());
     next.updated_at = timestamp.to_string();
     let audit = TaskTransitionAudit::TransitionApplied {

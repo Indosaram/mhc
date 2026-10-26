@@ -4,7 +4,10 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::memfs::hooks_commit_msg::{COMMIT_MSG_HOOK_SCRIPT, with_memory_hook_checker};
 use crate::memfs::hooks_scripts::{POST_COMMIT_HOOK_SCRIPT, PRE_COMMIT_HOOK_SCRIPT};
+
+pub use crate::memfs::hooks_commit_msg::MemoryHookChecker;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -16,18 +19,38 @@ pub struct InstalledHook {
     pub path: PathBuf,
 }
 
-const HOOKS: [(&str, &str); 2] = [
-    ("pre-commit", PRE_COMMIT_HOOK_SCRIPT),
-    ("post-commit", POST_COMMIT_HOOK_SCRIPT),
-];
+/// Optional configuration when installing memory repository hooks.
+#[derive(Debug, Default, Clone)]
+pub struct InstallHooksOptions {
+    pub checker: Option<MemoryHookChecker>,
+}
 
 /// Write the memory hooks into `repo_path`, overwriting any previous copy.
 pub fn install_hooks(repo_path: &Path) -> io::Result<Vec<InstalledHook>> {
+    install_hooks_with_options(repo_path, &InstallHooksOptions::default())
+}
+
+/// Write the memory hooks into `repo_path` with the specified options.
+pub fn install_hooks_with_options(
+    repo_path: &Path,
+    options: &InstallHooksOptions,
+) -> io::Result<Vec<InstalledHook>> {
     let hooks_dir = resolve_hooks_dir(repo_path);
     fs::create_dir_all(&hooks_dir)?;
 
-    let mut installed = Vec::with_capacity(HOOKS.len());
-    for (name, script) in HOOKS {
+    let pre_commit_script =
+        with_memory_hook_checker(PRE_COMMIT_HOOK_SCRIPT, "pre-commit", options.checker.as_ref());
+    let commit_msg_script =
+        with_memory_hook_checker(COMMIT_MSG_HOOK_SCRIPT, "commit-msg", options.checker.as_ref());
+
+    let hooks = [
+        ("pre-commit", pre_commit_script),
+        ("commit-msg", commit_msg_script),
+        ("post-commit", POST_COMMIT_HOOK_SCRIPT.to_string()),
+    ];
+
+    let mut installed = Vec::with_capacity(hooks.len());
+    for (name, script) in hooks {
         let dest = hooks_dir.join(name);
         atomic_write_executable(&dest, script.as_bytes())?;
         installed.push(InstalledHook {
@@ -44,7 +67,8 @@ pub fn resolve_hooks_dir(repo_path: &Path) -> PathBuf {
     resolve_common_git_dir(repo_path).join("hooks")
 }
 
-fn resolve_common_git_dir(repo_path: &Path) -> PathBuf {
+/// Resolve the common `.git` directory for normal repositories or linked worktrees.
+pub fn resolve_common_git_dir(repo_path: &Path) -> PathBuf {
     let dot_git = repo_path.join(".git");
     if !dot_git.exists() || dot_git.is_dir() {
         return dot_git;

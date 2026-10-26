@@ -94,6 +94,7 @@ fn validated_tip(worktree: &ReflectionWorktree) -> ValidatedReflectionTip {
         crate::reflection::completion_validation::CompletionValidation::Valid {
             tip_sha,
             changed_paths,
+            ..
         } => ValidatedReflectionTip {
             tip_sha,
             changed_paths,
@@ -128,7 +129,10 @@ fn given_a_validated_tip_when_auto_integration_lands_then_it_creates_a_no_ff_rec
     assert_eq!(result.integration_sha.as_deref(), Some(head.as_str()));
 
     let parents = exec
-        .run_in(&fix.parent_dir, &["rev-list", "--parents", "-n", "1", "HEAD"])
+        .run_in(
+            &fix.parent_dir,
+            &["rev-list", "--parents", "-n", "1", "HEAD"],
+        )
         .unwrap()
         .stdout
         .split_whitespace()

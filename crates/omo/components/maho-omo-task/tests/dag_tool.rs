@@ -30,7 +30,7 @@ fn given_workflow_schema_when_parameters_are_registered_then_only_latest_actions
     let schema = create_dag_tool(deps(&f.manager)).parameters;
     let properties = schema["properties"].as_object().expect("schema properties");
     let actions = properties["action"]["anyOf"].as_array().expect("action choices");
-    assert_eq!(actions.len(), 8);
+    assert_eq!(actions.len(), 11);
     assert!(actions.iter().all(|action| action["const"] != "detach"));
     assert!(properties.get("detach").is_none());
 }
@@ -41,6 +41,9 @@ fn given_send_message_with_surrounding_whitespace_when_dispatching_send_then_ori
     let started = run_dag_tool(&deps(&f.manager), DagToolInput {
         action: "start".into(), definition: Some(default_definition()), run_id: None,
         reason: None, detach: None, node_id: None, node_ids: None, message: None, prompt: None,
+    guidance_id: None,
+    text: None,
+    remove: None,
     }).expect("start");
     let run_id = started.details.expect("details")["run_id"].as_str().expect("run id").to_owned();
     let sent = Arc::new(Mutex::new(String::new()));
@@ -48,11 +51,14 @@ fn given_send_message_with_surrounding_whitespace_when_dispatching_send_then_ori
     let mut dependencies = deps(&f.manager);
     dependencies.send = Some(Arc::new(move |_, _, message| {
         *seen.lock().expect("sent mutex") = message.to_owned();
-        Ok(DagToolSendOutcome { node_id: "plan".into(), task_id: "task-1".into(), delivery: DagToolSendDelivery::Steer, queue_position: None })
+        Ok(DagToolSendOutcome { node_id: "plan".into(), task_id: Some("task-1".into()), delivery: DagToolSendDelivery::Steer, guidance_id: None, effect_id: None, queue_position: None })
     }));
     run_dag_tool(&dependencies, DagToolInput {
         action: "send".into(), definition: None, run_id: Some(run_id), reason: None,
         detach: None, node_id: Some("plan".into()), node_ids: None, message: Some("  continue  ".into()), prompt: None,
+    guidance_id: None,
+    text: None,
+    remove: None,
     }).expect("send");
     assert_eq!(*sent.lock().expect("sent mutex"), "  continue  ");
 }
@@ -143,7 +149,14 @@ fn deps(manager: &DagManager) -> DagToolDeps {
         cancel: None,
         retry: None,
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     }
 }
 
@@ -177,6 +190,9 @@ fn start_action_roundtrips_through_manager() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -210,6 +226,9 @@ fn repeat_start_reuses_same_run() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
 
@@ -225,6 +244,9 @@ fn repeat_start_reuses_same_run() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = second.details.unwrap();
@@ -249,6 +271,9 @@ fn start_without_definition_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -302,6 +327,9 @@ fn cyclic_definition_rejected_with_diagnostics() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -349,6 +377,9 @@ fn category_with_model_rejected() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -390,6 +421,9 @@ fn both_targets_rejected() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -429,6 +463,9 @@ fn no_target_rejected() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -468,6 +505,9 @@ fn subagent_type_and_model_accepted() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -494,6 +534,9 @@ fn attach_roundtrips_live_snapshot() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -510,6 +553,9 @@ fn attach_roundtrips_live_snapshot() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -534,6 +580,9 @@ fn snapshot_returns_manager_projection() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -550,6 +599,9 @@ fn snapshot_returns_manager_projection() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -573,6 +625,9 @@ fn snapshot_unknown_run_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -595,6 +650,9 @@ fn snapshot_foreign_session_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -607,7 +665,14 @@ fn snapshot_foreign_session_rejects() {
         cancel: None,
         retry: None,
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
     let result = run_dag_tool(
         &foreign,
@@ -621,6 +686,9 @@ fn snapshot_foreign_session_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -643,6 +711,9 @@ fn wait_with_detach_disabled_blocks_and_resolves() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -667,7 +738,14 @@ fn wait_with_detach_disabled_blocks_and_resolves() {
         cancel: None,
         retry: None,
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -682,6 +760,9 @@ fn wait_with_detach_disabled_blocks_and_resolves() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -705,6 +786,9 @@ fn wait_with_default_detach_returns_detached() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -722,7 +806,14 @@ fn wait_with_default_detach_returns_detached() {
         cancel: None,
         retry: None,
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -737,6 +828,9 @@ fn wait_with_default_detach_returns_detached() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -762,6 +856,9 @@ fn wait_settled_run_returns_final_result() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -784,7 +881,14 @@ fn wait_settled_run_returns_final_result() {
         cancel: None,
         retry: None,
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -799,6 +903,9 @@ fn wait_settled_run_returns_final_result() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -821,6 +928,9 @@ fn wait_without_wait_surface_enforces_ownership() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -843,6 +953,9 @@ fn cancel_action_forwards_reason() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -860,7 +973,14 @@ fn cancel_action_forwards_reason() {
         })),
         retry: None,
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -875,6 +995,9 @@ fn cancel_action_forwards_reason() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -897,6 +1020,9 @@ fn cancel_foreign_run_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -914,7 +1040,14 @@ fn cancel_foreign_run_rejects() {
         })),
         retry: None,
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -929,6 +1062,9 @@ fn cancel_foreign_run_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -982,6 +1118,9 @@ fn start_warnings_on_contract_violation() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -1040,6 +1179,9 @@ fn contract_complete_definition_has_empty_warnings() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -1078,6 +1220,9 @@ fn retired_momus_id_starts_as_ordinary_agent() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -1106,7 +1251,14 @@ fn retry_without_run_id_rejects() {
             manager_clone.snapshot(&run.to_string(), PARENT_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1121,6 +1273,9 @@ fn retry_without_run_id_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -1144,6 +1299,9 @@ fn retry_with_both_node_id_and_node_ids_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -1162,7 +1320,14 @@ fn retry_with_both_node_id_and_node_ids_rejects() {
             manager_clone.snapshot(&run.to_string(), PARENT_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1177,6 +1342,9 @@ fn retry_with_both_node_id_and_node_ids_rejects() {
             node_ids: Some(vec!["build".into()]),
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -1201,6 +1369,9 @@ fn send_without_message_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -1218,12 +1389,21 @@ fn send_without_message_rejects() {
             sent_clone.lock().unwrap().push(format!("{run}:{node}:{message}"));
             Ok(DagToolSendOutcome {
                 node_id: node.to_string(),
-                task_id: "task-1".into(),
+                task_id: Some("task-1".into()),
+                guidance_id: None,
+                effect_id: None,
                 delivery: DagToolSendDelivery::Steer,
                 queue_position: None,
             })
         })),
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1238,6 +1418,9 @@ fn send_without_message_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -1261,6 +1444,9 @@ fn send_without_node_id_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -1277,6 +1463,9 @@ fn send_without_node_id_rejects() {
             node_ids: None,
             message: Some("keep going".into()),
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -1299,6 +1488,9 @@ fn amend_without_definition_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -1307,6 +1499,7 @@ fn amend_without_definition_rejects() {
     let amended_clone = amended.clone();
     let manager_clone = f.manager.clone();
     let with_amend = DagToolDeps {
+        cancel_node: None, guide: None, pause_reason: None,
         manager: f.manager.clone(),
         parent_session_id: Arc::new(|| PARENT_SESSION_ID.into()),
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
@@ -1332,6 +1525,9 @@ fn amend_without_definition_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -1355,6 +1551,9 @@ fn retry_prompt_override_alongside_node_ids_rejects() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -1371,6 +1570,9 @@ fn retry_prompt_override_alongside_node_ids_rejects() {
             node_ids: Some(vec!["plan".into(), "build".into()]),
             message: None,
             prompt: Some("try harder".into()),
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -1394,6 +1596,9 @@ fn amend_definition_with_impossible_target_rejects_before_seam() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -1402,6 +1607,7 @@ fn amend_definition_with_impossible_target_rejects_before_seam() {
     let amended_clone = amended.clone();
     let manager_clone = f.manager.clone();
     let with_amend = DagToolDeps {
+        cancel_node: None, guide: None, pause_reason: None,
         manager: f.manager.clone(),
         parent_session_id: Arc::new(|| PARENT_SESSION_ID.into()),
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
@@ -1444,6 +1650,9 @@ fn amend_definition_with_impossible_target_rejects_before_seam() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -1468,6 +1677,9 @@ fn retry_seam_receives_targets_and_prompt() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -1486,7 +1698,14 @@ fn retry_seam_receives_targets_and_prompt() {
             manager_clone.snapshot(&run.to_string(), PARENT_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1501,6 +1720,9 @@ fn retry_seam_receives_targets_and_prompt() {
             node_ids: None,
             message: None,
             prompt: Some("try harder".into()),
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -1525,6 +1747,9 @@ fn retry_with_neither_selector_passes_none() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -1544,7 +1769,14 @@ fn retry_with_neither_selector_passes_none() {
             manager_clone.snapshot(&run_id_clone, PARENT_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     run_dag_tool(
@@ -1559,6 +1791,9 @@ fn retry_with_neither_selector_passes_none() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     assert_eq!(*calls.lock().unwrap(), vec![None]);
@@ -1579,6 +1814,9 @@ fn send_seam_returns_delivery_kind() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -1593,12 +1831,21 @@ fn send_seam_returns_delivery_kind() {
         send: Some(Arc::new(move |_run: &str, node: &str, _msg: &str| {
             Ok(DagToolSendOutcome {
                 node_id: node.to_string(),
-                task_id: "task-7".into(),
+                task_id: Some("task-7".into()),
+                guidance_id: None,
+                effect_id: None,
                 delivery: DagToolSendDelivery::Revive,
                 queue_position: None,
             })
         })),
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1613,6 +1860,9 @@ fn send_seam_returns_delivery_kind() {
             node_ids: None,
             message: Some("resume with the new spec".into()),
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -1637,6 +1887,9 @@ fn amend_seam_receives_compiled_definition() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -1645,6 +1898,7 @@ fn amend_seam_receives_compiled_definition() {
     let amended_clone = amended.clone();
     let manager_clone = f.manager.clone();
     let with_amend = DagToolDeps {
+        cancel_node: None, guide: None, pause_reason: None,
         manager: f.manager.clone(),
         parent_session_id: Arc::new(|| PARENT_SESSION_ID.into()),
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
@@ -1702,6 +1956,9 @@ fn amend_seam_receives_compiled_definition() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -1728,6 +1985,9 @@ fn engine_refusal_node_not_found_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -1747,7 +2007,14 @@ fn engine_refusal_node_not_found_surfaces_verbatim() {
             Err(DagToolExecutionError::Control(err))
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1762,6 +2029,9 @@ fn engine_refusal_node_not_found_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -1786,6 +2056,9 @@ fn engine_refusal_node_not_retryable_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -1805,7 +2078,14 @@ fn engine_refusal_node_not_retryable_surfaces_verbatim() {
             Err(DagToolExecutionError::Control(err))
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1820,6 +2100,9 @@ fn engine_refusal_node_not_retryable_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -1844,6 +2127,9 @@ fn engine_refusal_node_not_continuable_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -1863,7 +2149,14 @@ fn engine_refusal_node_not_continuable_surfaces_verbatim() {
             Err(DagToolExecutionError::Control(err))
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1878,6 +2171,9 @@ fn engine_refusal_node_not_continuable_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -1902,6 +2198,9 @@ fn engine_refusal_run_still_active_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -1921,7 +2220,14 @@ fn engine_refusal_run_still_active_surfaces_verbatim() {
             Err(DagToolExecutionError::Control(err))
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1936,6 +2242,9 @@ fn engine_refusal_run_still_active_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -1960,6 +2269,9 @@ fn engine_refusal_invalid_arguments_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -1979,7 +2291,14 @@ fn engine_refusal_invalid_arguments_surfaces_verbatim() {
             Err(DagToolExecutionError::Control(err))
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -1994,6 +2313,9 @@ fn engine_refusal_invalid_arguments_surfaces_verbatim() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -2018,11 +2340,15 @@ fn amend_refusal_invalid_amendment_surfaces() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
 
     let with_error = DagToolDeps {
+        cancel_node: None, guide: None, pause_reason: None,
         manager: f.manager.clone(),
         parent_session_id: Arc::new(|| PARENT_SESSION_ID.into()),
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
@@ -2051,6 +2377,9 @@ fn amend_refusal_invalid_amendment_surfaces() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -2074,11 +2403,15 @@ fn amend_refusal_amend_running_node_surfaces() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
 
     let with_error = DagToolDeps {
+        cancel_node: None, guide: None, pause_reason: None,
         manager: f.manager.clone(),
         parent_session_id: Arc::new(|| PARENT_SESSION_ID.into()),
         root_session_id: Arc::new(|| ROOT_SESSION_ID.into()),
@@ -2107,6 +2440,9 @@ fn amend_refusal_amend_running_node_surfaces() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -2130,6 +2466,9 @@ fn retry_foreign_session_enforces_run_not_owned() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let run_id = started.details.unwrap()["run_id"].as_str().unwrap().to_string();
@@ -2148,7 +2487,14 @@ fn retry_foreign_session_enforces_run_not_owned() {
             manager_clone.snapshot(&run.to_string(), FOREIGN_SESSION_ID).map_err(|e| ToolError::Message(e.to_string()).into())
         })),
         send: None,
-        amend: None,
+        amend:None,
+
+    cancel_node:None,
+
+    guide:None,
+
+    pause_reason:None,
+
     };
 
     let result = run_dag_tool(
@@ -2163,6 +2509,9 @@ fn retry_foreign_session_enforces_run_not_owned() {
             node_ids: None,
             message: None,
             prompt: None,
+        guidance_id: None,
+        text: None,
+        remove: None,
         },
     ).unwrap();
     let details = result.details.unwrap();
@@ -2184,7 +2533,7 @@ fn workflow_tool_schema_offers_control_verbs() {
         .collect();
     assert_eq!(
         members,
-        vec!["start", "attach", "snapshot", "wait", "cancel", "retry", "send", "amend"]
+        vec!["start", "attach", "snapshot", "wait", "cancel", "retry", "send", "amend", "resume", "cancel_node", "guide"]
     );
     let desc = action_schema["description"].as_str().unwrap();
     assert!(desc.contains("retry"));
@@ -2198,6 +2547,9 @@ async fn blocking_wait_does_not_starve_the_executor_that_drives_the_run() {
     let started = run_dag_tool(&deps(&f.manager), DagToolInput {
         action: "start".into(), definition: Some(default_definition()), run_id: None,
         reason: None, detach: None, node_id: None, node_ids: None, message: None, prompt: None,
+    guidance_id: None,
+    text: None,
+    remove: None,
     }).expect("start");
     let run_id = started.details.expect("details")["run_id"].as_str().expect("run id").to_owned();
     // The run settles only when a task on this same current-thread executor makes progress, the way

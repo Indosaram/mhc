@@ -340,7 +340,7 @@ fn prompt(suffix: &'static str) -> ExtensionHandler {
                 return Err("wrong event".into());
             };
             assert_eq!(ctx.get_system_prompt(), event.system_prompt);
-            Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult {
+            Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt_parts: None,
                 system_prompt: Some(format!("{}{suffix}", event.system_prompt)),
                 message: None,
             }))
@@ -465,7 +465,7 @@ async fn before_agent_start_collects_messages_in_order() {
     let message = |name: &'static str| -> ExtensionHandler {
         Arc::new(move |_, _| {
             Box::pin(async move {
-                Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult {
+                Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt_parts: None,
                     message: Some(CustomMessage {
                         custom_type: name.into(),
                         content: vec![],
@@ -1654,7 +1654,14 @@ fn clone_taken_before_binding_observes_later_mode_and_ui() {
     let context = tool_runner.create_context().expect("context");
     assert_eq!(context.mode, ExtensionMode::Tui);
     assert!(context.has_ui);
-    assert!(Arc::ptr_eq(&context.ui, &ui));
+    // Binding installs the lifecycle wrapper; pre-existing clones must see that
+    // same wrapper, rather than retaining their original UI.
+    let bound = runner.create_context().expect("bound context");
+    assert!(Arc::ptr_eq(&context.ui, &bound.ui));
+    assert!(std::ptr::eq(
+        context.ui.factories().expect("bound UI factories"),
+        bound.ui.factories().expect("runner UI factories"),
+    ));
 }
 
 #[tokio::test]
@@ -5473,4 +5480,24 @@ fn forged_monitor_json_never_supplies_private_parent_and_stale_context_cannot_mu
             .is_err()
     );
     assert!(host.monitor.lock().unwrap().as_ref().unwrap().2.is_none());
+}
+
+#[tokio::test]
+async fn move_emission_returns_each_failure_and_runs_later_handlers() {
+    let bad: ExtensionHandler = Arc::new(|_, _| Box::pin(async { Err(ExtensionFailure::new("export refused")) }));
+    let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = called.clone();
+    let good: ExtensionHandler = Arc::new(move |event, _| {
+        let seen = seen.clone();
+        Box::pin(async move {
+            assert!(matches!(event, ExtensionEvent::SessionMoveExport { .. }));
+            seen.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(EventResult::None)
+        })
+    });
+    let mut runner = runner(vec![extension("bad", EventKind::SessionMoveExport, bad), extension("good", EventKind::SessionMoveExport, good)]);
+    let failures = runner.emit_session_move(ExtensionEvent::SessionMoveExport { move_id: "move".into(), dir: "/tmp/export".into(), signal: AbortSignal::default() }).await.expect("emit");
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].extension_path, "bad");
+    assert!(called.load(std::sync::atomic::Ordering::SeqCst));
 }

@@ -7,14 +7,14 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lsp_core::lsp::process::{create_spawn_command, SpawnPlatform};
-use lsp_core::lsp::server_installation::{resolve_server_binary, ResolveServerBinaryOptions};
+use lsp_core::lsp::process::{SpawnPlatform, create_spawn_command};
+use lsp_core::lsp::server_installation::{ResolveServerBinaryOptions, resolve_server_binary};
 use maho_ext_api::{ToolContent, ToolResultEvent};
 use maho_omo_post_mutation::{
-    extract_mutated_file_paths, is_mutation_tool_name, run_single_flight, PostMutationEvent,
+    PostMutationEvent, extract_mutated_file_paths, is_mutation_tool_name, run_single_flight,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use tokio::fs;
 
 // Mutation formatting is intentionally opt-in through project markers and fail-open by default.
@@ -46,6 +46,7 @@ impl FormatMode {
 pub enum FormatterTool {
     Biome,
     Prettier,
+    BunFormat,
     Rustfmt,
     Gofmt,
     Ruff,
@@ -56,6 +57,7 @@ impl FormatterTool {
         match self {
             Self::Biome => "biome",
             Self::Prettier => "prettier",
+            Self::BunFormat => "bun format",
             Self::Rustfmt => "rustfmt",
             Self::Gofmt => "gofmt",
             Self::Ruff => "ruff",
@@ -134,11 +136,18 @@ pub fn resolve_format_mode(config: &FormatOnMutationConfig, language: &str) -> F
     config.mode.unwrap_or(DEFAULT_FORMAT_MODE)
 }
 
-pub fn detect_formatter(markers: &[String], file_path: &Path, config_text: &str) -> Option<Formatter> {
+pub fn detect_formatter(
+    markers: &[String],
+    file_path: &Path,
+    config_text: &str,
+) -> Option<Formatter> {
     let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     // Biome takes precedence over prettier
-    if markers.iter().any(|m| m == "biome.json" || m == "biome.jsonc") {
+    if markers
+        .iter()
+        .any(|m| m == "biome.json" || m == "biome.jsonc")
+    {
         return Some(Formatter {
             tool: FormatterTool::Biome,
             command: "biome".to_string(),
@@ -161,7 +170,11 @@ pub fn detect_formatter(markers: &[String], file_path: &Path, config_text: &str)
     }
 
     // Rustfmt
-    if markers.iter().any(|m| m == "rustfmt.toml" || m == "Cargo.toml") && ext == "rs" {
+    if markers
+        .iter()
+        .any(|m| m == "rustfmt.toml" || m == "Cargo.toml")
+        && ext == "rs"
+    {
         return Some(Formatter {
             tool: FormatterTool::Rustfmt,
             command: "rustfmt".to_string(),
@@ -181,7 +194,9 @@ pub fn detect_formatter(markers: &[String], file_path: &Path, config_text: &str)
     // Ruff
     let has_ruff_marker = markers.iter().any(|m| m == "ruff.toml");
     let has_pyproject_ruff = markers.iter().any(|m| m == "pyproject.toml")
-        && config_text.lines().any(|l| l.trim_start().starts_with("[tool.ruff]"));
+        && config_text
+            .lines()
+            .any(|l| l.trim_start().starts_with("[tool.ruff]"));
 
     if (has_ruff_marker || has_pyproject_ruff) && ext == "py" {
         return Some(Formatter {
@@ -292,14 +307,20 @@ pub async fn is_git_ignored(file_path: &Path, cwd: &Path) -> bool {
     }
 }
 
-pub async fn default_packaged_daemon_format(file_path: &Path) -> Result<DaemonFormatResult, String> {
+pub async fn default_packaged_daemon_format(
+    file_path: &Path,
+) -> Result<DaemonFormatResult, String> {
     let mut args = Map::new();
     args.insert("filePath".to_string(), json!(file_path.to_string_lossy()));
 
     let options = lsp_daemon::daemon_client::CallToolOptions::default();
     match lsp_daemon::daemon_client::call_tool_via_daemon("format", args, options).await {
         Ok(res) => {
-            let content = res.content.into_iter().filter_map(|v| serde_json::from_value::<ToolContent>(v).ok()).collect();
+            let content = res
+                .content
+                .into_iter()
+                .filter_map(|v| serde_json::from_value::<ToolContent>(v).ok())
+                .collect();
             Ok(DaemonFormatResult {
                 content: Some(content),
                 details: res.details,
@@ -328,8 +349,14 @@ pub async fn format_one(
     if let Some(Ok(daemon_res)) = daemon_outcome {
         if let Some(details) = daemon_res.details.as_ref().and_then(|d| d.as_object()) {
             if details.get("status").and_then(|s| s.as_str()) == Some("formatted") {
-                let added = details.get("linesAdded").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let removed = details.get("linesRemoved").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let added = details
+                    .get("linesAdded")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                let removed = details
+                    .get("linesRemoved")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
                 return FormatResult {
                     status: FormatStatus::Formatted,
                     added,
@@ -358,14 +385,21 @@ pub async fn format_one(
 
     // 2. CLI fallback: resolve binary with fallback to resolveServerBinary
     let binary = if let Some(rb) = resolve_binary {
-        rb(&formatter.command, cwd)
-            .or_else(|| {
-                let opts = ResolveServerBinaryOptions::default();
-                resolve_server_binary(std::slice::from_ref(&formatter.command), Some(&cwd.to_string_lossy()), &opts)
-            })
+        rb(&formatter.command, cwd).or_else(|| {
+            let opts = ResolveServerBinaryOptions::default();
+            resolve_server_binary(
+                std::slice::from_ref(&formatter.command),
+                Some(&cwd.to_string_lossy()),
+                &opts,
+            )
+        })
     } else {
         let opts = ResolveServerBinaryOptions::default();
-        resolve_server_binary(std::slice::from_ref(&formatter.command), Some(&cwd.to_string_lossy()), &opts)
+        resolve_server_binary(
+            std::slice::from_ref(&formatter.command),
+            Some(&cwd.to_string_lossy()),
+            &opts,
+        )
     };
 
     let Some(binary_path) = binary else {
@@ -378,7 +412,13 @@ pub async fn format_one(
 
     let before = match fs::read_to_string(file_path).await {
         Ok(text) => text,
-        Err(_) => return FormatResult { status: FormatStatus::Unchanged, added: 0, removed: 0 },
+        Err(_) => {
+            return FormatResult {
+                status: FormatStatus::Unchanged,
+                added: 0,
+                removed: 0,
+            };
+        }
     };
 
     let mut cmd_parts = vec![binary_path];
@@ -393,7 +433,13 @@ pub async fn format_one(
     let env_map: std::collections::BTreeMap<String, String> = std::env::vars().collect();
     let prepared = match create_spawn_command(&cmd_parts, platform, "cmd.exe", &env_map) {
         Ok(p) => p,
-        Err(_) => return FormatResult { status: FormatStatus::Missing, added: 0, removed: 0 },
+        Err(_) => {
+            return FormatResult {
+                status: FormatStatus::Missing,
+                added: 0,
+                removed: 0,
+            };
+        }
     };
 
     let mut tokio_cmd = tokio::process::Command::new(&prepared.command);
@@ -411,7 +457,13 @@ pub async fn format_one(
 
     let mut child = match tokio_cmd.spawn() {
         Ok(c) => c,
-        Err(_) => return FormatResult { status: FormatStatus::Missing, added: 0, removed: 0 },
+        Err(_) => {
+            return FormatResult {
+                status: FormatStatus::Missing,
+                added: 0,
+                removed: 0,
+            };
+        }
     };
 
     let exit_res = tokio::time::timeout(Duration::from_millis(timeout_ms), child.wait()).await;
@@ -427,7 +479,11 @@ pub async fn format_one(
             }
         }
         Ok(Err(_)) => {
-            return FormatResult { status: FormatStatus::Missing, added: 0, removed: 0 };
+            return FormatResult {
+                status: FormatStatus::Missing,
+                added: 0,
+                removed: 0,
+            };
         }
         Err(_) => {
             let _ = child.kill().await;
@@ -442,7 +498,13 @@ pub async fn format_one(
 
     let after = match fs::read_to_string(file_path).await {
         Ok(text) => text,
-        Err(_) => return FormatResult { status: FormatStatus::Unchanged, added: 0, removed: 0 },
+        Err(_) => {
+            return FormatResult {
+                status: FormatStatus::Unchanged,
+                added: 0,
+                removed: 0,
+            };
+        }
     };
 
     if after == before {
@@ -557,7 +619,8 @@ impl FormatterStep {
                 (marker_names, pyproject_text)
             });
 
-            let Some(marker) = detect_formatter(marker_names, &file_path, pyproject_text) else {
+            let Some(mut marker) = detect_formatter(marker_names, &file_path, pyproject_text)
+            else {
                 continue;
             };
 
@@ -572,6 +635,14 @@ impl FormatterStep {
                 continue;
             }
 
+            if marker.tool == FormatterTool::Prettier
+                && let Some(command) = resolve_bun_format(cwd).await {
+                    marker = Formatter {
+                        tool: FormatterTool::BunFormat,
+                        command,
+                        args: vec!["format".into(), "--write".into()],
+                    };
+                }
             let fp_str = file_path.to_string_lossy().into_owned();
             let fp_clone = file_path.clone();
             let marker_clone = marker.clone();
@@ -597,10 +668,7 @@ impl FormatterStep {
                 let rel_display = rel_path.to_string_lossy().replace('\\', "/");
                 let text = format!(
                     "\n\n(OmO) auto-formatted {} with {} (+{}/-{} lines). File content changed; re-read before exact-text edits.",
-                    rel_display,
-                    marker.tool,
-                    result.added,
-                    result.removed
+                    rel_display, marker.tool, result.added, result.removed
                 );
                 additions.push(ToolContent::Text {
                     text,
@@ -609,20 +677,33 @@ impl FormatterStep {
             }
 
             if result.status == FormatStatus::Missing && mode == FormatMode::Required {
-                required_error = Some(format!("Formatter {} is unavailable for {}", marker.tool, raw_path));
+                required_error = Some(format!(
+                    "Formatter {} is unavailable for {}",
+                    marker.tool, raw_path
+                ));
             }
 
             if result.status == FormatStatus::Missing && mode == FormatMode::BestEffort {
                 let notice_key = format!("{}:{}", sid, marker.tool);
-                let mut notices = self.missing_notices.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut notices = self
+                    .missing_notices
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let (true, Some(logger)) = (notices.insert(notice_key), &self.logger) {
-                    logger.warn(&format!("Formatter {} unavailable; install it with bun add -d", marker.tool));
+                    logger.warn(&format!(
+                        "Formatter {} unavailable; install it with bun add -d",
+                        marker.tool
+                    ));
                 }
             }
         }
 
         FormatMutationOutcome {
-            content: if additions.is_empty() { None } else { Some(additions) },
+            content: if additions.is_empty() {
+                None
+            } else {
+                Some(additions)
+            },
             error: required_error,
         }
     }
@@ -630,4 +711,151 @@ impl FormatterStep {
 
 pub fn create_formatter_step(options: FormatterStepOptions) -> FormatterStep {
     FormatterStep::new(options)
+}
+
+/// Resolve only Bun's native formatter, never a same-named project script or executable.
+pub async fn resolve_bun_format(cwd: &Path) -> Option<String> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    let mut root = cwd;
+    loop {
+        if home.as_deref() == Some(root) {
+            return None;
+        }
+        let manifest = read_package_json(root);
+        if ["bun.lock", "bun.lockb", "bunfig.toml"]
+            .iter()
+            .any(|name| root.join(name).exists())
+            || manifest
+                .get("packageManager")
+                .and_then(Value::as_str)
+                .is_some_and(|s| s.starts_with("bun@"))
+        {
+            break;
+        }
+        if root.join(".git").exists() {
+            return None;
+        }
+        root = root.parent()?;
+    }
+    let mut dir = cwd;
+    let mut found_manifest = false;
+    loop {
+        if !found_manifest && dir.join("package.json").exists() {
+            found_manifest = true;
+            if read_package_json(dir)
+                .pointer("/scripts/format")
+                .and_then(Value::as_str)
+                .is_some()
+            {
+                return None;
+            }
+        }
+        let suffixes: &[&str] = if cfg!(windows) {
+            &[".exe", ".bunx", ".cmd", ""]
+        } else {
+            &[""]
+        };
+        if suffixes.iter().any(|suffix| {
+            dir.join("node_modules/.bin")
+                .join(format!("format{suffix}"))
+                .exists()
+        }) {
+            return None;
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => break,
+        }
+    }
+    let extensions = [".tsx", ".ts", ".jsx", ".cts", ".cjs", ".js", ".mjs", ".mts"];
+    if cwd.join("format").is_file()
+        || extensions
+            .iter()
+            .any(|ext| cwd.join(format!("format{ext}")).is_file())
+        || (cwd.join("format").is_dir()
+            && (cwd.join("format/package.json").is_file()
+                || extensions
+                    .iter()
+                    .any(|ext| cwd.join("format").join(format!("index{ext}")).is_file())))
+    {
+        return None;
+    }
+    let binary = resolve_server_binary(
+        &["bun".into()],
+        Some(&cwd.to_string_lossy()),
+        &ResolveServerBinaryOptions::default(),
+    )?;
+    let probe = tempfile::tempdir().ok()?;
+    let mut help = tokio::process::Command::new(&binary);
+    help.args(["format", "--help"])
+        .current_dir(probe.path())
+        .kill_on_drop(true);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    if !tokio::time::timeout_at(deadline, help.output())
+        .await
+        .ok()?
+        .ok()?
+        .status
+        .success()
+    {
+        return None;
+    }
+    let file = probe.path().join("probe.ts");
+    fs::write(&file, "const a=1\n").await.ok()?;
+    let mut write = tokio::process::Command::new(&binary);
+    write
+        .args(["format", "--write", "probe.ts"])
+        .current_dir(probe.path())
+        .kill_on_drop(true);
+    if !tokio::time::timeout_at(deadline, write.output())
+        .await
+        .ok()?
+        .ok()?
+        .status
+        .success()
+    {
+        return None;
+    }
+    if fs::read_to_string(file).await.ok()? == "const a=1\n" {
+        return None;
+    }
+    Some(binary)
+}
+fn read_package_json(dir: &Path) -> Value {
+    std::fs::read(dir.join("package.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or(Value::Null)
+}
+
+#[cfg(all(test, unix))]
+mod bun_format_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    #[tokio::test]
+    async fn resolves_only_native_bun_and_proves_in_place_rewrite() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("bun.lock"), "").unwrap();
+        // The resolver's binary search accepts a project-local executable.
+        let bin = root.path().join("node_modules/.bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let bun = bin.join("bun");
+        std::fs::write(&bun, "#!/bin/sh\nif [ \"$2\" = --help ]; then exit 0; fi\nprintf 'const a = 1;\\n' > probe.ts\n").unwrap();
+        std::fs::set_permissions(&bun, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(resolve_bun_format(root.path()).await.is_some());
+        std::fs::write(
+            root.path().join("package.json"),
+            r#"{"scripts":{"format":"prettier"}}"#,
+        )
+        .unwrap();
+        assert!(resolve_bun_format(root.path()).await.is_none());
+        std::fs::remove_file(root.path().join("package.json")).unwrap();
+        std::fs::write(root.path().join("format.ts"), "").unwrap();
+        assert!(resolve_bun_format(root.path()).await.is_none());
+        std::fs::remove_file(root.path().join("format.ts")).unwrap();
+        std::fs::write(&bun, "#!/bin/sh\nexit 0\n").unwrap();
+        assert!(resolve_bun_format(root.path()).await.is_none());
+    }
 }

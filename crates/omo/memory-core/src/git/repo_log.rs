@@ -18,7 +18,11 @@ pub fn parse_log_output(output: &str) -> Vec<MemoryCommit> {
             let author_email = parts.get(4).copied().unwrap_or_default().to_string();
             let committed_at = parts.get(5).copied().unwrap_or_default().trim().to_string();
 
-            let normalized_body = raw_body.trim_end_matches(['\r', '\n']).to_string();
+            let normalized_body = raw_body
+                .strip_suffix("\r\n")
+                .or_else(|| raw_body.strip_suffix('\n'))
+                .unwrap_or(raw_body)
+                .to_string();
             let trailers = parse_trailers(&normalized_body);
 
             MemoryCommit {
@@ -31,6 +35,27 @@ pub fn parse_log_output(output: &str) -> Vec<MemoryCommit> {
                 trailers,
                 paths: None,
             }
+        })
+        .collect()
+}
+
+/// Parses paths carried in the same log process, preserving whitespace and embedded newlines.
+pub fn parse_log_output_with_paths(output: &str) -> Vec<MemoryCommit> {
+    output
+        .split('\x1e')
+        .skip(1)
+        .filter_map(|record| {
+            let (fields, tail) = record.rsplit_once('\x1f')?;
+            let mut tail = tail.split('\0');
+            let date = tail.next().unwrap_or_default();
+            let mut commit = parse_log_output(&format!("\x1e{fields}\x1f{date}")).pop()?;
+            commit.paths = Some(
+                tail.map(|path| path.strip_prefix('\n').unwrap_or(path))
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+            );
+            Some(commit)
         })
         .collect()
 }
@@ -61,4 +86,20 @@ fn parse_trailers(body: &str) -> BTreeMap<String, String> {
         }
     }
     trailers
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn paths_preserve_spaces_newlines_and_empty_commits() {
+        let commits = parse_log_output_with_paths(
+            "\x1esha\x1fsubject\x1fbody\n\x1fA\x1fa@b\x1fdate\0\n spaced .md\0line\nname.md\0\x1eempty\x1fe\x1f\x1fA\x1fa@b\x1fdate\0",
+        );
+        assert_eq!(
+            commits[0].paths.as_ref().unwrap(),
+            &[" spaced .md", "line\nname.md"]
+        );
+        assert_eq!(commits[1].paths, Some(vec![]));
+    }
 }

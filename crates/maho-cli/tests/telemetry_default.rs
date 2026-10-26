@@ -207,6 +207,8 @@ async fn run_mhc_print(
         .env("MAHO_CODING_AGENT_DIR", &agent_dir)
         .env("POSTHOG_HOST", format!("http://{posthog_addr}"))
         .env("POSTHOG_API_KEY", "phc_test_key_1234567890")
+        // This test deliberately exercises capture from an ephemeral test HOME.
+        .env("OMO_TELEMETRY_ALLOW_AUTOMATION", "1")
         .env_remove("DO_NOT_TRACK")
         .env_remove("OMO_DISABLE_POSTHOG")
         .env_remove("OMO_SENPI_DISABLE_POSTHOG")

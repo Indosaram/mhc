@@ -21,6 +21,7 @@ fn test_record(status: crate::dag::types::DagRunStatus, node: DagNode) -> DagRun
         started_at: None, completed_at: None, nodes: vec![node], edges: vec![], waves: vec![],
         critical_path: vec![], bottlenecks: vec![], diagnostics: vec![],
         amend_history: None, lease_holder_pid: None, previous_lease_holder_pid: None,
+        guidance: None, retry_on_resume: None, cancel_requested_nodes: None, paused_child_acks: None, pause: None,
     }
 }
 
@@ -61,7 +62,8 @@ fn given_retried_child_is_revived_when_watcher_settles_then_node_is_folded_once(
         Ok(())
     });
     let result = DagNodeSendResult {
-        node_id: "node".into(), task_id: "task-1".into(), delivery: DagNodeDeliveryResult::Revive,
+        node_id: "node".into(), task_id: Some("task-1".into()), delivery: DagNodeDeliveryResult::Revive,
+        guidance_id: None,
         queue_position: None, settled: Some(settled),
     };
     assert_eq!(result.delivery, DagNodeDeliveryResult::Revive);

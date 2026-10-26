@@ -4,6 +4,8 @@ use maho_ai::types::{Usage, UsageCost};
 
 pub fn empty_usage() -> Usage {
     Usage {
+        context_usage: None,
+        cost_unknown: None,
         input: 0,
         output: 0,
         cache_read: 0,
@@ -23,6 +25,9 @@ pub fn empty_usage() -> Usage {
 
 pub fn add_usage(left: &Usage, right: &Usage) -> Usage {
     Usage {
+        context_usage: None,
+        cost_unknown: (left.cost_unknown == Some(true) || right.cost_unknown == Some(true))
+            .then_some(true),
         input: left.input + right.input,
         output: left.output + right.output,
         cache_read: left.cache_read + right.cache_read,
@@ -43,5 +48,24 @@ pub fn add_usage(left: &Usage, right: &Usage) -> Usage {
             cache_write: left.cost.cache_write + right.cost.cache_write,
             total: left.cost.total + right.cost.total,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn propagates_cost_unknown_when_either_side_is_unknown() {
+        let mut u1 = empty_usage();
+        let mut u2 = empty_usage();
+        assert_eq!(add_usage(&u1, &u2).cost_unknown, None);
+
+        u1.cost_unknown = Some(true);
+        assert_eq!(add_usage(&u1, &u2).cost_unknown, Some(true));
+
+        u1.cost_unknown = None;
+        u2.cost_unknown = Some(true);
+        assert_eq!(add_usage(&u1, &u2).cost_unknown, Some(true));
     }
 }

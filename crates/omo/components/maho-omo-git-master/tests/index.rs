@@ -193,17 +193,16 @@ async fn a_custom_footer_replaces_the_builtin_text() {
 }
 
 #[tokio::test]
-async fn the_deprecated_co_author_flag_without_the_footer_is_untouched() {
+async fn the_co_author_flag_without_the_footer_appends_a_trailer_directive() {
     let api = with_settings(GitMasterSettings {
         commit_footer: GitMasterCommitFooter::Disabled,
         include_co_authored_by: true,
         git_env_prefix: String::new(),
     });
     let mut event = read_result(SKILL_PATH, false);
-    assert!(matches!(
-        dispatch(&api, &mut event).await,
-        EventResult::None
-    ));
+    let appended = appended_text(&dispatch(&api, &mut event).await);
+    assert!(appended.contains("--trailer \"Co-authored-by: sisyphus-dev-ai <sisyphus-dev-ai@users.noreply.github.com>\""));
+    assert!(!appended.contains(BUILTIN_FOOTER));
 }
 
 #[tokio::test]
@@ -292,28 +291,33 @@ async fn the_real_config_consumer_appends_the_project_configured_footer() {
         "the project git_master.commit_footer reaches the directive: {appended}"
     );
     assert!(!appended.contains("Ultraworked with"));
-    assert!(!appended.to_lowercase().contains(CO_AUTHOR_TRAILER));
+    assert!(appended.contains("--trailer \"Co-authored-by: sisyphus-dev-ai <sisyphus-dev-ai@users.noreply.github.com>\""));
 }
 
 #[tokio::test]
-async fn the_real_config_consumer_defaults_to_no_footer() {
+async fn the_real_config_consumer_defaults_to_a_co_author_without_a_footer() {
     let root = tempfile::tempdir().expect("temp dir");
     let (project, env) = project_config(root.path(), "{}");
     let api = config_consumer_api(env);
     let cwd = project.to_string_lossy().into_owned();
     let ctx = support::context_with_cwd(&cwd);
     let mut event = read_result(SKILL_PATH, false);
-    // Default config: the env-prefix section rides the skill text, no footer directive is appended.
+    // Default config: the env prefix rides the skill text and attribution adds only the co-author.
     let EventResult::ToolResult(transformed) = dispatch_with(&api, &mut event, &ctx).await else {
         panic!("expected a tool_result transform");
     };
     let content = transformed.content.expect("content");
-    assert_eq!(content.len(), 1);
+    assert_eq!(content.len(), 2);
     let Some(ToolContent::Text { text, .. }) = content.first() else {
         panic!("expected text");
     };
     assert!(text.contains("GIT_MASTER=1 git"));
     assert!(!text.contains("Ultraworked with"));
+    let Some(ToolContent::Text { text: attribution, .. }) = content.last() else {
+        panic!("expected attribution text");
+    };
+    assert!(attribution.contains("--trailer \"Co-authored-by: sisyphus-dev-ai <sisyphus-dev-ai@users.noreply.github.com>\""));
+    assert!(!attribution.contains(BUILTIN_FOOTER));
 }
 
 #[tokio::test]
@@ -344,4 +348,35 @@ async fn the_env_prefix_section_rides_the_skill_content_after_the_frontmatter() 
     );
     assert!(text.contains("GIT_MASTER=1 git add -A ."));
     assert!(text.contains("\necho done"));
+}
+
+#[tokio::test]
+async fn original_result_with_attribution_is_not_appended_twice() {
+    let api = with_settings(GitMasterSettings {
+        commit_footer: GitMasterCommitFooter::Builtin,
+        include_co_authored_by: true,
+        git_env_prefix: "GIT_MASTER=1".into(),
+    });
+    let mut event = read_result(SKILL_PATH, false);
+    if let ExtensionEvent::ToolResult(event) = &mut event {
+        event.content.push(ToolContent::text(
+            "<commit_attribution>existing</commit_attribution>",
+        ));
+    }
+    let EventResult::ToolResult(result) = dispatch(&api, &mut event).await else {
+        panic!("expected rewritten skill");
+    };
+    let content = result.content.expect("content");
+    assert_eq!(content.len(), 2);
+    assert_eq!(
+        content
+            .iter()
+            .filter_map(|item| match item {
+                ToolContent::Text { text, .. } =>
+                    Some(text.matches("<commit_attribution>").count()),
+                _ => None,
+            })
+            .sum::<usize>(),
+        1
+    );
 }

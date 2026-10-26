@@ -17,6 +17,12 @@ pub struct MemoryWiring {
     )>,
     footer_ticker: bool,
     pub provenance_by_session: std::collections::HashMap<String, maho_ext_api::ForkProvenance>,
+    /// Which sessions this run accepted input from and which finished their initial reconciliation.
+    pub user_activity: crate::user_activity::MemoryUserActivity,
+    /// Stuck-holder notices already shown, keyed `<session>:<run>`: a holder that stays held is reported once.
+    stale_lock_notices_shown: std::collections::BTreeSet<String>,
+    /// Holders this session already asked reconciliation to settle, keyed `<session>:<run>`.
+    stale_holder_reconciles: std::collections::BTreeSet<String>,
 }
 pub fn create_memory_wiring(options: MemoryWiringOptions) -> MemoryWiring {
     MemoryWiring {
@@ -29,6 +35,21 @@ pub fn create_memory_wiring(options: MemoryWiringOptions) -> MemoryWiring {
         live_host: None,
         footer_ticker: false,
         provenance_by_session: Default::default(),
+        user_activity: Default::default(),
+        stale_lock_notices_shown: Default::default(),
+        stale_holder_reconciles: Default::default(),
+    }
+}
+/// The host UI the sync notices are written to (`SyncNoticeUi`).
+struct NativeSyncNotice(std::sync::Arc<dyn maho_ext_api::ExtensionUi>);
+impl crate::sync_status_cached::SyncNoticeUi for NativeSyncNotice {
+    fn notify(&self, message: &str, level: &str) {
+        let kind = match level {
+            "error" => maho_ext_api::NotificationType::Error,
+            "warning" => maho_ext_api::NotificationType::Warning,
+            _ => maho_ext_api::NotificationType::Info,
+        };
+        self.0.notify(message, kind);
     }
 }
 struct NativeFooter(std::sync::Arc<dyn maho_ext_api::ExtensionUi>);
@@ -219,6 +240,60 @@ impl MemoryWiring {
         options: crate::wiring_types::NativeMemoryWiringOptions,
         register_static: impl FnOnce(&mut maho_ext_api::ExtensionApi),
     ) -> Result<bool, String> {
+        let activity_wiring = wiring.clone();
+        api.on(
+            maho_ext_api::EventKind::Input,
+            std::sync::Arc::new(move |event, ctx| {
+                let wiring = activity_wiring.clone();
+                let input = match event {
+                    maho_ext_api::ExtensionEvent::Input(input)
+                        if input.source != maho_ext_api::InputSource::Extension
+                            && !input.text.trim().is_empty() =>
+                    {
+                        Some(input.input_id.clone())
+                    }
+                    _ => None,
+                };
+                let session = ctx.session_manager.session_id().to_string();
+                Box::pin(async move {
+                    if let Some(input) = input {
+                        wiring
+                            .lock()
+                            .await
+                            .user_activity
+                            .record_input(&input, &session);
+                    }
+                    Ok(maho_ext_api::EventResult::None)
+                })
+            }),
+        );
+        let activity_wiring = wiring.clone();
+        api.on(
+            maho_ext_api::EventKind::InputDisposition,
+            std::sync::Arc::new(move |event, _| {
+                let wiring = activity_wiring.clone();
+                let input = match event {
+                    maho_ext_api::ExtensionEvent::InputDisposition {
+                        input_id,
+                        disposition,
+                    } => Some((
+                        input_id.clone(),
+                        match disposition {
+                            maho_ext_api::InputDisposition::Started => "started",
+                            maho_ext_api::InputDisposition::Queued => "queued",
+                            _ => "rejected",
+                        },
+                    )),
+                    _ => None,
+                };
+                Box::pin(async move {
+                    if let Some((id, state)) = input {
+                        wiring.lock().await.user_activity.disposition(&id, state);
+                    }
+                    Ok(maho_ext_api::EventResult::None)
+                })
+            }),
+        );
         let handle = std::sync::Arc::new(maho_ext_api::ExtensionApi::new(
             api.registered.clone(),
             api.profile.clone(),
@@ -230,6 +305,24 @@ impl MemoryWiring {
         let initial = options.initial_status;
         let facts = options.facts;
         let reconcile = options.reconcile;
+        let recovery = reconcile.clone();
+        wiring
+            .try_lock()
+            .map_err(|_| "memory wiring is busy during registration".to_string())?
+            .seams
+            .reconcile_runs = Some(std::sync::Arc::new(move |identity| {
+            let recovery = recovery.clone();
+            let identity = identity.clone();
+            std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| error.to_string())?;
+                runtime.block_on(recovery(identity))
+            })
+            .join()
+            .map_err(|_| "memory stale-holder reconciliation panicked".to_string())?
+        }));
         let now = options.now.clone();
         let journal_warn = options.warn.clone();
         let shutdown_wiring = wiring.clone();
@@ -343,10 +436,10 @@ impl MemoryWiring {
                         };
                         let provenance = context.session_manager.fork_provenance();
                         if let Some(prov) = provenance {
-                            wiring.lock().await.record_provenance(
-                                context.session_manager.session_id(),
-                                prov,
-                            );
+                            wiring
+                                .lock()
+                                .await
+                                .record_provenance(context.session_manager.session_id(), prov);
                         }
                         wiring
                             .lock()
@@ -404,6 +497,73 @@ impl MemoryWiring {
         wiring.try_lock().map_err(|error|format!("memory wiring locked during registration: {error}"))?.reflection_live.register_rpc(api,std::sync::Arc::new(move||->std::collections::BTreeMap<String,crate::context::MemoryIdentityContext>{
             rpc_component.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().filter(|(_,state)|state.enabled).filter_map(|(session,state)|state.context.clone().map(|context|(session.clone(),context))).collect()
         }),std::sync::Arc::new(move||rpc_now() as i64),Some(apply_facts)).map_err(|error|error.to_string())?;
+        let state = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<
+            std::path::PathBuf,
+            crate::sync_runner::SyncRepoStatus,
+        >::new()));
+        {
+            let source = state.clone();
+            let read: crate::sync_status_cached::SyncStatusReader =
+                std::sync::Arc::new(move |repo| {
+                    source
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get(repo)
+                        .cloned()
+                        .map(crate::sync_status_cached::report)
+                });
+            let mut locked = wiring
+                .try_lock()
+                .map_err(|_| "memory wiring busy during sync registration")?;
+            locked.set_sync_status(Some(read));
+            let source = state.clone();
+            locked
+                .reflection_live
+                .rpc
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .sync_status = Some(std::sync::Arc::new(move |repo| {
+                source
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(repo)
+                    .cloned()
+            }));
+        }
+        if let Some(runner) = component.sync_runner() {
+            let wiring = wiring.clone();
+            let now = options.now.clone();
+            let warn = options.warn.clone();
+            let (changes, received) = std::sync::mpsc::channel::<std::path::PathBuf>();
+            std::thread::Builder::new()
+                .name("memory-sync-surface".into())
+                .spawn(move || {
+                    while let Ok(repo) = received.recv() {
+                        if let Err(error) = wiring
+                            .blocking_lock()
+                            .on_sync_status_changed(&repo, now() as i64)
+                        {
+                            warn(&error);
+                        }
+                    }
+                })
+                .map_err(|error| error.to_string())?;
+            runner.on_change(std::sync::Arc::new(move |repo, status| {
+                {
+                    let mut state = state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if let Some(status) = status {
+                        state.insert(repo.clone(), status);
+                    } else {
+                        state.remove(&repo);
+                    }
+                }
+                if changes.send(repo).is_err() {
+                    eprintln!("memory sync surface receiver closed");
+                }
+            }));
+        }
         Ok(true)
     }
     #[allow(clippy::too_many_arguments)]
@@ -425,6 +585,9 @@ impl MemoryWiring {
         crate::policy_guard::register_memory_filesystem_policy(Some(api), Some(&input.identity))
             .map_err(|error| error.to_string())?;
         reconcile().await?;
+        // Session-start reconciliation runs once per session; a holder that dies after it is only
+        // recoverable from a later turn, which is what `recover_stale_holder_after_turn` does.
+        self.user_activity.mark_reconciled(input.session_id);
         if !input.entries.is_empty() {
             self.runtime
                 .journal_wiring_for(&input.identity)
@@ -528,8 +691,107 @@ impl MemoryWiring {
         };
         self.reflection_live.sync_rpc(&api, now)
     }
+    /// Installs the sync-status reader the footer, the notices and [`Self::on_sync_status_changed`] read.
+    pub fn set_sync_status(
+        &mut self,
+        sync_status: Option<crate::sync_status_cached::SyncStatusReader>,
+    ) {
+        self.seams.sync_status = sync_status.clone();
+        self.reflection_live.set_sync_status(sync_status);
+    }
+    /// A repository's sync failure appeared, changed kind or cleared: redraw the footer and tell the person.
+    ///
+    /// Only the active session's repository redraws a footer or pushes the desktop snapshot; any other
+    /// repository still feeds the notifier, so its notice state follows every transition.
+    pub fn on_sync_status_changed(
+        &mut self,
+        repo: &std::path::Path,
+        now: i64,
+    ) -> Result<(), String> {
+        let session = self.reflection_live.session().map(str::to_owned);
+        let active_repo = session
+            .as_deref()
+            .and_then(|session| self.runtime.resolve_context(session))
+            .map(|context| context.identity_paths.repo.as_path() == repo)
+            .unwrap_or(false);
+        let host = self.live_host.clone();
+        let notice = if active_repo {
+            host.as_ref().map(|(_, ui)| NativeSyncNotice(ui.clone()))
+        } else {
+            None
+        };
+        let notifier = self.reflection_live.sync_notifier.clone();
+        let mut apply = || -> Result<(), String> {
+            let (Some((api, ui)), Some(session)) = (host.as_ref(), session.as_deref()) else {
+                return Ok(());
+            };
+            // Redrawing the footer and pushing the desktop snapshot is exactly what a settle does.
+            self.reflection_live
+                .on_settled(session, api, now, Some(&mut NativeFooter(ui.clone())))
+        };
+        crate::sync_status_cached::deliver_sync_status_change(
+            crate::sync_status_cached::SyncStatusChange {
+                repo,
+                is_active_repo: active_repo,
+                notifier: notifier.as_deref(),
+                ui: notice
+                    .as_ref()
+                    .map(|notice| notice as &dyn crate::sync_status_cached::SyncNoticeUi),
+                apply: &mut apply,
+            },
+        )
+    }
+    /// Settles a reflection holder that provably died after this session's initial reconciliation (#10377).
+    ///
+    /// Each later turn settles such a holder once and reports a holder whose liveness cannot be proven
+    /// once per session and run; a live owner is never disturbed.
+    pub fn recover_stale_holder_after_turn(
+        &mut self,
+        session: &str,
+        identity: &crate::context::MemoryIdentityContext,
+    ) {
+        if !self.user_activity.has(session) || !self.user_activity.has_reconciled(session) {
+            return;
+        }
+        let reconcile_runs = self.seams.reconcile_runs.clone();
+        if reconcile_runs.is_none() {
+            return;
+        }
+        // A holder that one reconciliation could not release is reported, not reconciled every turn.
+        let settled = std::cell::RefCell::new(std::mem::take(&mut self.stale_holder_reconciles));
+        let should_reconcile = |run_id: &str| {
+            let key = format!("{session}:{run_id}");
+            let mut settled = settled.borrow_mut();
+            if settled.contains(&key) {
+                return false;
+            }
+            settled.insert(key);
+            true
+        };
+        let reconcile = || reconcile_runs.as_ref().expect("checked reconcile seam")(identity);
+        let recovery = crate::reflection_stale_active_sync::recover_stale_reflection_holder(
+            crate::reflection_stale_active_sync::StaleHolderRecoveryInput {
+                reflection_dir: &identity.identity_paths.reflection,
+                reconcile: &reconcile,
+                seams: None,
+                should_reconcile: Some(&should_reconcile),
+            },
+        );
+        self.stale_holder_reconciles = settled.into_inner();
+        let (Some(notice), Some(run_id)) = (recovery.notice, recovery.verdict.run_id()) else {
+            return;
+        };
+        let key = format!("{session}:{run_id}");
+        if !self.stale_lock_notices_shown.insert(key) {
+            return;
+        }
+        if let Some((_, ui)) = self.live_host.clone() {
+            ui.notify(&notice, maho_ext_api::NotificationType::Warning);
+        }
+    }
     pub fn record_provenance(&mut self, session: &str, provenance: maho_ext_api::ForkProvenance) {
-        self.provenance_by_session.insert(session.to_owned(), provenance);
+        self.provenance_by_session
+            .insert(session.to_owned(), provenance);
     }
     pub fn on_settled(
         &mut self,
@@ -554,6 +816,9 @@ impl MemoryWiring {
         let Some(identity) = self.runtime.resolve_context(session).cloned() else {
             return Ok(());
         };
+        // A holder that died after this session reconciled would keep the reflection lock for good, so each
+        // later settled turn settles a provably dead one before anything else queues behind it.
+        self.recover_stale_holder_after_turn(session, &identity);
         if !entries.is_empty() {
             self.runtime
                 .journal_wiring_for(&identity)
@@ -588,6 +853,7 @@ impl MemoryWiring {
         }
         self.runtime.contexts.remove(session);
         self.reflection_live.unbind(session);
+        self.user_activity.reset(session);
         self.provenance_by_session.remove(session);
     }
     pub async fn on_session_shutdown(
@@ -1026,22 +1292,26 @@ mod tests {
             .set_provenance("session", Some(prov.clone()));
         wiring.record_provenance("session", prov);
         assert!(wiring.provenance_by_session.contains_key("session"));
-        assert!(wiring
-            .runtime
-            .existing_facts_wiring("agent")
-            .unwrap()
-            .provenance("session")
-            .is_some());
+        assert!(
+            wiring
+                .runtime
+                .existing_facts_wiring("agent")
+                .unwrap()
+                .provenance("session")
+                .is_some()
+        );
 
         wiring.unbind("session");
 
         assert!(!wiring.provenance_by_session.contains_key("session"));
-        assert!(wiring
-            .runtime
-            .existing_facts_wiring("agent")
-            .unwrap()
-            .provenance("session")
-            .is_none());
+        assert!(
+            wiring
+                .runtime
+                .existing_facts_wiring("agent")
+                .unwrap()
+                .provenance("session")
+                .is_none()
+        );
         assert!(wiring.runtime.resolve_context("session").is_none());
     }
 }

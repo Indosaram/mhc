@@ -283,9 +283,9 @@ fn observability_buckets_failure_vocabulary_and_cold_seed_fields() {
         if !is_error { assert_eq!(expected,"other"); }
     }
     let mut pending=PendingCloseCauses::default();
-    let cold=observe(SyncObservationInput {kind:"cold-seed",reason:Some("transcript_missing"),delta_messages:5,first_turn:false,session:"telemetry",payload_bytes:Some(214_328),collapsed_directives:Some(4),settings_source:None},&mut pending);
+    let cold=observe(SyncObservationInput {kind:"cold-seed",reason:Some("transcript_missing"),delta_messages:5,first_turn:false,session:"telemetry",payload_bytes:Some(214_328),collapsed_directives:Some(4),settings_source:None,seat:None,seat_changed:None},&mut pending);
     assert_eq!(cold.payload_bytes,Some(214_328));assert_eq!(cold.collapsed_directives,Some(4));
-    let delta=observe(SyncObservationInput {kind:"incremental",reason:None,delta_messages:3,first_turn:false,session:"telemetry",payload_bytes:Some(999),collapsed_directives:Some(9),settings_source:None},&mut pending);
+    let delta=observe(SyncObservationInput {kind:"incremental",reason:None,delta_messages:3,first_turn:false,session:"telemetry",payload_bytes:Some(999),collapsed_directives:Some(9),settings_source:None,seat:None,seat_changed:None},&mut pending);
     assert_eq!(delta.payload_bytes,None);assert_eq!(delta.collapsed_directives,None);
 }
 
@@ -535,9 +535,9 @@ fn restart_binding_rejects_unconfirmed_session_and_reattaches_on_fingerprint_dri
 #[test]
 fn cold_seed_observations_project_telemetry_only_for_cold_seed() {
     let mut pending=PendingCloseCauses::default();
-    let cold=observe(SyncObservationInput {kind:"cold-seed",reason:Some("registry_miss"),delta_messages:5,first_turn:true,session:"s",payload_bytes:Some(100),collapsed_directives:Some(4),settings_source:None},&mut pending);
+    let cold=observe(SyncObservationInput {kind:"cold-seed",reason:Some("registry_miss"),delta_messages:5,first_turn:true,session:"s",payload_bytes:Some(100),collapsed_directives:Some(4),settings_source:None,seat:None,seat_changed:None},&mut pending);
     assert_eq!(cold.kind,"bootstrap");assert_eq!(cold.payload_bytes,Some(100));assert_eq!(cold.collapsed_directives,Some(4));
-    let delta=observe(SyncObservationInput {kind:"incremental",reason:None,delta_messages:2,first_turn:false,session:"s",payload_bytes:Some(500),collapsed_directives:Some(9),settings_source:None},&mut pending);
+    let delta=observe(SyncObservationInput {kind:"incremental",reason:None,delta_messages:2,first_turn:false,session:"s",payload_bytes:Some(500),collapsed_directives:Some(9),settings_source:None,seat:None,seat_changed:None},&mut pending);
     assert_eq!(delta.kind,"delta");assert_eq!(delta.payload_bytes,None);assert_eq!(delta.collapsed_directives,None);
 }
 
@@ -639,9 +639,9 @@ fn observed_terminal_failure_reason_vocabulary_is_sanitized() {
 #[test]
 fn telemetry_is_omitted_for_resume_and_delta_observations() {
     let mut pending=PendingCloseCauses::default();
-    let resume=observe(SyncObservationInput {kind:"resume",reason:Some("history_rolled_back"),delta_messages:2,first_turn:false,session:"s",payload_bytes:Some(500),collapsed_directives:Some(3),settings_source:None},&mut pending);
+    let resume=observe(SyncObservationInput {kind:"resume",reason:Some("history_rolled_back"),delta_messages:2,first_turn:false,session:"s",payload_bytes:Some(500),collapsed_directives:Some(3),settings_source:None,seat:None,seat_changed:None},&mut pending);
     assert_eq!(resume.kind,"fork");assert_eq!(resume.payload_bytes,None);assert_eq!(resume.collapsed_directives,None);
-    let delta=observe(SyncObservationInput {kind:"incremental",reason:None,delta_messages:1,first_turn:false,session:"s",payload_bytes:Some(500),collapsed_directives:Some(3),settings_source:None},&mut pending);
+    let delta=observe(SyncObservationInput {kind:"incremental",reason:None,delta_messages:1,first_turn:false,session:"s",payload_bytes:Some(500),collapsed_directives:Some(3),settings_source:None,seat:None,seat_changed:None},&mut pending);
     assert_eq!(delta.kind,"delta");assert_eq!(delta.payload_bytes,None);assert_eq!(delta.collapsed_directives,None);
 }
 
@@ -755,7 +755,7 @@ fn stream_protocol_helpers_map_stop_reasons_and_tools() {
     assert_eq!(map_stop_reason(Some("max_tokens")),maho_ai::types::StopReason::Length);
     let model=maho_ai::models_generated::MODELS["anthropic"].values().next().expect("model").clone();
     let mut output=empty_output(&model,1);
-    update_usage(&model,&mut output,&json!({"input_tokens":3,"output_tokens":2}));
+    update_usage(&model,&mut output,&json!({"input_tokens":3,"output_tokens":2}),maho_ext_anthropic_subscription::stream_protocol::UsageScope::Query);
     assert_eq!(output.usage.input,3);assert_eq!(output.usage.output,2);assert_eq!(output.usage.total_tokens,5);
 }
 

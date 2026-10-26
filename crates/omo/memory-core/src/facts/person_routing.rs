@@ -250,6 +250,7 @@ pub fn render_card_skeleton(target: &FactsPersonTarget) -> Result<String, Frontm
             read_only: None,
             kind: Some("person".to_string()),
             aliases: Some(person.aliases.clone()),
+            extra: None,
         },
         "",
     )
@@ -321,6 +322,7 @@ fn render_explicit_observations(
                 read_only: None,
                 kind: None,
                 aliases: None,
+                extra: None,
             },
             String::new(),
         ),
@@ -342,18 +344,22 @@ fn render_explicit_observations(
     };
     let explicit = &mut groups[explicit_at].entries;
     for record in records {
-        let normalized = normalize_observation_text(record.text());
-        match explicit
-            .iter_mut()
-            .find(|entry| normalize_observation_text(&entry.content) == normalized)
-        {
+        let normalized =
+            normalize_observation_text(&super::display::strip_receipt_suffix(record.text()));
+        match explicit.iter_mut().find(|entry| {
+            normalize_observation_text(&super::display::strip_receipt_suffix(&entry.content))
+                == normalized
+        }) {
             Some(found) => {
+                if record.receipt().is_some() {
+                    found.content = super::display::fact_display_text(record);
+                }
                 found.date = record.date().to_string();
                 found.n = Some(found.n.unwrap_or(1) + 1);
             }
             None => explicit.push(ObservationEntry {
                 date: record.date().to_string(),
-                content: record.text().to_string(),
+                content: super::display::fact_display_text(record),
                 ..ObservationEntry::default()
             }),
         }
@@ -365,7 +371,11 @@ fn render_explicit_observations(
         },
         limits,
     );
-    render_memory_file(&frontmatter, &format!("{rendered}\n"))
+    let rendered = render_memory_file(&frontmatter, &format!("{rendered}\n"))?;
+    Ok(super::display::stamp_receipt(
+        std::fs::read_to_string(&path).ok().as_deref(),
+        rendered,
+    ))
 }
 
 /// Strip a single trailing `<!-- ... -->` comment, matching the TS `/<!--[\s\S]*?-->\s*$/`.

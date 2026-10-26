@@ -9,6 +9,7 @@
 //! The coordinator key is `kibitzer:{path}` - the upstream member scope (one coordinator per
 //! wiring); it is deliberately NOT session-prefixed, matching `delivery.ts`.
 
+pub type ResolveSourceCallback = Option<Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>>;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -84,6 +85,7 @@ pub struct KibitzerDeliveryOptions {
     pub coordinator: Option<Arc<dyn KibitzerIdleCoordinator>>,
     pub send_message: Arc<dyn Fn(KibitzerSteerMessage) -> Result<(), String> + Send + Sync>,
     pub append_entry: AppendEntry,
+    pub resolve_source: ResolveSourceCallback,
     pub warn: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
@@ -161,10 +163,21 @@ impl KibitzerDelivery {
         let (snapshot_len, steering, to_enqueue) = {
             let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut to_enqueue: Vec<(String, RecallNudge)> = Vec::new();
-            for nudge in nudges {
+            for accepted in nudges {
+                let nudge = if let Some(resolve) = &self.options.resolve_source {
+                    if let Some(source) = resolve(session_id, &accepted.path) {
+                        let mut n = accepted.clone();
+                        n.source = Some(source);
+                        n
+                    } else {
+                        accepted.clone()
+                    }
+                } else {
+                    accepted.clone()
+                };
                 state.nudges.insert(nudge.path.clone(), nudge.clone());
                 if self.options.coordinator.is_some() {
-                    to_enqueue.push((Self::coordinator_key(&nudge.path), nudge.clone()));
+                    to_enqueue.push((Self::coordinator_key(&nudge.path), nudge));
                 }
             }
             let snapshot: Vec<RecallNudge> = state.nudges.values().cloned().collect();

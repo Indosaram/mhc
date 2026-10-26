@@ -16,6 +16,7 @@ use model_core::is_kimi_k2_model;
 use model_core::is_kimi_k27_model;
 use model_core::is_kimi_k28_model;
 use model_core::is_kimi_k3_model;
+use model_core::is_kimi_k31_model;
 use model_core::is_mini_max_model;
 use model_core::is_swe2_model;
 use model_core::is_unserved_devin_swe2_selector;
@@ -126,6 +127,7 @@ fn kimi_k3_model_ids_detect_k3_only_not_k2_x() {
             ("opencode-go/kimi-k3", true),
             ("moonshotai/kimi-k3-202607", true),
             ("kimi-for-coding/k3p1", true),
+            ("kimi-coding/k3.1-pro", true),
             ("opencode/k3", true),
             ("opencode-go/kimi-k2.7", false),
             ("kimi-for-coding/k2p7", false),
@@ -133,6 +135,37 @@ fn kimi_k3_model_ids_detect_k3_only_not_k2_x() {
             ("anthropic/claude-opus-4-7", false),
         ],
     );
+}
+
+#[test]
+fn kimi_k31_model_ids_detect_k31_and_leave_k3_alone() {
+    check(
+        is_kimi_k31_model,
+        &[
+            ("kimi-coding/k3.1-pro", true),
+            ("kimi-for-coding/k3.1-pro-highspeed", true),
+            ("moonshotai/kimi-k3.1-pro", true),
+            ("openrouter/moonshotai/kimi-k3.1-pro-highspeed", true),
+            ("venice/kimi-k3-1-pro", true),
+            ("kimi-for-coding/k3p1", true),
+            ("Kimi K3.1 Pro", true),
+            ("opencode-go/kimi-k3", false),
+            ("kimi-coding/k3", false),
+            ("kimi-coding/k3-256k", false),
+            ("moonshotai/kimi-k3-202607", false),
+            ("moonshotai/kimi-k3-128k", false),
+            ("opencode-go/kimi-k2.7", false),
+        ],
+    );
+    // K3.1 stays inside the wider K3 family.
+    for model in [
+        "kimi-coding/k3.1-pro",
+        "kimi-for-coding/k3.1-pro-highspeed",
+        "moonshotai/kimi-k3.1-pro",
+        "kimi-k3-1-pro",
+    ] {
+        assert!(is_kimi_k3_model(model), "{model}");
+    }
 }
 
 #[test]

@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 
+use super::events::{agreement_event_key, legacy_agreement_events};
 use super::format::{agreement_id, normalize_agreement_text, sort_agreements};
 use super::types::{
     AgreementAuthor, AgreementExtractionRecord, AgreementItem, AgreementScope, AgreementStatus,
@@ -13,6 +14,7 @@ pub struct AgreementsMutation {
     pub items: Vec<AgreementItem>,
     pub newly_flagged: Vec<String>,
     pub events: Vec<AgreementEvent>,
+    pub receipts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +39,21 @@ pub fn apply_agreement_records(
     records: &[AgreementExtractionRecord],
     policy: &AgreementsPolicy,
 ) -> AgreementsMutation {
+    apply_agreement_records_with_receipts(existing, records, policy, &[])
+}
+
+pub fn apply_agreement_records_with_receipts(
+    existing: &[AgreementItem],
+    records: &[AgreementExtractionRecord],
+    policy: &AgreementsPolicy,
+    prior_receipts: &[String],
+) -> AgreementsMutation {
+    let mut receipts = if prior_receipts.is_empty() {
+        legacy_agreement_events(existing)
+    } else {
+        prior_receipts.to_vec()
+    };
+    let mut known: HashSet<String> = receipts.iter().cloned().collect();
     let mut items: Vec<AgreementItem> = existing.to_vec();
     let committed: HashSet<String> = existing.iter().map(|item| item.id.clone()).collect();
     let mut flagged: Vec<String> = Vec::new();
@@ -77,22 +94,32 @@ pub fn apply_agreement_records(
 
     for record in records {
         match record {
-            AgreementExtractionRecord::Reaffirm { id, date, text } => {
+            AgreementExtractionRecord::Reaffirm { id, date, text, .. } => {
                 match items.iter().position(|item| item.id == *id) {
                     None => events.push(AgreementEvent::StaleReaffirm {
                         date: date.clone(),
                         id: id.clone(),
                     }),
-                    Some(at) => bump(&mut items, &mut flagged, at, date, text.as_deref()),
+                    Some(at) => {
+                        if claim(id, record, &mut known, &mut receipts) {
+                            bump(&mut items, &mut flagged, at, date, text.as_deref());
+                        }
+                    }
                 }
             }
             AgreementExtractionRecord::New {
                 applies,
                 text,
                 date,
+                ..
             } => {
                 if let Some(at) = find_agreement(&items, text) {
-                    bump(&mut items, &mut flagged, at, date, None);
+                    if claim(&items[at].id, record, &mut known, &mut receipts) {
+                        bump(&mut items, &mut flagged, at, date, None);
+                    }
+                    continue;
+                }
+                if known.contains(&agreement_event_key(&agreement_id(text), record)) {
                     continue;
                 }
                 let status = if 1 >= policy.needs_human_threshold {
@@ -133,6 +160,7 @@ pub fn apply_agreement_records(
                 if status == AgreementStatus::NeedsHuman && !flagged.contains(&created.id) {
                     flagged.push(created.id.clone());
                 }
+                claim(&created.id, record, &mut known, &mut receipts);
                 items.push(created);
             }
         }
@@ -141,7 +169,35 @@ pub fn apply_agreement_records(
         items: sort_agreements(&items),
         newly_flagged: flagged,
         events,
+        receipts,
     }
+}
+
+fn claim(
+    id: &str,
+    record: &AgreementExtractionRecord,
+    known: &mut HashSet<String>,
+    receipts: &mut Vec<String>,
+) -> bool {
+    let mut ids = vec![id.to_string()];
+    if let AgreementExtractionRecord::New { text, .. } = record {
+        let alias = agreement_id(text);
+        if alias != id {
+            ids.push(alias);
+        }
+    }
+    let keys: Vec<String> = ids
+        .iter()
+        .map(|id| agreement_event_key(id, record))
+        .collect();
+    let duplicate = keys.iter().any(|key| known.contains(key));
+    for key in keys {
+        known.insert(key.clone());
+        if !receipts.contains(&key) {
+            receipts.push(key);
+        }
+    }
+    !duplicate
 }
 
 /// At the cap only a committed agent item that was never reaffirmed and is not flagged may go: the oldest one.

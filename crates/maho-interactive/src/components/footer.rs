@@ -62,6 +62,10 @@ pub struct FooterSnapshot {
     pub cache_read: f64,
     pub cache_write: f64,
     pub cost: f64,
+    #[serde(default)]
+    pub cost_unknown: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_cost: Option<f64>,
     pub latest_cache_hit_rate: Option<f64>,
     pub context_window: f64,
     pub context_percent: Option<f64>,
@@ -119,20 +123,25 @@ impl FooterComponent {
         {
             middle.push(segment(format!("CH{rate:.1}%"), ThemeColor::Dim));
         }
-        if s.cost != 0. || s.subscription || s.provider.as_deref() == Some("kimi-coding") {
-            middle.push(segment(
-                format!(
-                    "$ {:.3}{}",
-                    s.cost,
-                    if s.subscription || s.provider.as_deref() == Some("kimi-coding") {
-                        " (sub)"
-                    } else {
-                        ""
-                    }
-                )
-                .replacen("$ ", "$", 1),
-                ThemeColor::Success,
-            ));
+        let subagent_cost = s
+            .subagent_cost
+            .filter(|cost| cost.is_finite() && *cost > 0.0)
+            .unwrap_or(0.0);
+        let using_subscription = s.subscription || s.provider.as_deref() == Some("kimi-coding");
+        if s.cost != 0. || using_subscription || subagent_cost > 0.0 {
+            let subagent_str = if subagent_cost > 0.0 {
+                format!(" (+{subagent_cost:.3})")
+            } else {
+                String::new()
+            };
+            let cost_str = format!(
+                "${:.3}{}{}{}",
+                s.cost,
+                if s.cost_unknown { "+?" } else { "" },
+                if using_subscription { " (sub)" } else { "" },
+                subagent_str,
+            );
+            middle.push(segment(cost_str, ThemeColor::Success));
         }
         let percent = s.context_percent.unwrap_or(0.);
         let percent_text = s
@@ -443,4 +452,45 @@ pub fn account_footer_suffix(
             )
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn footer_cost_renders_unknown_and_subagent_cost() {
+        let theme = Theme::builtin("dark", crate::theme::ColorMode::Truecolor).unwrap();
+        let mut snapshot = FooterSnapshot {
+            cost: 0.38,
+            ..Default::default()
+        };
+        let lines = FooterComponent::new(snapshot.clone())
+            .render(160, &theme)
+            .unwrap();
+        assert!(lines.iter().any(|l| l.contains("$0.380")));
+
+        // Unknown cost marker
+        snapshot.cost_unknown = true;
+        let lines = FooterComponent::new(snapshot.clone())
+            .render(160, &theme)
+            .unwrap();
+        assert!(lines.iter().any(|l| l.contains("$0.380+?")));
+
+        // Subagent cost bracket
+        snapshot.subagent_cost = Some(1.27);
+        let lines = FooterComponent::new(snapshot.clone())
+            .render(160, &theme)
+            .unwrap();
+        assert!(lines.iter().any(|l| l.contains("$0.380+? (+1.270)")));
+
+        // Subagent cost when session cost is zero
+        snapshot.cost = 0.0;
+        snapshot.cost_unknown = false;
+        snapshot.subagent_cost = Some(0.5);
+        let lines = FooterComponent::new(snapshot.clone())
+            .render(160, &theme)
+            .unwrap();
+        assert!(lines.iter().any(|l| l.contains("$0.000 (+0.500)")));
+    }
 }

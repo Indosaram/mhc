@@ -50,7 +50,8 @@ fn with_git_master_settings(
                 let content = (additions.rewrite_skill_text)(&skill.content);
                 let content = match &additions.directive {
                     None => content,
-                    Some(directive) => format!("{content}\n\n{directive}"),
+                    Some(directive) if !skill.content.contains("<commit_attribution>") => format!("{content}\n\n{directive}"),
+                    Some(_) => content,
                 };
                 let mut skill = skill.clone();
                 skill.content = content;

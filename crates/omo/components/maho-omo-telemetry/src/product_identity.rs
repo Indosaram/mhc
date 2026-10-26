@@ -51,6 +51,212 @@ pub fn mask_provider_and_model(provider: &str, model: &str) -> (String, String) 
     let known_provider=KNOWN_PROVIDERS.contains(&provider);
     (if known_provider {provider} else {"custom"}.into(), if ALL_KNOWN_MODEL_IDS.contains(model) {model} else {"custom"}.into())
 }
+
+/// Schema version shared by every native client.
+pub const OMO_NATIVE_SCHEMA_VERSION: u32 = 4;
+
+/// The first UTC day `machine_hash` no longer ships (exclusive; the last day it ships is 2026-12-14).
+pub const MACHINE_HASH_SUNSET: &str = "2026-12-15";
+const MACHINE_HASH_SUNSET_ISO: &str = "2026-12-15T00:00:00.000Z";
+const INSTALL_ID_FILE_NAME: &str = "install-id";
+
+fn is_install_id(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn user_home(env: &telemetry_core::TelemetryEnv) -> PathBuf {
+    let key = if cfg!(target_os = "windows") {
+        "USERPROFILE"
+    } else {
+        "HOME"
+    };
+    env.get(key)
+        .map(|home| home.trim())
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var(key).ok().map(PathBuf::from))
+        .unwrap_or_default()
+}
+
+/// One anonymous id per user, whatever agent home a process resolves. The id lives at the path OmO Desktop
+/// uses, `<user home>/.omo/agent/omo-senpi/omo-native/install-id`, so an agent-dir override (an
+/// orchestrator's isolated agent dir per run) or a pre-unification flat `~/.omo` layout no longer mints a
+/// new person.
+pub fn get_omo_native_install_id_path(env: &telemetry_core::TelemetryEnv) -> PathBuf {
+    user_home(env)
+        .join(".omo")
+        .join("agent")
+        .join("omo-senpi")
+        .join("omo-native")
+        .join(INSTALL_ID_FILE_NAME)
+}
+
+fn without_agent_dir_overrides(
+    env: &telemetry_core::TelemetryEnv,
+) -> std::collections::BTreeMap<String, String> {
+    env.iter()
+        .filter(|(name, _)| !maho_omo_agent_home::AGENT_DIR_ENV_NAMES.contains(&name.as_str()))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
+fn read_install_id(path: &Path) -> Option<String> {
+    let value = std::fs::read_to_string(path).ok()?;
+    let value = value.trim();
+    is_install_id(value).then(|| value.to_string())
+}
+
+fn write_install_id(path: &Path, value: &str) -> bool {
+    if let Some(parent) = path.parent() {
+        let _ignored = std::fs::create_dir_all(parent);
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    let mut file = match private_file(&mut options).open(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    file.write_all(format!("{value}\n").as_bytes()).is_ok()
+}
+
+fn random_install_id() -> std::io::Result<String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).map_err(std::io::Error::other)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn read_or_create_install_id(path: &Path) -> String {
+    if let Some(persisted) = read_install_id(path) {
+        return persisted;
+    }
+    let generated = random_install_id().unwrap_or_else(|_| "0".repeat(64));
+    if write_install_id(path, &generated) {
+        return generated;
+    }
+    // A concurrent writer (the Desktop, or another CLI process) may have created it first; its id wins.
+    read_install_id(path).unwrap_or(generated)
+}
+
+/// The legacy id is the one the user's own install wrote, so an orchestrator's agent-dir override is
+/// ignored here: otherwise its first post-upgrade run would mint the permanent id instead of adopting the
+/// real one.
+fn resolve_user_install_id(env: &telemetry_core::TelemetryEnv) -> String {
+    let canonical = get_omo_native_install_id_path(env);
+    let home = user_home(env);
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let legacy = maho_omo_agent_home::resolve_agent_home(
+        &without_agent_dir_overrides(env),
+        &home,
+        &cwd,
+        std::path::Path::exists,
+    )
+    .join("omo-senpi")
+    .join("omo-native")
+    .join(INSTALL_ID_FILE_NAME);
+    if legacy == canonical {
+        return read_or_create_install_id(&canonical);
+    }
+    if let Some(shared) = read_install_id(&canonical) {
+        return shared;
+    }
+    let Some(adopted) = read_install_id(&legacy) else {
+        return read_or_create_install_id(&canonical);
+    };
+    let _exclusive = write_install_id(&canonical, &adopted);
+    read_install_id(&canonical).unwrap_or(adopted)
+}
+
+fn is_ci_env(value: Option<&String>) -> bool {
+    let normalized = value.map(|value| value.trim().to_lowercase()).unwrap_or_default();
+    !normalized.is_empty() && normalized != "0" && normalized != "false"
+}
+
+/// Where the event came from: the standalone CLI, or a runtime embedded in OmO Desktop.
+pub struct OmoNativeAttributionInput<'a> {
+    pub env: Option<&'a telemetry_core::TelemetryEnv>,
+    /// Injected by tests; defaults to the runtime's resolved agent home.
+    pub state_dir: Option<&'a Path>,
+    /// Decides whether `machine_hash` is still inside its transition window.
+    pub now: Option<chrono::DateTime<chrono::Utc>>,
+    pub os_provider: Option<&'a dyn telemetry_core::TelemetryOsProvider>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OmoNativeAttribution {
+    pub surface: &'static str,
+    pub install_hash: String,
+    pub ci: bool,
+    pub machine_hash: Option<String>,
+}
+
+/// Shared attribution for every omo-native event. The install id is a random 64-hex id stored next to the
+/// session-id salt, so the CLI and the Desktop-bundled runtime on one machine converge on one id without
+/// deriving anything from the machine itself. A valid `OMO_NATIVE_INSTALL_ID` env override wins, because a
+/// Desktop host pins a remote (SSH/WSL) runtime to ITS local installation id.
+pub fn get_omo_native_attribution(input: &OmoNativeAttributionInput<'_>) -> OmoNativeAttribution {
+    let empty = telemetry_core::TelemetryEnv::new();
+    let env = input.env.unwrap_or(&empty);
+    let surface = match env.get("OMO_NATIVE_SURFACE").map(|value| value.trim()) {
+        Some("desktop") => "desktop",
+        _ => "cli",
+    };
+    let env_install_id = env
+        .get("OMO_NATIVE_INSTALL_ID")
+        .map(|value| value.trim())
+        .unwrap_or_default();
+    let install_id = if is_install_id(env_install_id) {
+        env_install_id.to_string()
+    } else if let Some(state_dir) = input.state_dir {
+        read_or_create_install_id(&state_dir.join(INSTALL_ID_FILE_NAME))
+    } else {
+        resolve_user_install_id(env)
+    };
+    let now = input.now.unwrap_or_else(chrono::Utc::now);
+    let sunset = chrono::DateTime::parse_from_rfc3339(MACHINE_HASH_SUNSET_ISO)
+        .map(|sunset| sunset.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|_| now);
+    let machine_hash = if now < sunset {
+        let os: &dyn telemetry_core::TelemetryOsProvider = input
+            .os_provider
+            .unwrap_or(telemetry_core::get_default_telemetry_os_provider());
+        Some(telemetry_core::get_telemetry_distinct_id(
+            &create_omo_native_product_config().machine_id_prefix,
+            os,
+        ))
+    } else {
+        None
+    };
+    let mut hash = Sha256::new();
+    hash.update(install_id.as_bytes());
+    OmoNativeAttribution {
+        surface,
+        install_hash: format!("{:x}", hash.finalize()),
+        ci: is_ci_env(env.get("CI")),
+        machine_hash,
+    }
+}
+
+/// Attach the shared attribution to a product config; the fixed identity keys still win downstream.
+pub fn with_omo_native_attribution(
+    product: telemetry_core::TelemetryProductConfig,
+    input: &OmoNativeAttributionInput<'_>,
+) -> telemetry_core::TelemetryProductConfig {
+    let attribution = get_omo_native_attribution(input);
+    let mut properties = product.additional_properties.clone().unwrap_or_default();
+    properties.insert("surface".into(), serde_json::json!(attribution.surface));
+    properties.insert("install_hash".into(), serde_json::json!(attribution.install_hash));
+    properties.insert("ci".into(), serde_json::json!(attribution.ci));
+    if let Some(machine_hash) = attribution.machine_hash {
+        properties.insert("machine_hash".into(), serde_json::json!(machine_hash));
+    }
+    telemetry_core::TelemetryProductConfig {
+        additional_properties: Some(properties),
+        ..product
+    }
+}
 #[cfg(test)]
 mod identity_tests {
     use super::*;
@@ -91,7 +297,7 @@ mod identity_tests {
         for key in ["token_status", "stats_status"] {
             assert_eq!(delegation[key]["values"], serde_json::json!(["complete", "partial", "unavailable"]));
         }
-        assert_eq!(delegation["cost_status"]["values"], serde_json::json!(["reported", "unavailable", "invalid"]));
+        assert_eq!(delegation["cost_status"]["values"], serde_json::json!(["reported", "partial", "unavailable", "invalid"]));
         assert_eq!(delegation["duration_status"]["values"], serde_json::json!(["monotonic", "wall_clock", "unavailable"]));
         assert_eq!(delegation["category"]["values"], serde_json::json!(builtin_category_names().into_iter().chain(["custom", "none"]).collect::<Vec<_>>()));
         assert_eq!(delegation["agent_type"]["values"], serde_json::json!(curated_agents().into_iter().chain(["custom", "none"]).collect::<Vec<_>>()));

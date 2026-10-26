@@ -1,7 +1,5 @@
 use crate::host_protocol_info::{HostProtocolInfo, parse_host_protocol_info};
 use serde_json::Value;
-#[cfg(unix)]
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub const DEFAULT_PROBE_TIMEOUT_MS: u64 = 10000;
 pub const DETACH_CONNECTION_CAPABILITY: &str = "detach_connection";
 pub struct ProbeHostOptions<'a> {
@@ -49,34 +47,26 @@ pub async fn connect_and_ask_with_secret(
     #[cfg(unix)]
     {
         let _ = secret;
-        let mut outcome = ProbeOutcome::default();
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
-            let mut socket = tokio::net::UnixStream::connect(socket_path).await.ok()?;
-            outcome.connected = true;
-            socket
-                .write_all(crate::jsonl::serialize_json_line(request).ok()?.as_bytes())
-                .await
-                .ok()?;
-            let mut buffer = String::new();
-            let mut chunk = [0u8; 8192];
-            loop {
-                let size = socket.read(&mut chunk).await.ok()?;
-                if size == 0 {
-                    return None;
-                }
-                buffer.push_str(&String::from_utf8_lossy(&chunk[..size]));
-                while let Some(newline) = buffer.find('\n') {
-                    let line = buffer[..newline].to_owned();
-                    buffer.drain(..=newline);
-                    if let Some(answer) = read_answer(&line) {
-                        outcome.answer = Some(answer);
-                        return Some(());
-                    }
-                }
+        match ask_host_authenticated(socket_path, request, timeout_ms, None).await {
+            Ok(Some(answer)) => ProbeOutcome {
+                connected: true,
+                answer: if answer["success"] == true {
+                    Some(
+                        answer
+                            .get("data")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({})),
+                    )
+                } else {
+                    None
+                },
+            },
+            Ok(None) => ProbeOutcome::default(),
+            Err(error) => {
+                eprintln!("host identity verification failed: {error}");
+                ProbeOutcome::default()
             }
-        })
-        .await;
-        outcome
+        }
     }
     #[cfg(windows)]
     {
@@ -176,6 +166,16 @@ pub async fn probe_protocol_info_with_secret(
     )
 }
 pub async fn probe_socket_reachable(socket_path: &str, timeout_ms: u64) -> bool {
+    #[cfg(unix)]
+    {
+        return tokio::time::timeout(
+            std::time::Duration::from_millis(timeout_ms),
+            tokio::net::UnixStream::connect(socket_path),
+        )
+        .await
+        .is_ok_and(|result| result.is_ok());
+    }
+    #[cfg(not(unix))]
     connect_and_ask(
         socket_path,
         &serde_json::json!({"id":PROBE_REQUEST_ID,"type":"get_protocol_info"}),
@@ -194,6 +194,162 @@ pub async fn probe_session_count(socket_path: &str, timeout_ms: u64) -> Option<u
     .get("sessions")?
     .as_array()
     .map(Vec::len)
+}
+
+/// Authenticated raw request. Identity failures are typed, never mistaken for a missing endpoint.
+#[cfg(unix)]
+pub async fn ask_host_authenticated(
+    endpoint: &str,
+    request: &Value,
+    timeout_ms: u64,
+    agent_dir: Option<&std::path::Path>,
+) -> Result<Option<Value>, crate::socket_auth::RpcIdentityError> {
+    use crate::socket_auth;
+    let (mut socket, info) =
+        match authenticated_host_socket(endpoint, request, timeout_ms, agent_dir).await {
+            Ok(connection) => connection,
+            Err(error) => {
+                return match error.downcast::<crate::socket_auth::RpcIdentityError>() {
+                    Ok(error) => Err(*error),
+                    Err(_) => Ok(None),
+                };
+            }
+        };
+    if request["type"] == "get_protocol_info" {
+        return Ok(Some(info));
+    }
+    let answer = match socket.request(request.clone()).await {
+        Ok(answer) => answer,
+        Err(_) => return Ok(None),
+    };
+    if answer["success"] == false
+        && (answer["errorCode"] == "auth_required" || answer["error"] == "auth_required")
+    {
+        return Err(socket_auth::auth_required_error(endpoint));
+    }
+    Ok(Some(answer))
+}
+
+#[cfg(unix)]
+pub async fn authenticated_host_socket(
+    endpoint: &str,
+    request: &Value,
+    timeout_ms: u64,
+    agent_dir: Option<&std::path::Path>,
+) -> Result<(crate::socket_client::RpcSocket, Value), Box<dyn std::error::Error + Send + Sync>> {
+    use crate::{socket_auth, socket_client::RpcSocket};
+    let mut socket =
+        match RpcSocket::connect(endpoint, std::time::Duration::from_millis(timeout_ms)).await {
+            Ok(socket) => socket,
+            Err(error) => return Err(error.into()),
+        };
+    let mut random = [0u8; 32];
+    getrandom::fill(&mut random).map_err(|error| std::io::Error::other(error.to_string()))?;
+    let nonce = hex::encode(random);
+    let mut command = if request["type"] == "get_protocol_info" {
+        request.clone()
+    } else {
+        serde_json::json!({"type":"get_protocol_info","observe":true})
+    };
+    command["auth"] = serde_json::json!({"client_nonce":nonce});
+    let info = match socket.request(command).await {
+        Ok(info) => info,
+        Err(error) => return Err(error.into()),
+    };
+    if let Some(auth) = info.get("data").and_then(|data| data.get("auth")) {
+        let launch = auth["launch_id"]
+            .as_str()
+            .filter(|launch| {
+                uuid::Uuid::parse_str(launch)
+                    .is_ok_and(|id| id.get_version_num() == 4 && id.to_string() == *launch)
+            })
+            .ok_or_else(|| socket_auth::RpcIdentityError {
+                code: "host_identity_unproven",
+                location: endpoint.into(),
+                detail: "invalid launch".into(),
+            })?;
+        for field in ["server_nonce", "server_proof"] {
+            if !auth[field].as_str().is_some_and(|value| {
+                value.len() == 64
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            }) {
+                return Err(Box::new(socket_auth::RpcIdentityError {
+                    code: "host_identity_unproven",
+                    location: endpoint.into(),
+                    detail: format!("invalid {field}"),
+                }));
+            }
+        }
+        let root = std::env::var("SENPI_RPC_KEY_ROOT")
+            .ok()
+            .filter(|root| !root.trim().is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| agent_dir.map(ToOwned::to_owned))
+            .unwrap_or_else(|| {
+                for name in [
+                    "OMO_CODING_AGENT_DIR",
+                    "SENPI_CODING_AGENT_DIR",
+                    "PI_CODING_AGENT_DIR",
+                ] {
+                    if let Ok(value) = std::env::var(name)
+                        && !value.trim().is_empty() {
+                            return std::path::absolute(value.trim())
+                                .unwrap_or_else(|_| std::path::PathBuf::from(value.trim()));
+                        }
+                }
+                let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+                for path in [home.join(".omo/agent"), home.join(".omo")] {
+                    if path.join("settings.json").exists() {
+                        return path;
+                    }
+                }
+                home.join(".senpi/agent")
+            });
+        if let Some(key) = socket_auth::read_key(&root, launch)? {
+            socket_auth::verify_server(&key, auth, &nonce, endpoint)?;
+            let proof = socket_auth::proof(
+                &key,
+                "senpi-rpc-client",
+                launch,
+                auth["server_nonce"].as_str().unwrap_or_default(),
+                &nonce,
+            );
+            let answer = match socket
+                .request(
+                    serde_json::json!({"type":"authenticate","client_proof":hex::encode(proof)}),
+                )
+                .await
+            {
+                Ok(answer) => answer,
+                Err(error) => return Err(error.into()),
+            };
+            if answer["success"] != true {
+                return Err(Box::new(socket_auth::RpcIdentityError {
+                    code: "auth_failed",
+                    location: endpoint.into(),
+                    detail: "client proof refused".into(),
+                }));
+            }
+        } else {
+            static GRACE_ROOTS: std::sync::OnceLock<
+                std::sync::Mutex<std::collections::BTreeSet<std::path::PathBuf>>,
+            > = std::sync::OnceLock::new();
+            if GRACE_ROOTS
+                .get_or_init(Default::default)
+                .lock()
+                .expect("authentication grace roots lock poisoned")
+                .insert(root.clone())
+            {
+                eprintln!(
+                    "senpi rpc client: no key record under {}; set SENPI_RPC_KEY_ROOT to the host's agent dir",
+                    root.display()
+                );
+            }
+        }
+    }
+    Ok((socket, info))
 }
 #[cfg(test)]
 mod tests {
@@ -214,19 +370,23 @@ mod tests {
         let path = temp.path().join("probe.sock");
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
         let serve = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut byte = [0u8; 1];
-            let mut request = vec![];
-            loop {
-                socket.read_exact(&mut byte).await.unwrap();
-                request.push(byte[0]);
-                if byte[0] == b'\n' {
-                    break;
-                }
-            }
-            let request: Value = serde_json::from_slice(&request).unwrap();
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = tokio::io::BufReader::new(socket);
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+            let mut line = String::new();
+            socket.read_line(&mut line).await.unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            let response = serde_json::json!({"id":request["id"],"success":true,"data":{}});
+            socket
+                .get_mut()
+                .write_all(format!("{response}\n").as_bytes())
+                .await
+                .unwrap();
+            line.clear();
+            socket.read_line(&mut line).await.unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
             assert_eq!(request["id"], PROBE_REQUEST_ID);
-            socket.write_all(b"{\"type\":\"agent_start\"}\n{\"id\":\"other\",\"success\":true}\n{\"id\":\"ensure-host-probe\",\"success\":true,\"data\":{\"sessions\":[{},{}]}}\n").await.unwrap();
+            socket.get_mut().write_all(b"{\"type\":\"agent_start\"}\n{\"id\":\"other\",\"success\":true}\n{\"id\":\"ensure-host-probe\",\"success\":true,\"data\":{\"sessions\":[{},{}]}}\n").await.unwrap();
         });
         assert_eq!(
             probe_session_count(path.to_str().unwrap(), 1000).await,

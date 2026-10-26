@@ -286,6 +286,10 @@ fn task_send_result_row(details: &SendResultDetails) -> ResultRow {
             ThemeColor::Error,
             format!("task_send stale {task_id} epoch {run_epoch}: {reason}"),
         ),
+        SendResultDetails::Held { task_id, .. } => row(
+            ThemeColor::Muted,
+            format!("task_send held {task_id} until the run resumes"),
+        ),
         SendResultDetails::Queued {
             task_id,
             queue_position,
@@ -439,5 +443,19 @@ fn task_cancel_result_row(details: &CancelResultDetails) -> ResultRow {
         CancelResultDetails::InvalidArguments { reason } => {
             row(ThemeColor::Error, format!("task_cancel invalid: {reason}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod held_parity_tests {
+    use super::*;
+    #[test]
+    fn held_send_uses_muted_result_color() {
+        let result = task_send_result_row(&SendResultDetails::Held {
+            task_id: "held".into(),
+            pause_seq: 2,
+            entry_id: "entry".into(),
+        });
+        assert_eq!(result.color, ThemeColor::Muted);
     }
 }

@@ -6,11 +6,14 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use crate::image_stub::is_image_line;
-use crate::mouse_input::{is_mouse_sequence, parse_sgr_mouse_event, to_tui_mouse_event, MouseClickSynthesizer, MouseTracking, SgrMouseEvent};
+use crate::mouse_input::{
+    MouseClickSynthesizer, MouseTracking, SgrMouseEvent, is_mouse_sequence, parse_sgr_mouse_event,
+    to_tui_mouse_event,
+};
 use crate::terminal::Terminal;
 use crate::tui::{
-    dispatch_mouse_event, retarget_mouse_event, Component, TuiBase, MouseBlocker,
-    TuiMouseDispatchTarget, TuiMouseEvent, TuiMouseEventResult, TuiMouseEventType,
+    Component, MouseBlocker, TuiBase, TuiMouseDispatchTarget, TuiMouseEvent, TuiMouseEventResult,
+    TuiMouseEventType, dispatch_mouse_event, retarget_mouse_event,
 };
 
 pub struct TuiMainScreenRenderState {
@@ -26,7 +29,8 @@ pub struct TuiMainScreenRenderState {
 struct MousePress {
     target: TuiMouseDispatchTarget,
     epoch: u64,
-    revision: u64,
+    frame: Vec<String>,
+    components: Vec<Rc<RefCell<dyn Component>>>,
     x: i64,
     y: i64,
 }
@@ -35,6 +39,7 @@ struct MousePress {
 pub struct TuiMainScreen {
     pub base: TuiBase,
     tracking_enabled: bool,
+    yielded: bool,
     clicks: MouseClickSynthesizer,
     mouse_press: Option<MousePress>,
     layout_revision: u64,
@@ -60,6 +65,7 @@ impl TuiMainScreen {
         Self {
             base: TuiBase::new(),
             tracking_enabled: false,
+            yielded: false,
             clicks: MouseClickSynthesizer::new(),
             mouse_press: None,
             layout_revision: 0,
@@ -74,7 +80,13 @@ impl TuiMainScreen {
     /// [`TuiMainScreen::acquire_mouse_capture`]/[`TuiMainScreen::release_mouse_capture`]/
     /// [`TuiMainScreen::set_mouse_blocker`] report that tracking state changed, since this port
     /// has no virtual dispatch from `TuiBase` back onto its owning renderer.
-    pub fn apply_mouse_tracking(&mut self, enabled: bool, support: &MouseTrackingSupport, terminal: &mut dyn Terminal) {
+    pub fn apply_mouse_tracking(
+        &mut self,
+        enabled: bool,
+        support: &MouseTrackingSupport,
+        terminal: &mut dyn Terminal,
+    ) {
+        self.yielded = false;
         let supported = support.is_tty && !support.is_termux && !support.is_windows_without_wt;
         let stopped = self.base.state.borrow().stopped;
         let next = enabled && supported && !stopped;
@@ -84,12 +96,17 @@ impl TuiMainScreen {
             return;
         }
         self.tracking_enabled = next;
-        terminal.write(if next { MouseTracking::INLINE } else { MouseTracking::DISABLE });
+        terminal.write(if next {
+            MouseTracking::INLINE
+        } else {
+            MouseTracking::DISABLE
+        });
     }
 
     pub fn before_terminal_stop(&mut self, terminal: &mut dyn Terminal) {
         terminal.write(MouseTracking::DISABLE);
         self.tracking_enabled = false;
+        self.yielded = false;
         self.clicks.cancel();
         self.mouse_press = None;
     }
@@ -98,7 +115,12 @@ impl TuiMainScreen {
     /// first lease (senpi's `acquireMouseCapture` calling `this.applyMouseTracking` through
     /// virtual dispatch; this port has no virtual dispatch onto `TuiBase`, so the caller-side
     /// wrapper applies tracking after the lease-accounting call returns).
-    pub fn acquire_mouse_capture(&mut self, reason: impl Into<String>, support: &MouseTrackingSupport, terminal: &mut dyn Terminal) {
+    pub fn acquire_mouse_capture(
+        &mut self,
+        reason: impl Into<String>,
+        support: &MouseTrackingSupport,
+        terminal: &mut dyn Terminal,
+    ) {
         let (token, should_apply) = self.base.acquire_mouse_capture(reason);
         self.mouse_capture_token = Some(token);
         if should_apply {
@@ -108,7 +130,11 @@ impl TuiMainScreen {
         }
     }
 
-    pub fn release_mouse_capture(&mut self, support: &MouseTrackingSupport, terminal: &mut dyn Terminal) {
+    pub fn release_mouse_capture(
+        &mut self,
+        support: &MouseTrackingSupport,
+        terminal: &mut dyn Terminal,
+    ) {
         let Some(token) = self.mouse_capture_token.take() else {
             return;
         };
@@ -117,7 +143,13 @@ impl TuiMainScreen {
         }
     }
 
-    pub fn set_mouse_blocker(&mut self, name: MouseBlocker, on: bool, support: &MouseTrackingSupport, terminal: &mut dyn Terminal) {
+    pub fn set_mouse_blocker(
+        &mut self,
+        name: MouseBlocker,
+        on: bool,
+        support: &MouseTrackingSupport,
+        terminal: &mut dyn Terminal,
+    ) {
         if self.base.set_mouse_blocker(name, on) {
             let enabled = self.base.mouse_capture_enabled();
             self.apply_mouse_tracking(enabled, support, terminal);
@@ -130,7 +162,10 @@ impl TuiMainScreen {
     pub fn note_render(&mut self, terminal: &mut dyn Terminal) {
         self.base.note_committed_mouse_frame(terminal);
 
-        fn visit(component: &Rc<RefCell<dyn Component>>, out: &mut Vec<Rc<RefCell<dyn Component>>>) {
+        fn visit(
+            component: &Rc<RefCell<dyn Component>>,
+            out: &mut Vec<Rc<RefCell<dyn Component>>>,
+        ) {
             out.push(Rc::clone(component));
             let component = component.borrow();
             if let Some(container) = component.as_container() {
@@ -165,7 +200,10 @@ impl TuiMainScreen {
     /// Called before `TuiBase::do_render` when a pending external write requires appending a
     /// fresh working frame instead of overwriting a displaced old one (senpi's
     /// `mouseExternalWritePending` branch at the top of `doRender`).
-    pub fn take_mouse_external_write_pending(&mut self, terminal: &mut dyn Terminal) -> Option<TuiMainScreenRenderState> {
+    pub fn take_mouse_external_write_pending(
+        &mut self,
+        terminal: &mut dyn Terminal,
+    ) -> Option<TuiMainScreenRenderState> {
         let pending = self.base.state.borrow().mouse_external_write_pending;
         if !pending {
             return None;
@@ -184,14 +222,21 @@ impl TuiMainScreen {
         Some(self.capture_render_state())
     }
 
-    fn apply_mouse_result(&mut self, result: Option<TuiMouseEventResult>, focus_target: Option<Rc<RefCell<dyn Component>>>, fallback_target: &Rc<RefCell<dyn Component>>) {
+    fn apply_mouse_result(
+        &mut self,
+        result: Option<TuiMouseEventResult>,
+        focus_target: Option<Rc<RefCell<dyn Component>>>,
+        fallback_target: &Rc<RefCell<dyn Component>>,
+    ) {
         let Some(result) = result else {
             return;
         };
         if !result.focus {
             return;
         }
-        let target = self.base.resolve_mouse_focus_target(focus_target.as_ref().unwrap_or(fallback_target));
+        let target = self
+            .base
+            .resolve_mouse_focus_target(focus_target.as_ref().unwrap_or(fallback_target));
         if let Some(target) = target {
             self.base.set_focus(Some(target));
         }
@@ -201,11 +246,48 @@ impl TuiMainScreen {
     /// `this.addInputListener((data) => this.handleMouseInput(data))`). `now_ms` is senpi's
     /// implicit `Date.now()` inside `MouseClickSynthesizer` - this port takes it explicitly so
     /// double-click detection stays testable without real timers.
-    pub fn handle_mouse_input(&mut self, data: &str, now_ms: i64, terminal: &mut dyn Terminal) -> bool {
+    pub fn handle_mouse_input(
+        &mut self,
+        data: &str,
+        now_ms: i64,
+        terminal: &mut dyn Terminal,
+    ) -> bool {
         if !is_mouse_sequence(data) {
+            let cell_report = data
+                .strip_prefix("\x1b[")
+                .and_then(|s| s.strip_suffix('t'))
+                .is_some_and(|s| {
+                    !s.is_empty()
+                        && s.split(';').all(|part| {
+                            !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())
+                        })
+                });
+            let report = matches!(data, "\x1b[I" | "\x1b[O") || data.starts_with("\x1b[?")
+                || cell_report
+                || data.len() > 2
+                    && (data.starts_with("\x1b]")
+                        || data.starts_with("\x1bP")
+                        || data.starts_with("\x1b_"));
+            if self.yielded && !report && !crate::keys::is_key_release(data) {
+                self.yielded = false;
+                if self.base.mouse_capture_enabled() && !self.base.state.borrow().stopped {
+                    self.tracking_enabled = true;
+                    terminal.write(MouseTracking::INLINE);
+                    self.base.request_render(false, 0);
+                }
+            }
             return false;
         }
         let raw = parse_sgr_mouse_event(data);
+        if self.tracking_enabled && raw.as_ref().is_some_and(|raw| raw.button & 64 != 0) {
+            terminal.write(MouseTracking::DISABLE);
+            self.tracking_enabled = false;
+            self.yielded = true;
+            self.clicks.cancel();
+            self.mouse_press = None;
+            self.base.request_render(false, 0);
+            return true;
+        }
         let Some(raw) = raw else {
             self.clicks.cancel();
             self.mouse_press = None;
@@ -227,8 +309,18 @@ impl TuiMainScreen {
             self.mouse_press = None;
             return true;
         }
-        let event_type = if raw.release { TuiMouseEventType::Release } else { TuiMouseEventType::Press };
-        let event = to_tui_mouse_event(event_type, raw, terminal.columns() as usize, terminal.rows() as usize, Default::default());
+        let event_type = if raw.release {
+            TuiMouseEventType::Release
+        } else {
+            TuiMouseEventType::Press
+        };
+        let event = to_tui_mouse_event(
+            event_type,
+            raw,
+            terminal.columns() as usize,
+            terminal.rows() as usize,
+            Default::default(),
+        );
 
         if !raw.release {
             self.handle_mouse_press(raw, event, frame_line, now_ms, terminal);
@@ -238,7 +330,14 @@ impl TuiMainScreen {
         true
     }
 
-    fn handle_mouse_press(&mut self, raw: SgrMouseEvent, event: TuiMouseEvent, frame_line: usize, now_ms: i64, terminal: &mut dyn Terminal) {
+    fn handle_mouse_press(
+        &mut self,
+        raw: SgrMouseEvent,
+        event: TuiMouseEvent,
+        frame_line: usize,
+        now_ms: i64,
+        terminal: &mut dyn Terminal,
+    ) {
         let (hit, overlay_result) = self.base.dispatch_mouse_to_overlay(&event);
         let placement_epoch = self.base.state.borrow().placement_epoch;
         let previous_lines_len = self.base.state.borrow().previous_lines.len();
@@ -248,19 +347,31 @@ impl TuiMainScreen {
         } else if hit {
             None
         } else {
-            let retargeted = TuiMouseEvent { y: frame_line as i64, height: previous_lines_len, ..event };
+            let retargeted = TuiMouseEvent {
+                y: frame_line as i64,
+                height: previous_lines_len,
+                ..event
+            };
             self.base.dispatch_self_mouse_event(&retargeted)
         };
 
         self.mouse_press = None;
         if let Some(result) = result {
-            let focus_target = result.focus_target.clone().unwrap_or_else(|| Rc::clone(&result.target.component));
+            let focus_target = result
+                .focus_target
+                .clone()
+                .unwrap_or_else(|| Rc::clone(&result.target.component));
             let press_key = component_key(&result.target.component);
-            self.apply_mouse_result(Some(result.result), Some(focus_target), &result.target.component);
+            self.apply_mouse_result(
+                Some(result.result),
+                Some(focus_target),
+                &result.target.component,
+            );
             self.mouse_press = Some(MousePress {
                 target: result.target,
                 epoch: placement_epoch,
-                revision: self.layout_revision,
+                frame: self.base.state.borrow().previous_lines.clone(),
+                components: self.collect_mouse_components(),
                 x: raw.x,
                 y: raw.y,
             });
@@ -272,22 +383,42 @@ impl TuiMainScreen {
         let _ = terminal;
     }
 
-    fn handle_mouse_release(&mut self, raw: SgrMouseEvent, event: TuiMouseEvent, now_ms: i64, terminal: &mut dyn Terminal) {
+    fn handle_mouse_release(
+        &mut self,
+        raw: SgrMouseEvent,
+        event: TuiMouseEvent,
+        now_ms: i64,
+        terminal: &mut dyn Terminal,
+    ) {
         let press = self.mouse_press.take();
         let placement_epoch = self.base.state.borrow().placement_epoch;
         let Some(press) = press else {
             self.clicks.cancel();
             return;
         };
-        if press.epoch != placement_epoch || press.revision != self.layout_revision || press.x != raw.x || press.y != raw.y {
+        let layout_unchanged = self.press_layout_unchanged(&press);
+        if press.epoch != placement_epoch
+            || !layout_unchanged
+            || press.x != raw.x
+            || press.y != raw.y
+        {
             self.clicks.cancel();
             return;
         }
 
-        let Some(count) = self.clicks.release(raw, component_key(&press.target.component), placement_epoch, now_ms) else {
+        let Some(count) = self.clicks.release(
+            raw,
+            component_key(&press.target.component),
+            placement_epoch,
+            now_ms,
+        ) else {
             return;
         };
-        let click = TuiMouseEvent { event_type: TuiMouseEventType::Click, click_count: Some(count), ..event };
+        let click = TuiMouseEvent {
+            event_type: TuiMouseEventType::Click,
+            click_count: Some(count),
+            ..event
+        };
         let focus_before_click = self.base.get_focused_component();
         let retargeted = retarget_mouse_event(&click, &press.target);
         let click_result = dispatch_mouse_event(&press.target.component, &retargeted);
@@ -298,10 +429,52 @@ impl TuiMainScreen {
         };
         if focus_unchanged {
             let focus_target = click_result.as_ref().and_then(|r| r.focus_target.clone());
-            self.apply_mouse_result(click_result.map(|r| r.result), focus_target, &press.target.component);
+            self.apply_mouse_result(
+                click_result.map(|r| r.result),
+                focus_target,
+                &press.target.component,
+            );
         }
         self.base.request_render(false, 0);
         let _ = terminal;
+    }
+
+    fn press_layout_unchanged(&self, press: &MousePress) -> bool {
+        let components = self.collect_mouse_components();
+        press.frame == self.base.state.borrow().previous_lines
+            && components.len() == press.components.len()
+            && components
+                .iter()
+                .zip(&press.components)
+                .all(|(a, b)| Rc::ptr_eq(a, b))
+    }
+
+    pub fn mouse_capture_state(&self) -> &'static str {
+        if self.yielded {
+            "yielded"
+        } else if self.tracking_enabled {
+            "armed"
+        } else {
+            "off"
+        }
+    }
+    fn collect_mouse_components(&self) -> Vec<Rc<RefCell<dyn Component>>> {
+        fn visit(
+            component: &Rc<RefCell<dyn Component>>,
+            out: &mut Vec<Rc<RefCell<dyn Component>>>,
+        ) {
+            out.push(Rc::clone(component));
+            if let Some(container) = component.borrow().as_container() {
+                for child in &container.children {
+                    visit(child, out);
+                }
+            }
+        }
+        let mut components = Vec::new();
+        for root in self.base.get_mouse_layout_roots() {
+            visit(&root, &mut components);
+        }
+        components
     }
 
     pub fn capture_render_state(&self) -> TuiMainScreenRenderState {
@@ -322,7 +495,13 @@ impl TuiMainScreen {
         state.previous_lines = restore_state
             .previous_lines
             .into_iter()
-            .map(|line| if is_image_line(&line) { String::new() } else { line })
+            .map(|line| {
+                if is_image_line(&line) {
+                    String::new()
+                } else {
+                    line
+                }
+            })
             .collect();
         state.previous_kitty_image_ids = Default::default();
         state.previous_width = restore_state.previous_width;
@@ -358,12 +537,55 @@ mod tests {
     use super::lines_fingerprint;
 
     #[test]
+    fn release_rejects_changed_frame_even_without_note_render() {
+        use super::*;
+        struct Target;
+        impl Component for Target {
+            fn render(&mut self, _: usize) -> Vec<String> {
+                vec![]
+            }
+        }
+        let screen = TuiMainScreen::new();
+        let target: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(Target));
+        let press = MousePress {
+            target: TuiMouseDispatchTarget {
+                component: target,
+                origin_x: 0,
+                origin_y: 0,
+                width: 80,
+                height: 1,
+            },
+            epoch: 0,
+            frame: vec!["before".into()],
+            components: vec![],
+            x: 0,
+            y: 0,
+        };
+        screen.base.state.borrow_mut().previous_lines = vec!["after".into()];
+        assert!(!screen.press_layout_unchanged(&press));
+        screen.base.state.borrow_mut().previous_lines = vec!["before".into()];
+        assert!(screen.press_layout_unchanged(&press));
+        let mut stale = press;
+        stale.components.push(Rc::new(RefCell::new(Target)));
+        assert!(!screen.press_layout_unchanged(&stale));
+    }
+
+    #[test]
     fn lines_fingerprint_tracks_line_content_and_boundaries() {
         let a = vec!["ab".to_string(), "c".to_string()];
         assert_eq!(lines_fingerprint(&a), lines_fingerprint(&a.clone()));
-        assert_ne!(lines_fingerprint(&a), lines_fingerprint(&["a".to_string(), "bc".to_string()]));
-        assert_ne!(lines_fingerprint(&a), lines_fingerprint(&["ab".to_string(), "d".to_string()]));
-        assert_ne!(lines_fingerprint(&a), lines_fingerprint(&["abc".to_string()]));
+        assert_ne!(
+            lines_fingerprint(&a),
+            lines_fingerprint(&["a".to_string(), "bc".to_string()])
+        );
+        assert_ne!(
+            lines_fingerprint(&a),
+            lines_fingerprint(&["ab".to_string(), "d".to_string()])
+        );
+        assert_ne!(
+            lines_fingerprint(&a),
+            lines_fingerprint(&["abc".to_string()])
+        );
         assert_ne!(lines_fingerprint(&[]), lines_fingerprint(&[String::new()]));
     }
 }

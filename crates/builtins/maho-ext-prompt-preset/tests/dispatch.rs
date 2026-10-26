@@ -1,7 +1,7 @@
 use maho_core::dynamic_prompt::build::BuildDynamicSystemPromptOptions;
 use maho_ext_prompt_preset::{presets::{ModelMetadata, resolve_preset}, settings::PromptPresetName};
 fn options() -> BuildDynamicSystemPromptOptions<'static> {
-    BuildDynamicSystemPromptOptions { cwd: "/tmp/project".into(), selected_tools: vec!["eval".into(), "read".into()], tool_snippets: Default::default(), prompt_guidelines: Vec::new(), context_files: Vec::new(), skills: Vec::new(), tuning_section: None, core_prompt: None, workstation_dialect: None, surface: maho_core::dynamic_prompt::PromptSurface::Terminal }
+    BuildDynamicSystemPromptOptions { custom_prompt: None, append_system_prompt: None, on_parts: None, cwd: "/tmp/project".into(), selected_tools: vec!["eval".into(), "read".into()], tool_snippets: Default::default(), prompt_guidelines: Vec::new(), context_files: Vec::new(), skills: Vec::new(), tuning_section: None, core_prompt: None, workstation_dialect: None, surface: maho_core::dynamic_prompt::PromptSurface::Terminal }
 }
 #[test]
 fn surface_is_visible_to_core_prompt_overrides() {
@@ -35,6 +35,40 @@ fn all_explicit_presets_dispatch_to_nonempty_prompts() {
         assert_eq!(resolved.name, preset);
         assert!(!resolved.prompt.is_empty());
         assert!(!resolved.prompt.contains("${"));
+    }
+}
+#[test]
+fn preset_capture_forwards_the_exact_render_once_and_preserves_context_sources() {
+    let observed = std::cell::RefCell::new(Vec::new());
+    let observer = |parts: &[maho_ext_api::DynamicSystemPromptPart]| {
+        observed.borrow_mut().push(parts.to_vec());
+    };
+    let mut input = options();
+    input.on_parts = Some(&observer);
+    input.context_files.push(maho_core::system_prompt::ContextFile {
+        path: "/project/AGENTS.md".into(),
+        content: "fixture context".into(),
+    });
+    let resolved = resolve_preset(
+        ModelMetadata { id: "unknown", provider: "fixture", name: None, prompt_preset: None },
+        PromptPresetName::Gpt55,
+        input,
+    ).unwrap();
+    let observed = observed.into_inner();
+    assert_eq!(observed.len(), 1);
+    assert_eq!(observed[0].iter().map(|part| part.text.as_str()).collect::<String>(), resolved.prompt);
+    assert_eq!(resolved.parts.iter().map(|part| part.text.as_str()).collect::<String>(), resolved.prompt);
+    for (original, captured) in observed[0].iter().zip(&resolved.parts) {
+        assert_eq!(original.name, captured.name);
+        assert_eq!(original.text, captured.text);
+        let expected_source = if original.name == "project_context"
+            && original.source.as_deref().is_some_and(|source| source != "dynamic-prompt")
+        {
+            original.source.as_deref()
+        } else {
+            Some("prompt-preset:gpt-5.5")
+        };
+        assert_eq!(captured.source.as_deref(), expected_source);
     }
 }
 #[test]

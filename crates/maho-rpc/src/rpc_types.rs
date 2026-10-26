@@ -2,6 +2,39 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "method", rename_all = "snake_case")]
+pub enum RpcHostRequestMethod {
+    ListRelocationTargets,
+    RelocateSession { target: String, reason: String },
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RpcHostRequest {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub record_type: String,
+    #[serde(flatten)]
+    pub method: RpcHostRequestMethod,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RpcHostResponse {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub record_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcRelocationDueEvent {
+    #[serde(rename = "type")]
+    pub record_type: String,
+    pub move_id: String,
+    pub target: String,
+    pub reason: String,
+}
 /// Stable machine-matchable error codes carried in response `error` fields (rpc-types.ts).
 pub const RPC_ERROR_UNKNOWN_SESSION: &str = "unknown_session";
 pub const RPC_ERROR_SESSION_CLOSING: &str = "session_closing";
@@ -95,6 +128,12 @@ pub enum RpcCommandBody {
         #[serde(skip_serializing_if = "Option::is_none")]
         deliver_as: Option<DeliveryMode>,
     },
+    ArmToolBarrier {
+        spec: Value,
+    },
+    ReleaseToolBarrier {
+        barrier_id: String,
+    },
     AppendUserMessage {
         content: Value,
     },
@@ -114,6 +153,31 @@ pub enum RpcCommandBody {
         images: Option<Vec<Value>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         enqueue_order: Option<f64>,
+    },
+    HoldInput {
+        input_id: String,
+        revision: u64,
+        text: String,
+        parent_session_id: Option<String>,
+        origin: Option<String>,
+    },
+    WithdrawHeldInput {
+        input_id: String,
+    },
+    PauseForRun {
+        parent_session_id: String,
+        parent_pause_seq: u64,
+        run_ref: maho_core::run_holds::RunRef,
+    },
+    ResumeForRun {
+        parent_session_id: String,
+        parent_pause_seq: u64,
+        resume_id: String,
+        child_seq_cutoff: u64,
+    },
+    HostResponse {
+        data: Option<Value>,
+        error: Option<String>,
     },
     Abort,
     AbortCompaction,

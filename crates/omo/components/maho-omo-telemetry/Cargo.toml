@@ -19,10 +19,12 @@ maho-omo-ultrawork = { path = "../maho-omo-ultrawork" }
 maho-omo-agent-home = { path = "../maho-omo-agent-home" }
 maho-omo-config-resolution = { path = "../maho-omo-config-resolution" }
 maho-omo-config-core = { path = "../../omo-config-core" }
+maho-ai = { path = "../../../maho-ai" }
 chrono = { workspace = true, features = ["clock", "std"] }
-tokio = { workspace = true, features = ["rt", "time", "macros"] }
+tokio = { workspace = true, features = ["rt", "time", "macros", "sync"] }
 futures.workspace = true
 sha2.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 getrandom = "=0.4.2"
 
 [dev-dependencies]

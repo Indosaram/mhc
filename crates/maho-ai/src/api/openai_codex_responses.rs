@@ -1680,6 +1680,7 @@ fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
         failure_source: None,
         timing: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,
@@ -2532,9 +2533,14 @@ mod tests {
             json!({"type":"response.completed","response":{"status":"completed"}}).to_string(),
         ])
         .await;
-        let socket = connect_web_socket(&url, &BTreeMap::new(), None, Some(1_000))
-            .await
-            .expect("connect");
+        let socket = connect_web_socket(
+            &url,
+            &BTreeMap::new(),
+            None,
+            Some(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS),
+        )
+        .await
+        .expect("connect");
         let (frames, failure) = read_live(socket, "{\"type\":\"response.create\"}").await;
         assert_eq!(
             server.await.expect("server task")["type"],
@@ -2552,9 +2558,14 @@ mod tests {
             json!({"type":"response.output_text.delta","delta":"hi"}).to_string(),
         ])
         .await;
-        let socket = connect_web_socket(&url, &BTreeMap::new(), None, Some(1_000))
-            .await
-            .expect("connect");
+        let socket = connect_web_socket(
+            &url,
+            &BTreeMap::new(),
+            None,
+            Some(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS),
+        )
+        .await
+        .expect("connect");
         let (frames, failure) = read_live(socket, "{}").await;
         server.await.expect("server task");
         assert_eq!(frames.len(), 1);

@@ -60,6 +60,7 @@ pub struct DagSchedulerOptions {
     pub pre_attached_tasks: Option<BTreeMap<DagNodeId, String>>,
     pub now: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
     /// Injectable retry-backoff timer; defaults to a real timer thread.
+    pub resume_credential: Option<crate::pause::admission_barrier::ResumeCredential>,
     pub schedule_retry: Option<RetrySchedule>,
 }
 
@@ -83,6 +84,7 @@ impl Clone for DagSchedulerOptions {
             subscriber_ring: self.subscriber_ring,
             pre_attached_tasks: self.pre_attached_tasks.clone(),
             now: self.now.clone(),
+            resume_credential: self.resume_credential.clone(),
             schedule_retry: self.schedule_retry.clone(),
         }
     }
@@ -346,6 +348,11 @@ fn apply_dag_scheduler_event_with_results(
     pending_terminal_results: Option<&Mutex<BTreeMap<DagNodeId, TaskRecord>>>,
     now: Option<&Arc<dyn Fn() -> i64 + Send + Sync>>,
 ) -> DagRunRecordV1 {
+    if let Some(updated) = crate::dag::manager::apply_paused_dag_event(record, event)
+        .or_else(|| crate::dag::manager::apply_run_pause(record, event))
+    {
+        return updated;
+    }
     match &event.payload {
         DagRunEventPayload::RunPaused { .. } => DagRunRecordV1 {
             status: crate::dag::types::DagRunStatus::Paused,
@@ -543,6 +550,11 @@ fn with_nodes(
         amend_history: record.amend_history.clone(),
         lease_holder_pid: record.lease_holder_pid,
         previous_lease_holder_pid: record.previous_lease_holder_pid,
+        guidance: record.guidance.clone(),
+        retry_on_resume: record.retry_on_resume.clone(),
+        cancel_requested_nodes: record.cancel_requested_nodes.clone(),
+        paused_child_acks: record.paused_child_acks.clone(),
+        pause: record.pause.clone(),
     }
 }
 
@@ -1511,6 +1523,13 @@ fn attach_or_fail(
                 true,
             )
         }
+        OwnedStartResult::Held { pause_seq } => {
+            context.journal.append(DagRunEventPayload::RunPaused {
+                reason: Some("user_stop".into()),
+                pause_seq: Some(pause_seq),
+            })?;
+            Ok(())
+        }
         OwnedStartResult::NotStarted(start_result) => {
             let failure = start_failure(&start_result);
             fail_node(context, node_id, failure.0, &failure.1)?;
@@ -1735,7 +1754,10 @@ fn fold_task_outcome(
     node_id: &DagNodeId,
     task: TaskRecord,
 ) -> Result<(), crate::dag::store::DagStoreError> {
-    if matches!(task.status, TaskStatus::Pending | TaskStatus::Running) {
+    if matches!(
+        task.status,
+        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused
+    ) {
         return fail_node(
             context,
             node_id,
@@ -1905,6 +1927,7 @@ fn start_spec(
         DagRoute::Agent { agent, model } => (None, Some(agent.clone()), model.clone()),
     };
     let mut spec = ManagerStartSpec {
+        resume_credential: context.options.resume_credential.clone(),
         prompt: persisted.effective_prompt.clone(),
         task_summary: persisted.task_summary.clone(),
         parent_session_id: parent_session_id.clone(),
@@ -1957,6 +1980,10 @@ fn owner_of(record: &DagRunRecordV1, node_id: &DagNodeId) -> DagTaskOwner {
 
 fn start_failure(result: &StartResult) -> (DagNodeErrorCode, String) {
     match result {
+        StartResult::Held(_) => (
+            DagNodeErrorCode::StartFailed,
+            "Task admission is held until the run resumes".into(),
+        ),
         StartResult::DepthDenied { reason, .. } => (DagNodeErrorCode::DepthDenied, reason.clone()),
         StartResult::PlanUnresolved(error) => {
             (DagNodeErrorCode::PlanUnresolved, error.message.clone())
@@ -1989,7 +2016,7 @@ fn task_failure(status: TaskStatus, message: Option<&str>) -> (DagNodeErrorCode,
             DagNodeErrorCode::TaskCancelled,
             message.unwrap_or("task was cancelled").to_string(),
         ),
-        TaskStatus::Completed | TaskStatus::Pending | TaskStatus::Running => (
+        TaskStatus::Completed | TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused => (
             DagNodeErrorCode::TaskError,
             "task in a non-terminal-failure status".to_string(),
         ),
@@ -2076,6 +2103,7 @@ fn count_nodes(nodes: &[DagNode]) -> DagNodeCounts {
             DagNodeState::Pending => counts.pending += 1,
             DagNodeState::Blocked => counts.blocked += 1,
             DagNodeState::Scheduled => counts.scheduled += 1,
+            DagNodeState::Paused => *counts.paused.get_or_insert(0) += 1,
             DagNodeState::Running => counts.running += 1,
             DagNodeState::Completed => counts.completed += 1,
             DagNodeState::Failed => counts.failed += 1,
@@ -2096,9 +2124,13 @@ pub enum DagNodeControlErrorCode {
     NodeNotRetryable,
     NodeHasNoTask,
     NodeNotContinuable,
+    RunPausedByUser,
+    RunNotUserPaused,
+    GuidanceFrozen,
+    GuidanceNotFound,
 }
 
-pub const DAG_NODE_CONTROL_ERROR_CODES: [DagNodeControlErrorCode; 8] = [
+pub const DAG_NODE_CONTROL_ERROR_CODES: [DagNodeControlErrorCode; 12] = [
     DagNodeControlErrorCode::RunNotFound,
     DagNodeControlErrorCode::RunNotOwned,
     DagNodeControlErrorCode::RunStillActive,
@@ -2107,6 +2139,10 @@ pub const DAG_NODE_CONTROL_ERROR_CODES: [DagNodeControlErrorCode; 8] = [
     DagNodeControlErrorCode::NodeNotRetryable,
     DagNodeControlErrorCode::NodeHasNoTask,
     DagNodeControlErrorCode::NodeNotContinuable,
+    DagNodeControlErrorCode::RunPausedByUser,
+    DagNodeControlErrorCode::RunNotUserPaused,
+    DagNodeControlErrorCode::GuidanceFrozen,
+    DagNodeControlErrorCode::GuidanceNotFound,
 ];
 
 impl DagNodeControlErrorCode {
@@ -2120,6 +2156,10 @@ impl DagNodeControlErrorCode {
             Self::NodeNotRetryable => "node_not_retryable",
             Self::NodeHasNoTask => "node_has_no_task",
             Self::NodeNotContinuable => "node_not_continuable",
+            Self::RunPausedByUser => "run_paused_by_user",
+            Self::RunNotUserPaused => "run_not_user_paused",
+            Self::GuidanceFrozen => "guidance_frozen",
+            Self::GuidanceNotFound => "guidance_not_found",
         }
     }
 }

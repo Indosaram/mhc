@@ -14,6 +14,50 @@ pub fn dag_activity_payload(run:&str,node:&str,task:&str,at:&str,details:&senpi_
     if let Some(calls)=details.tool_calls { activity["toolCalls"]=serde_json::json!(calls); }
     activity
 }
+/// `markRunCompleted`: the engine is told ONCE per new scheduler completion sequence, and never from
+/// historical replay. A recovered run that resumes and completes again is a NEW sequence and is told
+/// again; a replayed journal from `publish_durable_events` is not.
+#[derive(Default)]
+pub struct CompletionMarker { marked: std::sync::Mutex<std::collections::BTreeSet<String>> }
+
+impl CompletionMarker {
+    /// `true` when this event is the FIRST terminal event of its run in this process.
+    pub fn mark(&self, event: &DagRunEvent) -> bool {
+        if !matches!(
+            event.payload.event_type(),
+            senpi_task::dag::types::DagRunEventType::RunCompleted
+                | senpi_task::dag::types::DagRunEventType::RunFailed
+                | senpi_task::dag::types::DagRunEventType::RunCancelled
+        ) {
+            return false;
+        }
+        self.marked.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(event.run_id.clone())
+    }
+
+    /// A run that is re-entered (retry, amend, resume) may complete again: forget its old sequence.
+    pub fn forget(&self, run_id: &str) {
+        self.marked.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(run_id);
+    }
+}
+
+/// The scheduler publication path, with the engine completion signal placed BEFORE delivery
+/// deduplication so a completion the session never sees is still reported to the engine. A panicking
+/// host notification is isolated: it must never cost the durable delivery.
+pub fn publish_scheduler_event_marked(
+    event: &DagRunEvent,
+    delivered: &mut BTreeMap<String, u64>,
+    listeners: &BTreeMap<String, Vec<DurableDagListener>>,
+    on_event: &DurableDagListener,
+    marker: &CompletionMarker,
+    on_completed: &DurableDagListener,
+) {
+    if marker.mark(event)
+        && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_completed(event))).is_err() {
+            maho_ext_api::diagnostic("DAG run completion marker failed");
+        }
+    publish_scheduler_event(event, delivered, listeners, on_event);
+}
+
 pub fn publish_scheduler_event(event:&DagRunEvent,delivered:&mut BTreeMap<String,u64>,listeners:&BTreeMap<String,Vec<DurableDagListener>>,on_event:&DurableDagListener) {
     if *delivered.get(&event.run_id).unwrap_or(&0)>=event.seq { return; }
     delivered.insert(event.run_id.clone(),event.seq);

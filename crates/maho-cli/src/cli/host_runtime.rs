@@ -315,6 +315,7 @@ impl CliRuntimeConfiguration {
             },
             initial_thinking_level: self.thinking.clone(),
             auto_title: self.auto_title_sessions,
+            prompt_size_inventory: None,
         }
     }
 }
@@ -1144,17 +1145,6 @@ pub struct CliInitialModel {
     pub thinking_selection: Option<maho_ai::types::ThinkingSelection>,
 }
 
-fn provenance_str(provenance: maho_core::model_resolver::InitialModelProvenance) -> &'static str {
-    use maho_core::model_resolver::InitialModelProvenance as P;
-    match provenance {
-        P::Cli => "cli",
-        P::Scoped => "scoped",
-        P::Settings => "settings",
-        P::ProviderDefault => "provider-default",
-        P::FirstAvailable => "first-available",
-    }
-}
-
 pub async fn resolve_cli_initial_model(
     creation_model: Option<(String, String)>,
     thinking: Option<maho_ai::types::ThinkingLevel>,
@@ -1203,7 +1193,7 @@ pub async fn resolve_cli_initial_model(
     Ok(CliInitialModel {
         model: resolved.parsed.model,
         thinking_level: resolved.parsed.thinking_level,
-        provenance: Some(provenance_str(resolved.provenance)),
+        provenance: Some(maho_core::model_resolver::initial_model_provenance_str(resolved.provenance)),
         thinking_selection: resolved.parsed.thinking_selection,
     })
 }

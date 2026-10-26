@@ -233,6 +233,16 @@ pub struct DagRunRecordV1 {
     pub lease_holder_pid: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_lease_holder_pid: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guidance: Option<Vec<crate::dag::types::Guidance>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_on_resume: Option<Vec<DagNodeId>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_requested_nodes: Option<Vec<DagNodeId>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_child_acks: Option<HashMap<String, u64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause: Option<crate::dag::types::DagRunPause>,
 }
 
 impl DagJournalCheckpoint for DagRunRecordV1 {
@@ -787,6 +797,11 @@ fn start_run_locked(
         amend_history: None,
         lease_holder_pid: None,
         previous_lease_holder_pid: None,
+        guidance: None,
+        retry_on_resume: None,
+        cancel_requested_nodes: None,
+        paused_child_acks: None,
+        pause: None,
     };
 
     // Journal skeleton first: the checkpoint must exist before the key file can point at it, so a
@@ -879,10 +894,8 @@ fn amend_run(
         .with_run_id(selected));
     }
     if old.status == DagRunStatus::Paused
-        && old
-            .lease_holder_pid
-            .or(old.previous_lease_holder_pid)
-            .is_some_and(process_is_alive)
+        && old.pause.as_ref().map(|p| p.reason.as_str()) != Some("user_stop")
+        && live_lease_holder(&old)
     {
         let mut error = DagManagerError::new(
             DagManagerErrorCode::InvalidAmendment,
@@ -960,11 +973,7 @@ fn amend_run(
     let unsafe_ids: Vec<_> = changed
         .iter()
         .chain(removed.iter())
-        .filter(|id| {
-            old_nodes
-                .get(*id)
-                .is_some_and(|n| matches!(n.state, DagNodeState::Scheduled | DagNodeState::Running))
-        })
+        .filter(|id| paused_amendment_unsafe(&old, id))
         .cloned()
         .collect();
     if !unsafe_ids.is_empty() {
@@ -1231,7 +1240,185 @@ fn persisted_node(
     }
 }
 
-fn apply_run_event(record: &DagRunRecordV1, event: &DagRunEvent) -> DagRunRecordV1 {
+pub fn paused_amendment_unsafe(record: &DagRunRecordV1, node_id: &str) -> bool {
+    let Some(node) = record.nodes.iter().find(|entry| entry.id == node_id) else {
+        return false;
+    };
+    match node.state {
+        DagNodeState::Running | DagNodeState::Paused => true,
+        DagNodeState::Scheduled => {
+            let is_user_stop = record
+                .pause
+                .as_ref()
+                .is_some_and(|p| p.reason == "user_stop");
+            !is_user_stop || node.task_id.is_some()
+        }
+        _ => false,
+    }
+}
+
+pub fn live_lease_holder(record: &DagRunRecordV1) -> bool {
+    record
+        .lease_holder_pid
+        .or(record.previous_lease_holder_pid)
+        .is_some_and(process_is_alive)
+}
+
+pub fn apply_run_pause(record: &DagRunRecordV1, event: &DagRunEvent) -> Option<DagRunRecordV1> {
+    match &event.payload {
+        DagRunEventPayload::RunPaused { reason, pause_seq } => {
+            if reason.as_deref() != Some("user_stop") {
+                return Some(DagRunRecordV1 {
+                    status: DagRunStatus::Paused,
+                    updated_at: event.at.clone(),
+                    ..record.clone()
+                });
+            }
+            let pause_seq = pause_seq.expect("user_stop requires its pause sequence");
+            Some(DagRunRecordV1 {
+                status: DagRunStatus::Paused,
+                pause: Some(crate::dag::types::DagRunPause {
+                    reason: "user_stop".to_string(),
+                    pause_seq,
+                }),
+                updated_at: event.at.clone(),
+                nodes: record
+                    .nodes
+                    .iter()
+                    .map(|node| {
+                        if node.state == DagNodeState::Running {
+                            DagNode {
+                                state: DagNodeState::Paused,
+                                ..node.clone()
+                            }
+                        } else {
+                            node.clone()
+                        }
+                    })
+                    .collect(),
+                ..record.clone()
+            })
+        }
+        DagRunEventPayload::RunResumed { generation } => {
+            Some(DagRunRecordV1 {
+                status: DagRunStatus::Running,
+                pause: None,
+                completed_at: None,
+                retry_on_resume: None,
+                generation: *generation,
+                updated_at: event.at.clone(),
+                nodes: record
+                    .nodes
+                    .iter()
+                    .map(|node| {
+                        if node.state == DagNodeState::Paused {
+                            DagNode {
+                                state: if node.task_id.is_none() {
+                                    DagNodeState::Pending
+                                } else {
+                                    DagNodeState::Running
+                                },
+                                ..node.clone()
+                            }
+                        } else {
+                            node.clone()
+                        }
+                    })
+                    .collect(),
+                ..record.clone()
+            })
+        }
+        _ => None,
+    }
+}
+
+pub fn apply_paused_dag_event(record: &DagRunRecordV1, event: &DagRunEvent) -> Option<DagRunRecordV1> {
+    match &event.payload {
+        DagRunEventPayload::GuidanceAdded { guidance }
+        | DagRunEventPayload::GuidanceEdited { guidance }
+        | DagRunEventPayload::GuidanceRemoved { guidance }
+        | DagRunEventPayload::GuidanceDispatching { guidance }
+        | DagRunEventPayload::GuidanceDelivered { guidance } => {
+            let mut list: Vec<crate::dag::types::Guidance> = record
+                .guidance
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|entry| entry.id != guidance.id)
+                .collect();
+            list.push(guidance.clone());
+            Some(DagRunRecordV1 {
+                updated_at: event.at.clone(),
+                guidance: Some(list),
+                ..record.clone()
+            })
+        }
+        DagRunEventPayload::NodeCancelRequested { node_id } => {
+            let mut list = record.cancel_requested_nodes.clone().unwrap_or_default();
+            if !list.contains(node_id) {
+                list.push(node_id.clone());
+            }
+            Some(DagRunRecordV1 {
+                updated_at: event.at.clone(),
+                cancel_requested_nodes: Some(list),
+                ..record.clone()
+            })
+        }
+        DagRunEventPayload::NodeRetryStaged { node_ids } => {
+            let mut list = record.retry_on_resume.clone().unwrap_or_default();
+            for id in node_ids {
+                if !list.contains(id) {
+                    list.push(id.clone());
+                }
+            }
+            Some(DagRunRecordV1 {
+                updated_at: event.at.clone(),
+                retry_on_resume: Some(list),
+                ..record.clone()
+            })
+        }
+        DagRunEventPayload::NodePauseRecovered { node_id, child_seq } => {
+            let mut acks = record.paused_child_acks.clone().unwrap_or_default();
+            acks.insert(node_id.clone(), *child_seq);
+            Some(DagRunRecordV1 {
+                updated_at: event.at.clone(),
+                paused_child_acks: Some(acks),
+                ..record.clone()
+            })
+        }
+        DagRunEventPayload::NodePauseLost { node_id, error } => {
+            Some(DagRunRecordV1 {
+                updated_at: event.at.clone(),
+                nodes: record
+                    .nodes
+                    .iter()
+                    .map(|node| {
+                        if &node.id == node_id {
+                            DagNode {
+                                state: DagNodeState::Failed,
+                                error: Some(error.clone()),
+                                completed_at: Some(event.at.clone()),
+                                ..node.clone()
+                            }
+                        } else {
+                            node.clone()
+                        }
+                    })
+                    .collect(),
+                ..record.clone()
+            })
+        }
+        _ => None,
+    }
+}
+
+pub fn apply_dag_run_mutation(record: &DagRunRecordV1, event: &DagRunEvent) -> DagRunRecordV1 {
+    if let Some(mutated) = apply_paused_dag_event(record, event) {
+        return mutated;
+    }
+    if let Some(mutated) = apply_run_pause(record, event) {
+        return mutated;
+    }
     if let DagRunEventPayload::DefinitionAmended {
         previous_fingerprint,
         fingerprint,
@@ -1250,10 +1437,8 @@ fn apply_run_event(record: &DagRunRecordV1, event: &DagRunEvent) -> DagRunRecord
         if record.definition_fingerprint != *previous_fingerprint
             || record.status == DagRunStatus::Running
             || (record.status == DagRunStatus::Paused
-                && record
-                    .lease_holder_pid
-                    .or(record.previous_lease_holder_pid)
-                    .is_some_and(process_is_alive))
+                && record.pause.as_ref().map(|p| p.reason.as_str()) != Some("user_stop")
+                && live_lease_holder(record))
         {
             return record.clone();
         }
@@ -1268,12 +1453,7 @@ fn apply_run_event(record: &DagRunRecordV1, event: &DagRunEvent) -> DagRunRecord
             .iter()
             .map(String::as_str)
             .chain(removed_ids.iter().copied())
-            .any(|id| {
-                record.nodes.iter().any(|node| {
-                    node.id == id
-                        && matches!(node.state, DagNodeState::Scheduled | DagNodeState::Running)
-                })
-            })
+            .any(|id| paused_amendment_unsafe(record, id))
         {
             return record.clone();
         }
@@ -1363,6 +1543,10 @@ fn apply_run_event(record: &DagRunRecordV1, event: &DagRunEvent) -> DagRunRecord
     }
 }
 
+fn apply_run_event(record: &DagRunRecordV1, event: &DagRunEvent) -> DagRunRecordV1 {
+    apply_dag_run_mutation(record, event)
+}
+
 fn skip_duplicate_terminal_transition(
     record: &DagRunRecordV1,
     payload: &DagRunEventPayload,
@@ -1435,7 +1619,7 @@ fn project_snapshot_with_state_dir(
         .cloned()
         .map(|mut node| {
             if let (Some(task_id), Some(state_dir)) = (&node.task_id, state_dir)
-                && matches!(node.state, DagNodeState::Scheduled | DagNodeState::Running)
+                && matches!(node.state, DagNodeState::Scheduled | DagNodeState::Running | DagNodeState::Paused)
             {
                 node.last_activity_at =
                     crate::dag::node_activity::read_dag_node_activity_at(state_dir, task_id);
@@ -1457,7 +1641,8 @@ fn project_snapshot_with_state_dir(
         completed_at: record.completed_at,
         definition_fingerprint: record.definition_fingerprint,
         last_seq: record.checkpoint_seq,
-        counts: count_nodes(&record.nodes),
+        counts: crate::dag::handle::count_dag_nodes(&record.nodes),
+        pause: record.pause,
         nodes,
         edges: record.edges,
         waves: record.waves,
@@ -1481,23 +1666,7 @@ fn file_inode(_metadata: &fs::Metadata) -> u64 {
 }
 
 fn count_nodes(nodes: &[DagNode]) -> DagNodeCounts {
-    let mut counts = DagNodeCounts {
-        total: nodes.len(),
-        ..DagNodeCounts::default()
-    };
-    for node in nodes {
-        match node.state {
-            crate::dag::types::DagNodeState::Pending => counts.pending += 1,
-            crate::dag::types::DagNodeState::Blocked => counts.blocked += 1,
-            crate::dag::types::DagNodeState::Scheduled => counts.scheduled += 1,
-            crate::dag::types::DagNodeState::Running => counts.running += 1,
-            crate::dag::types::DagNodeState::Completed => counts.completed += 1,
-            crate::dag::types::DagNodeState::Failed => counts.failed += 1,
-            crate::dag::types::DagNodeState::Cancelled => counts.cancelled += 1,
-            crate::dag::types::DagNodeState::Skipped => counts.skipped += 1,
-        }
-    }
-    counts
+    crate::dag::handle::count_dag_nodes(nodes)
 }
 
 trait WithRunId<T> {

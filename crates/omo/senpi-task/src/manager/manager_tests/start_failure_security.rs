@@ -137,7 +137,7 @@ fn given_non_runner_error_imitating_runner_failure_when_start_fails_then_generic
 
 #[test]
 fn given_non_runner_error_with_secrets_when_team_member_spawn_fails_then_only_stable_classification()
-{
+ {
     let runner = FakeRunner::new();
     *super::fakes::lock(&runner.start_error) =
         Some(ManagedRunnerError::Other(ADVERSARIAL_ERROR.to_string()));

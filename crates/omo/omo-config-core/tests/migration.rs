@@ -1,4 +1,5 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use omo_config_core::internal::posix_path::posix_dirname;
 use omo_config_core::migration::*;
@@ -339,6 +340,7 @@ fn merge_commit_colliding_value_keeps_target_with_diagnostic() {
         mode: MigrationMode::Merge,
         on_boundary: None,
         pid: Some(100),
+        should_run: None,
         sources: vec![MigrationSourceDescriptor::new(fixture.source_path)],
         target_path: fixture.target_path.to_string(),
         transform: Box::new(|_| Ok(json!({ "task": { "default_concurrency": 3 } }).into())),
@@ -383,6 +385,7 @@ fn merge_commit_user_marker_does_not_suppress_project_target() {
         mode: MigrationMode::Merge,
         on_boundary: None,
         pid: Some(100),
+        should_run: None,
         sources: vec![MigrationSourceDescriptor::new(fixture.source_path)],
         target_path: project_target.to_string(),
         transform: Box::new(|_| Ok(json!({ "task": { "default_concurrency": 3 } }).into())),
@@ -417,6 +420,7 @@ fn merge_commit_distinct_migration_ids_accumulate() {
         mode: MigrationMode::Merge,
         on_boundary: None,
         pid: Some(100),
+        should_run: None,
         sources: vec![MigrationSourceDescriptor::new(source_a)],
         target_path: fixture.target_path.to_string(),
         transform: Box::new(|_| {
@@ -437,6 +441,7 @@ fn merge_commit_distinct_migration_ids_accumulate() {
         mode: MigrationMode::Merge,
         on_boundary: None,
         pid: Some(100),
+        should_run: None,
         sources: vec![MigrationSourceDescriptor::new(source_b)],
         target_path: fixture.target_path.to_string(),
         transform: Box::new(|_| {
@@ -458,6 +463,7 @@ fn merge_commit_distinct_migration_ids_accumulate() {
         mode: MigrationMode::Merge,
         on_boundary: None,
         pid: Some(100),
+        should_run: None,
         sources: vec![MigrationSourceDescriptor::new(source_a)],
         target_path: fixture.target_path.to_string(),
         transform: Box::new(|_| {
@@ -499,6 +505,7 @@ fn merge_commit_rejected_by_schema_leaves_source_and_target_untouched() {
         mode: MigrationMode::Merge,
         on_boundary: None,
         pid: Some(100),
+        should_run: None,
         sources: vec![MigrationSourceDescriptor::new(fixture.source_path)],
         target_path: fixture.target_path.to_string(),
         transform: Box::new(|_| Ok(json!({ "unsupported_key": true }).into())),
@@ -542,6 +549,7 @@ fn in_place_crash_after_journal_resumes_cleanly() {
             }
         })),
         pid: None,
+        should_run: None,
         sources: vec![],
         target_path: fixture.target_path.to_string(),
         transform: Box::new(|_| {
@@ -563,6 +571,7 @@ fn in_place_crash_after_journal_resumes_cleanly() {
         mode: MigrationMode::ReplaceTarget,
         on_boundary: None,
         pid: None,
+        should_run: None,
         sources: vec![],
         target_path: fixture.target_path.to_string(),
         transform: Box::new(|_| {
@@ -744,6 +753,7 @@ fn test_crash_recovery(boundary: MigrationBoundary) {
             }
         })),
         pid: Some(100),
+        should_run: None,
         sources: vec![MigrationSourceDescriptor::new(fixture.source_path)],
         target_path: fixture.target_path.to_string(),
         transform: Box::new(|_| Ok(json!({ "task": { "default_concurrency": 3 } }).into())),
@@ -766,6 +776,7 @@ fn test_crash_recovery(boundary: MigrationBoundary) {
         mode: MigrationMode::Merge,
         on_boundary: None,
         pid: Some(100),
+        should_run: None,
         sources: vec![MigrationSourceDescriptor::new(fixture.source_path)],
         target_path: fixture.target_path.to_string(),
         transform: Box::new(|_| {
@@ -803,6 +814,7 @@ fn transaction_concurrent_callers_exclusive_lock_and_retry() {
         mode: MigrationMode::Merge,
         on_boundary: None,
         pid: Some(100),
+        should_run: None,
         sources: vec![MigrationSourceDescriptor::new(fixture.source_path)],
         target_path: fixture.target_path.to_string(),
         transform: Box::new(|_| Ok(json!({ "task": { "default_concurrency": 3 } }).into())),
@@ -817,6 +829,7 @@ fn transaction_concurrent_callers_exclusive_lock_and_retry() {
                 mode: MigrationMode::Merge,
                 on_boundary: None,
                 pid: Some(200),
+        should_run: None,
                 sources: vec![MigrationSourceDescriptor::new(fixture.source_path)],
                 target_path: fixture.target_path.to_string(),
                 transform: Box::new(|_| Ok(json!({ "task": { "default_concurrency": 3 } }).into())),
@@ -839,6 +852,7 @@ fn transaction_concurrent_callers_exclusive_lock_and_retry() {
         mode: MigrationMode::Merge,
         on_boundary: None,
         pid: Some(200),
+        should_run: None,
         sources: vec![MigrationSourceDescriptor::new(fixture.source_path)],
         target_path: fixture.target_path.to_string(),
         transform: Box::new(|_| Ok(json!({ "task": { "default_concurrency": 3 } }).into())),
@@ -874,6 +888,7 @@ fn transaction_live_owner_fresh_lease_not_stolen() {
         mode: MigrationMode::Merge,
         on_boundary: None,
         pid: Some(100),
+        should_run: None,
         sources: vec![MigrationSourceDescriptor::new(fixture.source_path)],
         target_path: fixture.target_path.to_string(),
         transform: Box::new(|_| Ok(json!({ "task": { "default_concurrency": 3 } }).into())),
@@ -908,6 +923,7 @@ fn transaction_renewing_owner_never_stolen() {
             mode: MigrationMode::Merge,
             on_boundary: None,
             pid: Some(200),
+        should_run: None,
             sources: vec![MigrationSourceDescriptor::new(fixture.source_path)],
             target_path: fixture.target_path.to_string(),
             transform: Box::new(|_| Ok(json!({ "task": { "default_concurrency": 3 } }).into())),
@@ -939,6 +955,7 @@ fn transaction_renewing_owner_never_stolen() {
             Ok(())
         })),
         pid: Some(100),
+        should_run: None,
         sources: vec![MigrationSourceDescriptor::new(fixture.source_path)],
         target_path: fixture.target_path.to_string(),
         transform: Box::new(|_| Ok(json!({ "task": { "default_concurrency": 3 } }).into())),
@@ -983,6 +1000,7 @@ fn transaction_false_predicate_and_no_journal_does_not_write() {
         mode: MigrationMode::Merge,
         on_boundary: None,
         pid: Some(100),
+        should_run: None,
         sources: vec![MigrationSourceDescriptor::new(fixture.source_path)],
         target_path: fixture.target_path.to_string(),
         transform: Box::new(|_| Ok(json!({ "task": { "default_concurrency": 3 } }).into())),
@@ -1000,6 +1018,7 @@ fn transaction_false_predicate_and_no_journal_does_not_write() {
         mode: MigrationMode::Merge,
         on_boundary: None,
         pid: Some(100),
+        should_run: None,
         sources: vec![MigrationSourceDescriptor::new(fixture.source_path)],
         target_path: fixture.target_path.to_string(),
         transform: Box::new(|_| Ok(json!({ "task": { "default_concurrency": 3 } }).into())),
@@ -1088,6 +1107,7 @@ fn retired_codegraph_cleanup_options<'a>(
         mode,
         on_boundary: None,
         pid: Some(100),
+        should_run: None,
         sources,
         target_path: fixture.target_path.to_string(),
         transform,
@@ -1219,4 +1239,116 @@ fn retired_codegraph_is_stripped_from_a_renamed_harness_block() {
             "_migrations": ["earlier-merge", "harness-native-rename"],
         })
     );
+}
+
+fn content_gated_options<'a>(
+    fixture: &'a MigrationFixture,
+    file_system: &'a MemoryMigrationFileSystem,
+    should_run: Option<Rc<MigrationShouldRun<'a>>>,
+) -> RunMigrationOptions<'a> {
+    RunMigrationOptions {
+        clock: None,
+        env: Some(fixture.env.clone()),
+        file_system: Some(file_system),
+        id: "content-gated-test".to_string(),
+        is_process_alive: None,
+        lease_duration_ms: None,
+        mode: MigrationMode::ReplaceTarget,
+        on_boundary: None,
+        pid: Some(100),
+        should_run,
+        sources: vec![],
+        target_path: fixture.target_path.to_string(),
+        transform: Box::new(|_| Ok(json!({ "categories": { "deep-low": { "reasoning": "high" } } }).into())),
+        write_target: None,
+    }
+}
+
+fn target_write_operations(file_system: &MemoryMigrationFileSystem) -> Vec<String> {
+    file_system
+        .operations
+        .borrow()
+        .iter()
+        .filter(|operation| operation.starts_with("write:") || operation.starts_with("rename:"))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn run_migration_skips_a_content_gated_plan_without_writing_or_marking() {
+    let file_system = MemoryMigrationFileSystem::new();
+    let fixture = migration_fixture();
+    let original = json!({ "categories": { "quick": { "reasoning": "low" } } }).to_string();
+    file_system.write(fixture.target_path, &original).unwrap();
+    file_system.operations.borrow_mut().clear();
+
+    let result = run_migration(content_gated_options(
+        &fixture,
+        &file_system,
+        Some(Rc::new(|_target: &Value| false)),
+    ))
+    .expect("run gated migration");
+
+    assert_eq!(result.status, MigrationStatus::Skipped);
+    assert_eq!(file_system.read(fixture.target_path).unwrap(), original);
+    assert!(
+        parse_file(&file_system, fixture.target_path)
+            .get("_migrations")
+            .is_none()
+    );
+    assert_eq!(target_write_operations(&file_system), Vec::<String>::new());
+}
+
+#[test]
+fn run_migration_migrates_a_content_gated_plan_once_and_marks_it() {
+    let file_system = MemoryMigrationFileSystem::new();
+    let fixture = migration_fixture();
+    file_system
+        .write(
+            fixture.target_path,
+            &json!({ "categories": { "deep": { "reasoning": "high" } } }).to_string(),
+        )
+        .unwrap();
+
+    let result = run_migration(content_gated_options(
+        &fixture,
+        &file_system,
+        Some(Rc::new(|_target: &Value| true)),
+    ))
+    .expect("run gated migration");
+
+    assert_eq!(result.status, MigrationStatus::Migrated);
+    assert_eq!(
+        parse_file(&file_system, fixture.target_path),
+        json!({
+            "categories": { "deep-low": { "reasoning": "high" } },
+            "_migrations": ["content-gated-test"],
+        })
+    );
+}
+
+#[test]
+fn run_migration_gate_receives_the_parsed_target_document() {
+    let file_system = MemoryMigrationFileSystem::new();
+    let fixture = migration_fixture();
+    file_system
+        .write(
+            fixture.target_path,
+            &json!({ "categories": { "deep": {} } }).to_string(),
+        )
+        .unwrap();
+    let seen: Rc<RefCell<Vec<Value>>> = Rc::new(RefCell::new(Vec::new()));
+    let recorder = seen.clone();
+
+    run_migration(content_gated_options(
+        &fixture,
+        &file_system,
+        Some(Rc::new(move |target: &Value| {
+            recorder.borrow_mut().push(target.clone());
+            false
+        })),
+    ))
+    .expect("run gated migration");
+
+    assert_eq!(*seen.borrow(), vec![json!({ "categories": { "deep": {} } })]);
 }

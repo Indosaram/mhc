@@ -111,6 +111,8 @@ pub const EMPTY_TOOL_USE_DEMOTION_DIAGNOSTIC: &str = "empty_tool_use_terminal_st
 
 fn empty_usage() -> Usage {
     Usage {
+        context_usage: None,
+        cost_unknown: None,
         input: 0,
         output: 0,
         cache_read: 0,
@@ -270,6 +272,7 @@ pub fn create_terminal_failure_assistant_message(
         provider_thinking_level: partial_message
             .and_then(|message| message.provider_thinking_level.clone()),
         diagnostics,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: partial_message
             .and_then(|message| message.prompt_cache_diagnostics.clone()),
         usage: partial_message

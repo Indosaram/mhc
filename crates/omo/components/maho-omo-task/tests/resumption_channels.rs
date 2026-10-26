@@ -32,7 +32,7 @@ struct Manager(Mutex<Vec<TaskRecord>>);
     let runtime=team_core::team_state_store::create_runtime_state(&spec,Some("parent"),team_core::types::SpecSource::Project,&config).expect("runtime");
     let record=create_task_record(TaskRecordInput { parent_session_id:"parent".into(),name:Some(format!("team:{}:beta",runtime.team_run_id)),..Default::default() },Some(1)).expect("record"); store.save(&record).expect("save");
     let manager=create_task_manager(TaskManagerOptions::new(store,ManagedRunners { in_process:Arc::new(NoLaunch),process:Arc::new(NoLaunch) },Arc::new(|_| Ok(ResolvedChildPlan { model:"faux/faux".into(),..Default::default() })),root.path().to_string_lossy()));
-    let view=TaskResumptionChannelManager { manager:Arc::new(manager),ownership:TeamMemberOwnershipDeps { state_dir,team_bounds:bounds,load_runtime_state:None } };
+    let view=TaskResumptionChannelManager { manager:Arc::new(manager),ownership:TeamMemberOwnershipDeps { state_dir,team_bounds:bounds,load_runtime_state:None },owned_workpool_task_ids:None };
     assert_eq!(view.list("parent"),vec![record.clone()]); assert!(view.list("foreign").is_empty()); assert!(!view.was_background(&record.task_id)); assert!(view.is_owned_team_member(&record,"parent")); assert!(!view.is_owned_team_member(&record,"foreign"));
     let events=EventBus::default(); let received=Arc::new(Mutex::new(vec![])); let sink=received.clone(); let _subscription=events.on(RESUMPTION_CHANNEL_STATE_EVENT,Arc::new(move |event| sink.lock().expect("events").push(event.clone())));
     let mut emitter=ResumptionChannelEmitter::new(events,Arc::new(view),Arc::new(|| Some("parent".into()))); emitter.emit_session_start();
@@ -81,7 +81,7 @@ fn publishes_only_count_changes_for_background_and_owned_nonterminal_tasks() {
 #[test] fn missing_session_publishes_empty_start_and_shutdown() {
     let events=EventBus::default(); let captured=Arc::new(Mutex::new(Vec::new())); let sink=captured.clone(); let _subscription=events.on(RESUMPTION_CHANNEL_STATE_EVENT,Arc::new(move |value| sink.lock().expect("events").push(value.clone())));
     let mut emitter=ResumptionChannelEmitter::new(events,Arc::new(Manager(Mutex::new(vec![]))),Arc::new(|| None)); emitter.emit_session_start(); emitter.emit_shutdown();
-    assert_eq!(*captured.lock().expect("events"),vec![serde_json::json!({"source":"senpi-task","activeCount":0,"channels":[]});2]);
+    assert_eq!(*captured.lock().expect("events"),vec![serde_json::json!({"source":"senpi-task","kind":"children","activeCount":0,"items":[],"channels":[]});2]);
 }
 #[test] fn started_channel_preserves_task_identity_description_and_creation_timestamp() {
     let mut record=create_task_record(TaskRecordInput { parent_session_id:"session".into(),task_summary:Some("Inspect continuation timing".into()),..Default::default() },Some(1000)).expect("record"); record.task_id="background".into(); record.created_at="1970-01-01T00:00:01.000Z".into(); let events=EventBus::default(); let captured=Arc::new(Mutex::new(Vec::new())); let sink=captured.clone(); let _subscription=events.on(RESUMPTION_CHANNEL_STATE_EVENT,Arc::new(move |value| sink.lock().expect("events").push(value.clone())));

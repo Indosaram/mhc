@@ -99,7 +99,7 @@ async fn protocol_dispatch_covers_invalid_ping_notification_list_and_unknown_met
     assert_eq!(notification, None);
     assert_eq!(
         to_json(default_version)["result"]["protocolVersion"],
-        json!("2024-11-05")
+        json!("2025-06-18")
     );
     let names: Vec<Value> = to_json(list)["result"]["tools"]
         .as_array()

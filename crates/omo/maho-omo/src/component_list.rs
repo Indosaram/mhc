@@ -255,6 +255,10 @@ pub fn omo_components(
         maho_omo_question_gates::create_question_gates_component(),
     ));
     components.push(component(
+        "claim-receipt",
+        maho_omo_claim_receipt::ClaimReceiptComponent::new(options.env.clone()),
+    ));
+    components.push(component(
         "git-master",
         maho_omo_git_master::GitMasterAttributionComponent::new(
             maho_omo_git_master::GitMasterAttributionComponentOptions {
@@ -310,6 +314,10 @@ pub fn omo_components(
     components.push(component(
         "browser-bridge",
         maho_omo_browser_bridge::BrowserBridgeComponent::default(),
+    ));
+    components.push(component(
+        "desktop-toolkit",
+        maho_omo_desktop_toolkit::DesktopToolkitComponent::default(),
     ));
     components.push(OmoSenpiComponent::from_context_register(
         "lsp",
@@ -382,6 +390,7 @@ pub fn omo_component_names() -> Vec<&'static str> {
         "ulw-loop",
         "todo-fanout-reminder",
         "question-gates",
+        "claim-receipt",
         "git-master",
         "fallback-architect",
         "comment-checker",
@@ -390,6 +399,7 @@ pub fn omo_component_names() -> Vec<&'static str> {
         "x-search",
         "feedback",
         "browser-bridge",
+        "desktop-toolkit",
         "lsp",
         "task",
         "memory",

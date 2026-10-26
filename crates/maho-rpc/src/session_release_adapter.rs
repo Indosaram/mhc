@@ -59,14 +59,21 @@ impl ReleasableSession for AgentSessionRelease {
     }
 
     fn admission_pending(&self) -> Vec<String> {
-        Vec::new()
+        self.session.external_admission().list()["pending"]
+            .as_array()
+            .expect("pending admissions")
+            .iter()
+            .map(|v| v.as_str().expect("delivery id").to_owned())
+            .collect()
     }
 
-    fn admission_close(&self, _reason: &str) {
+    fn admission_close(&self, reason: &str) {
+        self.session.external_admission().close(reason.to_owned());
         self.admission_closed.store(true, Ordering::SeqCst);
     }
 
     fn admission_reopen(&self) {
+        self.session.external_admission().reopen();
         self.admission_closed.store(false, Ordering::SeqCst);
     }
 
@@ -138,6 +145,20 @@ impl ReleasableSession for AgentSessionRelease {
             .map_err(|error| error.to_string())
     }
 
+    async fn prepare_move_state(&self, move_id: &str) -> Result<Option<String>, String> {
+        let Some(file) = self.session.session_file() else {
+            return Ok(None);
+        };
+        let maho_core::session_move::extension_state::OutgoingState { attempt, dir } = maho_core::session_move::extension_state::prepare_outgoing_state(
+            std::path::Path::new(&file),
+            move_id,
+        )?;
+        self.session.emit_extension_event(
+            "session_move_export",
+            &serde_json::json!({"moveId":move_id,"dir":dir}),
+        );
+        Ok(Some(attempt))
+    }
     fn append_custom_entry(&self, custom_type: &str, data: Value) -> Result<(), ReleaseWriteError> {
         let (file, persisted, flushed) = self.session.with_session_manager(|manager| {
             (
@@ -171,5 +192,14 @@ impl ReleasableSession for AgentSessionRelease {
                 .map_err(|error| ReleaseWriteError::Other(error.to_string()))?;
         }
         Ok(())
+    }
+
+    /// `extensionRunner.emitSessionMove`: the session's own bus carries the export event, so a native extension
+    /// subscribed to `session_move_export` writes its state while this runtime is still live. The Rust extension
+    /// contract reports no handler failure, so a handler that cannot write fails the release only by its own report.
+    async fn emit_session_move(&self, move_id: &str, dir: &str) -> Result<(), String> {
+        self.session
+            .emit_session_move(move_id.to_owned(), dir.into(), None)
+            .await
     }
 }

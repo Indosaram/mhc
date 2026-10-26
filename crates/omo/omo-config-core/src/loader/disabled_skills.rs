@@ -20,11 +20,27 @@ fn to_record(value: Option<&Value>) -> Option<&Map<String, Value>> {
     }
 }
 
-fn names_at(record: Option<&Map<String, Value>>) -> Vec<String> {
+/// The two config keys collected as a union across layers instead of replaced by the later layer.
+#[derive(Clone, Copy)]
+enum UnionedListKey {
+    DisabledSkills,
+    ExcludeModels,
+}
+
+impl UnionedListKey {
+    fn as_str(self) -> &'static str {
+        match self {
+            UnionedListKey::DisabledSkills => "disabled_skills",
+            UnionedListKey::ExcludeModels => "exclude_models",
+        }
+    }
+}
+
+fn names_at(record: Option<&Map<String, Value>>, key: UnionedListKey) -> Vec<String> {
     let Some(record) = record else {
         return Vec::new();
     };
-    let Some(Value::Array(entries)) = record.get("disabled_skills") else {
+    let Some(Value::Array(entries)) = record.get(key.as_str()) else {
         return Vec::new();
     };
     entries
@@ -69,6 +85,19 @@ fn scopes_of<'a>(
 /// is a UNION: a project layer cannot re-enable a skill the user layer turned off by omitting it.
 /// The shared base, the `[harness]` block, and the selected profile's copies of both all count.
 pub fn collect_disabled_skills(options: &CollectDisabledSkillsOptions<'_>) -> Vec<String> {
+    collect_unioned_list(UnionedListKey::DisabledSkills, options)
+}
+
+/// The `exclude_models` denylist across every loaded layer, unioned by the same rule as
+/// `disabled_skills`: a project layer cannot let back in a model the user layer keeps out.
+pub fn collect_excluded_models(options: &CollectDisabledSkillsOptions<'_>) -> Vec<String> {
+    collect_unioned_list(UnionedListKey::ExcludeModels, options)
+}
+
+fn collect_unioned_list(
+    key: UnionedListKey,
+    options: &CollectDisabledSkillsOptions<'_>,
+) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for layer in options.layers {
@@ -83,7 +112,7 @@ pub fn collect_disabled_skills(options: &CollectDisabledSkillsOptions<'_>) -> Ve
             scopes.extend(scopes_of(profile, options.harness));
         }
         for scope in scopes {
-            for name in names_at(scope) {
+            for name in names_at(scope, key) {
                 if seen.insert(name.clone()) {
                     names.push(name);
                 }

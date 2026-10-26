@@ -10,6 +10,7 @@ pub enum ContinueDelivery {
     Steer,
     FollowUp,
     Revive,
+    Held,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,10 +27,16 @@ pub enum ContinueResult {
     },
 }
 
+
+
 pub fn to_continue_result(outcome: SendOutcome) -> ContinueResult {
     match outcome {
-        SendOutcome::Stale { task_id, reason, .. } => ContinueResult::NotContinuable {
-            task_id: Some(task_id), reason, suggestion: CONTINUE_SUGGESTION.into(),
+        SendOutcome::Stale {
+            task_id, reason, ..
+        } => ContinueResult::NotContinuable {
+            task_id: Some(task_id),
+            reason,
+            suggestion: CONTINUE_SUGGESTION.into(),
         },
         SendOutcome::Steered {
             task_id,
@@ -47,6 +54,11 @@ pub fn to_continue_result(outcome: SendOutcome) -> ContinueResult {
             task_id,
             status: TaskStatus::Running,
             delivered: ContinueDelivery::Revive,
+        },
+        SendOutcome::Held { task_id, .. } => ContinueResult::Continued {
+            task_id,
+            status: TaskStatus::Paused,
+            delivered: ContinueDelivery::FollowUp,
         },
         SendOutcome::Queued { task_id, .. } => ContinueResult::Continued {
             task_id,
@@ -81,5 +93,25 @@ pub fn to_continue_result(outcome: SendOutcome) -> ContinueResult {
             reason,
             suggestion,
         },
+    }
+}
+
+#[cfg(test)]
+mod held_tests {
+    use super::*;
+    #[test]
+    fn held_send_projects_to_paused_follow_up() {
+        assert_eq!(
+            to_continue_result(SendOutcome::Held {
+                task_id: "task".into(),
+                pause_seq: 3,
+                entry_id: "input".into()
+            }),
+            ContinueResult::Continued {
+                task_id: "task".into(),
+                status: TaskStatus::Paused,
+                delivered: ContinueDelivery::FollowUp
+            }
+        );
     }
 }

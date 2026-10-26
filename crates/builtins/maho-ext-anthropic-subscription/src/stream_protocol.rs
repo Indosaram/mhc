@@ -10,7 +10,12 @@ pub fn map_stop_reason(reason: Option<&str>) -> StopReason {
         _ => StopReason::Stop,
     }
 }
-pub fn update_usage(model: &Model, output: &mut AssistantMessage, usage: &Value) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum UsageScope { RequestStart, RequestDelta, Query }
+pub fn update_usage(model: &Model, output: &mut AssistantMessage, usage: &Value, scope: UsageScope) {
+    if scope == UsageScope::RequestStart {
+        output.usage.input = 0; output.usage.output = 0; output.usage.cache_read = 0; output.usage.cache_write = 0;
+    }
     for (key, target) in [
         ("input_tokens", &mut output.usage.input),
         ("output_tokens", &mut output.usage.output),
@@ -25,12 +30,16 @@ pub fn update_usage(model: &Model, output: &mut AssistantMessage, usage: &Value)
         + output.usage.output
         + output.usage.cache_read
         + output.usage.cache_write;
+    if scope != UsageScope::Query {
+        output.usage.context_usage = Some(Some(maho_ai::types::RequestContextUsage { input: output.usage.input + output.usage.cache_read + output.usage.cache_write, output: output.usage.output }));
+    }
     maho_ai::models::calculate_cost(model, &mut output.usage);
 }
 pub fn empty_output(model: &Model, now: i64) -> AssistantMessage {
     AssistantMessage {
         thinking_level: None,
         provider_diagnostic: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         content: Vec::new(),
         api: model.api.clone(),
@@ -40,7 +49,7 @@ pub fn empty_output(model: &Model, now: i64) -> AssistantMessage {
         response_id: None,
         provider_thinking_level: None,
         diagnostics: None,
-        usage: Usage::default(),
+        usage: Usage { context_usage: Some(None), ..Usage::default() },
         stop_reason: StopReason::Stop,
         stop_details: None,
         deferred: None,
@@ -75,11 +84,13 @@ mod tests {
             &model,
             &mut output,
             &serde_json::json!({"input_tokens":10,"cache_read_input_tokens":5,"cache_creation_input_tokens":2}),
+            UsageScope::RequestStart,
         );
         update_usage(
             &model,
             &mut output,
             &serde_json::json!({"input_tokens":null,"output_tokens":7}),
+            UsageScope::RequestDelta,
         );
         assert_eq!(output.usage.input, 10);
         assert_eq!(output.usage.total_tokens, 24);
@@ -87,6 +98,22 @@ mod tests {
         let mut expected = output.usage;
         maho_ai::models::calculate_cost(&model, &mut expected);
         assert_eq!(output.usage.cost, expected.cost);
+    }
+    #[test]
+    fn request_start_resets_previous_request_and_query_preserves_context() {
+        let model=maho_ai::models_generated::MODELS["anthropic"].values().next().expect("model");
+        let mut output=empty_output(model,1);
+        assert_eq!(output.usage.context_usage,Some(None));
+        update_usage(model,&mut output,&serde_json::json!({"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":20}),UsageScope::RequestStart);
+        update_usage(model,&mut output,&serde_json::json!({"input_tokens":10}),UsageScope::RequestStart);
+        assert_eq!(output.usage.output,0);
+        assert_eq!(output.usage.cache_read,0);
+        update_usage(model,&mut output,&serde_json::json!({"output_tokens":7}),UsageScope::RequestDelta);
+        let context=output.usage.context_usage.flatten().expect("context");
+        assert_eq!((context.input,context.output),(10,7));
+        update_usage(model,&mut output,&serde_json::json!({"input_tokens":500,"output_tokens":200}),UsageScope::Query);
+        assert_eq!(output.usage.total_tokens,700);
+        assert_eq!(output.usage.context_usage,Some(Some(context)));
     }
     #[test]
     fn empty_output_keeps_unreported_error_cause_absent() {

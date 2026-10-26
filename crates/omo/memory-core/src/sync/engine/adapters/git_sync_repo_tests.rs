@@ -73,9 +73,51 @@ fn a_missing_tracked_path_stages_as_a_delete_without_touching_the_shared_index()
     std::fs::write(dir.path().join("a.md"), "a")?;
     let repo = repo(dir.path());
     repo.commit(&["a.md".to_string()], "seed")?;
+    repo.sync_index(&["a.md".to_string()])?;
     std::fs::remove_file(dir.path().join("a.md"))?;
     let tree = repo.stage_tree(&["a.md".to_string()])?;
     assert_ne!(tree, repo.head_tree()?);
     assert_eq!(git(dir.path(), &["ls-files"])?, "a.md");
+    Ok(())
+}
+
+#[test]
+fn shared_index_is_reconciled_after_commit_or_resume() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    init(dir.path())?;
+    std::fs::write(dir.path().join("a.md"), "first")?;
+    std::fs::write(dir.path().join("other.md"), "first")?;
+    let repo = repo(dir.path());
+    repo.commit(&["a.md".into(), "other.md".into()], "seed")?;
+    repo.sync_index(&["a.md".into(), "other.md".into()])?;
+    std::fs::write(dir.path().join("a.md"), "synced")?;
+    std::fs::write(dir.path().join("other.md"), "staged local")?;
+    git(dir.path(), &["add", "other.md"])?;
+    repo.commit(&["a.md".into()], "sync")?;
+    repo.sync_index(&["a.md".into()])?;
+    repo.sync_index(&["a.md".into()])?;
+    assert_eq!(
+        git(dir.path(), &["diff", "--cached", "--name-only"])?,
+        "other.md"
+    );
+    assert_eq!(git(dir.path(), &["diff", "--name-only"])?, "");
+    Ok(())
+}
+#[test]
+fn unknown_lock_ownership_is_classified_and_kept() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    init(dir.path())?;
+    std::fs::write(dir.path().join("a.md"), "a")?;
+    let repo = repo(dir.path());
+    repo.commit(&["a.md".into()], "seed")?;
+    std::fs::write(dir.path().join(".git/index.lock"), "held")?;
+    assert!(matches!(
+        repo.sync_index(&["a.md".into()]),
+        Err(super::super::super::error::EngineError::StrandedLock(_))
+    ));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(".git/index.lock"))?,
+        "held"
+    );
     Ok(())
 }

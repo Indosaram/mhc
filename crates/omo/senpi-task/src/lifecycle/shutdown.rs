@@ -16,8 +16,15 @@ pub fn suspend_on_session_shutdown(
     context: &LifecycleContext,
     input: &SuspendInput,
 ) -> Result<SuspendSummary, LifecycleError> {
+    if let Some(owner) = super::stopped_owner::stopped_owner_task(
+        context,
+        &input.parent_session_id,
+        input.own_task_id.as_deref(),
+    )? {
+        return super::stopped_owner::stop_owned_children(context, input, &owner);
+    }
     if !context.config.resume_children {
-        return dispose_all_on_shutdown(context);
+        return dispose_all_on_shutdown(context, input);
     }
     let mut summary = SuspendSummary::default();
     for handle in context.registry.entries() {
@@ -100,49 +107,102 @@ fn suspend_pending(
             timestamp: context.now_iso(),
         },
     )?;
+    if reason == "quit" {
+        super::host_session_record::mark_suspension_reason(
+            context,
+            task_id,
+            crate::state::SuspensionReason::SessionQuit,
+        )?;
+    }
     context
         .store
         .append_event(task_id, &suspended_event(reason))?;
     Ok(())
 }
 
-fn suspend_handle(
+pub(crate) fn suspend_handle(
     context: &LifecycleContext,
     handle: &Arc<dyn ResidentHandle>,
     reason: &str,
 ) -> Result<(), LifecycleError> {
+    let hosted = handle.is_host_session()
+        || context
+            .store
+            .load(handle.task_id())?
+            .is_some_and(|r| super::host_session::is_host_session_record(&r));
+    if hosted
+        && let Some(record) = context.store.load(handle.task_id())?
+            && record.status.is_terminal() {
+                let publisher = handle.clone();
+                let status = record.status;
+                let (send, receive) = std::sync::mpsc::sync_channel(1);
+                std::thread::spawn(move || {
+                    let _ = send.send(publisher.publish_task_status(status));
+                });
+                let result = receive
+                    .recv_timeout(std::time::Duration::from_millis(
+                        context.teardown_step_deadline_ms,
+                    ))
+                    .unwrap_or_else(|error| {
+                        Err(crate::host::HostError {
+                            message: format!("publish_task_status: {error}"),
+                        })
+                    });
+                best_effort(handle.task_id(), "publish_task_status", result, "suspend");
+            }
     // Ownership drops BEFORE abort settles the turn so the outcome guard sees a forgotten child.
     context.registry.forget(handle.task_id());
-    best_effort(handle.task_id(), "abort", handle.abort(), "suspend");
-    if handle.kind() == ResidentKind::Rpc {
+    if !hosted {
+        best_effort(handle.task_id(), "abort", handle.abort(), "suspend");
+    }
+    if handle.kind() == ResidentKind::Rpc && !hosted {
         best_effort(handle.task_id(), "terminate", handle.terminate(), "suspend");
     }
     handle.dispose()?;
     let timestamp = context.now_iso();
-    let transition = match handle.kind() {
-        ResidentKind::InProcess => TaskTransition::PersistOnly { timestamp },
-        ResidentKind::Rpc => TaskTransition::DetachRpc { timestamp },
+    let transition = if hosted {
+        TaskTransition::DetachRpc { timestamp }
+    } else {
+        match handle.kind() {
+            ResidentKind::InProcess => TaskTransition::PersistOnly { timestamp },
+            ResidentKind::Rpc => TaskTransition::DetachRpc { timestamp },
+        }
     };
     context.store.transition(handle.task_id(), &transition)?;
+    if reason == "quit" {
+        super::host_session_record::mark_suspension_reason(
+            context,
+            handle.task_id(),
+            crate::state::SuspensionReason::SessionQuit,
+        )?;
+    }
     context
         .store
         .append_event(handle.task_id(), &suspended_event(reason))?;
     Ok(())
 }
 
-fn dispose_all_on_shutdown(context: &LifecycleContext) -> Result<SuspendSummary, LifecycleError> {
+fn dispose_all_on_shutdown(
+    context: &LifecycleContext,
+    input: &SuspendInput,
+) -> Result<SuspendSummary, LifecycleError> {
     let entries = context.registry.entries();
     let mut suspended_rpc = 0;
     let mut disposed = 0;
     for handle in &entries {
-        if handle.kind() == ResidentKind::Rpc {
+        if handle.is_host_session()
+            || context
+                .store
+                .load(handle.task_id())?
+                .is_some_and(|r| super::host_session::is_host_session_record(&r))
+        {
             let Some(record) = context.store.load(handle.task_id())? else {
                 continue;
             };
-            if record.host_pid != Some(context.host_pid) {
+            if !is_owned_child(&record, context, &input.parent_session_id) {
                 continue;
             }
-            suspend_handle(context, handle, "session shutdown")?;
+            suspend_handle(context, handle, &input.reason)?;
             suspended_rpc += 1;
             continue;
         }

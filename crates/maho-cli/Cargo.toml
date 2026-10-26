@@ -7,6 +7,8 @@ license = "MIT"
 autotests = false
 
 [dependencies]
+chrono = { workspace = true, features = ["clock"] }
+uuid = { workspace = true, features = ["v4"] }
 maho-chord = { path = "../maho-chord" }
 maho-ai = { path = "../maho-ai" }
 maho-agent = { path = "../maho-agent" }
@@ -53,6 +55,7 @@ maho-omo-task = { path = "../omo/components/maho-omo-task" }
 maho-server = { path = "../maho-server" }
 maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }
 maho-ext-hooks = { path = "../builtins/maho-ext-hooks" }
+maho-ext-relocate-session = { path = "../builtins/maho-ext-relocate-session" }
 maho-ext-prompt-preset = { path = "../builtins/maho-ext-prompt-preset" }
 maho-ext-anthropic-bash = { path = "../builtins/maho-ext-anthropic-bash" }
 maho-ext-bash-timeout = { path = "../builtins/maho-ext-bash-timeout" }

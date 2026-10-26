@@ -27,6 +27,7 @@ mod tests {
         AssistantMessage {
             thinking_level: None,
             provider_diagnostic: None,
+            prompt_cache_breakpoint: None,
             prompt_cache_diagnostics: None,
             error_cause: None,
             content: Vec::new(),
@@ -37,7 +38,7 @@ mod tests {
             response_id: None,
             provider_thinking_level: None,
             diagnostics: None,
-            usage: Usage {
+            usage: Usage { context_usage: None,
                 input: 200_000,
                 output,
                 cache_read: 0,
@@ -46,6 +47,7 @@ mod tests {
                 reasoning: None,
                 total_tokens: 200_000 + output,
                 cost: UsageCost::default(),
+                ..Default::default()
             },
             stop_reason,
             stop_details: None,

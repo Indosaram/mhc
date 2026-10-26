@@ -5,7 +5,10 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use crate::tools::task::types::{LoadedSkill, SkillLoader, SkillResolution};
+use super::checked_project_skills::{
+    CheckedProjectSkills, check_skill_path, read_project_skills, read_skill_file_checked,
+};
+use crate::tools::task::types::{LoadedSkill, SkillLoader, SkillRejection, SkillResolution};
 
 /// Options passed to a skill directory discovery function.
 pub struct SkillDiscoveryOptions<'a> {
@@ -45,7 +48,10 @@ pub fn build_skill_prepend(skills: &[LoadedSkill], prompt: &str) -> String {
     let block = skills
         .iter()
         .map(|skill| match &skill.location {
-            None => format!("<skill name=\"{}\">\n{}\n</skill>", skill.name, skill.content),
+            None => format!(
+                "<skill name=\"{}\">\n{}\n</skill>",
+                skill.name, skill.content
+            ),
             Some(location) => [
                 format!("<skill name=\"{}\" location=\"{}\">", skill.name, location),
                 format!("References are relative to {}.", dirname(location)),
@@ -136,7 +142,7 @@ fn split_frontmatter(normalized: &str) -> Option<(&str, &str)> {
     Some((&normalized[4..closing], &normalized[closing + 4..]))
 }
 
-fn skill_body(raw: &str) -> String {
+pub(super) fn skill_body(raw: &str) -> String {
     let normalized = normalize_newlines(raw);
     match split_frontmatter(&normalized) {
         None => raw.to_string(),
@@ -144,7 +150,7 @@ fn skill_body(raw: &str) -> String {
     }
 }
 
-fn frontmatter_name(raw: &str) -> Option<String> {
+pub(super) fn frontmatter_name(raw: &str) -> Option<String> {
     let normalized = normalize_newlines(raw);
     let (header, _) = split_frontmatter(&normalized)?;
     header.lines().find_map(|line| {
@@ -195,7 +201,9 @@ fn discovered(path: &Path, fallback: Option<&str>) -> Option<DiscoveredSkill> {
 fn collect_skills(dir: &Path, root: bool, out: &mut Vec<DiscoveredSkill>) {
     let skill_md = dir.join("SKILL.md");
     if skill_md.is_file() {
-        let fallback = dir.file_name().map(|name| name.to_string_lossy().into_owned());
+        let fallback = dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
         out.extend(discovered(&skill_md, fallback.as_deref()));
         return;
     }
@@ -220,7 +228,9 @@ fn collect_skills(dir: &Path, root: bool, out: &mut Vec<DiscoveredSkill>) {
         if is_dir {
             collect_skills(&path, false, out);
         } else if root && path.extension().is_some_and(|ext| ext == "md") {
-            let stem = path.file_stem().map(|stem| stem.to_string_lossy().into_owned());
+            let stem = path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned());
             out.extend(discovered(&path, stem.as_deref()));
         }
     }
@@ -234,62 +244,131 @@ pub fn load_skills_from_dir(options: &SkillDiscoveryOptions<'_>) -> SkillDiscove
     SkillDiscovery { skills }
 }
 
-fn read_skill_file(name: &str, path: &Path) -> Option<LoadedSkill> {
-    let raw = fs::read_to_string(path).ok()?;
-    Some(LoadedSkill {
-        name: name.to_string(),
-        content: skill_body(&raw),
-        location: Some(path.to_string_lossy().into_owned()),
-    })
-}
-
-fn direct_skill(name: &str, dir: &Path) -> Option<LoadedSkill> {
-    let candidates = [dir.join(name).join("SKILL.md"), dir.join(format!("{name}.md"))];
-    let path = candidates.iter().find(|candidate| candidate.exists())?;
-    read_skill_file(name, path)
-}
-
-fn discovered_skill(
-    name: &str,
-    dir: &Path,
-    discover: &DiscoverSkills,
-    cache: &mut HashMap<PathBuf, SkillDiscovery>,
-) -> Option<LoadedSkill> {
-    if !dir.exists() {
-        return None;
+fn blocked_skill_name(path: &Path) -> String {
+    if path.file_name().is_some_and(|name| name == "SKILL.md") {
+        path.parent().and_then(Path::file_name)
+    } else {
+        path.file_stem()
     }
-    let discovery = cache.entry(dir.to_path_buf()).or_insert_with(|| {
-        discover(&SkillDiscoveryOptions {
-            dir,
-            source: "project",
-        })
-    });
-    let skill = discovery
-        .skills
-        .iter()
-        .find(|candidate| candidate.name == name)?;
-    read_skill_file(name, &skill.file_path)
+    .unwrap_or_default()
+    .to_string_lossy()
+    .into_owned()
 }
-
 fn is_valid_skill_name(name: &str) -> bool {
     !name.is_empty()
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
-
+fn project_root(cwd: &Path, dir: &Path) -> PathBuf {
+    if let Some(root) = resolve(cwd)
+        .ancestors()
+        .find(|path| path.join(".git").exists())
+    {
+        return root.to_path_buf();
+    }
+    dir.ancestors()
+        .find(|path| {
+            path.file_name().is_some_and(|name| {
+                [".agents", ".pi", ".senpi", ".claude", ".opencode"]
+                    .iter()
+                    .any(|candidate| name == *candidate)
+            })
+        })
+        .and_then(Path::parent)
+        .unwrap_or_else(|| dir.parent().unwrap_or(dir))
+        .to_path_buf()
+}
 fn read_skill(
     name: &str,
+    cwd: &Path,
     dirs: &[PathBuf],
     discover: &DiscoverSkills,
-    cache: &mut HashMap<PathBuf, SkillDiscovery>,
+    caches: (&mut HashMap<PathBuf, SkillDiscovery>, &mut HashMap<PathBuf, CheckedProjectSkills>),
+    user_dirs: &[PathBuf],
+    rejected: &mut Vec<SkillRejection>,
 ) -> Option<LoadedSkill> {
+    let (cache, project_cache) = caches;
     if !is_valid_skill_name(name) {
         return None;
     }
-    dirs.iter().find_map(|dir| {
-        direct_skill(name, dir).or_else(|| discovered_skill(name, dir, discover, cache))
-    })
+    for dir in dirs {
+        let user = user_dirs.contains(dir);
+        let root = project_root(cwd, dir);
+        let attempt = (|| -> Result<Option<LoadedSkill>, String> {
+            if !dir.exists() {
+                return Ok(None);
+            }
+            if !user {
+                check_skill_path(dir, &root, user_dirs).map_err(|e| e.to_string())?;
+            }
+            let direct = if !user && dir.join("SKILL.md").exists() {
+                None
+            } else {
+                [
+                    dir.join(name).join("SKILL.md"),
+                    dir.join(format!("{name}.md")),
+                ]
+                .into_iter()
+                .find(|path| path.exists())
+            };
+            let path = if direct.is_some() {
+                direct
+            } else if user {
+                cache
+                    .entry(dir.clone())
+                    .or_insert_with(|| {
+                        discover(&SkillDiscoveryOptions {
+                            dir,
+                            source: "user",
+                        })
+                    })
+                    .skills
+                    .iter()
+                    .find(|skill| skill.name == name)
+                    .map(|skill| skill.file_path.clone())
+            } else {
+                let scan = project_cache
+                    .entry(dir.clone())
+                    .or_insert_with(|| read_project_skills(dir, &root, user_dirs));
+                if let Some(skill) = scan.skills.get(name) {
+                    skill.location.as_ref().map(PathBuf::from)
+                } else {
+                    if let Some(error) = scan
+                        .blocked
+                        .iter()
+                        .chain(scan.errors.iter())
+                        .find(|error| blocked_skill_name(error.path()) == name)
+                    {
+                        return Err(error.to_string());
+                    }
+                    None
+                }
+            };
+            let Some(path) = path else {
+                return Ok(None);
+            };
+            let raw = if user {
+                fs::read_to_string(&path).map_err(|e| e.to_string())?
+            } else {
+                read_skill_file_checked(&path, &root, user_dirs).map_err(|e| e.to_string())?
+            };
+            Ok(Some(LoadedSkill {
+                name: name.to_string(),
+                content: skill_body(&raw),
+                location: Some(path.to_string_lossy().into_owned()),
+            }))
+        })();
+        match attempt {
+            Ok(Some(skill)) => return Some(skill),
+            Ok(None) => {}
+            Err(reason) => rejected.push(SkillRejection {
+                name: name.to_string(),
+                reason,
+            }),
+        }
+    }
+    None
 }
 
 fn default_home_dir() -> PathBuf {
@@ -318,19 +397,41 @@ pub fn create_fs_skill_loader(options: FsSkillLoaderOptions) -> Arc<SkillLoader>
                 resolved: Vec::new(),
                 missing: Vec::new(),
                 skills: Some(Vec::new()),
+                rejected: None,
             };
         }
         let dirs = search_dirs(Path::new(cwd), &home, &agent_dir, &extra_dirs);
+        let user_dirs = unique_dirs(
+            std::iter::once(agent_dir.join("skills"))
+                .chain(std::iter::once(home.join(".agents/skills")))
+                .chain(extra_dirs.iter().cloned())
+                .collect(),
+        );
+        let mut rejected = Vec::new();
+        let mut project_cache = HashMap::new();
         let mut cache = HashMap::new();
         let mut skills: Vec<LoadedSkill> = Vec::new();
         let mut missing: Vec<String> = Vec::new();
         for name in names {
-            match read_skill(name, &dirs, &discover, &mut cache) {
+            match read_skill(
+                name,
+                Path::new(cwd),
+                &dirs,
+                &discover,
+                (&mut cache, &mut project_cache),
+                &user_dirs,
+                &mut rejected,
+            ) {
                 Some(skill) => skills.push(skill),
-                None => missing.push(name.clone()),
+                None if !rejected.iter().any(|entry| entry.name == *name) => {
+                    missing.push(name.clone())
+                }
+                None => {}
             }
         }
+        rejected.retain(|entry| !skills.iter().any(|skill| skill.name == entry.name));
         SkillResolution {
+            rejected: Some(rejected),
             prepend: build_skill_prepend(&skills, ""),
             resolved: skills.iter().map(|skill| skill.name.clone()).collect(),
             missing,

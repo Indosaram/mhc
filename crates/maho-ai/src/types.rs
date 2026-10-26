@@ -42,11 +42,8 @@ pub const KNOWN_APIS: &[&str] = &[
 
 pub const KNOWN_IMAGES_APIS: &[&str] = &["openrouter-images", "openai-images"];
 
-pub const KNOWN_CLASSIFIER_APIS: &[&str] = &[
-    "typesafe-system-one",
-    "cloudflare-workers-ai-system-one",
-    "llama-cpp-classify",
-];
+pub const KNOWN_CLASSIFIER_APIS: &[&str] =
+    &["typesafe-system-one", "cloudflare-workers-ai-system-one"];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -858,6 +855,13 @@ impl ContentBlock {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsage {
+    pub input: u64,
+    pub output: u64,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageCost {
@@ -868,9 +872,22 @@ pub struct UsageCost {
     pub total: f64,
 }
 
+pub type RequestContextUsage = ContextUsage;
+
+fn deserialize_context_usage<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Option<RequestContextUsage>>, D::Error> {
+    Ok(Some(Option::<RequestContextUsage>::deserialize(deserializer)?))
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Usage {
+    /// Latest request context when billing spans multiple internal requests.
+    /// None (outer Option) preserves the legacy single-request contract; Some(None)
+    /// means no request measurement is available.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_context_usage")]
+    pub context_usage: Option<Option<ContextUsage>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_unknown: Option<bool>,
     pub input: u64,
     pub output: u64,
     pub cache_read: u64,
@@ -1166,6 +1183,9 @@ pub struct AssistantMessageTiming {
 #[serde(rename_all = "camelCase")]
 pub struct AssistantMessage {
     pub content: Vec<ContentBlock>,
+    /// Request-local stable-prefix cache checkpoint hint for provider adapters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_breakpoint: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_diagnostics: Option<
         crate::api::openai_responses_shared::openai_responses_prompt_cache::PromptCacheDiagnostics,
@@ -1238,7 +1258,7 @@ fn serialize_optional<S: serde::ser::SerializeStruct, T: Serialize + ?Sized>(
 impl Serialize for AssistantMessage {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("AssistantMessage", 23)?;
+        let mut state = serializer.serialize_struct("AssistantMessage", 25)?;
         state.serialize_field("role", "assistant")?;
         state.serialize_field("content", &self.content)?;
         state.serialize_field("api", &self.api)?;
@@ -1252,6 +1272,11 @@ impl Serialize for AssistantMessage {
             &mut state,
             "promptCacheDiagnostics",
             self.prompt_cache_diagnostics.as_ref(),
+        )?;
+        serialize_optional(
+            &mut state,
+            "promptCacheBreakpoint",
+            self.prompt_cache_breakpoint.as_ref(),
         )?;
         serialize_optional(&mut state, "thinkingLevel", self.thinking_level.as_ref())?;
         serialize_optional(
@@ -1848,6 +1873,8 @@ pub struct ModelCost {
     /// Scheduled list-price changes, inclusive of their effective instant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_rates: Option<Vec<ModelCostEffectiveRate>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unknown: Option<bool>,
 }
 
 impl ModelCost {

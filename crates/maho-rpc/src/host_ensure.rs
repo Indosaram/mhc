@@ -196,12 +196,17 @@ pub async fn stop_managed_host(
         "stopping managed hosts is unsupported on this platform",
     ))
 }
-pub async fn start_host(
+pub fn start_host(
     prepared: &LockedHostEnsure,
     socket: &str,
     launch: &crate::host_launch::HostLaunch,
     options: HostStartOptions,
-) -> std::io::Result<StartedHost> {
+) -> impl std::future::Future<Output = std::io::Result<StartedHost>> + Send + use<> {
+    let paths = prepared.paths.clone();
+    let socket = normalize_socket_path(socket).to_owned();
+    let launch = launch.clone();
+    async move {
+    let socket = socket.as_str();
     let HostStartOptions {
         env,
         settings,
@@ -209,7 +214,7 @@ pub async fn start_host(
         timeout,
     } = options;
     let socket = normalize_socket_path(socket);
-    crate::host_daemon_state::write_host_settings(&prepared.paths, &settings)
+    crate::host_daemon_state::write_host_settings(&paths, &settings)
         .map_err(|error| error.source)?;
     let mut stderr_options = std::fs::OpenOptions::new();
     stderr_options
@@ -222,7 +227,7 @@ pub async fn start_host(
         use std::os::unix::fs::OpenOptionsExt;
         stderr_options.mode(0o600);
     }
-    let stderr = stderr_options.open(&prepared.paths.stderr_log)?;
+    let stderr = stderr_options.open(&paths.stderr_log)?;
     let mut command = tokio::process::Command::new(&launch.command);
     command
         .args(&launch.args)
@@ -246,7 +251,7 @@ pub async fn start_host(
             generation: settings.generation,
             launch_profile_id,
         };
-        crate::host_daemon_registration::write_host_registration(&prepared.paths, &registration)
+        crate::host_daemon_registration::write_host_registration(&paths, &registration)
             .map_err(|error| error.source)?;
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
@@ -286,34 +291,39 @@ pub async fn start_host(
             let _ = child.kill().await;
             let _ = child.wait().await;
             crate::host_daemon_registration::release_generation(
-                &prepared.paths,
+                &paths,
                 &settings.instance_id,
                 pid,
             )?;
             Err(error)
         }
     }
+    }
 }
-pub async fn start_refusal(
+pub fn start_refusal(
     prepared: &LockedHostEnsure,
     socket: &str,
-) -> std::io::Result<Option<&'static str>> {
-    let socket = normalize_socket_path(socket);
+) -> impl std::future::Future<Output = std::io::Result<Option<&'static str>>> + Send + use<> {
+    let paths = prepared.paths.clone();
+    let registration = prepared.registration.clone();
+    let socket = normalize_socket_path(socket).to_owned();
+    async move {
+    let socket = socket.as_str();
     if let Some(registered) =
-        crate::host_daemon_registration::proven_owner(prepared.registration.as_ref(), socket)
+        crate::host_daemon_registration::proven_owner(registration.as_ref(), socket)
     {
         if crate::host_daemon_registration::written_by_this_process(registered.writer.as_ref()) {
             if crate::host_probe::probe_socket_reachable(socket, 2000).await {
                 return Ok(Some("host_busy"));
             }
-        } else if refuse_if_foreign_held(&prepared.paths, registered, socket)
+        } else if refuse_if_foreign_held(&paths, registered, socket)
             .await
             .is_err()
         {
             return Ok(Some("foreign_writer"));
         }
     }
-    let legacy = crate::host_daemon_state::read_file_or_undefined(&prepared.paths.legacy_pid_file)?;
+    let legacy = crate::host_daemon_state::read_file_or_undefined(&paths.legacy_pid_file)?;
     if let Some(legacy) = crate::host_daemon_state::parse_json(legacy.as_deref())
         && let Some(pid) = legacy
             .get("pid")
@@ -332,6 +342,7 @@ pub async fn start_refusal(
         }
     }
     Ok(None)
+    }
 }
 pub use crate::host_holder::HostHolder;
 /// The `foreign_writer` refusal: the endpoint and the host it leaves in the way.

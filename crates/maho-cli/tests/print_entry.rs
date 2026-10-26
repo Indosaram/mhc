@@ -128,10 +128,10 @@ async fn run_print_entry(no_context_files: bool, piped_stdin: Option<&str>) {
     let (output, payload) = match result {
         Ok(Ok(result)) => result,
         other => {
-            let mut err = Vec::new();
-            let _ = stderr.read_to_end(&mut err).await;
             child.kill().await.expect("kill print after failed bounded operation");
             child.wait().await.expect("reap print after failed bounded operation");
+            let mut err = Vec::new();
+            stderr.read_to_end(&mut err).await.expect("read print diagnostics after exit");
             panic!("print operation failed: {other:?}\nstderr: {}", String::from_utf8_lossy(&err));
         }
     };
