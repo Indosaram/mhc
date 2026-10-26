@@ -64,7 +64,10 @@ impl Delivery {
         let id = provider.as_ref().and_then(|value| value.get("id")).and_then(Value::as_str);
         let Some(next) = state.publish(force, id) else { return; };
         let mut payload = json!({"type":"agentState","sessionId":self.config.session_id,"state":next.as_str(),"agent":"omo"});
-        if let Some(provider) = provider { payload["providerSession"] = provider; }
+        if let Some(mut provider) = provider {
+            provider["launcher"] = json!("mhc");
+            payload["providerSession"] = provider;
+        }
         if let Some(detail) = state.blocked_detail() { payload["detail"] = json!(detail); }
         if self.config.port.is_some() { payload["token"] = json!(self.config.token); }
         if let Some(sender) = self.sender.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()
@@ -166,6 +169,8 @@ mod tests {
         assert_eq!(payload["state"], "idle");
         assert_eq!(payload["token"], "fixture-token");
         assert_eq!(payload["providerSession"]["id"], "provider-session");
+        assert_eq!(payload["agent"], "omo");
+        assert_eq!(payload["providerSession"]["launcher"], "mhc");
         drop(delivery);
     }
     #[cfg(unix)]
