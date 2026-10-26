@@ -292,11 +292,29 @@ pub async fn create_agent_session(
         }
     }
     if model.is_none() {
-        model = settings
-            .get_string("defaultProvider")
-            .zip(settings.get_string("defaultModel"))
-            .and_then(|(provider, id)| registry.find(&provider, &id))
-            .or_else(|| registry.get_available().into_iter().next());
+        // senpi sdk.ts:333-345: findInitialModel picks the startup model and records its provenance,
+        // which session_start carries so an automatic pick (settings, provider default, first
+        // available) stays replaceable by a model profile.
+        let default_provider = settings.get_string("defaultProvider");
+        let default_model_id = settings.get_string("defaultModel");
+        let initial = crate::model_resolver::find_initial_model(
+            crate::model_resolver::InitialModelOptions {
+                cli_provider: None,
+                cli_model: None,
+                scoped_models: &[],
+                is_continuing: !context.messages.is_empty(),
+                default_provider: default_provider.as_deref(),
+                default_model_id: default_model_id.as_deref(),
+                model_thinking_levels: None,
+            },
+            &runtime,
+        )
+        .await?;
+        model = initial.parsed.model;
+        if options.initial_model_provenance.is_none() {
+            options.initial_model_provenance =
+                Some(crate::model_resolver::initial_model_provenance_str(initial.provenance).to_owned());
+        }
         // senpi sdk.ts:322-326: no model leaves a model-less session with the login guidance.
         match &model {
             None => {
