@@ -225,7 +225,11 @@ pub async fn run_app_server_command(
             // installed packages, auto-discovered dirs) gets the packaged root (`OMO_SENPI_SKILLS_ROOT`,
             // else the `skills/` directory beside the executable) as an extra skill path here. No new
             // RPC method is added - `MethodRegistry::register` replaces the default registration.
+            // The packaged root comes from the omo port, so the MIT profile (no `omo`) keeps the
+            // default `skills/list` registration.
+            #[cfg(feature = "omo")]
             let packaged_skills_root = maho_omo::builtin_skills_root();
+            #[cfg(feature = "omo")]
             if packaged_skills_root.is_dir() {
                 let loader = maho_server::app_server::skills::resource_skill_loader(vec![
                     packaged_skills_root.to_string_lossy().into_owned(),

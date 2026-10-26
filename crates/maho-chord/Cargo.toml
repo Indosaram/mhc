@@ -3,6 +3,7 @@ name = "maho-chord"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license = "MIT"
 autotests = false
 
 [dependencies]

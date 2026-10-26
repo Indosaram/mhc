@@ -67,12 +67,22 @@ pub fn load_hook_config_files(options:&HookConfigLoaderOptions)->ParsedHookConfi
     let mut parsed=load_hook_config_sources(options,|path|match std::fs::read(path) {
         Ok(bytes)=>Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(error)=>Err(error),
     });
-    append_claude_plugin_hooks(options,&claude_code_compat_core::shared::get_claude_config_dir(),&mut parsed);
+    append_claude_plugin_hooks(options,&claude_config_dir(),&mut parsed);
     parsed
 }
 
+/// Claude Code's config directory: `CLAUDE_CONFIG_DIR` when set, else `~/.claude`.
+#[cfg(feature="claude-plugins")]
+fn claude_config_dir()->std::path::PathBuf {claude_code_compat_core::shared::get_claude_config_dir()}
+
+/// Claude Code's config directory: `CLAUDE_CONFIG_DIR` when set, else `~/.claude`.
+#[cfg(not(feature="claude-plugins"))]
+fn claude_config_dir()->std::path::PathBuf {
+    std::env::var_os("CLAUDE_CONFIG_DIR").filter(|dir|!dir.is_empty()).map(std::path::PathBuf::from)
+        .unwrap_or_else(||std::path::PathBuf::from(maho_core::config::home_dir()).join(".claude"))
+}
+
 fn append_claude_plugin_hooks(options:&HookConfigLoaderOptions,claude_dir:&std::path::Path,parsed:&mut ParsedHookConfig) {
-    use claude_code_compat_core::{PluginLoaderOptions,discover_installed_plugins,load_plugin_hooks_configs};
     for (path,scope) in [(claude_dir.join("settings.json"),HookSourceScope::Global),
         (std::path::Path::new(&options.cwd).join(".claude/settings.json"),HookSourceScope::Project),
         (std::path::Path::new(&options.cwd).join(".claude/settings.local.json"),HookSourceScope::Project)] {
@@ -91,6 +101,18 @@ fn append_claude_plugin_hooks(options:&HookConfigLoaderOptions,claude_dir:&std::
         parsed.executable_handlers.extend(loaded.executable_handlers);
         parsed.diagnostics.extend(loaded.diagnostics);
     }
+    append_claude_installed_plugin_hooks(options,claude_dir,parsed);
+}
+
+/// Installed Claude Code plugins' hooks. Plugin discovery lives in the SUL `claude-code-compat-core`
+/// crate, so it is linked only with the `claude-plugins` feature (on by default); without it only the
+/// settings-file hooks above load.
+#[cfg(not(feature="claude-plugins"))]
+fn append_claude_installed_plugin_hooks(_options:&HookConfigLoaderOptions,_claude_dir:&std::path::Path,_parsed:&mut ParsedHookConfig) {}
+
+#[cfg(feature="claude-plugins")]
+fn append_claude_installed_plugin_hooks(options:&HookConfigLoaderOptions,claude_dir:&std::path::Path,parsed:&mut ParsedHookConfig) {
+    use claude_code_compat_core::{PluginLoaderOptions,discover_installed_plugins,load_plugin_hooks_configs};
     let discovery=discover_installed_plugins(&PluginLoaderOptions {
         cwd:Some(std::path::PathBuf::from(&options.cwd)),claude_config_dir:Some(claude_dir.to_owned()),
         plugins_home_override:Some(claude_dir.join("plugins")),..Default::default()
@@ -131,7 +153,7 @@ pub async fn load_hook_config_sources_async(options:&HookConfigLoaderOptions)->P
     let mut parsed=load_hook_config_sources(options,|path|match files.get(path) {
         Some(Ok(text))=>Ok(text.clone()),Some(Err(error))=>Err(std::io::Error::new(error.kind(),error.to_string())),None=>Ok(None),
     });
-    append_claude_plugin_hooks(options,&claude_code_compat_core::shared::get_claude_config_dir(),&mut parsed);
+    append_claude_plugin_hooks(options,&claude_config_dir(),&mut parsed);
     parsed
 }
 
