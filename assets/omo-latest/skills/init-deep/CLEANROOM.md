@@ -68,5 +68,5 @@
 11. grep for codex/lazycodex/multi_agent/omo/OmO names: none.
 
 ## Open items
-- mhc's init-deep advisor crate (`maho-omo-init-deep-advisor`) currently reads/excludes `.omo/init-deep.json` and plain `AGENTS.md` exclude lines, not `.mhc/init-deep.json` or a managed block. Per the dispatcher's decision this skill uses `.mhc/`; the advisor needs aligning (or the path changed) before they agree.
+- mhc's init-deep advisor crate (`maho-omo-init-deep-advisor`) currently reads/excludes `.omo/init-deep.json` and plain `AGENTS.md` exclude lines, not `.mhc/init-deep.json` or a managed block. Per the dispatcher's decision this skill uses `.mhc/`; the advisor needs aligning (or the path changed) before they agree. *(Integrator, 2026-10-27: resolved on the advisor side; it now reads `.mhc/init-deep.json`, falls back to the legacy `.omo/init-deep.json`, and excludes both from drift.)*
 - The exact JS shape of node fields (`dependsOn`, `load_skills`) and `res.details.run_id` was taken from `dag_tool.rs`; not exercised in a live session.
