@@ -128,6 +128,26 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
     patches and Chrome for Testing download; omowright's network capture, frames, HAR and tracing.
     The default (`omo`) build does not mount these tools (its browser bridge and computer-use
     crates were never mounted).
+- `<builtin:telemetry>` (`maho-telemetry`, ported from the MIT oh-my-pi @ f59bbac telemetry export
+  and stats packages; opt-outs, ledger and `mhc usage` in `docs/cleanroom/specs/telemetry.md`):
+  - Local usage ledger: one JSON line per model call (provider, model, token counters, recorded
+    cost, duration, time to first token, stop reason, session id, cwd; never prompt, response or
+    tool text) appended to `<agent dir>/stats/usage.jsonl` (`$MAHO_USAGE_DIR` overrides the
+    directory). It works for `--no-session` runs and never leaves the machine.
+  - `mhc usage [--json] [--sessions] [--days N] [--file PATH] [--status]` and `/usage`: requests,
+    errors, tokens, cache rate and savings, API-equivalent cost estimate, latency, by model and by
+    folder (`--sessions` reads the session logs instead of the ledger; `--status` shows what is on).
+  - OTLP export (opt-in): only when an `OTEL_EXPORTER_OTLP_ENDPOINT` or per-signal
+    `OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_ENDPOINT` is set. Each agent run is pushed as
+    OTLP/HTTP protobuf: GenAI spans (`invoke_agent mhc`, `chat <model>`, `execute_tool <tool>`),
+    `gen_ai.client.token.usage` and `mhc.agent.*` metrics, and an `agent run completed` log record.
+    `OTEL_*_EXPORTER=none`, `OTEL_EXPORTER_OTLP_*HEADERS`, `OTEL_SERVICE_NAME`,
+    `OTEL_RESOURCE_ATTRIBUTES` and `OTEL_LOG_LEVEL` are honoured; only `http/protobuf`. There is no
+    built-in endpoint, vendor or installation id.
+  - Opt-outs: `MAHO_TELEMETRY=0` or config `telemetry.enabled: false` (everything);
+    `DO_NOT_TRACK=1`, `OTEL_SDK_DISABLED=true` or `telemetry.otlpExportEnabled: false` (export);
+    `MAHO_USAGE_STATS=0` or `telemetry.usageStats: false` (ledger).
+  - The default (`omo`) build links the crate but does not mount it.
 - Formatter / post-mutation hooks: interfaces in `maho_lsp::hooks` (`Formatter`,
   `PostMutationHook`, `HookChain`); the LSP diagnostics hook is the first implementation.
 
@@ -138,7 +158,7 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
 | omo mount (`<builtin:omo>`): its task/subagent tools, `team_*`, `workflow`/DAG, `workpool`, `/task-kill`, `/dag` | not registered (MIT `<builtin:task>` provides `task`, `task_output`, `task_list`, `task_resume`, `task_cancel`, `/tasks`) |
 | omo memory tools and commands (`/remember`, `/dream`, `/reflect`, `/search`, `/people`, `/palace`, `/init`, `/doctor`, `/facts`, `/memfs`, ...), the omo recall sidecar, facts child, git-backed Markdown memory | not registered (MIT `<builtin:memory>` provides `retain`, `recall`, `memory_get`, `memory_forget`, first-turn auto-recall and `/memory`) |
 | ast-grep MCP; builtin MCPs (context7, grep_app); `x_search`; omo browser bridge | not registered (MIT `<builtin:browser>` provides the `browser` and `computer` tools) |
-| gateway, onboarding, init-deep advisor, git-master, telemetry | not registered |
+| gateway, onboarding, init-deep advisor, git-master, omo telemetry | not registered (MIT `<builtin:telemetry>` provides the usage ledger, `mhc usage` and opt-in OTLP export) |
 | bundled omo skills (`OMO_SENPI_SKILLS_ROOT`, the `skills/` root beside the executable) and the packaged root in app-server `skills/list` | not registered; settings and project skill paths still load |
 | `builtin:task-member` (`--extension builtin:task-member`) | unknown native extension error |
 | Claude Code plugin hooks (`maho-ext-hooks` feature `claude-plugins`) | not discovered; `~/.claude/settings.json` and project `.claude/settings*.json` hooks still load |
@@ -167,7 +187,10 @@ mass-ulw, persona prompts) are removed, not ported.
    `mhc memory import-legacy` + `mhc memory search` work on a legacy Markdown store, that the
    memory MCP server answers over stdio (`--memory-mcp`, `--omo-memory-mcp`), that (when
    `MHC_SMOKE_BROWSER` names a Chromium executable) a model-driven `browser` call returns the page's
-   snapshot with refs and a `computer` screenshot of the tab is taken, that `mhc doctor` reports the config sources and resolves a pinned
+   snapshot with refs and a `computer` screenshot of the tab is taken, that model calls are written to the usage
+   ledger and exported to a loopback OTLP collector (traces, metrics, logs, no content) while
+   `DO_NOT_TRACK=1` stops the export and `MAHO_TELEMETRY=0` stops both, that `mhc usage`
+   (`--json`, `--status`) reports the ledger, that `mhc doctor` reports the config sources and resolves a pinned
    model profile, and that `mhc ulw-loop` and `--memory-supervisor` report they are unavailable.
 5. `cargo nextest run -p maho-cli --no-default-features`: the `maho-cli` tests in the MIT profile.
 

@@ -149,6 +149,14 @@ fn run() -> Result<(), String> {
     if let Some(result) = run_memory_entry(&argv) {
         return result;
     }
+    #[cfg(not(feature = "omo"))]
+    if argv.first().map(String::as_str) == Some("usage") {
+        return maho_cli::cli::usage_stats::run_usage_command(&argv[1..]).map(|code| {
+            if code != 0 {
+                std::process::exit(code);
+            }
+        });
+    }
     if let Some(text) = root_metadata_output(
         &argv,
         maho_cli::cli::grok_neo_gate::is_grok_neo_enabled(&startup_env),
