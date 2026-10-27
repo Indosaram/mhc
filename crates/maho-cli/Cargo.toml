@@ -72,6 +72,8 @@ maho-ext-host = { path = "../maho-ext-host" }
 maho-ext-mcp = { path = "../builtins/maho-ext-mcp" }
 maho-ext-permission-system = { path = "../builtins/maho-ext-permission-system" }
 maho-ext-recommended-models = { path = "../builtins/maho-ext-recommended-models" }
+maho-config = { path = "../maho-config" }
+maho-model-select = { path = "../maho-model-select" }
 maho-omo-task = { path = "../omo/components/maho-omo-task", optional = true }
 maho-server = { path = "../maho-server" }
 maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }
