@@ -1017,7 +1017,6 @@ impl EventKind {
 pub enum ExtensionMode {
     Tui,
     Rpc,
-    AppServer,
     Json,
     #[default]
     Print,

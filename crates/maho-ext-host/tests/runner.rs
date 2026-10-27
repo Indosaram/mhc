@@ -1635,7 +1635,6 @@ fn set_extension_mode_reflects_mode_and_ui_presence_in_created_context() {
         (ExtensionMode::Print, false),
         (ExtensionMode::Json, false),
         (ExtensionMode::Tui, true),
-        (ExtensionMode::AppServer, true),
     ] {
         runner
             .set_extension_mode(mode, has_ui)
