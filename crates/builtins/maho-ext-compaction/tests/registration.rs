@@ -179,12 +179,12 @@ async fn run_policy_scenario() {
     let extension = maho_ext_compaction::CompactionExtension;
     Extension::register(&extension, &mut api);
     let source=vec![serde_json::from_value(serde_json::json!({"role":"assistant","content":[{"type":"toolCall","id":"call","name":"read","arguments":{}}],"api":"faux","provider":"faux","model":"m","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":0})).expect("native compaction scenario invariant"),serde_json::from_value(serde_json::json!({"role":"toolResult","toolCallId":"call","toolName":"read","content":[{"type":"text","text":"x".repeat(30000)}],"isError":false,"timestamp":0})).expect("native compaction scenario invariant")];
-    let mut event=ExtensionEvent::Context {messages:source.clone(),entry_ids:Vec::new()};
+    let mut event=ExtensionEvent::Context {messages:source.clone(),entry_ids:Vec::new(),source:ContextEventSource::Agent};
     let result=api.registered.handlers[&EventKind::Context][0](&mut event,&ctx).await.expect("native compaction scenario invariant");
     let EventResult::Context {messages:Some(preserved)}=result else {panic!("missing registered context")};
     assert_eq!(serde_json::to_value(&preserved).expect("native compaction scenario invariant"),serde_json::to_value(&source).expect("native compaction scenario invariant"));
     actions.settings.lock().expect("native compaction scenario invariant").tool_admission_enabled=true;
-    let mut event=ExtensionEvent::Context {messages:source,entry_ids:Vec::new()};
+    let mut event=ExtensionEvent::Context {messages:source,entry_ids:Vec::new(),source:ContextEventSource::Agent};
     let result=api.registered.handlers[&EventKind::Context][0](&mut event,&ctx).await.expect("native compaction scenario invariant");
     let EventResult::Context {messages:Some(projected)}=result else {panic!("missing registered context")};
     assert!(serde_json::to_value(projected).expect("native compaction scenario invariant")[1]["content"][0]["text"].as_str().expect("native compaction scenario invariant").len()<30000);
@@ -361,7 +361,7 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
         }, ..Default::default()
     }).expect("configured faux provider");
     let mut manager = maho_core::session_manager::SessionManager::in_memory(&cwd,None,None);
-    manager.append_message(serde_json::json!({"role":"user","content":"old ".repeat(if variant=="overflow" {2000} else if idle_variant {25000} else {30000}),"timestamp":0}));
+    manager.append_message(serde_json::json!({"role":"user","content":"old ".repeat(if variant=="overflow" {2000} else if idle_variant {25000} else if variant=="reminder" {16000} else {30000}),"timestamp":0}));
     manager.append_message(serde_json::json!({"role":"assistant","content":[{"type":"text","text":"reply"}],"api":model.api,"provider":model.provider,"model":model.id,"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0}));
     if variant=="overflow" {
         manager.append_message(serde_json::json!({"role":"user","content":"middle ".repeat(1000),"timestamp":0}));

@@ -206,7 +206,7 @@ async fn native_sdk_payload_failure_is_reported_without_transmission() {
             let calls = captured.clone();
             api.on(maho_ext_api::EventKind::BeforeProviderRequest, Arc::new(move |event, _| {
                 let calls = calls.clone();
-                *event = maho_ext_api::ExtensionEvent::Context { messages: Vec::new(), entry_ids: Vec::new() };
+                *event = maho_ext_api::ExtensionEvent::Context { messages: Vec::new(), entry_ids: Vec::new(), source: maho_ext_api::ContextEventSource::Agent };
                 Box::pin(async move {
                     calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     Ok(maho_ext_api::EventResult::None)

@@ -119,6 +119,8 @@ pub enum SummaryGenerationError {
     Stream(crate::speculative_summary::SummaryStreamError),
     Overflow(crate::overflow_retry::SummarizationOverflowExhaustedError),
     TotalBudget,
+    /// A successful summary whose retained suffix can never be replayed (rejected-recovery.ts).
+    UnsafeRetainedSuffix(Box<crate::deterministic_fallback::UnsafeRetainedSuffixError>),
 }
 
 impl std::fmt::Display for SummaryGenerationError {
@@ -134,6 +136,7 @@ impl std::fmt::Display for SummaryGenerationError {
             Self::Stream(error) => write!(formatter, "{error:?}"),
             Self::Overflow(error) => write!(formatter, "{error:?}"),
             Self::TotalBudget => formatter.write_str("summarization total budget exhausted"),
+            Self::UnsafeRetainedSuffix(error) => write!(formatter, "{error}"),
         }
     }
 }
@@ -187,6 +190,19 @@ fn is_authenticated(
                     )
             })
         })
+}
+
+/// The summary-failure class senpi's `classifyRequiredCompactionFallbackFailure` keys on.
+pub fn summary_failure(error: &SummaryGenerationError) -> crate::deterministic_fallback::SummaryFailure {
+    use crate::{deterministic_fallback::SummaryFailure, speculative_summary::SummaryStreamError};
+    match error {
+        SummaryGenerationError::Request(response) => summary_request_failure(response),
+        SummaryGenerationError::Stream(SummaryStreamError::IdleTimeout | SummaryStreamError::DurationBudget) | SummaryGenerationError::TotalBudget => SummaryFailure::Timeout,
+        SummaryGenerationError::Overflow(_) => SummaryFailure::OverflowExhausted,
+        SummaryGenerationError::EmptySummary(_) => SummaryFailure::EmptySummary,
+        SummaryGenerationError::UnsafeRetainedSuffix(_) => SummaryFailure::UnsafeRetainedSuffix,
+        _ => SummaryFailure::Other,
+    }
 }
 
 pub async fn run_extension_compaction(
