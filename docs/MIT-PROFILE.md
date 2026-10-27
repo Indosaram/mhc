@@ -80,8 +80,9 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
   agent's models, resolved by `maho-model-select` with the parent session's model as the system
   default. Only the main session delegates by default (`task.max_depth` = 1); concurrency follows
   `task.default_concurrency`. Isolated tasks (`isolated: true`, default `task.isolation.enabled`)
-  run through `maho-isolation` (Phase 3, below). Team/tmux panes are still interfaces only. Not
-  included: the omo `team_*`, `workflow`/DAG and `workpool` tools, `/task-kill`, `/dag`.
+  run through `maho-isolation` and team runs / tmux panes through `maho-team` (Phase 3, below).
+  The `task` tool also accepts `pane`. Not included: `workflow`/DAG and `workpool` tools,
+  `/task-kill`, `/dag`.
 - `<builtin:memory>` (`maho-memory`, ported from the MIT mnemopi engine in oh-my-pi @ f59bbac):
   long-term memory in SQLite banks under `$MNEMOPI_DATA_DIR`, else `<agent dir>/memories/mnemopi`
   (`mnemopi.db` is the global bank, `banks/<name>/mnemopi.db` the others). Tools `retain` (one or
@@ -184,12 +185,39 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
   hunks of one file) and `recent_commits` (subjects with conventional-commit style statistics).
   Staged changes by default, `staged: false` for the working tree. The default (`omo`) build links
   `maho-isolation` and `maho-git` but mounts neither.
+- Team runs and task panes (`maho-team`; ports of MIT oh-my-pi @ f59bbac terminal launch and
+  multiplexer detection, pi-interactive-subagents @ c100577 and pi-agent-teams @ 235fac8; the team
+  layer on `maho-task` from `docs/cleanroom/specs/team.md`), registered with `<builtin:task>`:
+  - `team_create` starts a named team (`^[a-z0-9-]+$`) of members, each a background `maho-task`
+    task `<team>-<member>` with its own assignment and the shared `context` (or from a configured
+    `teams.<name>` template). At most `task.team.max_parallel_members` (default 4) run at once,
+    the rest start as slots free up; `task.team.max_members` (default 8) caps the size and
+    `task.team.max_wall_clock_minutes` (default 120) stops a team that runs too long.
+  - The lead gets a `team-update` message as each member run settles (status, a result preview,
+    `done/total` progress) and once when the whole team has finished, unless it is collecting
+    with `team_wait`. Member tasks are `quiet`: no generic task-result message.
+  - `team_message` sends a member (or `*`) a follow-up: an idle member continues at once in its
+    own session; a busy one gets the queued messages as one follow-up run when its run ends.
+    `team_members` lists state, task ids, models, runs, queued messages, panes and (`tail`) the
+    last output lines; `team_wait` returns each member's `<task-result>` with a `done/total`
+    summary (bounded by `task.wait.*`); `team_stop` cancels one member or the team. `/team` lists
+    the session's teams. Team state is kept in `teams/<team>.json` in the task state directory.
+  - Panes: inside tmux (`$TMUX` + `tmux` on PATH) or cmux (`$CMUX_WORKSPACE_ID`/`$CMUX_SURFACE_ID`
+    + `cmux`), each team member (every delegated task with `MAHO_TEAM_PANES=all`; none with `off`)
+    is followed in a pane split off the lead without taking focus (`MAHO_TEAM_PANE_LAYOUT=window`
+    for windows; `MAHO_TEAM_MUX` picks the backend). The pane shows a title and a live `tail -F`
+    of the task's log and output; it closes `MAHO_TEAM_PANE_LINGER` seconds (default 3) after the
+    task settles, and by itself when the lead process ends. The child itself always runs as a
+    normal `mhc -p` process, so without a multiplexer everything works the same, headless.
+  - Not included: zellij/WezTerm backends, interactive teammates, a shared task list with
+    dependencies, quality-gate hooks. The default (`omo`) build links `maho-team` but mounts it
+    nowhere.
 
 ## What is compiled out (needs the `omo` feature)
 
 | Area | In the MIT profile |
 | --- | --- |
-| omo mount (`<builtin:omo>`): its task/subagent tools, `team_*`, `workflow`/DAG, `workpool`, `/task-kill`, `/dag` | not registered (MIT `<builtin:task>` provides `task`, `task_output`, `task_list`, `task_resume`, `task_cancel`, `/tasks`) |
+| omo mount (`<builtin:omo>`): its task/subagent tools, `team_*`, `workflow`/DAG, `workpool`, `/task-kill`, `/dag` | not registered (MIT `<builtin:task>` provides `task`, `task_output`, `task_list`, `task_resume`, `task_cancel`, `/tasks`, and from `maho-team` `team_create`, `team_members`, `team_message`, `team_wait`, `team_stop`, `/team`) |
 | omo memory tools and commands (`/remember`, `/dream`, `/reflect`, `/search`, `/people`, `/palace`, `/init`, `/doctor`, `/facts`, `/memfs`, ...), the omo recall sidecar, facts child, git-backed Markdown memory | not registered (MIT `<builtin:memory>` provides `retain`, `recall`, `memory_get`, `memory_forget`, first-turn auto-recall and `/memory`) |
 | ast-grep MCP; builtin MCPs (context7, grep_app); `x_search`; omo browser bridge | not registered (MIT `<builtin:browser>` provides the `browser` and `computer` tools) |
 | gateway, onboarding, init-deep advisor, git-master, omo telemetry | not registered (MIT `<builtin:telemetry>` provides the usage ledger, `mhc usage` and opt-in OTLP export; MIT `<builtin:git>` provides read-only git inspection tools) |
@@ -215,10 +243,13 @@ mass-ulw, persona prompts) are removed, not ported.
 3. `cargo clippy -p maho-cli --no-default-features --lib --bins -- -D warnings` and a build.
 4. `python3 scripts/mit-profile-smoke.py target/debug/mhc`: print-mode chat against a loopback
    model that calls the builtin `write` tool. It checks that `read`/`write`/`edit` and a shell tool (`bash` or the terminal's `bash_*`) are offered,
-   that the MIT LSP, task, git, memory and browser (`browser`, `computer`) tools are offered and no omo tool is, that a `task` call runs a child
+   that the MIT LSP, task, team, git, memory and browser (`browser`, `computer`) tools are offered and no omo tool is, that a `task` call runs a child
    `mhc -p` against the same model and returns its completed `<task-result>`, that in a git
    repository an `isolated: true` task runs its child in a git worktree whose written file is
-   applied back to the checkout (worktree removed afterwards), that the git tools are offered and
+   applied back to the checkout (worktree removed afterwards), that a model-driven `team_create`
+   runs two member children and `team_wait` collects both results (headless, and when `tmux` is on
+   PATH again attached to a private tmux server, where each member shows in its own pane that
+   closes afterwards), that the git tools are offered and
    `git_overview` reports the change, that a fact stored
    with `retain` is auto-recalled into the next run's first turn and returned by `recall`, that
    `mhc memory import-legacy` + `mhc memory search` work on a legacy Markdown store, that the

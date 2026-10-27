@@ -6,9 +6,12 @@ These revisions are the behavior of record. Ports, parity ledgers and golden fix
 | --- | --- | --- | --- |
 | senpi | 26acd9353 | 26acd935303869fd624f203dd8beb41f66ca4e5d | code-yeongyu/senpi |
 | oh-my-openagent | 7d818abaf9 | 7d818abaf97831537271b4af9629a5264649de37 | code-yeongyu/oh-my-openagent |
-| oh-my-pi | f59bbac3d | f59bbac3d56e8b485fef466388b1cb5be4b93123 | can1357/oh-my-pi (MIT; LSP mux design in crates/maho-lsp, task model in crates/maho-task, mnemopi memory engine in crates/maho-memory, Chromium discovery and browser/computer tool surface in crates/maho-browser, telemetry export and usage stats in crates/maho-telemetry, pi-iso rcopy backend and task worktree isolation in crates/maho-isolation, agentic-commit git tools in crates/maho-git) |
+| oh-my-pi | f59bbac3d | f59bbac3d56e8b485fef466388b1cb5be4b93123 | can1357/oh-my-pi (MIT; LSP mux design in crates/maho-lsp, task model in crates/maho-task, mnemopi memory engine in crates/maho-memory, Chromium discovery and browser/computer tool surface in crates/maho-browser, telemetry export and usage stats in crates/maho-telemetry, pi-iso rcopy backend and task worktree isolation in crates/maho-isolation, agentic-commit git tools in crates/maho-git, terminal launch and multiplexer detection in crates/maho-team) |
 | omowright | a019fdf | a019fdfbc337bd917d10b8f3d64026b3549e0b2c | code-yeongyu/omowright (MIT; CDP transport, page model and snapshot world in crates/maho-browser) |
 | pi-cua-integration | 9ba0c9e | 9ba0c9e23f13a7fc834c28c65e8733b40a162163 | code-yeongyu/pi-cua-integration (MIT; desktop computer-use daemon in crates/maho-browser) |
+| pi-agent-teams | 235fac8 | 235fac8622faed4b0f048ca285237189f590bc5a | tmustier/pi-agent-teams (MIT; team model and completion notices in crates/maho-team) |
+| pi-interactive-subagents | c100577 | c100577ebf7393a11d098ad9810ec6c269dcfc30 | HazAT/pi-interactive-subagents (MIT; tmux pane split/close in crates/maho-team) |
+| pi-tmux | 53af731 | 53af731148c4cd5f5132a7f02900ecbb5817fbb4 | JokerQianwei/pi-tmux (MIT; design reference for crates/maho-team) |
 | omo-components (COMP) | 93b78ac | 93b78ac1cc8d488d124da7ed1d19f678e93fb0fd | (private checkout) |
 
 ## Pin roles
