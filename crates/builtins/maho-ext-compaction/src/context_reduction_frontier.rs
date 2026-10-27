@@ -3,18 +3,7 @@ use maho_core::compaction::compaction::estimate_tokens;
 use sha2::{Digest, Sha256};
 use crate::{context_reduction::{reduce_context_messages, should_apply_context_reduction, ReduceContextOptions}, overflow_retry::estimate_total_tokens};
 
-#[derive(Clone, Debug, Default)]
-pub struct ContextReductionState {
-    pub engaged: bool,
-    pub cut_index: usize,
-    pub checkpoint_cut: Option<usize>,
-    pub prefix_hash: String,
-    pub anchor_count: Option<usize>,
-    pub anchor_cut: Option<usize>,
-    pub anchor_hash: Option<String>,
-    pub anchor_tokens: Option<u64>,
-    pub compaction_required: bool,
-}
+pub use crate::context_reduction_state::{ContextReductionState, clear_reduction_anchor, create_context_reduction_state};
 
 pub fn projected_reduction_tokens(messages: &[Message], state: &ContextReductionState, unreduced: &[Message], overhead: u64) -> u64 {
     let estimate = estimate_total_tokens(&json_messages(messages)).saturating_add(overhead);
@@ -34,37 +23,6 @@ fn fingerprint(messages: &[Message], cut: usize) -> String {
         if let Ok(encoded)=serde_json::to_vec(message) { digest.update((encoded.len() as u64).to_le_bytes()); digest.update(encoded); }
     }
     format!("{:x}",digest.finalize())
-}
-
-pub fn read_context_reduction_state(value:&serde_json::Value)->Option<ContextReductionState> {
-    let engaged=value.get("engaged")?.as_bool()?;
-    let cut=value.get("cutIndex")?.as_u64()? as usize;
-    let hash=value.get("prefixHash")?.as_str()?.to_owned();
-    let mut state=ContextReductionState {engaged,cut_index:cut,prefix_hash:hash,..Default::default()};
-    state.checkpoint_cut=value.get("checkpointCut").and_then(serde_json::Value::as_u64).map(|cut|cut as usize);
-    if value.get("anchorCount").is_some() || value.get("anchorCut").is_some() || value.get("anchorHash").is_some() || value.get("anchorTokens").is_some() {
-        state.anchor_count=Some(value.get("anchorCount")?.as_u64()? as usize);
-        state.anchor_cut=Some(value.get("anchorCut")?.as_u64()? as usize);
-        state.anchor_hash=Some(value.get("anchorHash")?.as_str()?.to_owned());
-        state.anchor_tokens=Some(value.get("anchorTokens")?.as_u64()?);
-        if state.anchor_cut? > state.anchor_count? {return None;}
-    }
-    Some(state)
-}
-
-pub fn snapshot_reduction_state(state:&ContextReductionState)->serde_json::Value {
-    let mut snapshot=serde_json::json!({"engaged":state.engaged,"cutIndex":state.cut_index,"prefixHash":state.prefix_hash});
-    if let Some(cut)=state.checkpoint_cut {snapshot["checkpointCut"]=serde_json::json!(cut);}
-    if let (Some(count),Some(cut),Some(hash),Some(tokens))=(state.anchor_count,state.anchor_cut,state.anchor_hash.as_ref(),state.anchor_tokens) {
-        snapshot["anchorCount"]=serde_json::json!(count);snapshot["anchorCut"]=serde_json::json!(cut);snapshot["anchorHash"]=serde_json::json!(hash);snapshot["anchorTokens"]=serde_json::json!(tokens);
-    }
-    snapshot
-}
-
-pub fn record_reduction_usage(state:&mut ContextReductionState,count:usize,cut:usize,hash:&str,tokens:f64) {
-    if state.engaged && tokens.is_finite() && tokens>0. && !state.compaction_required && cut==state.cut_index && hash==state.prefix_hash {
-        state.anchor_count=Some(count);state.anchor_cut=Some(cut);state.anchor_hash=Some(hash.to_owned());state.anchor_tokens=Some(tokens.ceil() as u64);
-    }
 }
 
 fn reduce_prefix(messages: &[Message], cut: usize) -> Vec<Message> {
@@ -100,7 +58,7 @@ pub struct ReductionBudget { pub window:u64, pub ceiling:u64, pub overhead:u64, 
 
 pub fn reduce_context_with_frontier(messages:&[Message],unreduced:&[Message],state:&mut ContextReductionState,budget:ReductionBudget)->Vec<Message> {
     let ReductionBudget { window, ceiling, overhead, block_ratio, force } = budget;
-    if state.cut_index>messages.len() || (state.cut_index>0 && fingerprint(unreduced,state.cut_index)!=state.prefix_hash) { *state=ContextReductionState::default(); }
+    if state.cut_index>messages.len() || (state.cut_index>0 && fingerprint(unreduced,state.cut_index)!=state.prefix_hash) { *state=create_context_reduction_state(); }
     let reduced=if state.engaged {reduce_prefix(messages,state.cut_index)} else {messages.to_vec()};
     let projected=projected_reduction_tokens(&reduced,state,unreduced,overhead);
     let pressure=((ceiling as f64*0.95).max(0.0).floor()) as u64;
@@ -137,7 +95,7 @@ pub fn reduce_context_with_frontier(messages:&[Message],unreduced:&[Message],sta
     state.checkpoint_cut=(state.cut_index>0).then_some(state.cut_index);
     state.cut_index=cut;
     state.prefix_hash=fingerprint(unreduced,cut);
-    state.anchor_count=None;state.anchor_cut=None;state.anchor_hash=None;state.anchor_tokens=None;
+    clear_reduction_anchor(state);
     with_stable_prefix_checkpoints(&candidate,state)
 }
 
@@ -145,6 +103,7 @@ pub fn reduce_context_with_frontier(messages:&[Message],unreduced:&[Message],sta
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context_reduction_state::{read_context_reduction_state, snapshot_reduction_state};
     #[test]
     fn checkpoints_copy_old_and_current_prefix_and_round_trip_state() {
         let assistant = || Message::Assistant(Box::new(maho_ai::providers::faux::faux_assistant_message("reply", Default::default())));
