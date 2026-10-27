@@ -139,6 +139,12 @@ fn run() -> Result<(), String> {
         &startup_env,
         &maho_cli::cli::setup::startup_process_env(&argv, &startup_env),
     );
+    // Before the root `--help`/`--version` fast path, so `mhc ulw-loop --help` reports the entry is
+    // missing instead of printing the root help.
+    #[cfg(not(feature = "omo"))]
+    if let Some(code) = omo_entry_unavailable(&argv) {
+        std::process::exit(code);
+    }
     if let Some(text) = root_metadata_output(
         &argv,
         maho_cli::cli::grok_neo_gate::is_grok_neo_enabled(&startup_env),
@@ -163,10 +169,6 @@ fn run() -> Result<(), String> {
     #[cfg(feature = "omo")]
     if let Some(result) = run_omo_entry(&argv) {
         return result;
-    }
-    #[cfg(not(feature = "omo"))]
-    if let Some(code) = omo_entry_unavailable(&argv) {
-        std::process::exit(code);
     }
     use maho_cli::experimental::process::{
         INTERNAL_PROCESS_ENV, InternalProcessRole, parse_internal_process_role,
