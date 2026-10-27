@@ -589,7 +589,7 @@ Import plans run before the four in-place plans so the in-place plans see their 
 - run the batch with the §12.2 plans (not dry-run);
 - a discovery failure → error result;
 - batch error → error result with the message;
-- status locked → error result "configuration migration is already running";
+- status locked → error result stating that another process holds the migration lock;
 - otherwise: `migrated_from` = sorted unique list of every source path moved by a migrated
   plan; `journal_resumed`; per-plan results (for their diagnostics).
 
@@ -604,8 +604,8 @@ On registration (once per process start of the extension):
    harness `native`.
 3. Compute notices, in this order:
    - migration error → warning naming the error; else non-empty `migrated_from` → info listing
-     the migrated paths; else `journal_resumed` → info "recovered an interrupted configuration
-     migration";
+     the migrated paths; else `journal_resumed` → an info notice stating that an interrupted
+     migration was completed;
    - if any plan produced diagnostics → one warning joining them with `; `;
    - if the load produced diagnostics → one warning joining their messages with `; `;
    - optional provider-specific advisory hook: a caller-supplied predicate over model selectors
