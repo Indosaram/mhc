@@ -2,7 +2,7 @@ use maho_core::{
     model_runtime::{CreateModelRuntimeOptions, ModelRuntime},
     sdk::{create_agent_session, CreateAgentSessionOptions, NoToolsMode},
     session_manager::SessionManager,
-    settings_manager::{FileSettingsStorage, SettingsManager, SettingsScope},
+    settings_manager::{FileSettingsStorage, SettingsManager},
 };
 use maho_ext_builtin_loose::service_tier::{ServiceTierExtension, ServiceTierHost, CODEX_RESPONSES_API};
 use maho_ext_host::loader::NativeAsyncExtensionFactory;
@@ -122,19 +122,15 @@ async fn rpc_fast_mode_switches_persists_and_refuses_unsupported_models() -> Res
     assert_eq!(enabled["data"]["enabled"], true);
     assert_eq!(enabled["data"]["modelId"], "codex");
     assert_eq!(session.model().id, "codex-fast");
-    let settings_path = SettingsManager::create(&cwd, &agent_dir.to_string_lossy(), "/unused-home", false)
-        .settings_path(SettingsScope::Global).expect("global settings path").to_owned();
-    let persisted: Value = serde_json::from_slice(&std::fs::read(settings_path)?)?;
+    let state_path = agent_dir.join("state.json");
+    let persisted: Value = serde_json::from_slice(&std::fs::read(&state_path)?)?;
     assert_eq!(persisted["modelServiceTiers"]["chatgpt-subscription/codex"], "priority");
 
     let disabled = rpc(&session, json!({"type":"set_fast_mode","enabled":false})).await;
     assert_eq!(disabled["success"], true);
     assert_eq!(disabled["data"]["enabled"], false);
     assert_eq!(disabled["data"]["modelId"], "codex");
-    let persisted: Value = serde_json::from_slice(&std::fs::read(
-        SettingsManager::create(&cwd, &agent_dir.to_string_lossy(), "/unused-home", false)
-            .settings_path(SettingsScope::Global).expect("global settings path"),
-    )?)?;
+    let persisted: Value = serde_json::from_slice(&std::fs::read(&state_path)?)?;
     assert_eq!(persisted["modelServiceTiers"]["chatgpt-subscription/codex"], "auto");
 
     let unsupported_model = session.model_runtime().get_model("faux", "faux-1").expect("unsupported faux model");
