@@ -2,7 +2,9 @@
 //! `task_output`, `task_list`, `task_resume`, `task_cancel` and `/tasks`. Children run as
 //! `mhc -p` processes of the current executable; the `omo` build mounts its own task tools.
 //! Isolated tasks (`isolated: true` or `task.isolation.enabled`) run in a git worktree (or a copy
-//! outside git) under `$MAHO_WORKTREE_DIR` or `<agent dir>/wt` (`maho-isolation`).
+//! outside git) under `$MAHO_WORKTREE_DIR` or `<agent dir>/wt` (`maho-isolation`). Team runs
+//! (`team_*` tools, `/team`) and tmux/cmux panes for delegated tasks come from `maho-team`
+//! (`cli/team_view.rs`).
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -32,13 +34,14 @@ pub fn extension() -> maho_task::TaskExtension {
     let agent_dir = PathBuf::from(maho_core::config::get_agent_dir());
     let runner = maho_task::ProcessRunner::current_exe()
         .unwrap_or_else(|_| maho_task::ProcessRunner::new("mhc"));
+    let panes = super::team_view::pane_observer();
     maho_task::TaskExtension {
         isolation: Some(Arc::new(isolation(&agent_dir))),
         agent_dir: Some(agent_dir),
         runner: Arc::new(runner),
         available_models: Arc::new(available_models),
-        observers: Vec::new(),
+        observers: vec![Arc::clone(&panes) as Arc<dyn maho_task::TaskObserver>],
         hooks: maho_lsp::hooks::HookChain::default(),
-        addons: Vec::new(),
+        addons: vec![Arc::new(super::team_view::addon(panes))],
     }
 }

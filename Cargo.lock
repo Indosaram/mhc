@@ -3666,6 +3666,7 @@ dependencies = [
  "maho-senpi-task",
  "maho-server",
  "maho-task",
+ "maho-team",
  "maho-telemetry",
  "maho-test-support",
  "maho-tool-child",
