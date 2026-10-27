@@ -67,6 +67,21 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
 - `pi-comment-checker` user port: links the MIT `maho-comment-checker` crate (hook payload model,
   apply_patch metadata readers, `@code-yeongyu/comment-checker` binary lookup with
   `COMMENT_CHECKER_BINARY`/`PATH` fallbacks).
+- `<builtin:task>` (`maho-task`, task model ported from MIT oh-my-pi @ f59bbac): subagent
+  delegation tools `task` (one task or a `tasks` batch with a shared `context`; `agent`,
+  `category`, `model`, `name`, `background`), `task_output` (result or status, optional bounded
+  wait), `task_list`, `task_resume` (follow-up in the task's own session) and `task_cancel`, plus
+  `/tasks`. Each subagent runs as a child `mhc -p` process of the same executable with its own
+  session under `<agent dir>/tasks/<session id>/` (or `task.state_dir`), so it has the same tools,
+  extensions and logins. Background results are delivered to the session as a follow-up message.
+  Agents: bundled `task` (general worker) and `scout` (read-only research), `*.md` agents in the
+  project `.omo/agents/` and `<agent dir>/agents/`, and the `agents` config section. Models:
+  explicit `model`, then a configured `categories.<name>` (no built-in categories), then the
+  agent's models, resolved by `maho-model-select` with the parent session's model as the system
+  default. Only the main session delegates by default (`task.max_depth` = 1); concurrency follows
+  `task.default_concurrency`. Worktree isolation (`isolated`, `task.isolation.enabled`) and
+  team/tmux panes are interfaces only until Phase 3: an isolated task is refused. Not included:
+  the omo `team_*`, `workflow`/DAG and `workpool` tools, `/task-kill`, `/dag`.
 - Formatter / post-mutation hooks: interfaces in `maho_lsp::hooks` (`Formatter`,
   `PostMutationHook`, `HookChain`); the LSP diagnostics hook is the first implementation.
 
@@ -74,7 +89,7 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
 
 | Area | In the MIT profile |
 | --- | --- |
-| omo mount (`<builtin:omo>`): task/subagent tools (`task`, `task_*`, `team_*`, `workflow`/DAG, `workpool`) and `/tasks`, `/task-kill`, `/dag` | not registered |
+| omo mount (`<builtin:omo>`): its task/subagent tools, `team_*`, `workflow`/DAG, `workpool`, `/task-kill`, `/dag` | not registered (MIT `<builtin:task>` provides `task`, `task_output`, `task_list`, `task_resume`, `task_cancel`, `/tasks`) |
 | memory tools and commands (`/memory`, `/remember`, `/dream`, `/reflect`, `/search`, `/people`, `/palace`, `/init`, `/doctor`, `/facts`, `/memfs`, ...), Kibitzer recall, facts child | not registered |
 | ast-grep MCP; builtin MCPs (context7, grep_app); `x_search`; browser bridge | not registered |
 | gateway, onboarding, init-deep advisor, git-master, telemetry | not registered |
@@ -100,7 +115,8 @@ mass-ulw, persona prompts) are removed, not ported.
 3. `cargo clippy -p maho-cli --no-default-features --lib --bins -- -D warnings` and a build.
 4. `python3 scripts/mit-profile-smoke.py target/debug/mhc`: print-mode chat against a loopback
    model that calls the builtin `write` tool. It checks that `read`/`write`/`edit` and a shell tool (`bash` or the terminal's `bash_*`) are offered,
-   that no omo tool is offered, that `mhc doctor` reports the config sources and resolves a pinned
+   that the MIT LSP and task tools are offered and no omo tool is, that a `task` call runs a child
+   `mhc -p` against the same model and returns its completed `<task-result>`, that `mhc doctor` reports the config sources and resolves a pinned
    model profile, and that `mhc ulw-loop` reports it is unavailable.
 5. `cargo nextest run -p maho-cli --no-default-features`: the `maho-cli` tests in the MIT profile.
 
