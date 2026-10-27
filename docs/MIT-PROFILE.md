@@ -35,6 +35,23 @@ Everything outside the omo port:
   `crates/extensions`, except `pi-comment-checker`;
 - `crates/desktop/senpi-desktop-*` (MIT; moved out of `crates/omo` so that path checks are exact).
 
+## Clean-room replacements (Phase 1)
+
+The MIT profile mounts these from MIT crates written from the specs in `docs/cleanroom/specs`:
+
+- `<builtin:config-notices>` (`maho-config`): runs the startup config migration, loads
+  `~/.omo/omo.jsonc` and the project `.omo/omo.jsonc` files, and reports load diagnostics at
+  session start;
+- `<builtin:config-hot-reload>` (`maho-config`): registers the config watch consumed by
+  `config-reload`;
+- `<builtin:model-profile>` (`maho-model-select`): applies the configured `model_profile` (or the
+  default lanes) to a new session's model;
+- `mhc doctor`: a basic report of the config sources (found/loaded), config problems, the active
+  config profile, and the model profile resolution against the models available from
+  `models.json` + `auth.json` (offline). It exits 1 only for an unknown model profile. Delegated
+  category checks return with the Phase 2 task port; models that only an extension provider
+  supplies (subscription logins) are not counted.
+
 ## What is compiled out (needs the `omo` feature)
 
 | Area | In the MIT profile |
@@ -43,11 +60,10 @@ Everything outside the omo port:
 | memory tools and commands (`/memory`, `/remember`, `/dream`, `/reflect`, `/search`, `/people`, `/palace`, `/init`, `/doctor`, `/facts`, `/memfs`, ...), Kibitzer recall, facts child | not registered |
 | LSP tools and `lsp-daemon`; ast-grep MCP; builtin MCPs (context7, grep_app); `x_search`; browser bridge | not registered |
 | comment-checker hook (`pi-comment-checker` user port) | not linked |
-| model profile, omo config startup/migration/watch, gateway, onboarding, init-deep advisor, git-master, telemetry | not registered |
+| gateway, onboarding, init-deep advisor, git-master, telemetry | not registered |
 | bundled omo skills (`OMO_SENPI_SKILLS_ROOT`, the `skills/` root beside the executable) and the packaged root in app-server `skills/list` | not registered; settings and project skill paths still load |
 | `builtin:task-member` (`--extension builtin:task-member`) | unknown native extension error |
 | Claude Code plugin hooks (`maho-ext-hooks` feature `claude-plugins`) | not discovered; `~/.claude/settings.json` and project `.claude/settings*.json` hooks still load |
-| `mhc doctor` | prints "not available in this build", exits 1 |
 | `mhc ulw-loop`, `--omo-memory-mcp`, `--memory-supervisor`, `--child-bootstrap` | print "not available in this build", exit 1 |
 
 The gated `maho-cli` modules are marked `#[cfg(feature = "omo")]` in `crates/maho-cli/src/cli/mod.rs`
@@ -67,7 +83,8 @@ mass-ulw, persona prompts) are removed, not ported.
 3. `cargo clippy -p maho-cli --no-default-features --lib --bins -- -D warnings` and a build.
 4. `python3 scripts/mit-profile-smoke.py target/debug/mhc`: print-mode chat against a loopback
    model that calls the builtin `write` tool. It checks that `read`/`write`/`edit` and a shell tool (`bash` or the terminal's `bash_*`) are offered,
-   that no omo tool is offered, and that `mhc doctor` / `mhc ulw-loop` report they are unavailable.
+   that no omo tool is offered, that `mhc doctor` reports the config sources and resolves a pinned
+   model profile, and that `mhc ulw-loop` reports it is unavailable.
 5. `cargo nextest run -p maho-cli --no-default-features`: the `maho-cli` tests in the MIT profile.
 
 The `license-audit` job also runs `bun tools/package-native.mjs --self-test`, which covers the
@@ -85,6 +102,6 @@ and every crate under `crates/desktop/` to be MIT.
   id in the extension registry, and the `ultrawork`/`ulw-loop` wording in a `maho-ext-prompt-preset`
   directive and `senpi_install.rs`.
 - `maho-ext-quiet-model-profile` (a re-export of the SUL `maho-omo-model-profile` with no consumer)
-  was removed from the workspace; the model-profile rewrite (Phase 1) will bring a replacement.
+  was removed from the workspace; `maho-model-select` replaces it in the MIT profile.
 - Tests and fixtures: the `maho-cli` integration tests for the omo modules are gated on `omo`. The
   rest of the suite runs with default features only.
