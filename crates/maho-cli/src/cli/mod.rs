@@ -1,4 +1,3 @@
-pub mod app_server;
 pub mod args;
 pub mod auth_check;
 pub mod auth_command;

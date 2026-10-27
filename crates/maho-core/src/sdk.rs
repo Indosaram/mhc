@@ -53,8 +53,7 @@ pub struct CreateAgentSessionOptions {
     pub minimal_resources: bool,
     pub defer_extension_start: bool,
     pub session_profile: maho_ext_api::ExtensionSessionProfile,
-    /// The first `bind_extensions` call's bindings, built over the created session (pinned
-    /// `createBoundAppServerSession` binding a mode's handlers before `session_start`).
+    /// The first `bind_extensions` call's bindings, built over the created session before `session_start`.
     pub extension_bindings: Option<crate::agent_session::ExtensionBindingsFactory>,
     /// senpi `bindExtensions({ uiContext })`: the UI a mode binds before `session_start` runs.
     pub extension_ui: Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,

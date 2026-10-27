@@ -2,7 +2,7 @@
 //!
 //! The registry lives in `maho-core` rather than the anthropic-subscription builtin because
 //! `maho-core` cannot depend on the builtin (the builtin depends on `maho-core`), yet both the
-//! session's account producers and the app-server consumer need one process-scoped listener set.
+//! session's account producers and their subscribers need one process-scoped listener set.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -59,7 +59,7 @@ impl ProviderAccountEvents {
     }
 }
 
-/// The process-global registry the app-server subscribes to once.
+/// The process-global provider account event registry.
 pub fn provider_account_events() -> &'static Arc<ProviderAccountEvents> {
     static EVENTS: OnceLock<Arc<ProviderAccountEvents>> = OnceLock::new();
     EVENTS.get_or_init(|| Arc::new(ProviderAccountEvents::default()))

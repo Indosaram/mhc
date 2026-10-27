@@ -6,7 +6,7 @@ Primary user-facing command-line interface entry points, argument parsing, and m
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| CLI command routing | `src/cli/` | Subcommand dispatch (ulw-loop, auth, import-omo, senpi-install, models discover, install/remove/uninstall/update/list, schedule, doctor, host, app-server, config, mini) |
+| CLI command routing | `src/cli/` | Subcommand dispatch (ulw-loop, auth, import-omo, senpi-install, models discover, install/remove/uninstall/update/list, schedule, doctor, host, config, mini) |
 | Configuration loading | `src/config.rs` | Local and global `.omo` config discovery |
 | Config discovery hierarchy | `src/nearest_parent_config.rs` | Walking upward to find closest repo configurations |
 | Migrations | `src/migrations_state.rs` | Migration state tracking and status inspection |

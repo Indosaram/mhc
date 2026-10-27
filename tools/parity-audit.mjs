@@ -67,7 +67,6 @@ export const SOURCE_ROOTS = {
 		{ root: "packages/client/src", prefix: "packages/client/src/" },
 		{ root: "packages/server/src", prefix: "packages/server/src/" },
 		{ root: "packages/session-backends", prefix: "packages/session-backends/", exclude: ["benchmark/", "scripts/", "dist/"] },
-		{ root: "packages/coding-agent/src/modes/app-server", prefix: "packages/coding-agent/src/modes/app-server/" },
 	],
 	"maho-codemode": [{ root: "packages/senpi-codemode/src" }],
 	"maho-cli": [{ root: "packages/coding-agent/src", exclude: ["core/", "modes/"] }],

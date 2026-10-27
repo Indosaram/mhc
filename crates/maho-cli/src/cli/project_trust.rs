@@ -3,7 +3,7 @@ use std::sync::Arc;
 use maho_core::project_trust::{AppMode, ProjectTrustContext};
 use maho_ext_api::{ExtensionContext, ExtensionFuture, ExtensionUi, ExtensionUiDialogOptions, NotificationType, ProjectTrustEventResult, UiFuture};
 pub fn extension_mode(mode: AppMode) -> &'static str {
-    match mode { AppMode::Interactive => "tui", AppMode::Print | AppMode::AppServer => "print", AppMode::Json => "json", AppMode::Rpc => "rpc" }
+    match mode { AppMode::Interactive => "tui", AppMode::Print => "print", AppMode::Json => "json", AppMode::Rpc => "rpc" }
 }
 pub type Selector = dyn Fn(&str, &[String]) -> Option<String> + Send + Sync;
 pub type Input = dyn Fn(&str, Option<&str>) -> Option<String> + Send + Sync;
@@ -24,7 +24,7 @@ impl ProjectTrustContext for CliProjectTrustContext {
 fn to_extension_mode(mode: AppMode) -> maho_ext_api::ExtensionMode {
     match mode {
         AppMode::Interactive => maho_ext_api::ExtensionMode::Tui,
-        AppMode::Print | AppMode::AppServer => maho_ext_api::ExtensionMode::Print,
+        AppMode::Print => maho_ext_api::ExtensionMode::Print,
         AppMode::Json => maho_ext_api::ExtensionMode::Json,
         AppMode::Rpc => maho_ext_api::ExtensionMode::Rpc,
     }

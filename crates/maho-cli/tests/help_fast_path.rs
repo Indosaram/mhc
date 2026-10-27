@@ -14,14 +14,13 @@ fn no_extension_help_needs_no_cache_and_trust_override_wins() {
     assert!(!resolve_help_project_trust(&args, directory.path().to_str().unwrap(), directory.path().to_str().unwrap()).unwrap());
 }
 
-const ALL_16_SUBCOMMANDS: &[&str] = &[
+const ALL_SUBCOMMANDS: &[&str] = &[
     "install",
     "remove",
     "uninstall",
     "update",
     "list",
     "config",
-    "app-server",
     "host",
     "auth",
     "doctor",
@@ -77,7 +76,7 @@ fn help_text_covers_all_dispatch_match_arms() {
         panic!("{missing}");
     }
 
-    if let Err(missing) = assert_subcommands_in_help(help_text, ALL_16_SUBCOMMANDS) {
+    if let Err(missing) = assert_subcommands_in_help(help_text, ALL_SUBCOMMANDS) {
         panic!("{missing}");
     }
 }
@@ -86,9 +85,9 @@ fn help_text_covers_all_dispatch_match_arms() {
 fn help_test_fails_naming_missing_entry() {
     let help_text = include_str!("../src/cli/help.txt");
 
-    for subcommand in ALL_16_SUBCOMMANDS {
+    for subcommand in ALL_SUBCOMMANDS {
         let scratch_help = help_text.replace(subcommand, "");
-        let err = assert_subcommands_in_help(&scratch_help, ALL_16_SUBCOMMANDS)
+        let err = assert_subcommands_in_help(&scratch_help, ALL_SUBCOMMANDS)
             .expect_err(&format!("expected failure when missing {subcommand}"));
         assert!(
             err.contains(subcommand),

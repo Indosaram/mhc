@@ -18,12 +18,11 @@ pub enum BrowserEngine {
     None,
 }
 
-/// `ExtensionMode` on the wire: `"tui" | "rpc" | "json" | "print"` (plus the app server's own `"app-server"`).
+/// `ExtensionMode` on the wire: `"tui" | "rpc" | "json" | "print"`.
 fn mode_str(mode: ExtensionMode) -> &'static str {
     match mode {
         ExtensionMode::Tui => "tui",
         ExtensionMode::Rpc => "rpc",
-        ExtensionMode::AppServer => "app-server",
         ExtensionMode::Json => "json",
         ExtensionMode::Print => "print",
     }
@@ -38,7 +37,6 @@ fn deserialize_mode<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Extens
     match text.as_str() {
         "tui" => Ok(ExtensionMode::Tui),
         "rpc" => Ok(ExtensionMode::Rpc),
-        "app-server" => Ok(ExtensionMode::AppServer),
         "json" => Ok(ExtensionMode::Json),
         "print" => Ok(ExtensionMode::Print),
         other => Err(serde::de::Error::custom(format!(
