@@ -1,0 +1,29 @@
+[package]
+name = "maho-task"
+description = "Delegated subagent tasks: agent definitions, category/model choice, child-process runner, background execution, resume and result retrieval, and the task tools."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-config = { path = "../maho-config" }
+maho-model-select = { path = "../maho-model-select" }
+# Only the post-mutation hook interface (`maho_lsp::hooks`); no LSP client is linked from here.
+maho-lsp = { path = "../maho-lsp" }
+maho-ext-api = { path = "../maho-ext-api" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+serde_yaml.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+tokio = { workspace = true, features = ["rt", "macros", "process", "io-util", "time", "sync", "fs"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "=0.28.0", features = ["signal"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

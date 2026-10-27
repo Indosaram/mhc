@@ -22,6 +22,7 @@ members = [
     "crates/maho-model-select",
     "crates/maho-comment-checker",
     "crates/maho-lsp",
+    "crates/maho-task",
     "crates/builtins/maho-ext-account",
     "crates/builtins/maho-ext-anthropic-bash",
     "crates/builtins/maho-ext-anthropic-subscription",
