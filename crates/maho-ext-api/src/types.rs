@@ -3082,6 +3082,13 @@ pub enum SessionCompactEvent {
 
 /// Every event accepted by types.ts has a native discriminant. JSON is retained only for
 /// payloads whose upstream contracts are open records or owned by a subsequent session port.
+/// senpi `ContextEvent.source`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ContextEventSource {
+    #[default]
+    Agent,
+    Projection,
+}
 #[derive(Clone, Debug)]
 pub enum ExtensionEvent {
     ProjectTrust {
@@ -3150,6 +3157,8 @@ pub enum ExtensionEvent {
     Context {
         messages: Vec<AgentMessage>,
         entry_ids: Vec<Option<String>>,
+        /// senpi `ContextEvent.source`: a prepared projection may not advance live agent state.
+        source: ContextEventSource,
     },
     BeforeProviderRequest {
         payload: JsonValue,
