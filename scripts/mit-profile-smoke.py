@@ -142,7 +142,7 @@ def main() -> int:
             return fail(f"builtin write tool did not write {written}\nstderr: {chat.stderr}")
         print(f"ok   chat + builtin write tool ({len(offered)} tools offered, none from omo)")
 
-        (home / ".omo").mkdir()
+        (home / ".omo").mkdir(exist_ok=True)
         (home / ".omo" / "omo.jsonc").write_text('{ "model_profile": "offline/offline" }\n')
         doctor = subprocess.run([mhc, "doctor"], cwd=work, env=env, stdin=subprocess.DEVNULL,
                                 capture_output=True, text=True, timeout=60)
