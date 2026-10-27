@@ -6,6 +6,7 @@ These revisions are the behavior of record. Ports, parity ledgers and golden fix
 | --- | --- | --- | --- |
 | senpi | 26acd9353 | 26acd935303869fd624f203dd8beb41f66ca4e5d | code-yeongyu/senpi |
 | oh-my-openagent | 7d818abaf9 | 7d818abaf97831537271b4af9629a5264649de37 | code-yeongyu/oh-my-openagent |
+| oh-my-pi | f59bbac3d | f59bbac3d56e8b485fef466388b1cb5be4b93123 | can1357/oh-my-pi (MIT) |
 | omo-components (COMP) | 93b78ac | 93b78ac1cc8d488d124da7ed1d19f678e93fb0fd | (private checkout) |
 
 ## Pin roles
@@ -26,6 +27,8 @@ Git extensions live under `~/.omo/agent/git/github.com/<owner>/<name>`.
 | code-yeongyu/pi-goal | 6937ce1 | 6937ce1d9ae2f9c3da11041cdf953ebe01303668 | MIT |
 | code-yeongyu/pi-ast-grep | 4a7d1be | 4a7d1beee684d96a6890e5fc55710bb63fecca85 | MIT |
 | code-yeongyu/pi-comment-checker | 0a38dd8 | 0a38dd8ff362be1b6020f2baba7b5723cbc5ea76 | MIT |
+| code-yeongyu/pi-lsp-client | fc8f612 | fc8f6124d0022ba8e6ed4e0678007c42d0f5e74e | MIT (ported into crates/maho-lsp) |
+| code-yeongyu/go-claude-code-comment-checker | 311565f | 311565fc9380579449ae34a8ab4c2cd386da840c | MIT (binary lookup in crates/maho-comment-checker) |
 | code-yeongyu/pi-rules | 12ad906 | 12ad906f0b29e949ebbd1f89d8f85789578aa6e6 | MIT |
 | DevNewbie1826/omo-zcode-oauth | a6f4c27 | a6f4c27a830abb6da65382898b805fa7a8ae306f | MIT (keep its notice) |
 
