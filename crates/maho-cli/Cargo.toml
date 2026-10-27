@@ -74,6 +74,8 @@ maho-ext-permission-system = { path = "../builtins/maho-ext-permission-system" }
 maho-ext-recommended-models = { path = "../builtins/maho-ext-recommended-models" }
 maho-config = { path = "../maho-config" }
 maho-model-select = { path = "../maho-model-select" }
+# MIT LSP client/tools; mounted as `<builtin:lsp>` in the MIT profile only (the omo build mounts its own).
+maho-lsp = { path = "../maho-lsp", features = ["extension"] }
 maho-omo-task = { path = "../omo/components/maho-omo-task", optional = true }
 maho-server = { path = "../maho-server" }
 maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }

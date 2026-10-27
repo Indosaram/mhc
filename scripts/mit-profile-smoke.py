@@ -7,7 +7,7 @@ and then answers in text, and checks that:
 - basic chat works (the final text reaches stdout, exit 0);
 - builtin tools are offered (read, write, edit, and the shell: `bash` or the terminal's `bash_*`
   tools) and run (the file is written);
-- no omo tool is offered (task, team_*, memory, lsp, ...);
+- no omo tool is offered (task, team_*, memory, ...); the MIT LSP tools (`maho-lsp`) are allowed;
 - `mhc doctor` reports the configuration sources and resolves a pinned model profile;
 - the omo-only entries report that they are unavailable (`mhc ulw-loop`).
 
@@ -29,7 +29,9 @@ import threading
 MARKER = "mit-profile-smoke-ok"
 REQUIRED_TOOLS = {"read", "write", "edit"}
 # Tools the omo port registers; none may appear in the MIT profile.
-OMO_TOOL_PREFIXES = ("task", "team_", "workpool", "memory", "lsp", "x_search", "omo_")
+OMO_TOOL_PREFIXES = ("task", "team_", "workpool", "memory", "x_search", "omo_")
+# MIT replacements that are expected in the MIT profile.
+MIT_LSP_TOOLS = {"lsp_diagnostics", "lsp_goto_definition", "lsp_find_references", "lsp_symbols", "lsp_prepare_rename", "lsp_rename"}
 UNAVAILABLE = "is not available in this build"
 
 
@@ -135,12 +137,15 @@ def main() -> int:
         omo = sorted(name for name in offered if name.startswith(OMO_TOOL_PREFIXES))
         if omo:
             return fail(f"omo tools offered in the MIT profile: {omo}")
+        lsp_missing = MIT_LSP_TOOLS - offered
+        if lsp_missing:
+            return fail(f"MIT LSP tools not offered: {sorted(lsp_missing)} (offered: {sorted(offered)})")
         if len(Model.requests) < 2:
             return fail("the write tool result never went back to the model")
         written = work / "smoke.txt"
         if not written.is_file() or written.read_text() != MARKER:
             return fail(f"builtin write tool did not write {written}\nstderr: {chat.stderr}")
-        print(f"ok   chat + builtin write tool ({len(offered)} tools offered, none from omo)")
+        print(f"ok   chat + builtin write tool ({len(offered)} tools offered incl. MIT LSP, none from omo)")
 
         (home / ".omo").mkdir(exist_ok=True)
         (home / ".omo" / "omo.jsonc").write_text('{ "model_profile": "offline/offline" }\n')

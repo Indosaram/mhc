@@ -3634,6 +3634,7 @@ dependencies = [
  "maho-ext-webfetch",
  "maho-ext-websearch",
  "maho-interactive",
+ "maho-lsp",
  "maho-lsp-daemon",
  "maho-memory-core",
  "maho-model-select",
@@ -4842,6 +4843,20 @@ dependencies = [
  "sha1",
  "tempfile",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "maho-lsp"
+version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "nix 0.28.0",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "url",
 ]
 
 [[package]]
