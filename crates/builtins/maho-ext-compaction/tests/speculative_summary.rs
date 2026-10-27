@@ -189,6 +189,94 @@ async fn summary_dispatch_uses_native_messages_and_supplied_runtime_runner() {
 }
 
 #[tokio::test]
+async fn summary_request_drops_conversation_bound_thinking_blocks() {
+    use maho_core::compaction::{
+        compaction::prepare_compaction, settings::default_compaction_settings,
+    };
+    let model: Model = serde_json::from_value(json!({"id":"m","name":"m","provider":"extension-provider","api":"extension-api","baseUrl":"https://example.com","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":10000,"maxTokens":8000})).unwrap();
+    let entries = [
+        json!({"type":"message","id":"old","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(500),"timestamp":0}}),
+        json!({"type":"message","id":"keep","parentId":"old","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"continue task","timestamp":0}}),
+    ];
+    let mut settings = default_compaction_settings();
+    settings.keep_recent_tokens = 1;
+    let preparation = prepare_compaction(&entries, &settings, true, false).unwrap();
+    let snapshot = maho_ext_compaction::speculative::SpeculativeCompactionSnapshot {
+        generation: 1,
+        expected_revision: 1,
+        model: model.clone(),
+        context_window: 10000,
+        preparation,
+        branch_entries: entries.to_vec(),
+        prompt_variant: maho_ext_compaction::prompts::PromptVariant::Default,
+        custom_instructions: None,
+        system_prompt: Some("agent prompt".into()),
+        tools: Vec::new(),
+        origin: None,
+    };
+    let mut assistant = maho_ai::utils::lazy::setup_error_message(&model, "");
+    assistant.stop_reason = maho_ai::types::StopReason::Stop;
+    assistant.error_message = None;
+    assistant.content = serde_json::from_value(json!([
+        {"type":"thinking","thinking":"plan","thinkingSignature":"sig-bound-to-main-conversation"},
+        {"type":"thinking","thinking":"","thinkingSignature":"opaque","redacted":true},
+        {"type":"text","text":"answer"}
+    ]))
+    .unwrap();
+    let messages = [
+        json!({"role":"user","content":"task","timestamp":0}),
+        serde_json::to_value(&assistant).unwrap(),
+    ];
+    let runner: SummaryStreamRunner = std::sync::Arc::new(|model, context, _| {
+        let blocks: Vec<_> = context
+            .messages
+            .iter()
+            .filter_map(|message| match message {
+                maho_ai::types::Message::Assistant(assistant) => Some(&assistant.content),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(blocks.len(), 1, "only the text block survives: {blocks:?}");
+        assert!(matches!(blocks[0], maho_ai::types::ContentBlock::Text(_)));
+        let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
+        let mut response = maho_ai::utils::lazy::setup_error_message(model, "");
+        response.stop_reason = maho_ai::types::StopReason::Stop;
+        response.error_message = None;
+        response.content = serde_json::from_value(json!([{"type":"text","text":"summary"}])).unwrap();
+        stream.push(maho_ai::types::AssistantMessageEvent::Done {
+            reason: maho_ai::types::DoneReason::Stop,
+            message: response,
+        });
+        stream
+    });
+    let prompt = maho_ext_compaction::prompts::CompactionPrompt {
+        system: "summary prompt",
+        user: "summarize".into(),
+    };
+    let result = generate_summary_message(
+        SummaryRequestOptions {
+            snapshot: &snapshot,
+            messages: &messages,
+            prompt: &prompt,
+            api_key: Some("faux".into()),
+            headers: None,
+            extra_body: None,
+            signal: None,
+            max_duration: std::time::Duration::from_secs(5),
+            omit_reasoning_options: false,
+            forbid_tool_calls: false,
+            stream_runner: Some(&runner),
+        },
+        &|_| {},
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(result.stop_reason, maho_ai::types::StopReason::Stop);
+}
+
+#[tokio::test]
 async fn generated_compaction_extracts_task_intent_and_structural_metadata() {
     use maho_core::compaction::{
         compaction::prepare_compaction, settings::default_compaction_settings,
