@@ -114,6 +114,14 @@ fn complete_tool_chains(messages: &[serde_json::Value]) -> bool {
     calls.len() == results.len() && calls.iter().all(|(id, (index, incomplete))| !incomplete && results.get(id).is_some_and(|result| result > index))
 }
 
+/// senpi `RecoveryMetadata`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RecoveryMetadata<'a> {
+    pub task_intent: Option<&'a str>,
+    /// An empty summary probes suffix viability independently of checkpoint overhead.
+    pub summary: Option<&'a str>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct DeterministicFallbackDiagnostic {
     pub rejection_reason: Option<&'static str>,
@@ -125,13 +133,25 @@ pub struct DeterministicFallbackDiagnostic {
     pub candidate_rejections: Vec<serde_json::Value>,
 }
 
-pub fn format_required_compaction_fallback_rejection(diagnostics: &DeterministicFallbackDiagnostic) -> String {
+/// senpi `UnsafeRetainedSuffixError`: a successful summary whose retained suffix can never be replayed.
+#[derive(Clone, Debug)]
+pub struct UnsafeRetainedSuffixError {
+    pub diagnostics: DeterministicFallbackDiagnostic,
+}
+
+impl std::fmt::Display for UnsafeRetainedSuffixError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&format_required_compaction_fallback_rejection(&self.diagnostics, true))
+    }
+}
+
+pub fn format_required_compaction_fallback_rejection(diagnostics: &DeterministicFallbackDiagnostic, automatic_paused: bool) -> String {
     use serde_json::json;
     let reason = diagnostics.rejection_reason.unwrap_or("context-reconstruction-failed");
     let recovery = match reason {
-        "retained-token-budget-exceeded" => "The retained turn exceeds the usable context. Select a model with a larger context and run /compact, or start a new session with an explicit checkpoint.",
-        "atomic-tool-chain-cut" => "The retained tool calls and results do not form complete pairs. Finish the pending tool operation before /compact; if the transcript is damaged, start a new session with an explicit checkpoint.",
-        "unsafe-retained-content" => "The retained message cannot be replayed safely. Inspect the identified entry; start a new session with an explicit checkpoint if it cannot be repaired.",
+        "retained-token-budget-exceeded" => "The retained turn exceeds the usable context. Use set_model to select a larger-context model, then compact (or /model and /compact).",
+        "atomic-tool-chain-cut" => "The retained tool calls and results do not form complete pairs. Finish the pending tool operation, then use compact to retry explicitly.",
+        "unsafe-retained-content" => "The retained message cannot be replayed safely. Inspect the identified entry with get_messages; use compact after correcting the context or selecting a larger-context model.",
         "missing-preparation-boundary" => "The prepared boundary is absent from the branch. Reload the session and run /compact.",
         _ => "The retained context could not be reconstructed. Reload the session and run /compact.",
     };
@@ -145,14 +165,15 @@ pub fn format_required_compaction_fallback_rejection(diagnostics: &Deterministic
         }
         diagnostic["candidate"] = candidate;
     }
-    format!("deterministic compaction fallback could not retain a safe suffix\n{diagnostic}\n{recovery} The original transcript has not been changed.")
+    let pause = if automatic_paused { " Automatic compaction is paused for this unchanged transcript and model/settings." } else { "" };
+    format!("deterministic compaction fallback could not retain a safe suffix\n{diagnostic}\n{recovery}{pause} The original transcript has not been changed.")
 }
 
 pub fn create_required_compaction_fallback(
     preparation: &maho_core::compaction::compaction::CompactionPreparation,
     context_window: u64,
     failure: RequiredCompactionFallbackFailure,
-    task_intent: Option<&str>,
+    metadata: RecoveryMetadata<'_>,
     branch_entries: &[serde_json::Value],
     diagnostics: &mut DeterministicFallbackDiagnostic,
 ) -> Option<maho_ext_api::CompactionResult> {
@@ -166,9 +187,11 @@ pub fn create_required_compaction_fallback(
         diagnostics.rejection_reason = Some("missing-preparation-boundary"); return None;
     };
     let mut summary = "[Deterministic compaction recovery checkpoint]\nGenerated summarization did not complete, so older context was reduced without another provider request.\nContinue from the retained messages after this checkpoint. Treat omitted transcript details as unknown.".to_owned();
-    let intent = task_intent.map(str::trim).filter(|intent| !intent.is_empty());
+    let intent = metadata.task_intent.map(str::trim).filter(|intent| !intent.is_empty());
     if let Some(intent) = intent { summary.push_str(&format!("\n\nTask intent:\n{intent}")); }
-    if let Some(previous) = preparation.previous_summary.as_deref().map(str::trim).filter(|text| !text.is_empty()) {
+    if let Some(override_summary) = metadata.summary {
+        summary = override_summary.to_owned();
+    } else if let Some(previous) = preparation.previous_summary.as_deref().map(str::trim).filter(|text| !text.is_empty()) {
         let prefix = format!("{summary}\n\nPrevious checkpoint:\n");
         let available = ((context_window as f64 * 0.4).floor() as usize).max(1024).saturating_sub(prefix.len());
         let marker = "\n[Older checkpoint truncated]";
@@ -192,11 +215,13 @@ pub fn create_required_compaction_fallback(
         }
         break;
     }
-    let projection_preview = json!({"type":"compaction","id":"__senpi_deterministic_fallback_preview__","parentId":branch_entries.last().and_then(|entry| entry.get("id")),"timestamp":"1970-01-01T00:00:00.000Z","summary":summary,"firstKeptEntryId":branch_entries.first().and_then(|entry|entry.get("id")),"tokensBefore":preparation.tokens_before,"fromHook":true});
+    // senpi syntheticCompaction: the preview carries `omit-unsafe-v1`, so the projection itself
+    // repairs every retained entry (session-manager.ts projectSession) before safety is judged.
+    let projection_preview = json!({"type":"compaction","id":"__senpi_deterministic_fallback_preview__","parentId":branch_entries.last().and_then(|entry| entry.get("id")),"timestamp":"1970-01-01T00:00:00.000Z","summary":summary,"firstKeptEntryId":branch_entries.first().and_then(|entry|entry.get("id")),"tokensBefore":preparation.tokens_before,"details":{"retainedMessagePolicy":"omit-unsafe-v1","retainedSuffix":"prepared"},"fromHook":true});
     let mut projection_entries = branch_entries.to_vec();
     projection_entries.push(projection_preview);
-    let projected: Vec<_> = build_context_entries(&projection_entries, None).iter()
-        .flat_map(|entry| session_entry_to_context_messages(entry).into_iter().map(|message| (entry["id"].clone(), message))).collect();
+    let context = maho_core::session_manager::build_session_context(&projection_entries, None);
+    let projected: Vec<_> = context.entry_ids.iter().map(|id| json!(id)).zip(context.messages).collect();
     let projected_messages: Vec<_> = projected.iter().map(|(_, message)| message.clone()).collect();
     let mut retained_positions = Vec::new();
     for (index, message) in projected_messages.iter().enumerate() {
@@ -206,10 +231,23 @@ pub fn create_required_compaction_fallback(
         }) { continue; }
         retained_positions.push(index);
     }
-    for (index, retained_suffix) in candidates {
+    let (mut position, mut saw_unsafe_retained_content, mut later_added) = (0, false, false);
+    loop {
+        if position == candidates.len() {
+            // A split turn can contain an unsafe persisted tool payload after the prepared boundary
+            // and no later user message. Advance to the earliest safe suffix rather than retaining
+            // that payload forever; every candidate is still checked for pairs, safety and budget.
+            if saw_unsafe_retained_content && !later_added {
+                later_added = true;
+                candidates.extend((prepared_index + 1..branch_entries.len()).filter(|index| branch_entries[*index]["type"] != "compaction").map(|index| (index, "later-safe-boundary")));
+            }
+            if position == candidates.len() { break; }
+        }
+        let (index, retained_suffix) = candidates[position];
+        position += 1;
         diagnostics.candidates_checked += 1;
         let id = branch_entries[index]["id"].as_str().unwrap_or_default();
-        let mut details = json!({"schema":"senpi.compaction.deterministic-fallback.v1","origin":"required-compaction-recovery","failureKind":failure_name(failure),"retainedSuffix":retained_suffix});
+        let mut details = json!({"schema":"senpi.compaction.deterministic-fallback.v1","origin":"required-compaction-recovery","failureKind":failure_name(failure),"retainedMessagePolicy":"omit-unsafe-v1","retainedSuffix":retained_suffix});
         if let Some(intent) = intent { details["taskIntent"] = json!(intent); }
         let preview = json!({"type":"compaction","id":"__senpi_deterministic_fallback_preview__","parentId":branch_entries.last().and_then(|entry| entry.get("id")),"timestamp":"1970-01-01T00:00:00.000Z","summary":summary,"firstKeptEntryId":id,"tokensBefore":preparation.tokens_before,"details":details,"fromHook":true});
         let mut entries = branch_entries.to_vec(); entries.push(preview);
@@ -252,6 +290,7 @@ pub fn create_required_compaction_fallback(
             if tokens > diagnostics.budget_tokens { diagnostics.budget_exceeded = true; Some("retained-token-budget-exceeded") } else { None }
         };
         if let Some(reason) = reason {
+            saw_unsafe_retained_content |= reason == "unsafe-retained-content";
             diagnostics.rejection_reason = Some(reason);
             rejection_details["firstKeptEntryId"] = json!(id);
             rejection_details["rejectionReason"] = json!(reason);

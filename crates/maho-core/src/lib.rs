@@ -56,6 +56,8 @@ pub mod provider_composer;
 pub mod provider_consent;
 pub mod resolve_config_value;
 pub mod resource_loader;
+pub mod retained_message_projection;
+pub mod retained_message_safety;
 pub mod retry_fallback;
 pub mod schedule;
 pub mod session_manager;

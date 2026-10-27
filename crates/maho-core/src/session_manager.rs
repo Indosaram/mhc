@@ -540,16 +540,47 @@ pub fn build_session_context(entries: &[Value], leaf_id: Option<&str>) -> Sessio
     // PERF-DIVERGENCE(senpi session-manager.ts): upstream builds the path once; the previous port built and deep-cloned it twice, this builds it once as references shared by the settings scan and the context-entry selection. Output is identical.
     let path = session_path_refs(entries, leaf_id);
     let settings = get_session_context_settings(&path);
-    let (entry_ids, messages) = context_entry_refs(path)
+    // senpi projectSession: only entries retained by an `omit-unsafe-v1` checkpoint are repaired;
+    // later messages keep their normal semantics and the source transcript is never edited.
+    let retained_ids: Option<std::collections::HashSet<&str>> = path
+        .iter()
+        .rposition(|entry| {
+            entry_type(entry) == "compaction"
+                && entry
+                    .get("details")
+                    .and_then(|details| details.get("retainedMessagePolicy"))
+                    .and_then(Value::as_str)
+                    == Some("omit-unsafe-v1")
+        })
+        .map(|recovery_index| path[..recovery_index].iter().filter_map(|entry| entry.get("id").and_then(Value::as_str)).collect());
+    let projected: Vec<(&Value, Vec<Value>)> = context_entry_refs(path)
         .into_iter()
-        .flat_map(|entry| {
-            let entry_id = entry
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            session_entry_to_context_messages(entry)
+        .map(|entry| (entry, session_entry_to_context_messages(entry)))
+        .collect();
+    let mut retained_messages: Vec<Value> = Vec::new();
+    if let Some(retained_ids) = &retained_ids {
+        for (entry, messages) in &projected {
+            if entry.get("id").and_then(Value::as_str).is_some_and(|id| retained_ids.contains(id)) {
+                retained_messages.extend(messages.iter().cloned());
+            }
+        }
+        retained_messages = crate::retained_message_projection::project_retained_messages(&retained_messages);
+    }
+    let mut repaired = retained_messages.into_iter();
+    let (entry_ids, messages) = projected
+        .into_iter()
+        .flat_map(|(entry, messages)| {
+            let entry_id = entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let is_retained = retained_ids
+                .as_ref()
+                .is_some_and(|ids| ids.contains(entry_id.as_str()));
+            messages
                 .into_iter()
-                .map(move |message| (entry_id.to_owned(), message))
+                .map(|message| {
+                    let message = if is_retained { repaired.next().unwrap_or(message) } else { message };
+                    (entry_id.clone(), message)
+                })
+                .collect::<Vec<_>>()
         })
         .unzip();
     SessionContext {
@@ -3692,6 +3723,32 @@ mod tests {
                 .iter()
                 .all(|message| message.get("id").is_none())
         );
+    }
+
+    #[test]
+    fn omit_unsafe_checkpoint_repairs_only_its_retained_messages() {
+        let unsafe_result = json!({ "role": "toolResult", "toolCallId": "t", "toolName": "read", "content": [{ "type": "image", "mimeType": "image/png" }], "isError": false, "timestamp": 2 });
+        let call = json!({ "role": "assistant", "content": [{ "type": "toolCall", "id": "t", "name": "read", "arguments": {} }], "timestamp": 1 });
+        let build = |policy: Option<&str>| {
+            let details = policy.map_or(Value::Null, |policy| json!({ "retainedMessagePolicy": policy }));
+            let entries = vec![
+                json!({ "type": "message", "id": "a", "parentId": null, "timestamp": "t1", "message": { "role": "user", "content": "task", "timestamp": 0 } }),
+                json!({ "type": "message", "id": "b", "parentId": "a", "timestamp": "t2", "message": call }),
+                json!({ "type": "message", "id": "c", "parentId": "b", "timestamp": "t3", "message": unsafe_result }),
+                json!({ "type": "compaction", "id": "d", "parentId": "c", "timestamp": "t4", "summary": "s", "firstKeptEntryId": "a", "tokensBefore": 1, "details": details }),
+                json!({ "type": "message", "id": "e", "parentId": "d", "timestamp": "t5", "message": { "role": "toolResult", "toolCallId": "later", "toolName": "read", "content": [{ "type": "image", "mimeType": "image/png" }], "isError": false, "timestamp": 9 } }),
+            ];
+            build_session_context(&entries, None)
+        };
+        let plain = build(None);
+        assert_eq!(plain.messages[3], unsafe_result);
+        let repaired = build(Some("omit-unsafe-v1"));
+        assert_eq!(repaired.entry_ids, plain.entry_ids);
+        // The retained assistant is unsafe (bare envelope), so it and its result are omitted together.
+        assert_eq!(repaired.messages[2]["role"], "user");
+        assert_eq!(repaired.messages[3]["role"], "user");
+        // Messages after the checkpoint keep their normal semantics.
+        assert_eq!(repaired.messages[4], plain.messages[4]);
     }
 
     #[test]

@@ -73,18 +73,29 @@ pub fn build_compaction_context(input: CompactionContextInput<'_>) -> Result<Com
     // A released latch leaves `source` as-is: no token report and the same entry stamps.
     let reduction_engaged = managed && reduction_state.as_deref().unwrap_or(&local_reduction_state).engaged;
     let emergency_window = if reduction_engaged { input.prompt_context_window.saturating_sub(input.context_overhead_tokens) } else { input.prompt_context_window };
-    let (pruned, entry_ids, emergency_prune_tokens) = match engaged_emergency_prune(&source, emergency_window, Some(input.emergency_prune_latch)) {
-        None => (source.clone(), source_entry_ids, None),
+    let (pruned, entry_ids, emergency_prune_tokens, aggressive, pruned_changed) = match engaged_emergency_prune(&source, emergency_window, Some(input.emergency_prune_latch)) {
+        None => (source.clone(), source_entry_ids, None, false, false),
         Some(emergency) => {
             let tokens = (emergency.needs_aggressive_compaction || emergency.messages != source)
                 .then(|| (estimate_total_tokens(&source), estimate_total_tokens(&emergency.messages)));
             let entry_ids = realign_entry_ids(&source, &source_entry_ids, &emergency.messages);
-            (emergency.messages, entry_ids, tokens)
+            (emergency.messages, entry_ids, tokens, emergency.needs_aggressive_compaction, true)
         }
     };
     let (marked, replay_boundary) = mark_openai_remote_replay_boundary(pruned, &entry_ids, input.model, input.branch_entries);
     let reminded = if input.reminder.is_some_and(|reminder| !reminder.is_empty()) { inject_token_budget_reminder(&marked, input.reminder) } else { marked };
-    Ok(CompactionContextOutput { messages: repair_orphaned_tool_results(&typed_messages(&reminded)?, input.now), emergency_prune_tokens, replay_boundary })
+    let outgoing = repair_orphaned_tool_results(&typed_messages(&reminded)?, input.now);
+    // senpi context-pipeline.ts:90-100: a prompt that is legal only because the emergency prune
+    // rewrote it must hand off to a real compaction rather than ride the prune forever.
+    if managed && (reduction_engaged || pruned_changed) {
+        let overhead = input.context_overhead_tokens;
+        let before_prune = estimate_total_tokens(&source).saturating_add(overhead);
+        let after_prune = estimate_total_tokens(&outgoing.iter().filter_map(|message| serde_json::to_value(message).ok()).collect::<Vec<_>>()).saturating_add(overhead);
+        if aggressive || after_prune > input.prompt_context_window || (after_prune < before_prune && input.emergency_prune_latch.engaged) {
+            reduction_state.as_deref_mut().unwrap_or(&mut local_reduction_state).compaction_required = true;
+        }
+    }
+    Ok(CompactionContextOutput { messages: outgoing, emergency_prune_tokens, replay_boundary })
 }
 
 #[cfg(test)]
@@ -97,6 +108,29 @@ mod tests {
         let source = [json!({"role":"user","timestamp":1}), json!({"role":"toolResult","toolCallId":"t","timestamp":2}), json!({"role":"user","timestamp":3})];
         let ids = [Some("a".to_owned()), Some("b".to_owned()), Some("c".to_owned())];
         assert_eq!(realign_entry_ids(&source, &ids, &[source[0].clone(), source[2].clone()]), vec![Some("a".to_owned()), Some("c".to_owned())]);
+    }
+
+    #[test]
+    fn emergency_prune_that_keeps_the_prompt_legal_still_requires_compaction() {
+        let oversized = "x".repeat(40_000);
+        let messages = [
+            json!({"role":"user","content":"task","timestamp":1}),
+            json!({"role":"assistant","content":[{"type":"toolCall","id":"c","name":"read","arguments":{}}],"api":"a","provider":"p","model":"m","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":2}),
+            json!({"role":"toolResult","toolCallId":"c","toolName":"read","content":[{"type":"text","text":oversized}],"isError":false,"timestamp":3}),
+        ];
+        let mut latch = EmergencyPruneLatch::default();
+        let mut state = ContextReductionState { engaged: true, ..Default::default() };
+        let output = build_compaction_context(CompactionContextInput {
+            messages: &messages, entry_ids: &[None, None, None], model: None, branch_entries: &[], context_window: 12_000,
+            prompt_context_window: 12_000, usage_tokens: None, provider_native_path: false,
+            tool_admission_enabled: false, breaker_fallback: false, lane_owns_compaction: false,
+            append_only_transcript: false, context_reduction_state: Some(&mut state), unreduced_messages: None,
+            context_overhead_tokens: 0, reduction_ceiling_tokens: None, reduction_block_budget_ratio: None,
+            emergency_prune_latch: &mut latch, reminder: None, now: 0,
+        }).expect("valid context");
+        assert!(output.emergency_prune_tokens.is_some());
+        assert!(latch.engaged);
+        assert!(state.compaction_required);
     }
 
     #[test]

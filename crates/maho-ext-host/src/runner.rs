@@ -1227,7 +1227,12 @@ impl ExtensionRunner {
         self.runtime.assert_active()?;
         let mut context_runner = self.clone();
         let messages = context_runner
-            .emit_context_owned(messages, &[], exclude_path.as_deref())
+            .emit_context_owned_from(
+                messages,
+                &[],
+                exclude_path.as_deref(),
+                ContextEventSource::Projection,
+            )
             .await
             .map_err(|failure| failure.error)?;
         let payload_runner = self.clone();
@@ -2415,6 +2420,16 @@ impl ExtensionRunner {
         entry_ids: &[Option<String>],
         exclude_path: Option<&str>,
     ) -> Result<Vec<AgentMessage>, OwnedContextDispatchError> {
+        self.emit_context_owned_from(messages, entry_ids, exclude_path, ContextEventSource::Agent)
+            .await
+    }
+    pub async fn emit_context_owned_from(
+        &mut self,
+        messages: Vec<AgentMessage>,
+        entry_ids: &[Option<String>],
+        exclude_path: Option<&str>,
+        source: ContextEventSource,
+    ) -> Result<Vec<AgentMessage>, OwnedContextDispatchError> {
         if let Err(error) = self.runtime.assert_active() {
             return Err(OwnedContextDispatchError { messages, error });
         }
@@ -2478,6 +2493,7 @@ impl ExtensionRunner {
         let mut event = ExtensionEvent::Context {
             messages,
             entry_ids,
+            source,
         };
         for (path, handler) in handlers {
             if exclude_path == Some(path.as_str()) {
@@ -2503,6 +2519,7 @@ impl ExtensionRunner {
                     if let ExtensionEvent::Context {
                         messages,
                         entry_ids,
+                        ..
                     } = &mut event
                     {
                         *entry_ids = next
