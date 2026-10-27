@@ -189,7 +189,12 @@ impl CdpClient {
     }
 
     /// Sends `method` and waits for its result with the default timeout.
-    pub fn send(&self, method: &str, params: Value, session: Option<&str>) -> Result<Value, String> {
+    pub fn send(
+        &self,
+        method: &str,
+        params: Value,
+        session: Option<&str>,
+    ) -> Result<Value, String> {
         self.send_with_timeout(method, params, session, self.timeout)
     }
 
@@ -305,7 +310,11 @@ mod tests {
 
     /// An in-memory peer: messages the client writes come out of `sent`; lines pushed into
     /// `incoming` are read by the client.
-    fn pair() -> (CdpClient, mpsc::Receiver<String>, mpsc::Sender<Option<String>>) {
+    fn pair() -> (
+        CdpClient,
+        mpsc::Receiver<String>,
+        mpsc::Sender<Option<String>>,
+    ) {
         let (sent_tx, sent_rx) = mpsc::channel::<String>();
         let (in_tx, in_rx) = mpsc::channel::<Option<String>>();
         let writer: Writer = Box::new(move |message| {
@@ -378,7 +387,10 @@ mod tests {
         let first = client.wait_event(0, Duration::from_secs(5), |event| {
             event.method == "Page.lifecycleEvent"
         });
-        assert_eq!(first.map(|event| event.params["name"].clone()), Some(json!("init")));
+        assert_eq!(
+            first.map(|event| event.params["name"].clone()),
+            Some(json!("init"))
+        );
         let cursor = client.event_cursor();
         let _ = incoming.send(Some(
             json!({"method": "Page.lifecycleEvent", "params": {"name": "load"}, "sessionId": "S"})

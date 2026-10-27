@@ -41,9 +41,15 @@ fn exercise(transport: TransportKind) {
     .unwrap_or_else(|error| panic!("launch failed: {error}"));
     assert_eq!(browser.open("main", Some(&url), WaitUntil::Load), Ok(true));
     let page = browser.tab("main").unwrap_or_else(|| panic!("no tab"));
-    let snapshot = page.snapshot(&SnapshotOptions::default()).unwrap_or_else(|error| panic!("{error}"));
+    let snapshot = page
+        .snapshot(&SnapshotOptions::default())
+        .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(snapshot.title, "Form");
-    assert!(snapshot.tree.contains("heading \"Order\""), "{}", snapshot.tree);
+    assert!(
+        snapshot.tree.contains("heading \"Order\""),
+        "{}",
+        snapshot.tree
+    );
     let button_ref = snapshot
         .tree
         .lines()
@@ -52,28 +58,61 @@ fn exercise(transport: TransportKind) {
         .and_then(|rest| rest.split(']').next())
         .map(str::to_owned)
         .unwrap_or_else(|| panic!("no button ref in\n{}", snapshot.tree));
-    page.fill("#name", "Ada").unwrap_or_else(|error| panic!("{error}"));
-    assert_eq!(page.select_option("#size", &["Large".into()]), Ok(vec!["l".to_owned()]));
-    page.click(&button_ref, "left", 1).unwrap_or_else(|error| panic!("{error}"));
+    page.fill("#name", "Ada")
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        page.select_option("#size", &["Large".into()]),
+        Ok(vec!["l".to_owned()])
+    );
+    page.click(&button_ref, "left", 1)
+        .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(page.evaluate("document.title"), Ok(json!("clicked:Ada:l")));
-    page.click("#keys", "left", 1).unwrap_or_else(|error| panic!("{error}"));
-    page.type_text("Hi!").unwrap_or_else(|error| panic!("{error}"));
-    page.press("Enter").unwrap_or_else(|error| panic!("{error}"));
+    page.click("#keys", "left", 1)
+        .unwrap_or_else(|error| panic!("{error}"));
+    page.type_text("Hi!")
+        .unwrap_or_else(|error| panic!("{error}"));
+    page.press("Enter")
+        .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(page.evaluate("document.title"), Ok(json!("enter:Hi!")));
-    page.press("Control+a").unwrap_or_else(|error| panic!("{error}"));
-    page.press("Backspace").unwrap_or_else(|error| panic!("{error}"));
-    assert_eq!(page.evaluate("document.getElementById('keys').value"), Ok(json!("")));
-    page.scroll(None, 0.0, 500.0).unwrap_or_else(|error| panic!("{error}"));
-    let scrolled = page.evaluate("scrollY").ok().and_then(|value| value.as_f64()).unwrap_or(0.0);
+    page.press("Control+a")
+        .unwrap_or_else(|error| panic!("{error}"));
+    page.press("Backspace")
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        page.evaluate("document.getElementById('keys').value"),
+        Ok(json!(""))
+    );
+    page.scroll(None, 0.0, 500.0)
+        .unwrap_or_else(|error| panic!("{error}"));
+    let scrolled = page
+        .evaluate("scrollY")
+        .ok()
+        .and_then(|value| value.as_f64())
+        .unwrap_or(0.0);
     assert!(scrolled > 0.0, "wheel did not scroll");
     let shot = page.screenshot(false, None).unwrap_or_default();
-    assert_eq!(maho_browser::computer::png_dimensions(&shot), Ok((900, 700)));
+    assert_eq!(
+        maho_browser::computer::png_dimensions(&shot),
+        Ok((900, 700))
+    );
     let element = page.screenshot(false, Some("#go")).unwrap_or_default();
-    assert!(maho_browser::computer::png_dimensions(&element).is_ok_and(|(w, h)| w < 300 && h < 100));
+    assert!(
+        maho_browser::computer::png_dimensions(&element).is_ok_and(|(w, h)| w < 300 && h < 100)
+    );
     let stale = page.click("e999", "left", 1).err().unwrap_or_default();
     assert!(stale.contains("stale"), "{stale}");
-    assert_eq!(page.goto("about:blank", WaitUntil::Load, std::time::Duration::from_secs(10)), Ok(true));
-    assert_eq!(page.history(-1, WaitUntil::Load, std::time::Duration::from_secs(10)), Ok(true));
+    assert_eq!(
+        page.goto(
+            "about:blank",
+            WaitUntil::Load,
+            std::time::Duration::from_secs(10)
+        ),
+        Ok(true)
+    );
+    assert_eq!(
+        page.history(-1, WaitUntil::Load, std::time::Duration::from_secs(10)),
+        Ok(true)
+    );
     assert_eq!(page.evaluate("document.title"), Ok(json!("Form")));
     browser.close();
 }
@@ -100,21 +139,43 @@ fn tools_against_a_real_browser_and_cdp_attach() {
     settings.launch.executable = Some(executable.clone());
     settings.cdp_url = None;
     let mut session = Session::new(settings, dir.path());
-    let opened = run_browser(&mut session, &json!({"action": "open", "url": url, "snapshot": true, "interactive": true}))
-        .unwrap_or_else(|error| panic!("{error}"));
+    let opened = run_browser(
+        &mut session,
+        &json!({"action": "open", "url": url, "snapshot": true, "interactive": true}),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
     assert!(opened.text.contains("button \"Submit\""), "{}", opened.text);
-    let filled = run_browser(&mut session, &json!({"action": "fill", "target": "#name", "text": "Bo"}));
+    let filled = run_browser(
+        &mut session,
+        &json!({"action": "fill", "target": "#name", "text": "Bo"}),
+    );
     assert!(filled.is_ok(), "{filled:?}");
-    let clicked = run_browser(&mut session, &json!({"action": "click", "target": "#go"})).unwrap_or_else(|error| panic!("{error}"));
+    let clicked = run_browser(&mut session, &json!({"action": "click", "target": "#go"}))
+        .unwrap_or_else(|error| panic!("{error}"));
     assert!(clicked.text.contains("— clicked:Bo:s"), "{}", clicked.text);
-    let saved = run_browser(&mut session, &json!({"action": "screenshot", "path": "shots/page.png"})).unwrap_or_else(|error| panic!("{error}"));
-    assert!(saved.text.starts_with("Screenshot 1365x768, saved to"), "{}", saved.text);
+    let saved = run_browser(
+        &mut session,
+        &json!({"action": "screenshot", "path": "shots/page.png"}),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        saved.text.starts_with("Screenshot 1365x768, saved to"),
+        "{}",
+        saved.text
+    );
     assert!(dir.path().join("shots/page.png").is_file());
     let screen = run_computer(&mut session, &json!({"action": "screenshot"})).map(|o| o.text);
     assert_eq!(screen, Ok("Screenshot 1365x768 (browser)".into()));
-    let waited = run_browser(&mut session, &json!({"action": "wait", "text": "Order", "timeout": 5}));
-    assert_eq!(waited.map(|o| o.text.starts_with("Condition met")), Ok(true));
-    run_browser(&mut session, &json!({"action": "close", "all": true})).unwrap_or_else(|error| panic!("{error}"));
+    let waited = run_browser(
+        &mut session,
+        &json!({"action": "wait", "text": "Order", "timeout": 5}),
+    );
+    assert_eq!(
+        waited.map(|o| o.text.starts_with("Condition met")),
+        Ok(true)
+    );
+    run_browser(&mut session, &json!({"action": "close", "all": true}))
+        .unwrap_or_else(|error| panic!("{error}"));
 
     // Attach to a browser someone else started, over its DevTools WebSocket.
     let mut owner = Browser::launch(&LaunchOptions {
@@ -123,22 +184,38 @@ fn tools_against_a_real_browser_and_cdp_attach() {
         ..LaunchOptions::default()
     })
     .unwrap_or_else(|error| panic!("{error}"));
-    owner.open("seed", Some(&url), WaitUntil::Load).unwrap_or_else(|error| panic!("{error}"));
+    owner
+        .open("seed", Some(&url), WaitUntil::Load)
+        .unwrap_or_else(|error| panic!("{error}"));
     let endpoint = owner
         .stdio_tail()
         .lines()
-        .find_map(|line| line.trim().strip_prefix("DevTools listening on ").map(str::to_owned))
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("DevTools listening on ")
+                .map(str::to_owned)
+        })
         .unwrap_or_else(|| panic!("no endpoint in {}", owner.stdio_tail()));
-    let port = endpoint.split(':').nth(2).and_then(|rest| rest.split('/').next()).unwrap_or_default().to_owned();
-    let mut guest = Browser::connect(&format!("http://127.0.0.1:{port}")).unwrap_or_else(|error| panic!("{error}"));
+    let port = endpoint
+        .split(':')
+        .nth(2)
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or_default()
+        .to_owned();
+    let mut guest = Browser::connect(&format!("http://127.0.0.1:{port}"))
+        .unwrap_or_else(|error| panic!("{error}"));
     let seed = guest
         .targets()
         .unwrap_or_default()
         .into_iter()
         .find(|target| target.title == "Form")
         .unwrap_or_else(|| panic!("seed tab not listed"));
-    guest.adopt("seed", &seed.id).unwrap_or_else(|error| panic!("{error}"));
-    let title = guest.tab("seed").map(|page| page.evaluate("document.title"));
+    guest
+        .adopt("seed", &seed.id)
+        .unwrap_or_else(|error| panic!("{error}"));
+    let title = guest
+        .tab("seed")
+        .map(|page| page.evaluate("document.title"));
     assert_eq!(title, Some(Ok(json!("Form"))));
     guest.close();
     // Closing an attached browser leaves it running.

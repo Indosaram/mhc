@@ -65,7 +65,13 @@ pub trait ComputerBackend {
     fn label(&self) -> String;
     fn screenshot(&mut self) -> Result<Screenshot, String>;
     /// `button` is `left`, `right` or `middle`; `clicks` 1–3.
-    fn click(&mut self, at: Point, button: &str, clicks: u32, modifiers: &[String]) -> Result<(), String>;
+    fn click(
+        &mut self,
+        at: Point,
+        button: &str,
+        clicks: u32,
+        modifiers: &[String],
+    ) -> Result<(), String>;
     fn move_to(&mut self, at: Point) -> Result<(), String>;
     fn drag(&mut self, path: &[Point]) -> Result<(), String>;
     fn scroll(&mut self, at: Point, dx: f64, dy: f64) -> Result<(), String>;
@@ -80,7 +86,11 @@ pub struct PageComputer<'a> {
 }
 
 impl PageComputer<'_> {
-    fn hold<T>(&mut self, modifiers: &[String], action: impl FnOnce(&mut Page) -> Result<T, String>) -> Result<T, String> {
+    fn hold<T>(
+        &mut self,
+        modifiers: &[String],
+        action: impl FnOnce(&mut Page) -> Result<T, String>,
+    ) -> Result<T, String> {
         let held: Vec<&String> = modifiers
             .iter()
             .filter(|key| crate::keys::modifier_name(key).is_some())
@@ -113,8 +123,16 @@ impl ComputerBackend for PageComputer<'_> {
         Screenshot::from_png(self.page.screenshot(false, None)?)
     }
 
-    fn click(&mut self, at: Point, button: &str, clicks: u32, modifiers: &[String]) -> Result<(), String> {
-        self.hold(modifiers, |page| page.mouse_click(at.x, at.y, button, clicks))
+    fn click(
+        &mut self,
+        at: Point,
+        button: &str,
+        clicks: u32,
+        modifiers: &[String],
+    ) -> Result<(), String> {
+        self.hold(modifiers, |page| {
+            page.mouse_click(at.x, at.y, button, clicks)
+        })
     }
 
     fn move_to(&mut self, at: Point) -> Result<(), String> {
@@ -227,10 +245,23 @@ pub const DAEMON_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn parse_ready(value: &Value) -> Option<DaemonReady> {
     (value.get("type").and_then(Value::as_str) == Some("ready")).then(|| DaemonReady {
-        version: value.get("version").and_then(Value::as_str).unwrap_or_default().to_owned(),
-        cua_available: value.get("cuaAvailable").and_then(Value::as_bool).unwrap_or(false),
-        cua_version: value.get("cuaVersion").and_then(Value::as_str).map(str::to_owned),
-        cua_import_error: value.get("cuaImportError").and_then(Value::as_str).map(str::to_owned),
+        version: value
+            .get("version")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        cua_available: value
+            .get("cuaAvailable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        cua_version: value
+            .get("cuaVersion")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        cua_import_error: value
+            .get("cuaImportError")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
     })
 }
 
@@ -279,43 +310,50 @@ impl DesktopDaemon {
         };
         let state: Arc<(Mutex<DaemonState>, Condvar)> = Arc::default();
         let errors = Arc::clone(&state);
-        let _ = std::thread::Builder::new().name("desktop-daemon-stderr".into()).spawn(move || {
-            let mut text = String::new();
-            let mut reader = BufReader::new(stderr);
-            let _ = reader.read_to_string(&mut text);
-            let (lock, changed) = &*errors;
-            lock.lock().unwrap_or_else(PoisonError::into_inner).stderr = text;
-            changed.notify_all();
-        });
+        let _ = std::thread::Builder::new()
+            .name("desktop-daemon-stderr".into())
+            .spawn(move || {
+                let mut text = String::new();
+                let mut reader = BufReader::new(stderr);
+                let _ = reader.read_to_string(&mut text);
+                let (lock, changed) = &*errors;
+                lock.lock().unwrap_or_else(PoisonError::into_inner).stderr = text;
+                changed.notify_all();
+            });
         let replies = Arc::clone(&state);
-        let _ = std::thread::Builder::new().name("desktop-daemon-stdout".into()).spawn(move || {
-            let (lock, changed) = &*replies;
-            let mut reader = BufReader::new(stdout);
-            let mut line = String::new();
-            while reader.read_line(&mut line).is_ok_and(|read| read > 0) {
-                if let Ok(message) = serde_json::from_str::<Value>(line.trim()) {
-                    let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
-                    if let Some(ready) = parse_ready(&message) {
-                        state.ready = Some(ready);
-                    } else if let Some(id) = message.get("id").and_then(Value::as_u64) {
-                        let response = match message.get("error") {
-                            Some(error) => Err(format!(
-                                "[desktop daemon {}] {}",
-                                error.get("code").and_then(Value::as_i64).unwrap_or(0),
-                                error.get("message").and_then(Value::as_str).unwrap_or("error")
-                            )),
-                            None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
-                        };
-                        state.responses.insert(id, response);
+        let _ = std::thread::Builder::new()
+            .name("desktop-daemon-stdout".into())
+            .spawn(move || {
+                let (lock, changed) = &*replies;
+                let mut reader = BufReader::new(stdout);
+                let mut line = String::new();
+                while reader.read_line(&mut line).is_ok_and(|read| read > 0) {
+                    if let Ok(message) = serde_json::from_str::<Value>(line.trim()) {
+                        let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                        if let Some(ready) = parse_ready(&message) {
+                            state.ready = Some(ready);
+                        } else if let Some(id) = message.get("id").and_then(Value::as_u64) {
+                            let response = match message.get("error") {
+                                Some(error) => Err(format!(
+                                    "[desktop daemon {}] {}",
+                                    error.get("code").and_then(Value::as_i64).unwrap_or(0),
+                                    error
+                                        .get("message")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("error")
+                                )),
+                                None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
+                            };
+                            state.responses.insert(id, response);
+                        }
+                        changed.notify_all();
                     }
-                    changed.notify_all();
+                    line.clear();
                 }
-                line.clear();
-            }
-            let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
-            state.exited = Some("the desktop daemon exited".into());
-            changed.notify_all();
-        });
+                let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                state.exited = Some("the desktop daemon exited".into());
+                changed.notify_all();
+            });
         let deadline = Instant::now() + startup_timeout;
         let ready = {
             let (lock, changed) = &*state;
@@ -371,7 +409,12 @@ impl DesktopDaemon {
     }
 
     /// Sends one request and waits for its response.
-    pub fn call(&mut self, method: &str, params: Value, timeout: Option<Duration>) -> Result<Value, String> {
+    pub fn call(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Option<Duration>,
+    ) -> Result<Value, String> {
         let id = self.next_id;
         self.next_id += 1;
         let line = json!({"id": id, "method": method, "params": params}).to_string();
@@ -441,7 +484,9 @@ impl DesktopDaemon {
         let name = result
             .get("name")
             .and_then(Value::as_str)
-            .ok_or("Invalid desktop daemon response for start_sandbox: expected string field 'name'")?
+            .ok_or(
+                "Invalid desktop daemon response for start_sandbox: expected string field 'name'",
+            )?
             .to_owned();
         self.target = DesktopTarget::Sandbox(name.clone());
         Ok(name)
@@ -449,7 +494,11 @@ impl DesktopDaemon {
 
     /// Destroys a sandbox; the target falls back to the host when it was this one.
     pub fn stop_sandbox(&mut self, name: &str) -> Result<(), String> {
-        self.call("stop_sandbox", json!({"name": name}), Some(Duration::from_secs(120)))?;
+        self.call(
+            "stop_sandbox",
+            json!({"name": name}),
+            Some(Duration::from_secs(120)),
+        )?;
         if self.target == DesktopTarget::Sandbox(name.to_owned()) {
             self.target = DesktopTarget::Localhost;
         }
@@ -467,21 +516,41 @@ impl DesktopDaemon {
     }
 
     /// Runs a shell command on the target.
-    pub fn shell(&mut self, command: &str, timeout: Option<Duration>) -> Result<(String, String, i64), String> {
+    pub fn shell(
+        &mut self,
+        command: &str,
+        timeout: Option<Duration>,
+    ) -> Result<(String, String, i64), String> {
         let mut params = self.target.encode();
         params["command"] = json!(command);
         params["timeout_ms"] = json!(timeout.map(|timeout| timeout.as_millis() as u64));
-        let result = self.call("shell", params, timeout.map(|timeout| timeout + Duration::from_secs(5)))?;
+        let result = self.call(
+            "shell",
+            params,
+            timeout.map(|timeout| timeout + Duration::from_secs(5)),
+        )?;
         Ok((
-            result.get("stdout").and_then(Value::as_str).unwrap_or_default().to_owned(),
-            result.get("stderr").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            result
+                .get("stdout")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            result
+                .get("stderr")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
             result.get("exit_code").and_then(Value::as_i64).unwrap_or(0),
         ))
     }
 
     /// Asks the daemon to stop, then kills it after a grace period.
     pub fn shutdown(&mut self) {
-        let _ = writeln!(self.stdin, "{}", json!({"id": 0, "method": "shutdown", "params": {}}));
+        let _ = writeln!(
+            self.stdin,
+            "{}",
+            json!({"id": 0, "method": "shutdown", "params": {}})
+        );
         let _ = self.stdin.flush();
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
@@ -513,17 +582,22 @@ impl ComputerBackend for DesktopDaemon {
 
     fn screenshot(&mut self) -> Result<Screenshot, String> {
         let result = self.call_target("screenshot", json!({}))?;
-        let data = result
-            .get("png_b64")
-            .and_then(Value::as_str)
-            .ok_or("Invalid desktop daemon response for screenshot: expected string field 'png_b64'")?;
+        let data = result.get("png_b64").and_then(Value::as_str).ok_or(
+            "Invalid desktop daemon response for screenshot: expected string field 'png_b64'",
+        )?;
         let png = base64::engine::general_purpose::STANDARD
             .decode(data)
             .map_err(|error| format!("screenshot is not base64: {error}"))?;
         let mut shot = Screenshot::from_png(png)?;
         if let (Some(width), Some(height)) = (
-            result.get("width").and_then(Value::as_u64).filter(|width| *width > 0),
-            result.get("height").and_then(Value::as_u64).filter(|height| *height > 0),
+            result
+                .get("width")
+                .and_then(Value::as_u64)
+                .filter(|width| *width > 0),
+            result
+                .get("height")
+                .and_then(Value::as_u64)
+                .filter(|height| *height > 0),
         ) {
             shot.width = width as u32;
             shot.height = height as u32;
@@ -531,7 +605,13 @@ impl ComputerBackend for DesktopDaemon {
         Ok(shot)
     }
 
-    fn click(&mut self, at: Point, button: &str, clicks: u32, modifiers: &[String]) -> Result<(), String> {
+    fn click(
+        &mut self,
+        at: Point,
+        button: &str,
+        clicks: u32,
+        modifiers: &[String],
+    ) -> Result<(), String> {
         if !modifiers.is_empty() {
             return Err("the desktop backend does not hold modifiers during a click; press a key chord instead".into());
         }
@@ -582,7 +662,10 @@ mod tests {
 
     #[test]
     fn targets_encode_like_the_client() {
-        assert_eq!(DesktopTarget::Localhost.encode(), json!({"target_kind": "localhost"}));
+        assert_eq!(
+            DesktopTarget::Localhost.encode(),
+            json!({"target_kind": "localhost"})
+        );
         assert_eq!(
             DesktopTarget::Sandbox("sb".into()).encode(),
             json!({"target_kind": "sandbox", "target_name": "sb"})
@@ -591,7 +674,9 @@ mod tests {
 
     #[test]
     fn ready_events_parse() {
-        let ready = parse_ready(&json!({"type": "ready", "version": "0.1.0", "cuaAvailable": false, "cuaVersion": null, "cuaImportError": "ModuleNotFoundError"}));
+        let ready = parse_ready(
+            &json!({"type": "ready", "version": "0.1.0", "cuaAvailable": false, "cuaVersion": null, "cuaImportError": "ModuleNotFoundError"}),
+        );
         assert_eq!(
             ready,
             Some(DaemonReady {
