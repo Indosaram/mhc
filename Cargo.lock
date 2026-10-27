@@ -4788,6 +4788,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-git"
+version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "maho-git-bash-mcp"
 version = "0.0.0"
 dependencies = [
@@ -4843,6 +4854,21 @@ dependencies = [
  "tokio",
  "two-face",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "maho-isolation"
+version = "0.0.0"
+dependencies = [
+ "maho-config",
+ "maho-git",
+ "maho-task",
+ "nix 0.28.0",
+ "serde",
+ "serde_json",
+ "similar",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

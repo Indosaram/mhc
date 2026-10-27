@@ -26,6 +26,8 @@ members = [
     "crates/maho-memory",
     "crates/maho-browser",
     "crates/maho-telemetry",
+    "crates/maho-git",
+    "crates/maho-isolation",
     "crates/builtins/maho-ext-account",
     "crates/builtins/maho-ext-anthropic-bash",
     "crates/builtins/maho-ext-anthropic-subscription",
