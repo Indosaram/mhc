@@ -82,6 +82,29 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
   `task.default_concurrency`. Worktree isolation (`isolated`, `task.isolation.enabled`) and
   team/tmux panes are interfaces only until Phase 3: an isolated task is refused. Not included:
   the omo `team_*`, `workflow`/DAG and `workpool` tools, `/task-kill`, `/dag`.
+- `<builtin:memory>` (`maho-memory`, ported from the MIT mnemopi engine in oh-my-pi @ f59bbac):
+  long-term memory in SQLite banks under `$MNEMOPI_DATA_DIR`, else `<agent dir>/memories/mnemopi`
+  (`mnemopi.db` is the global bank, `banks/<name>/mnemopi.db` the others). Tools `retain` (one or
+  more facts; `scope: global` writes the global bank, else this project's bank), `recall`
+  (lexical hybrid recall: FTS5 rank, keyword/word-form relevance, synonyms, importance, recency,
+  trust weights), `memory_get` and `memory_forget`; a memory section in the system prompt; on the
+  first prompt of a session the best matches are recalled into a hidden `<memories>` message; and
+  `/memory` (`status`, `search <query>`, `import-legacy [--dry-run] [--include-people]`). Sessions
+  write to a per-project bank and also recall the global bank (`MAHO_MEMORY_SCOPING` =
+  `per-project-tagged` (default) | `per-project` | `global`). `memory.enabled: false` in the omo
+  config turns it off. Shell: `mhc memory status|search|remember [--global]|import-legacy|mcp`.
+  The memory MCP server (`mhc memory mcp`, `mhc --memory-mcp`, and the legacy `--omo-memory-mcp`
+  entry) serves the `mnemopi_*` tools (remember, recall, get, update, forget, invalidate, stats,
+  scratchpad, triples, export/import) over stdio; `--bank`, `MNEMOPI_MCP_BANK` and
+  `MNEMOPI_SESSION_ID` select the bank and session. Not included: embeddings, LLM extraction or
+  consolidation (`sleep`/dream/reflect), automatic retain of finished turns, people profiles,
+  git-backed Markdown memory and the omo memory commands.
+- Legacy memory import: `mhc memory import-legacy [--from <dir>] [--dry-run] [--include-people]
+  [--json]` (or `/memory import-legacy`) reads the legacy Markdown store (`$MAHO_MEMORY_HOME`, else
+  `~/.omo/memory`) read-only and writes each Markdown block as an imported memory into the global
+  bank; re-running skips what is already there, and `people/` files are skipped unless
+  `memory.people.enabled` is true or `--include-people` is given. Format and mapping:
+  `docs/cleanroom/specs/memory-format.md`.
 - Formatter / post-mutation hooks: interfaces in `maho_lsp::hooks` (`Formatter`,
   `PostMutationHook`, `HookChain`); the LSP diagnostics hook is the first implementation.
 
@@ -90,13 +113,13 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
 | Area | In the MIT profile |
 | --- | --- |
 | omo mount (`<builtin:omo>`): its task/subagent tools, `team_*`, `workflow`/DAG, `workpool`, `/task-kill`, `/dag` | not registered (MIT `<builtin:task>` provides `task`, `task_output`, `task_list`, `task_resume`, `task_cancel`, `/tasks`) |
-| memory tools and commands (`/memory`, `/remember`, `/dream`, `/reflect`, `/search`, `/people`, `/palace`, `/init`, `/doctor`, `/facts`, `/memfs`, ...), Kibitzer recall, facts child | not registered |
+| omo memory tools and commands (`/remember`, `/dream`, `/reflect`, `/search`, `/people`, `/palace`, `/init`, `/doctor`, `/facts`, `/memfs`, ...), the omo recall sidecar, facts child, git-backed Markdown memory | not registered (MIT `<builtin:memory>` provides `retain`, `recall`, `memory_get`, `memory_forget`, first-turn auto-recall and `/memory`) |
 | ast-grep MCP; builtin MCPs (context7, grep_app); `x_search`; browser bridge | not registered |
 | gateway, onboarding, init-deep advisor, git-master, telemetry | not registered |
 | bundled omo skills (`OMO_SENPI_SKILLS_ROOT`, the `skills/` root beside the executable) and the packaged root in app-server `skills/list` | not registered; settings and project skill paths still load |
 | `builtin:task-member` (`--extension builtin:task-member`) | unknown native extension error |
 | Claude Code plugin hooks (`maho-ext-hooks` feature `claude-plugins`) | not discovered; `~/.claude/settings.json` and project `.claude/settings*.json` hooks still load |
-| `mhc ulw-loop`, `--omo-memory-mcp`, `--memory-supervisor`, `--child-bootstrap` | print "not available in this build", exit 1 |
+| `mhc ulw-loop`, `--memory-supervisor`, `--child-bootstrap` | print "not available in this build", exit 1 (`--omo-memory-mcp` now starts the MIT memory MCP server) |
 
 The gated `maho-cli` modules are marked `#[cfg(feature = "omo")]` in `crates/maho-cli/src/cli/mod.rs`
 and `src/main.rs`. They are MIT-labelled files that port the host side of the omo packages, so they
@@ -115,9 +138,12 @@ mass-ulw, persona prompts) are removed, not ported.
 3. `cargo clippy -p maho-cli --no-default-features --lib --bins -- -D warnings` and a build.
 4. `python3 scripts/mit-profile-smoke.py target/debug/mhc`: print-mode chat against a loopback
    model that calls the builtin `write` tool. It checks that `read`/`write`/`edit` and a shell tool (`bash` or the terminal's `bash_*`) are offered,
-   that the MIT LSP and task tools are offered and no omo tool is, that a `task` call runs a child
-   `mhc -p` against the same model and returns its completed `<task-result>`, that `mhc doctor` reports the config sources and resolves a pinned
-   model profile, and that `mhc ulw-loop` reports it is unavailable.
+   that the MIT LSP, task and memory tools are offered and no omo tool is, that a `task` call runs a child
+   `mhc -p` against the same model and returns its completed `<task-result>`, that a fact stored
+   with `retain` is auto-recalled into the next run's first turn and returned by `recall`, that
+   `mhc memory import-legacy` + `mhc memory search` work on a legacy Markdown store, that the
+   memory MCP server answers over stdio (`--memory-mcp`, `--omo-memory-mcp`), that `mhc doctor` reports the config sources and resolves a pinned
+   model profile, and that `mhc ulw-loop` and `--memory-supervisor` report they are unavailable.
 5. `cargo nextest run -p maho-cli --no-default-features`: the `maho-cli` tests in the MIT profile.
 
 The `license-audit` job also runs `bun tools/package-native.mjs --self-test`, which covers the

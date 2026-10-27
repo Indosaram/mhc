@@ -78,6 +78,8 @@ maho-model-select = { path = "../maho-model-select" }
 maho-lsp = { path = "../maho-lsp", features = ["extension"] }
 # MIT subagent delegation; mounted as `<builtin:task>` in the MIT profile only (the omo build mounts its own).
 maho-task = { path = "../maho-task" }
+# MIT long-term memory (mnemopi port); mounted as `<builtin:memory>` and served by `mhc memory` in the MIT profile only.
+maho-memory = { path = "../maho-memory" }
 maho-omo-task = { path = "../omo/components/maho-omo-task", optional = true }
 maho-server = { path = "../maho-server" }
 maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }
