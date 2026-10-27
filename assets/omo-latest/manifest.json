@@ -6160,7 +6160,7 @@
     "env": "OMO_SENPI_SKILLS_ROOT",
     "skillsRoot": "skills",
     "resolution": "crates/omo/maho-omo/src/component_list.rs: SKILLS_ROOT_ENV + builtin_skills_root() (a set non-empty env root wins, else <exe dir>/skills, else relative skills); consumed in crates/maho-cli/src/cli/omo_mount.rs:38-40 (env root -> OMO_SENPI_PLUGIN_ROOT/skills -> builtin_skills_root). The staged manifest records sources.latestAssets.loader = { skillsRoot: \"skills\", env: \"OMO_SENPI_SKILLS_ROOT\" }.",
-    "invocation": "bun tools/package-native.mjs --binary <mhc> --output <install> --skill-source latest --git-bash-binary <omo-git-bash> --omowright-runtime <materialized runtime dir>; the installed tree is then exercised through the native app-server: `mhc app-server --listen stdio://` with MAHO_CODING_AGENT_DIR=<install> and JSON-RPC `skills/list` (crates/maho-server/src/app_server/skills.rs). The OMO packaged root itself (OMO_SENPI_SKILLS_ROOT -> builtin_skills_root()) is consumed by the onboarding/init-deep-advisor/mass-ulw skill pointers and by the telemetry skill_loaded event (crates/omo/components/maho-omo-telemetry/src/omo_native_tools.rs::builtin_skill_name); it has no CLI/RPC list surface of its own."
+    "invocation": "bun tools/package-native.mjs --binary <mhc> --output <install> --skill-source latest --git-bash-binary <omo-git-bash> --omowright-runtime <materialized runtime dir>. The OMO packaged root itself (OMO_SENPI_SKILLS_ROOT -> builtin_skills_root()) is consumed by the onboarding/init-deep-advisor/mass-ulw skill pointers and by the telemetry skill_loaded event (crates/omo/components/maho-omo-telemetry/src/omo_native_tools.rs::builtin_skill_name); it has no CLI/RPC list surface of its own."
   },
   "contentBinding": {
     "files": 426,

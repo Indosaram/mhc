@@ -27,7 +27,6 @@ fn mode_selection_respects_explicit_protocols_and_terminal_state() {
     assert_eq!(resolve_app_mode(&Args::default(), false, true), AppMode::Print);
     assert_eq!(resolve_app_mode(&Args { mode: Some(Mode::Rpc), print: true, ..Default::default() }, false, false), AppMode::Rpc);
     assert_eq!(resolve_app_mode(&Args { mode: Some(Mode::Json), ..Default::default() }, true, true), AppMode::Json);
-    assert_eq!(resolve_app_mode(&Args { messages: vec!["app-server".to_owned()], ..Default::default() }, true, true), AppMode::AppServer);
 }
 #[test]
 fn auto_title_preserves_context_and_session_override_precedence() {
