@@ -3717,6 +3717,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-config"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "maho-core",
+ "maho-ext-api",
+ "maho-support",
+ "nix 0.28.0",
+ "percent-encoding",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "maho-config-migration"
 version = "0.0.0"
 dependencies = [
