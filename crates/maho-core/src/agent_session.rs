@@ -1094,6 +1094,44 @@ struct SessionFallbackDeps(
 
 struct SessionExtensionActions(std::sync::Weak<AgentSessionInner>);
 
+/// senpi `_bindExtensionCore` provider callbacks: registration updates the catalog, then the live
+/// session model is replaced so a reload does not keep the pre-reload context window.
+struct SessionProviderActions {
+    runtime: crate::agent_session_runtime::ExtensionModelRuntimeActions,
+    session: std::sync::Weak<AgentSessionInner>,
+}
+impl SessionProviderActions {
+    fn refresh(&self) {
+        if let Some(inner) = self.session.upgrade() {
+            AgentSession { inner }.refresh_current_model_from_registry();
+        }
+    }
+}
+impl maho_ext_api::ExtensionProviderActions for SessionProviderActions {
+    fn register_provider(
+        &self,
+        registration: maho_ext_api::ProviderRegistration,
+        path: &str,
+    ) -> Result<(), maho_ext_api::ExtensionFailure> {
+        maho_ext_api::ExtensionProviderActions::register_provider(
+            &self.runtime,
+            registration,
+            path,
+        )?;
+        self.refresh();
+        Ok(())
+    }
+    fn unregister_provider(
+        &self,
+        name: &str,
+        path: &str,
+    ) -> Result<(), maho_ext_api::ExtensionFailure> {
+        maho_ext_api::ExtensionProviderActions::unregister_provider(&self.runtime, name, path)?;
+        self.refresh();
+        Ok(())
+    }
+}
+
 /// Restores the ctx idle gate's settling flag on every exit path, matching senpi's `finally` in
 /// `_emitAgentSettled` (`agent-session.ts:1905`) so a dropped or cancelled settlement future
 /// cannot leave the session permanently reported as settling.
@@ -12293,6 +12331,10 @@ impl AgentSession {
             self.extend_resources_from_extensions(maho_ext_api::SessionReason::Reload)
                 .await;
         }
+        // senpi refreshes the live model when the rebuilt runner replays provider registration.
+        // A models.json edit has no provider payload, so reload itself also copies the catalog
+        // model back onto the session. Otherwise the footer and the next turn keep the old window.
+        self.refresh_current_model_from_registry();
         self.event_bus.emit(
             SESSION_REBIND_CHANNEL,
             &serde_json::json!({"reason": "reload"}),
@@ -13232,6 +13274,23 @@ impl AgentSession {
 
     pub fn model(&self) -> Model {
         self.agent.model()
+    }
+
+    /// senpi `_refreshCurrentModelFromRegistry`. Assigns the catalog object directly: `set_model`
+    /// would re-check auth and emit a model switch, which a reload must not do.
+    fn refresh_current_model_from_registry(&self) {
+        self.state().delegated_compaction_key = None;
+        let current = self.model();
+        let Some(refreshed) = self
+            .model_runtime()
+            .get_model(&current.provider, &current.id)
+        else {
+            return;
+        };
+        if refreshed == current {
+            return;
+        }
+        self.agent.set_model(refreshed);
     }
 
     /// The agent carries `"off" | ThinkingLevel`; senpi's `ThinkingLevel` includes `"off"`.
@@ -15374,11 +15433,12 @@ impl AgentSession {
                 error_message: error.message,
             });
         }
-        if let Err(error) = runner.bind_providers(Arc::new(
-            crate::agent_session_runtime::ExtensionModelRuntimeActions(Mutex::new(
+        if let Err(error) = runner.bind_providers(Arc::new(SessionProviderActions {
+            runtime: crate::agent_session_runtime::ExtensionModelRuntimeActions(Mutex::new(
                 self.model_runtime().clone(),
             )),
-        )) {
+            session: Arc::downgrade(&self.inner),
+        })) {
             self.emit(AgentSessionEvent::ContinuationError {
                 error_message: error.message,
             });
@@ -25140,6 +25200,105 @@ mod tests {
             .and_then(|runner| runner.runtime.get_flag("no-ask-user"));
         assert_eq!(flag, Some(FlagValue::Boolean(true)));
         assert_eq!(*lock(&starts), 0);
+        session.dispose().await;
+    }
+
+    fn register_window(runtime: &mut ModelRuntime, window: f64) {
+        runtime
+            .register_provider(
+                "fixture",
+                crate::provider_composer::ProviderConfigInput {
+                    config: crate::model_config_schema::ModelsJsonProvider {
+                        api: Some("openai-completions".into()),
+                        models: Some(vec![crate::model_config_schema::ModelsJsonModel {
+                            id: "live".into(),
+                            context_window: Some(window),
+                            max_tokens: Some(100.0),
+                            ..Default::default()
+                        }]),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .expect("register catalog model");
+    }
+
+    #[tokio::test]
+    async fn reload_replaces_the_live_model_with_the_refreshed_catalog_window() {
+        let session = test_session();
+        let mut runtime = session.model_runtime().clone();
+        register_window(&mut runtime, 1_000.0);
+        let model = session
+            .model_runtime()
+            .get_model("fixture", "live")
+            .expect("catalog model");
+        session.agent.set_model(model);
+        register_window(&mut runtime, 8_000.0);
+        assert_eq!(
+            session.model().context_window,
+            1_000,
+            "a catalog rewrite must not mutate the session's copied model"
+        );
+        session.refresh_current_model_from_registry();
+        assert_eq!(session.model().context_window, 8_000);
+
+        register_window(&mut runtime, 16_000.0);
+        assert!(!session.reload().await.expect("reload").cancelled);
+        assert_eq!(session.model().context_window, 16_000);
+
+        let runner = ExtensionRunner::new(
+            Vec::new(),
+            Default::default(),
+            Default::default(),
+            test_extension_context(&session),
+        );
+        session.set_extension_runner(runner).await;
+        let extension_runtime = session
+            .extension_runner
+            .lock()
+            .await
+            .as_ref()
+            .expect("runner")
+            .runtime
+            .clone();
+        extension_runtime
+            .register_provider(
+                maho_ext_api::ProviderRegistration::Config {
+                    name: "fixture".into(),
+                    config: Box::new(maho_ext_api::ProviderConfig {
+                        api: Some("openai-completions".into()),
+                        models: Some(vec![maho_ext_api::ProviderModelConfig {
+                            model_type: None,
+                            output: None,
+                            image_cost: None,
+                            input_limits: None,
+                            prompt_cache: None,
+                            supports_assistant_prefill: None,
+                            default_thinking_level: None,
+                            id: "live".into(),
+                            name: "live".into(),
+                            upstream_model_id: None,
+                            api: None,
+                            base_url: None,
+                            reasoning: false,
+                            recover_text_tool_calls: None,
+                            thinking_level_map: None,
+                            input: vec![maho_ai::types::InputModality::Text],
+                            cost: Default::default(),
+                            context_window: 32_000,
+                            max_tokens: 100,
+                            headers: None,
+                            extra_body: None,
+                            compat: None,
+                        }]),
+                        ..Default::default()
+                    }),
+                },
+                "fixture",
+            )
+            .expect("reregister");
+        assert_eq!(session.model().context_window, 32_000);
         session.dispose().await;
     }
 
