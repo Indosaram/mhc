@@ -11,8 +11,14 @@ and then answers in text, and checks that:
   delegation tools (`maho-task`: task, task_output, task_list, task_resume, task_cancel) are required;
 - the `task` tool delegates: a child `mhc -p` process answers through the same loopback model and
   its result comes back to the parent as a completed `<task-result>`;
+- the MIT memory tools (`maho-memory`: retain, recall, memory_get, memory_forget) are offered; a
+  fact stored with `retain` in one run is auto-recalled into the next run's first turn and found by
+  the `recall` tool;
+- `mhc memory import-legacy` imports a legacy Markdown store and `mhc memory search` finds it;
+- the memory MCP server (`mhc --memory-mcp`, legacy `--omo-memory-mcp`) answers initialize,
+  tools/list and tools/call;
 - `mhc doctor` reports the configuration sources and resolves a pinned model profile;
-- the omo-only entries report that they are unavailable (`mhc ulw-loop`).
+- the omo-only entries report that they are unavailable (`mhc ulw-loop`, `--memory-supervisor`).
 
 Usage: python3 scripts/mit-profile-smoke.py <path-to-mhc>
 See docs/MIT-PROFILE.md.
@@ -39,6 +45,9 @@ CHILD_MARKER = "mit-profile-child-ok"
 PARENT_MARKER = "mit-profile-delegation-ok"
 MIT_LSP_TOOLS = {"lsp_diagnostics", "lsp_goto_definition", "lsp_find_references", "lsp_symbols", "lsp_prepare_rename", "lsp_rename"}
 UNAVAILABLE = "is not available in this build"
+MIT_MEMORY_TOOLS = {"retain", "recall", "memory_get", "memory_forget"}
+MEMORY_FACT = "The smoke deployment target is cluster-zeta-42."
+MEMORY_MARKER = "mit-profile-memory-ok"
 
 
 def sse(chunks: list[dict]) -> bytes:
@@ -115,6 +124,57 @@ class DelegateModel(http.server.BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
+
+
+class MemoryModel(http.server.BaseHTTPRequestHandler):
+    """`phase` "retain": calls `retain` with MEMORY_FACT; "recall": calls `recall`; then answers."""
+    requests: list[dict] = []
+    phase = "retain"
+
+    def log_message(self, *_args) -> None:
+        pass
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("content-length", "0"))
+        payload = json.loads(self.rfile.read(length) or b"{}")
+        MemoryModel.requests.append(payload)
+        has_tool_result = any(message.get("role") == "tool" for message in payload.get("messages") or [])
+        if has_tool_result:
+            body = sse([chunk({"role": "assistant", "content": MEMORY_MARKER}), chunk({}, "stop")])
+        else:
+            if MemoryModel.phase == "retain":
+                name, arguments = "retain", {"items": [{"content": MEMORY_FACT, "context": "smoke"}]}
+            else:
+                name, arguments = "recall", {"query": "smoke deployment cluster"}
+            body = sse([
+                chunk({"role": "assistant", "tool_calls": [{
+                    "index": 0, "id": f"call_{name}", "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(arguments)},
+                }]}),
+                chunk({}, "tool_calls"),
+            ])
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def mcp_session(mhc: str, flag: str, cwd: pathlib.Path, env: dict, calls: list[dict]) -> list[dict]:
+    """Runs the memory MCP server with `flag`, sends initialize, tools/list and `calls`; returns responses."""
+    requests = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+    ]
+    for index, call in enumerate(calls):
+        requests.append({"jsonrpc": "2.0", "id": 3 + index, "method": "tools/call", "params": call})
+    result = subprocess.run([mhc, flag], cwd=cwd, env=env, input="\n".join(json.dumps(r) for r in requests) + "\n",
+                            capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(f"`mhc {flag}` exited {result.returncode}: {result.stderr}")
+    return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
 
 
 def tool_text(payload: dict) -> str:
@@ -197,7 +257,7 @@ def main() -> int:
         if not any(name == "bash" or name.startswith("bash_") for name in offered):
             return fail(f"no shell tool offered (offered: {sorted(offered)})")
         omo = sorted(name for name in offered
-                     if name.startswith(OMO_TOOL_PREFIXES) and name not in MIT_TASK_TOOLS)
+                     if name.startswith(OMO_TOOL_PREFIXES) and name not in MIT_TASK_TOOLS | MIT_MEMORY_TOOLS)
         if omo:
             return fail(f"omo tools offered in the MIT profile: {omo}")
         lsp_missing = MIT_LSP_TOOLS - offered
@@ -206,12 +266,15 @@ def main() -> int:
         task_missing = MIT_TASK_TOOLS - offered
         if task_missing:
             return fail(f"MIT task tools not offered: {sorted(task_missing)} (offered: {sorted(offered)})")
+        memory_missing = MIT_MEMORY_TOOLS - offered
+        if memory_missing:
+            return fail(f"MIT memory tools not offered: {sorted(memory_missing)} (offered: {sorted(offered)})")
         if len(Model.requests) < 2:
             return fail("the write tool result never went back to the model")
         written = work / "smoke.txt"
         if not written.is_file() or written.read_text() != MARKER:
             return fail(f"builtin write tool did not write {written}\nstderr: {chat.stderr}")
-        print(f"ok   chat + builtin write tool ({len(offered)} tools offered incl. MIT LSP and task, none from omo)")
+        print(f"ok   chat + builtin write tool ({len(offered)} tools offered incl. MIT LSP, task and memory, none from omo)")
 
         delegate = http.server.ThreadingHTTPServer(("127.0.0.1", 0), DelegateModel)
         threading.Thread(target=delegate.serve_forever, daemon=True).start()
@@ -232,6 +295,75 @@ def main() -> int:
             return fail(f"the task result did not reach the parent\ntool results: {result}\nstderr: {run.stderr}")
         print("ok   task tool: child mhc process ran and its <task-result> reached the parent")
 
+        memory_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), MemoryModel)
+        threading.Thread(target=memory_server.serve_forever, daemon=True).start()
+        (agent / "models.json").write_text(models_json(memory_server.server_port))
+        memory_env = {**env, "PI_OFFLINE": "1"}
+        retain = subprocess.run(
+            [mhc, "-p", "--offline", "--no-session", "--model", "offline/offline", "remember the smoke fact"],
+            cwd=work, env=memory_env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120,
+        )
+        if retain.returncode != 0 or MEMORY_MARKER not in retain.stdout:
+            memory_server.shutdown()
+            return fail(f"retain run failed (exit {retain.returncode})\nstdout: {retain.stdout}\nstderr: {retain.stderr}")
+        if "1 memory stored." not in "\n".join(tool_text(p) for p in MemoryModel.requests):
+            memory_server.shutdown()
+            return fail(f"retain tool did not store the fact\nstderr: {retain.stderr}")
+        if not (agent / "memories" / "mnemopi" / "banks").is_dir():
+            memory_server.shutdown()
+            return fail("retain did not create a project bank under <agent dir>/memories/mnemopi/banks")
+        MemoryModel.phase = "recall"
+        MemoryModel.requests = []
+        recall = subprocess.run(
+            [mhc, "-p", "--offline", "--no-session", "--model", "offline/offline", "what is the smoke deployment cluster"],
+            cwd=work, env=memory_env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120,
+        )
+        memory_server.shutdown()
+        if recall.returncode != 0 or MEMORY_MARKER not in recall.stdout:
+            return fail(f"recall run failed (exit {recall.returncode})\nstdout: {recall.stdout}\nstderr: {recall.stderr}")
+        first = json.dumps(MemoryModel.requests[0]) if MemoryModel.requests else ""
+        if "<memories>" not in first or "cluster-zeta-42" not in first:
+            return fail(f"the retained fact was not auto-recalled into the first turn\nrequest: {first[:4000]}")
+        if "cluster-zeta-42" not in "\n".join(tool_text(p) for p in MemoryModel.requests):
+            return fail(f"the recall tool did not return the retained fact\nstderr: {recall.stderr}")
+        print("ok   memory: retain stored a fact; the next run auto-recalled it and the recall tool found it")
+
+        legacy = home / "legacy-memory"
+        (legacy / "notes" / "facts").mkdir(parents=True)
+        (legacy / "notes" / "facts" / "2026-09.md").write_text("- Smoke builds are linked with zig cc\n")
+        (legacy / "people" / "kim").mkdir(parents=True)
+        (legacy / "people" / "kim" / "card.md").write_text("Kim owns billing.\n")
+        imported = subprocess.run([mhc, "memory", "import-legacy", "--from", str(legacy), "--json"], cwd=work,
+                                  env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        try:
+            report = json.loads(imported.stdout)
+        except json.JSONDecodeError:
+            report = {}
+        if imported.returncode != 0 or report.get("blocks_imported") != 1 or report.get("skipped_people_files") != 1:
+            return fail(f"`mhc memory import-legacy` failed (exit {imported.returncode})\nstdout: {imported.stdout}\nstderr: {imported.stderr}")
+        search = subprocess.run([mhc, "memory", "search", "zig", "builds"], cwd=work, env=env,
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        if search.returncode != 0 or "linked with zig cc" not in search.stdout:
+            return fail(f"`mhc memory search` did not find the imported fact\nstdout: {search.stdout}\nstderr: {search.stderr}")
+        print("ok   mhc memory import-legacy + search (people files skipped by default)")
+
+        try:
+            responses = mcp_session(mhc, "--memory-mcp", work, env, [
+                {"name": "mnemopi_remember", "arguments": {"content": "MCP smoke memory about tangerines"}},
+                {"name": "mnemopi_recall", "arguments": {"query": "tangerines"}},
+            ])
+            legacy_flag = mcp_session(mhc, "--omo-memory-mcp", work, env, [])
+        except RuntimeError as error:
+            return fail(str(error))
+        by_id = {response.get("id"): response for response in responses}
+        tools = {tool["name"] for tool in by_id.get(2, {}).get("result", {}).get("tools", [])}
+        recalled = json.dumps(by_id.get(4, {}))
+        if by_id.get(1, {}).get("result", {}).get("serverInfo", {}).get("name") != "mnemopi" \
+                or not {"mnemopi_remember", "mnemopi_recall"} <= tools or "tangerines" not in recalled \
+                or not legacy_flag or "result" not in legacy_flag[0]:
+            return fail(f"memory MCP server answered unexpectedly: {responses} / {legacy_flag}")
+        print(f"ok   memory MCP server (--memory-mcp, --omo-memory-mcp): {len(tools)} tools, remember + recall")
+
         (home / ".omo").mkdir(exist_ok=True)
         (home / ".omo" / "omo.jsonc").write_text('{ "model_profile": "offline/offline" }\n')
         doctor = subprocess.run([mhc, "doctor"], cwd=work, env=env, stdin=subprocess.DEVNULL,
@@ -244,7 +376,7 @@ def main() -> int:
                         f"exit {doctor.returncode}\nstdout: {doctor.stdout}\nstderr: {doctor.stderr}")
         print("ok   mhc doctor: config sources and model profile resolution")
 
-        for argv in (["ulw-loop", "--help"],):
+        for argv in (["ulw-loop", "--help"], ["--memory-supervisor"]):
             result = subprocess.run([mhc, *argv], cwd=work, env=env, stdin=subprocess.DEVNULL,
                                     capture_output=True, text=True, timeout=60)
             if result.returncode == 0 or UNAVAILABLE not in result.stderr:

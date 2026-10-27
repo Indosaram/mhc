@@ -3636,6 +3636,7 @@ dependencies = [
  "maho-interactive",
  "maho-lsp",
  "maho-lsp-daemon",
+ "maho-memory",
  "maho-memory-core",
  "maho-model-select",
  "maho-omo",

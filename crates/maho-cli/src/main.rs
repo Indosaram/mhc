@@ -145,6 +145,10 @@ fn run() -> Result<(), String> {
     if let Some(code) = omo_entry_unavailable(&argv) {
         std::process::exit(code);
     }
+    #[cfg(not(feature = "omo"))]
+    if let Some(result) = run_memory_entry(&argv) {
+        return result;
+    }
     if let Some(text) = root_metadata_output(
         &argv,
         maho_cli::cli::grok_neo_gate::is_grok_neo_enabled(&startup_env),
@@ -992,7 +996,6 @@ fn omo_entry_unavailable(argv: &[String]) -> Option<i32> {
     let entry = argv.first().map(String::as_str)?;
     let name = match entry {
         "ulw-loop" => "mhc ulw-loop",
-        "--omo-memory-mcp" => "the memory MCP server",
         "--memory-supervisor" | "--child-bootstrap" => "the memory supervisor",
         _ => return None,
     };
@@ -1000,6 +1003,24 @@ fn omo_entry_unavailable(argv: &[String]) -> Option<i32> {
         "{name} is not available in this build (MIT profile, built without the `omo` feature).\n"
     ));
     Some(1)
+}
+/// MIT profile memory entries (`maho-memory`): `mhc memory ...` and the memory MCP stdio server
+/// (`--memory-mcp`, or the legacy `--omo-memory-mcp` name). `None` means argv names neither.
+#[cfg(not(feature = "omo"))]
+fn run_memory_entry(argv: &[String]) -> Option<Result<(), String>> {
+    use maho_cli::cli::long_term_memory as memory;
+    let first = argv.first().map(String::as_str)?;
+    if memory::MCP_ENTRY_FLAGS.contains(&first) {
+        return Some(memory::run_mcp(&argv[1..]));
+    }
+    if first != "memory" {
+        return None;
+    }
+    Some(memory::run_memory_command(&argv[1..]).map(|code| {
+        if code != 0 {
+            std::process::exit(code);
+        }
+    }))
 }
 #[cfg(feature = "omo")]
 fn memory_terminal_gate(

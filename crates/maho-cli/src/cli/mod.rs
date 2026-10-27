@@ -38,6 +38,8 @@ pub mod host_runtime;
 pub mod host_transport;
 pub mod initial_message;
 pub mod interactive_entry;
+#[cfg(not(feature = "omo"))]
+pub mod long_term_memory;
 #[cfg(feature = "omo")]
 pub mod kernel_tools_host;
 #[cfg(feature = "omo")]
