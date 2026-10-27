@@ -172,7 +172,7 @@ pub async fn generate_summary_message(
 ) -> Result<Option<maho_ai::types::AssistantMessage>, SummaryStreamError> {
     let mut messages = options.messages.to_vec();
     messages.push(json!({"role":"user","content":[{"type":"text","text":options.prompt.user}],"timestamp":chrono::Utc::now().timestamp_millis()}));
-    let typed = maho_core::messages::convert_to_llm(&messages)
+    let mut typed = maho_core::messages::convert_to_llm(&messages)
         .into_iter()
         .map(serde_json::from_value)
         .collect::<Result<Vec<maho_ai::types::Message>, _>>()
@@ -181,6 +181,17 @@ pub async fn generate_summary_message(
                 error.to_string(),
             ))
         })?;
+    // Signed thinking is bound to the conversation that produced it. The summary
+    // request has its own system prompt and tools, and runs with thinking off,
+    // which on adaptive-only models also drops the `drop_block` binding control;
+    // replaying the signatures would then fail the whole request with a 400.
+    for message in &mut typed {
+        if let maho_ai::types::Message::Assistant(assistant) = message {
+            assistant
+                .content
+                .retain(|block| !matches!(block, maho_ai::types::ContentBlock::Thinking(_)));
+        }
+    }
     let messages = crate::repair_tool_pairs::repair_orphaned_tool_results(
         &crate::summarization_turn_order::normalize_summarization_turn_order(&typed),
         chrono::Utc::now().timestamp_millis(),
