@@ -70,7 +70,9 @@ impl maho_ext_api::Extension for CompactionExtension {
             let generation=std::sync::Arc::clone(&generation);
             let live_api=std::sync::Arc::clone(&live_api);
             let lane=std::sync::Arc::clone(&lane);
+            let compaction_state=std::sync::Arc::clone(&state);
             api.on(maho_ext_api::EventKind::MessageEnd,std::sync::Arc::new(move |event,context| {
+                let compaction_state=std::sync::Arc::clone(&compaction_state);
                 let degradation=std::sync::Arc::clone(&degradation);let warm=std::sync::Arc::clone(&warm);let generation=std::sync::Arc::clone(&generation);let live_api=std::sync::Arc::clone(&live_api);let lane=std::sync::Arc::clone(&lane);
                 Box::pin(async move {
                     let maho_ext_api::ExtensionEvent::MessageEnd {message}=event else {return Ok(maho_ext_api::EventResult::None);};
@@ -80,19 +82,25 @@ impl maho_ext_api::Extension for CompactionExtension {
                         if let Some(job) = retired { job.cancel().await; }
                     }
                     if lane_policy::live_disables_senpi_compaction(&lane,context) {return Ok(maho_ext_api::EventResult::None);}
-                    let mut degradation=degradation.lock().await;
-                    // handle_message_end is a no-op outside the post-compaction window; skip serializing the message.
-                    if degradation.post_compaction_turns_remaining==0 {return Ok(maho_ext_api::EventResult::None);}
-                    let raw=serde_json::to_value(message).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-                    if !extension_wiring::is_monitorable_message(&raw) {return Ok(maho_ext_api::EventResult::None);}
-                    let content:Vec<_>=raw["content"].as_array().into_iter().flatten().map(|part|degradation_monitor::MonitoredMessageContentPart {kind:part["type"].as_str().unwrap_or_default(),text:part["text"].as_str()}).collect();
-                    degradation_monitor::handle_message_end(&mut degradation,degradation_monitor::MonitoredMessageEvent {role:raw["role"].as_str().unwrap_or_default(),content:&content},|instructions|async {
-                        let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
-                        match extension_wiring::apply_live_blocking_compaction(&live_api,context,next,instructions.into()).await {
+                    let content:Vec<_>;
+                    let raw;
+                    let trigger={
+                        let mut degradation=degradation.lock().await;
+                        // begin_recovery is a no-op outside the post-compaction window; skip serializing the message.
+                        if degradation.post_compaction_turns_remaining==0 {return Ok(maho_ext_api::EventResult::None);}
+                        raw=serde_json::to_value(message).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                        if !extension_wiring::is_monitorable_message(&raw) {return Ok(maho_ext_api::EventResult::None);}
+                        content=raw["content"].as_array().into_iter().flatten().map(|part|degradation_monitor::MonitoredMessageContentPart {kind:part["type"].as_str().unwrap_or_default(),text:part["text"].as_str()}).collect();
+                        degradation_monitor::begin_recovery(&mut degradation,&degradation_monitor::MonitoredMessageEvent {role:raw["role"].as_str().unwrap_or_default(),content:&content})
+                    };
+                    // The lock is released before applying: the resulting session_compact handler locks the same mutex.
+                    if trigger {
+                        let result=match extension_wiring::apply_live_blocking_compaction(&live_api,context,&generation,&warm,&compaction_state,degradation_monitor::RECOVERY_INSTRUCTIONS.into()).await {
                             Ok(result)=>degradation_monitor::RecoveryResult {applied:result==speculative::SpeculativeCompactionResult::Applied,reason:if result==speculative::SpeculativeCompactionResult::Failed {"failed"} else {"rejected"}.into()},
                             Err(_)=>degradation_monitor::RecoveryResult {applied:false,reason:"failed".into()},
-                        }
-                    },|message|context.ui.notify(message,maho_ext_api::NotificationType::Warning)).await;
+                        };
+                        if degradation_monitor::should_notify_recovery(&result) {context.ui.notify(degradation_monitor::RECOVERY_NOTIFICATION,maho_ext_api::NotificationType::Warning);}
+                    }
                     Ok(maho_ext_api::EventResult::None)
                 })
             }));
@@ -102,8 +110,10 @@ impl maho_ext_api::Extension for CompactionExtension {
             let compaction_state=std::sync::Arc::clone(&state);
             let live_api=std::sync::Arc::clone(&live_api);
             let generation=std::sync::Arc::clone(&generation);
+            let warm=std::sync::Arc::clone(&warm);
             let lane=std::sync::Arc::clone(&lane);
             api.on(kind,std::sync::Arc::new(move |event,context| {
+                let warm=std::sync::Arc::clone(&warm);
                 let degradation=std::sync::Arc::clone(&degradation);
                 let compaction_state=std::sync::Arc::clone(&compaction_state);
                 let live_api=std::sync::Arc::clone(&live_api);
@@ -124,9 +134,11 @@ impl maho_ext_api::Extension for CompactionExtension {
                     if recover {
                         let api=std::sync::Arc::clone(&live_api);
                         let context=context.clone();
-                        let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
+                        let generation=std::sync::Arc::clone(&generation);
+                        let warm=std::sync::Arc::clone(&warm);
+                        let compaction_state=std::sync::Arc::clone(&compaction_state);
                         tokio::spawn(async move {
-                            let _result=extension_wiring::apply_live_blocking_compaction(&api,&context,next,degradation_monitor::RECOVERY_INSTRUCTIONS.into()).await;
+                            let _result=extension_wiring::apply_live_blocking_compaction(&api,&context,&generation,&warm,&compaction_state,degradation_monitor::RECOVERY_INSTRUCTIONS.into()).await;
                         });
                     }
                     Ok(maho_ext_api::EventResult::None)
@@ -492,13 +504,9 @@ impl maho_ext_api::Extension for CompactionExtension {
                     let threshold = !tripped && policy::should_trigger_compaction(tokens.map(|tokens|tokens+additional),window,&settings,last_yield);
                     let in_flight = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|job|!job.completed());
                     // senpi: the hard-limit valve runs even with compaction disabled; `enabled` gates only the threshold.
-                    if hard || (settings.enabled && threshold && !orchestration::should_defer_grace_band(tokens.unwrap_or(0.)+additional,geometry,window,in_flight,settings.ideal.grace_band_enabled))) {
-                        let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
-                        let retired = {warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()};
-                        if let Some(job) = retired {job.cancel().await;}
-                        if generation.load(std::sync::atomic::Ordering::SeqCst)!=next {return result;}
+                    if hard || (settings.enabled && threshold && !orchestration::should_defer_grace_band(tokens.unwrap_or(0.)+additional,geometry,window,in_flight,settings.ideal.grace_band_enabled)) {
                         let instructions=if hard {"EMERGENCY: hard context limit reached. Produce an aggressive recovery summary that preserves current goal, constraints, files touched, tool outcomes, and exact next steps. Prefer concise factual state over transcript detail."} else {"Proactively compact before the next agent turn."};
-                        extension_wiring::apply_live_blocking_compaction(&live_api,context,next,instructions.into()).await?;
+                        extension_wiring::apply_live_blocking_compaction(&live_api,context,&generation,&warm,&state,instructions.into()).await?;
                     } else if settings.enabled && !tripped && !openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref()) && policy::should_start_speculative_compaction(tokens.map(|tokens|tokens+additional),window,&settings,last_yield,Some(geometry.lead_tokens)) {
                         let mut job=warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         if job.is_none() {let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;*job=speculative_job::start_live_speculative_job(&live_api,context,next,"Proactively compact before the next agent turn.".into())?;}

@@ -1265,6 +1265,17 @@ pub trait ModelRegistry: Send + Sync {
             "Configured streaming is not supported by this model registry",
         ))
     }
+    /// senpi `modelRegistry.modelRuntime.stream`: dispatch through the runtime so providers
+    /// registered by extensions resolve. The default is the builtin api-registry stream, matching
+    /// senpi's behavior for a context constructed without a registry runtime.
+    fn stream(
+        &self,
+        model: &Model,
+        context: &maho_ai::types::Context,
+        options: Option<maho_ai::types::StreamOptions>,
+    ) -> Result<maho_ai::utils::event_stream::AssistantMessageEventStream, ExtensionFailure> {
+        Ok(maho_ai::compat::stream(model, context, options))
+    }
     fn get_api_key_and_headers<'a>(
         &'a self,
         _model: &'a Model,
@@ -1708,6 +1719,10 @@ pub trait ExtensionContextActions: Send + Sync {
     fn shutdown(&self);
     fn get_context_usage(&self) -> Option<ContextUsage>;
     fn get_compaction_settings(&self) -> CompactionSettings;
+    /// senpi `ctx.getCompactionModel()`: the summarizer model (`compaction.model` override when usable).
+    fn get_compaction_model(&self) -> Option<Model> {
+        None
+    }
     fn get_resolved_compaction_settings(&self) -> Option<ResolvedCompactionSettings> {
         None
     }
@@ -2563,6 +2578,9 @@ impl ExtensionContext {
     }
     pub fn get_compaction_settings(&self) -> Result<CompactionSettings, ExtensionFailure> {
         Ok(self.actions()?.get_compaction_settings())
+    }
+    pub fn get_compaction_model(&self) -> Result<Option<Model>, ExtensionFailure> {
+        Ok(self.actions()?.get_compaction_model())
     }
     pub fn get_resolved_compaction_settings(
         &self,

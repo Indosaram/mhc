@@ -659,8 +659,11 @@ async fn run_fallback_event_capture() {
         let mut event=maho_ext_compaction::extension_wiring::create_live_blocking_remote_compaction_event(&ctx,CompactionPreparation {first_kept_entry_id:"keep".into(),messages_to_summarize:Vec::new(),turn_prefix_messages:Vec::new(),tokens_before:10,previous_summary:None,settings:CompactionSettings {enabled:true,reserve_tokens:1,keep_recent_tokens:1}},String::new(),AbortSignal::default());
         event.request_id="fallback-request".into();if reason=="branch-compaction" {event.reason=CompactionReason::Branch;}
         let mut event=ExtensionEvent::SessionBeforeCompact(event);
-        let result=tokio::time::timeout(std::time::Duration::from_secs(10),async {for handler in &api.registered.handlers[&EventKind::SessionBeforeCompact] {handler(&mut event,&ctx).await?;}Ok::<_,ExtensionFailure>(())}).await.expect("bounded fallback handler");
-        assert_eq!(result.expect_err("source fallback reaches local generator").message,"local fallback reached");
+        let result=tokio::time::timeout(std::time::Duration::from_secs(10),async {let mut last=EventResult::None;for handler in &api.registered.handlers[&EventKind::SessionBeforeCompact] {last=handler(&mut event,&ctx).await?;}Ok::<_,ExtensionFailure>(last)}).await.expect("bounded fallback handler");
+        // The local generator reports the failed credential lookup as a cancelled compaction (senpi SummaryGenerationError "auth").
+        let EventResult::SessionBefore(cancelled)=result.expect("source fallback reaches local generator") else {panic!("expected cancel");};
+        assert_eq!(cancelled.cancel,Some(true));
+        assert!(cancelled.reason.expect("cancel reason").contains("local fallback reached"));
         assert_eq!(*captured.lock().expect("captured fallback"),vec![serde_json::json!({"version":1,"action":"remote_fallback","route":"builtin.compaction.openai_remote","requestId":"fallback-request","modelId":if reason=="missing-remote-replay-origin-provenance" {"request-model"} else {"context-model"},"reason":reason})]);
     }
 }
