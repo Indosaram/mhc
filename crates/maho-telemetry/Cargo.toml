@@ -1,0 +1,24 @@
+[package]
+name = "maho-telemetry"
+description = "Opt-out-respecting telemetry for mhc: a local usage ledger with `mhc usage` statistics (port of the MIT oh-my-pi stats aggregation) and OTLP/HTTP protobuf export of GenAI traces, metrics and a run log to a user-configured collector (port of the MIT oh-my-pi telemetry export)."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-config = { path = "../maho-config" }
+maho-ext-api = { path = "../maho-ext-api" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+percent-encoding.workspace = true
+jiff.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+reqwest = { workspace = true, features = ["rustls-tls"] }
+tokio = { workspace = true, features = ["rt"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
