@@ -8,6 +8,7 @@ pub mod catalog;
 pub mod cst;
 pub mod diagnostics;
 pub mod env;
+pub mod ext;
 pub mod fs;
 pub mod legacy_names;
 pub mod load;
