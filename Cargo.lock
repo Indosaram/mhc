@@ -5922,6 +5922,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-task"
+version = "0.0.0"
+dependencies = [
+ "maho-config",
+ "maho-ext-api",
+ "maho-lsp",
+ "maho-model-select",
+ "nix 0.28.0",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "maho-team-core"
 version = "0.0.0"
 dependencies = [
