@@ -85,6 +85,10 @@ def tool_names(payload: dict) -> set[str]:
 
 def fail(message: str) -> int:
     print(f"mit-profile-smoke: FAIL: {message}")
+    if os.environ.get("GITHUB_ACTIONS"):
+        # Surface the reason as a workflow annotation so it is readable without the job log.
+        escaped = message[-6000:].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::error title=mit-profile-smoke::{escaped}")
     return 1
 
 
