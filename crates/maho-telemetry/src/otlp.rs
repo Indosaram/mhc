@@ -169,7 +169,13 @@ fn resource_message(config: &ExportConfig) -> Message {
     let attributes: Attributes = config
         .resource
         .iter()
-        .map(|(key, value)| (key.clone(), AnyValue::from(value.as_str())))
+        .map(|(key, value)| {
+            let value = match (key.as_str(), value.parse::<i64>()) {
+                ("process.pid", Ok(pid)) => AnyValue::Int(pid),
+                _ => AnyValue::from(value.as_str()),
+            };
+            (key.clone(), value)
+        })
         .collect();
     put_attributes(&mut resource, 1, &attributes);
     resource
@@ -613,6 +619,8 @@ impl HttpTransport {
             .enable_all()
             .build()
             .map_err(|error| error.to_string())?;
+        // The connector registers with the runtime that is current when the client is built.
+        let _context = runtime.enter();
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
@@ -638,7 +646,8 @@ impl Transport for HttpTransport {
         }
         let status = self
             .runtime
-            .block_on(request.send())
+            // `send` arms the request timeout immediately, so it must run inside the runtime.
+            .block_on(async move { request.send().await })
             .map_err(|error| format!("{url}: {}", error.without_url()))?
             .status();
         if status.is_success() {
@@ -672,7 +681,9 @@ fn worker(
     failed: Arc<AtomicBool>,
     report: Arc<dyn Fn(&str) + Send + Sync>,
 ) {
-    let mut transport = match make() {
+    let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(make))
+        .unwrap_or_else(|_| Err("the transport panicked while starting".to_owned()));
+    let mut transport = match built {
         Ok(transport) => Some(transport),
         Err(error) => {
             if !failed.swap(true, Ordering::SeqCst) {
@@ -682,8 +693,13 @@ fn worker(
         }
     };
     for job in jobs {
-        if let Some(transport) = transport.as_mut()
-            && let Err(error) = transport.post(&job.url, &job.headers, job.body)
+        let outcome = transport.as_mut().map(|transport| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                transport.post(&job.url, &job.headers, job.body)
+            }))
+            .unwrap_or_else(|_| Err(format!("{}: the transport panicked", job.url)))
+        });
+        if let Some(Err(error)) = outcome
             && !failed.swap(true, Ordering::SeqCst)
         {
             report(&format!("telemetry export failed: {error}"));

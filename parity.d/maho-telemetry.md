@@ -21,7 +21,7 @@ Differences from the originals:
 - Cache savings derive the uncached input rate from the recorded `cost.input / input` instead of
   the model catalogue; premium requests and service tiers are not tracked.
 - The OTel SDK is replaced by a hand-written OTLP protobuf encoder and one push per agent run
-  (also at session shutdown, ≤ 3 s); no batching window, no 30 s timer. Only `http/protobuf`, as
+  (also at session shutdown, ≤ 1.5 s); no batching window, no 30 s timer. Only `http/protobuf`, as
   in the original. The common endpoint gets `/v1/<signal>` appended (OTLP/HTTP spec).
 - Span/metric/log names keep the OpenTelemetry GenAI keys; the vendor prefix `omp.` is `mhc.`.
   Spans carry token counts, finish reason, TTFT and cost; no request parameters, tool

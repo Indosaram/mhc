@@ -14,8 +14,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-/// How long session shutdown waits for queued exports.
-pub const SHUTDOWN_FLUSH: Duration = Duration::from_secs(3);
+/// How long the end of a run and session shutdown wait for queued exports (the host's quit
+/// budget is about 2 s).
+pub const SHUTDOWN_FLUSH: Duration = Duration::from_millis(1500);
 
 /// The telemetry extension for one process.
 #[derive(Clone)]
