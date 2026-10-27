@@ -88,6 +88,13 @@ jobs:
         run: cargo build -p maho-cli --no-default-features --bins --locked && cargo build -p maho-senpi-desktop-engine --locked
       - name: smoke (chat + builtin tools, omo entries unavailable)
         run: python3 scripts/mit-profile-smoke.py target/debug/mhc
+      - name: install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: maho-cli tests (MIT profile)
+        timeout-minutes: 40
+        run: cargo nextest run --locked --no-fail-fast -p maho-cli --no-default-features
       - name: disk usage
         if: always()
         run: df -h / && du -sh target 2>/dev/null || true
@@ -109,6 +116,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: license audit
         run: bun tools/license-audit.mjs
+      - name: package-native self-test (incl. the --mit staging)
+        run: bun tools/package-native.mjs --self-test
 
   # One job building every test binary filled the runner disk (`No space left on device`), so
   # each shard builds and runs only its own crates; scripts/ci-shard.py covers every member once.
