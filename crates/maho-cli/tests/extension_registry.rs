@@ -37,6 +37,23 @@ fn registered_builtin_ids_follow_pinned_order() {
 }
 
 #[test]
+fn search_fallback_runs_before_provider_payload_injection() {
+    let search = BUILTIN_EXTENSION_IDS
+        .iter()
+        .position(|id| *id == "websearch")
+        .unwrap();
+    for provider in ["anthropic-web-search", "openai-web-search"] {
+        assert!(
+            search
+                < BUILTIN_EXTENSION_IDS
+                    .iter()
+                    .position(|id| *id == provider)
+                    .unwrap()
+        );
+    }
+}
+
+#[test]
 fn every_pinned_id_is_linked_or_recorded_as_deferred() {
     let mut covered: Vec<&str> = builtin_extensions()
         .iter()

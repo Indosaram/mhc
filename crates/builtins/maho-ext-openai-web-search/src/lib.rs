@@ -2,10 +2,15 @@ use maho_ext_api::{BeforeAgentStartEventResult, EventKind, EventResult, Extensio
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const OPENAI_WEB_SEARCH_SECTION: &str = "\n## Web Search\n\nNative web search is available in this session.\nUse web search when the user asks for current or online information.\nPrefer web search over guessing when freshness matters.\n";
+pub const OPENAI_WEB_SEARCH_SECTION: &str = "\n## Web Search\n\nUse the available web search tool when the user asks for current or online information.\nPrefer web search over guessing when freshness matters.\n";
 const SOURCES: &str = "web_search_call.action.sources";
 const SERVER_SEARCH_FALLBACK: &str = "server_search_fallback";
 const SERVER_SEARCH_DISABLED: &str = "server_search_disabled";
+
+fn server_search_suppressed(payload: &Value) -> bool {
+    [SERVER_SEARCH_FALLBACK, "__senpi_server_search_fallback", SERVER_SEARCH_DISABLED, "__senpi_server_search_disabled"]
+        .iter().any(|key| payload.get(*key).and_then(Value::as_bool) == Some(true))
+}
 
 pub fn parse_enabled(value: Option<&str>) -> bool {
     !value.is_some_and(|value| matches!(value.trim().to_lowercase().as_str(), "0" | "false" | "no" | "off"))
@@ -37,7 +42,7 @@ fn sanitize(tools: &[Value], strip_function: bool) -> Vec<Value> {
         if !tool.is_object() { return false; }
         let kind = tool.get("type").and_then(Value::as_str);
         let unsupported = kind.is_some_and(|kind| ((kind == "web_search" || kind.starts_with("web_search_")) && !native(tool)) || kind.starts_with("web_fetch_"));
-        let function = strip_function && tool.get("name").and_then(Value::as_str) == Some("web_search") && !native(tool);
+        let function = strip_function && tool.get("name").or_else(|| tool.get("function").and_then(|function| function.get("name"))).and_then(Value::as_str) == Some("web_search") && !native(tool);
         !unsupported && !function
     }).cloned().collect()
 }
@@ -49,8 +54,7 @@ fn needs_strip(payload: &Value) -> bool {
 }
 /// `None` when `add_openai_web_search_to_payload` would return the payload unchanged, so callers can skip copying it.
 pub fn add_openai_web_search_to_payload_if_changed(model: Option<&Model>, payload: &Value, enabled: bool) -> Option<Value> {
-    if payload.get(SERVER_SEARCH_FALLBACK).and_then(Value::as_bool) == Some(true)
-        || payload.get(SERVER_SEARCH_DISABLED).and_then(Value::as_bool) == Some(true) {
+    if server_search_suppressed(payload) {
         return needs_strip(payload).then(|| strip(payload));
     }
     if !responses(model) { return needs_strip(payload).then(|| strip(payload)); }
@@ -63,8 +67,7 @@ pub fn add_openai_web_search_to_payload_if_changed(model: Option<&Model>, payloa
     Some(add_openai_web_search_to_payload(model, payload, enabled))
 }
 pub fn add_openai_web_search_to_payload(model: Option<&Model>, payload: &Value, enabled: bool) -> Value {
-    if payload.get(SERVER_SEARCH_FALLBACK).and_then(Value::as_bool) == Some(true)
-        || payload.get(SERVER_SEARCH_DISABLED).and_then(Value::as_bool) == Some(true) {
+    if server_search_suppressed(payload) {
         return strip(payload);
     }
     if !responses(model) { return strip(payload); }
@@ -88,8 +91,8 @@ pub struct OpenAiWebSearch;
 impl Extension for OpenAiWebSearch {
     fn register(&self, api: &mut ExtensionApi) {
         api.on(EventKind::BeforeProviderRequest, Arc::new(|event, ctx| Box::pin(async move {
-            let ExtensionEvent::BeforeProviderRequest { payload, .. } = event else { return Ok(EventResult::None) };
-            Ok(add_openai_web_search_to_payload_if_changed(ctx.model.as_ref(), payload, enabled()).map_or(EventResult::None, EventResult::ProviderPayload))
+            let ExtensionEvent::BeforeProviderRequest { payload, model, .. } = event else { return Ok(EventResult::None) };
+            Ok(add_openai_web_search_to_payload_if_changed(model.as_ref().or(ctx.model.as_ref()), payload, enabled()).map_or(EventResult::None, EventResult::ProviderPayload))
         })));
         for kind in [EventKind::SessionStart, EventKind::ModelSelect, EventKind::SessionShutdown] {
             api.on(kind, Arc::new(|_event, ctx| Box::pin(async move {
