@@ -49,7 +49,10 @@ pub fn canonicalize_lenient(path: &Path) -> PathBuf {
             }
             return out;
         }
-        match (current.file_name().map(|name| name.to_os_string()), current.parent()) {
+        match (
+            current.file_name().map(|name| name.to_os_string()),
+            current.parent(),
+        ) {
             (Some(name), Some(parent)) => {
                 remainder.push(name);
                 current = parent.to_path_buf();

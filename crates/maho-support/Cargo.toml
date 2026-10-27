@@ -3,7 +3,7 @@ name = "maho-support"
 description = "Small shared helpers (JSONC, atomic writes, path containment, logging hook, PATH lookup)."
 version.workspace = true
 edition.workspace = true
-publish.workspace = true
+publish = false
 license = "MIT"
 
 [dependencies]

@@ -11,7 +11,9 @@ static SINK: RwLock<Option<LogSink>> = RwLock::new(None);
 
 /// Installs (or clears) the process-wide log sink.
 pub fn set_log_sink(sink: Option<LogSink>) {
-    *SINK.write().unwrap_or_else(std::sync::PoisonError::into_inner) = sink;
+    *SINK
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = sink;
 }
 
 /// Logs through the installed sink; a no-op until one is set.
@@ -38,7 +40,10 @@ pub fn which_safe_in(name: &str, search_path: &str) -> Option<PathBuf> {
     }
     let separator = if cfg!(windows) { ';' } else { ':' };
     let has_extension = Path::new(name).extension().is_some();
-    for entry in search_path.split(separator).filter(|entry| !entry.is_empty()) {
+    for entry in search_path
+        .split(separator)
+        .filter(|entry| !entry.is_empty())
+    {
         let dir = Path::new(entry);
         let mut candidates = vec![dir.join(name)];
         if cfg!(windows) && !has_extension {
@@ -46,7 +51,10 @@ pub fn which_safe_in(name: &str, search_path: &str) -> Option<PathBuf> {
                 candidates.push(dir.join(format!("{name}{ext}")));
             }
         }
-        if let Some(found) = candidates.into_iter().find(|candidate| is_executable_file(candidate)) {
+        if let Some(found) = candidates
+            .into_iter()
+            .find(|candidate| is_executable_file(candidate))
+        {
             return Some(found);
         }
     }
@@ -94,7 +102,10 @@ pub fn merge_unique(a: &[String], b: &[String]) -> Vec<String> {
 pub fn merge_unique_ci(a: &[String], b: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for item in a.iter().chain(b) {
-        if !out.iter().any(|seen| seen.to_lowercase() == item.to_lowercase()) {
+        if !out
+            .iter()
+            .any(|seen| seen.to_lowercase() == item.to_lowercase())
+        {
             out.push(item.clone());
         }
     }
@@ -163,7 +174,9 @@ fn match_semver_at(bytes: &[u8], start: usize) -> Option<usize> {
         if bytes.get(pos) == Some(&marker) {
             let tail = pos + 1;
             let mut end = tail;
-            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'.' || bytes[end] == b'-') {
+            while end < bytes.len()
+                && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'.' || bytes[end] == b'-')
+            {
                 end += 1;
             }
             if end > tail {
@@ -178,7 +191,10 @@ fn match_semver_at(bytes: &[u8], start: usize) -> Option<usize> {
 pub fn escape_for_double_quotes(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
-        if matches!(ch, '\\' | '$' | '`' | '"' | ';' | '|' | '&' | '#' | '(' | ')') {
+        if matches!(
+            ch,
+            '\\' | '$' | '`' | '"' | ';' | '|' | '&' | '#' | '(' | ')'
+        ) {
             out.push('\\');
         }
         out.push(ch);

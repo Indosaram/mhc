@@ -35,8 +35,13 @@ fn jsonc_truncated_document_is_an_error() {
 
 #[test]
 fn jsonc_strings_and_numbers_decode() {
-    let value = parse_jsonc(r#"{"s": "a\nb\u00e9\ud83d\ude00", "n": -1.5e2, "i": 42, "k": "한글"}"#).unwrap();
-    assert_eq!(value, json!({"s": "a\nbé😀", "n": -150.0, "i": 42, "k": "한글"}));
+    let value =
+        parse_jsonc(r#"{"s": "a\nb\u00e9\ud83d\ude00", "n": -1.5e2, "i": 42, "k": "한글"}"#)
+            .unwrap();
+    assert_eq!(
+        value,
+        json!({"s": "a\nbé😀", "n": -150.0, "i": 42, "k": "한글"})
+    );
 }
 
 #[test]
@@ -53,7 +58,7 @@ fn read_jsonc_file_missing_or_invalid_is_none() {
 
 fn temp_leftovers(dir: &std::path::Path) -> Vec<String> {
     std::fs::read_dir(dir)
-        .unwrap()
+        .expect("read temp dir")
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .filter(|name| name.ends_with(".tmp"))
@@ -76,7 +81,11 @@ fn atomic_write_failure_removes_temp_and_keeps_target() {
     let target = dir.path().join("t.json");
     std::fs::write(&target, "old").unwrap();
     let result = write_atomically_with(&target, b"new", &|step| {
-        if step == AtomicStep::Write { Err(io::Error::other("disk full")) } else { Ok(()) }
+        if step == AtomicStep::Write {
+            Err(io::Error::other("disk full"))
+        } else {
+            Ok(())
+        }
     });
     assert!(result.is_err());
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "old");
@@ -88,7 +97,11 @@ fn atomic_write_tolerates_einval_fsync() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("t.json");
     write_atomically_with(&target, b"new", &|step| {
-        if step == AtomicStep::FsyncFile { Err(io::Error::from(io::ErrorKind::InvalidInput)) } else { Ok(()) }
+        if step == AtomicStep::FsyncFile {
+            Err(io::Error::from(io::ErrorKind::InvalidInput))
+        } else {
+            Ok(())
+        }
     })
     .unwrap();
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
@@ -100,7 +113,11 @@ fn atomic_write_aborts_on_eio_fsync() {
     let target = dir.path().join("t.json");
     std::fs::write(&target, "old").unwrap();
     let result = write_atomically_with(&target, b"new", &|step| {
-        if step == AtomicStep::FsyncFile { Err(io::Error::from_raw_os_error(5)) } else { Ok(()) }
+        if step == AtomicStep::FsyncFile {
+            Err(io::Error::from_raw_os_error(5))
+        } else {
+            Ok(())
+        }
     });
     assert!(result.is_err());
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "old");
@@ -168,9 +185,11 @@ fn log_hook_is_noop_until_set() {
     log("ignored", None);
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_seen = seen.clone();
-    set_log_sink(Some(std::sync::Arc::new(move |message: &str, _data: Option<&serde_json::Value>| {
-        sink_seen.lock().unwrap().push(message.to_string());
-    })));
+    set_log_sink(Some(std::sync::Arc::new(
+        move |message: &str, _data: Option<&serde_json::Value>| {
+            sink_seen.lock().unwrap().push(message.to_string());
+        },
+    )));
     log("hello", Some(&json!({"a": 1})));
     set_log_sink(None);
     log("after", None);
@@ -186,8 +205,14 @@ fn small_helpers() {
     assert_eq!(format_duration(-5), "0s");
     assert_eq!(format_duration(3_605_000), "1h 0m 5s");
     assert_eq!(format_duration(65_000), "1m 5s");
-    assert_eq!(extract_semver("tool v1.2.3-beta.1 (build)"), Some("1.2.3-beta.1".into()));
-    assert_eq!(extract_semver("started 00:24:25.202 version 4.5.6+abc"), Some("4.5.6+abc".into()));
+    assert_eq!(
+        extract_semver("tool v1.2.3-beta.1 (build)"),
+        Some("1.2.3-beta.1".into())
+    );
+    assert_eq!(
+        extract_semver("started 00:24:25.202 version 4.5.6+abc"),
+        Some("4.5.6+abc".into())
+    );
     assert_eq!(extract_semver("   "), None);
     assert_eq!(escape_for_double_quotes("a$b\"c;d"), "a\\$b\\\"c\\;d");
     assert!(find_free_port(20000, None).is_ok());
