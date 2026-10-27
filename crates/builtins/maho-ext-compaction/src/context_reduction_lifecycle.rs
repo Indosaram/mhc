@@ -28,13 +28,15 @@ pub struct ContextReductionPolicy {
     pub append_only_transcript: bool,
 }
 
+/// Emits a compaction log event (`emergency_prune`, `breaker_deterministic_fallback`).
+pub type ContextReductionLog = Arc<dyn Fn(&ExtensionContext, &str, Value) + Send + Sync>;
+
 pub struct ContextReductionLifecycleOptions {
     pub emergency_prune_latch: Arc<Mutex<EmergencyPruneLatch>>,
     pub emergency_instructions: String,
     pub get_tools: Arc<dyn Fn() -> Vec<maho_ai::types::Tool> + Send + Sync>,
     pub get_policy: Arc<dyn Fn(&ExtensionContext) -> ContextReductionPolicy + Send + Sync>,
-    /// Emits a compaction log event (`emergency_prune`, `breaker_deterministic_fallback`).
-    pub log: Arc<dyn Fn(&ExtensionContext, &str, Value) + Send + Sync>,
+    pub log: ContextReductionLog,
 }
 
 #[derive(Default)]

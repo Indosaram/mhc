@@ -115,7 +115,7 @@ mod tests {
         assert!(is_automatic_compaction_blocked(&branch, Some(&model), &settings));
         branch[0]["parentId"] = json!("elsewhere");
         assert!(is_automatic_compaction_blocked(&branch, Some(&model), &settings));
-        let mut other_settings = settings.clone();
+        let mut other_settings = settings;
         other_settings.keep_recent_tokens += 1;
         assert!(!is_automatic_compaction_blocked(&branch, Some(&model), &other_settings));
         assert!(!is_automatic_compaction_blocked(&branch, Some(&self::model(50_000)), &settings));

@@ -92,7 +92,7 @@ pub fn build_compaction_context(input: CompactionContextInput<'_>) -> Result<Com
         let before_prune = estimate_total_tokens(&source).saturating_add(overhead);
         let after_prune = estimate_total_tokens(&outgoing.iter().filter_map(|message| serde_json::to_value(message).ok()).collect::<Vec<_>>()).saturating_add(overhead);
         if aggressive || after_prune > input.prompt_context_window || (after_prune < before_prune && input.emergency_prune_latch.engaged) {
-            reduction_state.as_deref_mut().unwrap_or(&mut local_reduction_state).compaction_required = true;
+            reduction_state.unwrap_or(&mut local_reduction_state).compaction_required = true;
         }
     }
     Ok(CompactionContextOutput { messages: outgoing, emergency_prune_tokens, replay_boundary })

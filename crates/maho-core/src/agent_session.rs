@@ -2068,8 +2068,8 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         // Spent-account rerouting is not ported (the Rust retry controller has no spent-provider query).
         Some(match configured {
             Some(configured)
-                if !(runtime.has_fresh_availability_snapshot()
-                    && !runtime.has_configured_auth(&configured.provider)) =>
+                if !runtime.has_fresh_availability_snapshot()
+                    || runtime.has_configured_auth(&configured.provider) =>
             {
                 configured
             }
