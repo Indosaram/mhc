@@ -415,6 +415,17 @@ pub trait SettingsStorage: Send + Sync {
     fn agent_dir(&self) -> Option<String> {
         None
     }
+    /// senpi `withStateLock?`: the optional `state.json` bookkeeping store. Backends without one
+    /// keep every key in the global settings file.
+    fn has_state_store(&self) -> bool {
+        false
+    }
+    fn with_state_lock(
+        &self,
+        _update: &mut dyn FnMut(Option<&str>) -> Option<String>,
+    ) -> Option<Result<(), String>> {
+        None
+    }
 }
 
 pub struct FileSettingsStorage {
@@ -494,62 +505,86 @@ impl SettingsStorage for FileSettingsStorage {
         scope: SettingsScope,
         update: &mut dyn FnMut(Option<&str>) -> Option<String>,
     ) -> Result<(), String> {
-        let path = self.settings_path(scope);
-        let directory = Path::new(&path)
-            .parent()
-            .map(|parent| parent.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        with_path_lock(&self.settings_path(scope), update)
+    }
 
-        // Read without the lock: writers publish atomically via temp+rename below, so a reader can
-        // never observe partial content, and read-only callers skip lock acquisition entirely.
-        let current = std::fs::read_to_string(&path).ok();
-        let mut next = update(current.as_deref());
-        if next.is_none() {
+    fn has_state_store(&self) -> bool {
+        true
+    }
+
+    fn with_state_lock(
+        &self,
+        update: &mut dyn FnMut(Option<&str>) -> Option<String>,
+    ) -> Option<Result<(), String>> {
+        let agent_dir = resolve_path(
+            &self.agent_dir,
+            &self.agent_dir,
+            &PathInputOptions::default(),
+        );
+        let path = Path::new(&agent_dir).join("state.json");
+        Some(with_path_lock(&path.to_string_lossy(), update))
+    }
+}
+
+fn with_path_lock(
+    path: &str,
+    update: &mut dyn FnMut(Option<&str>) -> Option<String>,
+) -> Result<(), String> {
+    let directory = Path::new(path)
+        .parent()
+        .map(|parent| parent.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    // Read without the lock: writers publish atomically via temp+rename below, so a reader can
+    // never observe partial content, and read-only callers skip lock acquisition entirely.
+    let current = std::fs::read_to_string(path).ok();
+    let mut next = update(current.as_deref());
+    if next.is_none() {
+        return Ok(());
+    }
+    if !Path::new(&directory).exists() {
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| format!("Failed to write settings {path}: {error}"))?;
+    }
+    let mut guard = acquire_lock_sync(path, FILE_STORAGE_SYNC_LOCK_BUDGET_MS)
+        .map_err(|error: CredentialStoreBusyError| error.message())?;
+    let under_lock = std::fs::read_to_string(path).ok();
+    if under_lock != current {
+        // Lost a write race: re-merge against the winner's content under the lock.
+        next = update(under_lock.as_deref());
+    }
+    if let Some(next) = next {
+        // PERF-DIVERGENCE(settings-manager.ts): upstream rewrites unconditionally; this port skips the
+        // write when content is byte-identical to disk, avoiding a self-induced hot reload. Output is identical.
+        if under_lock.as_deref() == Some(next.as_str()) {
             return Ok(());
         }
-        if !Path::new(&directory).exists() {
-            std::fs::create_dir_all(&directory)
-                .map_err(|error| format!("Failed to write settings {path}: {error}"))?;
+        if guard.broker_write(&next)? {
+            record_self_write(path, &next);
+            return Ok(());
         }
-        let mut guard = acquire_lock_sync(&path, FILE_STORAGE_SYNC_LOCK_BUDGET_MS)
-            .map_err(|error: CredentialStoreBusyError| error.message())?;
-        let under_lock = std::fs::read_to_string(&path).ok();
-        if under_lock != current {
-            // Lost a write race: re-merge against the winner's content under the lock.
-            next = update(under_lock.as_deref());
-        }
-        if let Some(next) = next {
-            // PERF-DIVERGENCE(settings-manager.ts): upstream rewrites unconditionally; this port skips the
-            // write when content is byte-identical to disk, avoiding a self-induced hot reload. Output is identical.
-            if under_lock.as_deref() == Some(next.as_str()) {
-                return Ok(());
-            }
-            if guard.broker_write(&next)? {
-                record_self_write(&path, &next);
-                return Ok(());
-            }
-            let temp_path = format!("{path}.{}.{}.tmp", std::process::id(), uuid::Uuid::new_v4());
-            std::fs::write(&temp_path, &next).map_err(|error| {
-                let _ = std::fs::remove_file(&temp_path);
-                format!("Failed to write settings {path}: {error}")
-            })?;
-            guard.assert_held().map_err(|error| {
-                let _ = std::fs::remove_file(&temp_path);
-                format!("Failed to write settings {path}: lock lost before publishing ({error})")
-            })?;
-            record_self_write(&path, &next);
-            std::fs::rename(&temp_path, &path).map_err(|error| {
-                let _ = std::fs::remove_file(&temp_path);
-                format!("Failed to write settings {path}: {error}")
-            })?;
-        }
-        Ok(())
+        let temp_path = format!("{path}.{}.{}.tmp", std::process::id(), uuid::Uuid::new_v4());
+        std::fs::write(&temp_path, &next).map_err(|error| {
+            let _ = std::fs::remove_file(&temp_path);
+            format!("Failed to write settings {path}: {error}")
+        })?;
+        guard.assert_held().map_err(|error| {
+            let _ = std::fs::remove_file(&temp_path);
+            format!("Failed to write settings {path}: lock lost before publishing ({error})")
+        })?;
+        record_self_write(path, &next);
+        std::fs::rename(&temp_path, path).map_err(|error| {
+            let _ = std::fs::remove_file(&temp_path);
+            format!("Failed to write settings {path}: {error}")
+        })?;
     }
+    Ok(())
 }
 
 pub struct InMemorySettingsStorage {
     global: Mutex<Option<String>>,
     project: Mutex<Option<String>>,
+    state: Mutex<Option<String>>,
 }
 
 impl Default for InMemorySettingsStorage {
@@ -557,6 +592,7 @@ impl Default for InMemorySettingsStorage {
         Self {
             global: Mutex::new(None),
             project: Mutex::new(None),
+            state: Mutex::new(None),
         }
     }
 }
@@ -568,6 +604,7 @@ impl InMemorySettingsStorage {
         Self {
             global: Mutex::new(Some(content.into())),
             project: Mutex::new(None),
+            state: Mutex::new(None),
         }
     }
 
@@ -600,6 +637,21 @@ impl SettingsStorage for InMemorySettingsStorage {
             *guard = Some(next);
         }
         Ok(())
+    }
+
+    fn has_state_store(&self) -> bool {
+        true
+    }
+
+    fn with_state_lock(
+        &self,
+        update: &mut dyn FnMut(Option<&str>) -> Option<String>,
+    ) -> Option<Result<(), String>> {
+        let mut guard = self.state.lock().expect("in-memory settings lock");
+        if let Some(next) = update(guard.as_deref()) {
+            *guard = Some(next);
+        }
+        Some(Ok(()))
     }
 }
 
@@ -803,7 +855,7 @@ impl SettingsManager {
                     loaded = Settings::new();
                 }
                 Some(content) => match parse_settings_json(content) {
-                    Ok(parsed) => loaded = migrate_settings(parsed),
+                    Ok(parsed) => loaded = parsed,
                     Err(parse_error) => error = Some(parse_error),
                 },
             }
@@ -814,7 +866,19 @@ impl SettingsManager {
         {
             error = Some(storage_error);
         }
-        (loaded, error)
+        if error.is_some() {
+            return (Settings::new(), error);
+        }
+        if scope == SettingsScope::Global && storage.has_state_store() {
+            if crate::settings_state::STATE_KEYS
+                .iter()
+                .any(|key| loaded.contains_key(*key))
+            {
+                crate::settings_state::migrate_settings_state(storage);
+            }
+            loaded.extend(crate::settings_state::read_settings_state(storage));
+        }
+        (migrate_settings(loaded), None)
     }
 
     pub fn get(&self) -> &Settings {
@@ -1779,22 +1843,29 @@ impl SettingsManager {
         field: &str,
         nested: &Settings,
     ) -> Result<(), String> {
-        let mut write_error: Option<String> = None;
-        let mut apply = |current: Option<&str>| -> Option<String> {
-            let mut parsed = match parse_current_settings(current) {
-                Ok(parsed) => parsed,
-                Err(error) => {
-                    write_error = Some(error);
-                    return None;
-                }
+        if self.writes_state(scope, field) {
+            self.persist_state(&|state| {
+                let object = nested_into(state.get(field), nested);
+                state.insert(field.to_owned(), Value::Object(object));
+            });
+        } else {
+            let mut write_error: Option<String> = None;
+            let mut apply = |current: Option<&str>| -> Option<String> {
+                let mut parsed = match parse_current_settings(current) {
+                    Ok(parsed) => parsed,
+                    Err(error) => {
+                        write_error = Some(error);
+                        return None;
+                    }
+                };
+                let object = nested_into(parsed.get(field), nested);
+                parsed.insert(field.to_owned(), Value::Object(object));
+                Some(serialize_settings(&parsed))
             };
-            let object = nested_into(parsed.get(field), nested);
-            parsed.insert(field.to_owned(), Value::Object(object));
-            Some(serialize_settings(&parsed))
-        };
-        self.storage.with_lock(scope, &mut apply)?;
-        if let Some(error) = write_error {
-            return Err(error);
+            self.storage.with_lock(scope, &mut apply)?;
+            if let Some(error) = write_error {
+                return Err(error);
+            }
         }
         for key in nested.keys() {
             self.overrides = without_override(&self.overrides, field, Some(key));
@@ -1817,27 +1888,31 @@ impl SettingsManager {
     /// being overridden for this session (senpi `markModified` -> `withoutOverride`).
     pub fn set(&mut self, scope: SettingsScope, values: &Settings) -> Result<(), String> {
         let values = values.clone();
-        let mut write_error: Option<String> = None;
-        let mut apply = |current: Option<&str>| -> Option<String> {
-            let mut parsed = match parse_current_settings(current) {
-                Ok(parsed) => parsed,
-                Err(error) => {
-                    write_error = Some(error);
-                    return None;
-                }
+        let (state_values, config_values): (Settings, Settings) = values
+            .clone()
+            .into_iter()
+            .partition(|(key, _)| self.writes_state(scope, key));
+        if !state_values.is_empty() {
+            self.persist_state(&|state| {
+                *state = values_into(state, &state_values);
+            });
+        }
+        if !config_values.is_empty() {
+            let mut write_error: Option<String> = None;
+            let mut apply = |current: Option<&str>| -> Option<String> {
+                let parsed = match parse_current_settings(current) {
+                    Ok(parsed) => parsed,
+                    Err(error) => {
+                        write_error = Some(error);
+                        return None;
+                    }
+                };
+                Some(serialize_settings(&values_into(&parsed, &config_values)))
             };
-            for (key, value) in &values {
-                if value.is_null() {
-                    parsed.remove(key);
-                } else {
-                    parsed.insert(key.clone(), value.clone());
-                }
+            self.storage.with_lock(scope, &mut apply)?;
+            if let Some(error) = write_error {
+                return Err(error);
             }
-            Some(serialize_settings(&parsed))
-        };
-        self.storage.with_lock(scope, &mut apply)?;
-        if let Some(error) = write_error {
-            return Err(error);
         }
         for key in values.keys() {
             self.overrides = without_override(&self.overrides, key, None);
@@ -1861,6 +1936,30 @@ impl SettingsManager {
             }
         }
         Ok(())
+    }
+
+    /// senpi `save`: bookkeeping keys of the global scope go to `state.json` when the storage has one.
+    fn writes_state(&self, scope: SettingsScope, key: &str) -> bool {
+        scope == SettingsScope::Global
+            && self.storage.has_state_store()
+            && crate::settings_state::is_state_key(key)
+    }
+
+    /// senpi `persistScopedSettings(..., state = true)`: a failed bookkeeping write is logged, never
+    /// surfaced, so it cannot block the config write.
+    fn persist_state(&self, mutate: &dyn Fn(&mut Settings)) {
+        let storage = self.storage.as_ref();
+        let result = storage.with_state_lock(&mut |current| {
+            let current = migrate_settings(crate::settings_state::parse_state_settings(
+                storage, current,
+            ));
+            let mut merged = current.clone();
+            mutate(&mut merged);
+            (merged != current).then(|| serialize_settings(&merged))
+        });
+        if let Some(Err(error)) = result {
+            crate::settings_state::log_state_error(storage, &error);
+        }
     }
 
     /// senpi recreates settings for a switched session's cwd; the native manager keeps its
@@ -2728,6 +2827,84 @@ mod tests {
         removal.insert("keep".to_owned(), Value::Null);
         manager.set(SettingsScope::Global, &removal).expect("set");
         assert_eq!(manager.get_string("keep"), None);
+        reset_self_write_tracker_for_tests();
+    }
+
+    #[test]
+    fn bookkeeping_keys_move_to_state_json_and_survive_a_config_rewrite() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let agent = tmp.path().join("agent");
+        std::fs::create_dir_all(&agent).expect("mkdir");
+        let agent = agent.to_string_lossy().into_owned();
+        let settings_path = format!("{agent}/settings.json");
+        let state_path = format!("{agent}/state.json");
+        std::fs::write(
+            &settings_path,
+            r#"{"theme":"dark","modelThinkingLevels":{"p/m":"high"},"tipsHistory":{"t":1}}"#,
+        )
+        .expect("write");
+        std::fs::write(&state_path, r#"{"tipsHistory":{"kept":2}}"#).expect("state");
+
+        let mut manager = SettingsManager::create(&agent, &agent, &agent, true);
+        let on_disk = |path: &str| -> Value {
+            serde_json::from_str(&std::fs::read_to_string(path).expect("read")).expect("json")
+        };
+        assert_eq!(on_disk(&settings_path), serde_json::json!({"theme":"dark"}));
+        assert_eq!(
+            on_disk(&state_path),
+            serde_json::json!({"tipsHistory":{"kept":2},"modelThinkingLevels":{"p/m":"high"}})
+        );
+        assert_eq!(manager.get()["modelThinkingLevels"]["p/m"], "high");
+        assert_eq!(manager.get()["tipsHistory"], serde_json::json!({"kept":2}));
+
+        manager
+            .set(
+                SettingsScope::Global,
+                &serde_json::from_value(serde_json::json!({
+                    "modelThinkingLevels": {"p/m": "low"},
+                    "defaultThinkingLevel": "low"
+                }))
+                .expect("values"),
+            )
+            .expect("set");
+        assert_eq!(
+            on_disk(&settings_path),
+            serde_json::json!({"theme":"dark","defaultThinkingLevel":"low"})
+        );
+        assert_eq!(on_disk(&state_path)["modelThinkingLevels"]["p/m"], "low");
+
+        // Another process rewrites the whole config file without the bookkeeping keys.
+        std::fs::write(&settings_path, r#"{"theme":"light"}"#).expect("rewrite");
+        let reloaded = SettingsManager::create(&agent, &agent, &agent, true);
+        assert_eq!(reloaded.get()["modelThinkingLevels"]["p/m"], "low");
+        assert_eq!(reloaded.get_string("theme").as_deref(), Some("light"));
+        reset_self_write_tracker_for_tests();
+    }
+
+    #[test]
+    fn malformed_state_json_never_blocks_config_load_or_save() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let agent = tmp.path().join("agent");
+        std::fs::create_dir_all(&agent).expect("mkdir");
+        let agent = agent.to_string_lossy().into_owned();
+        std::fs::write(format!("{agent}/settings.json"), r#"{"theme":"dark"}"#).expect("write");
+        std::fs::write(format!("{agent}/state.json"), "{ not json").expect("state");
+
+        let mut manager = SettingsManager::create(&agent, &agent, &agent, true);
+        assert!(manager.errors().is_empty());
+        assert_eq!(manager.get_string("theme").as_deref(), Some("dark"));
+        manager
+            .set_nested(
+                SettingsScope::Global,
+                "changelogSeen",
+                &Settings::from_iter([("src".to_owned(), Value::from("1.0"))]),
+            )
+            .expect("state write replaces malformed bookkeeping");
+        let state: Value = serde_json::from_str(
+            &std::fs::read_to_string(format!("{agent}/state.json")).expect("read"),
+        )
+        .expect("json");
+        assert_eq!(state, serde_json::json!({"changelogSeen":{"src":"1.0"}}));
         reset_self_write_tracker_for_tests();
     }
 

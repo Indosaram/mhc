@@ -167,6 +167,7 @@ pub mod settings_diagnostics;
 pub mod settings_overrides;
 pub mod settings_public_types;
 pub mod settings_shapes;
+pub mod settings_state;
 pub mod share;
 pub mod shared_host_policy;
 pub mod skill_access;
