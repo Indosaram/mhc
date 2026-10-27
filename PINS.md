@@ -6,7 +6,7 @@ These revisions are the behavior of record. Ports, parity ledgers and golden fix
 | --- | --- | --- | --- |
 | senpi | 26acd9353 | 26acd935303869fd624f203dd8beb41f66ca4e5d | code-yeongyu/senpi |
 | oh-my-openagent | 7d818abaf9 | 7d818abaf97831537271b4af9629a5264649de37 | code-yeongyu/oh-my-openagent |
-| oh-my-pi | f59bbac3d | f59bbac3d56e8b485fef466388b1cb5be4b93123 | can1357/oh-my-pi (MIT; LSP mux design in crates/maho-lsp, task model in crates/maho-task) |
+| oh-my-pi | f59bbac3d | f59bbac3d56e8b485fef466388b1cb5be4b93123 | can1357/oh-my-pi (MIT; LSP mux design in crates/maho-lsp, task model in crates/maho-task, mnemopi memory engine in crates/maho-memory) |
 | omo-components (COMP) | 93b78ac | 93b78ac1cc8d488d124da7ed1d19f678e93fb0fd | (private checkout) |
 
 ## Pin roles

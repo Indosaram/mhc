@@ -4906,6 +4906,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-memory"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "maho-config",
+ "maho-ext-api",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "maho-memory-core"
 version = "0.0.0"
 dependencies = [
