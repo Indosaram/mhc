@@ -177,7 +177,9 @@ pub fn parse_user_rung(value: &Value) -> Option<ProfileRung> {
 /// user ids appended. `display_name`/`family`/`tier` fall back to the replaced built-in.
 pub fn merge_profiles(model_profiles: Option<&Value>) -> Vec<ModelProfile> {
     let mut out = builtin_profiles();
-    let Some(entries) = model_profiles.and_then(Value::as_object) else { return out };
+    let Some(entries) = model_profiles.and_then(Value::as_object) else {
+        return out;
+    };
     for (id, entry) in entries {
         let text = |key: &str| entry.get(key).and_then(Value::as_str).map(str::to_owned);
         let rungs: Vec<ProfileRung> = entry
@@ -187,7 +189,8 @@ pub fn merge_profiles(model_profiles: Option<&Value>) -> Vec<ModelProfile> {
             .unwrap_or_default();
         match out.iter_mut().find(|profile| &profile.id == id) {
             Some(builtin) => {
-                builtin.display_name = text("display_name").unwrap_or_else(|| builtin.display_name.clone());
+                builtin.display_name =
+                    text("display_name").unwrap_or_else(|| builtin.display_name.clone());
                 builtin.family = text("family").or_else(|| builtin.family.clone());
                 builtin.tier = text("tier").or_else(|| builtin.tier.clone());
                 builtin.rungs = rungs;
@@ -260,7 +263,11 @@ fn split_entry(entry: &str) -> (String, String) {
 }
 
 /// Matches one rung against `available` (§6.4).
-pub fn match_rung(rung: &ProfileRung, user_defined: bool, available: &[String]) -> Option<(String, String)> {
+pub fn match_rung(
+    rung: &ProfileRung,
+    user_defined: bool,
+    available: &[String],
+) -> Option<(String, String)> {
     if rung.providers.is_empty() {
         return match_available(&rung.model, available, None).map(|entry| split_entry(&entry));
     }
@@ -268,7 +275,9 @@ pub fn match_rung(rung: &ProfileRung, user_defined: bool, available: &[String]) 
         return rung.providers.iter().find_map(|provider| {
             let model = strip_provider(provider, &rung.model);
             let entry = format!("{provider}/{model}");
-            available.contains(&entry).then(|| (provider.clone(), model.to_owned()))
+            available
+                .contains(&entry)
+                .then(|| (provider.clone(), model.to_owned()))
         });
     }
     for provider in &rung.providers {
@@ -280,7 +289,8 @@ pub fn match_rung(rung: &ProfileRung, user_defined: bool, available: &[String]) 
             ids.push(as_written);
         }
         for id in ids {
-            if let Some(entry) = match_available(&format!("{provider}/{id}"), available, Some(only)) {
+            if let Some(entry) = match_available(&format!("{provider}/{id}"), available, Some(only))
+            {
                 return Some(split_entry(&entry));
             }
         }
@@ -322,7 +332,10 @@ pub fn resolve_profile(
         known.sort();
         return ProfileResolution::Unknown {
             name: active.to_owned(),
-            message: format!("unknown model profile \"{active}\"; known profiles: {}", known.join(", ")),
+            message: format!(
+                "unknown model profile \"{active}\"; known profiles: {}",
+                known.join(", ")
+            ),
             known,
         };
     };
@@ -354,7 +367,11 @@ pub fn resolve_profile(
 }
 
 /// The default lanes in order; the first `Resolved` wins, else the `daily-normal` result.
-pub fn resolve_default(profiles: &[ModelProfile], available: &[String], exclusions: &Exclusions) -> ProfileResolution {
+pub fn resolve_default(
+    profiles: &[ModelProfile],
+    available: &[String],
+    exclusions: &Exclusions,
+) -> ProfileResolution {
     let mut first = None;
     for id in DEFAULT_PROFILE_ORDER {
         let result = resolve_profile(profiles, id, available, exclusions);
@@ -370,7 +387,10 @@ pub fn resolve_default(profiles: &[ModelProfile], available: &[String], exclusio
 
 /// The configured profile to use: `None` when unset, blank, or the retired id that the user did
 /// not define.
-pub fn effective_profile(configured: Option<&str>, model_profiles: Option<&Value>) -> Option<String> {
+pub fn effective_profile(
+    configured: Option<&str>,
+    model_profiles: Option<&Value>,
+) -> Option<String> {
     let configured = configured.map(str::trim).filter(|c| !c.is_empty())?;
     if configured == RETIRED_PROFILE_ID
         && !model_profiles

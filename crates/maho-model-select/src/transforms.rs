@@ -6,13 +6,22 @@ fn is_digits(text: &str) -> bool {
 
 /// `claude-<name>-<N>-<M>` → `claude-<name>-<N>.<M>`.
 pub fn claude_dot_rule(id: &str) -> String {
-    let Some(rest) = id.strip_prefix("claude-") else { return id.to_owned() };
+    let Some(rest) = id.strip_prefix("claude-") else {
+        return id.to_owned();
+    };
     let parts: Vec<&str> = rest.split('-').collect();
     if parts.len() >= 3 {
         for i in 1..parts.len() - 1 {
-            let name_ok = parts[..i].iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphabetic()));
+            let name_ok = parts[..i]
+                .iter()
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphabetic()));
             if name_ok && is_digits(parts[i]) && is_digits(parts[i + 1]) {
-                let mut out = format!("claude-{}-{}.{}", parts[..i].join("-"), parts[i], parts[i + 1]);
+                let mut out = format!(
+                    "claude-{}-{}.{}",
+                    parts[..i].join("-"),
+                    parts[i],
+                    parts[i + 1]
+                );
                 for tail in &parts[i + 2..] {
                     out.push('-');
                     out.push_str(tail);
@@ -101,5 +110,8 @@ pub fn transform_for(provider: &str, model: &str) -> String {
 
 /// The model as written with one leading `provider/` stripped.
 pub fn strip_provider<'a>(provider: &str, model: &'a str) -> &'a str {
-    model.strip_prefix(provider).and_then(|rest| rest.strip_prefix('/')).unwrap_or(model)
+    model
+        .strip_prefix(provider)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .unwrap_or(model)
 }
