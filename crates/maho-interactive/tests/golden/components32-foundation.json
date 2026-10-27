@@ -40,7 +40,7 @@
           }
         ]
       },
-      "notice": "\u001b[38;5;145mSession continuity lost - resent the full conversation (transcript_missing) - sent 209.3KB, 4 duplicate ultrawork blocks collapsed\u001b[39m"
+      "notice": "\u001b[38;5;145mSession continuity lost - resent the full conversation (transcript_missing) - sent 209.3KB, 4 duplicate directive blocks collapsed\u001b[39m"
     },
     {
       "message": {
