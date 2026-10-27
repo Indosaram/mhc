@@ -5517,3 +5517,7 @@ f3dde3e9ea9c6459e20b312b0c8c184375e9c3608eeb00058a2174ccf12f5e21  tools/qa/ulw-i
 751858be97246af14699cb7b2c6613c4ba037d5f18985112ced4e2348a4ea72e  tools/residual-qa.mjs
 cf8897cd4b4b25fa8af328c97912658430c77b736b83b69df8f1c3f1f3060444  tools/run-session2-residual-gate.mjs
 e2fc8acfca3fda5fb5df951d2f8f288d2ff54549e3b608b0d6dc6f9633b06d7b  tools/verify-session2-residual.mjs
+# Implementer session 2 (2026-10-27): same checkout, forbidden paths still absent. For the single
+# `cargo check -p maho-cli --no-default-features` verification, crates/maho-cli/src/cli/doctor_mit.rs
+# and crates/maho-cli/src/import_omo.rs were materialized from git for the compiler only (never
+# opened or read by the implementer) and deleted again right after the check.
