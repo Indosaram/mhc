@@ -51,8 +51,8 @@ fn given_current_process_when_start_identity_queried_then_format_matches() {
 
     #[cfg(target_os = "windows")]
     {
-        // Unavailable until a safe `GetProcessTimes` binding exists; liveness alone is compared.
-        assert_eq!(identity, None);
+        let value = identity.expect("GetProcessTimes resolves the current process");
+        assert!(value.starts_with("windows-process-creation-filetime:"));
     }
 }
 
@@ -66,8 +66,14 @@ fn given_the_own_pid_when_start_identity_is_queried_twice_then_the_value_is_stab
 
 #[test]
 fn incompatible_identity_schemes_do_not_conflict_or_prove_comparability() {
-    assert!(!start_identities_conflict("ps-lstart:date", "proc-start-epoch:123"));
-    assert!(!start_identities_comparable("ps-lstart:date", "proc-start-epoch:123"));
+    assert!(!start_identities_conflict(
+        "ps-lstart:date",
+        "proc-start-epoch:123"
+    ));
+    assert!(!start_identities_comparable(
+        "ps-lstart:date",
+        "proc-start-epoch:123"
+    ));
 }
 
 /// The Linux branch is the fork-free port: `/proc` is read in process, no child is ever spawned.
