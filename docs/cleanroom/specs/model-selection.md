@@ -324,7 +324,8 @@ retired → that id/pin; else the default order).
   reasoning, skipped rungs, per-failure advice (refresh → re-authenticate that provider: in
   rpc/desktop via provider settings, otherwise via an interactive login; credentials → check that
   provider's credential configuration; request → check that model's headers in `models.json`),
-  and a note that mid-session fallback follows the retry chains in settings. Wording and the
+  and a note that failures later in the session are handled by the retry chains configured in
+  settings. Wording and the
   product prefix (`mhc`) are the implementer's.
   Proposed neutral type ids: `model-profile:applied`, `model-profile:unavailable`,
   `model-profile:unknown` (no consumer in mhc reads the old ids; Q5).
