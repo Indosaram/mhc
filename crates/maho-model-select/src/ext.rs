@@ -1,14 +1,18 @@
 //! The session-start model-profile extension (spec model-selection §6.7–6.8).
 
-use crate::probe::{Account, AuthProbe, ProbeError, ProbeFailure, ProbeReason, probe_and_resolve, rotation_allowed_by_models_json};
+use crate::probe::{
+    Account, AuthProbe, ProbeError, ProbeFailure, ProbeReason, probe_and_resolve,
+    rotation_allowed_by_models_json,
+};
 use crate::profile::{
-    ModelProfile, ProfileResolution, RETIRED_PROFILE_ID, effective_profile, merge_profiles, resolve_default,
-    resolve_profile,
+    ModelProfile, ProfileResolution, RETIRED_PROFILE_ID, effective_profile, merge_profiles,
+    resolve_default, resolve_profile,
 };
 use maho_ai::types::ModelThinkingLevel;
 use maho_ext_api::{
-    CustomMessage, EventKind, EventResult, Extension, ExtensionApi, ExtensionEvent, ExtensionFailure, ExtensionMode,
-    ModelRegistry, NotificationType, SendMessageOptions, SessionReason,
+    CustomMessage, EventKind, EventResult, Extension, ExtensionApi, ExtensionEvent,
+    ExtensionFailure, ExtensionMode, ModelRegistry, NotificationType, SendMessageOptions,
+    SessionReason,
 };
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -59,9 +63,14 @@ pub fn thinking_level_for(reasoning: Option<&str>) -> Option<ModelThinkingLevel>
 
 fn advice(failure: &ProbeFailure, rpc: bool) -> String {
     match failure.reason {
-        ProbeReason::Refresh if rpc => format!("re-authenticate {} in the provider settings", failure.provider),
+        ProbeReason::Refresh if rpc => format!(
+            "re-authenticate {} in the provider settings",
+            failure.provider
+        ),
         ProbeReason::Refresh => format!("log in to {} again", failure.provider),
-        ProbeReason::Credentials => format!("check the credential configuration of {}", failure.provider),
+        ProbeReason::Credentials => {
+            format!("check the credential configuration of {}", failure.provider)
+        }
         ProbeReason::Request => format!(
             "check the headers of {}/{} in models.json",
             failure.provider, failure.model
@@ -93,7 +102,15 @@ pub fn notice_for(
     };
     let failure_lines: Vec<String> = failures
         .iter()
-        .map(|f| format!("{}/{} skipped ({}): {}", f.provider, f.model, f.reason.as_str(), advice(f, rpc)))
+        .map(|f| {
+            format!(
+                "{}/{} skipped ({}): {}",
+                f.provider,
+                f.model,
+                f.reason.as_str(),
+                advice(f, rpc)
+            )
+        })
         .collect();
     let tail = if failure_lines.is_empty() {
         String::new()
@@ -112,7 +129,10 @@ pub fn notice_for(
             skipped,
             ..
         } => {
-            let mut text = format!("mhc: model profile {} selected {provider}/{model_id}", label(profile));
+            let mut text = format!(
+                "mhc: model profile {} selected {provider}/{model_id}",
+                label(profile)
+            );
             if let Some(reasoning) = reasoning {
                 text.push_str(&format!(" at {reasoning} reasoning"));
             }
@@ -138,10 +158,17 @@ pub fn notice_for(
         ),
         ProfileResolution::Empty { profile } => (
             UNAVAILABLE_TYPE,
-            format!("mhc: model profile {} has no models; keeping the current model.", label(profile)),
+            format!(
+                "mhc: model profile {} has no models; keeping the current model.",
+                label(profile)
+            ),
             json!({"profile": profile, "chain": []}),
         ),
-        ProfileResolution::Unknown { message, name, known } => (
+        ProfileResolution::Unknown {
+            message,
+            name,
+            known,
+        } => (
             UNKNOWN_TYPE,
             format!("mhc: {message}; keeping the current model."),
             json!({"profile": name, "known": known}),
@@ -173,8 +200,8 @@ impl AuthProbe for RegistryProbe {
         async move { allowed }
     }
 
-    fn accounts(&self, provider: &str) -> impl std::future::Future<Output = Vec<Account>> + Send {
-        async move {
+    async fn accounts(&self, provider: &str) -> Vec<Account> {
+        {
             self.registry
                 .get_credential_accounts(provider)
                 .await
@@ -192,12 +219,8 @@ impl AuthProbe for RegistryProbe {
         }
     }
 
-    fn provider_auth(
-        &self,
-        provider: &str,
-        slot: Option<&str>,
-    ) -> impl std::future::Future<Output = Result<(), ProbeError>> + Send {
-        async move {
+    async fn provider_auth(&self, provider: &str, slot: Option<&str>) -> Result<(), ProbeError> {
+        {
             self.registry
                 .get_provider_auth_for_slot(provider, slot)
                 .await
@@ -206,13 +229,13 @@ impl AuthProbe for RegistryProbe {
         }
     }
 
-    fn request_auth(
+    async fn request_auth(
         &self,
         provider: &str,
         model: &str,
         slot: Option<&str>,
-    ) -> impl std::future::Future<Output = Result<(), ProbeError>> + Send {
-        async move {
+    ) -> Result<(), ProbeError> {
+        {
             let Some(found) = self.registry.find(provider, model) else {
                 return Err(ProbeError {
                     class: Some("ModelNotFound".into()),

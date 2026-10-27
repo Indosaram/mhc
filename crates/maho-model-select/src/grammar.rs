@@ -35,7 +35,9 @@ pub fn clamp_reasoning<'a>(requested: &str, allowed: &[&'a str]) -> Option<&'a s
     allowed
         .iter()
         .filter_map(|candidate| {
-            let position = LEVEL_ORDER.iter().position(|level| level.eq_ignore_ascii_case(candidate.trim()))?;
+            let position = LEVEL_ORDER
+                .iter()
+                .position(|level| level.eq_ignore_ascii_case(candidate.trim()))?;
             (position <= rank).then_some((position, *candidate))
         })
         .max_by_key(|(position, _)| *position)
@@ -44,7 +46,10 @@ pub fn clamp_reasoning<'a>(requested: &str, allowed: &[&'a str]) -> Option<&'a s
 
 /// A trimmed model string, or `None` when empty or absent.
 pub fn normalize_model(value: Option<&str>) -> Option<String> {
-    value.map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned)
+    value
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned)
 }
 
 /// Replaces every `.` followed by a digit with `-` (`gpt-5.4` → `gpt-5-4`).
@@ -143,5 +148,8 @@ pub fn parse_model_string(reference: &str) -> Option<ParsedModel> {
 
 /// The provider of a reference (text before the first `/`), if qualified.
 pub fn provider_of(reference: &str) -> Option<&str> {
-    reference.split_once('/').map(|(provider, _)| provider).filter(|p| !p.is_empty())
+    reference
+        .split_once('/')
+        .map(|(provider, _)| provider)
+        .filter(|p| !p.is_empty())
 }

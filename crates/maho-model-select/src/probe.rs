@@ -66,7 +66,11 @@ pub trait AuthProbe {
     fn rotation_allowed(&self, provider: &str) -> impl Future<Output = bool> + Send;
     fn accounts(&self, provider: &str) -> impl Future<Output = Vec<Account>> + Send;
     /// Provider auth on a slot (`None` = the default credential).
-    fn provider_auth(&self, provider: &str, slot: Option<&str>) -> impl Future<Output = Result<(), ProbeError>> + Send;
+    fn provider_auth(
+        &self,
+        provider: &str,
+        slot: Option<&str>,
+    ) -> impl Future<Output = Result<(), ProbeError>> + Send;
     /// The model's request auth on the slot that succeeded.
     fn request_auth(
         &self,
@@ -77,7 +81,10 @@ pub trait AuthProbe {
 }
 
 /// Credential slots to try for a provider.
-pub async fn credential_slots<P: AuthProbe + Sync>(probe: &P, provider: &str) -> Vec<Option<String>> {
+pub async fn credential_slots<P: AuthProbe + Sync>(
+    probe: &P,
+    provider: &str,
+) -> Vec<Option<String>> {
     if !probe.rotation_allowed(provider).await {
         return vec![None];
     }
@@ -96,7 +103,10 @@ const MAX_ROUNDS: usize = 64;
 
 /// Resolves, probes the candidate, excludes what fails and re-resolves until a candidate passes or
 /// nothing resolves. Pins are never probed.
-pub async fn probe_and_resolve<P, R>(probe: &P, resolve: R) -> (ProfileResolution, Vec<ProbeFailure>)
+pub async fn probe_and_resolve<P, R>(
+    probe: &P,
+    resolve: R,
+) -> (ProfileResolution, Vec<ProbeFailure>)
 where
     P: AuthProbe + Sync,
     R: Fn(&Exclusions) -> ProfileResolution,
@@ -140,7 +150,10 @@ where
             exclusions.providers.insert(provider.clone());
             continue;
         };
-        if let Err(error) = probe.request_auth(provider, model_id, slot.as_deref()).await {
+        if let Err(error) = probe
+            .request_auth(provider, model_id, slot.as_deref())
+            .await
+        {
             failures.push(ProbeFailure {
                 provider: provider.clone(),
                 model: model_id.clone(),
@@ -158,7 +171,9 @@ where
 /// Whether `<agent dir>/models.json` allows credential rotation for `provider` (an unreadable
 /// file allows it).
 pub fn rotation_allowed_by_models_json(agent_dir: &Path, provider: &str) -> bool {
-    let Some(value) = maho_support::read_jsonc_file(&agent_dir.join("models.json")) else { return true };
+    let Some(value) = maho_support::read_jsonc_file(&agent_dir.join("models.json")) else {
+        return true;
+    };
     value
         .get("providers")
         .and_then(|p| p.get(provider))

@@ -48,7 +48,12 @@ pub enum DelegateChoice {
     None,
 }
 
-fn resolved(model: String, variant: Option<String>, rung: Option<usize>, from_fallback: bool) -> DelegateChoice {
+fn resolved(
+    model: String,
+    variant: Option<String>,
+    rung: Option<usize>,
+    from_fallback: bool,
+) -> DelegateChoice {
     DelegateChoice::Resolved(Resolved {
         model,
         variant,
@@ -73,7 +78,8 @@ fn log(message: &str) {
 pub fn resolve_delegate_model(input: &DelegateInput) -> DelegateChoice {
     let available = &input.available;
     let warm = !available.is_empty();
-    let connected: Option<&Vec<String>> = input.connected_providers.as_ref().filter(|c| !c.is_empty());
+    let connected: Option<&Vec<String>> =
+        input.connected_providers.as_ref().filter(|c| !c.is_empty());
     let is_connected = |model: &str| match (connected, provider_of(model)) {
         (Some(list), Some(provider)) => list.iter().any(|p| p == provider),
         _ => true,
@@ -81,12 +87,18 @@ pub fn resolve_delegate_model(input: &DelegateInput) -> DelegateChoice {
 
     if let Some(user) = normalize_model(input.user_model.as_deref()) {
         let (base, variant) = parse_variant(&user);
-        let primary = if variant.is_some() { base } else { user.clone() };
+        let primary = if variant.is_some() {
+            base
+        } else {
+            user.clone()
+        };
         if warm && !input.user_fallbacks.is_empty() && matches(&primary, available).is_none() {
             for fallback in &input.user_fallbacks {
                 let (model, fb_variant) = parse_variant(fallback);
                 if let Some(found) = matches(&model, available) {
-                    log(&format!("model {primary} is not available; using the configured fallback {found}"));
+                    log(&format!(
+                        "model {primary} is not available; using the configured fallback {found}"
+                    ));
                     return resolved(found, fb_variant, None, true);
                 }
             }
@@ -107,7 +119,9 @@ pub fn resolve_delegate_model(input: &DelegateInput) -> DelegateChoice {
             if is_connected(&model) {
                 return resolved(model, variant, None, false);
             }
-            log(&format!("skipping the category default {model}: its provider is not connected"));
+            log(&format!(
+                "skipping the category default {model}: its provider is not connected"
+            ));
         } else if let Some(found) = matches(&model, available) {
             let last = model.rsplit('/').next().unwrap_or(&model);
             if last.len() > "-high".len() && last.ends_with("-high") && found != model {
@@ -138,7 +152,11 @@ pub fn resolve_delegate_model(input: &DelegateInput) -> DelegateChoice {
     DelegateChoice::None
 }
 
-fn resolve_chain(input: &DelegateInput, warm: bool, connected: Option<&Vec<String>>) -> Option<DelegateChoice> {
+fn resolve_chain(
+    input: &DelegateInput,
+    warm: bool,
+    connected: Option<&Vec<String>>,
+) -> Option<DelegateChoice> {
     let chain = &input.chain;
     if !warm {
         return match connected {
@@ -154,7 +172,10 @@ fn resolve_chain(input: &DelegateInput, warm: bool, connected: Option<&Vec<Strin
             }
             Some(list) => chain.iter().enumerate().find_map(|(index, rung)| {
                 let provider = rung.providers.iter().find(|p| list.contains(p))?;
-                log(&format!("using chain rung {} through the connected provider {provider}", rung.model));
+                log(&format!(
+                    "using chain rung {} through the connected provider {provider}",
+                    rung.model
+                ));
                 Some(resolved(
                     format!("{provider}/{}", transform_for(provider, &rung.model)),
                     rung.variant.clone(),
@@ -174,9 +195,20 @@ fn resolve_chain(input: &DelegateInput, warm: bool, connected: Option<&Vec<Strin
             let only = std::slice::from_ref(provider);
             let transformed = transform_for(provider, &rung.model);
             let as_written = strip_provider(provider, &rung.model);
-            let found = match_available(&format!("{provider}/{transformed}"), &input.available, Some(only)).or_else(|| {
+            let found = match_available(
+                &format!("{provider}/{transformed}"),
+                &input.available,
+                Some(only),
+            )
+            .or_else(|| {
                 (transformed != as_written)
-                    .then(|| match_available(&format!("{provider}/{as_written}"), &input.available, Some(only)))
+                    .then(|| {
+                        match_available(
+                            &format!("{provider}/{as_written}"),
+                            &input.available,
+                            Some(only),
+                        )
+                    })
                     .flatten()
             });
             if let Some(found) = found {

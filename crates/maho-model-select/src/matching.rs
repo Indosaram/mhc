@@ -23,7 +23,9 @@ fn rules() -> &'static [(Regex, &'static str)] {
 pub fn normalize_for_match(name: &str) -> String {
     rules()
         .iter()
-        .fold(name.to_lowercase(), |text, (re, replacement)| re.replace_all(&text, *replacement).into_owned())
+        .fold(name.to_lowercase(), |text, (re, replacement)| {
+            re.replace_all(&text, *replacement).into_owned()
+        })
 }
 
 fn provider(entry: &str) -> &str {
@@ -35,12 +37,18 @@ fn model_id(entry: &str) -> &str {
 }
 
 /// One entry of `available` that serves `target`, or `None`.
-pub fn match_available(target: &str, available: &[String], providers: Option<&[String]>) -> Option<String> {
+pub fn match_available(
+    target: &str,
+    available: &[String],
+    providers: Option<&[String]>,
+) -> Option<String> {
     let wanted = normalize_for_match(target);
     let providers = providers.filter(|p| !p.is_empty());
     let rank = |entry: &str| -> usize {
         providers.map_or(0, |list| {
-            list.iter().position(|p| p == provider(entry)).unwrap_or(list.len())
+            list.iter()
+                .position(|p| p == provider(entry))
+                .unwrap_or(list.len())
         })
     };
     let candidates: Vec<(usize, &String, String)> = available
