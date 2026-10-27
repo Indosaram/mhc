@@ -25,7 +25,7 @@ omo = [
     "dep:lsp-daemon",
     "dep:senpi-task",
     "dep:delegate-core",
-    "dep:maho-ext-pi-comment-checker",
+    "maho-ext-pi-comment-checker/omo-core",
     "maho-ext-hooks/claude-plugins",
 ]
 
@@ -91,7 +91,7 @@ maho-ext-pi-webfetch = { path = "../extensions/maho-ext-pi-webfetch" }
 maho-ext-pi-rules = { path = "../extensions/maho-ext-pi-rules" }
 maho-ext-pi-websearch = { path = "../extensions/maho-ext-pi-websearch" }
 maho-ext-pi-goal = { path = "../extensions/maho-ext-pi-goal" }
-maho-ext-pi-comment-checker = { path = "../extensions/maho-ext-pi-comment-checker", optional = true }
+maho-ext-pi-comment-checker = { path = "../extensions/maho-ext-pi-comment-checker" }
 maho-ext-pi-ast-grep = { path = "../extensions/maho-ext-pi-ast-grep" }
 maho-ext-pi-nested-agents-md = { path = "../extensions/maho-ext-pi-nested-agents-md" }
 maho-ext-omo-zcode-oauth = { path = "../extensions/maho-ext-omo-zcode-oauth" }

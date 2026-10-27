@@ -3705,6 +3705,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-comment-checker"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "maho-comment-checker-core"
 version = "0.0.0"
 dependencies = [
@@ -4438,6 +4447,7 @@ dependencies = [
 name = "maho-ext-pi-comment-checker"
 version = "0.0.0"
 dependencies = [
+ "maho-comment-checker",
  "maho-comment-checker-core",
  "maho-ext-api",
  "maho-ext-host",
