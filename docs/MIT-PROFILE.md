@@ -79,9 +79,9 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
   explicit `model`, then a configured `categories.<name>` (no built-in categories), then the
   agent's models, resolved by `maho-model-select` with the parent session's model as the system
   default. Only the main session delegates by default (`task.max_depth` = 1); concurrency follows
-  `task.default_concurrency`. Worktree isolation (`isolated`, `task.isolation.enabled`) and
-  team/tmux panes are interfaces only until Phase 3: an isolated task is refused. Not included:
-  the omo `team_*`, `workflow`/DAG and `workpool` tools, `/task-kill`, `/dag`.
+  `task.default_concurrency`. Isolated tasks (`isolated: true`, default `task.isolation.enabled`)
+  run through `maho-isolation` (Phase 3, below). Team/tmux panes are still interfaces only. Not
+  included: the omo `team_*`, `workflow`/DAG and `workpool` tools, `/task-kill`, `/dag`.
 - `<builtin:memory>` (`maho-memory`, ported from the MIT mnemopi engine in oh-my-pi @ f59bbac):
   long-term memory in SQLite banks under `$MNEMOPI_DATA_DIR`, else `<agent dir>/memories/mnemopi`
   (`mnemopi.db` is the global bank, `banks/<name>/mnemopi.db` the others). Tools `retain` (one or
@@ -151,6 +151,40 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
 - Formatter / post-mutation hooks: interfaces in `maho_lsp::hooks` (`Formatter`,
   `PostMutationHook`, `HookChain`); the LSP diagnostics hook is the first implementation.
 
+## MIT ports and clean-room work (Phase 3)
+
+- Task workspace isolation (`maho-isolation`, ported from the MIT oh-my-pi @ f59bbac `pi-iso`
+  rcopy backend and task isolation runner; non-git parts from `docs/cleanroom/specs/isolation.md`),
+  the backend behind `<builtin:task>`:
+  - An isolated child runs in its own directory `<root>/t<hash>/m`, root `$MAHO_WORKTREE_DIR`
+    (absolute) or `<agent dir>/wt`. Inside git it is a detached `git worktree` of the repository
+    that mirrors the parent's staged, unstaged and untracked (non-ignored) state; outside git (or
+    with `task.isolation.backend: copy`) it is a recursive copy. The child's cwd keeps its relative
+    position. Copy-on-write backend names (`apfs`, `btrfs`, ...) fall back to this with a note.
+  - When the child succeeds, its changes (everything it edited, added, deleted or committed,
+    ignored files excepted) are taken as one patch against the isolation's own starting snapshot,
+    saved under `<root>/patches/`, and with `task.isolation.apply` (default on) applied to the
+    parent working tree (`merge: patch`, default) or committed on `mhc/task/<id>` and
+    cherry-picked onto the parent's HEAD (`merge: branch`; a failed cherry-pick keeps the branch).
+    A patch that does not apply is kept and reported; one already present is a no-op. With
+    `apply: false` nothing touches the parent. Outside git, changed files are written back only
+    if the parent's copies are unchanged since the start (all or nothing; otherwise the copy is
+    kept).
+  - A failed or cancelled child's changes are discarded. If capturing fails, the isolation is
+    kept as `<root>/t<hash>.retained-*` and named in the result. Otherwise the isolation (and its
+    worktree registration) is removed. Each isolation carries an owner marker (pid + start token);
+    isolations of processes that are gone are swept when `mhc` starts.
+  - The outcome is appended to the task's `<task-result>` as an `Isolation (...)` note. A resumed
+    isolated task starts from a fresh isolation of the parent's current state.
+  - Not included: copy-on-write backends, detaching the worktree's git dir, nested repositories
+    and submodules, AI commit messages, a `worktree` command.
+- `<builtin:git>` (`maho-git`, ported from the MIT oh-my-pi @ f59bbac agentic-commit tools):
+  read-only `git_overview` (changed files, diff stat, numstat; lock files listed apart),
+  `git_file_diff` (1-10 files, most important first, long diffs shortened), `git_hunk` (selected
+  hunks of one file) and `recent_commits` (subjects with conventional-commit style statistics).
+  Staged changes by default, `staged: false` for the working tree. The default (`omo`) build links
+  `maho-isolation` and `maho-git` but mounts neither.
+
 ## What is compiled out (needs the `omo` feature)
 
 | Area | In the MIT profile |
@@ -158,7 +192,7 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
 | omo mount (`<builtin:omo>`): its task/subagent tools, `team_*`, `workflow`/DAG, `workpool`, `/task-kill`, `/dag` | not registered (MIT `<builtin:task>` provides `task`, `task_output`, `task_list`, `task_resume`, `task_cancel`, `/tasks`) |
 | omo memory tools and commands (`/remember`, `/dream`, `/reflect`, `/search`, `/people`, `/palace`, `/init`, `/doctor`, `/facts`, `/memfs`, ...), the omo recall sidecar, facts child, git-backed Markdown memory | not registered (MIT `<builtin:memory>` provides `retain`, `recall`, `memory_get`, `memory_forget`, first-turn auto-recall and `/memory`) |
 | ast-grep MCP; builtin MCPs (context7, grep_app); `x_search`; omo browser bridge | not registered (MIT `<builtin:browser>` provides the `browser` and `computer` tools) |
-| gateway, onboarding, init-deep advisor, git-master, omo telemetry | not registered (MIT `<builtin:telemetry>` provides the usage ledger, `mhc usage` and opt-in OTLP export) |
+| gateway, onboarding, init-deep advisor, git-master, omo telemetry | not registered (MIT `<builtin:telemetry>` provides the usage ledger, `mhc usage` and opt-in OTLP export; MIT `<builtin:git>` provides read-only git inspection tools) |
 | bundled omo skills (`OMO_SENPI_SKILLS_ROOT`, the `skills/` root beside the executable) and the packaged root in app-server `skills/list` | not registered; settings and project skill paths still load |
 | `builtin:task-member` (`--extension builtin:task-member`) | unknown native extension error |
 | Claude Code plugin hooks (`maho-ext-hooks` feature `claude-plugins`) | not discovered; `~/.claude/settings.json` and project `.claude/settings*.json` hooks still load |
@@ -181,8 +215,11 @@ mass-ulw, persona prompts) are removed, not ported.
 3. `cargo clippy -p maho-cli --no-default-features --lib --bins -- -D warnings` and a build.
 4. `python3 scripts/mit-profile-smoke.py target/debug/mhc`: print-mode chat against a loopback
    model that calls the builtin `write` tool. It checks that `read`/`write`/`edit` and a shell tool (`bash` or the terminal's `bash_*`) are offered,
-   that the MIT LSP, task, memory and browser (`browser`, `computer`) tools are offered and no omo tool is, that a `task` call runs a child
-   `mhc -p` against the same model and returns its completed `<task-result>`, that a fact stored
+   that the MIT LSP, task, git, memory and browser (`browser`, `computer`) tools are offered and no omo tool is, that a `task` call runs a child
+   `mhc -p` against the same model and returns its completed `<task-result>`, that in a git
+   repository an `isolated: true` task runs its child in a git worktree whose written file is
+   applied back to the checkout (worktree removed afterwards), that the git tools are offered and
+   `git_overview` reports the change, that a fact stored
    with `retain` is auto-recalled into the next run's first turn and returned by `recall`, that
    `mhc memory import-legacy` + `mhc memory search` work on a legacy Markdown store, that the
    memory MCP server answers over stdio (`--memory-mcp`, `--omo-memory-mcp`), that (when
