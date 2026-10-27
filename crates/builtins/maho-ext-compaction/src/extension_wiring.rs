@@ -541,10 +541,6 @@ pub async fn generate_core_route_compaction(
         tools: summarization_tools(api),
         origin: Some("core-route".into()),
     };
-    let auth = context
-        .model_registry
-        .get_api_key_and_headers(&snapshot.model)
-        .await?;
     let controller = maho_ai::utils::abort::AbortController::new();
     let signal = controller.signal();
     let progress = |delta: &str| {
@@ -555,7 +551,7 @@ pub async fn generate_core_route_compaction(
             text: None,
         });
     };
-    let operation = crate::speculative::run_extension_compaction(&snapshot, auth.auth.api_key, auth.ambient, auth.auth.headers, Some(&signal), None, &progress);
+    let operation = crate::speculative::run_extension_compaction_for_context(context, &snapshot, Some(&signal), &progress);
     tokio::pin!(operation);
     let result = tokio::select! {
         biased;
@@ -647,23 +643,110 @@ pub async fn generate_core_route_compaction(
     }
 }
 
+/// senpi `applyBlockingCompaction` (minus the rejected-recovery and OpenAI-remote routes): honors the
+/// circuit breaker, consumes a pending warm speculative job before regenerating, and debits the
+/// breaker on transient summarization failures.
 pub async fn apply_live_blocking_compaction(
     api: &maho_ext_api::ExtensionApi,
     context: &maho_ext_api::ExtensionContext,
-    generation: u64,
+    generation: &std::sync::atomic::AtomicU64,
+    warm: &std::sync::Mutex<Option<crate::speculative_job::LiveSpeculativeJob>>,
+    state: &std::sync::Mutex<crate::state::CompactionExtensionState>,
     instructions: String,
 ) -> Result<crate::speculative::SpeculativeCompactionResult, maho_ext_api::ExtensionFailure> {
+    use crate::speculative::SpeculativeCompactionResult as Outcome;
+    use std::sync::{PoisonError, atomic::Ordering};
     if context
         .model
         .as_ref()
         .is_some_and(|model| matches!(model.provider.as_str(), "cursor" | "cursor-cli-oauth"))
         && !context.is_idle()
     {
-        return Ok(crate::speculative::SpeculativeCompactionResult::Rejected);
+        return Ok(Outcome::Rejected);
     }
-    let signal = context.begin_compaction(maho_ext_api::BeginCompactionOptions {
+    let now = || chrono::Utc::now().timestamp_millis() as f64;
+    {
+        let state = state.lock().unwrap_or_else(PoisonError::into_inner);
+        if crate::circuit_breaker::is_tripped(&state, now())
+            || crate::per_turn_cap::should_reject_by_cap(&state).cancel
+        {
+            return Ok(Outcome::Rejected);
+        }
+    }
+    let record_failure = || {
+        let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+        let previous = std::mem::take(&mut *state);
+        *state = crate::circuit_breaker::record_failure(
+            previous,
+            now(),
+            Some(maho_ext_api::CompactionReason::Extension),
+            None,
+        );
+    };
+    let mut signal = context.begin_compaction(maho_ext_api::BeginCompactionOptions {
         reason: maho_ext_api::CompactionReason::Extension,
     })?;
+    // Upstream awaits the pending warm job and applies it instead of regenerating (`warm_consumed`).
+    let pending = warm.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    if let Some(job) = pending {
+        let settlement = {
+            let cancelled = async {
+                match &signal {
+                    Some(signal) => signal.cancelled().await,
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            tokio::pin!(cancelled);
+            let settled = job.settled();
+            tokio::pin!(settled);
+            tokio::select! {
+                biased;
+                settlement = &mut settled => settlement,
+                () = &mut cancelled => {
+                    job.controller.abort(None);
+                    settled.await
+                }
+            }
+        };
+        let current = generation.load(Ordering::SeqCst);
+        if let Some(failure) = settlement.error {
+            warm.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if crate::transient_failure::is_transient_summarization_failure(
+                failure.classification,
+                &failure.message,
+            ) {
+                end_compaction_feedback(
+                    context,
+                    signal,
+                    false,
+                    "failed",
+                    Some(&failure.message.replace("senpi:no-turn-retry:", "")),
+                )?;
+                record_failure();
+                return Ok(Outcome::Failed);
+            }
+        } else {
+            let result = crate::speculative::apply_generated_compaction(
+                context,
+                Some(&job.snapshot),
+                current,
+                settlement.result,
+                signal.clone(),
+            )
+            .await?;
+            warm.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if result == Outcome::Applied {
+                end_compaction_feedback(context, signal, true, "applied", None)?;
+                return Ok(result);
+            }
+            if result == Outcome::Rejected {
+                signal = context.begin_compaction(maho_ext_api::BeginCompactionOptions {
+                    reason: maho_ext_api::CompactionReason::Extension,
+                })?;
+            }
+        }
+    }
+    let generation = generation.fetch_add(1, Ordering::SeqCst) + 1;
     let Some(mut snapshot) = crate::speculative::create_speculative_compaction_snapshot(
         context,
         generation,
@@ -672,13 +755,9 @@ pub async fn apply_live_blocking_compaction(
     )?
     else {
         end_compaction_feedback(context, signal, false, "unavailable", None)?;
-        return Ok(crate::speculative::SpeculativeCompactionResult::Unavailable);
+        return Ok(Outcome::Unavailable);
     };
     snapshot.origin = Some("blocking".into());
-    let auth = context
-        .model_registry
-        .get_api_key_and_headers(&snapshot.model)
-        .await?;
     let controller = maho_ai::utils::abort::AbortController::new();
     let ai_signal = controller.signal();
     let generated = {
@@ -696,7 +775,7 @@ pub async fn apply_live_blocking_compaction(
                 None => std::future::pending::<()>().await,
             }
         };
-        let operation = crate::speculative::run_extension_compaction(&snapshot,auth.auth.api_key,auth.ambient,auth.auth.headers,Some(&ai_signal),None,&progress);
+        let operation = crate::speculative::run_extension_compaction_for_context(context,&snapshot,Some(&ai_signal),&progress);
         tokio::pin!(operation);
         tokio::select! {
             biased;
@@ -715,19 +794,13 @@ pub async fn apply_live_blocking_compaction(
             )
             .await?;
             let reason = match result {
-                crate::speculative::SpeculativeCompactionResult::Applied => "applied",
-                crate::speculative::SpeculativeCompactionResult::Stale => "stale",
-                crate::speculative::SpeculativeCompactionResult::Rejected => "rejected",
-                crate::speculative::SpeculativeCompactionResult::Unavailable => "unavailable",
-                crate::speculative::SpeculativeCompactionResult::Failed => "failed",
+                Outcome::Applied => "applied",
+                Outcome::Stale => "stale",
+                Outcome::Rejected => "rejected",
+                Outcome::Unavailable => "unavailable",
+                Outcome::Failed => "failed",
             };
-            end_compaction_feedback(
-                context,
-                signal,
-                result == crate::speculative::SpeculativeCompactionResult::Applied,
-                reason,
-                None,
-            )?;
+            end_compaction_feedback(context, signal, result == Outcome::Applied, reason, None)?;
             Ok(result)
         }
         Err(error) => {
@@ -738,7 +811,14 @@ pub async fn apply_live_blocking_compaction(
                 "failed",
                 Some(&error.to_string().replace("senpi:no-turn-retry:", "")),
             )?;
-            Ok(crate::speculative::SpeculativeCompactionResult::Failed)
+            let failure = crate::speculative_job::LiveSummaryFailure::from(error);
+            if crate::transient_failure::is_transient_summarization_failure(
+                failure.classification,
+                &failure.message,
+            ) {
+                record_failure();
+            }
+            Ok(Outcome::Failed)
         }
     }
 }

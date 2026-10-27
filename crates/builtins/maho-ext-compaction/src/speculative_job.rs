@@ -85,34 +85,20 @@ pub fn start_live_speculative_job(
     let controller = AbortController::new();
     let signal = controller.signal();
     let task_snapshot = snapshot.clone();
-    let registry = Arc::clone(&context.model_registry);
+    let context = context.clone();
     let armed = context
         .get_context_usage()?
         .and_then(|usage| usage.tokens)
         .unwrap_or(0);
     let settled = async move {
-        let auth = tokio::select! {
-            biased;
-            () = signal.cancelled() => return JobSettlement { result: None, error: None },
-            auth = registry.get_api_key_and_headers(&task_snapshot.model) => auth,
-        };
-        let result = match auth {
-            Ok(auth) => crate::speculative::run_extension_compaction(
-                &task_snapshot,
-                auth.auth.api_key,
-                auth.ambient,
-                auth.auth.headers,
-                Some(&signal),
-                None,
-                &|_| {},
-            )
-            .await
-            .map_err(LiveSummaryFailure::from),
-            Err(error) => Err(LiveSummaryFailure {
-                message: error.to_string(),
-                classification: crate::transient_failure::SummarizationFailure::Other,
-            }),
-        };
+        let result = crate::speculative::run_extension_compaction_for_context(
+            &context,
+            &task_snapshot,
+            Some(&signal),
+            &|_| {},
+        )
+        .await
+        .map_err(LiveSummaryFailure::from);
         match result {
             Ok(result) => JobSettlement {
                 result,

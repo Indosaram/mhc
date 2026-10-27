@@ -34,7 +34,7 @@ pub fn openai_remote_compaction_timeout_ms(model: &Model, tokens: u64) -> u64 {
     } else {
         REMOTE_COMPACTION_TIMEOUT_MS
     };
-    floor.max(tokens.saturating_mul(12)).min(300_000)
+    floor.max(tokens.saturating_mul(2)).min(900_000)
 }
 
 pub fn openai_remote_compaction_uses_v2(model: &Model) -> bool {
@@ -90,7 +90,8 @@ pub async fn run_remote_compaction(
         ) as f64,
         options.timeout,
     );
-    let deadline = crate::openai_remote_timeout::RemoteCompactionDeadline::new(compaction_timeout);
+    // One shared deadline across every attempt (senpi `createRemoteCompactionDeadline`).
+    let deadline = options.deadline.with_attempt_budget(compaction_timeout);
     if (options.model.api == "openai-responses"
         && v2::supports_openai_responses_remote_compaction_v2(options.model))
         || options.model.api == "openai-codex-responses"
@@ -119,7 +120,14 @@ pub async fn run_remote_compaction(
         }
         emit(event);
     };
-    if v2::supports_openai_responses_websocket(options.model) {
+    let budget_exhausted = |transport: &str| {
+        let exhausted = deadline.remaining().is_zero();
+        if exhausted {
+            event("remote_fallback", transport, json!({"reason":"remote-compaction-budget-exhausted"}));
+        }
+        exhausted
+    };
+    if v2::supports_openai_responses_websocket(options.model) && !budget_exhausted("websocket") {
         event(
             "remote_started",
             "websocket",
@@ -186,6 +194,9 @@ pub async fn run_remote_compaction(
         input_item_count: options.request.input_item_count,
         tokens_before: options.request.tokens_before,
     };
+    if budget_exhausted("compact-endpoint") {
+        return Ok(None);
+    }
     let headers = options
         .headers
         .iter()
@@ -820,10 +831,11 @@ mod timeout_tests {
     fn timeout_scales_with_input_and_respects_a_hard_cap() {
         let model: Model = serde_json::from_value(json!({"id":"m","name":"m","provider":"openai","api":"openai-responses","baseUrl":"https://api.openai.com/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":200000,"maxTokens":10000})).expect("model fixture");
         assert_eq!(openai_remote_compaction_timeout_ms(&model, 1), 15_000);
-        assert_eq!(openai_remote_compaction_timeout_ms(&model, 20_000), 240_000);
+        assert_eq!(openai_remote_compaction_timeout_ms(&model, 20_000), 40_000);
+        assert_eq!(openai_remote_compaction_timeout_ms(&model, 300_000), 600_000);
         assert_eq!(
             openai_remote_compaction_timeout_ms(&model, u64::MAX),
-            300_000
+            900_000
         );
     }
 }

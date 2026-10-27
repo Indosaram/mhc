@@ -20,18 +20,25 @@ pub fn reset_on_session_compact(state:&mut DegradationMonitorState) {
     state.no_text_counter=0;
     state.recovery_triggered_this_cycle=false;
 }
-pub async fn handle_message_end<F,Fut,N>(state:&mut DegradationMonitorState,event:MonitoredMessageEvent<'_>,apply_compaction:F,notify:N)
-where F:FnOnce(&'static str)->Fut,Fut:Future<Output=RecoveryResult>,N:FnOnce(&'static str) {
-    if state.post_compaction_turns_remaining==0 {return;}
+/// Decides whether this message triggers recovery; mutates counters only. Callers must drop any
+/// lock on `state` before running the recovery compaction, whose `session_compact` re-enters the monitor.
+pub fn begin_recovery(state:&mut DegradationMonitorState,event:&MonitoredMessageEvent<'_>)->bool {
+    if state.post_compaction_turns_remaining==0 {return false;}
     let has_text=event.role!="assistant" || event.content.iter().any(|part|part.kind=="text" && part.text.is_some_and(|text|!text.is_empty()));
-    if has_text {state.no_text_counter=0;return;}
+    if has_text {state.no_text_counter=0;return false;}
     state.no_text_counter=state.no_text_counter.saturating_add(1);
-    if state.no_text_counter<POST_COMPACTION_NO_TEXT_THRESHOLD || state.recovery_triggered_this_cycle || state.recovery_attempts>=MAX_RECOVERY_ATTEMPTS {return;}
+    if state.no_text_counter<POST_COMPACTION_NO_TEXT_THRESHOLD || state.recovery_triggered_this_cycle || state.recovery_attempts>=MAX_RECOVERY_ATTEMPTS {return false;}
     state.recovery_triggered_this_cycle=true;
     state.recovery_attempts=state.recovery_attempts.saturating_add(1);
     state.no_text_counter=0;
+    true
+}
+pub fn should_notify_recovery(result:&RecoveryResult)->bool {result.applied || result.reason!="failed"}
+pub async fn handle_message_end<F,Fut,N>(state:&mut DegradationMonitorState,event:MonitoredMessageEvent<'_>,apply_compaction:F,notify:N)
+where F:FnOnce(&'static str)->Fut,Fut:Future<Output=RecoveryResult>,N:FnOnce(&'static str) {
+    if !begin_recovery(state,&event) {return;}
     let result=apply_compaction(RECOVERY_INSTRUCTIONS).await;
-    if result.applied || result.reason!="failed" {notify(RECOVERY_NOTIFICATION);}
+    if should_notify_recovery(&result) {notify(RECOVERY_NOTIFICATION);}
 }
 pub fn handle_turn_end(state:&mut DegradationMonitorState) {
     state.post_compaction_turns_remaining=state.post_compaction_turns_remaining.saturating_sub(1);

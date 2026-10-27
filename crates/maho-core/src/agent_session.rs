@@ -1291,6 +1291,17 @@ impl maho_ext_api::ModelRegistry for ExtensionModelRegistryView {
     > {
         Ok(self.registry.stream_simple(model, context, options))
     }
+    fn stream(
+        &self,
+        model: &Model,
+        context: &maho_ai::types::Context,
+        options: Option<maho_ai::types::StreamOptions>,
+    ) -> Result<
+        maho_ai::utils::event_stream::AssistantMessageEventStream,
+        maho_ext_api::ExtensionFailure,
+    > {
+        Ok(self.registry.stream(model, context, options))
+    }
     fn get_api_key_and_headers<'a>(
         &'a self,
         model: &'a Model,
@@ -2034,6 +2045,37 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             keep_recent_tokens: resolved.keep_recent_tokens,
         }
     }
+    fn get_compaction_model(&self) -> Option<Model> {
+        let session = self.session().ok()?;
+        let model = session.model();
+        let selector = session.with_settings_manager(|manager| {
+            manager
+                .get_value("compaction")
+                .and_then(|settings| settings.get("model"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+        let Some(selector) = selector else {
+            return Some(model);
+        };
+        let runtime = session.model_runtime();
+        let configured = selector
+            .split_once('/')
+            .filter(|(provider, _)| !provider.is_empty())
+            .and_then(|(provider, id)| runtime.get_model(provider, id));
+        // senpi `_resolveCompactionModel` (healthy session): an unknown or credential-less override
+        // keeps the session model; "no credentials" is only decided from a fresh availability snapshot.
+        // Spent-account rerouting is not ported (the Rust retry controller has no spent-provider query).
+        Some(match configured {
+            Some(configured)
+                if !(runtime.has_fresh_availability_snapshot()
+                    && !runtime.has_configured_auth(&configured.provider)) =>
+            {
+                configured
+            }
+            _ => model,
+        })
+    }
     fn get_resolved_compaction_settings(&self) -> Option<maho_ext_api::ResolvedCompactionSettings> {
         let session = self
             .session()
@@ -2468,6 +2510,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             session.state().compaction_abort_controller = None;
             session.state().compaction_extension_signal = None;
             session.state().compaction_signal_bridge = None;
+            let accepted_request_id = request_id.clone();
             session.emit(AgentSessionEvent::CompactionEnd {
                 reason: options.reason,
                 request_id: Some(request_id),
@@ -2481,10 +2524,33 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
                     .err()
                     .map(|error| format!("Compaction failed: {error}")),
             });
-            if applied.is_err() {
-                return Ok(maho_ext_api::ApplyCompactionResult::Rejected);
-            }
+            let entry = match applied {
+                Ok(entry) => entry,
+                Err(_) => return Ok(maho_ext_api::ApplyCompactionResult::Rejected),
+            };
             session.state().delegated_compaction_key = None;
+            // senpi `_executeCompaction` emits `session_compact` for extension-applied compactions too.
+            session
+                .dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionCompact(
+                    maho_ext_api::SessionCompactEvent::Accepted {
+                        reason: options.reason,
+                        request_id: accepted_request_id,
+                        compaction_entry: session_entry_from_value(entry),
+                        from_extension: true,
+                        will_retry: false,
+                    },
+                ))
+                .await;
+            // senpi `_onCompactionContextChanged`.
+            let released = session
+                .retry_fallback
+                .lock()
+                .await
+                .as_mut()
+                .is_some_and(|controller| controller.notify_compaction_applied());
+            if released && !session.is_streaming() {
+                session.restore_fallback_primary().await;
+            }
             Ok(maho_ext_api::ApplyCompactionResult::Applied)
         })
     }
@@ -28938,6 +29004,65 @@ mod tests {
             matches!(&events[1], AgentSessionEvent::CompactionEnd { request_id: completed, accepted: Some(true), .. } if completed == request_id)
         );
         assert_eq!(events.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn extension_applied_compaction_dispatches_session_compact() {
+        let session = test_session();
+        session.agent.set_model(test_model());
+        let retained = session.with_session_manager_mut(|manager| {
+            manager.append_message(serde_json::json!({"role":"user","content":"recent","timestamp":0}))
+        });
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let captured = seen.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new(
+            "<inline:apply-compact>",
+            session.cwd().into(),
+            Default::default(),
+        );
+        extension.handlers.insert(
+            maho_ext_api::EventKind::SessionCompact,
+            vec![Arc::new(move |event, _| {
+                if let maho_ext_api::ExtensionEvent::SessionCompact(
+                    maho_ext_api::SessionCompactEvent::Accepted { from_extension, .. },
+                ) = event
+                {
+                    lock(&captured).push(*from_extension);
+                }
+                Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+            })],
+        );
+        session
+            .set_extension_runner(maho_ext_host::ExtensionRunner::new(
+                vec![extension],
+                Default::default(),
+                Default::default(),
+                test_extension_context(&session),
+            ))
+            .await;
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        let result = maho_ext_api::CompactionResult {
+            summary: "digest".to_owned(),
+            first_kept_entry_id: retained["id"].as_str().expect("retained").to_owned(),
+            tokens_before: 100,
+            details: None,
+        };
+        assert_eq!(
+            maho_ext_api::ExtensionContextActions::apply_compaction(
+                &actions,
+                    result,
+                    maho_ext_api::ApplyCompactionOptions {
+                        reason: maho_ext_api::CompactionReason::Extension,
+                        expected_revision: Some(session.message_revision()),
+                        expected_warm_anchor: None,
+                        signal: None,
+                    },
+                )
+                .await
+                .expect("applied"),
+            maho_ext_api::ApplyCompactionResult::Applied
+        );
+        assert_eq!(*lock(&seen), [true]);
     }
 
     #[tokio::test]
