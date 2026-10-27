@@ -21,9 +21,10 @@ pub mod settings;
 pub mod summary;
 
 pub use agents::{AgentDefinition, AgentSource, Discovery, bundled_agents, discover};
-pub use extension::{TOOL_NAMES, TaskExtension};
+pub use extension::{AddonCommand, AddonHandler, AddonTool, Notifier, TOOL_NAMES, TaskAddon, TaskExtension, TaskScope};
 pub use manager::{SpawnRequest, TaskManager, TaskManagerOptions};
 pub use models::{ModelChoice, ModelContext, ModelRequest, choose_model};
+pub use isolation::{IsolatedWorkspace, TaskObserver, WorkspaceIsolation};
 pub use record::{StateDir, TaskRecord, TaskStatus};
 pub use runner::{CancelToken, ProcessRunner, RunOutcome, RunSpec, TaskRunner};
 pub use settings::TaskSettings;

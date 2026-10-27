@@ -39,6 +39,101 @@ pub struct TaskExtension {
     pub isolation: Option<Arc<dyn WorkspaceIsolation>>,
     pub observers: Vec<Arc<dyn TaskObserver>>,
     pub hooks: HookChain,
+    /// Tools and commands layered on the task machinery (e.g. team tools), registered with the
+    /// task tools under the same depth gate.
+    pub addons: Vec<Arc<dyn TaskAddon>>,
+}
+
+/// Sends a displayed follow-up message (`custom_type`, text, details) to the session that owns
+/// the tools; the message triggers a turn.
+pub type Notifier = Arc<dyn Fn(&str, &str, Value) + Send + Sync>;
+
+/// Per-call access to the delegation machinery for tools layered on top of it.
+#[derive(Clone)]
+pub struct TaskScope {
+    shared: Arc<Shared>,
+    info: Arc<CallInfo>,
+}
+
+impl TaskScope {
+    /// The task manager of the calling session (same state directory as `task`).
+    pub fn manager(&self) -> Arc<TaskManager> {
+        self.shared.manager(&self.info.session_id)
+    }
+    pub fn session_id(&self) -> &str {
+        &self.info.session_id
+    }
+    pub fn cwd(&self) -> &Path {
+        &self.info.cwd
+    }
+    /// The merged configuration view.
+    pub fn view(&self) -> &Value {
+        &self.shared.view
+    }
+    pub fn settings(&self) -> &TaskSettings {
+        &self.shared.settings
+    }
+    /// A background spawn request from a `task`-shaped item (`task`, `agent`, `category`,
+    /// `model`, `name`, `isolated`), with the `task` tool's agent and model rules.
+    ///
+    /// # Errors
+    /// Missing task, unknown agent, or no usable model.
+    pub fn request(&self, item: &Value, context: Option<&str>) -> Result<SpawnRequest, String> {
+        let mut request = spawn_request(&self.shared, item, context, Some(true), &self.info)?;
+        request.background = true;
+        Ok(request)
+    }
+    /// The session's message sender, when it has one.
+    pub fn notifier(&self) -> Option<Notifier> {
+        let sender = self.shared.sender.clone()?;
+        Some(Arc::new(move |custom_type: &str, text: &str, details: Value| {
+            let _ = sender.send_message(
+                CustomMessage {
+                    custom_type: custom_type.to_owned(),
+                    content: vec![ToolContent::text(text)],
+                    display: true,
+                    details: Some(details),
+                },
+                SendMessageOptions {
+                    trigger_turn: true,
+                    deliver_as: Some(DeliverAs::FollowUp),
+                },
+            );
+        }))
+    }
+}
+
+/// Handler of an addon tool.
+pub type AddonHandler = Arc<
+    dyn Fn(TaskScope, Value, CancelToken) -> crate::runner::BoxFuture<'static, Result<ToolResult, ToolError>>
+        + Send
+        + Sync,
+>;
+
+/// A tool contributed by a [`TaskAddon`].
+#[derive(Clone)]
+pub struct AddonTool {
+    pub name: String,
+    pub label: String,
+    pub description: String,
+    pub parameters: Value,
+    pub handler: AddonHandler,
+}
+
+/// A slash command contributed by a [`TaskAddon`]; the handler's text is shown to the user.
+#[derive(Clone)]
+pub struct AddonCommand {
+    pub name: String,
+    pub description: String,
+    pub handler: Arc<dyn Fn(TaskScope, String) -> String + Send + Sync>,
+}
+
+/// Tools and commands built on the task machinery.
+pub trait TaskAddon: Send + Sync {
+    fn tools(&self) -> Vec<AddonTool>;
+    fn commands(&self) -> Vec<AddonCommand> {
+        Vec::new()
+    }
 }
 
 static MANAGERS: Mutex<Option<HashMap<PathBuf, Arc<TaskManager>>>> = Mutex::new(None);
@@ -137,6 +232,7 @@ fn bool_param(params: &Value, key: &str) -> Option<bool> {
     params.get(key).and_then(Value::as_bool)
 }
 
+#[derive(Clone)]
 struct CallInfo {
     cwd: PathBuf,
     session_id: String,
@@ -198,6 +294,9 @@ fn spawn_request(
             .or(background)
             .unwrap_or(agent.background),
         isolated: bool_param(item, "isolated").unwrap_or(shared.settings.isolation_enabled),
+        group: None,
+        pane: bool_param(item, "pane"),
+        quiet: false,
     })
 }
 
@@ -315,7 +414,8 @@ fn task_item_properties() -> Value {
         "model": {"type": "string", "description": "Explicit `provider/model` (overrides agent and category models)"},
         "name": {"type": "string", "description": "CamelCase id for the task (generated when omitted)"},
         "background": {"type": "boolean", "description": "Return immediately and deliver the result later"},
-        "isolated": {"type": "boolean", "description": "Run in an isolated copy of the workspace (needs an isolation backend)"}
+        "isolated": {"type": "boolean", "description": "Run in an isolated copy of the workspace (needs an isolation backend)"},
+        "pane": {"type": "boolean", "description": "Follow the run in a terminal pane when mhc runs inside tmux/cmux (default: configured behaviour)"}
     })
 }
 
@@ -439,6 +539,29 @@ fn definitions(shared: &Arc<Shared>) -> Vec<ToolDefinition> {
                 Ok(text_result(manager.cancel(id), json!({"id": id})))
             }))),
     ]
+    .into_iter()
+    .chain(addon_definitions(shared))
+    .collect()
+}
+
+fn addon_definitions(shared: &Arc<Shared>) -> Vec<ToolDefinition> {
+    let mut definitions = Vec::new();
+    for addon in &shared.config.addons {
+        for tool in addon.tools() {
+            let handler = Arc::clone(&tool.handler);
+            definitions.push(define(
+                shared,
+                &tool.name,
+                &tool.label,
+                tool.description.clone(),
+                tool.parameters.clone(),
+                Arc::new(move |shared, params, info, cancel| {
+                    handler(TaskScope { shared, info: Arc::new(info) }, params, cancel)
+                }),
+            ));
+        }
+    }
+    definitions
 }
 
 impl Extension for TaskExtension {
@@ -464,5 +587,31 @@ impl Extension for TaskExtension {
                 })
             }),
         );
+        for addon in &shared.config.addons {
+            for command in addon.commands() {
+                let command_shared = Arc::clone(&shared);
+                let handler = Arc::clone(&command.handler);
+                api.register_command(
+                    &command.name,
+                    Some(command.description.clone()),
+                    None,
+                    Arc::new(move |raw, ctx| {
+                        let scope = TaskScope {
+                            info: Arc::new(CallInfo {
+                                cwd: command_shared.cwd.clone(),
+                                session_id: ctx.session_manager.session_id().to_owned(),
+                                parent_model: None,
+                            }),
+                            shared: Arc::clone(&command_shared),
+                        };
+                        let text = handler(scope, raw.to_string());
+                        Box::pin(async move {
+                            ctx.ui.notify(&text, NotificationType::Info);
+                            Ok(())
+                        })
+                    }),
+                );
+            }
+        }
     }
 }
