@@ -11,6 +11,11 @@ and then answers in text, and checks that:
   delegation tools (`maho-task`: task, task_output, task_list, task_resume, task_cancel) are required;
 - the `task` tool delegates: a child `mhc -p` process answers through the same loopback model and
   its result comes back to the parent as a completed `<task-result>`;
+- isolated delegation (`maho-isolation`): in a git repository a `task` call with `isolated: true`
+  runs the child in a git worktree, the file the child writes there is applied back to the parent
+  checkout, the result note says so and the worktree is removed;
+- the read-only git tools (`maho-git`: git_overview, git_file_diff, git_hunk, recent_commits) are
+  offered and `git_overview` reports the repository's changes;
 - the MIT memory tools (`maho-memory`: retain, recall, memory_get, memory_forget) are offered; a
   fact stored with `retain` in one run is auto-recalled into the next run's first turn and found by
   the `recall` tool;
@@ -50,6 +55,10 @@ REQUIRED_TOOLS = {"read", "write", "edit"}
 OMO_TOOL_PREFIXES = ("task", "team_", "workpool", "memory", "x_search", "omo_")
 # MIT replacements that are expected in the MIT profile.
 MIT_TASK_TOOLS = {"task", "task_output", "task_list", "task_resume", "task_cancel"}
+MIT_GIT_TOOLS = {"git_overview", "git_file_diff", "git_hunk", "recent_commits"}
+ISOLATED_FILE = "isolated-smoke.txt"
+ISOLATED_CONTENT = "written by an isolated child"
+ISOLATION_MARKER = "mit-profile-isolation-ok"
 CHILD_MARKER = "mit-profile-child-ok"
 PARENT_MARKER = "mit-profile-delegation-ok"
 MIT_LSP_TOOLS = {"lsp_diagnostics", "lsp_goto_definition", "lsp_find_references", "lsp_symbols", "lsp_prepare_rename", "lsp_rename"}
@@ -137,6 +146,49 @@ class DelegateModel(http.server.BaseHTTPRequestHandler):
             ])
         else:
             body = sse([chunk({"role": "assistant", "content": PARENT_MARKER}), chunk({}, "stop")])
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class IsolationModel(http.server.BaseHTTPRequestHandler):
+    """Parent: `task` (isolated), then `git_overview`, then answers. Child: `write`, then answers."""
+    requests: list[dict] = []
+
+    def log_message(self, *_args) -> None:
+        pass
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("content-length", "0"))
+        payload = json.loads(self.rfile.read(length) or b"{}")
+        IsolationModel.requests.append(payload)
+        offered = tool_names(payload)
+        results = sum(1 for message in payload.get("messages") or [] if message.get("role") == "tool")
+        call = None
+        if "task" not in offered:
+            if results == 0:
+                call = ("write", {"path": ISOLATED_FILE, "content": ISOLATED_CONTENT})
+            else:
+                text = CHILD_MARKER
+        elif results == 0:
+            call = ("task", {"task": "Write the smoke file.", "name": "IsoChild", "isolated": True})
+        elif results == 1:
+            call = ("git_overview", {"staged": False, "include_untracked": True})
+        else:
+            text = ISOLATION_MARKER
+        if call:
+            body = sse([
+                chunk({"role": "assistant", "tool_calls": [{
+                    "index": 0, "id": f"call_{call[0]}", "type": "function",
+                    "function": {"name": call[0], "arguments": json.dumps(call[1])},
+                }]}),
+                chunk({}, "tool_calls"),
+            ])
+        else:
+            body = sse([chunk({"role": "assistant", "content": text}), chunk({}, "stop")])
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(body)))
@@ -367,6 +419,9 @@ def main() -> int:
         task_missing = MIT_TASK_TOOLS - offered
         if task_missing:
             return fail(f"MIT task tools not offered: {sorted(task_missing)} (offered: {sorted(offered)})")
+        git_missing = MIT_GIT_TOOLS - offered
+        if git_missing:
+            return fail(f"MIT git tools not offered: {sorted(git_missing)} (offered: {sorted(offered)})")
         memory_missing = MIT_MEMORY_TOOLS - offered
         if memory_missing:
             return fail(f"MIT memory tools not offered: {sorted(memory_missing)} (offered: {sorted(offered)})")
@@ -375,7 +430,7 @@ def main() -> int:
         written = work / "smoke.txt"
         if not written.is_file() or written.read_text() != MARKER:
             return fail(f"builtin write tool did not write {written}\nstderr: {chat.stderr}")
-        print(f"ok   chat + builtin write tool ({len(offered)} tools offered incl. MIT LSP, task, memory and browser, none from omo)")
+        print(f"ok   chat + builtin write tool ({len(offered)} tools offered incl. MIT LSP, task, git, memory and browser, none from omo)")
 
         delegate = http.server.ThreadingHTTPServer(("127.0.0.1", 0), DelegateModel)
         threading.Thread(target=delegate.serve_forever, daemon=True).start()
@@ -395,6 +450,42 @@ def main() -> int:
         if CHILD_MARKER not in result or 'status="completed"' not in result:
             return fail(f"the task result did not reach the parent\ntool results: {result}\nstderr: {run.stderr}")
         print("ok   task tool: child mhc process ran and its <task-result> reached the parent")
+
+        repo = home / "repo"
+        repo.mkdir()
+        git = lambda *args: subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, env=env)
+        git("init", "-q")
+        (repo / "README.md").write_text("smoke\n")
+        git("add", "README.md")
+        git("-c", "user.name=smoke", "-c", "user.email=smoke@localhost", "-c", "commit.gpgsign=false",
+            "commit", "-q", "-m", "init")
+        isolation = http.server.ThreadingHTTPServer(("127.0.0.1", 0), IsolationModel)
+        threading.Thread(target=isolation.serve_forever, daemon=True).start()
+        (agent / "models.json").write_text(models_json(isolation.server_port))
+        run = subprocess.run(
+            [mhc, "-p", "--offline", "--no-session", "--model", "offline/offline", "delegate an isolated task"],
+            cwd=repo, env={**env, "PI_OFFLINE": "1"}, stdin=subprocess.DEVNULL, capture_output=True,
+            text=True, timeout=180,
+        )
+        isolation.shutdown()
+        if run.returncode != 0 or ISOLATION_MARKER not in run.stdout:
+            return fail(f"isolated delegation failed (exit {run.returncode})\nstdout: {run.stdout}\nstderr: {run.stderr}")
+        child_cwds = [p for p in IsolationModel.requests if "task" not in tool_names(p)]
+        if not child_cwds:
+            return fail(f"no isolated child request reached the model\nstderr: {run.stderr}")
+        results = "\n".join(tool_text(p) for p in IsolationModel.requests)
+        if "Isolation (worktree): applied 1 changed file" not in results or 'status="completed"' not in results:
+            return fail(f"isolation note missing from the task result\ntool results: {results}\nstderr: {run.stderr}")
+        applied = repo / ISOLATED_FILE
+        if not applied.is_file() or applied.read_text() != ISOLATED_CONTENT:
+            return fail(f"the isolated child's file was not applied to {repo}\ntool results: {results}")
+        listed = subprocess.run(["git", "-C", str(repo), "worktree", "list", "--porcelain"], capture_output=True,
+                                text=True, check=True).stdout
+        if listed.count("worktree ") != 1 or any((agent / "wt").glob("t*")):
+            return fail(f"the isolation worktree was not removed\n{listed}")
+        if f'"untrackedFiles": [\n    "{ISOLATED_FILE}"' not in results:
+            return fail(f"git_overview did not report the applied file\ntool results: {results}")
+        print("ok   isolated task: child ran in a git worktree, its change was applied back and the worktree removed; git_overview saw it")
 
         memory_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), MemoryModel)
         threading.Thread(target=memory_server.serve_forever, daemon=True).start()
