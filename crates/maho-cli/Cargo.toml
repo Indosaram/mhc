@@ -87,6 +87,8 @@ maho-telemetry = { path = "../maho-telemetry" }
 # MIT task workspace isolation (git worktree / copy) behind `<builtin:task>` and the read-only git tools (`<builtin:git>`); MIT profile only.
 maho-isolation = { path = "../maho-isolation" }
 maho-git = { path = "../maho-git" }
+# MIT team runs (`team_*` tools, `/team`) and tmux/cmux panes for delegated tasks, attached to `<builtin:task>`; MIT profile only.
+maho-team = { path = "../maho-team" }
 maho-omo-task = { path = "../omo/components/maho-omo-task", optional = true }
 maho-server = { path = "../maho-server" }
 maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }

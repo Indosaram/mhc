@@ -86,6 +86,8 @@ pub mod stdout_guard;
 pub mod task_runners;
 #[cfg(feature = "omo")]
 pub mod task_session;
+#[cfg(not(feature = "omo"))]
+pub mod team_view;
 pub mod tool_runtime;
 pub mod tool_search;
 pub mod user_extensions;

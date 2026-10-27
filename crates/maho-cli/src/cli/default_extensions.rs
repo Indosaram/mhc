@@ -104,7 +104,8 @@ fn factory<E: Extension + 'static>(name: &str, extension: E) -> NativeExtensionF
 /// daemon when it sits beside the executable), the subagent delegation tools (`maho-task`),
 /// long-term memory (`maho-memory`), the browser/computer-use tools (`maho-browser`) and telemetry
 /// (`maho-telemetry`: local usage ledger, opt-in OTLP export) and the read-only git tools
-/// (`maho-git`); delegated tasks can run isolated (`maho-isolation`). The `omo` build mounts its
+/// (`maho-git`); delegated tasks can run isolated (`maho-isolation`) and as teams with tmux/cmux
+/// panes (`maho-team`). The `omo` build mounts its
 /// own equivalents through the omo glue (it has no browser/computer tools).
 #[cfg(not(feature = "omo"))]
 pub fn mit_config_factories() -> Vec<NativeExtensionFactory> {

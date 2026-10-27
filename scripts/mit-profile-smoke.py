@@ -14,6 +14,10 @@ and then answers in text, and checks that:
 - isolated delegation (`maho-isolation`): in a git repository a `task` call with `isolated: true`
   runs the child in a git worktree, the file the child writes there is applied back to the parent
   checkout, the result note says so and the worktree is removed;
+- team runs (`maho-team`: team_create, team_members, team_message, team_wait, team_stop): a
+  model-driven `team_create` starts two members as real child `mhc -p` processes and `team_wait`
+  collects both results; when `tmux` is on PATH the same run is repeated attached to a private tmux
+  server and each member is shown in a pane that follows its output and closes afterwards;
 - the read-only git tools (`maho-git`: git_overview, git_file_diff, git_hunk, recent_commits) are
   offered and `git_overview` reports the repository's changes;
 - the MIT memory tools (`maho-memory`: retain, recall, memory_get, memory_forget) are offered; a
@@ -56,6 +60,8 @@ OMO_TOOL_PREFIXES = ("task", "team_", "workpool", "memory", "x_search", "omo_")
 # MIT replacements that are expected in the MIT profile.
 MIT_TASK_TOOLS = {"task", "task_output", "task_list", "task_resume", "task_cancel"}
 MIT_GIT_TOOLS = {"git_overview", "git_file_diff", "git_hunk", "recent_commits"}
+MIT_TEAM_TOOLS = {"team_create", "team_members", "team_message", "team_wait", "team_stop"}
+TEAM_MARKER = "mit-profile-team-ok"
 ISOLATED_FILE = "isolated-smoke.txt"
 ISOLATED_CONTENT = "written by an isolated child"
 ISOLATION_MARKER = "mit-profile-isolation-ok"
@@ -179,6 +185,50 @@ class IsolationModel(http.server.BaseHTTPRequestHandler):
             call = ("git_overview", {"staged": False, "include_untracked": True})
         else:
             text = ISOLATION_MARKER
+        if call:
+            body = sse([
+                chunk({"role": "assistant", "tool_calls": [{
+                    "index": 0, "id": f"call_{call[0]}", "type": "function",
+                    "function": {"name": call[0], "arguments": json.dumps(call[1])},
+                }]}),
+                chunk({}, "tool_calls"),
+            ])
+        else:
+            body = sse([chunk({"role": "assistant", "content": text}), chunk({}, "stop")])
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class TeamModel(http.server.BaseHTTPRequestHandler):
+    """Lead: `team_create` (two members), then `team_wait`, then answers. Members answer with their
+    own marker taken from the assignment text."""
+    requests: list[dict] = []
+
+    def log_message(self, *_args) -> None:
+        pass
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("content-length", "0"))
+        payload = json.loads(self.rfile.read(length) or b"{}")
+        TeamModel.requests.append(payload)
+        offered = tool_names(payload)
+        results = sum(1 for message in payload.get("messages") or [] if message.get("role") == "tool")
+        call = None
+        text = TEAM_MARKER
+        if "team_create" not in offered:
+            prompt = json.dumps(payload.get("messages") or [])
+            text = "team-member-alpha-ok" if "alpha assignment" in prompt else "team-member-beta-ok"
+        elif results == 0:
+            call = ("team_create", {"name": "smoke", "context": "Smoke team.", "members": [
+                {"name": "alpha", "task": "alpha assignment: reply with your marker"},
+                {"name": "beta", "task": "beta assignment: reply with your marker"},
+            ]})
+        elif results == 1:
+            call = ("team_wait", {"timeout_ms": 120000})
         if call:
             body = sse([
                 chunk({"role": "assistant", "tool_calls": [{
@@ -365,6 +415,93 @@ def fail(message: str) -> int:
     return 1
 
 
+def team_smoke(mhc: str, home: pathlib.Path, work: pathlib.Path, agent: pathlib.Path, env: dict) -> str | None:
+    """Runs the two-member team headless, then (when tmux is on PATH) attached to a private tmux
+    server. Returns a failure message or None."""
+    import shutil
+    import time
+
+    def run_team(extra: dict, label: str) -> subprocess.CompletedProcess | str:
+        TeamModel.requests = []
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), TeamModel)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        (agent / "models.json").write_text(models_json(server.server_port))
+        run_env = {**env, "PI_OFFLINE": "1", **extra}
+        for name in ("TMUX", "TMUX_PANE", "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID"):
+            if name not in extra:
+                run_env.pop(name, None)
+        run = subprocess.run(
+            [mhc, "-p", "--offline", "--no-session", "--model", "offline/offline", "run the smoke team"],
+            cwd=work, env=run_env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=240,
+        )
+        server.shutdown()
+        if run.returncode != 0 or TEAM_MARKER not in run.stdout:
+            return f"{label} team run failed (exit {run.returncode})\nstdout: {run.stdout}\nstderr: {run.stderr}"
+        members = [p for p in TeamModel.requests if "team_create" not in tool_names(p)]
+        if len(members) < 2:
+            return f"{label}: expected two member requests, got {len(members)}\nstderr: {run.stderr}"
+        results = "\n".join(tool_text(p) for p in TeamModel.requests)
+        for needle in ("Team smoke created with 2 members", "team smoke: 2/2 done",
+                       "team-member-alpha-ok", "team-member-beta-ok"):
+            if needle not in results:
+                return f"{label}: {needle!r} missing from the tool results\n{results}\nstderr: {run.stderr}"
+        return run
+
+    outcome = run_team({"MAHO_TEAM_PANES": "auto"}, "headless")
+    if isinstance(outcome, str):
+        return outcome
+    print("ok   team run (headless): team_create started two child mhc members, team_wait collected both results")
+
+    tmux = shutil.which("tmux", path=env.get("PATH"))
+    if not tmux:
+        print("skip team panes: tmux not on PATH")
+        return None
+    socket = str(home / "tmux.sock")
+    tmux_cmd = lambda *args: subprocess.run([tmux, "-S", socket, *args], capture_output=True, text=True, env=env)
+    tmux_cmd("new-session", "-d", "-s", "lead", "-x", "220", "-y", "60", "sleep 300")
+    lead = tmux_cmd("list-panes", "-t", "lead", "-F", "#{pane_id}").stdout.strip()
+    server_pid = tmux_cmd("display-message", "-p", "#{pid}").stdout.strip()
+    seen: dict[str, str] = {}
+    stop = threading.Event()
+
+    def watch() -> None:
+        while not stop.is_set():
+            for pane in tmux_cmd("list-panes", "-a", "-F", "#{pane_id}").stdout.split():
+                if pane != lead:
+                    text = tmux_cmd("capture-pane", "-p", "-t", pane).stdout
+                    if text.strip():
+                        seen[pane] = text
+            time.sleep(0.1)
+
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    try:
+        outcome = run_team({"TMUX": f"{socket},{server_pid},0", "TMUX_PANE": lead, "MAHO_TEAM_PANE_LINGER": "1"},
+                           "tmux")
+        if isinstance(outcome, str):
+            return outcome
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            left = [p for p in tmux_cmd("list-panes", "-a", "-F", "#{pane_id}").stdout.split() if p != lead]
+            if not left:
+                break
+            time.sleep(0.2)
+        stop.set()
+        watcher.join(timeout=5)
+        if len(seen) < 2:
+            return f"tmux: expected two member panes, saw {sorted(seen)}\nstderr: {outcome.stderr}"
+        titles = [text for text in seen.values() if "team smoke" in text]
+        if len(titles) < 2:
+            return f"tmux: member panes did not show the team title\n{seen}"
+        if left:
+            return f"tmux: member panes were not closed: {left}"
+    finally:
+        stop.set()
+        tmux_cmd("kill-server")
+    print("ok   team run (tmux): each member followed in its own pane (title + live output), panes closed afterwards")
+    return None
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         sys.stderr.write(__doc__ or "")
@@ -407,7 +544,8 @@ def main() -> int:
         if not any(name == "bash" or name.startswith("bash_") for name in offered):
             return fail(f"no shell tool offered (offered: {sorted(offered)})")
         omo = sorted(name for name in offered
-                     if name.startswith(OMO_TOOL_PREFIXES) and name not in MIT_TASK_TOOLS | MIT_MEMORY_TOOLS)
+                     if name.startswith(OMO_TOOL_PREFIXES)
+                     and name not in MIT_TASK_TOOLS | MIT_MEMORY_TOOLS | MIT_TEAM_TOOLS)
         browser_missing = MIT_BROWSER_TOOLS - offered
         if browser_missing:
             return fail(f"MIT browser tools not offered: {sorted(browser_missing)} (offered: {sorted(offered)})")
@@ -419,6 +557,9 @@ def main() -> int:
         task_missing = MIT_TASK_TOOLS - offered
         if task_missing:
             return fail(f"MIT task tools not offered: {sorted(task_missing)} (offered: {sorted(offered)})")
+        team_missing = MIT_TEAM_TOOLS - offered
+        if team_missing:
+            return fail(f"MIT team tools not offered: {sorted(team_missing)} (offered: {sorted(offered)})")
         git_missing = MIT_GIT_TOOLS - offered
         if git_missing:
             return fail(f"MIT git tools not offered: {sorted(git_missing)} (offered: {sorted(offered)})")
@@ -430,7 +571,7 @@ def main() -> int:
         written = work / "smoke.txt"
         if not written.is_file() or written.read_text() != MARKER:
             return fail(f"builtin write tool did not write {written}\nstderr: {chat.stderr}")
-        print(f"ok   chat + builtin write tool ({len(offered)} tools offered incl. MIT LSP, task, git, memory and browser, none from omo)")
+        print(f"ok   chat + builtin write tool ({len(offered)} tools offered incl. MIT LSP, task, team, git, memory and browser, none from omo)")
 
         delegate = http.server.ThreadingHTTPServer(("127.0.0.1", 0), DelegateModel)
         threading.Thread(target=delegate.serve_forever, daemon=True).start()
@@ -486,6 +627,10 @@ def main() -> int:
         if f'"untrackedFiles": [\n    "{ISOLATED_FILE}"' not in results:
             return fail(f"git_overview did not report the applied file\ntool results: {results}")
         print("ok   isolated task: child ran in a git worktree, its change was applied back and the worktree removed; git_overview saw it")
+
+        failure = team_smoke(mhc, home, work, agent, env)
+        if failure:
+            return fail(failure)
 
         memory_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), MemoryModel)
         threading.Thread(target=memory_server.serve_forever, daemon=True).start()
