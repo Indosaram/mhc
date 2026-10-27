@@ -1,7 +1,7 @@
 //! Interfaces for the parts of delegation that later phases implement: workspace isolation
 //! (worktrees and similar, Phase 3) and team/terminal-pane presentation (Phase 3). This crate only
 //! calls them; it links no implementation.
-use crate::record::TaskRecord;
+use crate::record::{StateDir, TaskRecord};
 use crate::runner::BoxFuture;
 use std::path::{Path, PathBuf};
 
@@ -31,7 +31,15 @@ pub trait WorkspaceIsolation: Send + Sync {
 }
 
 /// Observes task lifecycle (a team view or terminal panes can follow children with it).
+/// The manager calls the `_in` forms, which also name the task's state directory (output, log);
+/// their default bodies forward to `started`/`finished`.
 pub trait TaskObserver: Send + Sync {
     fn started(&self, _record: &TaskRecord) {}
     fn finished(&self, _record: &TaskRecord) {}
+    fn started_in(&self, record: &TaskRecord, _state: &StateDir) {
+        self.started(record);
+    }
+    fn finished_in(&self, record: &TaskRecord, _state: &StateDir) {
+        self.finished(record);
+    }
 }

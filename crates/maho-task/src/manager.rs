@@ -47,6 +47,12 @@ pub struct SpawnRequest {
     pub cwd: PathBuf,
     pub background: bool,
     pub isolated: bool,
+    /// Team (or other grouping) recorded on the task.
+    pub group: Option<String>,
+    /// Pane preference recorded on the task (`None` = observer default).
+    pub pane: Option<bool>,
+    /// Skip the background-delivery callback for this task.
+    pub quiet: bool,
 }
 
 struct Live {
@@ -233,6 +239,9 @@ impl TaskManager {
             tools: request.agent.tools.clone(),
             exclude_tools: exclude,
             isolated: request.isolated,
+            group: request.group.clone(),
+            pane: request.pane,
+            quiet: request.quiet,
         };
         state
             .save(&record)
@@ -303,7 +312,7 @@ impl TaskManager {
             let settled = manager.execute(record, prompt, cancel).await;
             let _ = done_tx.send(true);
             lock(&manager.live).remove(&id);
-            if settled.background {
+            if settled.background && !settled.quiet {
                 let callback = lock(&manager.on_settled).clone();
                 if let Some(callback) = callback {
                     let text = manager.envelope(&settled);
@@ -331,7 +340,7 @@ impl TaskManager {
         record.status = TaskStatus::Running;
         let _ = state.save(&record);
         for observer in &self.options.observers {
-            observer.started(&record);
+            observer.started_in(&record, state);
         }
         let mut notes = Vec::new();
         let mut cwd = record.cwd.clone();
@@ -427,7 +436,7 @@ impl TaskManager {
         record.hook_notes = notes;
         let _ = self.options.state.save(&record);
         for observer in &self.options.observers {
-            observer.finished(&record);
+            observer.finished_in(&record, &self.options.state);
         }
         record
     }
@@ -577,6 +586,9 @@ mod tests {
             cwd: dir.to_path_buf(),
             background,
             isolated: false,
+            group: None,
+            pane: None,
+            quiet: false,
         }
     }
 
@@ -671,6 +683,57 @@ mod tests {
         assert_eq!(manager.get("Old").expect("record").status, TaskStatus::Interrupted);
         let text = manager.result_text("Old").expect("text");
         assert!(text.contains("status=\"interrupted\""));
+    }
+
+    #[derive(Default)]
+    struct Seen(Mutex<Vec<String>>);
+
+    impl TaskObserver for Seen {
+        fn started_in(&self, record: &TaskRecord, state: &StateDir) {
+            let log = state.log_path(&record.id);
+            lock(&self.0).push(format!("start {} {}", record.id, log.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+        }
+        fn finished(&self, record: &TaskRecord) {
+            lock(&self.0).push(format!("finish {} {}", record.id, record.status.as_str()));
+        }
+    }
+
+    #[tokio::test]
+    async fn observers_group_and_quiet_delivery() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let seen = Arc::new(Seen::default());
+        let manager = TaskManager::new(TaskManagerOptions {
+            state: StateDir::new(dir.path().join("state")),
+            settings: TaskSettings::default(),
+            runner: Arc::new(FakeRunner::default()),
+            isolation: None,
+            observers: vec![Arc::clone(&seen) as Arc<dyn TaskObserver>],
+            hooks: HookChain::default(),
+            depth: 0,
+        });
+        let delivered: Arc<Mutex<Vec<String>>> = Arc::default();
+        let sink = Arc::clone(&delivered);
+        manager.set_on_settled(Some(Arc::new(move |record, _| lock(&sink).push(record.id.clone()))));
+        let mut quiet = request(dir.path(), "q", true);
+        quiet.name = Some("Quiet".into());
+        quiet.group = Some("crew".into());
+        quiet.quiet = true;
+        let loud = request(dir.path(), "l", true);
+        manager.start(quiet).expect("start");
+        manager.start(loud).expect("start");
+        for id in ["Quiet", "Job"] {
+            manager.wait(id, Some(Duration::from_secs(5))).await.expect("record");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(*lock(&delivered), ["Job"]);
+        let record = manager.get("Quiet").expect("record");
+        assert_eq!(record.group.as_deref(), Some("crew"));
+        assert!(record.quiet);
+        let events = lock(&seen.0).clone();
+        assert!(events.contains(&"start Quiet Quiet.log".to_owned()), "{events:?}");
+        assert!(events.contains(&"finish Job completed".to_owned()), "{events:?}");
+        let stored = std::fs::read_to_string(manager.state().record_path("Job")).expect("json");
+        assert!(!stored.contains("\"quiet\"") && !stored.contains("\"group\""), "{stored}");
     }
 
     #[test]

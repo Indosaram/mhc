@@ -68,6 +68,15 @@ pub struct TaskRecord {
     pub exclude_tools: Vec<String>,
     #[serde(default)]
     pub isolated: bool,
+    /// Team (or other grouping) the task belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Show the run in a terminal pane (`None` = the pane observer's default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<bool>,
+    /// No generic background-result delivery (the group reports instead).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quiet: bool,
 }
 
 /// Milliseconds since the Unix epoch.
@@ -219,6 +228,9 @@ pub(crate) fn sample(id: &str) -> TaskRecord {
         tools: None,
         exclude_tools: Vec::new(),
         isolated: false,
+        group: None,
+        pane: None,
+        quiet: false,
     }
 }
 

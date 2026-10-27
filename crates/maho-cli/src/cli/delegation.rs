@@ -39,5 +39,6 @@ pub fn extension() -> maho_task::TaskExtension {
         available_models: Arc::new(available_models),
         observers: Vec::new(),
         hooks: maho_lsp::hooks::HookChain::default(),
+        addons: Vec::new(),
     }
 }

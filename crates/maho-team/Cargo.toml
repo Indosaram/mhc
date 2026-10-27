@@ -1,0 +1,22 @@
+[package]
+name = "maho-team"
+description = "Team runs for mhc's delegated tasks (named members, follow-up messages queued while busy, wait/collect, stop, team updates) and tmux/cmux panes that follow each task's output with a headless fallback (ported from MIT oh-my-pi terminal launch, pi-agent-teams, pi-interactive-subagents; clean-room spec docs/cleanroom/specs/team.md)."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-ext-api = { path = "../maho-ext-api" }
+maho-task = { path = "../maho-task" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
+
+[dev-dependencies]
+maho-lsp = { path = "../maho-lsp" }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
+
+[lints]
+workspace = true
