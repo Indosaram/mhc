@@ -19,6 +19,7 @@ members = [
     "crates/maho-test-support",
     "crates/maho-support",
     "crates/maho-config",
+    "crates/maho-model-select",
     "crates/builtins/maho-ext-account",
     "crates/builtins/maho-ext-anthropic-bash",
     "crates/builtins/maho-ext-anthropic-subscription",
