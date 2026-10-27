@@ -4290,6 +4290,10 @@ impl AgentSession {
             let mut state = self.state();
             match &mut event {
                 AgentEvent::AgentStart => {
+                    // senpi closes the agent_end boundary when a retry or continuation launches the
+                    // next run. A boundary left open would make `begin_user_abort` treat a user
+                    // abort of this run as a late join of the finished one and never abort it.
+                    state.abort_provenance.close_agent_end_boundary();
                     *lock(&self.custody_run_id) = uuid::Uuid::new_v4().to_string();
                     state.queued_input_ages.note_run_started();
                     *lock(&self.stop_interrupt) = None;
@@ -27294,6 +27298,33 @@ mod tests {
             .await;
         // Then its first extension turn starts at zero.
         assert_eq!(session.state().turn_index, 0);
+    }
+
+    #[tokio::test]
+    async fn agent_start_closes_previous_agent_end_boundary() {
+        // Given a run that ended and left its agent_end boundary open (retry/continuation).
+        let session = test_session();
+        let boundary = session
+            .state()
+            .abort_provenance
+            .begin_agent_end(Vec::new(), true, false);
+        session.state().abort_provenance.end_agent_end(&boundary);
+        // When the next run starts.
+        session
+            .process_agent_event(
+                maho_agent::types::AgentEvent::AgentStart,
+                maho_ai::utils::abort::AbortController::new().signal(),
+            )
+            .await;
+        // Then a user abort is no longer swallowed as a late join of the finished run.
+        let mut state = session.state();
+        assert!(!state.abort_provenance.has_open_agent_end_boundary());
+        assert!(
+            state
+                .abort_provenance
+                .join_open_boundary(maho_ext_api::AbortSource::User)
+                .is_none()
+        );
     }
 
     fn retry_session(
