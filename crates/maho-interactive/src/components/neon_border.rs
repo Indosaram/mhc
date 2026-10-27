@@ -1,16 +1,19 @@
-//! Neon border for the prompt editor while the draft names an ulw-family keyword
-//! (`ulw`, `ulw-loop`, `ulw-plan`, `ultrawork`, ...) or an ulw turn is still running.
+//! Neon border for the prompt editor while the draft names a registered glow keyword (at a word
+//! start, so `kw`, `kw-loop`, `/kw-plan` all match `kw`) or a turn submitted with one is still
+//! running. The keywords are registered at startup by the feature that reacts to them; none are
+//! built in.
 //!
 //! maho-only presentation (no senpi counterpart).
 
 use maho_tui::utils::strip_terminal_sequences;
+use std::sync::RwLock;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::theme::{ColorMode, palette::rgb_to_256};
 
 const BREATH_SECONDS: f64 = 4.0;
 /// Breath steps per second. The interactive loop repaints only when the rendered lines change,
-/// so quantizing the clock here caps the ulw border at this many frames per second instead of
+/// so quantizing the clock here caps the neon border at this many frames per second instead of
 /// one frame per loop tick (~50 fps of continuous full-width repaints). That stream outran
 /// terminals that relay output with bounded buffers and left stale prompt boxes behind.
 const BREATH_STEPS_PER_SECOND: f64 = 15.0;
@@ -24,10 +27,27 @@ const PALETTE: [(f64, [f64; 3]); 4] = [
     (1.00, [64.0, 220.0, 230.0]),
 ];
 
-pub fn has_ulw_keyword(text: &str) -> bool {
+static GLOW_KEYWORDS: RwLock<Vec<String>> = RwLock::new(Vec::new());
+
+/// Registers keywords (case-insensitive) that light the prompt border. Idempotent.
+pub fn register_glow_keywords(keywords: &[&str]) {
+    let mut known = GLOW_KEYWORDS.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for keyword in keywords {
+        let keyword = keyword.to_ascii_lowercase();
+        if !keyword.is_empty() && !known.contains(&keyword) {
+            known.push(keyword);
+        }
+    }
+}
+
+pub fn has_glow_keyword(text: &str) -> bool {
+    let keywords = GLOW_KEYWORDS.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if keywords.is_empty() {
+        return false;
+    }
     let lower = text.to_ascii_lowercase();
-    ["ultrawork", "ulw"].iter().any(|keyword| {
-        lower.match_indices(keyword).any(|(index, _)| {
+    keywords.iter().any(|keyword| {
+        lower.match_indices(keyword.as_str()).any(|(index, _)| {
             index == 0 || !lower[..index].chars().next_back().is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
         })
     })
@@ -125,32 +145,34 @@ mod tests {
     }
 
     #[test]
-    fn detects_ulw_family_keywords_at_word_starts() {
-        for text in ["ulw fix it", "please ULW", "ulw-loop go", "/ulw-plan", "ultrawork mode", "do it (ulw)"] {
-            assert!(has_ulw_keyword(text), "{text}");
+    fn detects_registered_keywords_at_word_starts() {
+        register_glow_keywords(&["Sparkle", "spk"]);
+        register_glow_keywords(&["spk"]);
+        for text in ["spk fix it", "please SPK", "spk-loop go", "/spk-plan", "sparkle mode", "do it (spk)"] {
+            assert!(has_glow_keyword(text), "{text}");
         }
-        for text in ["", "bulwark", "fix the bug", "ultra work"] {
-            assert!(!has_ulw_keyword(text), "{text}");
+        for text in ["", "bspkx", "fix the bug", "spar kle"] {
+            assert!(!has_glow_keyword(text), "{text}");
         }
     }
 
     #[test]
     fn thickens_borders_and_recolors_prompt() {
-        let mut lines = vec!["\x1b[38;5;8m".to_owned() + &"─".repeat(40) + "\x1b[39m", "\x1b[38;2;1;2;3m❯\x1b[39m ulw hi".to_owned(), "─".repeat(37) + "↓ 2", "  → /ulw-loop".to_owned()];
+        let mut lines = vec!["\x1b[38;5;8m".to_owned() + &"─".repeat(40) + "\x1b[39m", "\x1b[38;2;1;2;3m❯\x1b[39m spk hi".to_owned(), "─".repeat(37) + "↓ 2", "  → /spk-loop".to_owned()];
         assert!(apply_neon_border(&mut lines, 0.0, ColorMode::Truecolor));
         assert_eq!(strip_terminal_sequences(&lines[0]), "━".repeat(40));
         assert_eq!(strip_terminal_sequences(&lines[2]), "━".repeat(37) + "↓ 2");
         assert!(lines[0].contains("\x1b[38;2;") && !lines[0].contains("\x1b[38;5;8m"));
-        assert_eq!(strip_terminal_sequences(&lines[1]), "❯ ulw hi");
+        assert_eq!(strip_terminal_sequences(&lines[1]), "❯ spk hi");
         assert!(!lines[1].contains("1;2;3m"));
-        assert_eq!(lines[3], "  → /ulw-loop");
+        assert_eq!(lines[3], "  → /spk-loop");
     }
 
     #[test]
     fn missing_bottom_border_leaves_lines_untouched() {
-        let mut lines = vec!["────".to_owned(), "❯ ulw".to_owned()];
+        let mut lines = vec!["────".to_owned(), "❯ spk".to_owned()];
         assert!(!apply_neon_border(&mut lines, 0.0, ColorMode::Truecolor));
-        assert_eq!(lines, vec!["────".to_owned(), "❯ ulw".to_owned()]);
+        assert_eq!(lines, vec!["────".to_owned(), "❯ spk".to_owned()]);
     }
 
     #[test]
@@ -175,7 +197,7 @@ mod tests {
     #[test]
     fn border_repaints_at_most_fifteen_times_per_second() {
         let render = |now_ms: f64| {
-            let mut lines = vec!["─".repeat(20), "❯ ulw".to_owned(), "─".repeat(20)];
+            let mut lines = vec!["─".repeat(20), "❯ spk".to_owned(), "─".repeat(20)];
             assert!(apply_neon_border(&mut lines, now_ms, ColorMode::Truecolor));
             lines
         };

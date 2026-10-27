@@ -167,6 +167,8 @@ fn run() -> Result<(), String> {
     maho_tui::native_platform::register_builtin_native_platform_helper();
     maho_tools::managed_tools::set_managed_tool_resolver(std::sync::Arc::new(ensure_managed_tool));
     #[cfg(feature = "omo")]
+    register_omo_keywords();
+    #[cfg(feature = "omo")]
     if let Some(result) = run_omo_entry(&argv) {
         return result;
     }
@@ -932,6 +934,17 @@ fn report_startup_settings_diagnostics(cwd: &std::path::Path) -> Result<(), Stri
     );
     maho_cli::cli::runtime::report_startup_settings_diagnostics(&settings);
     Ok(())
+}
+/// The omo port's mode keywords and injected directive tag. The MIT crates only collapse
+/// registered directive tags and light the prompt border for registered keywords, so they name
+/// none of these themselves.
+#[cfg(feature = "omo")]
+fn register_omo_keywords() {
+    maho_ext_anthropic_subscription::prompt_directive_dedupe::register_directive_tag(
+        "ultrawork-mode",
+        "ultrawork",
+    );
+    maho_interactive::components::neon_border::register_glow_keywords(&["ultrawork", "ulw"]);
 }
 /// Entries served by the oh-my-openagent port (crates/omo, `omo` feature): `mhc ulw-loop`, the
 /// memory MCP stdio server, and the memory supervisor / child-bootstrap roles. `None` means argv
