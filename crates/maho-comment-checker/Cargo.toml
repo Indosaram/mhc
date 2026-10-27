@@ -1,0 +1,17 @@
+[package]
+name = "maho-comment-checker"
+description = "Comment-checker hook input model, edit extraction helpers and native binary resolution."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

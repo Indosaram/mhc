@@ -1,5 +1,5 @@
 use maho_ext_pi_comment_checker::{cli::{RunStatus, run_checker}, core::{CommentCheckRequest, to_hook_input}};
-use comment_checker_core::HookToolInput;
+use maho_ext_pi_comment_checker::checker::HookToolInput;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -576,7 +576,6 @@ fn installed_git_package_entry(owner: &str, repo: &str) -> std::path::PathBuf {
         .join("src")
         .join("index.ts")
 }
-#[cfg(feature = "omo")]
 fn pi_comment_checker() -> Box<dyn Extension> {
     Box::new(maho_ext_pi_comment_checker::CommentChecker {
         source_path: std::env::var_os("PI_COMMENT_CHECKER_SOURCE")
@@ -602,11 +601,9 @@ fn orca_prefill() -> Box<dyn Extension> {
 }
 
 /// Linked user/omo extension ports (`crates/extensions/*`) whose crate publishes the constructor.
-/// `pi-comment-checker` wraps the SUL `comment-checker-core`, so it is linked only with `omo`.
-#[cfg(feature = "omo")]
+/// `pi-comment-checker` uses the SUL `comment-checker-core` helpers with `omo` and the MIT
+/// `maho-comment-checker` crate without it.
 const USER_FACTORY_COUNT: usize = 13;
-#[cfg(not(feature = "omo"))]
-const USER_FACTORY_COUNT: usize = 12;
 static USER_FACTORIES: [NativeExtension; USER_FACTORY_COUNT] = [
     NativeExtension {
         id: "pi-ast-grep",
@@ -663,7 +660,6 @@ static USER_FACTORIES: [NativeExtension; USER_FACTORY_COUNT] = [
         crate_name: "maho-ext-omo-zcode-oauth",
         factory: omo_zcode_oauth,
     },
-    #[cfg(feature = "omo")]
     NativeExtension {
         id: "pi-comment-checker",
         crate_name: "maho-ext-pi-comment-checker",

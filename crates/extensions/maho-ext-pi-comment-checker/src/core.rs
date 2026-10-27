@@ -1,4 +1,4 @@
-use comment_checker_core::{EditPair, HookInput, HookToolInput, get_apply_patch_metadata_files, get_string};
+use crate::checker::{EditPair, HookInput, HookToolInput, get_apply_patch_metadata_files, get_string};
 use maho_ext_api::{ToolContent, ToolResultEvent};
 
 #[derive(Debug, PartialEq, Eq)]

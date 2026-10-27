@@ -2,7 +2,7 @@ use crate::{cli::{RunStatus, resolve_binary, run_checker}, core::{extract_commen
 use maho_ext_api::{EventKind, EventResult, Extension, ExtensionApi, ExtensionEvent, ExtensionHandler, NotificationType, ToolContent, ToolResultEventResult};
 use std::{path::PathBuf, sync::Arc};
 
-pub type CheckerRunner = Arc<dyn Fn(comment_checker_core::HookInput) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::cli::RunResult> + Send>> + Send + Sync>;
+pub type CheckerRunner = Arc<dyn Fn(crate::checker::HookInput) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::cli::RunResult> + Send>> + Send + Sync>;
 
 pub fn create_comment_checker_tool_result_handler(runner: CheckerRunner) -> ExtensionHandler {
     Arc::new(move |event, ctx| {
