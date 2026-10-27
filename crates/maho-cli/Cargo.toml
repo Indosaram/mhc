@@ -76,6 +76,8 @@ maho-config = { path = "../maho-config" }
 maho-model-select = { path = "../maho-model-select" }
 # MIT LSP client/tools; mounted as `<builtin:lsp>` in the MIT profile only (the omo build mounts its own).
 maho-lsp = { path = "../maho-lsp", features = ["extension"] }
+# MIT subagent delegation; mounted as `<builtin:task>` in the MIT profile only (the omo build mounts its own).
+maho-task = { path = "../maho-task" }
 maho-omo-task = { path = "../omo/components/maho-omo-task", optional = true }
 maho-server = { path = "../maho-server" }
 maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }

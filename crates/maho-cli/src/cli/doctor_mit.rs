@@ -42,7 +42,7 @@ pub fn run_doctor(args: &[String]) -> Result<i32, String> {
 
 /// `provider/id` of every model with usable credentials, from `<agent dir>/models.json` and
 /// `auth.json`, offline. `None` when the model runtime cannot be created.
-fn available_models() -> Result<Option<Vec<String>>, String> {
+pub fn available_models() -> Result<Option<Vec<String>>, String> {
     let agent = std::path::PathBuf::from(maho_core::config::get_agent_dir());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

@@ -7,7 +7,10 @@ and then answers in text, and checks that:
 - basic chat works (the final text reaches stdout, exit 0);
 - builtin tools are offered (read, write, edit, and the shell: `bash` or the terminal's `bash_*`
   tools) and run (the file is written);
-- no omo tool is offered (task, team_*, memory, ...); the MIT LSP tools (`maho-lsp`) are allowed;
+- no omo tool is offered (team_*, memory, workpool, ...); the MIT LSP tools (`maho-lsp`) and the MIT
+  delegation tools (`maho-task`: task, task_output, task_list, task_resume, task_cancel) are required;
+- the `task` tool delegates: a child `mhc -p` process answers through the same loopback model and
+  its result comes back to the parent as a completed `<task-result>`;
 - `mhc doctor` reports the configuration sources and resolves a pinned model profile;
 - the omo-only entries report that they are unavailable (`mhc ulw-loop`).
 
@@ -31,6 +34,9 @@ REQUIRED_TOOLS = {"read", "write", "edit"}
 # Tools the omo port registers; none may appear in the MIT profile.
 OMO_TOOL_PREFIXES = ("task", "team_", "workpool", "memory", "x_search", "omo_")
 # MIT replacements that are expected in the MIT profile.
+MIT_TASK_TOOLS = {"task", "task_output", "task_list", "task_resume", "task_cancel"}
+CHILD_MARKER = "mit-profile-child-ok"
+PARENT_MARKER = "mit-profile-delegation-ok"
 MIT_LSP_TOOLS = {"lsp_diagnostics", "lsp_goto_definition", "lsp_find_references", "lsp_symbols", "lsp_prepare_rename", "lsp_rename"}
 UNAVAILABLE = "is not available in this build"
 
@@ -75,6 +81,62 @@ class Model(http.server.BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
+
+
+class DelegateModel(http.server.BaseHTTPRequestHandler):
+    """Parent: calls `task`, then answers. Child (no `task` tool at depth 1): answers CHILD_MARKER."""
+    requests: list[dict] = []
+
+    def log_message(self, *_args) -> None:
+        pass
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("content-length", "0"))
+        payload = json.loads(self.rfile.read(length) or b"{}")
+        DelegateModel.requests.append(payload)
+        offered = tool_names(payload)
+        has_tool_result = any(message.get("role") == "tool" for message in payload.get("messages") or [])
+        if "task" not in offered:
+            body = sse([chunk({"role": "assistant", "content": CHILD_MARKER}), chunk({}, "stop")])
+        elif not has_tool_result:
+            arguments = json.dumps({"task": "Reply with the child marker.", "name": "SmokeChild"})
+            body = sse([
+                chunk({"role": "assistant", "tool_calls": [{
+                    "index": 0, "id": "call_task", "type": "function",
+                    "function": {"name": "task", "arguments": arguments},
+                }]}),
+                chunk({}, "tool_calls"),
+            ])
+        else:
+            body = sse([chunk({"role": "assistant", "content": PARENT_MARKER}), chunk({}, "stop")])
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def tool_text(payload: dict) -> str:
+    parts = []
+    for message in payload.get("messages") or []:
+        if message.get("role") != "tool":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            parts.extend(str(part.get("text", "")) for part in content if isinstance(part, dict))
+    return "\n".join(parts)
+
+
+def models_json(port: int) -> str:
+    return json.dumps({"providers": {"offline": {
+        "api": "openai-completions", "baseUrl": f"http://127.0.0.1:{port}/v1",
+        "apiKey": "offline-fixture",
+        "models": [{"id": "offline", "reasoning": False, "input": ["text"],
+                    "contextWindow": 128000, "maxTokens": 4096}],
+    }}})
 
 
 def tool_names(payload: dict) -> set[str]:
@@ -134,18 +196,41 @@ def main() -> int:
             return fail(f"builtin tools not offered: {sorted(missing)} (offered: {sorted(offered)})")
         if not any(name == "bash" or name.startswith("bash_") for name in offered):
             return fail(f"no shell tool offered (offered: {sorted(offered)})")
-        omo = sorted(name for name in offered if name.startswith(OMO_TOOL_PREFIXES))
+        omo = sorted(name for name in offered
+                     if name.startswith(OMO_TOOL_PREFIXES) and name not in MIT_TASK_TOOLS)
         if omo:
             return fail(f"omo tools offered in the MIT profile: {omo}")
         lsp_missing = MIT_LSP_TOOLS - offered
         if lsp_missing:
             return fail(f"MIT LSP tools not offered: {sorted(lsp_missing)} (offered: {sorted(offered)})")
+        task_missing = MIT_TASK_TOOLS - offered
+        if task_missing:
+            return fail(f"MIT task tools not offered: {sorted(task_missing)} (offered: {sorted(offered)})")
         if len(Model.requests) < 2:
             return fail("the write tool result never went back to the model")
         written = work / "smoke.txt"
         if not written.is_file() or written.read_text() != MARKER:
             return fail(f"builtin write tool did not write {written}\nstderr: {chat.stderr}")
-        print(f"ok   chat + builtin write tool ({len(offered)} tools offered incl. MIT LSP, none from omo)")
+        print(f"ok   chat + builtin write tool ({len(offered)} tools offered incl. MIT LSP and task, none from omo)")
+
+        delegate = http.server.ThreadingHTTPServer(("127.0.0.1", 0), DelegateModel)
+        threading.Thread(target=delegate.serve_forever, daemon=True).start()
+        (agent / "models.json").write_text(models_json(delegate.server_port))
+        run = subprocess.run(
+            [mhc, "-p", "--offline", "--no-session", "--model", "offline/offline", "delegate the smoke task"],
+            cwd=work, env={**env, "PI_OFFLINE": "1"}, stdin=subprocess.DEVNULL, capture_output=True,
+            text=True, timeout=180,
+        )
+        delegate.shutdown()
+        if run.returncode != 0 or PARENT_MARKER not in run.stdout:
+            return fail(f"delegation run failed (exit {run.returncode})\nstdout: {run.stdout}\nstderr: {run.stderr}")
+        child_requests = [p for p in DelegateModel.requests if "task" not in tool_names(p)]
+        if not child_requests:
+            return fail(f"no child request reached the model\nstderr: {run.stderr}")
+        result = "\n".join(tool_text(p) for p in DelegateModel.requests)
+        if CHILD_MARKER not in result or 'status="completed"' not in result:
+            return fail(f"the task result did not reach the parent\ntool results: {result}\nstderr: {run.stderr}")
+        print("ok   task tool: child mhc process ran and its <task-result> reached the parent")
 
         (home / ".omo").mkdir(exist_ok=True)
         (home / ".omo" / "omo.jsonc").write_text('{ "model_profile": "offline/offline" }\n')
