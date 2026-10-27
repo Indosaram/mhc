@@ -361,7 +361,7 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
         }, ..Default::default()
     }).expect("configured faux provider");
     let mut manager = maho_core::session_manager::SessionManager::in_memory(&cwd,None,None);
-    manager.append_message(serde_json::json!({"role":"user","content":"old ".repeat(if variant=="overflow" {2000} else if idle_variant {25000} else {30000}),"timestamp":0}));
+    manager.append_message(serde_json::json!({"role":"user","content":"old ".repeat(if variant=="overflow" {2000} else if idle_variant {25000} else if variant=="reminder" {16000} else {30000}),"timestamp":0}));
     manager.append_message(serde_json::json!({"role":"assistant","content":[{"type":"text","text":"reply"}],"api":model.api,"provider":model.provider,"model":model.id,"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0}));
     if variant=="overflow" {
         manager.append_message(serde_json::json!({"role":"user","content":"middle ".repeat(1000),"timestamp":0}));

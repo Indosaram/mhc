@@ -113,7 +113,7 @@ mod tests {
         branch.push(rejection(&branch, &model, &settings));
         // The rejection's own entry never releases its latch, and reparenting is ignored.
         assert!(is_automatic_compaction_blocked(&branch, Some(&model), &settings));
-        branch[1]["parentId"] = json!("elsewhere");
+        branch[0]["parentId"] = json!("elsewhere");
         assert!(is_automatic_compaction_blocked(&branch, Some(&model), &settings));
         let mut other_settings = settings.clone();
         other_settings.keep_recent_tokens += 1;
