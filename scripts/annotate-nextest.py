@@ -13,6 +13,7 @@ import subprocess
 import sys
 
 FAIL = re.compile(r"^\s*(?:FAIL|SIGSEGV|SIGABRT|TIMEOUT|LEAK-FAIL)\s+\[[^\]]*\]\s+(?:\(\d+/\d+\)\s+)?(.+?)\s*$")
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 PANIC = re.compile(r"panicked at |^error(\[|:)|assertion .*failed|^\s+left: |^\s+right: ")
 
 
@@ -31,7 +32,7 @@ def main() -> int:
     assert process.stdout is not None
     for line in process.stdout:
         sys.stdout.write(line)
-        lines.append(line.rstrip("\n"))
+        lines.append(ANSI.sub("", line.rstrip("\n")))
     code = process.wait()
     if code == 0:
         return 0
