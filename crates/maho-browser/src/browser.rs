@@ -105,8 +105,9 @@ impl Browser {
                         .map(|elapsed| elapsed.as_nanos())
                         .unwrap_or_default()
                 ));
-                std::fs::create_dir_all(&dir)
-                    .map_err(|error| format!("cannot create a browser profile directory: {error}"))?;
+                std::fs::create_dir_all(&dir).map_err(|error| {
+                    format!("cannot create a browser profile directory: {error}")
+                })?;
                 (dir.clone(), Some(dir))
             }
         };
@@ -209,11 +210,9 @@ impl Browser {
     /// Returns whether the navigation settled.
     pub fn open(&mut self, name: &str, url: Option<&str>, wait: WaitUntil) -> Result<bool, String> {
         if !self.tabs.contains_key(name) {
-            let created = self.client.send(
-                "Target.createTarget",
-                json!({"url": "about:blank"}),
-                None,
-            )?;
+            let created =
+                self.client
+                    .send("Target.createTarget", json!({"url": "about:blank"}), None)?;
             let target = created
                 .get("targetId")
                 .and_then(Value::as_str)
@@ -253,8 +252,16 @@ impl Browser {
                             .find(|(_, page)| page.target_id == id)
                             .map(|(name, _)| name.clone());
                         TargetInfo {
-                            url: target.get("url").and_then(Value::as_str).unwrap_or_default().to_owned(),
-                            title: target.get("title").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                            url: target
+                                .get("url")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned(),
+                            title: target
+                                .get("title")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned(),
                             id,
                             name,
                         }
@@ -277,8 +284,11 @@ impl Browser {
             return Ok(false);
         };
         if self.child.is_some() {
-            self.client
-                .send("Target.closeTarget", json!({"targetId": page.target_id}), None)?;
+            self.client.send(
+                "Target.closeTarget",
+                json!({"targetId": page.target_id}),
+                None,
+            )?;
         } else {
             // A browser we do not own keeps its tabs; just detach.
             let _ = self.client.send(

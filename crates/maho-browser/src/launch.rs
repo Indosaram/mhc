@@ -110,10 +110,8 @@ pub fn system_candidates(
                 env("ProgramFiles").unwrap_or_else(|| "C:\\Program Files".to_owned());
             let program_files_x86 =
                 env("ProgramFiles(x86)").unwrap_or_else(|| "C:\\Program Files (x86)".to_owned());
-            let local_app_data = env("LOCALAPPDATA").map_or_else(
-                || home.join("AppData").join("Local"),
-                PathBuf::from,
-            );
+            let local_app_data = env("LOCALAPPDATA")
+                .map_or_else(|| home.join("AppData").join("Local"), PathBuf::from);
             let program_files = PathBuf::from(program_files);
             let program_files_x86 = PathBuf::from(program_files_x86);
             candidates.push(program_files.join("Google\\Chrome\\Application\\chrome.exe"));
@@ -249,12 +247,18 @@ mod tests {
         )));
         assert!(mac.contains(&home.join("Applications/Chromium.app/Contents/MacOS/Chromium")));
         let linux = system_candidates("linux", home, None, &no_env);
-        assert_eq!(linux.first(), Some(&PathBuf::from("/usr/bin/google-chrome-stable")));
+        assert_eq!(
+            linux.first(),
+            Some(&PathBuf::from("/usr/bin/google-chrome-stable"))
+        );
         assert!(linux.contains(&PathBuf::from("/snap/bin/chromium")));
         let windows = system_candidates("windows", home, None, &|key: &str| {
             (key == "ProgramFiles").then(|| "D:\\PF".to_owned())
         });
-        assert!(windows.contains(&PathBuf::from("D:\\PF").join("Google\\Chrome\\Application\\chrome.exe")));
+        assert!(
+            windows
+                .contains(&PathBuf::from("D:\\PF").join("Google\\Chrome\\Application\\chrome.exe"))
+        );
         assert!(system_candidates("plan9", home, None, &no_env).is_empty());
     }
 
@@ -306,7 +310,13 @@ mod tests {
             1
         );
         assert_eq!(args.last().map(String::as_str), Some("about:blank"));
-        let headed = launch_args(DEFAULT_VIEWPORT, false, Path::new("/p"), &LaunchFeatures::default(), &no_env);
+        let headed = launch_args(
+            DEFAULT_VIEWPORT,
+            false,
+            Path::new("/p"),
+            &LaunchFeatures::default(),
+            &no_env,
+        );
         assert!(!headed.iter().any(|arg| arg.starts_with("--headless")));
     }
 }

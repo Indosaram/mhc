@@ -39,7 +39,14 @@ const PUNCTUATION: &[(char, char, &str, u32)] = &[
 const SHIFTED_DIGITS: [char; 10] = [')', '!', '@', '#', '$', '%', '^', '&', '*', '('];
 
 /// (key, code, keyCode, text, location, aliases)
-type NamedKey = (&'static str, &'static str, u32, &'static str, u32, &'static [&'static str]);
+type NamedKey = (
+    &'static str,
+    &'static str,
+    u32,
+    &'static str,
+    u32,
+    &'static [&'static str],
+);
 const NAMED: &[NamedKey] = &[
     ("Backspace", "Backspace", 8, "", 0, &[]),
     ("Tab", "Tab", 9, "\t", 0, &["\t"]),
@@ -90,23 +97,47 @@ fn lookup_exact(name: &str) -> Option<(KeyDescriptor, Option<KeyDescriptor>)> {
             let shifted_char = SHIFTED_DIGITS[digit as usize];
             return Some((
                 key(&c.to_string(), &code, 48 + digit, &c.to_string(), 0),
-                Some(key(&shifted_char.to_string(), &code, 48 + digit, &shifted_char.to_string(), 0)),
+                Some(key(
+                    &shifted_char.to_string(),
+                    &code,
+                    48 + digit,
+                    &shifted_char.to_string(),
+                    0,
+                )),
             ));
         }
         if let Some(position) = SHIFTED_DIGITS.iter().position(|shifted| *shifted == c) {
             let digit = position as u32;
-            let descriptor = key(&c.to_string(), &format!("Digit{digit}"), 48 + digit, &c.to_string(), 0);
+            let descriptor = key(
+                &c.to_string(),
+                &format!("Digit{digit}"),
+                48 + digit,
+                &c.to_string(),
+                0,
+            );
             return Some((descriptor.clone(), Some(descriptor)));
         }
         for (base, shifted, code, key_code) in PUNCTUATION {
             if c == *base {
                 return Some((
                     key(&base.to_string(), code, *key_code, &base.to_string(), 0),
-                    Some(key(&shifted.to_string(), code, *key_code, &shifted.to_string(), 0)),
+                    Some(key(
+                        &shifted.to_string(),
+                        code,
+                        *key_code,
+                        &shifted.to_string(),
+                        0,
+                    )),
                 ));
             }
             if c == *shifted {
-                let descriptor = key(&shifted.to_string(), code, *key_code, &shifted.to_string(), 0);
+                let descriptor = key(
+                    &shifted.to_string(),
+                    code,
+                    *key_code,
+                    &shifted.to_string(),
+                    0,
+                );
                 return Some((descriptor.clone(), Some(descriptor)));
             }
         }
@@ -121,10 +152,15 @@ fn lookup_exact(name: &str) -> Option<(KeyDescriptor, Option<KeyDescriptor>)> {
     {
         return Some((key(name, name, 111 + number, "", 0), None));
     }
-    if let Some(digit) = name.strip_prefix("Numpad").and_then(|n| n.parse::<u32>().ok())
+    if let Some(digit) = name
+        .strip_prefix("Numpad")
+        .and_then(|n| n.parse::<u32>().ok())
         && digit <= 9
     {
-        return Some((key(&digit.to_string(), name, 96 + digit, &digit.to_string(), 3), None));
+        return Some((
+            key(&digit.to_string(), name, 96 + digit, &digit.to_string(), 3),
+            None,
+        ));
     }
     for (code, key_code, text) in [
         ("NumpadMultiply", 106, "*"),
@@ -148,7 +184,12 @@ fn resolve_smart_modifier(name: &str) -> String {
     }
     let trimmed = name.trim();
     if trimmed.eq_ignore_ascii_case("controlormeta") {
-        return if cfg!(target_os = "macos") { "Meta" } else { "Control" }.to_owned();
+        return if cfg!(target_os = "macos") {
+            "Meta"
+        } else {
+            "Control"
+        }
+        .to_owned();
     }
     trimmed.to_owned()
 }
@@ -159,10 +200,17 @@ fn lookup(name: &str) -> Option<(KeyDescriptor, Option<KeyDescriptor>)> {
         .or_else(|| {
             let mut chars = name.chars();
             let first = chars.next()?;
-            let capitalized: String = first.to_uppercase().chain(chars.flat_map(char::to_lowercase)).collect();
+            let capitalized: String = first
+                .to_uppercase()
+                .chain(chars.flat_map(char::to_lowercase))
+                .collect();
             lookup_exact(&capitalized)
         })
-        .or_else(|| (name.chars().count() > 1).then(|| lookup_exact(&name.to_lowercase())).flatten())
+        .or_else(|| {
+            (name.chars().count() > 1)
+                .then(|| lookup_exact(&name.to_lowercase()))
+                .flatten()
+        })
 }
 
 /// Whether `name` is a known key.
@@ -175,7 +223,10 @@ pub const MODIFIERS: [&str; 4] = ["Alt", "Control", "Meta", "Shift"];
 /// The canonical modifier name of `name`, if it is one.
 pub fn modifier_name(name: &str) -> Option<&'static str> {
     let descriptor = lookup(name)?.0;
-    MODIFIERS.iter().copied().find(|modifier| *modifier == descriptor.key)
+    MODIFIERS
+        .iter()
+        .copied()
+        .find(|modifier| *modifier == descriptor.key)
 }
 
 /// CDP modifier bit mask (Alt=1, Control=2, Meta=4, Shift=8).
@@ -241,28 +292,53 @@ mod tests {
     #[test]
     fn letters_digits_and_punctuation_have_codes_and_shifted_forms() {
         let a = resolve("a", &[]).ok();
-        assert_eq!(a.as_ref().map(|k| (k.code.as_str(), k.key_code, k.text.as_str())), Some(("KeyA", 65, "a")));
+        assert_eq!(
+            a.as_ref()
+                .map(|k| (k.code.as_str(), k.key_code, k.text.as_str())),
+            Some(("KeyA", 65, "a"))
+        );
         let shifted = resolve("a", &["Shift"]).ok();
         assert_eq!(shifted.map(|k| k.text), Some("A".into()));
         assert_eq!(resolve("A", &[]).ok().map(|k| k.key), Some("A".into()));
-        assert_eq!(resolve("1", &["Shift"]).ok().map(|k| k.key), Some("!".into()));
-        assert_eq!(resolve("?", &[]).ok().map(|k| (k.code, k.key_code)), Some(("Slash".into(), 191)));
+        assert_eq!(
+            resolve("1", &["Shift"]).ok().map(|k| k.key),
+            Some("!".into())
+        );
+        assert_eq!(
+            resolve("?", &[]).ok().map(|k| (k.code, k.key_code)),
+            Some(("Slash".into(), 191))
+        );
     }
 
     #[test]
     fn named_keys_and_aliases_resolve() {
-        assert_eq!(resolve("Return", &[]).ok().map(|k| (k.key, k.text)), Some(("Enter".into(), "\r".into())));
-        assert_eq!(resolve("esc", &[]).ok().map(|k| k.key), Some("Escape".into()));
-        assert_eq!(resolve("ctrl", &[]).ok().map(|k| (k.key, k.location)), Some(("Control".into(), 1)));
+        assert_eq!(
+            resolve("Return", &[]).ok().map(|k| (k.key, k.text)),
+            Some(("Enter".into(), "\r".into()))
+        );
+        assert_eq!(
+            resolve("esc", &[]).ok().map(|k| k.key),
+            Some("Escape".into())
+        );
+        assert_eq!(
+            resolve("ctrl", &[]).ok().map(|k| (k.key, k.location)),
+            Some(("Control".into(), 1))
+        );
         assert_eq!(resolve("F5", &[]).ok().map(|k| k.key_code), Some(116));
-        assert_eq!(resolve("Numpad7", &[]).ok().map(|k| (k.key, k.location)), Some(("7".into(), 3)));
+        assert_eq!(
+            resolve("Numpad7", &[]).ok().map(|k| (k.key, k.location)),
+            Some(("7".into(), 3))
+        );
         assert_eq!(resolve("Space", &[]).ok().map(|k| k.text), Some(" ".into()));
         assert!(resolve("Hyper", &[]).is_err());
     }
 
     #[test]
     fn modifiers_suppress_text_except_shift() {
-        assert_eq!(resolve("a", &["Control"]).ok().map(|k| k.text), Some(String::new()));
+        assert_eq!(
+            resolve("a", &["Control"]).ok().map(|k| k.text),
+            Some(String::new())
+        );
         assert_eq!(modifier_mask(&["Control", "Shift"]), 10);
         assert_eq!(modifier_name("cmd"), Some("Meta"));
         assert_eq!(modifier_name("a"), None);
@@ -272,7 +348,10 @@ mod tests {
 
     #[test]
     fn combos_split_on_plus() {
-        assert_eq!(split_combo("Control+Shift+a"), vec!["Control", "Shift", "a"]);
+        assert_eq!(
+            split_combo("Control+Shift+a"),
+            vec!["Control", "Shift", "a"]
+        );
         assert_eq!(split_combo("+"), vec!["+"]);
         assert_eq!(split_combo("Control++"), vec!["Control", "+"]);
         assert_eq!(split_combo(" Enter "), vec!["Enter"]);

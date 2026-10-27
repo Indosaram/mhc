@@ -296,20 +296,37 @@ impl Page {
     pub fn reload(&mut self, wait: WaitUntil, timeout: Duration) -> Result<bool, String> {
         let cursor = self.client.event_cursor();
         self.send("Page.reload", json!({}))?;
-        Ok(self.wait_lifecycle(cursor, self.main_frame.clone().as_deref(), None, wait, timeout))
+        Ok(self.wait_lifecycle(
+            cursor,
+            self.main_frame.clone().as_deref(),
+            None,
+            wait,
+            timeout,
+        ))
     }
 
     /// Moves `delta` entries through the session history (-1 back, 1 forward).
-    pub fn history(&mut self, delta: i64, wait: WaitUntil, timeout: Duration) -> Result<bool, String> {
+    pub fn history(
+        &mut self,
+        delta: i64,
+        wait: WaitUntil,
+        timeout: Duration,
+    ) -> Result<bool, String> {
         let history = self.send("Page.getNavigationHistory", json!({}))?;
-        let current = history.get("currentIndex").and_then(Value::as_i64).unwrap_or(0);
+        let current = history
+            .get("currentIndex")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
         let entries = history
             .get("entries")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
         let index = current + delta;
-        let Some(entry) = usize::try_from(index).ok().and_then(|index| entries.get(index)) else {
+        let Some(entry) = usize::try_from(index)
+            .ok()
+            .and_then(|index| entries.get(index))
+        else {
             return Err(if delta < 0 {
                 "There is no previous page in this tab's history.".into()
             } else {
@@ -319,7 +336,13 @@ impl Page {
         let id = entry.get("id").cloned().unwrap_or(Value::Null);
         let cursor = self.client.event_cursor();
         self.send("Page.navigateToHistoryEntry", json!({"entryId": id}))?;
-        Ok(self.wait_lifecycle(cursor, self.main_frame.clone().as_deref(), None, wait, timeout))
+        Ok(self.wait_lifecycle(
+            cursor,
+            self.main_frame.clone().as_deref(),
+            None,
+            wait,
+            timeout,
+        ))
     }
 
     /// Evaluates `expression` (promises awaited) and returns its value by JSON.
@@ -356,7 +379,9 @@ impl Page {
     }
 
     fn ensure_world(&self) -> Result<(), String> {
-        let present = self.evaluate("typeof globalThis.__mahoPage === 'object' && globalThis.__mahoPage !== null")?;
+        let present = self.evaluate(
+            "typeof globalThis.__mahoPage === 'object' && globalThis.__mahoPage !== null",
+        )?;
         if present == Value::Bool(true) {
             return Ok(());
         }
@@ -422,7 +447,15 @@ impl Page {
         })
     }
 
-    fn mouse_event(&self, kind: &str, x: f64, y: f64, button: &str, buttons: u32, clicks: u32) -> Result<(), String> {
+    fn mouse_event(
+        &self,
+        kind: &str,
+        x: f64,
+        y: f64,
+        button: &str,
+        buttons: u32,
+        clicks: u32,
+    ) -> Result<(), String> {
         self.send(
             "Input.dispatchMouseEvent",
             json!({
@@ -445,7 +478,11 @@ impl Page {
         let (x, y) = self.mouse;
         let mask = button_mask(button);
         self.mouse_event(
-            if down { "mousePressed" } else { "mouseReleased" },
+            if down {
+                "mousePressed"
+            } else {
+                "mouseReleased"
+            },
             x,
             y,
             button,
@@ -513,14 +550,24 @@ impl Page {
     /// Picks options of a `<select>` by value or label.
     pub fn select_option(&self, target: &str, values: &[String]) -> Result<Vec<String>, String> {
         self.ensure_world()?;
-        let result = self.evaluate(&format!("{SELECT_OPTION}({}, {})", json!(target), json!(values)))?;
+        let result = self.evaluate(&format!(
+            "{SELECT_OPTION}({}, {})",
+            json!(target),
+            json!(values)
+        ))?;
         if let Some(error) = result.get("error").and_then(Value::as_str) {
             return Err(error.to_owned());
         }
         Ok(result
             .get("selected")
             .and_then(Value::as_array)
-            .map(|values| values.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
             .unwrap_or_default())
     }
 
@@ -534,10 +581,16 @@ impl Page {
 
     /// `Input.insertText`.
     pub fn insert_text(&self, text: &str) -> Result<(), String> {
-        self.send("Input.insertText", json!({"text": text})).map(drop)
+        self.send("Input.insertText", json!({"text": text}))
+            .map(drop)
     }
 
-    fn key_event(&self, down: bool, descriptor: &keys::KeyDescriptor, auto_repeat: bool) -> Result<(), String> {
+    fn key_event(
+        &self,
+        down: bool,
+        descriptor: &keys::KeyDescriptor,
+        auto_repeat: bool,
+    ) -> Result<(), String> {
         let kind = if !down {
             "keyUp"
         } else if descriptor.text.is_empty() {
@@ -673,10 +726,17 @@ impl Page {
             params["captureBeyondViewport"] = json!(true);
         } else if full_page {
             let metrics = self.send("Page.getLayoutMetrics", json!({}))?;
-            let width = metrics.pointer("/cssContentSize/width").and_then(Value::as_f64).unwrap_or(0.0);
-            let height = metrics.pointer("/cssContentSize/height").and_then(Value::as_f64).unwrap_or(0.0);
+            let width = metrics
+                .pointer("/cssContentSize/width")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let height = metrics
+                .pointer("/cssContentSize/height")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
             if width > 0.0 && height > 0.0 {
-                params["clip"] = json!({"x": 0, "y": 0, "width": width, "height": height, "scale": 1});
+                params["clip"] =
+                    json!({"x": 0, "y": 0, "width": width, "height": height, "scale": 1});
                 params["captureBeyondViewport"] = json!(true);
             }
         }
@@ -691,7 +751,12 @@ impl Page {
     }
 
     /// Waits until a selector/ref is visible, or text appears, or for `duration`.
-    pub fn wait_for(&self, selector: Option<&str>, text: Option<&str>, timeout: Duration) -> Result<bool, String> {
+    pub fn wait_for(
+        &self,
+        selector: Option<&str>,
+        text: Option<&str>,
+        timeout: Duration,
+    ) -> Result<bool, String> {
         let check = match (selector, text) {
             (Some(selector), _) => {
                 self.ensure_world()?;
@@ -748,8 +813,14 @@ mod tests {
     #[test]
     fn wait_until_parses_puppeteer_and_playwright_names() {
         assert_eq!(WaitUntil::parse("load"), Some(WaitUntil::Load));
-        assert_eq!(WaitUntil::parse("DOMContentLoaded"), Some(WaitUntil::DomContentLoaded));
-        assert_eq!(WaitUntil::parse("networkidle2"), Some(WaitUntil::NetworkIdle));
+        assert_eq!(
+            WaitUntil::parse("DOMContentLoaded"),
+            Some(WaitUntil::DomContentLoaded)
+        );
+        assert_eq!(
+            WaitUntil::parse("networkidle2"),
+            Some(WaitUntil::NetworkIdle)
+        );
         assert_eq!(WaitUntil::parse("commit"), Some(WaitUntil::Commit));
         assert_eq!(WaitUntil::parse("soon"), None);
     }

@@ -51,11 +51,16 @@ pub struct BrowserExtension {
 }
 
 fn env_var(key: &str) -> Option<String> {
-    std::env::var(key).ok().filter(|value| !value.trim().is_empty())
+    std::env::var(key)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn falsy(value: &str) -> bool {
-    matches!(value.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off")
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+    )
 }
 
 impl BrowserExtension {
@@ -70,7 +75,8 @@ impl BrowserExtension {
         if let Some(headless) = env_var("MAHO_BROWSER_HEADLESS") {
             launch.headless = !falsy(&headless);
         }
-        if env_var("MAHO_BROWSER_TRANSPORT").is_some_and(|value| value.eq_ignore_ascii_case("port")) {
+        if env_var("MAHO_BROWSER_TRANSPORT").is_some_and(|value| value.eq_ignore_ascii_case("port"))
+        {
             launch.transport = TransportKind::Port;
         }
         Self {
@@ -111,7 +117,11 @@ impl Session {
     }
 
     fn browser_or_start(&mut self, params: &Value) -> Result<&mut Browser, String> {
-        if self.browser.as_ref().is_some_and(|browser| !browser.is_connected()) {
+        if self
+            .browser
+            .as_ref()
+            .is_some_and(|browser| !browser.is_connected())
+        {
             self.browser = None;
         }
         if self.browser.is_none() {
@@ -125,7 +135,11 @@ impl Session {
                         options.executable = Some(resolve_path(&self.cwd, &path));
                     }
                     if let Some(args) = app.get("args").and_then(Value::as_array) {
-                        options.args = args.iter().filter_map(Value::as_str).map(str::to_owned).collect();
+                        options.args = args
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect();
                     }
                     if let Some(headed) = params.get("headed").and_then(Value::as_bool) {
                         options.headless = !headed;
@@ -134,7 +148,10 @@ impl Session {
                         let width = viewport.get("width").and_then(Value::as_u64);
                         let height = viewport.get("height").and_then(Value::as_u64);
                         if let (Some(width), Some(height)) = (width, height) {
-                            options.viewport = (width.clamp(200, 4096) as u32, height.clamp(200, 4096) as u32);
+                            options.viewport = (
+                                width.clamp(200, 4096) as u32,
+                                height.clamp(200, 4096) as u32,
+                            );
                         }
                     }
                     options.features = LaunchFeatures {
@@ -149,15 +166,23 @@ impl Session {
         if let (Some(browser), Some(dialogs)) = (&self.browser, str_param(params, "dialogs")) {
             browser.client().set_accept_dialogs(dialogs != "dismiss");
         }
-        self.browser.as_mut().ok_or_else(|| "browser unavailable".into())
+        self.browser
+            .as_mut()
+            .ok_or_else(|| "browser unavailable".into())
     }
 
     fn desktop_or_start(&mut self) -> Result<&mut DesktopDaemon, String> {
         if self.desktop.is_none() {
             let script = install_daemon_script(&self.settings.daemon_dir)?;
-            self.desktop = Some(DesktopDaemon::start(&self.settings.python, &script, DAEMON_STARTUP_TIMEOUT)?);
+            self.desktop = Some(DesktopDaemon::start(
+                &self.settings.python,
+                &script,
+                DAEMON_STARTUP_TIMEOUT,
+            )?);
         }
-        self.desktop.as_mut().ok_or_else(|| "desktop daemon unavailable".into())
+        self.desktop
+            .as_mut()
+            .ok_or_else(|| "desktop daemon unavailable".into())
     }
 }
 
@@ -184,13 +209,19 @@ fn required(params: &Value, key: &str, action: &str) -> Result<String, String> {
 
 fn resolve_path(cwd: &Path, value: &str) -> PathBuf {
     let path = PathBuf::from(value);
-    if path.is_absolute() { path } else { cwd.join(path) }
+    if path.is_absolute() {
+        path
+    } else {
+        cwd.join(path)
+    }
 }
 
 fn timeout_param(params: &Value, default: Duration) -> Duration {
     number_param(params, "timeout")
         .filter(|seconds| *seconds > 0.0)
-        .map_or(default, |seconds| Duration::from_secs_f64(seconds.min(300.0)))
+        .map_or(default, |seconds| {
+            Duration::from_secs_f64(seconds.min(300.0))
+        })
 }
 
 fn clip(text: &str, limit: usize) -> String {
@@ -253,8 +284,11 @@ pub fn run_browser(session: &mut Session, params: &Value) -> Result<Output, Stri
     let action = required(params, "action", "browser")?;
     let name = str_param(params, "name").unwrap_or_else(|| DEFAULT_TAB.to_owned());
     let wait = match str_param(params, "wait_until") {
-        Some(value) => WaitUntil::parse(&value)
-            .ok_or_else(|| format!("unknown wait_until {value:?}: use load, domcontentloaded, networkidle or commit"))?,
+        Some(value) => WaitUntil::parse(&value).ok_or_else(|| {
+            format!(
+                "unknown wait_until {value:?}: use load, domcontentloaded, networkidle or commit"
+            )
+        })?,
         None => WaitUntil::Load,
     };
     match action.as_str() {
@@ -269,7 +303,11 @@ pub fn run_browser(session: &mut Session, params: &Value) -> Result<Output, Stri
                     "\n- {}: {} {}",
                     target.name.as_deref().unwrap_or("(not opened here)"),
                     target.url,
-                    if target.title.is_empty() { String::new() } else { format!("— {}", target.title) }
+                    if target.title.is_empty() {
+                        String::new()
+                    } else {
+                        format!("— {}", target.title)
+                    }
                 ));
             }
             Ok(Output {
@@ -284,7 +322,11 @@ pub fn run_browser(session: &mut Session, params: &Value) -> Result<Output, Stri
                 if let Some(mut browser) = session.browser.take() {
                     browser.close();
                 }
-                return Ok(Output::text(if had { "Browser closed." } else { "No browser is open." }));
+                return Ok(Output::text(if had {
+                    "Browser closed."
+                } else {
+                    "No browser is open."
+                }));
             }
             let Some(browser) = session.browser.as_mut() else {
                 return Ok(Output::text("No browser is open."));
@@ -292,7 +334,10 @@ pub fn run_browser(session: &mut Session, params: &Value) -> Result<Output, Stri
             if browser.close_tab(&name)? {
                 Ok(Output::text(format!("Closed tab {name}.")))
             } else {
-                Ok(Output::text(format!("No tab named {name}. Open tabs: {}", browser.tab_names().join(", "))))
+                Ok(Output::text(format!(
+                    "No tab named {name}. Open tabs: {}",
+                    browser.tab_names().join(", ")
+                )))
             }
         }
         "open" => {
@@ -304,24 +349,45 @@ pub fn run_browser(session: &mut Session, params: &Value) -> Result<Output, Stri
                 let found = browser
                     .targets()?
                     .into_iter()
-                    .find(|info| info.id == target || info.url.contains(&target) || info.title.contains(&target))
+                    .find(|info| {
+                        info.id == target
+                            || info.url.contains(&target)
+                            || info.title.contains(&target)
+                    })
                     .ok_or_else(|| format!("no open page matches {target:?}"))?;
                 browser.adopt(&name, &found.id)?;
             }
             let settled = browser.open(&name, url.as_deref(), wait)?;
-            after_action(session, params, &name, &format!("Tab {name} open{}", settle_note(settled)))
+            after_action(
+                session,
+                params,
+                &name,
+                &format!("Tab {name} open{}", settle_note(settled)),
+            )
         }
         _ => {
-            let has_tab = session.browser.as_mut().is_some_and(|browser| browser.tab(&name).is_some());
+            let has_tab = session
+                .browser
+                .as_mut()
+                .is_some_and(|browser| browser.tab(&name).is_some());
             if !has_tab {
                 if action == "goto" {
                     // `goto` without `open` opens the tab first.
                     session.browser_or_start(params)?.open(&name, None, wait)?;
                 } else if session.browser.is_none() {
-                    return Err(format!("No browser tab {name:?} is open. Call the browser tool with action \"open\" first."));
+                    return Err(format!(
+                        "No browser tab {name:?} is open. Call the browser tool with action \"open\" first."
+                    ));
                 } else {
-                    let names = session.browser.as_ref().map(Browser::tab_names).unwrap_or_default();
-                    return Err(format!("No tab named {name:?}. Open tabs: {}", names.join(", ")));
+                    let names = session
+                        .browser
+                        .as_ref()
+                        .map(Browser::tab_names)
+                        .unwrap_or_default();
+                    return Err(format!(
+                        "No tab named {name:?}. Open tabs: {}",
+                        names.join(", ")
+                    ));
                 }
             }
             page_action(session, params, &action, &name, wait)
@@ -329,10 +395,18 @@ pub fn run_browser(session: &mut Session, params: &Value) -> Result<Output, Stri
     }
 }
 
-fn page_action(session: &mut Session, params: &Value, action: &str, name: &str, wait: WaitUntil) -> Result<Output, String> {
+fn page_action(
+    session: &mut Session,
+    params: &Value,
+    action: &str,
+    name: &str,
+    wait: WaitUntil,
+) -> Result<Output, String> {
     let cwd = session.cwd.clone();
     let browser = session.browser.as_mut().ok_or("No browser is open.")?;
-    let page = browser.tab(name).ok_or_else(|| format!("No tab named {name:?}."))?;
+    let page = browser
+        .tab(name)
+        .ok_or_else(|| format!("No tab named {name:?}."))?;
     let timeout = timeout_param(params, crate::page::NAVIGATION_TIMEOUT);
     let message = match action {
         "goto" => {
@@ -341,14 +415,20 @@ fn page_action(session: &mut Session, params: &Value, action: &str, name: &str, 
             format!("Navigated to {url}{}", settle_note(settled))
         }
         "back" => format!("Went back{}", settle_note(page.history(-1, wait, timeout)?)),
-        "forward" => format!("Went forward{}", settle_note(page.history(1, wait, timeout)?)),
+        "forward" => format!(
+            "Went forward{}",
+            settle_note(page.history(1, wait, timeout)?)
+        ),
         "reload" => format!("Reloaded{}", settle_note(page.reload(wait, timeout)?)),
         "snapshot" => {
             let snapshot = page.snapshot(&SnapshotOptions {
                 interactive: bool_param(params, "interactive"),
                 selector: str_param(params, "selector"),
                 ref_id: str_param(params, "ref"),
-                max_depth: params.get("max_depth").and_then(Value::as_u64).map(|depth| depth as u32),
+                max_depth: params
+                    .get("max_depth")
+                    .and_then(Value::as_u64)
+                    .map(|depth| depth as u32),
                 max_chars: None,
             })?;
             let text = format!(
@@ -366,18 +446,34 @@ fn page_action(session: &mut Session, params: &Value, action: &str, name: &str, 
         }
         "click" => {
             let button = str_param(params, "button").unwrap_or_else(|| "left".into());
-            let button = crate::page::parse_button(&button).ok_or_else(|| format!("unknown button {button:?}"))?;
-            let count = params.get("count").and_then(Value::as_u64).unwrap_or(1).clamp(1, 3) as u32;
-            match (str_param(params, "target"), number_param(params, "x"), number_param(params, "y")) {
+            let button = crate::page::parse_button(&button)
+                .ok_or_else(|| format!("unknown button {button:?}"))?;
+            let count = params
+                .get("count")
+                .and_then(Value::as_u64)
+                .unwrap_or(1)
+                .clamp(1, 3) as u32;
+            match (
+                str_param(params, "target"),
+                number_param(params, "x"),
+                number_param(params, "y"),
+            ) {
                 (Some(target), _, _) => {
                     let element = page.click(&target, button, count)?;
-                    format!("Clicked {target} (<{}>) at ({:.0}, {:.0})", element.tag, element.x, element.y)
+                    format!(
+                        "Clicked {target} (<{}>) at ({:.0}, {:.0})",
+                        element.tag, element.x, element.y
+                    )
                 }
                 (None, Some(x), Some(y)) => {
                     page.mouse_click(x, y, button, count)?;
                     format!("Clicked at ({x:.0}, {y:.0})")
                 }
-                _ => return Err("`click` needs `target` (a ref or CSS selector) or `x` and `y`".into()),
+                _ => {
+                    return Err(
+                        "`click` needs `target` (a ref or CSS selector) or `x` and `y`".into(),
+                    );
+                }
             }
         }
         "hover" => {
@@ -387,12 +483,18 @@ fn page_action(session: &mut Session, params: &Value, action: &str, name: &str, 
         }
         "fill" => {
             let target = required(params, "target", action)?;
-            let text = params.get("text").and_then(Value::as_str).ok_or("`fill` needs `text`")?;
+            let text = params
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or("`fill` needs `text`")?;
             page.fill(&target, text)?;
             format!("Filled {target} ({} chars)", text.chars().count())
         }
         "type" => {
-            let text = params.get("text").and_then(Value::as_str).ok_or("`type` needs `text`")?;
+            let text = params
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or("`type` needs `text`")?;
             if let Some(target) = str_param(params, "target") {
                 page.focus(&target)?;
             }
@@ -407,7 +509,11 @@ fn page_action(session: &mut Session, params: &Value, action: &str, name: &str, 
         "select" => {
             let target = required(params, "target", action)?;
             let values: Vec<String> = match params.get("values") {
-                Some(Value::Array(values)) => values.iter().filter_map(Value::as_str).map(str::to_owned).collect(),
+                Some(Value::Array(values)) => values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect(),
                 Some(Value::String(value)) => vec![value.clone()],
                 _ => str_param(params, "text").into_iter().collect(),
             };
@@ -424,7 +530,10 @@ fn page_action(session: &mut Session, params: &Value, action: &str, name: &str, 
             format!("Scrolled by ({dx:.0}, {dy:.0})")
         }
         "screenshot" => {
-            let png = page.screenshot(bool_param(params, "full_page"), str_param(params, "target").as_deref())?;
+            let png = page.screenshot(
+                bool_param(params, "full_page"),
+                str_param(params, "target").as_deref(),
+            )?;
             let (width, height) = crate::computer::png_dimensions(&png)?;
             let mut text = format!("Screenshot {width}x{height}");
             if let Some(path) = str_param(params, "path") {
@@ -432,7 +541,8 @@ fn page_action(session: &mut Session, params: &Value, action: &str, name: &str, 
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
                 }
-                std::fs::write(&path, &png).map_err(|error| format!("cannot save {}: {error}", path.display()))?;
+                std::fs::write(&path, &png)
+                    .map_err(|error| format!("cannot save {}: {error}", path.display()))?;
                 text.push_str(&format!(", saved to {}", path.display()));
             }
             return Ok(Output {
@@ -461,12 +571,24 @@ fn page_action(session: &mut Session, params: &Value, action: &str, name: &str, 
         "wait" => {
             let target = str_param(params, "target");
             let text = str_param(params, "text");
-            let budget = timeout_param(params, if target.is_some() || text.is_some() { Duration::from_secs(10) } else { Duration::from_secs(1) });
+            let budget = timeout_param(
+                params,
+                if target.is_some() || text.is_some() {
+                    Duration::from_secs(10)
+                } else {
+                    Duration::from_secs(1)
+                },
+            );
             let found = page.wait_for(target.as_deref(), text.as_deref(), budget)?;
             match (target, text, found) {
                 (None, None, _) => format!("Waited {:.1}s", budget.as_secs_f64()),
                 (_, _, true) => "Condition met".to_owned(),
-                (_, _, false) => return Err(format!("Timed out after {:.1}s waiting", budget.as_secs_f64())),
+                (_, _, false) => {
+                    return Err(format!(
+                        "Timed out after {:.1}s waiting",
+                        budget.as_secs_f64()
+                    ));
+                }
             }
         }
         other => {
@@ -479,17 +601,36 @@ fn page_action(session: &mut Session, params: &Value, action: &str, name: &str, 
 }
 
 /// Appends the location, and the fresh snapshot when `snapshot: true`.
-fn after_action(session: &mut Session, params: &Value, name: &str, message: &str) -> Result<Output, String> {
+fn after_action(
+    session: &mut Session,
+    params: &Value,
+    name: &str,
+    message: &str,
+) -> Result<Output, String> {
     let page = session
         .browser
         .as_mut()
         .and_then(|browser| browser.tab(name))
         .ok_or_else(|| format!("No tab named {name:?}."))?;
     let (url, title) = page.location().unwrap_or_default();
-    let mut text = format!("{message}.\nPage: {url}{}", if title.is_empty() { String::new() } else { format!(" — {title}") });
+    let mut text = format!(
+        "{message}.\nPage: {url}{}",
+        if title.is_empty() {
+            String::new()
+        } else {
+            format!(" — {title}")
+        }
+    );
     if bool_param(params, "snapshot") {
-        match page.snapshot(&SnapshotOptions { interactive: bool_param(params, "interactive"), ..SnapshotOptions::default() }) {
-            Ok(snapshot) => text.push_str(&format!("\n{} ref(s)\n{}", snapshot.refs, clip(&snapshot.tree, SNAPSHOT_LIMIT))),
+        match page.snapshot(&SnapshotOptions {
+            interactive: bool_param(params, "interactive"),
+            ..SnapshotOptions::default()
+        }) {
+            Ok(snapshot) => text.push_str(&format!(
+                "\n{} ref(s)\n{}",
+                snapshot.refs,
+                clip(&snapshot.tree, SNAPSHOT_LIMIT)
+            )),
             Err(error) => text.push_str(&format!("\n(snapshot failed: {error})")),
         }
     }
@@ -510,12 +651,20 @@ fn point(params: &Value) -> Result<Point, String> {
 fn string_list(params: &Value, key: &str) -> Vec<String> {
     match params.get(key) {
         Some(Value::String(value)) => vec![value.clone()],
-        Some(Value::Array(values)) => values.iter().filter_map(Value::as_str).map(str::to_owned).collect(),
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
         _ => Vec::new(),
     }
 }
 
-fn computer_actions(backend: &mut dyn ComputerBackend, action: &str, params: &Value) -> Result<Output, String> {
+fn computer_actions(
+    backend: &mut dyn ComputerBackend,
+    action: &str,
+    params: &Value,
+) -> Result<Output, String> {
     let label = backend.label();
     let text = match action {
         "screenshot" => {
@@ -535,10 +684,17 @@ fn computer_actions(backend: &mut dyn ComputerBackend, action: &str, params: &Va
             let clicks = if action == "double_click" {
                 2
             } else {
-                params.get("clicks").and_then(Value::as_u64).unwrap_or(1).clamp(1, 3) as u32
+                params
+                    .get("clicks")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(1)
+                    .clamp(1, 3) as u32
             };
             backend.click(at, &button, clicks, &string_list(params, "modifiers"))?;
-            format!("{button} click x{clicks} at ({:.0}, {:.0}) on {label}", at.x, at.y)
+            format!(
+                "{button} click x{clicks} at ({:.0}, {:.0}) on {label}",
+                at.x, at.y
+            )
         }
         "move" => {
             let at = point(params)?;
@@ -559,10 +715,16 @@ fn computer_actions(backend: &mut dyn ComputerBackend, action: &str, params: &Va
             let dx = number_param(params, "dx").unwrap_or(0.0);
             let dy = number_param(params, "dy").unwrap_or(0.0);
             backend.scroll(at, dx, dy)?;
-            format!("Scrolled ({dx:.0}, {dy:.0}) at ({:.0}, {:.0}) on {label}", at.x, at.y)
+            format!(
+                "Scrolled ({dx:.0}, {dy:.0}) at ({:.0}, {:.0}) on {label}",
+                at.x, at.y
+            )
         }
         "type" => {
-            let text = params.get("text").and_then(Value::as_str).ok_or("`type` needs `text`")?;
+            let text = params
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or("`type` needs `text`")?;
             backend.type_text(text)?;
             format!("Typed {} chars on {label}", text.chars().count())
         }
@@ -587,12 +749,16 @@ fn computer_actions(backend: &mut dyn ComputerBackend, action: &str, params: &Va
 pub fn run_computer(session: &mut Session, params: &Value) -> Result<Output, String> {
     let action = required(params, "action", "computer")?;
     let name = str_param(params, "name").unwrap_or_else(|| DEFAULT_TAB.to_owned());
-    let has_tab = session.browser.as_mut().is_some_and(|browser| browser.tab(&name).is_some());
-    let backend = str_param(params, "backend").unwrap_or_else(|| if has_tab { "browser" } else { "desktop" }.to_owned());
+    let has_tab = session
+        .browser
+        .as_mut()
+        .is_some_and(|browser| browser.tab(&name).is_some());
+    let backend = str_param(params, "backend")
+        .unwrap_or_else(|| if has_tab { "browser" } else { "desktop" }.to_owned());
     match (backend.as_str(), action.as_str()) {
-        ("browser", "status" | "sandbox_start" | "sandbox_stop" | "sandbox_list") => {
-            Err(format!("`{action}` is a desktop backend action; pass backend: \"desktop\""))
-        }
+        ("browser", "status" | "sandbox_start" | "sandbox_stop" | "sandbox_list") => Err(format!(
+            "`{action}` is a desktop backend action; pass backend: \"desktop\""
+        )),
         ("browser", _) => {
             let page = session
                 .browser
@@ -614,7 +780,10 @@ pub fn run_computer(session: &mut Session, params: &Value) -> Result<Output, Str
                     match (&ready.cua_version, ready.cua_available) {
                         (Some(version), true) => format!("{version} available"),
                         (None, true) => "available".to_owned(),
-                        _ => format!("unavailable ({})", ready.cua_import_error.as_deref().unwrap_or("not installed")),
+                        _ => format!(
+                            "unavailable ({})",
+                            ready.cua_import_error.as_deref().unwrap_or("not installed")
+                        ),
                     },
                     sandboxes.len()
                 ),
@@ -625,7 +794,11 @@ pub fn run_computer(session: &mut Session, params: &Value) -> Result<Output, Str
         ("desktop", "sandbox_start") => {
             let daemon = session.desktop_or_start()?;
             let mode = str_param(params, "mode").unwrap_or_else(|| "local".into());
-            let api_key = if mode == "cloud" { env_var("CUA_API_KEY") } else { None };
+            let api_key = if mode == "cloud" {
+                env_var("CUA_API_KEY")
+            } else {
+                None
+            };
             if mode == "cloud" && api_key.is_none() {
                 return Err("cloud sandboxes need CUA_API_KEY in the environment".into());
             }
@@ -639,7 +812,9 @@ pub fn run_computer(session: &mut Session, params: &Value) -> Result<Output, Str
                 api_key,
                 region: str_param(params, "region"),
             })?;
-            Ok(Output::text(format!("Sandbox {name} started; it is now the desktop target.")))
+            Ok(Output::text(format!(
+                "Sandbox {name} started; it is now the desktop target."
+            )))
         }
         ("desktop", "sandbox_stop") => {
             let daemon = session.desktop_or_start()?;
@@ -647,7 +822,9 @@ pub fn run_computer(session: &mut Session, params: &Value) -> Result<Output, Str
                 Some(name) => name,
                 None => match &daemon.target {
                     crate::computer::DesktopTarget::Sandbox(name) => name.clone(),
-                    crate::computer::DesktopTarget::Localhost => return Err("`sandbox_stop` needs `sandbox`".into()),
+                    crate::computer::DesktopTarget::Localhost => {
+                        return Err("`sandbox_stop` needs `sandbox`".into());
+                    }
                 },
             };
             daemon.stop_sandbox(&name)?;
@@ -661,11 +838,18 @@ pub fn run_computer(session: &mut Session, params: &Value) -> Result<Output, Str
                     "\n- {} ({}, {}, {})",
                     sandbox.get("name").and_then(Value::as_str).unwrap_or("?"),
                     sandbox.get("mode").and_then(Value::as_str).unwrap_or("?"),
-                    sandbox.get("os_type").and_then(Value::as_str).unwrap_or("?"),
+                    sandbox
+                        .get("os_type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?"),
                     sandbox.get("status").and_then(Value::as_str).unwrap_or("?"),
                 ));
             }
-            Ok(Output { text, image_png: None, details: json!({"sandboxes": sandboxes}) })
+            Ok(Output {
+                text,
+                image_png: None,
+                details: json!({"sandboxes": sandboxes}),
+            })
         }
         ("desktop", _) => {
             let daemon = session.desktop_or_start()?;
@@ -674,7 +858,9 @@ pub fn run_computer(session: &mut Session, params: &Value) -> Result<Output, Str
             }
             computer_actions(daemon, &action, params)
         }
-        (other, _) => Err(format!("unknown computer backend {other:?}: use browser or desktop")),
+        (other, _) => Err(format!(
+            "unknown computer backend {other:?}: use browser or desktop"
+        )),
     }
 }
 
@@ -754,7 +940,11 @@ fn computer_schema() -> Value {
 
 type Runner = fn(&mut Session, &Value) -> Result<Output, String>;
 
-async fn run_blocking(session: Arc<Mutex<Session>>, params: Value, runner: Runner) -> Result<ToolResult, ToolError> {
+async fn run_blocking(
+    session: Arc<Mutex<Session>>,
+    params: Value,
+    runner: Runner,
+) -> Result<ToolResult, ToolError> {
     let job = move || {
         let mut session = session.lock().unwrap_or_else(PoisonError::into_inner);
         runner(&mut session, &params).map(Output::into_result)
@@ -769,7 +959,14 @@ async fn run_blocking(session: Arc<Mutex<Session>>, params: Value, runner: Runne
     outcome.map_err(ToolError::Message)
 }
 
-fn define(session: &Arc<Mutex<Session>>, name: &str, label: &str, description: &str, parameters: Value, runner: Runner) -> ToolDefinition {
+fn define(
+    session: &Arc<Mutex<Session>>,
+    name: &str,
+    label: &str,
+    description: &str,
+    parameters: Value,
+    runner: Runner,
+) -> ToolDefinition {
     let session = Arc::clone(session);
     let mut definition = ToolDefinition::new(
         name,
@@ -789,8 +986,22 @@ fn define(session: &Arc<Mutex<Session>>, name: &str, label: &str, description: &
 /// The tool definitions over one session.
 pub fn tool_definitions(session: &Arc<Mutex<Session>>) -> Vec<ToolDefinition> {
     vec![
-        define(session, "browser", "Browser", BROWSER_DESCRIPTION, browser_schema(), run_browser),
-        define(session, "computer", "Computer", COMPUTER_DESCRIPTION, computer_schema(), run_computer),
+        define(
+            session,
+            "browser",
+            "Browser",
+            BROWSER_DESCRIPTION,
+            browser_schema(),
+            run_browser,
+        ),
+        define(
+            session,
+            "computer",
+            "Computer",
+            COMPUTER_DESCRIPTION,
+            computer_schema(),
+            run_computer,
+        ),
     ]
 }
 
@@ -807,7 +1018,12 @@ impl Extension for BrowserExtension {
             Arc::new(move |_event, _ctx| {
                 let session = Arc::clone(&session);
                 Box::pin(async move {
-                    let close = move || session.lock().unwrap_or_else(PoisonError::into_inner).close_all();
+                    let close = move || {
+                        session
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .close_all()
+                    };
                     match tokio::runtime::Handle::try_current() {
                         Ok(handle) => {
                             let _ = handle.spawn_blocking(close).await;
@@ -828,7 +1044,10 @@ mod tests {
     fn session() -> Session {
         Session::new(
             BrowserExtension {
-                launch: LaunchOptions { executable: Some(PathBuf::from("/nonexistent/chromium")), ..LaunchOptions::default() },
+                launch: LaunchOptions {
+                    executable: Some(PathBuf::from("/nonexistent/chromium")),
+                    ..LaunchOptions::default()
+                },
                 cdp_url: None,
                 python: "python3".into(),
                 daemon_dir: std::env::temp_dir().join("maho-computer-test"),
@@ -840,25 +1059,55 @@ mod tests {
     #[test]
     fn actions_without_a_browser_explain_what_to_do() {
         let mut session = session();
-        assert_eq!(run_browser(&mut session, &json!({"action": "tabs"})).map(|o| o.text), Ok("No browser is open.".into()));
-        assert_eq!(run_browser(&mut session, &json!({"action": "close", "all": true})).map(|o| o.text), Ok("No browser is open.".into()));
-        let error = run_browser(&mut session, &json!({"action": "click", "target": "e1"})).err().unwrap_or_default();
+        assert_eq!(
+            run_browser(&mut session, &json!({"action": "tabs"})).map(|o| o.text),
+            Ok("No browser is open.".into())
+        );
+        assert_eq!(
+            run_browser(&mut session, &json!({"action": "close", "all": true})).map(|o| o.text),
+            Ok("No browser is open.".into())
+        );
+        let error = run_browser(&mut session, &json!({"action": "click", "target": "e1"}))
+            .err()
+            .unwrap_or_default();
         assert!(error.contains("action \"open\" first"), "{error}");
         assert!(run_browser(&mut session, &json!({})).is_err());
-        let launch = run_browser(&mut session, &json!({"action": "open", "url": "about:blank"})).err().unwrap_or_default();
+        let launch = run_browser(
+            &mut session,
+            &json!({"action": "open", "url": "about:blank"}),
+        )
+        .err()
+        .unwrap_or_default();
         assert!(launch.contains("/nonexistent/chromium"), "{launch}");
-        let bad_wait = run_browser(&mut session, &json!({"action": "goto", "url": "x", "wait_until": "soon"})).err().unwrap_or_default();
+        let bad_wait = run_browser(
+            &mut session,
+            &json!({"action": "goto", "url": "x", "wait_until": "soon"}),
+        )
+        .err()
+        .unwrap_or_default();
         assert!(bad_wait.contains("wait_until"), "{bad_wait}");
     }
 
     #[test]
     fn computer_browser_backend_needs_a_tab() {
         let mut session = session();
-        let error = run_computer(&mut session, &json!({"action": "screenshot", "backend": "browser"})).err().unwrap_or_default();
+        let error = run_computer(
+            &mut session,
+            &json!({"action": "screenshot", "backend": "browser"}),
+        )
+        .err()
+        .unwrap_or_default();
         assert!(error.contains("No browser tab"), "{error}");
-        let error = run_computer(&mut session, &json!({"action": "status", "backend": "browser"})).err().unwrap_or_default();
+        let error = run_computer(
+            &mut session,
+            &json!({"action": "status", "backend": "browser"}),
+        )
+        .err()
+        .unwrap_or_default();
         assert!(error.contains("desktop backend action"), "{error}");
-        assert!(run_computer(&mut session, &json!({"action": "click", "backend": "moon"})).is_err());
+        assert!(
+            run_computer(&mut session, &json!({"action": "click", "backend": "moon"})).is_err()
+        );
     }
 
     #[test]
@@ -871,7 +1120,10 @@ mod tests {
     #[test]
     fn schemas_list_every_action() {
         let browser = browser_schema();
-        let actions = browser.pointer("/properties/action/enum").and_then(Value::as_array).map(Vec::len);
+        let actions = browser
+            .pointer("/properties/action/enum")
+            .and_then(Value::as_array)
+            .map(Vec::len);
         assert_eq!(actions, Some(18));
         let computer = computer_schema();
         assert_eq!(computer.pointer("/required/0"), Some(&json!("action")));
@@ -879,8 +1131,15 @@ mod tests {
 
     #[test]
     fn outputs_put_the_image_first() {
-        let result = Output { text: "shot".into(), image_png: Some(vec![1, 2, 3]), details: json!({"w": 1}) }.into_result();
-        assert!(matches!(result.content.first(), Some(ToolContent::Image { mime_type, .. }) if mime_type == "image/png"));
+        let result = Output {
+            text: "shot".into(),
+            image_png: Some(vec![1, 2, 3]),
+            details: json!({"w": 1}),
+        }
+        .into_result();
+        assert!(
+            matches!(result.content.first(), Some(ToolContent::Image { mime_type, .. }) if mime_type == "image/png")
+        );
         assert_eq!(result.content.len(), 2);
         assert_eq!(result.details, Some(json!({"w": 1})));
     }

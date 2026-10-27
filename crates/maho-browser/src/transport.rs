@@ -303,7 +303,9 @@ pub fn discover_websocket_url(http_url: &str) -> Result<String, String> {
         match stream.read(&mut chunk) {
             Ok(0) => break,
             Ok(read) => raw.extend_from_slice(&chunk[..read]),
-            Err(error) if raw.is_empty() => return Err(format!("DevTools discovery failed: {error}")),
+            Err(error) if raw.is_empty() => {
+                return Err(format!("DevTools discovery failed: {error}"));
+            }
             Err(_) => break,
         }
     }
@@ -321,7 +323,9 @@ pub fn discover_websocket_url(http_url: &str) -> Result<String, String> {
             head.lines().next().unwrap_or_default()
         ));
     }
-    let json_start = body.find('{').ok_or("DevTools discovery body is not JSON")?;
+    let json_start = body
+        .find('{')
+        .ok_or("DevTools discovery body is not JSON")?;
     let json_end = body.rfind('}').map_or(body.len(), |end| end + 1);
     let version: Value = serde_json::from_str(&body[json_start..json_end])
         .map_err(|error| format!("DevTools discovery body is not JSON: {error}"))?;
@@ -364,10 +368,7 @@ pub fn connect(endpoint: &str) -> Result<CdpClient, String> {
     });
     let reader: Reader = Box::new(move || {
         loop {
-            let read = socket
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .read();
+            let read = socket.lock().unwrap_or_else(PoisonError::into_inner).read();
             match read {
                 Ok(tungstenite::Message::Text(text)) => return Ok(Some(text.as_str().to_owned())),
                 Ok(tungstenite::Message::Binary(bytes)) => {
@@ -376,9 +377,9 @@ pub fn connect(endpoint: &str) -> Result<CdpClient, String> {
                 Ok(tungstenite::Message::Close(_)) => return Ok(None),
                 Ok(_) => {}
                 Err(error) if is_timeout(&error) => std::thread::yield_now(),
-                Err(
-                    tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed,
-                ) => return Ok(None),
+                Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
+                    return Ok(None);
+                }
                 Err(error) => return Err(io::Error::other(error)),
             }
         }
@@ -392,12 +393,7 @@ pub fn shutdown(client: &CdpClient, child: &mut Child) {
         return;
     }
     if client.is_connected() {
-        let _ = client.send_with_timeout(
-            "Browser.close",
-            json!({}),
-            None,
-            GRACEFUL_CLOSE_TIMEOUT,
-        );
+        let _ = client.send_with_timeout("Browser.close", json!({}), None, GRACEFUL_CLOSE_TIMEOUT);
     }
     let deadline = Instant::now() + GRACEFUL_CLOSE_TIMEOUT;
     while Instant::now() < deadline {
@@ -445,12 +441,17 @@ mod tests {
     fn discovery_reads_the_websocket_url_from_json_version() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0");
         let Ok(listener) = listener else { return };
-        let port = listener.local_addr().map(|addr| addr.port()).unwrap_or_default();
+        let port = listener
+            .local_addr()
+            .map(|addr| addr.port())
+            .unwrap_or_default();
         std::thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
                 let mut request = Vec::new();
                 let mut byte = [0u8; 1];
-                while !request.ends_with(b"\r\n\r\n") && stream.read(&mut byte).is_ok_and(|n| n == 1) {
+                while !request.ends_with(b"\r\n\r\n")
+                    && stream.read(&mut byte).is_ok_and(|n| n == 1)
+                {
                     request.push(byte[0]);
                 }
                 let body = r#"{"Browser":"Fake/1","webSocketDebuggerUrl":"ws://127.0.0.1:1/devtools/browser/x"}"#;
