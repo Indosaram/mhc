@@ -5,7 +5,8 @@ Runs `mhc -p` against a loopback OpenAI-compatible model that first calls the bu
 and then answers in text, and checks that:
 
 - basic chat works (the final text reaches stdout, exit 0);
-- builtin tools are offered (read, write, edit, bash) and run (the file is written);
+- builtin tools are offered (read, write, edit, and the shell: `bash` or the terminal's `bash_*`
+  tools) and run (the file is written);
 - no omo tool is offered (task, team_*, memory, lsp, ...);
 - the omo-only entries report that they are unavailable (`mhc doctor`, `mhc ulw-loop`).
 
@@ -25,7 +26,7 @@ import tempfile
 import threading
 
 MARKER = "mit-profile-smoke-ok"
-REQUIRED_TOOLS = {"read", "write", "edit", "bash"}
+REQUIRED_TOOLS = {"read", "write", "edit"}
 # Tools the omo port registers; none may appear in the MIT profile.
 OMO_TOOL_PREFIXES = ("task", "team_", "workpool", "memory", "lsp", "x_search", "omo_")
 UNAVAILABLE = "is not available in this build"
@@ -124,6 +125,8 @@ def main() -> int:
         missing = REQUIRED_TOOLS - offered
         if missing:
             return fail(f"builtin tools not offered: {sorted(missing)} (offered: {sorted(offered)})")
+        if not any(name == "bash" or name.startswith("bash_") for name in offered):
+            return fail(f"no shell tool offered (offered: {sorted(offered)})")
         omo = sorted(name for name in offered if name.startswith(OMO_TOOL_PREFIXES))
         if omo:
             return fail(f"omo tools offered in the MIT profile: {omo}")

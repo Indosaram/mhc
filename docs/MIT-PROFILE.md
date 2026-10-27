@@ -61,7 +61,7 @@ mass-ulw, persona prompts) are removed, not ported.
    (`[licenses.private] ignore = false`).
 3. `cargo clippy -p maho-cli --no-default-features --lib --bins -- -D warnings` and a build.
 4. `python3 scripts/mit-profile-smoke.py target/debug/mhc`: print-mode chat against a loopback
-   model that calls the builtin `write` tool. It checks that `read`/`write`/`edit`/`bash` are offered,
+   model that calls the builtin `write` tool. It checks that `read`/`write`/`edit` and a shell tool (`bash` or the terminal's `bash_*`) are offered,
    that no omo tool is offered, and that `mhc doctor` / `mhc ulw-loop` report they are unavailable.
 
 `tools/license-audit.mjs` also requires every crate under `crates/omo/` to be `LicenseRef-SUL-1.0`
