@@ -316,6 +316,40 @@ pub fn estimate_context_tokens(messages: &[Value]) -> ContextUsageEstimate {
     }
 }
 
+/// senpi estimateProjectedContextTokens: estimate the projected context without trusting usage
+/// captured before a later compaction (maho-core has no `context_edit` entries).
+pub fn estimate_projected_context_tokens(path_entries: &[Value]) -> ContextUsageEstimate {
+    let context = build_session_context(path_entries, None);
+    let messages = filter_context_excluded_messages(context.messages);
+    let estimate = estimate_context_tokens(&messages);
+    if let Some(usage_index) = estimate.last_usage_index {
+        let usage_entry_index = context.entry_ids.get(usage_index).and_then(|usage_entry_id| {
+            path_entries
+                .iter()
+                .position(|entry| entry_id(entry).as_deref() == Some(usage_entry_id.as_str()))
+        });
+        let latest_compaction_index = path_entries
+            .iter()
+            .rposition(|entry| entry_type(entry) == Some("compaction"));
+        if usage_entry_index.is_some_and(|usage| latest_compaction_index.is_none_or(|latest| usage > latest)) {
+            return estimate;
+        }
+    }
+    let counted = counted_message_mask(&messages);
+    let tokens = messages
+        .iter()
+        .zip(counted)
+        .filter(|(_, counted)| *counted)
+        .map(|(message, _)| estimate_tokens(message))
+        .sum();
+    ContextUsageEstimate {
+        tokens,
+        usage_tokens: 0,
+        trailing_tokens: tokens,
+        last_usage_index: None,
+    }
+}
+
 /// senpi policy.ts RESERVE_WINDOW_FRACTION.
 pub const RESERVE_WINDOW_FRACTION: f64 = 0.04;
 /// senpi policy.ts MAX_SCALED_RESERVE_TOKENS.
@@ -572,13 +606,27 @@ pub fn find_cut_point(
 
     let mut accumulated_tokens: i64 = 0;
     let mut cut_index = cut_points[0];
+    // senpi keepBudgetWeighted: a failed turn is never sent, so it may not absorb the keep budget.
+    let entry_messages: Vec<Vec<Value>> = (start_index..end_index)
+        .map(|index| context_messages_for_compaction_entry(&entries[index]))
+        .collect();
+    let flat: Vec<Value> = entry_messages.iter().flatten().cloned().collect();
+    let weighted = counted_message_mask(&flat);
+    let mut entry_offsets = Vec::with_capacity(entry_messages.len());
+    let mut offset = 0;
+    for messages in &entry_messages {
+        entry_offsets.push(offset);
+        offset += messages.len();
+    }
 
     let mut index = end_index as i64 - 1;
     while index >= start_index as i64 {
-        let entry = &entries[index as usize];
-        let message_tokens: i64 = context_messages_for_compaction_entry(entry)
+        let local = index as usize - start_index;
+        let message_tokens: i64 = entry_messages[local]
             .iter()
-            .map(|message| estimate_tokens(message) as i64)
+            .enumerate()
+            .filter(|(position, _)| weighted[entry_offsets[local] + position])
+            .map(|(_, message)| estimate_tokens(message) as i64)
             .sum();
         if message_tokens != 0 {
             accumulated_tokens += message_tokens;
@@ -1227,22 +1275,22 @@ Create a concise checkpoint of the user's request and the progress shown above. 
 Only summarize information explicitly present above. Do not infer or recreate later messages.";
 
 /// senpi SOURCE_CONTEXT_TURN_PREFIX_SUMMARIZATION_PROMPT (compaction-execution.ts).
-pub const SOURCE_CONTEXT_TURN_PREFIX_SUMMARIZATION_PROMPT: &str = "The final turn in the source conversation was too large to keep in full. Its SUFFIX (recent work) is retained.
+pub const SOURCE_CONTEXT_TURN_PREFIX_SUMMARIZATION_PROMPT: &str = "The messages above are context from an ongoing conversation whose final turn is still in progress. Later messages of that turn are stored separately and do not need to be reconstructed.
 
-The source conversation may also contain complete earlier turns for background. Summarize only the final, incomplete turn. It begins with the last user-role request before this instruction. Do not summarize earlier turns except for details needed to understand this final turn's prefix.
+The conversation may also contain complete earlier turns for background. Summarize only the final, incomplete turn. It begins with the last user-role request before this instruction. Do not summarize earlier turns except for details needed to understand the final turn.
 
-Summarize the prefix to provide context for the retained suffix:
+Create a concise checkpoint of that request and the progress shown so far. This checkpoint will be placed before the later messages so the conversation can continue with the necessary context.
 
 ## Original Request
-[What did the user ask for in this turn?]
+[What did the user ask for?]
 
-## Early Progress
-- [Key decisions and work done in the prefix]
+## Progress So Far
+- [Key decisions and work completed in these messages]
 
-## Context for Suffix
-- [Information needed to understand the retained recent work]
+## Context Needed to Continue
+- [Information from these messages needed to understand the later work]
 
-Be concise. Focus on what's needed to understand the kept suffix.";
+Only summarize information explicitly present above. Do not infer or recreate later messages.";
 
 /// senpi compact (compaction-execution.ts): generate the history (and split-turn prefix) summary
 /// for a prepared compaction.
@@ -1260,7 +1308,10 @@ pub async fn compact(
     let source_context = cache_friendly.and_then(|options| options.source_context.as_ref());
     let (mut summary, summary_usage) =
         if preparation.is_split_turn && !preparation.turn_prefix_messages.is_empty() {
-            let mut history_text = "No prior history.".to_owned();
+            let mut history_text = preparation
+                .previous_summary
+                .clone()
+                .unwrap_or_else(|| "No prior history.".to_owned());
             let mut history_usage = None;
             if !preparation.messages_to_summarize.is_empty() {
                 let history = generate_summary_with_usage(
@@ -1477,10 +1528,7 @@ pub fn prepare_compaction(
     }
     let boundary_end = path_entries.len();
 
-    let tokens_before = estimate_context_tokens(&filter_context_excluded_messages(
-        build_session_context(path_entries, None).messages,
-    ))
-    .tokens as i64;
+    let tokens_before = estimate_projected_context_tokens(path_entries).tokens as i64;
 
     let mut cut_point = find_cut_point(
         path_entries,
@@ -1491,8 +1539,8 @@ pub fn prepare_compaction(
     if force_progress
         && cut_point.first_kept_entry_index == boundary_start
         && let Some(next_cut_point) =
-            find_valid_cut_points(path_entries, boundary_start + 1, boundary_end)
-                .first()
+            find_valid_cut_points(path_entries, boundary_start, boundary_end)
+                .get(1)
                 .copied()
     {
         let turn_start_index = find_turn_start_index(path_entries, next_cut_point, boundary_start);

@@ -15,6 +15,15 @@ static NETWORK: LazyLock<Option<regex::Regex>> = LazyLock::new(|| {
     )
     .ok()
 });
+/// senpi `isRetryableProviderError`: any transient provider failure (network drop, 429, 5xx), and
+/// never a hard auth/quota/billing failure.
+pub fn is_retryable_provider_error(raw: Option<&str>) -> bool {
+    let Some(raw) = raw.filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    is_network_provider_error(Some(raw), false)
+        || maho_ai::utils::retry::is_retryable_error_message(raw)
+}
 pub fn is_network_provider_error(raw: Option<&str>, envelope_only: bool) -> bool {
     let Some(raw) = raw.filter(|s| !s.is_empty()) else {
         return false;

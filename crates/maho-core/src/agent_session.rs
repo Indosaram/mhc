@@ -481,8 +481,10 @@ pub struct CompactionExecutionError {
     pub aborted: bool,
 }
 
-/// senpi `_checkCompaction`: terminal message after the single compact-and-retry still overflows.
-pub const OVERFLOW_RECOVERY_FAILED_MESSAGE: &str = "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.";
+/// senpi `OVERFLOW_RECOVERY_RUNGS`: compact-and-retry attempts per overflow episode; the second keeps no recent tail.
+const OVERFLOW_RECOVERY_RUNGS: u8 = 2;
+/// senpi `OVERFLOW_RECOVERY_EXHAUSTED_MESSAGE`: terminal message after both compact-and-retry rungs still overflow.
+pub const OVERFLOW_RECOVERY_FAILED_MESSAGE: &str = "Context overflow recovery failed after two compact-and-retry attempts. Try reducing context or switching to a larger-context model.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RequiredCompactionError;
@@ -608,8 +610,8 @@ struct AgentSessionState {
     last_persisted_assistant: Option<(String, u64)>,
     post_compaction_assistant_generation: Option<u64>,
     post_compaction_usage_exempt_entries: BTreeSet<String>,
-    /// senpi `_overflowRecoveryAttempted`: one compact-and-retry per user turn.
-    overflow_recovery_attempted: bool,
+    /// senpi `_overflowRecoveryRungs`: compact-and-retry rungs spent in the current overflow episode.
+    overflow_recovery_rungs: u8,
     /// senpi `_compactionSkippedTooSmall`: the last overflow compaction found nothing to compact.
     compaction_skipped_too_small: bool,
     messages_awaiting_persistence: Vec<(uuid::Uuid, AgentMessage)>,
@@ -3951,7 +3953,7 @@ impl AgentSession {
             post_compaction_usage_exempt_entries: BTreeSet::new(),
             session_stats_cache: None,
             context_usage_cache: None,
-            overflow_recovery_attempted: false,
+            overflow_recovery_rungs: 0,
             compaction_skipped_too_small: false,
             messages_awaiting_persistence: Vec::new(),
             steering_messages: Vec::new(),
@@ -4411,7 +4413,7 @@ impl AgentSession {
         if let AgentEvent::MessageStart { message } = &event
             && message.role() == "user"
         {
-            self.state().overflow_recovery_attempted = false;
+            self.state().overflow_recovery_rungs = 0;
             if let Some(controller) = self.retry_fallback.lock().await.as_mut() {
                 controller.reset_turn();
             }
@@ -4741,7 +4743,7 @@ impl AgentSession {
                 && !maho_ai::utils::stop_details::is_classifier_refusal(assistant)
             {
                 if assistant.stop_reason != StopReason::Length {
-                    self.state().overflow_recovery_attempted = false;
+                    self.state().overflow_recovery_rungs = 0;
                 }
                 let attempt = self.state().retry_attempt;
                 if attempt > 0 {
@@ -6469,7 +6471,9 @@ impl AgentSession {
                             })
                 })
             {
-                let result = self.compact_for_model(None, &model, "pre-prompt").await;
+                let result = self
+                    .compact_for_model_splitting_turn(&model, "pre-prompt")
+                    .await;
                 if !self.is_compaction_delegated() {
                     result?;
                 }
@@ -6783,7 +6787,9 @@ impl AgentSession {
         {
             return Err("Compaction required before provider request".to_owned());
         }
-        let result = self.compact_for_model(None, &model, "pre-prompt").await;
+        let result = self
+            .compact_for_model_splitting_turn(&model, "pre-prompt")
+            .await;
         if self.is_compaction_delegated() {
             return Ok(());
         }
@@ -8506,6 +8512,44 @@ impl AgentSession {
         hinted
     }
 
+    /// senpi `_checkCompaction` rung step: spend one overflow recovery rung and return its
+    /// `keepRecentTokensOverride`. The second rung keeps nothing but the summary and the turn being
+    /// answered, because a re-send still too long after the configured tail needs a smaller one.
+    fn begin_overflow_recovery_rung(&self) -> Option<i64> {
+        let mut state = self.state();
+        state.overflow_recovery_rungs = state.overflow_recovery_rungs.saturating_add(1);
+        (state.overflow_recovery_rungs >= 2).then_some(0)
+    }
+
+    /// senpi `_checkCompaction` inline threshold route: when the required compaction finds nothing
+    /// older than the recent window, split the current turn by compacting again with
+    /// `keepRecentTokens` 0 (senpi#2925).
+    async fn compact_for_model_splitting_turn(
+        &self,
+        budget_model: &Model,
+        reason: &str,
+    ) -> Result<crate::compaction::compaction::CompactionResult, String> {
+        match self.compact_for_model(None, budget_model, reason).await {
+            Err(error)
+                if !self.is_compaction_delegated()
+                    && maho_ai::utils::overflow::should_retry_overflow_without_compact(
+                        false, &error,
+                    ) =>
+            {
+                self.compact_for_model_with_retry(
+                    None,
+                    budget_model,
+                    reason,
+                    reason != "manual",
+                    false,
+                    Some(0),
+                )
+                .await
+            }
+            result => result,
+        }
+    }
+
     /// The overflow case of senpi `_checkCompaction` on the inline `pre_prompt` route
     /// (`_enforceCompactionBeforeProvider`): the latest assistant still overflowed, so compact once
     /// before admitting the prompt. Returns whether the overflow route handled admission.
@@ -8554,22 +8598,19 @@ impl AgentSession {
             return Ok(false);
         }
         self.flush_post_compaction_deferred_messages();
-        if self.state().overflow_recovery_attempted {
-            self.emit(AgentSessionEvent::CompactionEnd {
-                reason: maho_ext_api::CompactionReason::Overflow,
-                request_id: None,
-                result: None,
-                aborted: false,
-                will_retry: false,
-                accepted: None,
-                rejection_cause: None,
-                error_message: Some(OVERFLOW_RECOVERY_FAILED_MESSAGE.to_owned()),
-            });
-            return Err(OVERFLOW_RECOVERY_FAILED_MESSAGE.to_owned());
-        }
-        self.state().overflow_recovery_attempted = true;
+        // A new turn admission is a fresh overflow episode, whatever an earlier turn spent: the
+        // prompt it admits must reach a compaction, not a stale latch.
+        self.state().overflow_recovery_rungs = 0;
+        let keep_recent_tokens_override = self.begin_overflow_recovery_rung();
         let compacted = self
-            .compact_for_model_with_retry(None, &model, "overflow", true, false, None)
+            .compact_for_model_with_retry(
+                None,
+                &model,
+                "overflow",
+                true,
+                false,
+                keep_recent_tokens_override,
+            )
             .await;
         if self.is_compaction_delegated() {
             return Ok(true);
@@ -8590,7 +8631,7 @@ impl AgentSession {
                     &message,
                     Some(model.context_window),
                 ) {
-                    self.state().overflow_recovery_attempted = false;
+                    self.state().overflow_recovery_rungs = 0;
                 }
                 self.state().compaction_skipped_too_small =
                     maho_ai::utils::overflow::should_retry_overflow_without_compact(false, &error);
@@ -8769,7 +8810,7 @@ impl AgentSession {
             {
                 self.flush_post_compaction_deferred_messages();
                 let will_retry = message.stop_reason != StopReason::Stop;
-                if will_retry && self.state().overflow_recovery_attempted {
+                if will_retry && self.state().overflow_recovery_rungs >= OVERFLOW_RECOVERY_RUNGS {
                     self.emit(AgentSessionEvent::CompactionEnd {
                         reason: maho_ext_api::CompactionReason::Overflow,
                         request_id: None,
@@ -8783,9 +8824,11 @@ impl AgentSession {
                     return Ok(());
                 }
                 overflow_compacted |= will_retry;
-                if will_retry {
-                    self.state().overflow_recovery_attempted = true;
-                }
+                let keep_recent_tokens_override = if will_retry {
+                    self.begin_overflow_recovery_rung()
+                } else {
+                    None
+                };
                 let execution = {
                     let _auto = self.begin_auto_compaction();
                     Box::pin(self.compact_for_model_with_retry(
@@ -8794,7 +8837,7 @@ impl AgentSession {
                         "overflow",
                         will_retry,
                         false,
-                        None,
+                        keep_recent_tokens_override,
                     ))
                     .await
                 };
@@ -8804,7 +8847,7 @@ impl AgentSession {
                 if let Err(error) = execution {
                     // senpi blocks the retry when required overflow compaction fails; the too-small flag is
                     // consumed by the next inline (pre-prompt) overflow check.
-                    self.state().overflow_recovery_attempted = false;
+                    self.state().overflow_recovery_rungs = 0;
                     self.state().compaction_skipped_too_small =
                         maho_ai::utils::overflow::should_retry_overflow_without_compact(
                             false, &error,
@@ -15839,8 +15882,7 @@ impl AgentSession {
             return Ok(());
         }
         let result = self
-            .compact_for_model(
-                None,
+            .compact_for_model_splitting_turn(
                 &model,
                 if proactive { "pre-prompt" } else { "threshold" },
             )
@@ -30356,6 +30398,7 @@ mod tests {
                 ..Default::default()
             },
         );
+        failed.provider = "cursor".to_owned();
         failed.usage.input = 1000;
         failed.content.push(maho_ai::types::ContentBlock::ToolCall(
             maho_ai::types::ToolCall {
@@ -30541,7 +30584,7 @@ mod tests {
             )],
             1,
         );
-        let failed = maho_ai::providers::faux::faux_assistant_message(
+        let mut failed = maho_ai::providers::faux::faux_assistant_message(
             "",
             maho_ai::providers::faux::FauxAssistantMessageOptions {
                 stop_reason: Some(StopReason::Error),
@@ -30549,6 +30592,7 @@ mod tests {
                 ..Default::default()
             },
         );
+        failed.provider = "cursor".to_owned();
         session.with_session_manager_mut(|manager| {
             manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"task"}],"timestamp":0}));
             manager.append_message(serde_json::to_value(maho_ai::providers::faux::faux_assistant_message("prior", Default::default())).expect("prior"));
@@ -30633,7 +30677,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repeated_recoverable_length_stops_after_one_compact_and_retry() {
+    async fn repeated_recoverable_length_stops_after_two_compact_and_retries() {
         let truncated = |text: &str| {
             maho_ai::providers::faux::faux_assistant_message(
                 text,
@@ -30644,7 +30688,11 @@ mod tests {
             )
         };
         let session = retry_session(
-            vec![truncated(&"x".repeat(64)), truncated(&"y".repeat(64))],
+            vec![
+                truncated(&"x".repeat(64)),
+                truncated(&"y".repeat(64)),
+                truncated(&"z".repeat(64)),
+            ],
             0,
         );
         session.with_settings_manager_mut(|manager| {
@@ -30714,9 +30762,10 @@ mod tests {
         .expect("bounded recovery")
         .expect("prompt");
         let ends = lock(&ends).clone();
-        assert_eq!(ends.len(), 2);
+        assert_eq!(ends.len(), 3);
         assert_eq!(ends[0], None);
-        assert_eq!(ends[1].as_deref(), Some(OVERFLOW_RECOVERY_FAILED_MESSAGE));
+        assert_eq!(ends[1], None);
+        assert_eq!(ends[2].as_deref(), Some(OVERFLOW_RECOVERY_FAILED_MESSAGE));
     }
 
     #[tokio::test]
