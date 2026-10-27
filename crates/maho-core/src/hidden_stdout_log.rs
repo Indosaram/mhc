@@ -8,7 +8,7 @@ use chrono::{SecondsFormat, Utc};
 use crate::config::get_debug_log_path;
 use crate::sensitive_output::redact_sensitive_output;
 
-fn append_debug_log_entry(header: &str, text: &str) {
+pub(crate) fn append_debug_log_entry(header: &str, text: &str) {
     let debug_log_path = get_debug_log_path();
     let prefix = format!("[{}] {header}\n", Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true));
     let redacted = redact_sensitive_output(text);
