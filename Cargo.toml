@@ -18,6 +18,7 @@ members = [
     "crates/maho-process-env",
     "crates/maho-test-support",
     "crates/maho-support",
+    "crates/maho-config",
     "crates/builtins/maho-ext-account",
     "crates/builtins/maho-ext-anthropic-bash",
     "crates/builtins/maho-ext-anthropic-subscription",
