@@ -25322,6 +25322,7 @@ mod tests {
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
                         api: Some("openai-completions".into()),
+                        base_url: Some("http://127.0.0.1:9".into()),
                         models: Some(vec![crate::model_config_schema::ModelsJsonModel {
                             id: "live".into(),
                             context_window: Some(window),
@@ -25392,7 +25393,7 @@ mod tests {
                             name: "live".into(),
                             upstream_model_id: None,
                             api: None,
-                            base_url: None,
+                            base_url: Some("http://127.0.0.1:9".into()),
                             reasoning: false,
                             recover_text_tool_calls: None,
                             thinking_level_map: None,
