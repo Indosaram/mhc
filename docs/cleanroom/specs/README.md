@@ -14,6 +14,7 @@ does it.
 | [model-selection.md](model-selection.md) | Model reference grammar, catalog aliases, fuzzy matching, delegated-task model choice, model profiles, fallback/retry policy | `model-core`, `maho-omo-model-profile`, `delegate-core` |
 | [memory-format.md](memory-format.md) | Phase 2 step 3: on-disk format of the legacy memory store (`~/.omo/memory`) written from user docs and MIT call sites only, and how the MIT migrator maps it into the mnemopi SQLite store | `memory-core` data compatibility (the store itself is replaced by `crates/maho-memory`, ported from MIT mnemopi) |
 | [browser-tools.md](browser-tools.md) | Phase 2 step 4: behaviour of the `browser` and `computer` agent tools, written from MIT sources only (omowright, pi-cua-integration, oh-my-pi), since no MIT original has this discrete-action shape | `maho-omo-browser-bridge`, `maho-omo-computer-use` (both unmounted; replaced by `crates/maho-browser`) |
+| [telemetry.md](telemetry.md) | Phase 2 step 5: opt-out rules (`MAHO_TELEMETRY`, `DO_NOT_TRACK`, `OTEL_SDK_DISABLED`, config), the local usage ledger and `mhc usage`, and the reduced OTLP export, written from MIT oh-my-pi sources and public OpenTelemetry/Do-Not-Track conventions | `telemetry-core`, `maho-omo-telemetry` (OmO telemetry product dropped; replaced by `crates/maho-telemetry`) |
 
 ## Roles (plan §5)
 
