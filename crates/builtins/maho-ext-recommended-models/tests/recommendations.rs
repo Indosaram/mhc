@@ -9,9 +9,9 @@ fn aliases(){for id in ["kimi-k3-ultrafast","k3","K3-FAST-256k-unlocked"]{assert
 // Unknown configured ids use medium: recommended-models/index.ts:51-55.
 fn configured_priority(){let ids=vec!["glm-5.2".into(),"custom-fast".into()];let recommendations=recommendations_for(Some(&ids));assert_eq!(recommendations[0].model_id,"glm-5.2");assert_eq!(recommendations[0].thinking_level,ThinkingLevel::Medium);assert_eq!(recommendations[1].thinking_level,ThinkingLevel::Medium);}
 #[test]
-fn explicit_defaults_respected(){for provenance in ["settings","cli","scoped"]{assert!(!can_auto_switch("tui",Some(provenance)));}}
+fn explicit_defaults_respected(){for provenance in ["settings","cli","scoped"]{assert!(!can_auto_switch(Some(provenance)));}}
 #[test]
-fn implicit_defaults_switch(){for provenance in ["provider-default","first-available"]{assert!(can_auto_switch("tui",Some(provenance)));assert!(!can_auto_switch("app-server",Some(provenance)));}}
+fn implicit_defaults_switch(){for provenance in ["provider-default","first-available"]{assert!(can_auto_switch(Some(provenance)));}}
 #[test]
 fn empty_override(){assert!(recommendations_for(Some(&[])).is_empty());assert!(!recommendations_for(None).is_empty());}
 #[test]

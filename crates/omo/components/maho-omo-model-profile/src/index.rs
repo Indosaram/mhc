@@ -135,7 +135,6 @@ fn mode_str(mode: ExtensionMode) -> Option<&'static str> {
     match mode {
         ExtensionMode::Tui => Some("tui"),
         ExtensionMode::Rpc => Some("rpc"),
-        ExtensionMode::AppServer => Some("app-server"),
         ExtensionMode::Json => Some("json"),
         ExtensionMode::Print => Some("print"),
     }

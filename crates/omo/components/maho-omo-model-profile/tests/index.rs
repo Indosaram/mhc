@@ -984,20 +984,6 @@ async fn a_json_mode_session_applies_the_profile_like_any_headless_run() {
 }
 
 #[tokio::test]
-async fn an_app_server_mode_session_applies_the_profile() {
-    let harness = start(
-        json!({"model_profile": "daily-heavy"}),
-        Arc::new(TestRegistry::new(fixture(&[FABLE]))),
-        "session-app",
-        ExtensionMode::AppServer,
-        STARTUP,
-        Some("settings"),
-    )
-    .await;
-    assert_eq!(selectors(&harness.session_models()), ["anthropic/claude-fable-5-1"]);
-}
-
-#[tokio::test]
 async fn a_provider_removed_by_a_failure_never_returns_on_a_later_rung() {
     let harness = start(
         json!({"model_profile": "pair", "model_profiles": {"pair": {"models": ["anthropic/claude-opus-5-5", "anthropic-subscription/claude-opus-5-5", "zai/glm-5.3"]}}}),

@@ -81,41 +81,13 @@ pub fn start_usage_polling(agent_dir: &str, report: Arc<dyn Fn(String) + Send + 
     });
 }
 
-pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
+pub async fn run(mut parsed: Args) -> Result<(), String> {
     super::setup::register_builtin_apis();
     let stdin_tty = std::io::stdin().is_terminal();
     let mode = startup::resolve_app_mode(&parsed, stdin_tty, std::io::stdout().is_terminal());
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     let cwd_text = cwd.to_string_lossy();
     let agent_dir = maho_core::config::get_agent_dir();
-    if mode == AppMode::AppServer {
-        let config = super::host_runtime::CliRuntimeConfiguration::from_parsed(
-            &parsed,
-            &cwd_text,
-            &agent_dir,
-            AppMode::AppServer,
-        );
-        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-        let code = super::app_server::run_app_server_with_signals(
-            argv,
-            config,
-            env!("CARGO_PKG_VERSION"),
-            resolve_session_dir(
-                parsed.session_dir.as_deref(),
-                std::env::var(maho_core::config::env_session_dir_var())
-                    .ok()
-                    .as_deref(),
-                None,
-            ),
-            &executable,
-            &[],
-        )
-        .await?;
-        if code != 0 {
-            return Err(format!("app-server exited with code {code}"));
-        }
-        return Ok(());
-    }
     if mode != AppMode::Interactive {
         super::stdout_guard::take_over_stdout();
         // senpi main.ts:1008-1012: route process-wide stdout writes (`maho_write_stdout`) to stderr
@@ -885,9 +857,8 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
             AppMode::Print => "print",
             AppMode::Json => "json",
             AppMode::Rpc => "rpc",
-            AppMode::AppServer => "app-server",
         },
-        matches!(mode, AppMode::Rpc | AppMode::AppServer),
+        mode == AppMode::Rpc,
     );
     // senpi main.ts:1569-1576: subscription limits are known before the first turn; print runs never poll.
     if matches!(mode, AppMode::Rpc | AppMode::Interactive)
@@ -1055,7 +1026,6 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
                 .await
                 .map(|()| 0)
             }
-            AppMode::AppServer => unreachable!("server mode rejected before session creation"),
         }
     };
     // senpi print-mode.ts:55-73 / rpc-mode.ts:150-162: SIGTERM/SIGHUP in print, json and RPC mode
