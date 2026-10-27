@@ -8,7 +8,8 @@ and then answers in text, and checks that:
 - builtin tools are offered (read, write, edit, and the shell: `bash` or the terminal's `bash_*`
   tools) and run (the file is written);
 - no omo tool is offered (task, team_*, memory, lsp, ...);
-- the omo-only entries report that they are unavailable (`mhc doctor`, `mhc ulw-loop`).
+- `mhc doctor` reports the configuration sources and resolves a pinned model profile;
+- the omo-only entries report that they are unavailable (`mhc ulw-loop`).
 
 Usage: python3 scripts/mit-profile-smoke.py <path-to-mhc>
 See docs/MIT-PROFILE.md.
@@ -141,7 +142,19 @@ def main() -> int:
             return fail(f"builtin write tool did not write {written}\nstderr: {chat.stderr}")
         print(f"ok   chat + builtin write tool ({len(offered)} tools offered, none from omo)")
 
-        for argv in (["doctor"], ["ulw-loop", "--help"]):
+        (home / ".omo").mkdir()
+        (home / ".omo" / "omo.jsonc").write_text('{ "model_profile": "offline/offline" }\n')
+        doctor = subprocess.run([mhc, "doctor"], cwd=work, env=env, stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=60)
+        expected = ("~/.omo/omo.jsonc  (loaded)", "PASS configuration has no problems",
+                    "PASS offline/offline resolves to offline/offline")
+        missing_lines = [line for line in expected if line not in doctor.stdout]
+        if doctor.returncode != 0 or missing_lines:
+            return fail(f"`mhc doctor` report is incomplete (missing {missing_lines})\n"
+                        f"exit {doctor.returncode}\nstdout: {doctor.stdout}\nstderr: {doctor.stderr}")
+        print("ok   mhc doctor: config sources and model profile resolution")
+
+        for argv in (["ulw-loop", "--help"],):
             result = subprocess.run([mhc, *argv], cwd=work, env=env, stdin=subprocess.DEVNULL,
                                     capture_output=True, text=True, timeout=60)
             if result.returncode == 0 or UNAVAILABLE not in result.stderr:
