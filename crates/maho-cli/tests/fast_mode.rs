@@ -86,26 +86,26 @@ async fn create_fast_session_with_sibling_provider(dir:&std::path::Path)->maho_c
 async fn production_host_persists_priority_and_auto_and_respects_priority_pin() {
     let dir=tempfile::tempdir().expect("isolated settings");
     let session=create_fast_session(dir.path(),"codex",None,catalog_models()).await;
-    let settings_path=dir.path().join("agent/settings.json");
+    let settings_path=dir.path().join("agent/state.json");
     let command_context=session.extension_command_context().await.expect("session extension context");
     let on=command_context.context.apply_fast_mode(true).await.expect("enable");
     assert!(on.applied);
     assert_eq!(on.recorded_tier,ServiceTier::Priority);
-    let written:serde_json::Value=serde_json::from_slice(&std::fs::read(&settings_path).expect("persisted global settings")).expect("valid global settings JSON");
+    let written:serde_json::Value=serde_json::from_slice(&std::fs::read(&settings_path).expect("persisted model state")).expect("valid model state JSON");
     assert_eq!(written["modelServiceTiers"]["fixture/codex"],"priority");
     assert!(written["modelServiceTiers"]["fixture:codex"].is_null());
     let command_context=session.extension_command_context().await.expect("session extension context");
     let off=command_context.context.apply_fast_mode(false).await.expect("disable");
     assert!(off.applied);
     assert_eq!(off.recorded_tier,ServiceTier::Auto);
-    let written:serde_json::Value=serde_json::from_slice(&std::fs::read(&settings_path).expect("persisted global settings")).expect("valid global settings JSON");
+    let written:serde_json::Value=serde_json::from_slice(&std::fs::read(&settings_path).expect("persisted model state")).expect("valid model state JSON");
     assert_eq!(written["modelServiceTiers"]["fixture/codex"],"auto");
     assert!(written["modelServiceTiers"]["fixture:codex"].is_null());
     session.dispose().await;
 
     let pinned_dir=tempfile::tempdir().expect("pinned settings");
     let pinned=create_fast_session(pinned_dir.path(),"codex",Some(ServiceTier::Priority),catalog_models()).await;
-    let pinned_settings_path=pinned_dir.path().join("agent/settings.json");
+    let pinned_settings_path=pinned_dir.path().join("agent/state.json");
     let before_bytes=std::fs::read(&pinned_settings_path).ok();
     let before=SettingsManager::create(&pinned_dir.path().to_string_lossy(),&pinned_dir.path().join("agent").to_string_lossy(),&pinned_dir.path().to_string_lossy(),false)
         .get_model_service_tier("fixture","codex").map(str::to_owned);
