@@ -4920,6 +4920,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-model-select"
+version = "0.0.0"
+dependencies = [
+ "maho-ai",
+ "maho-config",
+ "maho-ext-api",
+ "maho-ext-recommended-models",
+ "maho-support",
+ "regex",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "maho-omo"
 version = "0.0.0"
 dependencies = [
