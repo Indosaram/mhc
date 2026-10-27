@@ -2582,7 +2582,17 @@ impl ExtensionRunner {
             }
             self.runtime.assert_active()?;
         }
-        if let ExtensionEvent::BeforeProviderRequest { payload, .. } = event {
+        if let ExtensionEvent::BeforeProviderRequest { mut payload, .. } = event {
+            if let Some(object) = payload.as_object_mut() {
+                for key in [
+                    "server_search_fallback",
+                    "__senpi_server_search_fallback",
+                    "server_search_disabled",
+                    "__senpi_server_search_disabled",
+                ] {
+                    object.remove(key);
+                }
+            }
             return Ok(payload);
         }
         Err(ExtensionFailure::new(

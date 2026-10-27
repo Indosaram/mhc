@@ -1170,6 +1170,39 @@ async fn provider_payload_excluded_extension_does_not_run() {
     );
 }
 #[tokio::test]
+async fn server_search_markers_reach_all_hooks_but_not_the_transport() {
+    let handler: ExtensionHandler = Arc::new(|event, _| {
+        Box::pin(async move {
+            let ExtensionEvent::BeforeProviderRequest { payload, .. } = event else {
+                panic!()
+            };
+            assert_eq!(payload["server_search_fallback"], true);
+            assert_eq!(payload["__senpi_server_search_fallback"], true);
+            Ok(EventResult::None)
+        })
+    });
+    let result = runner(vec![
+        extension("first", EventKind::BeforeProviderRequest, handler.clone()),
+        extension("second", EventKind::BeforeProviderRequest, handler),
+    ])
+    .emit_before_provider_request(
+        serde_json::json!({
+            "server_search_fallback": true,
+            "__senpi_server_search_fallback": true,
+            "server_search_disabled": true,
+            "__senpi_server_search_disabled": true,
+            "tools": [{"type":"function", "name":"web_search"}],
+        }),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result,
+        serde_json::json!({"tools":[{"type":"function", "name":"web_search"}]})
+    );
+}
+#[tokio::test]
 async fn context_clones_and_isolates_original_messages() {
     let handler: ExtensionHandler = Arc::new(|event, _| {
         Box::pin(async move {

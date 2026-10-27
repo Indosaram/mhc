@@ -4748,8 +4748,10 @@ name = "maho-ext-websearch"
 version = "0.0.0"
 dependencies = [
  "maho-ai",
+ "maho-ext-anthropic-web-search",
  "maho-ext-api",
  "maho-ext-host",
+ "maho-ext-openai-web-search",
  "maho-interactive",
  "maho-test-support",
  "maho-tools",
