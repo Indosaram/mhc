@@ -436,7 +436,9 @@ async fn panes_with_fake_tmux() {
         "{calls}"
     );
     assert!(
-        first.contains("tail -n +1 -F") && first.contains("view-a.log"),
+        first.contains("tail -n +1 -F")
+            && first.contains("view-a.log")
+            && first.contains("kill -0"),
         "{calls}"
     );
     assert!(

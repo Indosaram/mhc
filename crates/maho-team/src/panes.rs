@@ -36,13 +36,20 @@ pub fn pane_title(record: &TaskRecord) -> String {
     }
 }
 
-/// The follower command shown in the pane.
-pub fn follow_command(title: &str, log: &std::path::Path, output: &std::path::Path) -> Vec<String> {
+/// The follower command shown in the pane: the title, then `tail -F` of the log and output. It
+/// ends on its own once process `lead_pid` is gone, so a pane never outlives the session that
+/// opened it (a background child may keep running; its files stay on disk).
+pub fn follow_command(
+    title: &str,
+    log: &std::path::Path,
+    output: &std::path::Path,
+    lead_pid: u32,
+) -> Vec<String> {
     vec![
         "/bin/sh".into(),
         "-c".into(),
         format!(
-            "printf '%s\\n\\n' {}; exec tail -n +1 -F {} {}",
+            "printf '%s\\n\\n' {}; tail -n +1 -F {} {} & t=$!; while kill -0 {lead_pid} 2>/dev/null; do sleep 1; done; kill $t 2>/dev/null",
             shell_quote(title),
             shell_quote(&log.to_string_lossy()),
             shell_quote(&output.to_string_lossy())
@@ -122,7 +129,7 @@ impl TaskObserver for PaneObserver {
             (panes.splits.last().cloned(), panes.splits.is_empty())
         };
         let request = PaneRequest {
-            command: follow_command(&title, &log, &output),
+            command: follow_command(&title, &log, &output, std::process::id()),
             title,
             cwd: record.cwd.clone(),
             placement: self.settings.placement,
@@ -290,10 +297,11 @@ mod tests {
             "it's",
             std::path::Path::new("/a b/x.log"),
             std::path::Path::new("/c/x.md"),
+            42,
         );
         assert_eq!(
             command[2],
-            "printf '%s\\n\\n' 'it'\\''s'; exec tail -n +1 -F '/a b/x.log' '/c/x.md'"
+            "printf '%s\\n\\n' 'it'\\''s'; tail -n +1 -F '/a b/x.log' '/c/x.md' & t=$!; while kill -0 42 2>/dev/null; do sleep 1; done; kill $t 2>/dev/null"
         );
     }
 }

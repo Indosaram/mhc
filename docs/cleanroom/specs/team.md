@@ -166,15 +166,19 @@ A `TaskObserver` shows delegated tasks in terminal multiplexer panes.
 
 Per team, `team_create.panes` overrides (`true` = members get panes when a backend exists,
 `false` = none). Per member, `pane: false` opts out, and a template member with
-`backendType: "tmux"` asks for a pane even when the team default would not.
+`backendType: "tmux"` asks for a pane even when the team default would not. The effective choice
+is recorded on the task (`pane`); a task's own `pane` wins over the mode except `off`.
 
 ### 4.3 Opening (task starts running)
 
 The pane runs a read-only follower of the task's files — never the child itself (the child keeps
 running as the normal `mhc -p` process, so headless and pane runs behave identically):
 
-`/bin/sh -c 'printf "%s\n\n" "<title>"; exec tail -n +1 -F <log> <output>'` with the paths
-single-quoted. `<title>` is `team <team> · <member> (task <id>)` or `task <id>`.
+`/bin/sh -c 'printf "%s\n\n" <title>; tail -n +1 -F <log> <output> & t=$!; while kill -0 <lead pid>
+2>/dev/null; do sleep 1; done; kill $t'` with the title and paths single-quoted. The loop ends the
+pane once the lead process is gone, so panes never outlive the session that opened them (a
+background child may keep running; its files stay on disk). `<title>` is
+`team <team> · task <id>` or `task <id>`. The log and output files are created empty first.
 
 tmux (placement `MAHO_TEAM_PANE_LAYOUT=split` default, or `window`):
 
@@ -191,14 +195,14 @@ cmux: `cmux --json new-split right [--surface $CMUX_SURFACE_ID] --command <shell
 id from the JSON reply (`pane_id`/`pane_ref`, also under `data`); close with
 `cmux close-surface --surface <id>`.
 
-Open failures never fail the task: they are written to the task's log as one line and the task
-runs headless.
+Open failures never fail the task: the error is kept per task (shown by `team_members` as
+`pane unavailable (<error>)`) and the task runs headless.
 
 ### 4.4 Closing (task settles)
 
 After `MAHO_TEAM_PANE_LINGER` seconds (default 3, `0` = immediately), `kill-pane -t <pane>`
 (`kill-window -t <window>` for windows). A resumed member gets a new pane for the new run.
-`team_stop` closes the panes of the members it stops at once. Close errors are ignored (the user
+`team_stop` cancels the members it stops; their panes close as their tasks settle (same linger). Close errors are ignored (the user
 may have closed the pane).
 
 ## 5. Environment variables
@@ -228,8 +232,9 @@ These are environment variables rather than config keys because the config schem
 ## 7. Interfaces
 
 - `maho-task`:
-  - `TaskRecord` gains `group: Option<String>` and `quiet: bool` (both default when absent in old
-    records); `SpawnRequest` gains the same two fields.
+  - `TaskRecord` gains `group: Option<String>`, `pane: Option<bool>` (pane preference; `None` =
+    the observer's default) and `quiet: bool` (all default when absent in old records, omitted
+    when unset); `SpawnRequest` gains the same three fields; the `task` tool accepts `pane`.
   - `TaskObserver` gains `started_in(record, state)` / `finished_in(record, state)` with default
     bodies calling `started`/`finished`; the manager calls the `_in` forms so an observer can find
     the task's output and log files.
