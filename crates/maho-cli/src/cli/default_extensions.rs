@@ -102,8 +102,9 @@ fn factory<E: Extension + 'static>(name: &str, extension: E) -> NativeExtensionF
 /// MIT profile: startup config notices (migration + load diagnostics), the config hot-reload watch,
 /// the session-start model profile and the LSP tools (`maho-lsp`, linking through the `mhc-lsp`
 /// daemon when it sits beside the executable), the subagent delegation tools (`maho-task`),
-/// long-term memory (`maho-memory`) and the browser/computer-use tools (`maho-browser`). The `omo`
-/// build mounts its own equivalents through the omo glue (it has no browser/computer tools).
+/// long-term memory (`maho-memory`), the browser/computer-use tools (`maho-browser`) and telemetry
+/// (`maho-telemetry`: local usage ledger, opt-in OTLP export). The `omo` build mounts its own
+/// equivalents through the omo glue (it has no browser/computer tools).
 #[cfg(not(feature = "omo"))]
 pub fn mit_config_factories() -> Vec<NativeExtensionFactory> {
     vec![
@@ -122,6 +123,7 @@ pub fn mit_config_factories() -> Vec<NativeExtensionFactory> {
         factory("task", super::delegation::extension()),
         factory("memory", super::long_term_memory::extension()),
         factory("browser", super::browser_automation::extension()),
+        factory("telemetry", super::usage_stats::extension()),
     ]
 }
 
@@ -1232,7 +1234,7 @@ impl Extension for Todo {
 #[cfg(all(test, not(feature = "omo")))]
 mod mit_tests {
     #[test]
-    fn mit_profile_mounts_config_model_profile_lsp_task_memory_and_browser_extensions() {
+    fn mit_profile_mounts_config_model_profile_lsp_task_memory_browser_and_telemetry_extensions() {
         let paths: Vec<String> = super::mit_config_factories()
             .into_iter()
             .map(|factory| factory.path)
@@ -1246,7 +1248,8 @@ mod mit_tests {
                 "<builtin:lsp>",
                 "<builtin:task>",
                 "<builtin:memory>",
-                "<builtin:browser>"
+                "<builtin:browser>",
+                "<builtin:telemetry>"
             ]
         );
     }

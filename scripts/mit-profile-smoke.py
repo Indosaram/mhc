@@ -21,6 +21,11 @@ and then answers in text, and checks that:
   `MHC_SMOKE_BROWSER` names a Chromium executable, a model-driven `browser` call opens a page and
   its accessibility snapshot (with element refs) comes back to the model, and a `computer`
   screenshot of that tab is taken;
+- telemetry (`maho-telemetry`): every model call appends a line to the local usage ledger
+  (`<agent dir>/stats/usage.jsonl`) and `mhc usage` reports it; with an OTLP endpoint configured
+  the run is exported to a loopback collector as OTLP/HTTP protobuf (traces, metrics, logs, no
+  prompt text); `DO_NOT_TRACK=1` stops the export but keeps the ledger; `MAHO_TELEMETRY=0` stops
+  both;
 - `mhc doctor` reports the configuration sources and resolves a pinned model profile;
 - the omo-only entries report that they are unavailable (`mhc ulw-loop`, `--memory-supervisor`).
 
@@ -55,6 +60,13 @@ MEMORY_MARKER = "mit-profile-memory-ok"
 MIT_BROWSER_TOOLS = {"browser", "computer"}
 BROWSER_MARKER = "mit-profile-browser-ok"
 BROWSER_HEADING = "smoke-browser-heading"
+TELEMETRY_MARKER = "mit-profile-telemetry-ok"
+TELEMETRY_PROMPT = "telemetry smoke prompt text that must never be exported"
+OTEL_VARIABLES = ("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                  "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+                  "OTEL_SDK_DISABLED", "DO_NOT_TRACK", "MAHO_TELEMETRY", "MAHO_USAGE_STATS",
+                  "MAHO_USAGE_DIR", "OTEL_TRACES_EXPORTER", "OTEL_METRICS_EXPORTER", "OTEL_LOGS_EXPORTER",
+                  "OTEL_EXPORTER_OTLP_PROTOCOL")
 
 
 def sse(chunks: list[dict]) -> bytes:
@@ -204,6 +216,47 @@ class BrowserModel(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+
+class TelemetryModel(http.server.BaseHTTPRequestHandler):
+    """Answers in text and reports token usage in the final chunk."""
+
+    def log_message(self, *_args) -> None:
+        pass
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("content-length", "0"))
+        self.rfile.read(length)
+        final = chunk({}, "stop")
+        final["usage"] = {"prompt_tokens": 1200, "completion_tokens": 34, "total_tokens": 1234}
+        body = sse([chunk({"role": "assistant", "content": TELEMETRY_MARKER}), final])
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class Collector(http.server.BaseHTTPRequestHandler):
+    """A loopback OTLP/HTTP receiver that records (path, content type, body)."""
+    received: list[tuple[str, str, bytes]] = []
+
+    def log_message(self, *_args) -> None:
+        pass
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("content-length", "0"))
+        Collector.received.append((self.path, self.headers.get("content-type", ""), self.rfile.read(length)))
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-protobuf")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+
+def ledger_lines(path: pathlib.Path) -> int:
+    return len(path.read_text().splitlines()) if path.is_file() else 0
+
+
 def mcp_session(mhc: str, flag: str, cwd: pathlib.Path, env: dict, calls: list[dict]) -> list[dict]:
     """Runs the memory MCP server with `flag`, sends initialize, tools/list and `calls`; returns responses."""
     requests = [
@@ -281,6 +334,8 @@ def main() -> int:
         }}}))
         env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home), "MAHO_CODING_AGENT_DIR": str(agent)}
         env.pop("__PI_INTERNAL_SPAWN", None)
+        for name in OTEL_VARIABLES:
+            env.pop(name, None)
 
         chat = subprocess.run(
             [mhc, "-p", "--offline", "--no-session", "--model", "offline/offline", "write the smoke file"],
@@ -409,6 +464,82 @@ def main() -> int:
                 or not legacy_flag or "result" not in legacy_flag[0]:
             return fail(f"memory MCP server answered unexpectedly: {responses} / {legacy_flag}")
         print(f"ok   memory MCP server (--memory-mcp, --omo-memory-mcp): {len(tools)} tools, remember + recall")
+
+
+        telemetry_model = http.server.ThreadingHTTPServer(("127.0.0.1", 0), TelemetryModel)
+        threading.Thread(target=telemetry_model.serve_forever, daemon=True).start()
+        collector = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Collector)
+        threading.Thread(target=collector.serve_forever, daemon=True).start()
+        (agent / "models.json").write_text(models_json(telemetry_model.server_port))
+        ledger = agent / "stats" / "usage.jsonl"
+        otel_env = {**env, "PI_OFFLINE": "1", "OTEL_EXPORTER_OTLP_ENDPOINT": f"http://127.0.0.1:{collector.server_port}"}
+
+        def telemetry_run(extra: dict) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                [mhc, "-p", "--offline", "--no-session", "--model", "offline/offline", TELEMETRY_PROMPT],
+                cwd=work, env={**otel_env, **extra}, stdin=subprocess.DEVNULL, capture_output=True,
+                text=True, timeout=120,
+            )
+
+        before = ledger_lines(ledger)
+        exported = telemetry_run({})
+        if exported.returncode != 0 or TELEMETRY_MARKER not in exported.stdout:
+            return fail(f"telemetry run failed (exit {exported.returncode})\nstdout: {exported.stdout}\nstderr: {exported.stderr}")
+        paths = sorted({path for path, _, _ in Collector.received})
+        if paths != ["/v1/logs", "/v1/metrics", "/v1/traces"]:
+            return fail(f"OTLP export did not reach the collector on all signals: {paths}\nstderr: {exported.stderr}")
+        if any(ctype != "application/x-protobuf" for _, ctype, _ in Collector.received):
+            return fail(f"unexpected OTLP content types: {[c for _, c, _ in Collector.received]}")
+        traces = b"".join(body for path, _, body in Collector.received if path == "/v1/traces")
+        metrics = b"".join(body for path, _, body in Collector.received if path == "/v1/metrics")
+        if b"invoke_agent mhc" not in traces or b"chat offline" not in traces or b"gen_ai.client.token.usage" not in metrics:
+            return fail(f"OTLP payloads lack the GenAI spans/metrics: traces={traces[:400]!r}")
+        if any(TELEMETRY_PROMPT.encode() in body or TELEMETRY_MARKER.encode() in body for _, _, body in Collector.received):
+            return fail("prompt or response text was exported")
+        if ledger_lines(ledger) <= before:
+            return fail(f"the usage ledger was not written ({ledger})\nstderr: {exported.stderr}")
+        last = json.loads(ledger.read_text().splitlines()[-1])
+        if last.get("model") != "offline" or last.get("input") != 1200 or TELEMETRY_PROMPT in ledger.read_text():
+            return fail(f"unexpected ledger record: {last}")
+        print(f"ok   telemetry: ledger record written and OTLP traces/metrics/logs exported ({len(Collector.received)} requests, no content)")
+
+        Collector.received = []
+        before = ledger_lines(ledger)
+        dnt = telemetry_run({"DO_NOT_TRACK": "1"})
+        if dnt.returncode != 0 or TELEMETRY_MARKER not in dnt.stdout:
+            return fail(f"DO_NOT_TRACK run failed (exit {dnt.returncode})\nstderr: {dnt.stderr}")
+        if Collector.received:
+            return fail(f"DO_NOT_TRACK=1 still exported: {[p for p, _, _ in Collector.received]}")
+        if ledger_lines(ledger) <= before:
+            return fail("DO_NOT_TRACK=1 should keep the local ledger")
+        before = ledger_lines(ledger)
+        off = telemetry_run({"MAHO_TELEMETRY": "0"})
+        telemetry_model.shutdown()
+        collector.shutdown()
+        if off.returncode != 0 or TELEMETRY_MARKER not in off.stdout:
+            return fail(f"MAHO_TELEMETRY=0 run failed (exit {off.returncode})\nstderr: {off.stderr}")
+        if Collector.received or ledger_lines(ledger) != before:
+            return fail(f"MAHO_TELEMETRY=0 still recorded (exported {len(Collector.received)}, ledger {before} -> {ledger_lines(ledger)})")
+        print("ok   telemetry opt-outs: DO_NOT_TRACK=1 stops export (ledger kept); MAHO_TELEMETRY=0 stops both")
+
+        usage = subprocess.run([mhc, "usage", "--json"], cwd=work, env=env, stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, timeout=60)
+        try:
+            report = json.loads(usage.stdout)
+        except json.JSONDecodeError:
+            report = {}
+        models = {m.get("model") for m in report.get("byModel", [])}
+        if usage.returncode != 0 or report.get("records", 0) < 2 or "offline" not in models \
+                or report.get("overall", {}).get("totalInputTokens", 0) < 2400:
+            return fail(f"`mhc usage --json` is incomplete (exit {usage.returncode})\nstdout: {usage.stdout[:2000]}\nstderr: {usage.stderr}")
+        summary = subprocess.run([mhc, "usage"], cwd=work, env=env, stdin=subprocess.DEVNULL,
+                                 capture_output=True, text=True, timeout=60)
+        status = subprocess.run([mhc, "usage", "--status"], cwd=work, env={**env, "DO_NOT_TRACK": "1"},
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        if "=== AI Usage Statistics ===" not in summary.stdout or "OTLP export: off" not in status.stdout \
+                or "DO_NOT_TRACK is set" not in status.stdout:
+            return fail(f"`mhc usage` / `--status` output unexpected\nsummary: {summary.stdout}\nstatus: {status.stdout}\nstderr: {summary.stderr}{status.stderr}")
+        print(f"ok   mhc usage: {report['records']} ledger records, --json/summary/--status")
 
         browser_exe = os.environ.get("MHC_SMOKE_BROWSER")
         if browser_exe:

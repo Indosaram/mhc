@@ -87,3 +87,5 @@ pub mod task_session;
 pub mod tool_runtime;
 pub mod tool_search;
 pub mod user_extensions;
+#[cfg(not(feature = "omo"))]
+pub mod usage_stats;

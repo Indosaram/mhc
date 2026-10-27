@@ -82,6 +82,8 @@ maho-task = { path = "../maho-task" }
 maho-memory = { path = "../maho-memory" }
 # MIT browser automation + computer use; mounted as `<builtin:browser>` in the MIT profile only.
 maho-browser = { path = "../maho-browser" }
+# MIT telemetry (usage ledger, `mhc usage`, opt-in OTLP export); mounted as `<builtin:telemetry>` in the MIT profile only.
+maho-telemetry = { path = "../maho-telemetry" }
 maho-omo-task = { path = "../omo/components/maho-omo-task", optional = true }
 maho-server = { path = "../maho-server" }
 maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }

@@ -3664,6 +3664,7 @@ dependencies = [
  "maho-senpi-task",
  "maho-server",
  "maho-task",
+ "maho-telemetry",
  "maho-test-support",
  "maho-tool-child",
  "maho-tools",
@@ -5986,6 +5987,22 @@ dependencies = [
  "thiserror 2.0.20",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "maho-telemetry"
+version = "0.0.0"
+dependencies = [
+ "jiff",
+ "maho-config",
+ "maho-ext-api",
+ "percent-encoding",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
