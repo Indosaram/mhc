@@ -3547,6 +3547,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-browser"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "maho-ext-api",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tungstenite",
+]
+
+[[package]]
 name = "maho-chord"
 version = "0.0.0"
 dependencies = [
