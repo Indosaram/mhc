@@ -12,6 +12,7 @@ does it.
 | [config-keys.md](config-keys.md) | Flat inventory of every key a user may write (name, type, default, bounds) | the generated `assets/omo.schema.json` |
 | [utils.md](utils.md) | The helper functions MIT code still needs, which ones a standard crate replaces, and which ones are dropped | `utils` (`maho-utils`) |
 | [model-selection.md](model-selection.md) | Model reference grammar, catalog aliases, fuzzy matching, delegated-task model choice, model profiles, fallback/retry policy | `model-core`, `maho-omo-model-profile`, `delegate-core` |
+| [memory-format.md](memory-format.md) | Phase 2 step 3: on-disk format of the legacy memory store (`~/.omo/memory`) written from user docs and MIT call sites only, and how the MIT migrator maps it into the mnemopi SQLite store | `memory-core` data compatibility (the store itself is replaced by `crates/maho-memory`, ported from MIT mnemopi) |
 
 ## Roles (plan §5)
 
