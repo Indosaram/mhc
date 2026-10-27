@@ -13,9 +13,14 @@ cargo build -p maho-cli --no-default-features --bins     # mhc, mhc-launcher, mh
 cargo build -p maho-senpi-desktop-engine                 # MIT sibling binary (crates/desktop)
 ```
 
-Do not stage the SUL sibling binaries (`ast-grep-mcp`, `lsp-daemon`, `omo-git-bash`) with an MIT
-build. `tools/package-native.mjs` still stages the default product, so it does not package an MIT
-build yet.
+Package it with `bun tools/package-native.mjs --mit --output <dir> [--binary target/release/mhc]`
+(without `--binary` it runs `cargo build --release --locked -p maho-cli --no-default-features --bins`
+first). The MIT stage holds `mhc`, `mhc-launcher` (and `senpi-desktop-engine` with
+`--desktop-engine-binary`), the MIT text and third-party notices, and a manifest with
+`profile: "mit"`. It refuses a payload whose `mhc ulw-loop` does not report "not available in this
+build", refuses the SUL/OmO staging flags, and `--verify-only` rejects a stage containing
+`licenses/SUL-1.0.md`, skills, the omo schema or a SUL sibling (`ast-grep-mcp`, `lsp-daemon`,
+`omo-git-bash`). Builtin skills come back with the Phase 4 asset work.
 
 ## What it includes
 
@@ -63,16 +68,22 @@ mass-ulw, persona prompts) are removed, not ported.
 4. `python3 scripts/mit-profile-smoke.py target/debug/mhc`: print-mode chat against a loopback
    model that calls the builtin `write` tool. It checks that `read`/`write`/`edit` and a shell tool (`bash` or the terminal's `bash_*`) are offered,
    that no omo tool is offered, and that `mhc doctor` / `mhc ulw-loop` report they are unavailable.
+5. `cargo nextest run -p maho-cli --no-default-features`: the `maho-cli` tests in the MIT profile.
+
+The `license-audit` job also runs `bun tools/package-native.mjs --self-test`, which covers the
+`--mit` staging.
 
 `tools/license-audit.mjs` also requires every crate under `crates/omo/` to be `LicenseRef-SUL-1.0`
 and every crate under `crates/desktop/` to be MIT.
 
 ## Known leftovers (not linked SUL code)
 
-- MIT crates still name OmO features in strings and UI: `maho-ext-anthropic-subscription` collapses
-  duplicate `<ultrawork-mode>` blocks, `maho-interactive` lights the prompt border for
-  `ulw`/`ultrawork` keywords and has ulw tips (hidden without the task command), and the `omo`
-  builtin id stays in the extension registry. Clean these up when the features are removed.
+- The directive dedupe in `maho-ext-anthropic-subscription` and the prompt-border glow in
+  `maho-interactive` are neutral: they act only on tags/keywords registered at startup, and only the
+  default (`omo`) build registers `<ultrawork-mode>` and `ulw`/`ultrawork` (`maho-cli` main.rs).
+  Still left: ulw tips in `maho-interactive` (hidden without the task command), the `omo` builtin
+  id in the extension registry, and the `ultrawork`/`ulw-loop` wording in a `maho-ext-prompt-preset`
+  directive and `senpi_install.rs`.
 - `maho-ext-quiet-model-profile` (a re-export of the SUL `maho-omo-model-profile` with no consumer)
   was removed from the workspace; the model-profile rewrite (Phase 1) will bring a replacement.
 - Tests and fixtures: the `maho-cli` integration tests for the omo modules are gated on `omo`. The
