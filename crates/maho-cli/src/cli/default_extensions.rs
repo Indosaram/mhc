@@ -99,6 +99,21 @@ fn factory<E: Extension + 'static>(name: &str, extension: E) -> NativeExtensionF
     }
 }
 
+/// MIT profile: startup config notices (migration + load diagnostics), the config hot-reload watch
+/// and the session-start model profile. The `omo` build mounts its own equivalents through the omo
+/// glue.
+#[cfg(not(feature = "omo"))]
+pub fn mit_config_factories() -> Vec<NativeExtensionFactory> {
+    vec![
+        factory("config-notices", maho_config::ext::ConfigNotices::default()),
+        factory(
+            "config-hot-reload",
+            maho_config::ext::ConfigHotReload::default(),
+        ),
+        factory("model-profile", maho_model_select::ModelProfileExtension),
+    ]
+}
+
 pub fn async_factories(factories: Vec<NativeExtensionFactory>) -> Vec<NativeAsyncExtensionFactory> {
     factories
         .into_iter()
@@ -200,8 +215,13 @@ pub fn assembled_factories_with_mcp_registry(
             }),
         }
     }
+    // The MIT profile mounts the clean-room config and model-profile extensions instead
+    // (`maho-config`, `maho-model-select`; docs/MIT-PROFILE.md).
     #[cfg(not(feature = "omo"))]
-    drop(parent);
+    {
+        drop(parent);
+        assembled.extend(async_factories(mit_config_factories()));
+    }
     assembled.extend(super::oauth_providers::runtime_oauth_factories(
         settings, cwd, agent_dir,
     ));
@@ -1195,5 +1215,24 @@ impl Extension for Todo {
             }),
         }
         .register(api);
+    }
+}
+
+#[cfg(all(test, not(feature = "omo")))]
+mod mit_tests {
+    #[test]
+    fn mit_profile_mounts_config_and_model_profile_extensions() {
+        let paths: Vec<String> = super::mit_config_factories()
+            .into_iter()
+            .map(|factory| factory.path)
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "<builtin:config-notices>",
+                "<builtin:config-hot-reload>",
+                "<builtin:model-profile>"
+            ]
+        );
     }
 }
