@@ -12,6 +12,8 @@ pub mod credentials;
 pub mod default_extensions;
 pub mod deferred_commands;
 #[cfg(not(feature = "omo"))]
+pub mod browser_automation;
+#[cfg(not(feature = "omo"))]
 pub mod delegation;
 #[cfg(feature = "omo")]
 pub mod doctor;

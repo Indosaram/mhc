@@ -80,6 +80,8 @@ maho-lsp = { path = "../maho-lsp", features = ["extension"] }
 maho-task = { path = "../maho-task" }
 # MIT long-term memory (mnemopi port); mounted as `<builtin:memory>` and served by `mhc memory` in the MIT profile only.
 maho-memory = { path = "../maho-memory" }
+# MIT browser automation + computer use; mounted as `<builtin:browser>` in the MIT profile only.
+maho-browser = { path = "../maho-browser" }
 maho-omo-task = { path = "../omo/components/maho-omo-task", optional = true }
 maho-server = { path = "../maho-server" }
 maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }

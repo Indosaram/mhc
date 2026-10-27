@@ -17,6 +17,10 @@ and then answers in text, and checks that:
 - `mhc memory import-legacy` imports a legacy Markdown store and `mhc memory search` finds it;
 - the memory MCP server (`mhc --memory-mcp`, legacy `--omo-memory-mcp`) answers initialize,
   tools/list and tools/call;
+- the MIT browser/computer-use tools (`maho-browser`: browser, computer) are offered; when
+  `MHC_SMOKE_BROWSER` names a Chromium executable, a model-driven `browser` call opens a page and
+  its accessibility snapshot (with element refs) comes back to the model, and a `computer`
+  screenshot of that tab is taken;
 - `mhc doctor` reports the configuration sources and resolves a pinned model profile;
 - the omo-only entries report that they are unavailable (`mhc ulw-loop`, `--memory-supervisor`).
 
@@ -48,6 +52,9 @@ UNAVAILABLE = "is not available in this build"
 MIT_MEMORY_TOOLS = {"retain", "recall", "memory_get", "memory_forget"}
 MEMORY_FACT = "The smoke deployment target is cluster-zeta-42."
 MEMORY_MARKER = "mit-profile-memory-ok"
+MIT_BROWSER_TOOLS = {"browser", "computer"}
+BROWSER_MARKER = "mit-profile-browser-ok"
+BROWSER_HEADING = "smoke-browser-heading"
 
 
 def sse(chunks: list[dict]) -> bytes:
@@ -161,6 +168,42 @@ class MemoryModel(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+class BrowserModel(http.server.BaseHTTPRequestHandler):
+    """Calls `browser` (open + snapshot), then `computer` (screenshot of that tab), then answers."""
+    requests: list[dict] = []
+
+    def log_message(self, *_args) -> None:
+        pass
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("content-length", "0"))
+        payload = json.loads(self.rfile.read(length) or b"{}")
+        BrowserModel.requests.append(payload)
+        tool_results = [m for m in payload.get("messages") or [] if m.get("role") == "tool"]
+        if len(tool_results) >= 2:
+            body = sse([chunk({"role": "assistant", "content": BROWSER_MARKER}), chunk({}, "stop")])
+        else:
+            if not tool_results:
+                name = "browser"
+                arguments = {"action": "open", "snapshot": True,
+                             "url": f"data:text/html,<title>smoke</title><h1>{BROWSER_HEADING}</h1><button>Go</button>"}
+            else:
+                name, arguments = "computer", {"action": "screenshot"}
+            body = sse([
+                chunk({"role": "assistant", "tool_calls": [{
+                    "index": 0, "id": f"call_{name}", "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(arguments)},
+                }]}),
+                chunk({}, "tool_calls"),
+            ])
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+
 def mcp_session(mhc: str, flag: str, cwd: pathlib.Path, env: dict, calls: list[dict]) -> list[dict]:
     """Runs the memory MCP server with `flag`, sends initialize, tools/list and `calls`; returns responses."""
     requests = [
@@ -258,6 +301,9 @@ def main() -> int:
             return fail(f"no shell tool offered (offered: {sorted(offered)})")
         omo = sorted(name for name in offered
                      if name.startswith(OMO_TOOL_PREFIXES) and name not in MIT_TASK_TOOLS | MIT_MEMORY_TOOLS)
+        browser_missing = MIT_BROWSER_TOOLS - offered
+        if browser_missing:
+            return fail(f"MIT browser tools not offered: {sorted(browser_missing)} (offered: {sorted(offered)})")
         if omo:
             return fail(f"omo tools offered in the MIT profile: {omo}")
         lsp_missing = MIT_LSP_TOOLS - offered
@@ -274,7 +320,7 @@ def main() -> int:
         written = work / "smoke.txt"
         if not written.is_file() or written.read_text() != MARKER:
             return fail(f"builtin write tool did not write {written}\nstderr: {chat.stderr}")
-        print(f"ok   chat + builtin write tool ({len(offered)} tools offered incl. MIT LSP, task and memory, none from omo)")
+        print(f"ok   chat + builtin write tool ({len(offered)} tools offered incl. MIT LSP, task, memory and browser, none from omo)")
 
         delegate = http.server.ThreadingHTTPServer(("127.0.0.1", 0), DelegateModel)
         threading.Thread(target=delegate.serve_forever, daemon=True).start()
@@ -363,6 +409,30 @@ def main() -> int:
                 or not legacy_flag or "result" not in legacy_flag[0]:
             return fail(f"memory MCP server answered unexpectedly: {responses} / {legacy_flag}")
         print(f"ok   memory MCP server (--memory-mcp, --omo-memory-mcp): {len(tools)} tools, remember + recall")
+
+        browser_exe = os.environ.get("MHC_SMOKE_BROWSER")
+        if browser_exe:
+            browser_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), BrowserModel)
+            threading.Thread(target=browser_server.serve_forever, daemon=True).start()
+            (agent / "models.json").write_text(models_json(browser_server.server_port))
+            run = subprocess.run(
+                [mhc, "-p", "--offline", "--no-session", "--model", "offline/offline", "look at the smoke page"],
+                cwd=work, env={**env, "MAHO_BROWSER_PATH": browser_exe}, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=180,
+            )
+            browser_server.shutdown()
+            if run.returncode != 0 or BROWSER_MARKER not in run.stdout:
+                return fail(f"browser run failed (exit {run.returncode})\nstdout: {run.stdout}\nstderr: {run.stderr}")
+            snapshot = "\n".join(tool_text(p) for p in BrowserModel.requests)
+            if f'heading "{BROWSER_HEADING}"' not in snapshot or "[ref=e" not in snapshot:
+                return fail(f"the browser snapshot did not reach the model\ntool results: {snapshot[:4000]}\nstderr: {run.stderr}")
+            # The fixture model is text-only, so the image block itself may be withheld from it;
+            # the screenshot's text line must arrive either way.
+            if "Screenshot " not in snapshot or "(browser)" not in snapshot:
+                return fail(f"the computer screenshot result did not reach the model\ntool results: {snapshot[:4000]}")
+            print("ok   browser tool: opened a page, its snapshot with refs and a computer screenshot reached the model")
+        else:
+            print("skip browser run (set MHC_SMOKE_BROWSER to a Chromium executable)")
 
         (home / ".omo").mkdir(exist_ok=True)
         (home / ".omo" / "omo.jsonc").write_text('{ "model_profile": "offline/offline" }\n')
