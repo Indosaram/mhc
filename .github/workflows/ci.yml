@@ -94,7 +94,7 @@ jobs:
           tool: cargo-nextest
       - name: maho-cli tests (MIT profile)
         timeout-minutes: 40
-        run: cargo nextest run --locked --no-fail-fast -p maho-cli --no-default-features
+        run: python3 scripts/annotate-nextest.py maho-cli-mit-tests -- cargo nextest run --locked --no-fail-fast -p maho-cli --no-default-features
       - name: disk usage
         if: always()
         run: df -h / && du -sh target 2>/dev/null || true
