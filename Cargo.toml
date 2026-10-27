@@ -73,7 +73,6 @@ members = [
     "crates/extensions/maho-ext-orca-titlebar-spinner",
     "crates/extensions/maho-ext-herdr-agent-state",
     "crates/extensions/maho-ext-ferryx-agent-state",
-    "crates/extensions/maho-ext-quiet-model-profile",
     "crates/omo/mcp-stdio-core",
     "crates/omo/boulder-state",
     "crates/omo/model-core",

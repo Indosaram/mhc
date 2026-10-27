@@ -73,7 +73,7 @@ and every crate under `crates/desktop/` to be MIT.
   duplicate `<ultrawork-mode>` blocks, `maho-interactive` lights the prompt border for
   `ulw`/`ultrawork` keywords and has ulw tips (hidden without the task command), and the `omo`
   builtin id stays in the extension registry. Clean these up when the features are removed.
-- `maho-ext-quiet-model-profile` re-exports the SUL `maho-omo-model-profile`. No binary depends on it,
-  and Phase 1 rewrites it.
+- `maho-ext-quiet-model-profile` (a re-export of the SUL `maho-omo-model-profile` with no consumer)
+  was removed from the workspace; the model-profile rewrite (Phase 1) will bring a replacement.
 - Tests and fixtures: the `maho-cli` integration tests for the omo modules are gated on `omo`. The
   rest of the suite runs with default features only.

@@ -10929,7 +10929,6 @@ Used by:
 - [maho-ext-pi-goal 0.0.0](https://crates.io/crates/maho-ext-pi-goal)
 - [maho-ext-pi-nested-agents-md 0.0.0](https://crates.io/crates/maho-ext-pi-nested-agents-md)
 - [maho-ext-pi-websearch 0.0.0](https://crates.io/crates/maho-ext-pi-websearch)
-- [maho-ext-quiet-model-profile 0.0.0](https://crates.io/crates/maho-ext-quiet-model-profile)
 - [maho-agent 0.0.0](https://crates.io/crates/maho-agent)
 - [maho-ai 0.0.0](https://crates.io/crates/maho-ai)
 - [maho-cli 0.0.0](https://crates.io/crates/maho-cli)

@@ -4529,14 +4529,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "maho-ext-quiet-model-profile"
-version = "0.0.0"
-dependencies = [
- "maho-ext-api",
- "maho-omo-model-profile",
-]
-
-[[package]]
 name = "maho-ext-reasoning"
 version = "0.0.0"
 dependencies = [
