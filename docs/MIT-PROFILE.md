@@ -15,7 +15,8 @@ cargo build -p maho-senpi-desktop-engine                 # MIT sibling binary (c
 
 Package it with `bun tools/package-native.mjs --mit --output <dir> [--binary target/release/mhc]`
 (without `--binary` it runs `cargo build --release --locked -p maho-cli --no-default-features --bins`
-first). The MIT stage holds `mhc`, `mhc-launcher` (and `senpi-desktop-engine` with
+first). The MIT stage holds `mhc`, `mhc-launcher`, the `mhc-lsp` LSP daemon when it was built beside
+`mhc` (or named with `--mhc-lsp-binary`) (and `senpi-desktop-engine` with
 `--desktop-engine-binary`), the MIT text and third-party notices, and a manifest with
 `profile: "mit"`. It refuses a payload whose `mhc ulw-loop` does not report "not available in this
 build", refuses the SUL/OmO staging flags, and `--verify-only` rejects a stage containing
@@ -32,7 +33,7 @@ Everything outside the omo port:
 - builtin tools: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, and the rest of `maho-tools`;
 - builtin extensions under `crates/builtins` (MCP, hooks, codemode, websearch/webfetch, todo,
   compaction, goal, rules, permission system, ...) and the native user ports under
-  `crates/extensions`, except `pi-comment-checker`;
+  `crates/extensions` (`pi-comment-checker` uses the MIT `maho-comment-checker` crate here);
 - `crates/desktop/senpi-desktop-*` (MIT; moved out of `crates/omo` so that path checks are exact).
 
 ## Clean-room replacements (Phase 1)
@@ -52,14 +53,30 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
   category checks return with the Phase 2 task port; models that only an extension provider
   supplies (subscription logins) are not counted.
 
+## MIT ports (Phase 2)
+
+- `<builtin:lsp>` (`maho-lsp`, ported from MIT `pi-lsp-client` @ fc8f612): `lsp_diagnostics`,
+  `lsp_goto_definition`, `lsp_find_references`, `lsp_symbols`, `lsp_prepare_rename`, `lsp_rename`,
+  the `/lsp` command (`status`, `install <id>`, `warmup <id>`) and post-edit LSP error reporting
+  after `write`/`edit`/`apply_patch`. Servers come from the builtin table merged with
+  `.omo/lsp-client.json` / `.pi/lsp-client.json` (project) and `<agent dir>/lsp-client.json` /
+  `~/.pi/lsp-client.json` (user). When the `mhc-lsp` daemon binary sits beside `mhc` (build it with
+  `cargo build -p maho-lsp --bins`), clients link through it so language servers survive across mhc
+  processes (unix; `MHC_LSP_DAEMON=0` disables, `MHC_LSP_SOCKET` moves the socket); otherwise
+  servers are spawned in-process. The daemon design follows the MIT oh-my-pi LSP mux.
+- `pi-comment-checker` user port: links the MIT `maho-comment-checker` crate (hook payload model,
+  apply_patch metadata readers, `@code-yeongyu/comment-checker` binary lookup with
+  `COMMENT_CHECKER_BINARY`/`PATH` fallbacks).
+- Formatter / post-mutation hooks: interfaces in `maho_lsp::hooks` (`Formatter`,
+  `PostMutationHook`, `HookChain`); the LSP diagnostics hook is the first implementation.
+
 ## What is compiled out (needs the `omo` feature)
 
 | Area | In the MIT profile |
 | --- | --- |
 | omo mount (`<builtin:omo>`): task/subagent tools (`task`, `task_*`, `team_*`, `workflow`/DAG, `workpool`) and `/tasks`, `/task-kill`, `/dag` | not registered |
 | memory tools and commands (`/memory`, `/remember`, `/dream`, `/reflect`, `/search`, `/people`, `/palace`, `/init`, `/doctor`, `/facts`, `/memfs`, ...), Kibitzer recall, facts child | not registered |
-| LSP tools and `lsp-daemon`; ast-grep MCP; builtin MCPs (context7, grep_app); `x_search`; browser bridge | not registered |
-| comment-checker hook (`pi-comment-checker` user port) | not linked |
+| ast-grep MCP; builtin MCPs (context7, grep_app); `x_search`; browser bridge | not registered |
 | gateway, onboarding, init-deep advisor, git-master, telemetry | not registered |
 | bundled omo skills (`OMO_SENPI_SKILLS_ROOT`, the `skills/` root beside the executable) and the packaged root in app-server `skills/list` | not registered; settings and project skill paths still load |
 | `builtin:task-member` (`--extension builtin:task-member`) | unknown native extension error |

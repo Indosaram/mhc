@@ -99,9 +99,10 @@ fn factory<E: Extension + 'static>(name: &str, extension: E) -> NativeExtensionF
     }
 }
 
-/// MIT profile: startup config notices (migration + load diagnostics), the config hot-reload watch
-/// and the session-start model profile. The `omo` build mounts its own equivalents through the omo
-/// glue.
+/// MIT profile: startup config notices (migration + load diagnostics), the config hot-reload watch,
+/// the session-start model profile and the LSP tools (`maho-lsp`, linking through the `mhc-lsp`
+/// daemon when it sits beside the executable). The `omo` build mounts its own equivalents through
+/// the omo glue.
 #[cfg(not(feature = "omo"))]
 pub fn mit_config_factories() -> Vec<NativeExtensionFactory> {
     vec![
@@ -111,6 +112,12 @@ pub fn mit_config_factories() -> Vec<NativeExtensionFactory> {
             maho_config::ext::ConfigHotReload::default(),
         ),
         factory("model-profile", maho_model_select::ModelProfileExtension),
+        factory(
+            "lsp",
+            maho_lsp::extension::LspExtension::from_env(Some(std::path::PathBuf::from(
+                maho_core::config::get_agent_dir(),
+            ))),
+        ),
     ]
 }
 
@@ -1221,7 +1228,7 @@ impl Extension for Todo {
 #[cfg(all(test, not(feature = "omo")))]
 mod mit_tests {
     #[test]
-    fn mit_profile_mounts_config_and_model_profile_extensions() {
+    fn mit_profile_mounts_config_model_profile_and_lsp_extensions() {
         let paths: Vec<String> = super::mit_config_factories()
             .into_iter()
             .map(|factory| factory.path)
@@ -1231,7 +1238,8 @@ mod mit_tests {
             [
                 "<builtin:config-notices>",
                 "<builtin:config-hot-reload>",
-                "<builtin:model-profile>"
+                "<builtin:model-profile>",
+                "<builtin:lsp>"
             ]
         );
     }
