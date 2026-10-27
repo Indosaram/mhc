@@ -174,7 +174,7 @@ with unpriced requests, `$x.xxxx` below 0.01, `$x.xxx` below 1, else `$x.xx`; du
 ## OTLP export (port of oh-my-pi telemetry export, reduced)
 
 Collected per agent run (`agent_start` … `agent_end`) and pushed when the run ends; whatever is
-still buffered is pushed at session shutdown, waiting at most 3 s. Pushing happens on a
+still buffered is pushed at session shutdown, waiting at most 1.5 s. Pushing happens on a
 background thread with a 10 s request timeout; failures are reported once as a diagnostic and
 never affect the session. Content capture is always off: no prompt, message, tool argument or
 result text is exported.
