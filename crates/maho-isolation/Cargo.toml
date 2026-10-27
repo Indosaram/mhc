@@ -1,0 +1,26 @@
+[package]
+name = "maho-isolation"
+description = "Workspace isolation for mhc's delegated tasks: a git worktree (or a copy outside git) mirroring the parent's live state, change capture as a patch, patch apply or branch cherry-pick back into the parent, retention and stale cleanup (ported from the MIT oh-my-pi pi-iso rcopy backend and task isolation runner)."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-config = { path = "../maho-config" }
+maho-git = { path = "../maho-git" }
+maho-task = { path = "../maho-task" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+similar = "=2.7.0"
+tokio = { workspace = true, features = ["rt"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "=0.28.0", features = ["signal"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true
