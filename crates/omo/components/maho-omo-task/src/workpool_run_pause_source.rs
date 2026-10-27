@@ -56,7 +56,16 @@ impl WorkpoolRunPauseSource {
             WorkpoolError::new(WorkpoolErrorCode::AdmissionRefused, error.to_string())
         })?;
         for pool in self.owned(parent) {
-            engine.pause_for_run(&WorkpoolCaller { session_id: pool.parent_session_id.clone(), root_session_id: pool.root_session_id.clone(), depth: 0, cwd: String::new() }, &pool.pool_id, pause_seq)?;
+            engine.pause_for_run(
+                &WorkpoolCaller {
+                    session_id: pool.parent_session_id.clone(),
+                    root_session_id: pool.root_session_id.clone(),
+                    depth: 0,
+                    cwd: String::new(),
+                },
+                &pool.pool_id,
+                pause_seq,
+            )?;
         }
         Ok(())
     }
@@ -80,7 +89,12 @@ impl WorkpoolRunPauseSource {
             };
             let guard = TicketGuard(ticket);
             let result = self.workpools.lock().await.resume_for_run(
-                &WorkpoolCaller { session_id: pool.parent_session_id.clone(), root_session_id: pool.root_session_id.clone(), depth: 0, cwd: String::new() },
+                &WorkpoolCaller {
+                    session_id: pool.parent_session_id.clone(),
+                    root_session_id: pool.root_session_id.clone(),
+                    depth: 0,
+                    cwd: String::new(),
+                },
                 &pool.pool_id,
                 pause_seq,
                 Some(credential.clone()),
@@ -133,6 +147,25 @@ impl Drop for TicketGuard {
         self.0.leave();
     }
 }
+/// These sync wrappers run inside `EngineRunPause`'s own `futures::executor::block_on`, and that
+/// executor panics when entered twice on one thread, so the inner future runs on a scoped thread
+/// that keeps the caller's tokio runtime context for any task the engine spawns.
+fn block_on_nested<F>(future: F) -> F::Output
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    let runtime = tokio::runtime::Handle::try_current().ok();
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let _context = runtime.as_ref().map(tokio::runtime::Handle::enter);
+                futures::executor::block_on(future)
+            })
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
+}
 fn held() -> WorkpoolError {
     WorkpoolError::new(
         WorkpoolErrorCode::AdmissionRefused,
@@ -153,7 +186,7 @@ impl crate::engine_run_pause::RunPauseSource for WorkpoolRunPauseSource {
         }
     }
     fn install(&self, parent: &str, seq: u64, credential: &ResumeCredential) -> Result<(), String> {
-        futures::executor::block_on(WorkpoolRunPauseSource::install(
+        block_on_nested(WorkpoolRunPauseSource::install(
             self,
             parent,
             seq,
@@ -162,11 +195,20 @@ impl crate::engine_run_pause::RunPauseSource for WorkpoolRunPauseSource {
         .map_err(|error| error.to_string())
     }
     fn released(&self, parent: &str) -> Result<(), String> {
-        futures::executor::block_on(WorkpoolRunPauseSource::released(self, parent))
+        block_on_nested(WorkpoolRunPauseSource::released(self, parent))
             .map_err(|error| error.to_string())
     }
     fn cancel(&self, parent: &str, run: &RunRef) -> Result<(), String> {
-        futures::executor::block_on(WorkpoolRunPauseSource::cancel(self, parent, run))
+        block_on_nested(WorkpoolRunPauseSource::cancel(self, parent, run))
             .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn nested_block_on_inside_an_outer_executor_does_not_panic() {
+        let value = futures::executor::block_on(async { super::block_on_nested(async { 7 }) });
+        assert_eq!(value, 7);
     }
 }
