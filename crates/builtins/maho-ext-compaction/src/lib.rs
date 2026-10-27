@@ -451,7 +451,11 @@ impl maho_ext_api::Extension for CompactionExtension {
             let idle_since_end = std::sync::Arc::clone(&idle_since_end);
             let reminder = std::sync::Arc::clone(&reminder);
             let lane = std::sync::Arc::clone(&lane);
-            api.on(maho_ext_api::EventKind::BeforeAgentStart, std::sync::Arc::new(move |event, context| {
+            api.on_with_options(maho_ext_api::EventKind::BeforeAgentStart, std::sync::Arc::new(move |event, context| {
+                // senpi: a preview composes a prompt no turn follows, so no compaction, reminder, or restoration.
+                if matches!(event, maho_ext_api::ExtensionEvent::BeforeAgentStart(event) if event.preview) {
+                    return Box::pin(async { Ok(maho_ext_api::EventResult::None) });
+                }
                 idle_since_end.store(false,std::sync::atomic::Ordering::SeqCst);
                 // PERF-DIVERGENCE(senpi compaction): upstream hands every session entry to the checkpoint lookup; we only materialize `custom` entries (the only ones it inspects) and move the owned strings instead of cloning them. The chosen checkpoint is identical.
                 let entries: Vec<_> = context.session_manager.get_entries().into_iter().filter(|entry| entry.kind == "custom").map(|entry| {
@@ -487,7 +491,8 @@ impl maho_ext_api::Extension for CompactionExtension {
                     let hard = policy::is_at_hard_limit(tokens,window,geometry.reserve_tokens,additional);
                     let threshold = !tripped && policy::should_trigger_compaction(tokens.map(|tokens|tokens+additional),window,&settings,last_yield);
                     let in_flight = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|job|!job.completed());
-                    if settings.enabled && (hard || (threshold && !orchestration::should_defer_grace_band(tokens.unwrap_or(0.)+additional,geometry,window,in_flight,settings.ideal.grace_band_enabled))) {
+                    // senpi: the hard-limit valve runs even with compaction disabled; `enabled` gates only the threshold.
+                    if hard || (settings.enabled && threshold && !orchestration::should_defer_grace_band(tokens.unwrap_or(0.)+additional,geometry,window,in_flight,settings.ideal.grace_band_enabled))) {
                         let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
                         let retired = {warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()};
                         if let Some(job) = retired {job.cancel().await;}
@@ -511,7 +516,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                     }
                     Ok(result)
                 })
-            }));
+            }), maho_ext_api::ExtensionHandlerOptions { preview_safe: true, ..Default::default() });
         }
         for kind in [maho_ext_api::EventKind::TurnEnd, maho_ext_api::EventKind::AgentEnd,
             maho_ext_api::EventKind::SessionCompact] {

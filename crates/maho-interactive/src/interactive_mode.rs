@@ -1044,6 +1044,8 @@ pub struct InteractiveMode {
     idle_status: Option<crate::components::status_indicator::IdleStatus>,
     /// senpi's compaction queue: submissions typed while compaction runs.
     compaction_queue: Rc<RefCell<CompactionQueueState>>,
+    /// senpi `autoCompactionProgressText`: the summary streamed so far for the compaction indicator.
+    auto_compaction_progress_text: String,
     pending_compaction_flush: Option<CompactionFlush>,
     /// The manual `/compact` in flight: `submit_start` initiates it, `poll_turn` advances it so the
     /// loop keeps rendering and reading input (Esc aborts) while compaction runs.
@@ -2849,6 +2851,7 @@ impl InteractiveMode {
             active_status_indicator: None,
             idle_status: None,
             compaction_queue: Default::default(),
+            auto_compaction_progress_text: String::new(),
             pending_compaction_flush: None,
             queued_compaction_flushes: Default::default(),
             pending_bash: None,
@@ -3866,6 +3869,7 @@ impl InteractiveMode {
         let in_current_cwd = cwd_override.is_some();
         match self.host_switch_session(path, cwd_override).await {
             Ok(true) => {
+                self.reset_compaction_queue();
                 self.rebuild_history();
                 self.apply_theme_from_settings();
                 self.editor.editor.set_text("");
@@ -3915,6 +3919,7 @@ impl InteractiveMode {
             .await
         {
             Ok(true) => {
+                self.reset_compaction_queue();
                 self.rebuild_history();
                 self.apply_theme_from_settings();
                 self.editor.editor.set_text("");
@@ -4235,6 +4240,15 @@ impl InteractiveMode {
             maho_tui::components::text::Text::with_padding(self.theme.fg(color, &message), 1, 0),
         )));
         self.last_status = None;
+    }
+
+    /// senpi `renderCurrentSessionState`: a replaced session drops the compaction queue, its flush
+    /// tail and any in-flight transfer, so text queued in the old session never reaches the new one.
+    fn reset_compaction_queue(&mut self) {
+        self.pending_compaction_flush = None;
+        self.queued_compaction_flushes.clear();
+        self.compaction_queue = Default::default();
+        self.auto_compaction_progress_text.clear();
     }
 
     pub fn rebuild_history(&mut self) {
@@ -5488,32 +5502,14 @@ impl InteractiveMode {
                 self.submit_start(&text, Default::default()).await?;
                 return Ok(());
             }
-            // The compaction queue carries text only: drop attachments visibly and strip markers.
+            // senpi: ordinary text joins the compaction queue as a follow-up, delivered after
+            // compaction settles; the queue carries text only, so attachments are dropped visibly.
             let images = self.take_submission_images(&text);
-            let dropped = images.len();
-            let plural = if dropped > 1 { "s" } else { "" };
-            let queued = if dropped == 0 {
-                text.clone()
-            } else {
-                maho_tui::image_markers::IMAGE_MARKER_REGEX
-                    .replace_all(&text, "")
-                    .trim()
-                    .to_owned()
-            };
-            if queued.is_empty() {
-                self.show_status(format!("Dropped {dropped} image{plural}: messages sent during compaction cannot carry images - paste again after compaction finishes"));
-                return Ok(());
-            }
-            self.editor.editor.add_to_history(&queued);
-            self.set_active_editor_text("");
-            let options = PromptOptions {
-                streaming_behavior: Some(maho_ext_api::StreamingBehavior::FollowUp),
-                ..Default::default()
-            };
-            self.show_status(if dropped > 0 {
-                format!("Queued message for after compaction; dropped {dropped} image{plural}: messages sent during compaction cannot carry images - paste again after compaction finishes")
-            } else { "Queued message for after compaction".into() });
-            self.park_prompt_enqueue(queued, options);
+            self.queue_compaction_submission(
+                &text,
+                Some(images),
+                maho_ext_api::StreamingBehavior::FollowUp,
+            );
             return Ok(());
         }
         let images = self.take_submission_images(&text);
@@ -5968,10 +5964,11 @@ impl InteractiveMode {
         &mut self,
         text: &str,
         images: Option<Vec<maho_ai::types::ImageContent>>,
+        mode: maho_ext_api::StreamingBehavior,
     ) {
         let count = images.map_or(0, |images| images.len());
         if count == 0 {
-            self.queue_compaction_message(text, 0);
+            self.queue_compaction_message(text, 0, mode);
             return;
         }
         let queued = maho_tui::image_markers::IMAGE_MARKER_REGEX
@@ -5979,19 +5976,24 @@ impl InteractiveMode {
             .trim()
             .to_owned();
         if !queued.is_empty() {
-            self.queue_compaction_message(&queued, count);
+            self.queue_compaction_message(&queued, count, mode);
             return;
         }
         self.show_status(format!("Dropped {count} image{}: messages sent during compaction cannot carry images - paste again after compaction finishes", if count > 1 { "s" } else { "" }));
     }
 
     /// senpi `queueCompactionMessage`.
-    fn queue_compaction_message(&mut self, text: &str, dropped_image_count: usize) {
+    fn queue_compaction_message(
+        &mut self,
+        text: &str,
+        dropped_image_count: usize,
+        mode: maho_ext_api::StreamingBehavior,
+    ) {
         let enqueue_order = self.session.reserve_queued_input_order();
         self.compaction_queue.borrow_mut().queued.push(
             crate::compaction_queue_transfer::CompactionQueuedMessage {
                 text: text.to_owned(),
-                mode: maho_ext_api::StreamingBehavior::Steer,
+                mode,
                 enqueue_order: Some(enqueue_order),
                 pending_echo_id: None,
                 unknown_command_as_text: false,
@@ -6242,7 +6244,10 @@ impl InteractiveMode {
             // rejection is ignored. The compaction is not awaited here: `poll_turn` drives it so the
             // production loop keeps rendering and reading input (Esc aborts) while it runs.
             self.clear_status_indicator(None);
-            let instructions = text.trim().strip_prefix("/compact ").map(str::to_owned);
+            let instructions = text
+                .trim()
+                .strip_prefix("/compact ")
+                .map(|instructions| instructions.trim().to_owned());
             let compact: CompactFuture = match self.session_host.clone() {
                 Some(host) => Box::pin(async move {
                     drop(host.compact(instructions).await);
@@ -6421,7 +6426,11 @@ impl InteractiveMode {
     ) -> Result<PromptDisposition, String> {
         // senpi queues non-command input during compaction for delivery after it settles.
         if self.host_is_compacting() && !self.is_extension_command(text.trim()) {
-            self.queue_compaction_submission(text.trim(), options.images.clone());
+            self.queue_compaction_submission(
+                text.trim(),
+                options.images.clone(),
+                maho_ext_api::StreamingBehavior::Steer,
+            );
             return Ok(PromptDisposition::Handled);
         }
         self.flush_pending_bash_components();
@@ -6584,6 +6593,7 @@ impl InteractiveMode {
         self.install_remote_replacement(snapshot);
         match result {
             Ok(true) => {
+                self.reset_compaction_queue();
                 self.rebuild_history();
                 self.apply_theme_from_settings();
                 self.chat.add_component(Rc::new(RefCell::new(
@@ -6680,6 +6690,7 @@ impl InteractiveMode {
             ),
             SwitchTail::Replaced(snapshot) => {
                 self.install_remote_replacement(Some(snapshot));
+                self.reset_compaction_queue();
                 self.rebuild_history();
                 self.apply_theme_from_settings();
                 self.editor.editor.set_text("");
@@ -6693,6 +6704,7 @@ impl InteractiveMode {
                 );
             }
             SwitchTail::Local => {
+                self.reset_compaction_queue();
                 self.rebuild_history();
                 self.apply_theme_from_settings();
                 self.editor.editor.set_text("");
@@ -6779,12 +6791,14 @@ impl InteractiveMode {
             }
             ImportTail::Replaced(snapshot) => {
                 self.install_remote_replacement(Some(snapshot));
+                self.reset_compaction_queue();
                 self.rebuild_history();
                 self.apply_theme_from_settings();
                 self.editor.editor.set_text("");
                 self.show_status(format!("Session imported from: {path}"));
             }
             ImportTail::Local => {
+                self.reset_compaction_queue();
                 self.rebuild_history();
                 self.apply_theme_from_settings();
                 self.editor.editor.set_text("");
@@ -6855,6 +6869,7 @@ impl InteractiveMode {
             }
             ForkTail::Local(result) => result.editor_text,
         };
+        self.reset_compaction_queue();
         self.rebuild_history();
         self.apply_theme_from_settings();
         if cloned {
@@ -11620,11 +11635,18 @@ impl InteractiveMode {
                 else { self.show_compaction_status_indicator(reason.unwrap_or(maho_ext_api::CompactionReason::Manual)); }
             }
             AgentSessionEvent::SummarizationRetryFinished => self.clear_status_indicator(Some(StatusIndicatorKind::Retry)),
-            AgentSessionEvent::CompactionStart { reason, .. } => self.show_compaction_status_indicator(*reason),
+            AgentSessionEvent::CompactionStart { reason, .. } => {
+                self.auto_compaction_progress_text.clear();
+                self.show_compaction_status_indicator(*reason);
+            }
             AgentSessionEvent::CompactionProgress { delta, text, .. } => {
                 if let Some(indicator) = self.active_status_indicator.clone().filter(|indicator| indicator.borrow().kind == StatusIndicatorKind::Compaction) {
-                    let next = text.clone().or_else(|| delta.clone()).unwrap_or_default();
+                    // senpi: a full `text` replaces the preview; a `delta` extends what streamed so far.
+                    let next = text.clone().unwrap_or_else(|| {
+                        format!("{}{}", self.auto_compaction_progress_text, delta.as_deref().unwrap_or_default())
+                    });
                     if !next.is_empty() {
+                        self.auto_compaction_progress_text = next.clone();
                         let tail = next.char_indices().rev().nth(3_999).map_or(next.as_str(), |(index, _)| &next[index..]);
                         let preview = if tail.len() < next.len() { format!("...{tail}") } else { next.clone() };
                         indicator.borrow_mut().set_progress_text(&maho_tui::terminal_text::sanitize_terminal_label(&preview), self.status_indicator_now());
@@ -11632,6 +11654,7 @@ impl InteractiveMode {
                 }
             }
             AgentSessionEvent::CompactionEnd { reason, result, aborted, will_retry, accepted, rejection_cause, error_message, .. } => {
+                self.auto_compaction_progress_text.clear();
                 self.clear_status_indicator(Some(StatusIndicatorKind::Compaction));
                 if self.working_started_ms.is_some() {
                     self.working_started_ms = Some(self.clock.elapsed().as_secs_f64() * 1000.0);
@@ -11743,10 +11766,15 @@ impl InteractiveMode {
             self.compaction_delegated = false;
         } else if let Some(error_message) = error_message {
             let error_message = maho_tui::terminal_text::sanitize_terminal_label(error_message);
-            if crate::provider_error_presentation::is_network_provider_error(
-                Some(error_message.as_str()),
-                false,
-            ) {
+            // senpi: only a retryable provider failure that ends an open retry episode joins the
+            // quiet provider-error banner; any other terminal compaction failure surfaces as an error.
+            if crate::provider_error_presentation::is_retryable_provider_error(Some(
+                error_message.as_str(),
+            )) && self
+                .provider_errors
+                .as_ref()
+                .is_some_and(|errors| errors.borrow().awaiting_retry_finish())
+            {
                 self.finish_provider_error(&error_message);
             } else if manual {
                 self.show_error(&error_message);

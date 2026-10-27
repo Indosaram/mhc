@@ -68,10 +68,12 @@ pub fn record_reduction_usage(state:&mut ContextReductionState,count:usize,cut:u
 }
 
 fn reduce_prefix(messages: &[Message], cut: usize) -> Vec<Message> {
+    // senpi reducePrefix: the builtin options with only the recency protections zeroed.
+    let builtin=ReduceContextOptions::builtin();
     let options=ReduceContextOptions {
-        collapse:Some(crate::context_reduction::CollapseConsecutiveOptions {protect_recent_messages:0,..Default::default()}),
-        shrink_assistant:Some(crate::context_reduction::MicroCompactAssistantOptions {protect_recent_tokens:0,..Default::default()}),
-        clear_tool_results:Some(Default::default()),
+        collapse:builtin.collapse.map(|options|crate::context_reduction::CollapseConsecutiveOptions {protect_recent_messages:0,..options}),
+        shrink_assistant:builtin.shrink_assistant.map(|options|crate::context_reduction::MicroCompactAssistantOptions {protect_recent_tokens:0,..options}),
+        clear_tool_results:builtin.clear_tool_results.map(|options|crate::context_reduction::ClearOldToolResultsOptions {keep_recent:0,..options}),
     };
     let mut prefix=reduce_context_messages(&messages[..cut],&options).messages;
     prefix.extend_from_slice(&messages[cut..]);

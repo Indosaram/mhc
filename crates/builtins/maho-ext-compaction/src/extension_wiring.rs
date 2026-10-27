@@ -511,12 +511,27 @@ pub async fn generate_core_route_compaction(
         maho_ext_api::CompactionReason::Branch => "branch",
         _ => "extension",
     };
+    let usage = context.get_context_usage()?;
+    // senpi requiresDeterministicCompactionFallback: a pre-prompt compaction at the reserve boundary
+    // must land too, or the prompt it admits overflows.
+    let required_fallback = is_required_compaction_fallback_reason(reason)
+        || (event.reason == maho_ext_api::CompactionReason::PrePrompt
+            && usage.as_ref().is_some_and(|usage| {
+                usage.context_window > 0
+                    && usage.tokens.is_some_and(|tokens| {
+                        tokens as f64
+                            >= usage.context_window as f64
+                                - maho_core::compaction::compaction::resolve_effective_reserve_tokens(
+                                    usage.context_window as f64,
+                                    preparation.settings.reserve_tokens as f64,
+                                    preparation.settings.ideal.reserve_scaling_enabled,
+                                )
+                    })
+            }));
     let snapshot = crate::speculative::SpeculativeCompactionSnapshot {
         generation: 0,
         expected_revision: context.get_message_revision()?,
-        context_window: context
-            .get_context_usage()?
-            .map_or(model.context_window, |usage| usage.context_window),
+        context_window: usage.map_or(model.context_window, |usage| usage.context_window),
         model,
         prompt_variant: crate::speculative::get_prompt_variant(reason, &preparation),
         preparation,
@@ -586,7 +601,7 @@ pub async fn generate_core_route_compaction(
                 }
                 _ => crate::deterministic_fallback::SummaryFailure::Other,
             };
-            if is_required_compaction_fallback_reason(reason)
+            if required_fallback
                 && let Some(failure) =
                     crate::deterministic_fallback::classify_required_compaction_fallback_failure(
                         failure,

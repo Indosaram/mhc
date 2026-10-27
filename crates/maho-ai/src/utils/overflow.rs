@@ -171,6 +171,7 @@ pub fn get_overflow_patterns() -> Vec<Regex> {
 /// The loosely typed message shape the Cursor helpers accept.
 #[derive(Debug, Clone, Default)]
 pub struct CursorExhaustionProbe<'a> {
+    pub provider: Option<&'a str>,
     pub stop_reason: Option<&'a str>,
     pub error_message: Option<&'a str>,
     pub usage: Option<Usage>,
@@ -188,6 +189,7 @@ impl<'a> CursorExhaustionProbe<'a> {
             StopReason::Deferred => "deferred",
         };
         Self {
+            provider: Some(message.provider.as_str()),
             stop_reason: Some(stop_reason),
             error_message: message.error_message.as_deref(),
             usage: Some(message.usage),
@@ -198,8 +200,17 @@ impl<'a> CursorExhaustionProbe<'a> {
         self.usage.as_ref().map_or(0, token_count)
     }
 
+    /// The zero-token / quota `resource_exhausted` signatures describe Cursor's backend only. Other
+    /// providers send `resource_exhausted` for their own rate and usage limits (senpi#2660), and
+    /// reading those as a Cursor payload overflow or re-mint skips the fallback chain.
+    fn is_cursor_provider(&self) -> bool {
+        self.provider
+            .is_none_or(|provider| matches!(provider, "cursor" | "cursor-cli-oauth"))
+    }
+
     fn is_resource_exhausted_error(&self) -> bool {
-        self.stop_reason == Some("error")
+        self.is_cursor_provider()
+            && self.stop_reason == Some("error")
             && RESOURCE_EXHAUSTED_PATTERN.is_match(self.error_message.unwrap_or_default())
     }
 }
@@ -286,6 +297,31 @@ mod tests {
             failure_source: None,
             timing: None,
         }
+    }
+
+    fn cursor_error_message(error_message_text: &str) -> AssistantMessage {
+        AssistantMessage {
+            provider: "cursor".into(),
+            ..error_message(error_message_text)
+        }
+    }
+
+    #[test]
+    fn does_not_read_another_providers_resource_exhausted_limit_as_a_cursor_signature() {
+        let limit = "Devin stream error resource_exhausted: Reached free model rate limit. Your limit will reset in 9 minutes.";
+        let mut zero_token = error_message(limit);
+        zero_token.provider = "devin".into();
+        let mut token_bearing = zero_token.clone();
+        token_bearing.usage.total_tokens = 178_626;
+        assert!(!is_cursor_zero_token_resource_exhausted(&CursorExhaustionProbe::from_message(&zero_token)));
+        assert!(!is_cursor_payload_resource_exhausted(&CursorExhaustionProbe::from_message(&zero_token), 0));
+        assert!(!is_cursor_quota_resource_exhausted(
+            &CursorExhaustionProbe::from_message(&token_bearing),
+            1_048_576
+        ));
+        assert!(is_cursor_zero_token_resource_exhausted(&CursorExhaustionProbe::from_message(
+            &cursor_error_message(limit)
+        )));
     }
 
     #[test]
@@ -644,7 +680,7 @@ mod tests {
 
     #[test]
     fn identifies_cursor_usage_pool_exhaustion_below_half_the_context_window() {
-        let mut message = error_message("Connect error resource_exhausted: Error");
+        let mut message = cursor_error_message("Connect error resource_exhausted: Error");
         message.usage.total_tokens = 178_626;
         assert!(!is_context_overflow(&message, Some(1_048_576)));
         assert!(is_cursor_quota_resource_exhausted(
@@ -655,7 +691,7 @@ mod tests {
 
     #[test]
     fn does_not_identify_cursor_context_overflow_as_usage_pool_exhaustion() {
-        let mut message = error_message("Connect error resource_exhausted: Error");
+        let mut message = cursor_error_message("Connect error resource_exhausted: Error");
         message.usage.total_tokens = 600_000;
         assert!(!is_cursor_quota_resource_exhausted(
             &CursorExhaustionProbe::from_message(&message),
@@ -665,8 +701,8 @@ mod tests {
 
     #[test]
     fn does_not_identify_zero_token_or_non_resource_exhausted_errors_as_usage_pool_exhaustion() {
-        let zero_token = error_message("Connect error resource_exhausted: Error");
-        let non_resource_exhausted = error_message("Connect error unavailable");
+        let zero_token = cursor_error_message("Connect error resource_exhausted: Error");
+        let non_resource_exhausted = cursor_error_message("Connect error unavailable");
         assert!(!is_cursor_quota_resource_exhausted(
             &CursorExhaustionProbe::from_message(&zero_token),
             1_048_576
@@ -823,13 +859,13 @@ mod tests {
 
     #[test]
     fn cursor_resource_exhaustion_helpers() {
-        let zero = error_message("resource_exhausted");
+        let zero = cursor_error_message("resource_exhausted");
         let probe = CursorExhaustionProbe::from_message(&zero);
         assert!(
             is_cursor_zero_token_resource_exhausted(&probe)
                 && is_cursor_payload_resource_exhausted(&probe, 5)
         );
-        let quota = error_message("resource exhausted");
+        let quota = cursor_error_message("resource exhausted");
         let mut quota = quota;
         quota.usage.total_tokens = 100;
         assert!(is_cursor_quota_resource_exhausted(

@@ -52,7 +52,7 @@ impl Default for MicroCompactAssistantOptions {
             protect_recent_tokens: 2000,
             max_assistant_text_tokens: 500,
             min_savings_tokens: 100,
-            replacement_template: "[response shrunk — {original_tokens} → {shrunk_tokens} tokens]"
+            replacement_template: "[response shrunk - {original_tokens} → {shrunk_tokens} tokens]"
                 .into(),
         }
     }

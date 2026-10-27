@@ -74,19 +74,42 @@ fn parse_payload(data: &Value) -> Option<Vec<Value>> {
 }
 
 pub fn latest_phases(entries: &[Value]) -> Vec<Value> {
+    latest_todo_state(entries).0
+}
+
+/// senpi `isTodoAsk`: the user request a todo list serves.
+fn read_ask(data: &Value) -> Option<Value> {
+    data.get("ask")
+        .filter(|ask| {
+            ask.get("entryId").is_some_and(Value::is_string)
+                && ask.get("text").is_some_and(Value::is_string)
+                && ask.get("capturedAt").is_some_and(Value::is_u64)
+        })
+        .cloned()
+}
+
+/// senpi `getLatestTodoStateFromBranchEntries`: the latest phases and the ask stored with them.
+pub fn latest_todo_state(entries: &[Value]) -> (Vec<Value>, Option<Value>) {
     let mut phases = Vec::new();
+    let mut ask = None;
     for entry in entries {
         let data = if entry.get("type").and_then(Value::as_str) == Some("custom") && entry.get("customType").and_then(Value::as_str) == Some("senpi.todo-state") {
             Some(&entry["data"])
         } else if entry.get("type").and_then(Value::as_str) == Some("message") && entry["message"]["role"] == "toolResult"
             && matches!(entry["message"]["toolName"].as_str(), Some("todo" | "todowrite")) { Some(&entry["message"]["details"]) } else { None };
-        if let Some(parsed) = data.and_then(parse_payload) { phases = parsed; }
+        if let Some(data) = data && let Some(parsed) = parse_payload(data) {
+            phases = parsed;
+            ask = if data.get("schema").and_then(Value::as_str) == Some("v2") || data.get("phases").is_some_and(Value::is_array) { read_ask(data) } else { None };
+        }
     }
-    phases
+    (phases, ask)
 }
 
 pub fn create_todo_snapshot(context: &ExtensionContext) -> Value {
-    json!({"schema":TODO_SNAPSHOT_SCHEMA,"todos":latest_phases(&crate::speculative::branch_values(context)),"capturedAt":chrono::Utc::now().timestamp_millis()})
+    let (phases, ask) = latest_todo_state(&crate::speculative::branch_values(context));
+    let mut snapshot = json!({"schema":TODO_SNAPSHOT_SCHEMA,"todos":phases,"capturedAt":chrono::Utc::now().timestamp_millis()});
+    if let Some(ask) = ask { snapshot["ask"] = ask; }
+    snapshot
 }
 pub fn capture_todo_snapshot(api: &ExtensionApi, context: &ExtensionContext) -> Result<(), ExtensionFailure> {
     api.append_entry(TODO_SNAPSHOT_CUSTOM_TYPE, Some(create_todo_snapshot(context)))
@@ -106,7 +129,8 @@ pub fn restore_todos_if_missing(api: &ExtensionApi, context: &ExtensionContext) 
         if data["schema"] != TODO_SNAPSHOT_SCHEMA { continue; }
         let Some(todos) = normalize_snapshot_items(&data["todos"]) else { continue; };
         if todos.is_empty() { return Ok(()); }
-        let details = json!({"schema":TODO_SNAPSHOT_SCHEMA,"todos":todos,"capturedAt":data.get("capturedAt").filter(|value| value.is_number()).cloned().unwrap_or(json!(0))});
+        let mut details = json!({"schema":TODO_SNAPSHOT_SCHEMA,"todos":todos,"capturedAt":data.get("capturedAt").filter(|value| value.is_number()).cloned().unwrap_or(json!(0))});
+        if let Some(ask) = read_ask(data) { details["ask"] = ask; }
         return api.send_message(CustomMessage { custom_type: "compaction.todo-restore-request".into(), content: vec![ToolContent::text(format!("Restore missing todo tasks from snapshot: {}", details["todos"]))], display: false, details: Some(details) }, SendMessageOptions { trigger_turn: true, deliver_as: Some(DeliverAs::NextTurn) });
     }
     Ok(())
