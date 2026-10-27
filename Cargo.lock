@@ -3583,6 +3583,7 @@ dependencies = [
  "libproc",
  "maho-agent",
  "maho-ai",
+ "maho-browser",
  "maho-chord",
  "maho-codemode",
  "maho-config",

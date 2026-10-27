@@ -105,6 +105,29 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
   bank; re-running skips what is already there, and `people/` files are skipped unless
   `memory.people.enabled` is true or `--include-people` is given. Format and mapping:
   `docs/cleanroom/specs/memory-format.md`.
+- `<builtin:browser>` (`maho-browser`, ported from the MIT omowright @ a019fdf, pi-cua-integration @
+  9ba0c9e and oh-my-pi @ f59bbac; tool behaviour in `docs/cleanroom/specs/browser-tools.md`):
+  - `browser`: drives Chromium over the DevTools protocol. Actions `open`, `goto`, `back`,
+    `forward`, `reload`, `snapshot` (accessibility tree with `[ref=eN]` element refs), `click`,
+    `fill`, `type`, `press`, `select`, `hover`, `scroll`, `screenshot` (image block, optional
+    `path`), `evaluate`, `wait`, `tabs`, `close`; tabs are named (default `main`). The browser is
+    launched on first use with a temporary profile and closed at session shutdown. Executable:
+    `app.path`, else `$MAHO_BROWSER_PATH` / `$PUPPETEER_EXECUTABLE_PATH` / `$CHROME_PATH`, else the
+    first system Chrome/Chromium/Edge. Headless unless `headed: true` or `$MAHO_BROWSER_HEADLESS=0`.
+    Transport: `--remote-debugging-pipe` on Unix (no listening port), `--remote-debugging-port=0`
+    on Windows or with `$MAHO_BROWSER_TRANSPORT=port`; `app.cdp_url` or `$MAHO_BROWSER_CDP_URL`
+    attaches to a running browser instead.
+  - `computer`: screenshot + coordinate actions (`click`, `double_click`, `move`, `drag`,
+    `scroll`, `type`, `key`) on the viewport of a browser tab (`backend: "browser"`, the default
+    when a tab is open) or the host desktop / a Cua sandbox (`backend: "desktop"`: the vendored
+    pi-cua-integration daemon, written to `<agent dir>/computer-use/` and run with
+    `$MAHO_COMPUTER_PYTHON`, default `python3`; needs Python 3.12/3.13 with `pip install cua`;
+    `status`, `sandbox_start|stop|list`, cloud sandboxes read `CUA_API_KEY`). Without `cua` the
+    desktop actions fail with the daemon's "cua Python package is not installed" error.
+  - Not ported: oh-my-pi's JavaScript-execution browser runtime, relay/Tern/cmux browsers, stealth
+    patches and Chrome for Testing download; omowright's network capture, frames, HAR and tracing.
+    The default (`omo`) build does not mount these tools (its browser bridge and computer-use
+    crates were never mounted).
 - Formatter / post-mutation hooks: interfaces in `maho_lsp::hooks` (`Formatter`,
   `PostMutationHook`, `HookChain`); the LSP diagnostics hook is the first implementation.
 
@@ -114,7 +137,7 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
 | --- | --- |
 | omo mount (`<builtin:omo>`): its task/subagent tools, `team_*`, `workflow`/DAG, `workpool`, `/task-kill`, `/dag` | not registered (MIT `<builtin:task>` provides `task`, `task_output`, `task_list`, `task_resume`, `task_cancel`, `/tasks`) |
 | omo memory tools and commands (`/remember`, `/dream`, `/reflect`, `/search`, `/people`, `/palace`, `/init`, `/doctor`, `/facts`, `/memfs`, ...), the omo recall sidecar, facts child, git-backed Markdown memory | not registered (MIT `<builtin:memory>` provides `retain`, `recall`, `memory_get`, `memory_forget`, first-turn auto-recall and `/memory`) |
-| ast-grep MCP; builtin MCPs (context7, grep_app); `x_search`; browser bridge | not registered |
+| ast-grep MCP; builtin MCPs (context7, grep_app); `x_search`; omo browser bridge | not registered (MIT `<builtin:browser>` provides the `browser` and `computer` tools) |
 | gateway, onboarding, init-deep advisor, git-master, telemetry | not registered |
 | bundled omo skills (`OMO_SENPI_SKILLS_ROOT`, the `skills/` root beside the executable) and the packaged root in app-server `skills/list` | not registered; settings and project skill paths still load |
 | `builtin:task-member` (`--extension builtin:task-member`) | unknown native extension error |
@@ -138,11 +161,13 @@ mass-ulw, persona prompts) are removed, not ported.
 3. `cargo clippy -p maho-cli --no-default-features --lib --bins -- -D warnings` and a build.
 4. `python3 scripts/mit-profile-smoke.py target/debug/mhc`: print-mode chat against a loopback
    model that calls the builtin `write` tool. It checks that `read`/`write`/`edit` and a shell tool (`bash` or the terminal's `bash_*`) are offered,
-   that the MIT LSP, task and memory tools are offered and no omo tool is, that a `task` call runs a child
+   that the MIT LSP, task, memory and browser (`browser`, `computer`) tools are offered and no omo tool is, that a `task` call runs a child
    `mhc -p` against the same model and returns its completed `<task-result>`, that a fact stored
    with `retain` is auto-recalled into the next run's first turn and returned by `recall`, that
    `mhc memory import-legacy` + `mhc memory search` work on a legacy Markdown store, that the
-   memory MCP server answers over stdio (`--memory-mcp`, `--omo-memory-mcp`), that `mhc doctor` reports the config sources and resolves a pinned
+   memory MCP server answers over stdio (`--memory-mcp`, `--omo-memory-mcp`), that (when
+   `MHC_SMOKE_BROWSER` names a Chromium executable) a model-driven `browser` call returns the page's
+   snapshot with refs and a `computer` screenshot of the tab is taken, that `mhc doctor` reports the config sources and resolves a pinned
    model profile, and that `mhc ulw-loop` and `--memory-supervisor` report they are unavailable.
 5. `cargo nextest run -p maho-cli --no-default-features`: the `maho-cli` tests in the MIT profile.
 
