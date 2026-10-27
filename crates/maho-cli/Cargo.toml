@@ -84,6 +84,9 @@ maho-memory = { path = "../maho-memory" }
 maho-browser = { path = "../maho-browser" }
 # MIT telemetry (usage ledger, `mhc usage`, opt-in OTLP export); mounted as `<builtin:telemetry>` in the MIT profile only.
 maho-telemetry = { path = "../maho-telemetry" }
+# MIT task workspace isolation (git worktree / copy) behind `<builtin:task>` and the read-only git tools (`<builtin:git>`); MIT profile only.
+maho-isolation = { path = "../maho-isolation" }
+maho-git = { path = "../maho-git" }
 maho-omo-task = { path = "../omo/components/maho-omo-task", optional = true }
 maho-server = { path = "../maho-server" }
 maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }

@@ -88,6 +88,14 @@ pub fn has_live_owner(base: &Path) -> bool {
     }
 }
 
+fn recently_modified(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.elapsed().ok())
+        .is_none_or(|age| age < std::time::Duration::from_secs(600))
+}
+
 /// Removes every isolation under `root` whose owner is gone; retained isolations
 /// (`*.retained-*`) only when `include_retained`. Returns the removed directories.
 pub fn clear_stale(root: &Path, include_retained: bool) -> Vec<PathBuf> {
@@ -108,6 +116,11 @@ pub fn clear_stale(root: &Path, include_retained: bool) -> Vec<PathBuf> {
             continue;
         }
         let owner = read_owner(&path);
+        // A directory without a marker may be one being created right now (the marker is
+        // written just after the directory); leave young ones alone.
+        if owner.is_none() && recently_modified(&path) {
+            continue;
+        }
         let merged = path.join(crate::MERGED_DIR);
         if owner.as_ref().is_some_and(|o| o.backend == "worktree") {
             let _ = maho_git::Git::new(&merged).run(&["worktree", "remove", "--force", "."]);
@@ -149,10 +162,20 @@ mod tests {
             serde_json::to_vec(&dead_owner).expect("json"),
         )
         .expect("write");
+        std::fs::write(
+            kept.join(OWNER_FILE),
+            serde_json::to_vec(&dead_owner).expect("json"),
+        )
+        .expect("write");
         assert!(!has_live_owner(&dead));
         let removed = clear_stale(root.path(), false);
         assert_eq!(removed, vec![dead.clone()]);
         assert!(live.exists() && kept.exists() && !dead.exists());
         assert_eq!(clear_stale(root.path(), true), vec![kept.clone()]);
+        // A fresh directory without a marker (being created) is left alone.
+        let fresh = root.path().join("tfresh");
+        std::fs::create_dir_all(&fresh).expect("mkdir");
+        assert!(clear_stale(root.path(), true).is_empty());
+        assert!(fresh.exists());
     }
 }
