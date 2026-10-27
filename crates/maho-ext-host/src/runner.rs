@@ -1,7 +1,8 @@
 //! Port of senpi extensions/runner.ts dispatch, using native static registration.
 pub type LifecycleAttentionCallback = Arc<std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
 use maho_ext_api::*;
-pub type PromptStartObserver<'a> = dyn Fn(&str, &str, &str, Option<&[DynamicSystemPromptPart]>) + Send + Sync + 'a;
+pub type PromptStartObserver<'a> =
+    dyn Fn(&str, &str, &str, Option<&[DynamicSystemPromptPart]>) + Send + Sync + 'a;
 #[path = "shutdown_quit_budget.rs"]
 pub mod shutdown_quit_budget;
 use std::{
@@ -154,6 +155,7 @@ struct CommandActions {
     inner: Arc<dyn ExtensionCommandContextActions>,
     reload: ReloadState,
     runtime: ExtensionRuntime,
+    replaced: Arc<std::sync::atomic::AtomicBool>,
 }
 impl ExtensionCommandContextActions for CommandActions {
     fn wait_for_idle(&self) -> ExtensionFuture<'_, ()> {
@@ -169,7 +171,12 @@ impl ExtensionCommandContextActions for CommandActions {
     ) -> ExtensionFuture<'_, SessionNavigationResult> {
         Box::pin(async move {
             self.runtime.assert_active()?;
-            self.inner.new_session(options).await
+            let result = self.inner.new_session(options).await?;
+            if !result.cancelled {
+                self.replaced
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok(result)
         })
     }
     fn fork<'a>(
@@ -179,7 +186,12 @@ impl ExtensionCommandContextActions for CommandActions {
     ) -> ExtensionFuture<'a, SessionNavigationResult> {
         Box::pin(async move {
             self.runtime.assert_active()?;
-            self.inner.fork(entry_id, options).await
+            let result = self.inner.fork(entry_id, options).await?;
+            if !result.cancelled {
+                self.replaced
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok(result)
         })
     }
     fn navigate_tree<'a>(
@@ -233,7 +245,12 @@ impl ExtensionCommandContextActions for CommandActions {
     ) -> ExtensionFuture<'a, SessionNavigationResult> {
         Box::pin(async move {
             self.runtime.assert_active()?;
-            self.inner.switch_session(path, options).await
+            let result = self.inner.switch_session(path, options).await?;
+            if !result.cancelled {
+                self.replaced
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok(result)
         })
     }
     fn reload(&self) -> ExtensionFuture<'_, ()> {
@@ -244,7 +261,10 @@ impl ExtensionCommandContextActions for CommandActions {
                 self.reload.clone(),
                 Box::pin(async move { actions.reload().await }),
             )
-            .await
+            .await?;
+            self.replaced
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
         })
     }
 }
@@ -1194,6 +1214,7 @@ impl ExtensionRunner {
                 inner: actions,
                 reload: self.reload.clone(),
                 runtime: self.runtime.clone(),
+                replaced: Arc::default(),
             }),
             runtime: self.runtime.clone(),
         })
@@ -1255,11 +1276,27 @@ impl ExtensionRunner {
                     .then_some(handlers)
             })
             .ok_or_else(|| ExtensionFailure::new("Command owner is unavailable"))?;
+        // A command may retire its own runtime through session navigation. Track that per
+        // invocation so an unrelated invalidation still rejects a pending command's completion.
+        let replaced = Arc::default();
+        let context = ExtensionCommandContext {
+            actions: Arc::new(CommandActions {
+                inner: context.actions.clone(),
+                reload: Arc::default(),
+                runtime: self.runtime.clone(),
+                replaced: Arc::clone(&replaced),
+            }),
+            ..context.clone()
+        };
         match handlers.get(&resolved.command.name) {
-            Some(handler) => handler(args, context).await,
+            Some(handler) => handler(args, &context).await,
             None => (resolved.command.handler)(args, &context.context).await,
         }?;
-        self.runtime.assert_active()
+        if replaced.load(std::sync::atomic::Ordering::SeqCst) {
+            Ok(())
+        } else {
+            self.runtime.assert_active()
+        }
     }
     pub async fn apply_fast_mode(
         &self,
@@ -1566,8 +1603,15 @@ impl ExtensionRunner {
             .collect()
     }
 
-    pub fn extension_paths(&self) -> Vec<String> { self.extensions.iter().map(|extension| extension.identity.path.clone()).collect() }
-    pub fn third_party_session_start_paths(&self) -> Vec<String> { self.get_third_party_session_start_paths() }
+    pub fn extension_paths(&self) -> Vec<String> {
+        self.extensions
+            .iter()
+            .map(|extension| extension.identity.path.clone())
+            .collect()
+    }
+    pub fn third_party_session_start_paths(&self) -> Vec<String> {
+        self.get_third_party_session_start_paths()
+    }
 
     pub fn preview_unsafe_before_agent_start_paths(&self) -> Vec<String> {
         self.extensions
@@ -2230,9 +2274,10 @@ impl ExtensionRunner {
             }
             if let ExtensionEvent::BeforeAgentStart(current) = &event
                 && current.preview
-                    && let Some(observe) = observe {
-                        observe(&path, &before, &current.system_prompt, parts.as_deref());
-                    }
+                && let Some(observe) = observe
+            {
+                observe(&path, &before, &current.system_prompt, parts.as_deref());
+            }
             self.runtime.assert_active()?;
         }
         Ok(

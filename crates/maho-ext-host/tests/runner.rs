@@ -340,7 +340,8 @@ fn prompt(suffix: &'static str) -> ExtensionHandler {
                 return Err("wrong event".into());
             };
             assert_eq!(ctx.get_system_prompt(), event.system_prompt);
-            Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt_parts: None,
+            Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult {
+                system_prompt_parts: None,
                 system_prompt: Some(format!("{}{suffix}", event.system_prompt)),
                 message: None,
             }))
@@ -442,8 +443,14 @@ async fn stale_context_panic_is_reported_as_handler_error() {
 #[tokio::test]
 async fn non_extension_failure_panic_still_unwinds() {
     let broken: ExtensionHandler = Arc::new(|_, _| Box::pin(async { panic!("bug") }));
-    let mut runner = runner(vec![extension("/ext/broken", EventKind::BeforeAgentStart, broken)]);
-    let result = tokio::spawn(async move { runner.emit_before_agent_start(before()).await.map(|_| ()) }).await;
+    let mut runner = runner(vec![extension(
+        "/ext/broken",
+        EventKind::BeforeAgentStart,
+        broken,
+    )]);
+    let result =
+        tokio::spawn(async move { runner.emit_before_agent_start(before()).await.map(|_| ()) })
+            .await;
     assert!(result.unwrap_err().is_panic());
 }
 #[tokio::test]
@@ -465,7 +472,8 @@ async fn before_agent_start_collects_messages_in_order() {
     let message = |name: &'static str| -> ExtensionHandler {
         Arc::new(move |_, _| {
             Box::pin(async move {
-                Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt_parts: None,
+                Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult {
+                    system_prompt_parts: None,
                     message: Some(CustomMessage {
                         custom_type: name.into(),
                         content: vec![],
@@ -5383,6 +5391,121 @@ async fn command_invocation_rejects_completion_after_invalidation() {
         .unwrap();
     assert_eq!(result.unwrap_err().message, "replaced during command");
 }
+
+#[tokio::test]
+async fn command_owned_navigation_allows_completion_but_not_stale_context_access() {
+    for access_stale_context in [false, true] {
+        let runtime = ExtensionRuntime::default();
+        let retired = runtime.clone();
+        let mut api = ExtensionApi::new(
+            LoadedExtension::new("navigation", "/tmp".into(), SourceInfo::default()),
+            ExtensionSessionProfile::default(),
+            EventBus::default(),
+            runtime.clone(),
+        );
+        api.register_command_with_context(
+            "jump",
+            None,
+            None,
+            Arc::new(move |_, ctx| {
+                let retired = retired.clone();
+                Box::pin(async move {
+                    ctx.fork("entry", ForkOptions::default()).await?;
+                    retired.invalidate("navigation retired this context");
+                    if access_stale_context {
+                        ctx.wait_for_idle().await?;
+                    }
+                    Ok(())
+                })
+            }),
+        );
+        let runner = ExtensionRunner::new(
+            vec![api.registered],
+            runtime,
+            EventBus::default(),
+            context(),
+        );
+        let ctx = runner
+            .create_command_context(Arc::new(CommandActions(Mutex::new(vec![]))))
+            .unwrap();
+        let result = runner.invoke_command("jump", "", &ctx).await;
+        assert_eq!(result.is_err(), access_stale_context);
+        assert!(ctx.runtime.assert_active().is_err());
+    }
+}
+
+#[tokio::test]
+async fn cancelled_navigation_does_not_accept_an_unrelated_invalidation() {
+    let runtime = ExtensionRuntime::default();
+    let retired = runtime.clone();
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("cancelled", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        runtime.clone(),
+    );
+    api.register_command_with_context(
+        "jump",
+        None,
+        None,
+        Arc::new(move |_, ctx| {
+            let retired = retired.clone();
+            Box::pin(async move {
+                assert!(
+                    ctx.new_session(NewSessionOptions::default())
+                        .await?
+                        .cancelled
+                );
+                retired.invalidate("unrelated replacement");
+                Ok(())
+            })
+        }),
+    );
+    let runner = ExtensionRunner::new(
+        vec![api.registered],
+        runtime,
+        EventBus::default(),
+        context(),
+    );
+    let ctx = runner
+        .create_command_context(Arc::new(CommandActions(Mutex::new(vec![]))))
+        .unwrap();
+    assert_eq!(
+        runner
+            .invoke_command("jump", "", &ctx)
+            .await
+            .unwrap_err()
+            .message,
+        "unrelated replacement"
+    );
+}
+
+#[tokio::test]
+async fn command_reload_completes_through_the_invocation_wrapper() {
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("reload", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    api.register_command_with_context(
+        "refresh",
+        None,
+        None,
+        Arc::new(|_, ctx| Box::pin(async move { ctx.reload().await })),
+    );
+    let runner = runner(vec![api.registered]);
+    let actions = Arc::new(CommandActions(Mutex::new(vec![])));
+    let ctx = runner.create_command_context(actions.clone()).unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        runner.invoke_command("refresh", "", &ctx),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(*actions.0.lock().unwrap(), ["reload"]);
+}
 #[tokio::test]
 async fn question_without_ui_returns_unavailable_and_preserves_unanswered_ids() {
     let ctx = context();
@@ -5484,7 +5607,8 @@ fn forged_monitor_json_never_supplies_private_parent_and_stale_context_cannot_mu
 
 #[tokio::test]
 async fn move_emission_returns_each_failure_and_runs_later_handlers() {
-    let bad: ExtensionHandler = Arc::new(|_, _| Box::pin(async { Err(ExtensionFailure::new("export refused")) }));
+    let bad: ExtensionHandler =
+        Arc::new(|_, _| Box::pin(async { Err(ExtensionFailure::new("export refused")) }));
     let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let seen = called.clone();
     let good: ExtensionHandler = Arc::new(move |event, _| {
@@ -5495,8 +5619,18 @@ async fn move_emission_returns_each_failure_and_runs_later_handlers() {
             Ok(EventResult::None)
         })
     });
-    let mut runner = runner(vec![extension("bad", EventKind::SessionMoveExport, bad), extension("good", EventKind::SessionMoveExport, good)]);
-    let failures = runner.emit_session_move(ExtensionEvent::SessionMoveExport { move_id: "move".into(), dir: "/tmp/export".into(), signal: AbortSignal::default() }).await.expect("emit");
+    let mut runner = runner(vec![
+        extension("bad", EventKind::SessionMoveExport, bad),
+        extension("good", EventKind::SessionMoveExport, good),
+    ]);
+    let failures = runner
+        .emit_session_move(ExtensionEvent::SessionMoveExport {
+            move_id: "move".into(),
+            dir: "/tmp/export".into(),
+            signal: AbortSignal::default(),
+        })
+        .await
+        .expect("emit");
     assert_eq!(failures.len(), 1);
     assert_eq!(failures[0].extension_path, "bad");
     assert!(called.load(std::sync::atomic::Ordering::SeqCst));
