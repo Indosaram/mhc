@@ -218,7 +218,8 @@ impl Parser<'_> {
                 // Consume one word-like run so recovery always makes progress.
                 let mut consumed = false;
                 while let Some(byte) = self.peek() {
-                    if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || byte >= 0x80 {
+                    if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || byte >= 0x80
+                    {
                         self.pos += 1;
                         consumed = true;
                     } else {
@@ -477,7 +478,9 @@ impl Parser<'_> {
     fn read_unicode_escape(&mut self) -> Option<char> {
         let first = self.read_hex4()?;
         if (0xD800..0xDC00).contains(&first) {
-            if self.bytes.get(self.pos) == Some(&b'\\') && self.bytes.get(self.pos + 1) == Some(&b'u') {
+            if self.bytes.get(self.pos) == Some(&b'\\')
+                && self.bytes.get(self.pos + 1) == Some(&b'u')
+            {
                 let save = self.pos;
                 self.pos += 2;
                 if let Some(second) = self.read_hex4()

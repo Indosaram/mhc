@@ -5854,6 +5854,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-support"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "maho-team-core"
 version = "0.0.0"
 dependencies = [
