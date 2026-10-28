@@ -65,9 +65,27 @@ fn acquire_writes_token_and_release_removes_file() {
 #[test]
 fn renewing_holder_is_not_reclaimed_after_several_stale_windows() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let overrides = timing(40, Some(120), Some(0), Some(10));
+    // The stale window is wide against the renew interval so a briefly starved renew thread on a
+    // loaded runner cannot let the lease go stale between two renewals.
+    let stale_ms = 300;
+    let overrides = timing(20, Some(stale_ms), Some(0), Some(10));
     let holder = acquired(acquire(dir.path(), &overrides));
-    std::thread::sleep(Duration::from_millis(400));
+    let first = body(holder.path())["renewed_at"].as_i64().expect("renewed_at");
+    // Wait for the holder's own renewals to carry the lease past two stale windows of its
+    // first write; an unrenewed lease would be reclaimable by then. A read racing the renewal's
+    // rename (Windows) is retried; the poll interval only paces reads and never decides the result.
+    let target = first + 2 * i64::try_from(stale_ms).expect("stale ms");
+    let renewed_at = |path: &std::path::Path| {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .and_then(|value| value["renewed_at"].as_i64())
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while renewed_at(holder.path()).is_none_or(|at| at < target) {
+        assert!(std::time::Instant::now() < deadline, "holder stopped renewing");
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let waiter = acquire(dir.path(), &overrides);
     assert!(matches!(waiter, AcquireAdmissionLeaseResult::Contended));
     assert!(holder.is_owner());

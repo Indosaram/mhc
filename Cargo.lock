@@ -4935,8 +4935,10 @@ name = "maho-isolation"
 version = "0.0.0"
 dependencies = [
  "maho-config",
+ "maho-core",
  "maho-git",
  "maho-task",
+ "maho-tool-child",
  "nix 0.28.0",
  "serde",
  "serde_json",

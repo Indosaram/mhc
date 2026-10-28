@@ -59,8 +59,12 @@ pub fn segment(source: &Path, id: &str) -> String {
     format!("t{:09x}", hash & 0xf_ffff_ffff)
 }
 
+/// Resolved `path`, without the Windows verbatim `\\?\` prefix `canonicalize` adds there: git
+/// cannot create files under a verbatim path (`worktree add`, the scratch index lock).
 fn canonical(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    std::fs::canonicalize(path)
+        .map(maho_core::paths::strip_verbatim_prefix)
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Makes the isolation for task `id` started from `cwd` under the isolation root `wt`.

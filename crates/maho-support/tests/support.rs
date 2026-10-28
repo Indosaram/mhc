@@ -112,9 +112,16 @@ fn atomic_write_aborts_on_eio_fsync() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("t.json");
     std::fs::write(&target, "old").unwrap();
+    // A device I/O error in the platform's own numbering: raw code 5 is EIO on Unix but
+    // ERROR_ACCESS_DENIED on Windows (a tolerated kind); ERROR_IO_DEVICE (1117) is the
+    // Windows equivalent of EIO.
+    #[cfg(windows)]
+    const IO_ERROR: i32 = 1117;
+    #[cfg(not(windows))]
+    const IO_ERROR: i32 = 5;
     let result = write_atomically_with(&target, b"new", &|step| {
         if step == AtomicStep::FsyncFile {
-            Err(io::Error::from_raw_os_error(5))
+            Err(io::Error::from_raw_os_error(IO_ERROR))
         } else {
             Ok(())
         }

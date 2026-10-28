@@ -24,6 +24,21 @@ pub fn forward_slashes(path: &str) -> String {
     path.replace('\\', "/")
 }
 
+/// Windows: native separators. Rewriting `\` to `/` would turn a verbatim `\\?\C:\...` path into
+/// `//?/C:/...`, which `Path` parses as a different prefix, so joined config paths stop comparing
+/// equal (component-wise) to the paths the OS and callers hand back.
+#[cfg(windows)]
+fn absolute_normalised(raw: &str, cwd: &Path) -> PathBuf {
+    let path = PathBuf::from(raw);
+    let joined = if path.is_absolute() || has_drive_prefix(raw) {
+        path
+    } else {
+        cwd.join(path)
+    };
+    maho_support::normalize_lexically(&joined)
+}
+
+#[cfg(not(windows))]
 fn absolute_normalised(raw: &str, cwd: &Path) -> PathBuf {
     let slashed = forward_slashes(raw);
     let path = PathBuf::from(&slashed);
@@ -42,7 +57,8 @@ pub(crate) fn has_drive_prefix(text: &str) -> bool {
 }
 
 /// Home directory for every harness-config path: `HOME`, else `USERPROFILE`, else `cwd`.
-/// Made absolute and written with forward slashes. `XDG_CONFIG_HOME`/`APPDATA` are never used.
+/// Made absolute and written with forward slashes (native separators on Windows, so verbatim
+/// `\\?\` paths survive). `XDG_CONFIG_HOME`/`APPDATA` are never used.
 pub fn home_dir_with(env: &Env, cwd: &Path) -> PathBuf {
     let raw = non_empty(env, "HOME")
         .or_else(|| non_empty(env, "USERPROFILE"))

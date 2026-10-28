@@ -8,6 +8,7 @@ license = "MIT"
 
 [dependencies]
 maho-config = { path = "../maho-config" }
+maho-core = { path = "../maho-core" }
 maho-git = { path = "../maho-git" }
 maho-task = { path = "../maho-task" }
 serde = { workspace = true, features = ["derive"] }
@@ -17,6 +18,9 @@ tokio = { workspace = true, features = ["rt"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "=0.28.0", features = ["signal"] }
+
+[target.'cfg(not(unix))'.dependencies]
+maho-tool-child = { path = "../maho-tool-child" }
 
 [dev-dependencies]
 tempfile.workspace = true

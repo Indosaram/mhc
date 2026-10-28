@@ -243,12 +243,15 @@ mod tests {
             .into_iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
+        // Path arguments are real OS paths, so build them with the platform's separator.
+        let sessions = dir.join("sessions").to_string_lossy().into_owned();
+        let prompt_file = dir.join("p.md").to_string_lossy().into_owned();
         assert_eq!(
             args,
             [
-                "-p", "--mode", "text", "--session-dir", "/s/sessions", "--session-id", "sid",
+                "-p", "--mode", "text", "--session-dir", &sessions, "--session-id", "sid",
                 "--name", "T", "--model", "a/b", "--thinking", "low", "--append-system-prompt",
-                "/s/p.md", "--tools", "read,grep", "--exclude-tools", "bash", "--",
+                &prompt_file, "--tools", "read,grep", "--exclude-tools", "bash", "--",
                 "-starts with a dash"
             ]
         );

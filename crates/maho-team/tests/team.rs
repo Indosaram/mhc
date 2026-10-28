@@ -6,10 +6,15 @@ use maho_task::{
     TaskManagerOptions, TaskObserver, TaskRunner, TaskSettings, TaskStatus, bundled_agents,
 };
 use maho_team::{
-    MemberSpec, PaneMode, PaneObserver, PaneSettings, Placement, Team, TeamLimits, TeamStatus,
-    TmuxBackend,
+    MemberSpec, Team, TeamLimits, TeamStatus,
 };
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use maho_team::{
+    PaneMode, PaneObserver, PaneSettings, Placement, TmuxBackend,
+};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -447,6 +452,7 @@ async fn panes_with_fake_tmux() {
     );
 }
 
+#[cfg(unix)]
 fn real_tmux() -> Option<PathBuf> {
     let path = std::env::var("PATH").ok();
     maho_team::mux::which("tmux", path.as_deref())
