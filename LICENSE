@@ -21,6 +21,6 @@ Portions of this software incorporate or derive from third-party works:
 - `crates/extensions/maho-ext-omo-zcode-oauth/LICENSE` (MIT)
 - `crates/extensions/maho-ext-pi-webfetch/THIRD_PARTY_NOTICES.md` (MIT)
 - `crates/extensions/maho-ext-pi-rules/THIRD_PARTY_NOTICES.md` (MIT)
-- `assets/omo-latest/skills/frontend/LICENSE-Apache-2.0.txt` (Apache-2.0)
-- `assets/omo-latest/skills/ast-grep/LICENSE` (MIT)
+- `assets/skills/frontend/LICENSE-Apache-2.0.txt` (Apache-2.0)
+- `assets/skills/ast-grep/LICENSE` (MIT)
 - Rust crate dependencies: `THIRD_PARTY_LICENSES.md`

@@ -35,9 +35,9 @@ jobs:
       - name: build release binaries
         run: |
           export MHC_BUILD_VERSION="${GITHUB_REF_NAME#build/}"
-          cargo zigbuild --release --locked --target x86_64-unknown-linux-gnu.2.28 -p maho-cli -p maho-senpi-desktop-engine --bins
+          cargo zigbuild --release --locked --target x86_64-unknown-linux-gnu.2.28 -p maho-cli -p maho-lsp -p maho-senpi-desktop-engine -p maho-git-bash -p maho-ast-grep --bins
           mkdir -p target/release
-          for bin in mhc mhc-launcher ast-grep-mcp lsp-daemon omo-git-bash senpi-desktop-engine; do
+          for bin in mhc mhc-launcher mhc-lsp senpi-desktop-engine mhc-git-bash mhc-ast-grep; do
             if [ -f "target/x86_64-unknown-linux-gnu/release/$bin" ]; then cp "target/x86_64-unknown-linux-gnu/release/$bin" target/release/; fi
           done
           test "$(./target/release/mhc --version)" = "$MHC_BUILD_VERSION"
@@ -45,12 +45,12 @@ jobs:
 
       - name: materialize browser skill runtime
         run: |
-          commit=$(bun -e 'console.log((await Bun.file("assets/omo-latest/manifest.json").json()).browserRuntime.dependency.commit)')
+          commit=$(bun -e 'console.log((await Bun.file("assets/skills/manifest.json").json()).browserRuntime.dependency.commit)')
           git init -q "$RUNNER_TEMP/omowright"
           git -C "$RUNNER_TEMP/omowright" fetch -q --depth 1 https://github.com/code-yeongyu/omowright.git "$commit"
           git -C "$RUNNER_TEMP/omowright" checkout -q FETCH_HEAD
           (cd "$RUNNER_TEMP/omowright" && bun install --frozen-lockfile --ignore-scripts --production)
-          node assets/omo-latest/stage-omowright-runtime.mjs --source "$RUNNER_TEMP/omowright" --target "$RUNNER_TEMP/omowright-runtime"
+          node tools/stage-omowright-runtime.mjs --source "$RUNNER_TEMP/omowright" --target "$RUNNER_TEMP/omowright-runtime"
 
       - name: package
         env:
@@ -60,8 +60,9 @@ jobs:
         run: |
           export MHC_BUILD_VERSION="${GITHUB_REF_NAME#build/}"
           name=mhc-linux-x86_64
-          bun tools/package-native.mjs --binary target/release/mhc --launcher-binary target/release/mhc-launcher --output "dist/$name" --skill-source latest \
-            --git-bash-binary target/release/omo-git-bash --desktop-engine-binary target/release/senpi-desktop-engine \
+          bun tools/package-native.mjs --binary target/release/mhc --launcher-binary target/release/mhc-launcher --output "dist/$name" \
+            --mhc-lsp-binary target/release/mhc-lsp --desktop-engine-binary target/release/senpi-desktop-engine \
+            --git-bash-binary target/release/mhc-git-bash --ast-grep-binary target/release/mhc-ast-grep \
             --omowright-runtime "$RUNNER_TEMP/omowright-runtime"
           bun tools/package-native.mjs --verify-only "dist/$name"
           test -x "dist/$name/mhc" && test -x "dist/$name/mhc-launcher"
