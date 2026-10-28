@@ -260,49 +260,6 @@ fn run() -> Result<(), String> {
         println!("Imported {} entries into {}", copied.len(), to.display());
         return Ok(());
     }
-    if argv.first().is_some_and(|arg| arg == "senpi-install") {
-        let action = argv
-            .get(1)
-            .map(String::as_str)
-            .ok_or("Expected positional action install|uninstall")?;
-        if !matches!(action, "install" | "uninstall") {
-            return Err("Expected positional action install|uninstall".into());
-        }
-        let home_dir = PathBuf::from(maho_core::config::home_dir());
-        let agent_dir = PathBuf::from(maho_core::config::get_agent_dir());
-        let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-        let plugin_path = std::env::var_os("OMO_SENPI_PLUGIN_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| cwd.join("packages/omo-senpi/plugin"));
-        let options = maho_cli::senpi_install::InstallOptions {
-            home_dir,
-            agent_dir,
-            repo_root: cwd,
-            plugin_path,
-            cli_path: std::env::current_exe().map_err(|error| error.to_string())?,
-            validate_artifacts: true,
-        };
-        let result = if action == "install" {
-            maho_cli::senpi_install::install(&options)
-        } else {
-            maho_cli::senpi_install::uninstall(&options)
-        };
-        match result {
-            Ok(result) => {
-                return output(&format!(
-                    "{}\n",
-                    serde_json::to_string(&result).map_err(|error| error.to_string())?
-                ));
-            }
-            Err(error) => {
-                return output(&format!(
-                    "{}\n",
-                    serde_json::to_string(&serde_json::json!({"ok":false,"error":error}))
-                        .map_err(|error| error.to_string())?
-                ));
-            }
-        }
-    }
     let env = maho_core::config::current_env();
     let grok = maho_cli::cli::grok_neo_gate::is_grok_neo_enabled(&env);
     if maho_cli::cli::models_command::is_models_discover_command(&argv) {
