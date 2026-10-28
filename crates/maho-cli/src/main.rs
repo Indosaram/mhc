@@ -7,10 +7,13 @@ static GLOBAL_ALLOCATOR: maho_tool_child::allocator::MahoAllocator =
     maho_tool_child::allocator::ALLOCATOR;
 
 fn main() {
-    let hook_args: Vec<String> = std::env::args().skip(1).collect();
-    if hook_args.first().is_some_and(|arg| arg == "--memory-hook") {
-        let cwd = match std::env::current_dir() { Ok(cwd) => cwd, Err(error) => { eprintln!("{error}"); std::process::exit(1); } };
-        std::process::exit(maho_omo_memory::worker::spawn_supervisor_support::run_memory_hook(&hook_args[1..], &cwd));
+    #[cfg(feature = "omo")]
+    {
+        let hook_args: Vec<String> = std::env::args().skip(1).collect();
+        if hook_args.first().is_some_and(|arg| arg == "--memory-hook") {
+            let cwd = match std::env::current_dir() { Ok(cwd) => cwd, Err(error) => { eprintln!("{error}"); std::process::exit(1); } };
+            std::process::exit(maho_omo_memory::worker::spawn_supervisor_support::run_memory_hook(&hook_args[1..], &cwd));
+        }
     }
     // senpi `internal-role.ts`: a process the engine started as a tool child becomes one before anything else runs.
     maho_cli::internal_role::run_internal_role();
