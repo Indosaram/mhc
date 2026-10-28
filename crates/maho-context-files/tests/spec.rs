@@ -76,6 +76,16 @@ fn choice_follows_manifests_thresholds_and_collapses() {
     assert!(!chosen.contains(&"web".to_owned()), "{chosen:?}");
     assert!(!chosen.contains(&"web/src".to_owned()), "{chosen:?}");
     assert!(!chosen.contains(&"docs".to_owned()));
+    // crates/core/src holds 25 of crates/core's 26 files (tests/ has one), so it stays.
+    assert!(chosen.contains(&"crates/core/src".to_owned()), "{chosen:?}");
+    std::fs::remove_file(dir.path().join("crates/core/tests/it.rs")).expect("rm");
+    let a2 = analyze(dir.path());
+    let chosen2 = choose(&a2, &Settings::default());
+    assert!(
+        !chosen2.contains(&"crates/core/src".to_owned()),
+        "{chosen2:?}"
+    );
+    assert!(chosen2.contains(&"crates/core".to_owned()), "{chosen2:?}");
     let small = Settings {
         max_dirs: 2,
         ..Settings::default()
