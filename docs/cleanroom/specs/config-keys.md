@@ -477,9 +477,13 @@ Owner: Phase 3 git attribution
 
 ## `gateway`
 
-Owner: Phase 3 gateway
+Owner: Phase 3 gateway (`crates/maho-gateway`, spec `gateway.md` §8)
 
 - `gateway` : map<string,any>
+- `gateway.enabled` : boolean default=true (read by `maho-gateway`)
+- `gateway.poll_ms` : integer default=500, minimum 50 (read by `maho-gateway`)
+- `gateway.max_hops` : integer default=3 (read by `maho-gateway`)
+- other keys are accepted and ignored
 
 ## `side_panel`
 
