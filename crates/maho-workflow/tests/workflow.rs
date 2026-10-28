@@ -367,7 +367,7 @@ async fn acceptance_07_run_limit_and_pruned_key_is_free() {
     record.finished_at = Some(1);
     store.save(&record).expect("save");
     let (removed, failures) = h.scheduler.sweep();
-    assert_eq!(removed, [first.run.run_id.clone()]);
+    assert_eq!(removed, std::slice::from_ref(&first.run.run_id));
     assert!(failures.is_empty());
     let mut changed = node("a", &[]);
     changed.prompt = "new".into();
@@ -621,7 +621,7 @@ async fn acceptance_18_recovery_reattaches_live_children() {
     lock(&h.exec.children).remove(&gone.task);
     let successor = scheduler_at(h.dir.path(), &h.exec, DagSettings::default());
     let mut events = successor.subscribe();
-    assert_eq!(successor.recover(&h.caller.session_id), [run.clone()]);
+    assert_eq!(successor.recover(&h.caller.session_id), std::slice::from_ref(&run));
     h.exec.complete(&a.task);
     let b = h.next_start().await;
     assert_eq!(b.node, "b");
@@ -665,7 +665,7 @@ async fn acceptance_19_retention_spares_running_runs() {
         store.save(&record).expect("save");
     }
     let (removed, _) = h.scheduler.sweep();
-    assert_eq!(removed, [done.run.run_id.clone()]);
+    assert_eq!(removed, std::slice::from_ref(&done.run.run_id));
     assert!(store.load(&done.run.run_id).is_none());
     assert!(!store.journal_path(&done.run.run_id).exists());
     assert!(!store.results_dir(&done.run.run_id).exists());
