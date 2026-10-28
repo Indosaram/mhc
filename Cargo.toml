@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/maho-approval-gates",
+    "crates/maho-format",
+    "crates/maho-git-bash",
+    "crates/maho-x-search",
     "crates/maho-ai",
     "crates/maho-agent",
     "crates/maho-chord",
