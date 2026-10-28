@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/maho-approval-gates",
+    "crates/maho-feedback",
     "crates/maho-format",
     "crates/maho-git-bash",
     "crates/maho-x-search",

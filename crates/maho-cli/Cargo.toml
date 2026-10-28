@@ -71,6 +71,7 @@ maho-team = { path = "../maho-team" }
 # MIT skill support (bundled root, disabled_skills, `skill` tool, `/skill`) and builtin MCP servers (context7, grep_app) on maho-ext-mcp; mounted as `<builtin:skills>` / `<builtin:mcp-builtins>` in the MIT profile only.
 maho-skills = { path = "../maho-skills" }
 maho-approval-gates = { path = "../maho-approval-gates" }
+maho-feedback = { path = "../maho-feedback" }
 maho-format = { path = "../maho-format" }
 maho-git-bash = { path = "../maho-git-bash" }
 maho-x-search = { path = "../maho-x-search" }
