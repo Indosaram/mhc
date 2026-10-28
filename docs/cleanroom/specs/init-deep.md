@@ -42,8 +42,8 @@ Settings (§6): `max_depth` (3), `max_dirs` (12), `min_files` (20).
 - The root is always a target.
 - A directory below the root is a candidate when its depth ≤ `max_depth`, and it has a manifest,
   or its `subtree_code_files` ≥ `min_files`.
-- Pass-through directories (no files of their own and exactly one child directory) are not
-  candidates.
+- Directories with no files of their own (pass-through or grouping directories such as
+  `crates/` or `web/`) are not candidates; their children are.
 - A candidate whose subtree code files equal those of its only candidate child is dropped in
   favour of the child.
 - Score = `subtree_code_files` + 40 × manifests + 10 × `has_tests`; the best `max_dirs - 1`

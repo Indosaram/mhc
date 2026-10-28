@@ -11,19 +11,20 @@ fn bullet(label: &str, items: &[String]) -> Option<String> {
 
 /// The facts block of one target.
 pub fn facts(target: &Target) -> String {
-    let mut lines = vec![
-        format!(
-            "- files here: {}; source files here and below: {}",
-            target.files, target.subtree_code_files
-        ),
-    ];
+    let mut lines = vec![format!(
+        "- files here: {}; source files here and below: {}",
+        target.files, target.subtree_code_files
+    )];
     lines.extend(bullet("main languages", &target.languages));
     lines.extend(bullet("build/package files here", &target.manifests));
     lines.extend(bullet("likely entry points here", &target.entry_points));
     if target.has_tests {
         lines.push("- tests: present".into());
     }
-    lines.extend(bullet("subdirectories with their own file", &target.children));
+    lines.extend(bullet(
+        "subdirectories with their own file",
+        &target.children,
+    ));
     lines.join("\n")
 }
 
@@ -44,8 +45,10 @@ pub fn file_prompt(target: &Target, child_summaries: &[(String, String)]) -> Str
     )];
     out.push(format!("What is already known:\n{}", facts(target)));
     if !child_summaries.is_empty() {
-        let mut block =
-            vec!["These subdirectories get their own file; link to them instead of repeating them:".to_owned()];
+        let mut block = vec![
+            "These subdirectories get their own file; link to them instead of repeating them:"
+                .to_owned(),
+        ];
         for (path, summary) in child_summaries {
             block.push(format!("- `{path}`: {summary}"));
         }
@@ -79,8 +82,10 @@ pub fn clean_answer(answer: &str) -> String {
         .and_then(|rest| {
             let (first, body) = rest.split_once('\n')?;
             let lang = first.trim();
-            (lang.is_empty() || lang.eq_ignore_ascii_case("markdown") || lang.eq_ignore_ascii_case("md"))
-                .then_some(body)
+            (lang.is_empty()
+                || lang.eq_ignore_ascii_case("markdown")
+                || lang.eq_ignore_ascii_case("md"))
+            .then_some(body)
         })
         .and_then(|body| body.trim_end().strip_suffix("```"))
         .map(str::trim)
@@ -167,7 +172,10 @@ pub fn session_request(plan: &Plan) -> String {
         .map(|t| format!("`{}`", t.path))
         .collect();
     if !kept.is_empty() {
-        out.push(format!("Leave these existing files as they are: {}.", kept.join(", ")));
+        out.push(format!(
+            "Leave these existing files as they are: {}.",
+            kept.join(", ")
+        ));
     }
     out.push(
         "Each file: Markdown, a `# ` title, sections only where there is something specific \

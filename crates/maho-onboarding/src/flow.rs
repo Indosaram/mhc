@@ -89,7 +89,10 @@ pub fn run(
     };
     let models = host.models(&provider.id);
     if models.is_empty() {
-        return Err(Stop::Empty(format!("provider {} has no models", provider.id)));
+        return Err(Stop::Empty(format!(
+            "provider {} has no models",
+            provider.id
+        )));
     }
     let model = if steps.contains(&MODEL) {
         let shown = &models[..models.len().min(MODEL_LIST_LIMIT)];
@@ -179,7 +182,12 @@ mod tests {
                 key: Some("sk-9".into())
             }
         );
-        assert!(prompter.transcript.iter().any(|l| l.contains("alpha (ALPHA)  ✓")));
+        assert!(
+            prompter
+                .transcript
+                .iter()
+                .any(|l| l.contains("alpha (ALPHA)  ✓"))
+        );
     }
 
     #[test]
@@ -189,7 +197,12 @@ mod tests {
         let choice = run(&host, &mut prompter, &ALL_STEPS, None).expect("choice");
         assert_eq!(choice.model, "a2");
         assert_eq!(choice.key, None);
-        assert!(prompter.transcript.iter().any(|l| l == "unknown provider \"bogus\""));
+        assert!(
+            prompter
+                .transcript
+                .iter()
+                .any(|l| l == "unknown provider \"bogus\"")
+        );
         assert!(!prompter.transcript.iter().any(|l| l.starts_with("API key")));
     }
 
@@ -220,7 +233,12 @@ mod tests {
         let mut prompter = Scripted::new(&["", "1"]);
         let choice = run(&host, &mut prompter, &ALL_STEPS, Some("beta")).expect("choice");
         assert_eq!(choice.provider, "beta");
-        assert!(!prompter.transcript.iter().any(|l| l.starts_with("Provider")));
+        assert!(
+            !prompter
+                .transcript
+                .iter()
+                .any(|l| l.starts_with("Provider"))
+        );
     }
 
     #[test]

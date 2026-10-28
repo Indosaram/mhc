@@ -102,7 +102,9 @@ fn is_entry(name: &str) -> bool {
 fn is_test_file(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     let stem = lower.rsplit_once('.').map_or(lower.as_str(), |(s, _)| s);
-    stem.ends_with("_test") || stem.contains(".test") || stem.contains(".spec")
+    stem.ends_with("_test")
+        || stem.contains(".test")
+        || stem.contains(".spec")
         || (lower.starts_with("test_") && lower.ends_with(".py"))
 }
 
@@ -156,7 +158,10 @@ fn parent_of(path: &str) -> Option<String> {
     if path == "." {
         return None;
     }
-    Some(path.rsplit_once('/').map_or(".".into(), |(p, _)| p.to_owned()))
+    Some(
+        path.rsplit_once('/')
+            .map_or(".".into(), |(p, _)| p.to_owned()),
+    )
 }
 
 /// The git top-level containing `cwd`, else `cwd`.
@@ -195,7 +200,9 @@ pub fn analyze(root: &Path) -> Analysis {
         })
         .build();
     for entry in walker.flatten() {
-        let Some(kind) = entry.file_type() else { continue };
+        let Some(kind) = entry.file_type() else {
+            continue;
+        };
         let path = rel(root, entry.path());
         if kind.is_dir() {
             if path == "." {
@@ -254,7 +261,11 @@ pub fn analyze(root: &Path) -> Analysis {
     }
     for (path, facts) in &mut dirs {
         facts.path.clone_from(path);
-        facts.depth = if path == "." { 0 } else { path.split('/').count() };
+        facts.depth = if path == "." {
+            0
+        } else {
+            path.split('/').count()
+        };
         facts.manifests.sort();
         facts.entry_points.sort();
         facts.child_dirs.sort();
