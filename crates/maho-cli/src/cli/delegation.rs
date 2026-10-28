@@ -35,6 +35,7 @@ pub fn extension() -> maho_task::TaskExtension {
     let skill_roots: Vec<PathBuf> = std::iter::once(agent_dir.join("skills"))
         .chain(maho_skills::bundled_skills_root())
         .collect();
+    let workpool = maho_workpool::WorkpoolAddon { agent_dir: Some(agent_dir.clone()) };
     let runner = maho_task::ProcessRunner::current_exe()
         .unwrap_or_else(|_| maho_task::ProcessRunner::new("mhc"));
     let panes = super::team_view::pane_observer();
@@ -48,6 +49,7 @@ pub fn extension() -> maho_task::TaskExtension {
         addons: vec![
             Arc::new(super::team_view::addon(panes)),
             Arc::new(maho_workflow::WorkflowAddon { skill_roots }),
+            Arc::new(workpool),
         ],
     }
 }
