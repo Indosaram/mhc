@@ -60,8 +60,9 @@ session"; several → "ambiguous", listing the candidates. A session cannot send
 
 ## 5. Receiving
 
-When a session starts (and after each switch to another session) and the gateway is enabled, the
-session writes its endpoint record, creates its inbox and polls it every `poll_ms`
+When a long-lived session (interactive TUI, RPC, app server — not `-p`/JSON one-shot runs, which
+also covers delegated child tasks) starts, and after each switch to another session, and the
+gateway is enabled, the session writes its endpoint record, creates its inbox and polls it every `poll_ms`
 (default 500 ms, minimum 50). For each delivery, oldest `created_at` first:
 
 1. skip it if this process already delivered that `delivery_id` (ledger kept in memory);
