@@ -78,7 +78,7 @@ jobs:
           curl -sSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz" | tar xz -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
       - name: cargo deny licenses (MIT profile, whole workspace)
-        run: cargo deny --workspace check --config deny-mit.toml licenses
+        run: cargo deny --workspace --config deny-mit.toml check licenses
       - name: cargo clippy (MIT profile)
         run: cargo clippy -p maho-cli --lib --bins --locked -- -D warnings
       - name: build MIT-profile binaries
