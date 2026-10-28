@@ -26,9 +26,16 @@ pub const RESUME_SESSION_CAPABILITY: &str = "resume_session";
 /// Host honors `open_session.attended:false` instead of silently starting unattended work.
 pub const ATTENDED_CAPABILITY: &str = "attended";
 /// Connection role (senpi#3811): may exercise a person's authority (Stop with intent, release a pause).
+pub const TASK_PARENT_CAPABILITY: &str = "task_parent";
 pub const INTERACTIVE_USER_CAPABILITY: &str = "interactive_user";
 /// Host accepts `record_user_activity`.
 pub const USER_ACTIVITY_CAPABILITY: &str = "user_activity";
+/// Both directions, like `media_placeholders`: a host advertises it in `get_protocol_info` (its sessions send
+/// `host_request` / `relocation_due`), and a client sends it in `set_client_info` to offer moving a session elsewhere.
+pub const SESSION_RELOCATION_CAPABILITY: &str = "session_relocation";
+/// The capability a client's handshake carries when it can present an MCP grant decision (senpi `grant_select`);
+/// only such a connection is ever asked, and only its answer counts.
+pub const GRANT_SELECT_CAPABILITY: &str = "grant_select";
 pub const RPC_CLIENT_CAPABILITIES_ENV: &str = "SENPI_RPC_CLIENT_CAPABILITIES";
 pub const DEFAULT_CUSTOM_EXTENSION_LABEL: &str = "custom UI component";
 

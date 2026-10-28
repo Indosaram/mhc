@@ -42,6 +42,7 @@ fn test_commits_omo_trailers_when_provenance_is_present() {
         provenance: Some(MemoryToolProvenanceInput {
             session_id: "session-9".to_string(),
             user_turns: 2,
+            claim: None,
         }),
     };
 

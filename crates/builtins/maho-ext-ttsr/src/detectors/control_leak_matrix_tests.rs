@@ -29,7 +29,7 @@ fn positive(prefix:&str,token:&str,count:usize,gap:&str,id:&str,kind:&str) {
 }
 fn negative(text:&str) { matrix(text,|state|assert!(state.latched.is_none(),"{text}")); }
 #[test] fn upstream_start_positive_families_and_preambles() {
-    for (prefix,token,id) in [("Thinking... ","<|sep|>","ctrl:sep"),("","<|im_start|>","ctrl:im_start"),("Reasoning: ","<|eot_id|>","ctrl:eot_id"),("","<|fim_suffix|>","ctrl:fim_suffix"),("","<s>","sgml:s"),("Thinking.\n","</s>","sgml:/s"),("Analysis... ","[UNK]","bracket:UNK")] {
+    for (prefix,token,id) in [("Thinking... ","<|sep|>","ctrl:sep"),("","<|im_start|>","ctrl:im_start"),("Reasoning: ","<|eot_id|>","ctrl:eot_id"),("","<|fim_suffix|>","ctrl:fim_suffix"),("","<bos>","sgml:bos"),("Thinking.\n","</s>","sgml:/s"),("Analysis... ","[UNK]","bracket:UNK")] {
         positive(prefix,token,3," ",id,"start");
     }
 }
@@ -48,7 +48,7 @@ fn negative(text:&str) { matrix(text,|state|assert!(state.latched.is_none(),"{te
     negative(&format!("Thinking about the answer. {}",repeated("<|eot_id|>",3," ")));
 }
 #[test] fn upstream_grammar_length_and_name_acceptance() {
-    let names=[(format!("<|a{}|>","b".repeat(31)),format!("ctrl:a{}","b".repeat(31))),(format!("<a{}>","b".repeat(15)),format!("sgml:a{}","b".repeat(15))),(format!("[A{}]","B".repeat(15)),format!("bracket:A{}","B".repeat(15))),("[AB]".into(),"bracket:AB".into()),("<|a_1b_2|>".into(),"ctrl:a_1b_2".into())];
+    let names=[(format!("<|a{}|>","b".repeat(31)),format!("ctrl:a{}","b".repeat(31))),("<start_of_image>".into(),"sgml:start_of_image".into()),(format!("[A{}]","B".repeat(15)),format!("bracket:A{}","B".repeat(15))),("[AB]".into(),"bracket:AB".into()),("<|a_1b_2|>".into(),"ctrl:a_1b_2".into())];
     for (token,id) in names { positive(&format!("{PROSE} "),&token,4," ",&id,"normal"); }
 }
 #[test] fn upstream_grammar_rejections() {
@@ -62,7 +62,9 @@ fn negative(text:&str) { matrix(text,|state|assert!(state.latched.is_none(),"{te
     for text in ["The separator token is <|sep|>.".into(),"<|im_start|> <|im_end|> <s> [PAD]".into(),format!("{PROSE}\n\n{PROSE} {}",repeated("<|sep|>",3," ")),format!("```\nExample configuration:\n{}\n```\n",repeated("<|sep|>",7,"\n")),format!("use `{}` here",repeated("<|im_start|>",3," ")),format!("tokenizer example sequence is {}",repeated("<|eot_id|>",4," ")),format!("{PROSE} {}",repeated("<|sep|>",5,", ")),repeated("<|im_start|> <|im_end|>",10," "),format!("```\ndocumentation:\n{}\n```\n",repeated("<div>",7,"\n")),format!("```\n{}\n```\n",repeated("<div><span><code>",9,"\n")),format!("{PROSE} {}",repeated("[sep]",10," ")),format!("{PROSE} <|unclosed_name and then the prose continues"),format!("    tokenizer fixture:\n    {}",repeated("[SEP]",7," "))] { negative(&text); }
 }
 #[test] fn upstream_custom_tokens_and_overlong_candidate_recovery() {
-    for (token,id) in [("<|custom_marker|>","ctrl:custom_marker"),("<div>","sgml:div"),("[MASK]","bracket:MASK")] { positive(&format!("{PROSE} "),token,4," ",id,"normal"); }
+    for (token,id) in [("<|custom_marker|>","ctrl:custom_marker"),("</s>","sgml:/s"),("[MASK]","bracket:MASK")] { positive(&format!("{PROSE} "),token,4," ",id,"normal"); }
+    negative(&format!("{PROSE} {}",repeated("<div>",8," ")));
+    negative(&format!("{PROSE} {}",repeated("<span>",8," ")));
     positive(&format!("<|{} {PROSE} ","a".repeat(100)),"<|sep|>",4," ","ctrl:sep","normal");
     matrix(&format!("{PROSE} <|custom_marker|> trailing prose"),|state| { assert!(state.latched.is_none()); let e=state.pending_evidence.as_ref().unwrap(); assert_eq!(e.token_id,"ctrl:custom_marker"); assert!(!e.quotation_like); });
     matrix(&format!("{PROSE} <|sep|> <s> [PAD]"),|state| { assert!(state.latched.is_none()); assert_eq!(state.pending_evidence.as_ref().unwrap().token_id,"bracket:PAD"); });
@@ -78,4 +80,57 @@ fn negative(text:&str) { matrix(text,|state|assert!(state.latched.is_none(),"{te
     let prose=" but then the answer continued for a while. ";
     matrix(&format!("<|close|>{prose}{}","!".repeat(300)),|state| { let e=state.pending_evidence.as_ref().unwrap(); assert_eq!(e.first_payload_offset,Some(10)); assert!(!corroborates_control_leak(e,9+prose.len(),state.current_offset)); });
     matrix(&format!("{PROSE} <s> [PAD] tail"),|state| { let e=state.pending_evidence.as_ref().unwrap(); assert_eq!(e.family,TokenFamily::Bracket); assert_eq!(e.token_id,"bracket:PAD"); assert_eq!(e.first_payload_offset,Some(PROSE.len()+11)); });
+}
+const FENCE:&str="```";
+fn leak(text:&str,id:&str,occurrences:usize,kind:&str,at:usize) {
+    matrix(text,|state| {
+        let found=state.latched.as_ref().unwrap();
+        assert_eq!(found.anomaly_start_offset,at);
+        assert_eq!(found.garbage_start_offset,at);
+        assert_eq!(found.detail["tokenId"],DetailValue::String(id.into()));
+        assert_eq!(found.detail["occurrences"],DetailValue::Number(occurrences as f64));
+        assert_eq!(found.detail["context"],DetailValue::String(kind.into()));
+    });
+}
+#[test] fn upstream_markup_collisions_stay_silent() {
+    negative(&format!("{}text{}",repeated("<s>",4,""),repeated("</s>",4,"")));
+    negative(&format!("{}content{}",repeated("<mask>",4,""),repeated("</mask>",4,"")));
+    negative(&format!("{FENCE}svg\n{}\n{FENCE}",repeated("</mask>",8,"")));
+}
+#[test] fn upstream_fenced_eos_closers_fire_at_quotation_threshold() {
+    let close="</s>";
+    let fixture=format!("{FENCE}html\n{}\n{FENCE}",repeated(close,8,""));
+    leak(&fixture,"sgml:/s",8,"quotation",fixture.find(close).unwrap());
+}
+#[test] fn upstream_single_fenced_eos_closer_is_a_documented_example() {
+    let close="</s>";
+    negative(&format!("{FENCE}\nThe model ends a turn with {close}.\n{FENCE}"));
+}
+#[test] fn upstream_unclosed_strikethrough_does_not_hide_a_later_eos_run() {
+    let open="<s>";
+    let close="</s>";
+    let run=repeated(close,4,"");
+    let fixture=format!("{open}draft text that never closes. {} and then {run}","x".repeat(2100));
+    leak(&fixture,"sgml:/s",4,"normal",fixture.find(run.as_str()).unwrap());
+}
+#[test] fn upstream_fenced_opener_does_not_credit_a_closer_in_prose() {
+    let open="<s>";
+    let close="</s>";
+    let run=repeated(close,4,"");
+    let fixture=format!("{FENCE}html\n{open}old\n{FENCE}\nThen {run}");
+    leak(&fixture,"sgml:/s",4,"normal",fixture.find(run.as_str()).unwrap());
+}
+#[test] fn upstream_whitespace_only_opener_run_does_not_hide_later_closers() {
+    let open="<s>";
+    let close="</s>";
+    let run=repeated(close,5,"");
+    let fixture=format!("answer: {} x {run}",repeated(open,4," "));
+    leak(&fixture,"sgml:/s",4,"normal",fixture.find(run.as_str()).unwrap()+close.len());
+}
+#[test] fn upstream_closers_beyond_the_opened_markup_still_fire() {
+    let open="<s>";
+    let close="</s>";
+    let run=repeated(close,4,"");
+    let fixture=format!("{open}struck{close} and then {run}");
+    leak(&fixture,"sgml:/s",4,"normal",fixture.find(run.as_str()).unwrap());
 }

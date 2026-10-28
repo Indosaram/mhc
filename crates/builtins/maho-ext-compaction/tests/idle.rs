@@ -8,7 +8,6 @@ fn decision(settings: &CompactionSettings) -> IdleCompactionDecision<'_> {
 #[test] fn idle_runs_in_tui_and_rpc_modes() {
     let settings=default_compaction_settings();
     for mode in [ExtensionMode::Tui,ExtensionMode::Rpc] { let mut d=decision(&settings);d.mode=mode;assert!(should_run_idle_compaction(&d)); }
-    let mut app_server=decision(&settings);app_server.mode=ExtensionMode::AppServer;assert!(!should_run_idle_compaction(&app_server));
 }
 #[test] fn idle_rejects_auto_continue() { let s=default_compaction_settings();let mut d=decision(&s);d.will_retry=true;assert!(!should_run_idle_compaction(&d)); }
 #[test] fn idle_rejects_aborted() { let s=default_compaction_settings();let mut d=decision(&s);d.aborted=true;assert!(!should_run_idle_compaction(&d)); }

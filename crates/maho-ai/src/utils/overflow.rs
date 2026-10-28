@@ -137,20 +137,31 @@ pub fn is_context_overflow(message: &AssistantMessage, context_window: Option<u6
     let Some(window) = context_window.filter(|w| *w > 0) else {
         return false;
     };
-    let input_tokens = message.usage.input + message.usage.cache_read;
+    let (context_input, context_output) = match message.usage.context_usage {
+        None => (
+            message.usage.input + message.usage.cache_read,
+            message.usage.output,
+        ),
+        Some(context) => (
+            context.map_or(0, |c| c.input),
+            context.map_or(0, |c| c.output),
+        ),
+    };
     match message.stop_reason {
-        StopReason::Stop => input_tokens > window,
-        StopReason::Length => {
-            message.usage.output == 0 && input_tokens as f64 >= window as f64 * 0.99
-        }
+        StopReason::Stop => context_input > window,
+        StopReason::Length => context_output == 0 && context_input as f64 >= window as f64 * 0.99,
         _ => false,
     }
 }
 
 pub fn is_recoverable_length(message: &AssistantMessage, desired_max_output: u64) -> bool {
+    let output = match message.usage.context_usage {
+        Some(Some(c)) => c.output,
+        _ => message.usage.output,
+    };
     message.stop_reason == StopReason::Length
         && desired_max_output > 0
-        && message.usage.output < desired_max_output
+        && output < desired_max_output
 }
 
 pub fn get_overflow_patterns() -> Vec<Regex> {
@@ -160,6 +171,7 @@ pub fn get_overflow_patterns() -> Vec<Regex> {
 /// The loosely typed message shape the Cursor helpers accept.
 #[derive(Debug, Clone, Default)]
 pub struct CursorExhaustionProbe<'a> {
+    pub provider: Option<&'a str>,
     pub stop_reason: Option<&'a str>,
     pub error_message: Option<&'a str>,
     pub usage: Option<Usage>,
@@ -177,6 +189,7 @@ impl<'a> CursorExhaustionProbe<'a> {
             StopReason::Deferred => "deferred",
         };
         Self {
+            provider: Some(message.provider.as_str()),
             stop_reason: Some(stop_reason),
             error_message: message.error_message.as_deref(),
             usage: Some(message.usage),
@@ -187,8 +200,17 @@ impl<'a> CursorExhaustionProbe<'a> {
         self.usage.as_ref().map_or(0, token_count)
     }
 
+    /// The zero-token / quota `resource_exhausted` signatures describe Cursor's backend only. Other
+    /// providers send `resource_exhausted` for their own rate and usage limits (senpi#2660), and
+    /// reading those as a Cursor payload overflow or re-mint skips the fallback chain.
+    fn is_cursor_provider(&self) -> bool {
+        self.provider
+            .is_none_or(|provider| matches!(provider, "cursor" | "cursor-cli-oauth"))
+    }
+
     fn is_resource_exhausted_error(&self) -> bool {
-        self.stop_reason == Some("error")
+        self.is_cursor_provider()
+            && self.stop_reason == Some("error")
             && RESOURCE_EXHAUSTED_PATTERN.is_match(self.error_message.unwrap_or_default())
     }
 }
@@ -251,6 +273,7 @@ mod tests {
     fn error_message(error_message: &str) -> AssistantMessage {
         AssistantMessage {
             error_cause: None,
+            prompt_cache_breakpoint: None,
             prompt_cache_diagnostics: None,
             thinking_level: None,
             provider_diagnostic: None,
@@ -274,6 +297,31 @@ mod tests {
             failure_source: None,
             timing: None,
         }
+    }
+
+    fn cursor_error_message(error_message_text: &str) -> AssistantMessage {
+        AssistantMessage {
+            provider: "cursor".into(),
+            ..error_message(error_message_text)
+        }
+    }
+
+    #[test]
+    fn does_not_read_another_providers_resource_exhausted_limit_as_a_cursor_signature() {
+        let limit = "Devin stream error resource_exhausted: Reached free model rate limit. Your limit will reset in 9 minutes.";
+        let mut zero_token = error_message(limit);
+        zero_token.provider = "devin".into();
+        let mut token_bearing = zero_token.clone();
+        token_bearing.usage.total_tokens = 178_626;
+        assert!(!is_cursor_zero_token_resource_exhausted(&CursorExhaustionProbe::from_message(&zero_token)));
+        assert!(!is_cursor_payload_resource_exhausted(&CursorExhaustionProbe::from_message(&zero_token), 0));
+        assert!(!is_cursor_quota_resource_exhausted(
+            &CursorExhaustionProbe::from_message(&token_bearing),
+            1_048_576
+        ));
+        assert!(is_cursor_zero_token_resource_exhausted(&CursorExhaustionProbe::from_message(
+            &cursor_error_message(limit)
+        )));
     }
 
     #[test]
@@ -306,6 +354,7 @@ mod tests {
     fn length_stop_message(options: LengthStopOptions) -> AssistantMessage {
         AssistantMessage {
             error_cause: None,
+            prompt_cache_breakpoint: None,
             prompt_cache_diagnostics: None,
             thinking_level: None,
             provider_diagnostic: None,
@@ -317,7 +366,7 @@ mod tests {
             response_id: None,
             provider_thinking_level: None,
             diagnostics: None,
-            usage: Usage {
+            usage: Usage { context_usage: None,
                 input: options.input,
                 output: options.output,
                 cache_read: options.cache_read,
@@ -329,6 +378,7 @@ mod tests {
                     + options.cache_write
                     + options.output,
                 cost: Default::default(),
+                ..Default::default()
             },
             stop_reason: StopReason::Length,
             stop_details: None,
@@ -630,7 +680,7 @@ mod tests {
 
     #[test]
     fn identifies_cursor_usage_pool_exhaustion_below_half_the_context_window() {
-        let mut message = error_message("Connect error resource_exhausted: Error");
+        let mut message = cursor_error_message("Connect error resource_exhausted: Error");
         message.usage.total_tokens = 178_626;
         assert!(!is_context_overflow(&message, Some(1_048_576)));
         assert!(is_cursor_quota_resource_exhausted(
@@ -641,7 +691,7 @@ mod tests {
 
     #[test]
     fn does_not_identify_cursor_context_overflow_as_usage_pool_exhaustion() {
-        let mut message = error_message("Connect error resource_exhausted: Error");
+        let mut message = cursor_error_message("Connect error resource_exhausted: Error");
         message.usage.total_tokens = 600_000;
         assert!(!is_cursor_quota_resource_exhausted(
             &CursorExhaustionProbe::from_message(&message),
@@ -651,8 +701,8 @@ mod tests {
 
     #[test]
     fn does_not_identify_zero_token_or_non_resource_exhausted_errors_as_usage_pool_exhaustion() {
-        let zero_token = error_message("Connect error resource_exhausted: Error");
-        let non_resource_exhausted = error_message("Connect error unavailable");
+        let zero_token = cursor_error_message("Connect error resource_exhausted: Error");
+        let non_resource_exhausted = cursor_error_message("Connect error unavailable");
         assert!(!is_cursor_quota_resource_exhausted(
             &CursorExhaustionProbe::from_message(&zero_token),
             1_048_576
@@ -741,14 +791,81 @@ mod tests {
     }
 
     #[test]
+    fn inspects_request_context_usage_for_overflow_and_recovery() {
+        use crate::types::ContextUsage;
+        let mut message = length_stop_message(LengthStopOptions {
+            input: 702_000,
+            cache_read: 0,
+            cache_write: 0,
+            output: 300,
+        });
+
+        message.stop_reason = StopReason::Stop;
+        message.usage.context_usage = Some(Some(ContextUsage {
+            input: 352_000,
+            output: 200,
+        }));
+        assert!(!is_context_overflow(&message, Some(600_000)));
+
+        message.usage.context_usage = Some(Some(ContextUsage {
+            input: 600_001,
+            output: 200,
+        }));
+        assert!(is_context_overflow(&message, Some(600_000)));
+
+        message.stop_reason = StopReason::Length;
+        message.usage.context_usage = Some(Some(ContextUsage {
+            input: 600_000,
+            output: 0,
+        }));
+        assert!(is_context_overflow(&message, Some(600_000)));
+
+        message.usage.context_usage = Some(Some(ContextUsage {
+            input: 352_000,
+            output: 0,
+        }));
+        assert!(!is_context_overflow(&message, Some(600_000)));
+
+        let mut rec_msg = length_stop_message(LengthStopOptions {
+            input: 2_000,
+            cache_read: 0,
+            cache_write: 0,
+            output: 2_048,
+        });
+        rec_msg.usage.context_usage = Some(Some(ContextUsage {
+            input: 1_000,
+            output: 16,
+        }));
+        assert!(is_recoverable_length(&rec_msg, 1_024));
+
+        rec_msg.usage.context_usage = Some(Some(ContextUsage {
+            input: 1_000,
+            output: 1_024,
+        }));
+        assert!(!is_recoverable_length(&rec_msg, 1_024));
+
+        rec_msg.usage.context_usage = Some(None);
+        assert!(!is_recoverable_length(&rec_msg, 1_024));
+
+        let mut rec_msg2 = length_stop_message(LengthStopOptions {
+            input: 2_000,
+            cache_read: 0,
+            cache_write: 0,
+            output: 16,
+        });
+        rec_msg2.usage.context_usage = Some(None);
+        assert!(is_recoverable_length(&rec_msg2, 1_024));
+    }
+
+    #[test]
     fn cursor_resource_exhaustion_helpers() {
-        let zero = error_message("resource_exhausted");
+        let zero = cursor_error_message("resource_exhausted");
         let probe = CursorExhaustionProbe::from_message(&zero);
         assert!(
             is_cursor_zero_token_resource_exhausted(&probe)
                 && is_cursor_payload_resource_exhausted(&probe, 5)
         );
-        let quota = error_message("resource exhausted");
+        let quota = cursor_error_message("resource exhausted");
         let mut quota = quota;
         quota.usage.total_tokens = 100;
         assert!(is_cursor_quota_resource_exhausted(

@@ -25,6 +25,9 @@ use crate::kibitzer_tools_path_safety::{PathCheck, normalize_memory_path};
 use crate::kibitzer_tools_result::{
     KibitzerRejectionCode, KibitzerToolResult, bounded_text, ok_json, ok_text, rejection,
 };
+use crate::project_recall_seats::{
+    project_documents_of, select_with_project_seats, ProjectRecallCorpus,
+};
 
 /// The registered tool name (`memory`).
 pub const KIBITZER_MEMORY_TOOL_NAME: &str = "memory";
@@ -65,6 +68,18 @@ pub fn execute_memory(
     searched_paths: &mut BTreeSet<String>,
     params: &Value,
 ) -> Result<KibitzerToolResult, GitError> {
+    execute_memory_with_projects(repo, cache, caps, query_expansion, searched_paths, params, &[])
+}
+
+pub fn execute_memory_with_projects(
+    repo: &GitMemoryRepo,
+    cache: &mut RecallCorpusCache,
+    caps: KibitzerToolCaps,
+    query_expansion: bool,
+    searched_paths: &mut BTreeSet<String>,
+    params: &Value,
+    projects: &[ProjectRecallCorpus],
+) -> Result<KibitzerToolResult, GitError> {
     match params.get("operation").and_then(Value::as_str) {
         Some("search") => {
             let corpus = cache.load(repo)?;
@@ -74,11 +89,12 @@ pub fn execute_memory(
                 &corpus,
                 caps,
                 searched_paths,
+                projects,
             ))
         }
         Some("read") => {
             let corpus = cache.load(repo)?;
-            Ok(read(params.get("path").and_then(Value::as_str), &corpus, caps))
+            Ok(read(params.get("path").and_then(Value::as_str), &corpus, caps, projects))
         }
         _ => Ok(rejection(
             KibitzerRejectionCode::UnsupportedOperation,
@@ -96,6 +112,7 @@ fn search(
     corpus: &RecallCorpus,
     caps: KibitzerToolCaps,
     searched_paths: &mut BTreeSet<String>,
+    projects: &[ProjectRecallCorpus],
 ) -> KibitzerToolResult {
     let Some(query) = query.filter(|query| !query.trim().is_empty()) else {
         return rejection(KibitzerRejectionCode::MissingArgument, "search requires a non-empty query.", None);
@@ -108,17 +125,25 @@ fn search(
     // Invalid added terms never lose plain lexical recall: the fallback is reported in the SUCCESSFUL
     // result so the sidecar can correct its next search without turning this search into a miss.
     // One over the cap tells us whether the page is truncated without a second selection pass.
-    let selected = select_recall_candidates(
+    let page_probe = caps.memory_search_results.saturating_add(1);
+    let selected = select_with_project_seats(
         &corpus.documents,
-        &[query.to_string()],
-        &SelectRecallOptions {
-            max_items: caps.memory_search_results.saturating_add(1),
-            // Upstream passes a FRESH empty surfaced set here, not the session's, so a search never
-            // excludes a path merely for having been surfaced earlier.
-            surfaced: BTreeSet::new(),
-            exclude_paths: None,
-            strategy: None,
-            expansions,
+        projects,
+        page_probe,
+        |documents, extra_queries, _identity_id| {
+            let mut all_queries = vec![query.to_string()];
+            all_queries.extend(extra_queries.iter().cloned());
+            select_recall_candidates(
+                documents,
+                &all_queries,
+                &SelectRecallOptions {
+                    max_items: page_probe,
+                    surfaced: BTreeSet::new(),
+                    exclude_paths: None,
+                    strategy: None,
+                    expansions: expansions.clone(),
+                },
+            )
         },
     );
     let truncated = selected.len() > caps.memory_search_results;
@@ -142,7 +167,12 @@ fn search(
 
 /// One read: the committed `description` and body of `path`, redacted then bounded to
 /// `caps.memory_read_chars`.
-fn read(path: Option<&str>, corpus: &RecallCorpus, caps: KibitzerToolCaps) -> KibitzerToolResult {
+fn read(
+    path: Option<&str>,
+    corpus: &RecallCorpus,
+    caps: KibitzerToolCaps,
+    projects: &[ProjectRecallCorpus],
+) -> KibitzerToolResult {
     let Some(path) = path else {
         return rejection(KibitzerRejectionCode::MissingArgument, "read requires a path.", None);
     };
@@ -151,7 +181,10 @@ fn read(path: Option<&str>, corpus: &RecallCorpus, caps: KibitzerToolCaps) -> Ki
         // A normalization failure carries the path the model SUPPLIED, not the rejected result.
         PathCheck::Rejected { code, message } => return rejection(code, &message, Some(path)),
     };
-    let Some(document) = corpus.documents.iter().find(|document| document.path == normalized) else {
+    let project_docs = project_documents_of(projects);
+    let document = corpus.documents.iter().find(|document| document.path == normalized)
+        .or_else(|| project_docs.iter().find(|document| document.path == normalized));
+    let Some(document) = document else {
         return rejection(
             KibitzerRejectionCode::NotCommitted,
             &format!("\"{normalized}\" is not a committed memory file at HEAD."),

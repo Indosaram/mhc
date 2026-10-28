@@ -57,7 +57,7 @@ fn every_payload() -> Vec<DagRunEventPayload> {
             edge_count: 0,
         },
         DagRunEventPayload::RunStarted { generation: 1 },
-        DagRunEventPayload::RunPaused { reason: None },
+        DagRunEventPayload::RunPaused { reason: None, pause_seq: None, },
         DagRunEventPayload::RunResumed { generation: 1 },
         DagRunEventPayload::RunCompleted { counts: counts() },
         DagRunEventPayload::RunFailed {
@@ -129,14 +129,88 @@ fn every_payload() -> Vec<DagRunEventPayload> {
             dropped_count: 1,
             recover_after_seq: 0,
         },
+        DagRunEventPayload::GuidanceAdded {
+            guidance: crate::dag::types::Guidance {
+                id: "g-1".to_string(),
+                revision: 0,
+                scope: crate::dag::types::GuidanceScope::Run,
+                text: "guide".to_string(),
+                state: crate::dag::types::GuidanceState::Draft,
+                created_at: "2026-01-01T00:00:00.000Z".to_string(),
+                edited_at: None,
+                deliveries: Vec::new(),
+            },
+        },
+        DagRunEventPayload::GuidanceEdited {
+            guidance: crate::dag::types::Guidance {
+                id: "g-1".to_string(),
+                revision: 1,
+                scope: crate::dag::types::GuidanceScope::Run,
+                text: "guide-edited".to_string(),
+                state: crate::dag::types::GuidanceState::Draft,
+                created_at: "2026-01-01T00:00:00.000Z".to_string(),
+                edited_at: Some("2026-01-01T00:01:00.000Z".to_string()),
+                deliveries: Vec::new(),
+            },
+        },
+        DagRunEventPayload::GuidanceRemoved {
+            guidance: crate::dag::types::Guidance {
+                id: "g-1".to_string(),
+                revision: 2,
+                scope: crate::dag::types::GuidanceScope::Run,
+                text: "guide-edited".to_string(),
+                state: crate::dag::types::GuidanceState::Removed,
+                created_at: "2026-01-01T00:00:00.000Z".to_string(),
+                edited_at: Some("2026-01-01T00:02:00.000Z".to_string()),
+                deliveries: Vec::new(),
+            },
+        },
+        DagRunEventPayload::GuidanceDispatching {
+            guidance: crate::dag::types::Guidance {
+                id: "g-1".to_string(),
+                revision: 0,
+                scope: crate::dag::types::GuidanceScope::Run,
+                text: "guide".to_string(),
+                state: crate::dag::types::GuidanceState::Dispatching,
+                created_at: "2026-01-01T00:00:00.000Z".to_string(),
+                edited_at: None,
+                deliveries: Vec::new(),
+            },
+        },
+        DagRunEventPayload::GuidanceDelivered {
+            guidance: crate::dag::types::Guidance {
+                id: "g-1".to_string(),
+                revision: 0,
+                scope: crate::dag::types::GuidanceScope::Run,
+                text: "guide".to_string(),
+                state: crate::dag::types::GuidanceState::Delivered,
+                created_at: "2026-01-01T00:00:00.000Z".to_string(),
+                edited_at: None,
+                deliveries: Vec::new(),
+            },
+        },
+        DagRunEventPayload::NodeCancelRequested {
+            node_id: "node-a".to_string(),
+        },
+        DagRunEventPayload::NodeRetryStaged {
+            node_ids: ids(&["node-a"]),
+        },
+        DagRunEventPayload::NodePauseRecovered {
+            node_id: "node-a".to_string(),
+            child_seq: 1,
+        },
+        DagRunEventPayload::NodePauseLost {
+            node_id: "node-a".to_string(),
+            error: node_error(),
+        },
     ]
 }
 
 // dagEventLane
 
 #[test]
-fn given_all_17_journaled_event_types_then_every_one_classifies_as_boundary() {
-    assert_eq!(journaled_event_types().len(), 17);
+fn given_all_26_journaled_event_types_then_every_one_classifies_as_boundary() {
+    assert_eq!(journaled_event_types().len(), 26);
     for tag in journaled_event_types() {
         assert_eq!(dag_event_lane_of(tag), Ok(DagEventLane::Boundary), "{tag}");
     }
@@ -183,7 +257,7 @@ fn given_a_generation_when_run_started_then_spec_shaped_payload() {
 #[test]
 fn given_a_reason_when_run_paused_then_spec_shaped_payload() {
     let event = DagRunEventPayload::RunPaused {
-        reason: Some("session_shutdown".to_string()),
+        reason: Some("session_shutdown".to_string()), pause_seq: None,
     };
 
     assert_eq!(
@@ -195,7 +269,7 @@ fn given_a_reason_when_run_paused_then_spec_shaped_payload() {
 #[test]
 fn given_no_reason_when_run_paused_then_reason_omitted() {
     assert_eq!(
-        wire(&DagRunEventPayload::RunPaused { reason: None }),
+        wire(&DagRunEventPayload::RunPaused { reason: None, pause_seq: None, }),
         json!({ "type": "dag.run.paused" })
     );
 }

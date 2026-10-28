@@ -83,7 +83,12 @@ fn totals_and_tps_derive_from_generation_time() {
     })));
     let stats = tracker.snapshot(11_000);
     assert_eq!(
-        TaskRunStats { duration_status: None, token_status: None, cost_status: None, ..stats.clone() },
+        TaskRunStats {
+            duration_status: None,
+            token_status: None,
+            cost_status: None,
+            ..stats.clone()
+        },
         TaskRunStats {
             runtime_ms: 10_000,
             turns: 2,
@@ -106,7 +111,12 @@ fn non_assistant_and_missing_usage_report_only_counted_facts() {
     ));
     let stats = tracker.snapshot(2_000);
     assert_eq!(
-        TaskRunStats { duration_status: None, token_status: None, cost_status: None, ..stats.clone() },
+        TaskRunStats {
+            duration_status: None,
+            token_status: None,
+            cost_status: None,
+            ..stats.clone()
+        },
         TaskRunStats {
             runtime_ms: 1_000,
             turns: 1,
@@ -138,7 +148,10 @@ fn failed_assistant_turn_is_excluded_from_usage_and_generation_totals() {
     assert_eq!(stats.total_tokens, Some(30));
     assert_eq!(stats.generation_ms, Some(2_000));
     assert_eq!(stats.cost_usd, Some(0.1));
-    assert_eq!(stats.token_status, Some(crate::state::TokenCoverageStatus::Complete));
+    assert_eq!(
+        stats.token_status,
+        Some(crate::state::TokenCoverageStatus::Complete)
+    );
 }
 
 #[test]
@@ -449,4 +462,32 @@ fn duplicated_eval_end_counts_nested_once() {
     tracker.accept(&end_event);
     tracker.accept(&end_event);
     assert_eq!(tracker.snapshot(2_000).tool_calls, 3);
+}
+
+#[test]
+fn zero_usage_unknown_cost_and_partial_coverage() {
+    let mut tracker = create_run_stats_tracker(0, || 10);
+    tracker.accept(&assistant_usage(
+        json!({"input":0,"output":0,"cost":{"total":0}}),
+    ));
+    let empty = tracker.snapshot(10);
+    assert_eq!(empty.token_status, Some(TokenCoverageStatus::Unavailable));
+    assert_eq!(empty.cost_status, Some(CostReportStatus::Unavailable));
+    assert_eq!(empty.cost_usd, None);
+    tracker.accept(&assistant_usage(
+        json!({"input":10,"cost":0,"costUnknown":true}),
+    ));
+    assert_eq!(tracker.snapshot(10).cost_usd, None);
+    tracker.accept(&assistant_usage(json!({"output":5,"cost":0.25})));
+    let partial = tracker.snapshot(10);
+    assert_eq!(partial.cost_status, Some(CostReportStatus::Partial));
+    assert_eq!(partial.token_status, Some(TokenCoverageStatus::Partial));
+    assert_eq!(partial.cost_usd, Some(0.25));
+    let mut free = create_run_stats_tracker(0, || 10);
+    free.accept(&assistant_usage(json!({"output":5,"cost":0})));
+    assert_eq!(
+        free.snapshot(10).cost_status,
+        Some(CostReportStatus::Reported)
+    );
+    assert_eq!(free.snapshot(10).cost_usd, Some(0.0));
 }

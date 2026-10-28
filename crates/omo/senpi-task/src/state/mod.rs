@@ -3,6 +3,7 @@
 mod id;
 mod isolation;
 mod record;
+mod run_fence;
 pub mod recovery_presentation;
 mod transitions;
 mod types;
@@ -17,11 +18,15 @@ pub use isolation::{
     TaskIsolationSpec,
 };
 pub use record::create_task_record;
+pub use run_fence::{LEGACY_RUN_START_EPOCH, current_run_start_epoch};
 pub use transitions::{
     LostReason, mark_record_lost_for_reconciliation, messageability, messageability_with_runner,
     read_resolved_reasoning, resolved_reasoning_fields, transition_task_record,
 };
 pub use types::{
+    ParentModelFallback, ParentModelFallbackReason, FallbackClosingChild, StartQueued,
+    ReviveDeliveryUncertainty, RecordedRunPause, RunPauseRef, RunPauseKind,
+    COST_REPORT_STATUSES, LiveRunStats, PARENT_MODEL_FALLBACK_REASONS, ParentModelFallbackPhase,
     AwaitingInputReason, BackgroundMode, CancelRequest, CostReportStatus, DeliverAs,
     DurationSourceStatus, EffectiveModelRecord, EffectiveModelSource, HostSessionIdentity,
     Messageability, PendingSteeringEntry, PendingSteeringWorkpoolMetadata, RESIDENCY_STATES,

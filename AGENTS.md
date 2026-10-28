@@ -10,7 +10,7 @@ Rust native port of senpi + oh-my-openagent (maho). File-for-file translation pr
 ## STRUCTURE
 ```
 crates/
-├── maho-cli/            # mhc binary: CLI routing, subcommands (install/auth/doctor/host/app-server/import-omo), migrations
+├── maho-cli/            # mhc binary: CLI routing, subcommands (install/auth/doctor/host/import-omo), migrations
 ├── maho-core/           # senpi coding-agent core: sessions, settings, auth, model runtime, brand/config paths
 ├── maho-agent/          # Core agent loop, execution harness, state machine
 ├── maho-ai/             # Multi-provider LLM abstraction layer & model clients (build.rs needs protoc)
@@ -20,7 +20,7 @@ crates/
 ├── maho-tui/            # Keyboard input, fuzzy search, terminal mux primitives
 ├── maho-interactive/    # Terminal UI, streaming reveal pacing, theme engine
 ├── maho-rpc/            # Headless JSONL RPC protocol and print mode
-├── maho-server/         # Daemon RPC server, Codex app-server, SQLite storage, protocol frames
+├── maho-server/         # Daemon RPC server, SQLite storage, protocol frames
 ├── maho-codemode/       # eval kernel (bun/js only) and the code-mode tool host
 ├── maho-process-env/    # Safe process-environment updates at CLI startup (edition 2021)
 ├── maho-ext-api/        # Static extension contracts

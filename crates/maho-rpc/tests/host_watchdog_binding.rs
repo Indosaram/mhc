@@ -141,7 +141,7 @@ async fn a_shared_host_answers_the_protocol_then_exits_on_its_empty_window() {
 
 #[test]
 fn a_launch_profile_carries_the_session_cwd() {
-    let profile = AgentSessionLaunchProfile {
+    let profile = AgentSessionLaunchProfile { prompt_size_inventory: None,
         cwd: "/tmp/host-session".to_owned(),
         permission_preset: None,
         creation_model: None,

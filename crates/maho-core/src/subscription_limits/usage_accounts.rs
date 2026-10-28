@@ -244,7 +244,7 @@ async fn claude_access(
             // An aborted refresh (shutdown) and a busy store say nothing about the grant: retried next
             // interval, never a lock. A rejected grant is recorded on the slot the way a turn records it,
             // so later polls stop at the auth_error branch above; only /login lifts it.
-            if *signal.borrow() || is_busy(&error) || !is_grant_rejected(&error) {
+            if *signal.borrow() || is_busy(&error) || !token_endpoint_rejected(&error) {
                 return None;
             }
             // The lock could not be written (a busy store): the next pass asks again and records it then.
@@ -252,6 +252,35 @@ async fn claude_access(
             Some(Err(SIGN_IN_NEEDED.to_owned()))
         }
     }
+}
+
+/// A background poll records the auth_error lock only on an explicit rejection from the token endpoint:
+/// a 400/401 answer, or invalid_grant when no status is known (senpi#3695).
+pub fn token_endpoint_rejected(error: &anyhow::Error) -> bool {
+    if !is_grant_rejected(error) {
+        return false;
+    }
+    static STATUS_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = STATUS_RE.get_or_init(|| regex::Regex::new(r"\bstatus=(\d{3})\b").expect("regex"));
+
+    for cause in error.chain() {
+        let msg = cause.to_string();
+        if let Some(caps) = re.captures(&msg)
+            && let Some(status) = caps.get(1) {
+                let s = status.as_str();
+                return s == "400" || s == "401";
+            }
+        if msg.contains("invalid_grant") {
+            return true;
+        }
+    }
+    let full = error.to_string();
+    if let Some(caps) = re.captures(&full)
+        && let Some(status) = caps.get(1) {
+            let s = status.as_str();
+            return s == "400" || s == "401";
+        }
+    full.contains("invalid_grant")
 }
 
 fn is_busy(error: &anyhow::Error) -> bool {
@@ -475,5 +504,23 @@ mod tests {
             .collect();
         assert_eq!(names, ["env", "env-2"]);
         assert_eq!(env_slot_token(&*env, "env-2").as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn token_endpoint_rejected_classification() {
+        let err_400 = anyhow::anyhow!("token refresh failed status=400 bad request");
+        assert!(token_endpoint_rejected(&err_400));
+
+        let err_401 = anyhow::anyhow!("token refresh failed status=401 unauthorized");
+        assert!(token_endpoint_rejected(&err_401));
+
+        let err_invalid_grant = anyhow::anyhow!("error: invalid_grant description=token revoked");
+        assert!(token_endpoint_rejected(&err_invalid_grant));
+
+        let err_500 = anyhow::anyhow!("token refresh failed status=500 server error");
+        assert!(!token_endpoint_rejected(&err_500));
+
+        let err_network = anyhow::anyhow!("connection reset by peer");
+        assert!(!token_endpoint_rejected(&err_network));
     }
 }

@@ -2,6 +2,9 @@ use serde_json::{Map, Value, json};
 
 use crate::internal::jsonc::parse_jsonc_safe;
 use crate::internal::validate::safe_parse;
+use crate::loader::disabled_skills::{
+    CollectDisabledSkillsOptions, collect_excluded_models,
+};
 use crate::loader::layer_validation::{
     OmoConfigLayerValidation, invalid_value_diagnostics, validate_config_layer,
     validation_diagnostic,
@@ -36,6 +39,28 @@ fn default_raw_config() -> Map<String, Value> {
     config.insert("categories".into(), Value::Object(Map::new()));
     config.insert("task".into(), task);
     config.insert("teams".into(), Value::Object(Map::new()));
+    config
+}
+
+/// The generic merge lets a later array replace an earlier one; the model denylist is a union.
+fn with_excluded_models(
+    config: Map<String, Value>,
+    exclude_models: &[String],
+) -> Map<String, Value> {
+    if exclude_models.is_empty() {
+        return config;
+    }
+    let mut config = config;
+    config.insert(
+        "exclude_models".into(),
+        Value::Array(
+            exclude_models
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect(),
+        ),
+    );
     config
 }
 
@@ -259,6 +284,12 @@ pub fn load_omo_config(options: &LoadOmoConfigOptions<'_>) -> LoadOmoConfigResul
     let with_defaults = merge_omo_config_records(&default_raw_config(), &resolved.config);
     let mut all_diagnostics = diagnostics;
     all_diagnostics.extend(resolved.diagnostics.clone());
+    // The generic merge lets a later array replace an earlier one; the model denylist is a union.
+    let exclude_models = collect_excluded_models(&CollectDisabledSkillsOptions {
+        harness: options.harness.as_deref(),
+        layers: &layers,
+        profile: resolved.profile.as_deref(),
+    });
 
     match safe_parse(&omo_config_schema(), &Value::Object(with_defaults.clone())) {
         Ok(validated) => {
@@ -267,7 +298,10 @@ pub fn load_omo_config(options: &LoadOmoConfigOptions<'_>) -> LoadOmoConfigResul
                 _ => Map::new(),
             };
             LoadOmoConfigResult {
-                config: strip_resolution_control_keys(config),
+                config: with_excluded_models(
+                    strip_resolution_control_keys(config),
+                    &exclude_models,
+                ),
                 diagnostics: all_diagnostics,
                 layers,
                 profile: resolved.profile,
@@ -292,7 +326,10 @@ pub fn load_omo_config(options: &LoadOmoConfigOptions<'_>) -> LoadOmoConfigResul
                     all_diagnostics
                         .extend(invalid_value_diagnostics(MERGED_OMO_CONFIG_PATH, &dropped));
                     LoadOmoConfigResult {
-                        config: strip_resolution_control_keys(config),
+                        config: with_excluded_models(
+                            strip_resolution_control_keys(config),
+                            &exclude_models,
+                        ),
                         diagnostics: all_diagnostics,
                         layers,
                         profile: resolved.profile,

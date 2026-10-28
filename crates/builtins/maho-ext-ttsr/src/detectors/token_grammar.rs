@@ -12,6 +12,8 @@ pub struct CandidateParser { mode: ParserMode, buffer: Vec<u16>, name_length: us
 fn letter(value: &[u16]) -> bool { value.first().is_some_and(|v| matches!(v,65..=90 | 97..=122)) }
 fn name_char(value: &[u16]) -> bool { letter(value) || value.first().is_some_and(|v| matches!(v,48..=57)) || value == [95] }
 fn upper(value: &[u16]) -> bool { value.first().is_some_and(|v| matches!(v,65..=90)) }
+pub const SGML_CONTROL_TOKEN_NAMES: [&str; 20] = ["s","pad","unk","mask","bos","eos","sep","cls","eot","eom","endoftext","think","start_of_turn","end_of_turn","start_of_image","end_of_image","im_start","im_end","tool_call","tool_response"];
+pub fn is_sgml_control_token_name(raw_name: &str) -> bool { let name=raw_name.strip_prefix('/').unwrap_or(raw_name); SGML_CONTROL_TOKEN_NAMES.iter().any(|known| name.eq_ignore_ascii_case(known)) }
 impl CandidateParser {
     pub fn feed(&mut self, value: &[u16], offset: usize) -> Vec<CandidateOutcome> {
         match self.mode {
@@ -20,7 +22,7 @@ impl CandidateParser {
             ParserMode::CtrlFirst | ParserMode::SgmlFirst => { if letter(value) { self.name_length=1; let mode=match self.mode { ParserMode::CtrlFirst=>ParserMode::CtrlName, _=>ParserMode::SgmlName }; self.append(value,mode); vec![] } else { self.reject_with(value,offset) } },
             ParserMode::CtrlName => { if value == [124] { self.append(value,ParserMode::CtrlClose); vec![] } else if name_char(value) && self.name_length<32 { self.name_length+=1; self.buffer.extend_from_slice(value); vec![] } else { self.reject_with(value,offset) } },
             ParserMode::CtrlClose => { if value == [62] { vec![self.emit(TokenFamily::Ctrl,2,1,value,offset)] } else { self.reject_with(value,offset) } },
-            ParserMode::SgmlName => { if value == [62] { vec![self.emit(TokenFamily::Sgml,1,0,value,offset)] } else if name_char(value) && self.name_length<16 { self.name_length+=1; self.buffer.extend_from_slice(value); vec![] } else { self.reject_with(value,offset) } },
+            ParserMode::SgmlName => { if value == [62] { let name=String::from_utf16_lossy(&self.buffer[1..]); if is_sgml_control_token_name(&name) { vec![self.emit(TokenFamily::Sgml,1,0,value,offset)] } else { self.reject_with(value,offset) } } else if name_char(value) && self.name_length<16 { self.name_length+=1; self.buffer.extend_from_slice(value); vec![] } else { self.reject_with(value,offset) } },
             ParserMode::BracketFirst => { if upper(value) { self.name_length=1; self.append(value,ParserMode::BracketName); vec![] } else { self.reject_with(value,offset) } },
             ParserMode::BracketName => { if value == [93] { if self.name_length<2 { self.reject_with(value,offset) } else { vec![self.emit(TokenFamily::Bracket,1,0,value,offset)] } } else if (upper(value) || value.first().is_some_and(|v| matches!(v,48..=57)) || value == [95]) && self.name_length<16 { self.name_length+=1; self.buffer.extend_from_slice(value); vec![] } else { self.reject_with(value,offset) } },
         }
@@ -50,4 +52,6 @@ impl CandidateParser {
     #[test] fn oversized_control_name_is_rejected() { let result=parse(&format!("<|{}|>","a".repeat(33))); assert!(matches!(&result[0],CandidateOutcome::Reject { .. })); }
     #[test] fn pending_length_tracks_partial_token() { let mut parser=CandidateParser::default(); parser.feed(&[60],0); parser.feed(&[124],1); let result=parser.pending_length(); assert_eq!(result,2); }
     #[test] fn ground_preserves_unpaired_surrogate() { let mut parser=CandidateParser::default(); let result=parser.feed(&[0xd800],9); assert_eq!(result,vec![CandidateOutcome::Ground { value:vec![0xd800],offset:9 }]); }
+    #[test] fn sgml_accepts_only_case_insensitive_tokenizer_names() { for text in ["<s>","</S>","<pad>","<start_of_turn>","<tool_response>"] { assert!(matches!(&parse(text)[0],CandidateOutcome::Token { .. }),"{text}"); } for text in ["<div>","</span>","<script>"] { assert!(matches!(&parse(text)[0],CandidateOutcome::Reject { .. }),"{text}"); } }
+    #[test] fn sgml_name_allowlist_matches_case_insensitively_with_or_without_slash() { for name in ["s","/s","S","/S","Mask","/MASK","start_of_image"] { assert!(is_sgml_control_token_name(name),"{name}"); } for name in ["div","/div","span","script","ab",""] { assert!(!is_sgml_control_token_name(name),"{name}"); } }
 }

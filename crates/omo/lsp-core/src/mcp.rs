@@ -29,7 +29,8 @@ use std::sync::Mutex;
 
 const SERVER_NAME: &str = "lsp";
 const SERVER_VERSION: &str = "0.1.0";
-const DEFAULT_PROTOCOL_VERSION: &str = "2024-11-05";
+const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// TS `HandleLspMcpRequestOptions`.
 #[derive(Debug, Clone, Default)]
@@ -79,10 +80,12 @@ pub async fn handle_lsp_mcp_request(
         Some("notifications/initialized") => None,
         Some("ping") => Some(success_response(id, Map::new())),
         Some("initialize") => {
-            let protocol_version = request
+            let requested = request
                 .get("params")
                 .and_then(|params| params.get("protocolVersion"))
-                .and_then(Value::as_str)
+                .and_then(Value::as_str);
+            let protocol_version = requested
+                .filter(|version| PROTOCOL_VERSIONS.contains(version))
                 .unwrap_or(DEFAULT_PROTOCOL_VERSION);
             Some(success_response(
                 id,

@@ -114,6 +114,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let payload = FactsPayload {
             version: 1,
+            agreement_event_version: Some(1),
             identity: "agent".into(),
             today: "2026-10-02".into(),
             known_people: vec![],

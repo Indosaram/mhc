@@ -7,12 +7,16 @@ use std::sync::Arc;
 use maho_agent::harness::context::BACKGROUND_CONTEXT;
 use maho_agent::harness::env::nodejs::NodeExecutionEnv;
 use maho_agent::harness::session::commit::{insert_entry, insert_usage};
-use maho_agent::harness::session::jsonl::types::{JSONL_STORAGE_VERSION, JsonlStorageHeader, JsonlStorageOptions};
 use maho_agent::harness::session::jsonl::JsonlStorage;
+use maho_agent::harness::session::jsonl::types::{
+    JSONL_STORAGE_VERSION, JsonlStorageHeader, JsonlStorageOptions,
+};
 use maho_agent::harness::session::types::{
     EntryScan, NewEntry, NewUsageRow, ScanOrder, SessionStats, Storage, UsageScan,
 };
-use maho_agent::harness::session::values::{append_list, branch_tip, delete_list, list, set_value, session_name};
+use maho_agent::harness::session::values::{
+    append_list, branch_tip, delete_list, list, session_name, set_value,
+};
 use maho_agent::harness::types::FileSystem;
 use maho_ai::types::{Usage, UsageCost};
 
@@ -45,7 +49,7 @@ fn options(file_system: Arc<dyn FileSystem>, path: &str) -> JsonlStorageOptions 
 }
 
 fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64) -> Usage {
-    Usage {
+    Usage { context_usage: None,
         input,
         output,
         cache_read,
@@ -60,6 +64,7 @@ fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64) -> Usage {
             cache_write: 0.0,
             total: 0.0,
         },
+        ..Default::default()
     }
 }
 
@@ -67,10 +72,12 @@ fn user_entry(id: &str, content: &str) -> NewEntry {
     NewEntry::message(
         id,
         None,
-        maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::User(maho_ai::types::UserMessage {
-            content: maho_ai::types::UserContent::Text(content.to_owned()),
-            timestamp: 1,
-        })),
+        maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::User(
+            maho_ai::types::UserMessage {
+                content: maho_ai::types::UserContent::Text(content.to_owned()),
+                timestamp: 1,
+            },
+        )),
     )
 }
 
@@ -80,14 +87,25 @@ async fn replays_whole_list_deletion_without_resurrecting_earlier_appends() {
     let file_system = file_system(&root);
     let options = options(file_system.clone(), "list-delete.jsonl");
     let events = list("test.events", "").expect("address");
-    let storage = JsonlStorage::create(options.clone(), header("list-delete"), Vec::new(), &BACKGROUND_CONTEXT)
-        .await
-        .expect("create");
+    let storage = JsonlStorage::create(
+        options.clone(),
+        header("list-delete"),
+        Vec::new(),
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .expect("create");
     storage
         .commit(
             vec![
-                maho_agent::harness::session::types::Write::List(append_list(&events, serde_json::json!("first"))),
-                maho_agent::harness::session::types::Write::List(append_list(&events, serde_json::json!("second"))),
+                maho_agent::harness::session::types::Write::List(append_list(
+                    &events,
+                    serde_json::json!("first"),
+                )),
+                maho_agent::harness::session::types::Write::List(append_list(
+                    &events,
+                    serde_json::json!("second"),
+                )),
             ],
             &BACKGROUND_CONTEXT,
         )
@@ -95,27 +113,39 @@ async fn replays_whole_list_deletion_without_resurrecting_earlier_appends() {
         .expect("append");
     storage
         .commit(
-            vec![maho_agent::harness::session::types::Write::List(delete_list(&events))],
+            vec![maho_agent::harness::session::types::Write::List(
+                delete_list(&events),
+            )],
             &BACKGROUND_CONTEXT,
         )
         .await
         .expect("delete");
     storage.close(&BACKGROUND_CONTEXT).await;
 
-    let reopened = JsonlStorage::open(options, &BACKGROUND_CONTEXT).await.expect("reopen");
-    assert!(reopened.read_list(&events, None, &BACKGROUND_CONTEXT).await.expect("list").is_empty());
+    let reopened = JsonlStorage::open(options, &BACKGROUND_CONTEXT)
+        .await
+        .expect("reopen");
+    assert!(
+        reopened
+            .read_list(&events, None, &BACKGROUND_CONTEXT)
+            .await
+            .expect("list")
+            .is_empty()
+    );
     let recreated = reopened
         .commit(
-            vec![maho_agent::harness::session::types::Write::List(append_list(
-                &events,
-                serde_json::json!("after"),
-            ))],
+            vec![maho_agent::harness::session::types::Write::List(
+                append_list(&events, serde_json::json!("after")),
+            )],
             &BACKGROUND_CONTEXT,
         )
         .await
         .expect("recreate");
     assert_eq!(recreated.first_seq, 4);
-    let elements = reopened.read_list(&events, None, &BACKGROUND_CONTEXT).await.expect("list");
+    let elements = reopened
+        .read_list(&events, None, &BACKGROUND_CONTEXT)
+        .await
+        .expect("list");
     assert_eq!(elements.len(), 1);
     assert_eq!(elements[0].seq, 4);
     assert_eq!(elements[0].value, serde_json::json!("after"));
@@ -128,14 +158,22 @@ async fn writes_one_line_per_transaction_and_replays_stamped_state() {
     let root = temp_root("round-trip");
     let file_system = file_system(&root);
     let options = options(file_system.clone(), "session.jsonl");
-    let storage = JsonlStorage::create(options.clone(), header("round-trip"), Vec::new(), &BACKGROUND_CONTEXT)
-        .await
-        .expect("create");
+    let storage = JsonlStorage::create(
+        options.clone(),
+        header("round-trip"),
+        Vec::new(),
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .expect("create");
     let committed = storage
         .commit(
             vec![
                 insert_entry(user_entry("root", "hello")),
-                maho_agent::harness::session::types::Write::Value(set_value(&branch_tip("main"), serde_json::json!("root"))),
+                maho_agent::harness::session::types::Write::Value(set_value(
+                    &branch_tip("main"),
+                    serde_json::json!("root"),
+                )),
                 insert_usage(NewUsageRow {
                     id: "usage".to_owned(),
                     usage: usage(1, 2, 0, 0),
@@ -150,10 +188,9 @@ async fn writes_one_line_per_transaction_and_replays_stamped_state() {
         .expect("commit");
     storage
         .commit(
-            vec![maho_agent::harness::session::types::Write::Value(set_value(
-                &session_name(),
-                serde_json::json!("name"),
-            ))],
+            vec![maho_agent::harness::session::types::Write::Value(
+                set_value(&session_name(), serde_json::json!("name")),
+            )],
             &BACKGROUND_CONTEXT,
         )
         .await
@@ -167,13 +204,25 @@ async fn writes_one_line_per_transaction_and_replays_stamped_state() {
         serde_json::to_value(header("round-trip")).expect("header")
     );
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(lines[1]).expect("transaction").as_array().map(Vec::len),
+        serde_json::from_str::<serde_json::Value>(lines[1])
+            .expect("transaction")
+            .as_array()
+            .map(Vec::len),
         Some(3)
     );
-    assert!(!serde_json::from_str::<serde_json::Value>(lines[2]).expect("transaction").is_array());
+    assert!(
+        !serde_json::from_str::<serde_json::Value>(lines[2])
+            .expect("transaction")
+            .is_array()
+    );
 
-    let reopened = JsonlStorage::open(options, &BACKGROUND_CONTEXT).await.expect("reopen");
-    let entries = reopened.get_entries(vec!["root".to_owned()], &BACKGROUND_CONTEXT).await.expect("entries");
+    let reopened = JsonlStorage::open(options, &BACKGROUND_CONTEXT)
+        .await
+        .expect("reopen");
+    let entries = reopened
+        .get_entries(vec!["root".to_owned()], &BACKGROUND_CONTEXT)
+        .await
+        .expect("entries");
     let root_entry = entries.get("root").expect("root entry");
     assert_eq!(root_entry.seq, committed.seqs[0]);
     assert_eq!(root_entry.timestamp, committed.timestamp);
@@ -185,7 +234,13 @@ async fn writes_one_line_per_transaction_and_replays_stamped_state() {
     assert_eq!(stored.value, serde_json::json!("root"));
     assert_eq!(stored.seq, committed.seqs[1]);
     let usage_rows = reopened
-        .scan_usage(UsageScan { order: Some(ScanOrder::Asc), ..Default::default() }, &BACKGROUND_CONTEXT)
+        .scan_usage(
+            UsageScan {
+                order: Some(ScanOrder::Asc),
+                ..Default::default()
+            },
+            &BACKGROUND_CONTEXT,
+        )
         .await
         .expect("usage");
     assert_eq!(usage_rows.len(), 1);
@@ -196,8 +251,17 @@ async fn writes_one_line_per_transaction_and_replays_stamped_state() {
         message_count: 1,
         usage: usage(1, 2, 0, 0),
     };
-    assert_eq!(reopened.get_stats(&BACKGROUND_CONTEXT).await.expect("stats"), historical);
-    let next = reopened.commit(Vec::new(), &BACKGROUND_CONTEXT).await.expect("next");
+    assert_eq!(
+        reopened
+            .get_stats(&BACKGROUND_CONTEXT)
+            .await
+            .expect("stats"),
+        historical
+    );
+    let next = reopened
+        .commit(Vec::new(), &BACKGROUND_CONTEXT)
+        .await
+        .expect("next");
     assert_eq!(next.first_seq, 5);
     assert_eq!(next.stats, historical);
     reopened.close(&BACKGROUND_CONTEXT).await;
@@ -207,11 +271,19 @@ async fn writes_one_line_per_transaction_and_replays_stamped_state() {
 async fn seed(root: &str) -> (Arc<dyn FileSystem>, JsonlStorageOptions, String) {
     let file_system = file_system(root);
     let options = options(file_system.clone(), "session.jsonl");
-    let storage = JsonlStorage::create(options.clone(), header("torn"), Vec::new(), &BACKGROUND_CONTEXT)
-        .await
-        .expect("create");
+    let storage = JsonlStorage::create(
+        options.clone(),
+        header("torn"),
+        Vec::new(),
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .expect("create");
     storage
-        .commit(vec![insert_entry(user_entry("kept", "kept"))], &BACKGROUND_CONTEXT)
+        .commit(
+            vec![insert_entry(user_entry("kept", "kept"))],
+            &BACKGROUND_CONTEXT,
+        )
         .await
         .expect("commit");
     storage.close(&BACKGROUND_CONTEXT).await;
@@ -229,22 +301,37 @@ async fn discards_an_unterminated_final_object_line_and_truncates_before_admitti
         "seq": 2, "timestamp": NOW
     });
     file_system
-        .append_file("session.jsonl", torn.to_string().as_bytes(), &BACKGROUND_CONTEXT)
+        .append_file(
+            "session.jsonl",
+            torn.to_string().as_bytes(),
+            &BACKGROUND_CONTEXT,
+        )
         .await
         .expect("append torn");
 
-    let reopened = JsonlStorage::open(options, &BACKGROUND_CONTEXT).await.expect("reopen");
+    let reopened = JsonlStorage::open(options, &BACKGROUND_CONTEXT)
+        .await
+        .expect("reopen");
     let entries = reopened
-        .get_entries(vec!["kept".to_owned(), "torn".to_owned()], &BACKGROUND_CONTEXT)
+        .get_entries(
+            vec!["kept".to_owned(), "torn".to_owned()],
+            &BACKGROUND_CONTEXT,
+        )
         .await
         .expect("entries");
     assert!(!entries.contains_key("torn"));
     assert!(entries.contains_key("kept"));
-    assert_eq!(std::fs::read_to_string(format!("{root}/session.jsonl")).expect("content"), prefix);
+    assert_eq!(
+        std::fs::read_to_string(format!("{root}/session.jsonl")).expect("content"),
+        prefix
+    );
     assert!(!std::path::Path::new(&format!("{root}/session.jsonl.tmp")).exists());
 
     let next = reopened
-        .commit(vec![insert_entry(user_entry("after", "after"))], &BACKGROUND_CONTEXT)
+        .commit(
+            vec![insert_entry(user_entry("after", "after"))],
+            &BACKGROUND_CONTEXT,
+        )
         .await
         .expect("commit");
     assert_eq!(next.first_seq, 2);
@@ -267,23 +354,42 @@ async fn discards_a_torn_array_line_wholly_including_list_elements() {
         { "kind": "list", "op": "append", "seq": 4, "namespace": "test.events", "key": "", "value": "lost" }
     ]);
     file_system
-        .append_file("session.jsonl", torn.to_string().as_bytes(), &BACKGROUND_CONTEXT)
+        .append_file(
+            "session.jsonl",
+            torn.to_string().as_bytes(),
+            &BACKGROUND_CONTEXT,
+        )
         .await
         .expect("append torn");
 
-    let reopened = JsonlStorage::open(options, &BACKGROUND_CONTEXT).await.expect("reopen");
-    assert!(!reopened
-        .get_entries(vec!["torn-a".to_owned()], &BACKGROUND_CONTEXT)
+    let reopened = JsonlStorage::open(options, &BACKGROUND_CONTEXT)
         .await
-        .expect("entries")
-        .contains_key("torn-a"));
-    assert!(reopened
-        .get_value(&session_name(), &BACKGROUND_CONTEXT)
-        .await
-        .expect("value")
-        .is_none());
-    assert!(reopened.read_list(&events, None, &BACKGROUND_CONTEXT).await.expect("list").is_empty());
-    assert_eq!(std::fs::read_to_string(format!("{root}/session.jsonl")).expect("content"), prefix);
+        .expect("reopen");
+    assert!(
+        !reopened
+            .get_entries(vec!["torn-a".to_owned()], &BACKGROUND_CONTEXT)
+            .await
+            .expect("entries")
+            .contains_key("torn-a")
+    );
+    assert!(
+        reopened
+            .get_value(&session_name(), &BACKGROUND_CONTEXT)
+            .await
+            .expect("value")
+            .is_none()
+    );
+    assert!(
+        reopened
+            .read_list(&events, None, &BACKGROUND_CONTEXT)
+            .await
+            .expect("list")
+            .is_empty()
+    );
+    assert_eq!(
+        std::fs::read_to_string(format!("{root}/session.jsonl")).expect("content"),
+        prefix
+    );
     reopened.close(&BACKGROUND_CONTEXT).await;
     std::fs::remove_dir_all(&root).expect("cleanup");
 }
@@ -306,7 +412,10 @@ async fn rejects_a_malformed_interior_line_without_rewriting() {
         .err()
         .expect("malformed");
     assert!(error.message.contains("line 3"), "{}", error.message);
-    assert_eq!(std::fs::read_to_string(format!("{root}/session.jsonl")).expect("content"), corrupted);
+    assert_eq!(
+        std::fs::read_to_string(format!("{root}/session.jsonl")).expect("content"),
+        corrupted
+    );
     assert!(!std::path::Path::new(&format!("{root}/session.jsonl.tmp")).exists());
     std::fs::remove_dir_all(&root).expect("cleanup");
 }
@@ -326,7 +435,10 @@ async fn rejects_a_complete_malformed_final_line_without_rewriting() {
         .err()
         .expect("malformed");
     assert!(error.message.contains("line 3"), "{}", error.message);
-    assert_eq!(std::fs::read_to_string(format!("{root}/session.jsonl")).expect("content"), corrupted);
+    assert_eq!(
+        std::fs::read_to_string(format!("{root}/session.jsonl")).expect("content"),
+        corrupted
+    );
     std::fs::remove_dir_all(&root).expect("cleanup");
 }
 
@@ -334,7 +446,10 @@ async fn rejects_a_complete_malformed_final_line_without_rewriting() {
 async fn rejects_a_complete_final_line_with_invalid_transaction_framing() {
     let root = temp_root("invalid-framing");
     let (file_system, options, prefix) = seed(&root).await;
-    let corrupted = format!("{prefix}{}\n", serde_json::json!({ "kind": "nope", "seq": 2 }));
+    let corrupted = format!(
+        "{prefix}{}\n",
+        serde_json::json!({ "kind": "nope", "seq": 2 })
+    );
     file_system
         .write_file("session.jsonl", corrupted.as_bytes(), &BACKGROUND_CONTEXT)
         .await
@@ -345,7 +460,10 @@ async fn rejects_a_complete_final_line_with_invalid_transaction_framing() {
         .err()
         .expect("invalid framing");
     assert!(error.message.contains("line 3"), "{}", error.message);
-    assert_eq!(std::fs::read_to_string(format!("{root}/session.jsonl")).expect("content"), corrupted);
+    assert_eq!(
+        std::fs::read_to_string(format!("{root}/session.jsonl")).expect("content"),
+        corrupted
+    );
     std::fs::remove_dir_all(&root).expect("cleanup");
 }
 
@@ -368,7 +486,11 @@ async fn rejects_an_unterminated_header() {
         .await
         .err()
         .expect("torn header");
-    assert!(error.message.contains("missing header"), "{}", error.message);
+    assert!(
+        error.message.contains("missing header"),
+        "{}",
+        error.message
+    );
     std::fs::remove_dir_all(&root).expect("cleanup");
 }
 
@@ -404,7 +526,10 @@ async fn scan_entries_orders_and_filters_stamped_entries() {
         .await
         .expect("ascending");
     assert_eq!(
-        ascending.iter().map(|entry| entry.id.as_str()).collect::<Vec<&str>>(),
+        ascending
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<&str>>(),
         vec!["a", "b"]
     );
     let descending = storage
@@ -418,7 +543,10 @@ async fn scan_entries_orders_and_filters_stamped_entries() {
         .await
         .expect("descending");
     assert_eq!(
-        descending.iter().map(|entry| entry.id.as_str()).collect::<Vec<&str>>(),
+        descending
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<&str>>(),
         vec!["c", "b", "a"]
     );
     storage.close(&BACKGROUND_CONTEXT).await;

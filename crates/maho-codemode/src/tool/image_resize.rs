@@ -16,7 +16,7 @@ pub trait EvalImageSdk: Send + Sync {
 }
 
 pub fn webp_exclusion_for_model(provider: Option<&str>, api: Option<&str>) -> bool {
-    matches!(provider, Some("ollama" | "ollama-cloud" | "llama.cpp" | "lm-studio" | "local-server")) || api == Some("ollama-chat")
+    matches!(provider, Some("ollama" | "ollama-cloud" | "lm-studio" | "local-server")) || api == Some("ollama-chat")
 }
 
 pub async fn resize_eval_image(image: EvalImageContent, provider: Option<&str>, api: Option<&str>, sdk: &dyn EvalImageSdk) -> Result<EvalImageResizeResult, String> {

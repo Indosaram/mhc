@@ -354,3 +354,36 @@ fn given_builtin_category_child_on_chain_rung_when_fallback_to_next_rung_then_re
     handle.settle(RunnerOutcome::completed("done"));
     wait_terminal(&harness.manager, &task_id);
 }
+
+#[test]
+fn start_failure_matrix_does_not_spend_same_account_parent_on_auth_or_quota() {
+    for message in ["401 unauthorized", "weekly limit exhausted"] {
+        let runner = FakeRunner::new();
+        *super::fakes::lock(&runner.hook) = Some(Arc::new(move |_, call| {
+            (call == 1).then(|| {
+                Err(crate::manager::types::ManagedRunnerError::Runner(
+                    crate::runners::RunnerFailure::new(
+                        RunnerFailureKind::ModelUnavailable,
+                        message,
+                    ),
+                ))
+            })
+        }));
+        let harness = harness_with(
+            fallback_plan(vec![
+                category_record("vendor-b", "fallback-model"),
+                category_record("vendor-a", "parent"),
+            ]),
+            &runner,
+            ExecutionMode::InProcess,
+        );
+        let task = started(harness.manager.start(&ManagerStartSpec {
+            parent_model: Some("vendor-a/parent".into()),
+            ..base_spec()
+        }));
+        let record = load(&harness, &task.task_id);
+        assert_eq!(record.model, "vendor-b/fallback-model");
+        assert!(!displays(record.fallback_models.as_ref()).contains(&"vendor-a/parent".to_owned()));
+        assert_eq!(runner.started_count(), 2);
+    }
+}

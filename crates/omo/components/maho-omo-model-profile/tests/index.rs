@@ -984,20 +984,6 @@ async fn a_json_mode_session_applies_the_profile_like_any_headless_run() {
 }
 
 #[tokio::test]
-async fn an_app_server_mode_session_applies_the_profile() {
-    let harness = start(
-        json!({"model_profile": "daily-heavy"}),
-        Arc::new(TestRegistry::new(fixture(&[FABLE]))),
-        "session-app",
-        ExtensionMode::AppServer,
-        STARTUP,
-        Some("settings"),
-    )
-    .await;
-    assert_eq!(selectors(&harness.session_models()), ["anthropic/claude-fable-5-1"]);
-}
-
-#[tokio::test]
 async fn a_provider_removed_by_a_failure_never_returns_on_a_later_rung() {
     let harness = start(
         json!({"model_profile": "pair", "model_profiles": {"pair": {"models": ["anthropic/claude-opus-5-5", "anthropic-subscription/claude-opus-5-5", "zai/glm-5.3"]}}}),
@@ -1025,4 +1011,125 @@ async fn the_registry_is_never_probed_when_the_resolution_is_unavailable() {
     )
     .await;
     assert!(harness.registry.calls().is_empty());
+}
+
+fn notice_text(harness: &support::Harness) -> String {
+    let messages = harness.messages();
+    let notice = messages.first().expect("a notice message");
+    assert!(notice.display, "the notice is user-facing");
+    match notice.content.first().expect("notice content") {
+        maho_ext_api::ToolContent::Text { text, .. } => text.clone(),
+        other => panic!("expected text content, got {other:?}"),
+    }
+}
+
+/// The exclude pattern that hides the whole Fable family, derived from the id instead of restating
+/// it: `<family>-*`, the same wildcard shape upstream's `exclude_models` test uses.
+fn fable_family_pattern() -> String {
+    format!("{}-*", FABLE.1.rsplit_once('-').expect("versioned model id").0)
+}
+
+#[tokio::test]
+async fn geeky_normal_with_gpt_6_astra_beside_the_sol_tiers_applies_astra_medium_with_the_bold_caution() {
+    let harness = start(
+        json!({"model_profile": "geeky-normal"}),
+        Arc::new(TestRegistry::new(fixture(&[ASTRA, SOL_61, SOL_61_FAST, SOL_56_COPILOT, UNRELATED]))),
+        "session-1",
+        ExtensionMode::Rpc,
+        STARTUP,
+        Some("settings"),
+    )
+    .await;
+    assert_eq!(selectors(&harness.session_models()), ["chatgpt-subscription/gpt-6-astra"]);
+    assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::Medium]);
+    let text = notice_text(&harness);
+    assert!(text.contains("chatgpt-subscription/gpt-6-astra medium"), "{text}");
+    assert!(text.contains("**NOT RECOMMENDED FOR WRITING OR EVERYDAY WORK.**"), "{text}");
+}
+
+#[tokio::test]
+async fn a_lane_without_a_caution_never_renders_the_bold_warning() {
+    let harness = start(
+        json!({"model_profile": "daily-heavy"}),
+        Arc::new(TestRegistry::new(fixture(&[FABLE]))),
+        "session-1",
+        ExtensionMode::Rpc,
+        STARTUP,
+        Some("settings"),
+    )
+    .await;
+    let text = notice_text(&harness);
+    assert!(!text.contains("**"), "{text}");
+}
+
+#[tokio::test]
+async fn an_excluded_first_rung_makes_the_session_apply_the_next_rung() {
+    let harness = start(
+        json!({
+            "model_profile": "mine",
+            "model_profiles": {"mine": {"models": [
+                format!("{}/{}", FABLE.0, FABLE.1),
+                format!("{}/{}", OPUS.0, OPUS.1)
+            ]}},
+            "exclude_models": [fable_family_pattern()]
+        }),
+        Arc::new(TestRegistry::new(fixture(&[FABLE, OPUS]))),
+        "session-1",
+        ExtensionMode::Rpc,
+        STARTUP,
+        Some("settings"),
+    )
+    .await;
+    assert_eq!(selectors(&harness.session_models()), [format!("{}/{}", OPUS.0, OPUS.1)]);
+    assert_eq!(harness.first_custom_type(), MODEL_PROFILE_APPLIED_TYPE);
+    assert_eq!(harness.first_details()["model"], json!(format!("{}/{}", OPUS.0, OPUS.1)));
+}
+
+#[tokio::test]
+async fn a_literal_pin_that_is_excluded_is_not_applied() {
+    let harness = start(
+        json!({
+            "model_profile": format!("{}/{}", FABLE.0, FABLE.1),
+            "exclude_models": [fable_family_pattern()]
+        }),
+        Arc::new(TestRegistry::new(fixture(&[FABLE, OPUS]))),
+        "session-1",
+        ExtensionMode::Rpc,
+        STARTUP,
+        Some("settings"),
+    )
+    .await;
+    assert!(harness.session_models().is_empty());
+    assert_eq!(harness.first_custom_type(), MODEL_PROFILE_UNAVAILABLE_TYPE);
+}
+
+/// The Claude rung id `daily-normal` heads with, read from the builtin table: a custom-provider case
+/// proves the wiring, not the id.
+fn daily_normal_opus_id() -> String {
+    maho_omo_model_profile::builtin_profiles::builtin_model_profiles()["daily-normal"].models[0]
+        .model
+        .to_owned()
+}
+
+#[tokio::test]
+async fn a_models_json_declared_provider_serves_a_builtin_lane_through_the_component() {
+    let opus = daily_normal_opus_id();
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(
+        dir.path().join("models.json"),
+        format!(r#"{{ "providers": {{ "my-claude-proxy": {{ "models": [{{ "id": "{opus}" }}] }} }} }}"#),
+    )
+    .expect("models.json");
+    let harness = support::harness_in(
+        component(json!({})),
+        Arc::new(TestRegistry::new(fixture(&[("my-claude-proxy", opus.as_str())]))),
+        "session-1",
+        ExtensionMode::Rpc,
+        "/project",
+        dir,
+    );
+    harness.start(STARTUP, Some("settings")).await;
+    assert_eq!(selectors(&harness.session_models()), [format!("my-claude-proxy/{opus}")]);
+    assert_eq!(harness.first_details()["profile"], json!("daily-normal"));
+    assert_eq!(harness.first_custom_type(), MODEL_PROFILE_APPLIED_TYPE);
 }

@@ -66,11 +66,11 @@ pub struct ExecuteBatchInput<'a> {
 enum BatchStart<'a> {
     Started {
         item: &'a ResolvedSpawnItem,
-        result: StartedTask,
+        result: Box<StartedTask>,
         skills: Option<TaskSkillSummary>,
     },
     Failed {
-        detail: TaskToolItemDetail,
+        detail: Box<TaskToolItemDetail>,
         skills: Option<TaskSkillSummary>,
     },
 }
@@ -118,6 +118,13 @@ fn failed_start_detail(
     skills: Option<TaskSkillSummary>,
 ) -> TaskToolItemDetail {
     match start {
+        StartResult::Held(held) => TaskToolItemDetail {
+            task_id: held.task_id.clone(),
+            name: item.name.clone(),
+            status: "paused".to_string(),
+            skills,
+            ..Default::default()
+        },
         StartResult::Started(started) => started_detail(item, started, skills.as_ref()),
         StartResult::PlanUnresolved(error) => item_error(
             item,
@@ -184,17 +191,17 @@ fn start_all<'a>(input: &ExecuteBatchInput<'a>) -> Vec<BatchStart<'a>> {
                 starts.push(match start {
                     StartResult::Started(result) => BatchStart::Started {
                         item,
-                        result,
+                        result: Box::new(result),
                         skills,
                     },
                     other => BatchStart::Failed {
-                        detail: failed_start_detail(item, &other, skills.clone()),
+                        detail: Box::new(failed_start_detail(item, &other, skills.clone())),
                         skills,
                     },
                 });
             }
             Err(message) => starts.push(BatchStart::Failed {
-                detail: item_error(item, "", &message, None),
+                detail: Box::new(item_error(item, "", &message, None)),
                 skills: None,
             }),
         }
@@ -274,7 +281,7 @@ fn live_starts<'s>(starts: &'s [BatchStart<'_>]) -> Vec<&'s StartedTask> {
     starts
         .iter()
         .filter_map(|start| match start {
-            BatchStart::Started { result, .. } => Some(result),
+            BatchStart::Started { result, .. } => Some(result.as_ref()),
             BatchStart::Failed { .. } => None,
         })
         .collect()
@@ -299,7 +306,7 @@ fn background_result(starts: &[BatchStart<'_>]) -> TaskToolResult {
                 result,
                 skills,
             } => started_detail(item, result, skills.as_ref()),
-            BatchStart::Failed { detail, .. } => detail.clone(),
+            BatchStart::Failed { detail, .. } => detail.as_ref().clone(),
         })
         .collect();
     result(
@@ -487,7 +494,7 @@ fn sync_result(input: &ExecuteBatchInput<'_>, starts: &[BatchStart<'_>]) -> Task
         .iter()
         .map(|start| match start {
             BatchStart::Failed { detail, .. } => BatchItemOutput {
-                detail: detail.clone(),
+                detail: detail.as_ref().clone(),
                 body: detail
                     .error_message
                     .clone()
@@ -511,12 +518,9 @@ fn sync_result(input: &ExecuteBatchInput<'_>, starts: &[BatchStart<'_>]) -> Task
                     Some(Some(Ok(ForegroundWaitResult::Promoted { budget_seconds }))) => {
                         promoted_output(item, result, skills.as_ref(), *budget_seconds)
                     }
-                    Some(Some(Err(error))) => rejected_output(
-                        result,
-                        skills.as_ref(),
-                        signal_aborted,
-                        &error.to_string(),
-                    ),
+                    Some(Some(Err(error))) => {
+                        rejected_output(result, skills.as_ref(), signal_aborted, &error.to_string())
+                    }
                 }
             }
         })
@@ -566,5 +570,36 @@ pub fn execute_batch(input: &ExecuteBatchInput<'_>) -> TaskToolResult {
         background_result(&starts)
     } else {
         sync_result(input, &starts)
+    }
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    #[test]
+    fn held_batch_item_keeps_task_identity_and_paused_status() {
+        let item = ResolvedSpawnItem {
+            prompt: "work".into(),
+            task_summary: None,
+            description: None,
+            name: Some("named".into()),
+            model: None,
+            isolated: None,
+            apply: None,
+            merge: None,
+            load_skills: vec![],
+            tools: None,
+            run_in_background: None,
+            target: SpawnTarget::Category("quick".into()),
+        };
+        let held = StartResult::Held(crate::manager::start_admission::HeldStart {
+            kind: "held",
+            task_id: "held-batch".into(),
+            pause_seq: 2,
+            root_session_id: "root".into(),
+        });
+        let detail = failed_start_detail(&item, &held, None);
+        assert_eq!(detail.task_id, "held-batch");
+        assert_eq!(detail.status, "paused");
     }
 }

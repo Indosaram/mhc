@@ -123,6 +123,7 @@ fn given_a_missing_requested_skill_when_background_spawn_succeeds_then_the_task_
     assert_eq!(
         result.details.skills,
         Some(TaskSkillSummary {
+            rejected: None,
             requested: vec!["ghost".to_string()],
             resolved: Vec::new(),
             missing: vec!["ghost".to_string()],

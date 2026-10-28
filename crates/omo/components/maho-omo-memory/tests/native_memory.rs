@@ -626,7 +626,8 @@ impl Extension for MemoryToolsExtension {
                     *notifications.lock().map_err(|error| error.to_string())? += 1;
                     Ok(())
                 }),
-                refresh_status: Arc::new(|_, _| {
+                sync_status: None,
+                refresh_status: Arc::new(|_, _, _| {
                     Ok(maho_omo_memory::status::MemoryStatusResult {
                         notified: false,
                         footer_shown: true,

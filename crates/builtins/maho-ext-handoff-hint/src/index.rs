@@ -87,7 +87,10 @@ pub fn prompt_tokens_of_first_reply(entries: &[SessionEntry]) -> Option<u64> {
         }
         let usage = message.get("usage")?;
         let field = |name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0);
-        let tokens = field("input") + field("cacheRead") + field("cacheWrite");
+        let tokens = match usage.get("contextUsage") {
+            Some(context) => context.get("input").and_then(Value::as_u64).unwrap_or(0),
+            None => field("input") + field("cacheRead") + field("cacheWrite"),
+        };
         (tokens > 0).then_some(tokens)
     })
 }
@@ -584,6 +587,20 @@ mod tests {
         ];
         assert_eq!(prompt_tokens_of_first_reply(&entries), Some(60));
         assert_eq!(prompt_tokens_of_first_reply(&[]), None);
+    }
+
+    #[test]
+    fn first_reply_prompt_tokens_prefer_context_usage_over_billed_tokens() {
+        let mut reply = assistant(1, 10, 20, 30);
+        reply.data["message"]["usage"]["contextUsage"] = json!({"input": 90});
+        assert_eq!(prompt_tokens_of_first_reply(&[reply]), Some(90));
+    }
+
+    #[test]
+    fn first_reply_prompt_tokens_skip_explicitly_unknown_context_usage() {
+        let mut reply = assistant(1, 10, 20, 30);
+        reply.data["message"]["usage"]["contextUsage"] = Value::Null;
+        assert_eq!(prompt_tokens_of_first_reply(&[reply, assistant(2, 40, 0, 0)]), Some(40));
     }
 
     #[test]

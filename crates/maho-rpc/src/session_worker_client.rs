@@ -1,4 +1,212 @@
 use crate::session_worker_protocol::{WorkerDisplay, WorkerSnapshot};
+use serde_json::Value;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+/// The capability a client's handshake carries when it can present an MCP grant decision: only such a connection is
+/// ever asked, and only its answer counts (senpi `grant_select`).
+pub const GRANT_SELECT_CAPABILITY: &str = crate::custom_capability::GRANT_SELECT_CAPABILITY;
+
+/// `isSecurityNoticeState`: the snapshot a worker relays must be a generation stamp plus notices this host can read.
+pub fn is_security_notice_state(value: &Value) -> bool {
+    let Some(fields) = value.as_object() else {
+        return false;
+    };
+    // `Number.isSafeInteger(generation) && generation >= 0`: any integral number counts, not only a JSON integer.
+    let safe_generation = fields.get("generation").is_some_and(|generation| {
+        generation.as_f64().is_some_and(|value| {
+            value >= 0. && value.fract() == 0. && value <= 9_007_199_254_740_991.
+        })
+    });
+    if !safe_generation {
+        return false;
+    }
+    let Some(notices) = fields.get("notices").and_then(Value::as_array) else {
+        return false;
+    };
+    notices.iter().all(|notice| {
+        let Some(notice) = notice.as_object() else {
+            return false;
+        };
+        if !matches!(
+            notice.get("category").and_then(Value::as_str),
+            Some("skill-link-blocked" | "mcp-env-withheld")
+        ) {
+            return false;
+        }
+        if notice.get("message").and_then(Value::as_str).is_none() {
+            return false;
+        }
+        match notice.get("path") {
+            // `!("path" in notice) || notice.path === undefined || typeof notice.path === "string"`: an absent path,
+            // or a string. A JSON `null` is present and not a string, so it is refused.
+            None | Some(Value::String(_)) => true,
+            Some(_) => false,
+        }
+    })
+}
+
+/// Where a worker's grant-select request was routed: to one connection, or nowhere (the dialog is cancelled).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerGrantRoute {
+    pub accepted: bool,
+    pub connection: Option<String>,
+}
+
+/// What the bound writer lends a worker's security traffic (senpi `SessionEventWriter`'s `settleGrantDialog` /
+/// `acceptWorkerSecuritySnapshot`, over its fanout's connection view). A host with no writer bridges nothing, and
+/// then a worker's grant requests are forwarded as they are.
+pub trait WorkerSecurityWriter: Send + Sync {
+    /// Every connection attached to the session (senpi `SessionEventFanout.attachedConnections`).
+    fn attached(&self, session_id: &str) -> Vec<String>;
+    /// Whether `connection` registered `capability` in its own handshake (senpi `connectionHas`).
+    fn has_capability(&self, connection: &str, capability: &str) -> bool;
+    /// Whether the writer has no connection at all (senpi `SessionEventFanout.isEmpty`).
+    fn is_empty(&self) -> bool;
+    /// `settleGrantDialog`: the dialog for `id` settled, so nothing may answer it any more.
+    fn settle_grant_dialog(&self, session_id: &str, id: &str);
+    /// `acceptWorkerSecuritySnapshot`: the worker's notices become this session's presentation state.
+    fn accept_worker_security_snapshot(&self, session_id: &str, snapshot: &Value);
+}
+
+/// One grant dialog the host routed to a connection, and the worker-side cancel that ends it.
+struct PendingGrant {
+    connection: Option<String>,
+    cancel: Box<dyn Fn() + Send + Sync>,
+}
+
+/// The host's half of the worker grant bridge (senpi `RpcSecurityPresentations`' grant methods): the request goes to
+/// the one connection that can present it, only that connection's response reaches the worker, and a connection that
+/// leaves (or stops being able to present) cancels what it was asked.
+pub struct WorkerGrants {
+    writer: Arc<dyn WorkerSecurityWriter>,
+    pending: std::sync::Mutex<BTreeMap<String, PendingGrant>>,
+}
+
+fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl WorkerGrants {
+    pub fn new(writer: Arc<dyn WorkerSecurityWriter>) -> Self {
+        Self {
+            writer,
+            pending: std::sync::Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// `routeWorkerGrant`: the requesting connection when it can present the grant, else any attached connection that
+    /// can, else — when this host has no connections at all — the session's own capabilities decide.
+    pub fn route(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        preferred: Option<&str>,
+        fallback_capabilities: &[String],
+        cancel: impl Fn() + Send + Sync + 'static,
+    ) -> WorkerGrantRoute {
+        let attached = self.writer.attached(session_id);
+        let capable = |connection: &str| {
+            self.writer
+                .has_capability(connection, GRANT_SELECT_CAPABILITY)
+        };
+        let connection = match preferred {
+            Some(preferred)
+                if attached.iter().any(|id| id.as_str() == preferred) && capable(preferred) =>
+            {
+                Some(preferred.to_owned())
+            }
+            _ => attached.iter().find(|id| capable(id.as_str())).cloned(),
+        };
+        let accepted = connection.is_some()
+            || (self.writer.is_empty()
+                && fallback_capabilities
+                    .iter()
+                    .any(|capability| capability == GRANT_SELECT_CAPABILITY));
+        if !accepted {
+            cancel();
+            return WorkerGrantRoute {
+                accepted: false,
+                connection: None,
+            };
+        }
+        lock(&self.pending).insert(
+            request_id.to_owned(),
+            PendingGrant {
+                connection: connection.clone(),
+                cancel: Box::new(cancel),
+            },
+        );
+        WorkerGrantRoute {
+            accepted: true,
+            connection,
+        }
+    }
+
+    /// `acceptWorkerResponse`: `None` when no grant is pending under `id` (the response is an ordinary one), `false`
+    /// when it came from another connection or one that can no longer present the grant, `true` when it is the answer.
+    pub fn accept_response(&self, request_id: &str, connection: Option<&str>) -> Option<bool> {
+        let mut pending = lock(&self.pending);
+        let grant = pending.get(request_id)?;
+        let asked = grant.connection.as_deref() == connection;
+        let capable = connection.is_none_or(|connection| {
+            self.writer
+                .has_capability(connection, GRANT_SELECT_CAPABILITY)
+        });
+        if !asked || !capable {
+            return Some(false);
+        }
+        pending.remove(request_id);
+        Some(true)
+    }
+
+    /// `settleGrant`: the worker reported the dialog settled; nothing may answer it any more.
+    pub fn settle(&self, request_id: &str) {
+        lock(&self.pending).remove(request_id);
+    }
+
+    /// `cancelFor`: a connection that left the session, or stopped advertising `grant_select`, ends what it was asked.
+    pub fn cancel_for(&self, connection: &str) {
+        let cancelled: Vec<PendingGrant> = {
+            let mut pending = lock(&self.pending);
+            let ids: Vec<String> = pending
+                .iter()
+                .filter(|(_, grant)| grant.connection.as_deref() == Some(connection))
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.into_iter().filter_map(|id| pending.remove(&id)).collect()
+        };
+        for grant in cancelled {
+            (grant.cancel)();
+        }
+    }
+
+    /// `#stop`: every pending dialog is cancelled, so a closing worker is never left waiting on one.
+    pub fn cancel_all(&self) {
+        let cancelled: Vec<PendingGrant> =
+            std::mem::take(&mut *lock(&self.pending)).into_values().collect();
+        for grant in cancelled {
+            (grant.cancel)();
+        }
+    }
+
+    /// The writer these grants belong to.
+    pub fn writer(&self) -> &Arc<dyn WorkerSecurityWriter> {
+        &self.writer
+    }
+}
+
+/// What the worker's security bridge did with one output record (senpi `receive`'s `output` case).
+enum SecurityRelay {
+    /// The bridge consumed the record: the host grants its credit.
+    Consumed,
+    /// The record is not a snapshot this host can read: the host denies its credit and fails the worker.
+    Invalid,
+    /// The record goes to a client, possibly rerouted to the connection the grant was routed to.
+    Forward(Option<String>),
+}
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkerControl {
     Display(WorkerDisplay),
@@ -176,6 +384,9 @@ pub struct SessionWorkerCallbacks {
     pub request_close: Box<dyn Fn() + Send + Sync>,
     pub failure: Box<dyn Fn(&str) + Send + Sync>,
     pub exit: Box<dyn Fn() + Send + Sync>,
+    /// The bound writer's security bridge (senpi `SessionEventWriter`'s grant methods); `None` forwards a worker's
+    /// grant traffic to the clients unchanged.
+    pub security: Option<Arc<dyn WorkerSecurityWriter>>,
 }
 struct ClientState {
     snapshot: Option<WorkerSnapshot>,
@@ -185,6 +396,8 @@ struct ClientState {
     binding_ready: bool,
     display_revision: f64,
     capabilities: Vec<String>,
+    /// The session this worker was bound to; absent before `bind`.
+    bound_session: Option<String>,
     controls: WorkerControls,
     connection_roles: Option<crate::session_binding::SharedConnectionRoles>,
 }
@@ -196,16 +409,13 @@ struct ClientInner {
     exited: tokio::sync::watch::Receiver<bool>,
     settled: tokio::sync::watch::Sender<u64>,
     callbacks: SessionWorkerCallbacks,
+    /// The grant dialogs this worker is waiting on, when a writer bridges them.
+    grants: Option<WorkerGrants>,
     started: std::time::Instant,
 }
 /// Host-side handle of one session worker process (senpi \`SessionWorkerClient\`).
 pub struct SessionWorkerClient {
     inner: std::sync::Arc<ClientInner>,
-}
-fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 fn wire_signal(message: &crate::session_worker_protocol::SessionWorkerWire) -> Option<u64> {
     use crate::session_worker_protocol::SessionWorkerWire as W;
@@ -255,6 +465,10 @@ impl ClientInner {
     fn quarantine(&self) {
         lock(&self.state).stopped = true;
         lock(&self.requests).close_with_error("session_closing");
+        // A quarantined worker never answers a grant dialog, so every dialog it was asked is cancelled here.
+        if let Some(grants) = &self.grants {
+            grants.cancel_all();
+        }
         if let Some(kill) = lock(&self.kill).take() {
             let _ = kill.send(());
         }
@@ -287,6 +501,73 @@ impl ClientInner {
         lock(&self.requests).close_with_error("session_worker_exited");
         self.settled.send_modify(|count| *count += 1);
         (self.callbacks.exit)();
+    }
+    /// senpi `receive`'s `output` case before publication: the worker's security traffic is the host's to route, and a
+    /// grant-select request goes to the one connection that can present it.
+    fn relay_security(&self, record: &Value, connection: Option<&str>) -> SecurityRelay {
+        let (Some(grants), Some(session_id)) = (&self.grants, lock(&self.state).bound_session.clone())
+        else {
+            return SecurityRelay::Forward(connection.map(str::to_owned));
+        };
+        let kind = record.get("type").and_then(Value::as_str);
+        if kind == Some("security_grant_settled") {
+            let Some(id) = record.get("id").and_then(Value::as_str) else {
+                return SecurityRelay::Forward(connection.map(str::to_owned));
+            };
+            grants.writer().settle_grant_dialog(&session_id, id);
+            grants.settle(id);
+            return SecurityRelay::Consumed;
+        }
+        if kind == Some("security_notice_snapshot") {
+            let Some(snapshot) = record.get("snapshot") else {
+                return SecurityRelay::Invalid;
+            };
+            if !is_security_notice_state(snapshot) {
+                return SecurityRelay::Invalid;
+            }
+            grants
+                .writer()
+                .accept_worker_security_snapshot(&session_id, snapshot);
+            return SecurityRelay::Consumed;
+        }
+        if kind == Some("extension_ui_request")
+            && record.get("method").and_then(Value::as_str) == Some("select")
+            && record.get("grantSelect").and_then(Value::as_bool) == Some(true)
+        {
+            let Some(id) = record.get("id").and_then(Value::as_str) else {
+                return SecurityRelay::Forward(connection.map(str::to_owned));
+            };
+            let fallback = lock(&self.state).capabilities.clone();
+            let cancel_id = id.to_owned();
+            let client = self.outbox.clone();
+            let target = grants.route(
+                &session_id,
+                id,
+                connection,
+                &fallback,
+                move || {
+                    // `post({ type: "cancel_grant", id })`: the worker ends the dialog nobody can present.
+                    if let Ok(line) = serde_json::to_string(
+                        &crate::session_worker_protocol::HostToSessionWorker::CancelGrant {
+                            id: cancel_id.clone(),
+                        },
+                    ) {
+                        let _ = client.send(format!("{line}\n"));
+                    }
+                },
+            );
+            if !target.accepted {
+                return SecurityRelay::Consumed;
+            }
+            return SecurityRelay::Forward(target.connection);
+        }
+        SecurityRelay::Forward(connection.map(str::to_owned))
+    }
+    /// senpi `acceptWorkerGrantResponse`: whether this response may reach the worker.
+    fn accept_grant_response(&self, id: &str, connection: Option<&str>) -> Option<bool> {
+        self.grants
+            .as_ref()
+            .and_then(|grants| grants.accept_response(id, connection))
     }
     fn receive(&self, message: crate::session_worker_protocol::SessionWorkerWire) {
         use crate::session_worker_protocol::SessionWorkerWire as W;
@@ -371,7 +652,29 @@ impl ClientInner {
                         activity.streaming,
                     );
                 }
-                (self.callbacks.output)(record, connection);
+                // The worker's security traffic is the host's to route: a grant dialog reaches only the connection
+                // that can present it, and a settled grant or a notice snapshot never reaches a client at all.
+                let target = match self.relay_security(&record, connection.as_deref()) {
+                    SecurityRelay::Forward(target) => target,
+                    SecurityRelay::Consumed => {
+                        self.credit(
+                            signal,
+                            crate::session_worker_protocol::WORKER_CREDIT_CODES.granted,
+                            None,
+                        );
+                        return;
+                    }
+                    SecurityRelay::Invalid => {
+                        self.credit(
+                            signal,
+                            crate::session_worker_protocol::WORKER_CREDIT_CODES.conflict,
+                            None,
+                        );
+                        self.fail("invalid_security_notice_snapshot");
+                        return;
+                    }
+                };
+                (self.callbacks.output)(record, target);
                 self.credit(
                     signal,
                     crate::session_worker_protocol::WORKER_CREDIT_CODES.granted,
@@ -383,6 +686,11 @@ impl ClientInner {
                 capabilities,
                 signal,
             } => {
+                // A handshake with no connection is the worker's own list, which is what an unregistered host routes
+                // a grant dialog by (senpi `options.capabilities`).
+                if connection.is_none() {
+                    lock(&self.state).capabilities = capabilities.clone();
+                }
                 // The isolate already refused a changed role; a refusal here means the two registries drifted.
                 let roles = lock(&self.state).connection_roles.clone();
                 if let Some(roles) = roles {
@@ -433,6 +741,7 @@ impl SessionWorkerClient {
         let (outbox, mut lines) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (kill, killed) = tokio::sync::oneshot::channel::<()>();
         let (exited_tx, exited) = tokio::sync::watch::channel(false);
+        let grants = callbacks.security.clone().map(WorkerGrants::new);
         let inner = std::sync::Arc::new(ClientInner {
             state: std::sync::Mutex::new(ClientState {
                 snapshot: None,
@@ -442,6 +751,7 @@ impl SessionWorkerClient {
                 binding_ready: false,
                 display_revision: 0.,
                 capabilities: Vec::new(),
+                bound_session: None,
                 controls: WorkerControls::default(),
                 connection_roles: None,
             }),
@@ -451,6 +761,7 @@ impl SessionWorkerClient {
             exited,
             settled: tokio::sync::watch::channel(0).0,
             callbacks,
+            grants,
             started: std::time::Instant::now(),
         });
         tokio::spawn(async move {
@@ -542,6 +853,7 @@ impl SessionWorkerClient {
         {
             let mut state = lock(&self.inner.state);
             state.capabilities = capabilities;
+            state.bound_session = Some(session_id.to_owned());
             state.binding_ready = true;
         }
         let mut message = serde_json::json!({"type":"bind","sessionId":session_id,"display":self.inner.display()});
@@ -559,6 +871,14 @@ impl SessionWorkerClient {
         connection: Option<String>,
         roles: Option<Vec<String>>,
     ) -> Result<(), String> {
+        // A response to a grant dialog belongs to the worker only when it came from the connection the dialog was
+        // routed to (senpi `acceptWorkerGrantResponse`); any other answer is dropped here.
+        if command.get("type").and_then(Value::as_str) == Some("extension_ui_response")
+            && let Some(id) = command.get("id").and_then(Value::as_str)
+            && self.inner.accept_grant_response(id, connection.as_deref()) == Some(false)
+        {
+            return Ok(());
+        }
         let mut message =
             serde_json::json!({"type":"command","command":command,"display":self.inner.display()});
         if let Some(connection) = connection {
@@ -700,5 +1020,147 @@ mod tests {
         snapshot.handoff_busy = None;
         assert!(worker_handoff_busy(0, Some(&snapshot)));
         assert!(!worker_busy(0, None));
+    }
+
+    /// The writer a worker's grant dialogs are routed by, with the two connections a shared host has.
+    struct FakeWriter {
+        attached: Vec<String>,
+        capable: Vec<String>,
+        empty: bool,
+        settled: std::sync::Mutex<Vec<String>>,
+        snapshots: std::sync::Mutex<Vec<Value>>,
+    }
+
+    impl WorkerSecurityWriter for FakeWriter {
+        fn attached(&self, _: &str) -> Vec<String> {
+            self.attached.clone()
+        }
+        fn has_capability(&self, connection: &str, capability: &str) -> bool {
+            capability == GRANT_SELECT_CAPABILITY
+                && self.capable.iter().any(|id| id == connection)
+        }
+        fn is_empty(&self) -> bool {
+            self.empty
+        }
+        fn settle_grant_dialog(&self, _: &str, id: &str) {
+            self.settled.lock().unwrap().push(id.to_owned());
+        }
+        fn accept_worker_security_snapshot(&self, _: &str, snapshot: &Value) {
+            self.snapshots.lock().unwrap().push(snapshot.clone());
+        }
+    }
+
+    fn grants(attached: &[&str], capable: &[&str], empty: bool) -> WorkerGrants {
+        WorkerGrants::new(Arc::new(FakeWriter {
+            attached: attached.iter().map(|id| (*id).to_owned()).collect(),
+            capable: capable.iter().map(|id| (*id).to_owned()).collect(),
+            empty,
+            settled: std::sync::Mutex::new(Vec::new()),
+            snapshots: std::sync::Mutex::new(Vec::new()),
+        }))
+    }
+
+    #[test]
+    fn a_grant_dialog_goes_to_the_connection_that_can_present_it() {
+        let grants = grants(&["peer-a", "peer-b"], &["peer-b"], false);
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&cancelled);
+        let route = grants.route("s", "ui-1", Some("peer-a"), &[], move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        // The requesting connection cannot present the grant, so the one that can gets it instead.
+        assert_eq!(
+            route,
+            WorkerGrantRoute {
+                accepted: true,
+                connection: Some("peer-b".to_owned())
+            }
+        );
+        assert_eq!(cancelled.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // Only that connection's answer reaches the worker.
+        assert_eq!(grants.accept_response("ui-1", Some("peer-a")), Some(false));
+        assert_eq!(grants.accept_response("ui-1", Some("peer-b")), Some(true));
+        assert_eq!(grants.accept_response("ui-1", Some("peer-b")), None);
+    }
+
+    #[test]
+    fn a_grant_dialog_nobody_can_present_is_cancelled_in_the_worker() {
+        let grants = grants(&["peer-a"], &[], false);
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&cancelled);
+        let route = grants.route("s", "ui-1", Some("peer-a"), &[], move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert_eq!(
+            route,
+            WorkerGrantRoute {
+                accepted: false,
+                connection: None
+            }
+        );
+        assert_eq!(cancelled.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(grants.accept_response("ui-1", Some("peer-a")), None);
+    }
+
+    #[test]
+    fn with_no_connections_the_sessions_own_capabilities_decide() {
+        let grants = grants(&[], &[], true);
+        let route = grants.route(
+            "s",
+            "ui-1",
+            None,
+            &[GRANT_SELECT_CAPABILITY.to_owned()],
+            || panic!("a capable session keeps its dialog"),
+        );
+        assert_eq!(
+            route,
+            WorkerGrantRoute {
+                accepted: true,
+                connection: None
+            }
+        );
+        // An untargeted dialog is answered by whoever takes it.
+        assert_eq!(grants.accept_response("ui-1", None), Some(true));
+    }
+
+    #[test]
+    fn a_connection_that_leaves_cancels_what_it_was_asked_and_a_settled_dialog_is_forgotten() {
+        let grants = grants(&["peer-a"], &["peer-a"], false);
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&cancelled);
+        grants.route("s", "ui-1", Some("peer-a"), &[], move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        grants.route("s", "ui-2", Some("peer-a"), &[], || {});
+        grants.settle("ui-2");
+        assert_eq!(grants.accept_response("ui-2", Some("peer-a")), None);
+        grants.cancel_for("peer-a");
+        assert_eq!(cancelled.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(grants.accept_response("ui-1", Some("peer-a")), None);
+    }
+
+    #[test]
+    fn only_a_readable_security_notice_snapshot_crosses_the_worker_wire() {
+        for snapshot in [
+            serde_json::json!({"generation":0,"notices":[]}),
+            serde_json::json!({"generation":1.0,"notices":[]}),
+            serde_json::json!({"generation":2,"notices":[{"category":"skill-link-blocked","message":"m","path":"/p"}]}),
+            serde_json::json!({"generation":1,"notices":[{"category":"mcp-env-withheld","message":"m"}]}),
+        ] {
+            assert!(is_security_notice_state(&snapshot), "{snapshot}");
+        }
+        for snapshot in [
+            serde_json::json!({}),
+            serde_json::json!({"generation":-1,"notices":[]}),
+            serde_json::json!({"generation":1.5,"notices":[]}),
+            serde_json::json!({"generation":1,"notices":{}}),
+            serde_json::json!({"generation":1,"notices":[{"category":"other","message":"m"}]}),
+            serde_json::json!({"generation":1,"notices":[{"category":"mcp-env-withheld"}]}),
+            serde_json::json!({"generation":1,"notices":[{"category":"mcp-env-withheld","message":"m","path":7}]}),
+            serde_json::json!({"generation":1,"notices":[{"category":"mcp-env-withheld","message":"m","path":null}]}),
+            serde_json::json!("snapshot"),
+        ] {
+            assert!(!is_security_notice_state(&snapshot), "{snapshot}");
+        }
     }
 }

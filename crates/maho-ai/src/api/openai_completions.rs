@@ -1549,7 +1549,7 @@ fn parse_chunk_usage(raw_usage: &Value, model: &Model) -> Usage {
     )
     .map(|count| count.max(0.0) as u64);
 
-    let mut usage = Usage {
+    let mut usage = Usage { context_usage: None,
         input,
         output: output_tokens,
         cache_read: cache_read_tokens,
@@ -1558,6 +1558,7 @@ fn parse_chunk_usage(raw_usage: &Value, model: &Model) -> Usage {
         reasoning,
         total_tokens: input + output_tokens + cache_read_tokens + cache_write_tokens,
         cost: Default::default(),
+        ..Default::default()
     };
     calculate_cost(model, &mut usage);
     usage
@@ -2387,6 +2388,7 @@ pub fn stream_with_transport(
     let output = AssistantMessage {
         failure_source: None,
         timing: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,

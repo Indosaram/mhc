@@ -6,14 +6,17 @@ pub mod agents;
 pub mod category;
 pub mod completion;
 pub mod dag;
-pub mod eval_handles;
 mod delegate_adapter;
+pub mod eval_handles;
 pub mod host;
 pub mod isolation;
 pub mod kernel_tools;
 pub mod lifecycle;
 pub mod manager;
 pub mod model_chain;
+pub mod model_chains;
+pub mod model_exclusion;
+pub mod pause;
 pub mod progress;
 pub mod renderer_text;
 pub mod run_stats;
@@ -32,5 +35,20 @@ pub mod tools;
 pub mod workpool;
 
 pub use delegate_adapter::DelegateFallbackEntry;
-pub use isolation::{IsolationRuntime, create_isolation_runtime, isolation_backends};
 pub use isolation::OwnerProbe;
+pub use isolation::{IsolationRuntime, create_isolation_runtime, isolation_backends};
+
+pub use agents::resolve_task_agents;
+pub use completion::{
+    ParentModelFallback, ParentModelFallbackPhase, ParentModelFallbackReason,
+    describe_parent_model_fallback,
+};
+pub use manager::start_admission::{
+    AdmissionHeld, HELD_START_KIND, HeldStart, StartAdmission, StartAdmissionError, StartAdmissions,
+    StartOutcome, admission_held_result, enter_start_admission,
+};
+pub use pause::admission_barrier::{
+    AdmissionBarrier, AdmissionBarrierError, AdmissionCheck, AdmissionCommit, AdmissionEntry,
+    AdmissionParticipant, AdmissionState, AdmissionTicket, ResumeCredential,
+};
+pub use pause::ports::{RunPauseOwner, RunRef, RunRefKind};

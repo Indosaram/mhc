@@ -45,7 +45,8 @@ const TERMINAL: &[WorkpoolItemStatus] = &[WorkpoolItemStatus::Completed, Workpoo
 pub fn pool_work_is_finished(pool: &WorkpoolRecord) -> bool {
     pool.status != WorkpoolStatus::Open
         && pool.items.iter().all(|item| TERMINAL.contains(&item.status))
-        && pool.workers.iter().all(|worker| worker.status != super::types::WorkpoolWorkerStatus::Busy)
+        && pool.hold.is_none()
+        && pool.workers.iter().all(|worker| worker.status == super::types::WorkpoolWorkerStatus::Idle)
 }
 
 pub fn aggregate_results(pool: &WorkpoolRecord) -> Option<Vec<WorkpoolAggregateResult>> {
@@ -108,7 +109,7 @@ mod tests {
     use std::sync::Mutex;
 
     fn pool(status: WorkpoolStatus, items: Vec<WorkpoolItem>, aggregate: Option<WorkpoolAggregate>) -> WorkpoolRecord {
-        WorkpoolRecord { version: 1, pool_id: "wp_test".into(), name: "pool".into(), parent_session_id: "parent".into(), root_session_id: "root".into(), generation: 1, revision: 0, mode: WorkpoolMode::Fresh, agent: WorkpoolAgent::Category { prompt: "p".into(), model: None, category: "quick".into() }, worker_spec: WorkpoolSpec { start: ManagerStartSpec::default(), plan: ResolvedChildPlan::default() }, status, kernel_tool_names: None, items, workers: vec![], aggregate }
+        WorkpoolRecord { hold: None, version: 1, pool_id: "wp_test".into(), name: "pool".into(), parent_session_id: "parent".into(), root_session_id: "root".into(), generation: 1, revision: 0, mode: WorkpoolMode::Fresh, agent: WorkpoolAgent::Category { prompt: "p".into(), model: None, category: "quick".into() }, worker_spec: WorkpoolSpec { start: ManagerStartSpec::default(), plan: ResolvedChildPlan::default() }, status, kernel_tool_names: None, items, workers: vec![], aggregate }
     }
 
     fn item(key: &str, status: WorkpoolItemStatus) -> WorkpoolItem {

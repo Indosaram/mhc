@@ -25,99 +25,117 @@ pub fn normalize_patch_text(patch_text: &str) -> String {
     patch_text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
-/// `stripHeredoc`.
+/// JS `\s` / `String.prototype.trim` whitespace.
+fn js_whitespace(character: char) -> bool {
+    matches!(character, '\u{0009}'..='\u{000d}' | '\u{0020}' | '\u{00a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}')
+}
+
+/// `stripHeredoc`: `^(?:cat\s+)?<<['"]?(\w+)['"]?\s*\n([\s\S]*?)\n\1\s*$` (JS `\w` is ASCII-only).
+/// Same algorithm as the gpt-apply-patch extension's `text::strip_heredoc`.
 pub fn strip_heredoc(input: &str) -> String {
-    let rest = match input.strip_prefix("cat") {
-        Some(rest) if rest.starts_with([' ', '\t']) => rest.trim_start_matches([' ', '\t']),
-        Some(_) => return input.to_string(),
-        None => input,
-    };
-    let Some(rest) = rest.strip_prefix("<<") else {
+    let mut header = input;
+    if let Some(rest) = header.strip_prefix("cat") {
+        if !rest.starts_with(js_whitespace) {
+            return input.to_string();
+        }
+        header = rest.trim_start_matches(js_whitespace);
+    }
+    let Some(rest) = header.strip_prefix("<<") else {
         return input.to_string();
     };
-    let rest = rest.trim_start_matches(['\'', '"']);
-    let delimiter_len = rest.chars().take_while(|character| character.is_alphanumeric() || *character == '_').count();
-    if delimiter_len == 0 {
+    let rest = rest.strip_prefix(['\'', '"']).unwrap_or(rest);
+    let length = rest
+        .bytes()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        .count();
+    if length == 0 {
         return input.to_string();
     }
-    let delimiter: String = rest.chars().take(delimiter_len).collect();
-    let after = rest[delimiter_len..].trim_start_matches(['\'', '"']).trim_start_matches([' ', '\t']);
-    let Some(body_and_end) = after.strip_prefix('\n') else {
-        return input.to_string();
-    };
-    let terminator = format!("\n{delimiter}");
-    let Some(index) = body_and_end.rfind(&terminator) else {
-        return input.to_string();
-    };
-    if !body_and_end[index + terminator.len()..].trim().is_empty() {
-        return input.to_string();
+    let tag = &rest[..length];
+    let rest = rest[length..].strip_prefix(['\'', '"']).unwrap_or(&rest[length..]);
+    let newlines = rest
+        .char_indices()
+        .take_while(|(_, character)| js_whitespace(*character))
+        .filter(|(_, character)| *character == '\n')
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    for newline in newlines.into_iter().rev() {
+        let body = &rest[newline + 1..];
+        for (index, _) in body.match_indices('\n') {
+            let tail = &body[index + 1..];
+            if tail
+                .strip_prefix(tag)
+                .is_some_and(|suffix| suffix.chars().all(js_whitespace))
+            {
+                return body[..index].to_string();
+            }
+        }
     }
-    body_and_end[..index].to_string()
+    input.to_string()
 }
 
-/// `extractPatchedPaths`.
+/// `extractPatchedPaths` (gpt-apply-patch `text.ts`): headers are matched on the trimmed line.
 pub fn extract_patched_paths(patch_text: &str) -> Vec<String> {
-    let normalized = strip_heredoc(&normalize_patch_text(patch_text));
-    let mut paths: Vec<String> = Vec::new();
-    for line in normalized.split('\n') {
-        let Some(rest) = line.strip_prefix("*** ") else {
-            continue;
-        };
-        for prefix in ["Add File: ", "Delete File: ", "Update File: ", "Move to: "] {
-            if let Some(path) = rest.strip_prefix(prefix) {
-                paths.push(path.to_string());
-                break;
-            }
-        }
-    }
-    paths
+    strip_heredoc(&normalize_patch_text(patch_text))
+        .split(['\n', '\u{2028}', '\u{2029}'])
+        .filter_map(|line| {
+            let trimmed = line.trim_matches(js_whitespace);
+            ["*** Add File: ", "*** Delete File: ", "*** Update File: ", "*** Move to: "]
+                .iter()
+                .find_map(|marker| trimmed.strip_prefix(marker))
+                .map(str::to_owned)
+        })
+        .collect()
 }
 
-/// `extractFileOpsFromMessage`.
+/// `extractFileOpsFromMessage`: tool calls in an assistant message, or the nested calls a codemode
+/// script recorded on its tool result.
 pub fn extract_file_ops_from_message(message: &Value, file_ops: &mut FileOperations) {
-    if message.get("role").and_then(Value::as_str) != Some("assistant") {
-        return;
+    match message.get("role").and_then(Value::as_str) {
+        Some("toolResult") => {
+            let calls = message
+                .get("nestedCalls")
+                .and_then(|nested| nested.get("calls"))
+                .and_then(Value::as_array);
+            for call in calls.into_iter().flatten() {
+                if let Some(name) = call.get("name").and_then(Value::as_str) {
+                    add_file_op(name, call.get("arguments"), file_ops);
+                }
+            }
+        }
+        Some("assistant") => {
+            let Some(content) = message.get("content").and_then(Value::as_array) else {
+                return;
+            };
+            for block in content {
+                if block.get("type").and_then(Value::as_str) != Some("toolCall") {
+                    continue;
+                }
+                if let Some(name) = block.get("name").and_then(Value::as_str) {
+                    add_file_op(name, block.get("arguments"), file_ops);
+                }
+            }
+        }
+        _ => {}
     }
-    let Some(content) = message.get("content").and_then(Value::as_array) else {
+}
+
+/// `addFileOp`.
+fn add_file_op(tool_name: &str, arguments: Option<&Value>, file_ops: &mut FileOperations) {
+    let Some(arguments) = arguments.filter(|arguments| !arguments.is_null()) else {
         return;
     };
-
-    for block in content {
-        if block.get("type").and_then(Value::as_str) != Some("toolCall") {
-            continue;
+    let path = || arguments.get("path").and_then(Value::as_str).map(str::to_string);
+    match tool_name {
+        "read" => file_ops.read.extend(path()),
+        "write" => file_ops.written.extend(path()),
+        "edit" => file_ops.edited.extend(path()),
+        "apply_patch" => {
+            if let Some(input) = arguments.get("input").and_then(Value::as_str) {
+                file_ops.edited.extend(extract_patched_paths(input));
+            }
         }
-        let (Some(name), Some(arguments)) = (block.get("name").and_then(Value::as_str), block.get("arguments")) else {
-            continue;
-        };
-        if arguments.is_null() {
-            continue;
-        }
-
-        match name {
-            "read" => {
-                if let Some(path) = arguments.get("path").and_then(Value::as_str) {
-                    file_ops.read.insert(path.to_string());
-                }
-            }
-            "write" => {
-                if let Some(path) = arguments.get("path").and_then(Value::as_str) {
-                    file_ops.written.insert(path.to_string());
-                }
-            }
-            "edit" => {
-                if let Some(path) = arguments.get("path").and_then(Value::as_str) {
-                    file_ops.edited.insert(path.to_string());
-                }
-            }
-            "apply_patch" => {
-                if let Some(input) = arguments.get("input").and_then(Value::as_str) {
-                    for patched_path in extract_patched_paths(input) {
-                        file_ops.edited.insert(patched_path);
-                    }
-                }
-            }
-            _ => {}
-        }
+        _ => {}
     }
 }
 
@@ -361,5 +379,24 @@ mod tests {
     fn an_assistant_message_without_text_omits_the_assistant_line() {
         let serialized = serialize_conversation(&[json!({ "role": "assistant", "content": [{ "type": "toolCall", "name": "read", "arguments": {} }] })]);
         assert_eq!(serialized, "[Assistant tool calls]: read()");
+    }
+
+    #[test]
+    fn file_ops_include_nested_codemode_calls_and_trimmed_patch_headers() {
+        let mut file_ops = create_file_ops();
+        extract_file_ops_from_message(
+            &json!({ "role": "toolResult", "nestedCalls": { "complete": true, "calls": [
+                { "id": "1", "name": "edit", "arguments": { "path": "a.rs" }, "status": "ok" },
+                { "id": "2", "name": "apply_patch", "arguments": { "input": "  *** Update File: b.rs  \n" }, "status": "ok" }
+            ] } }),
+            &mut file_ops,
+        );
+        assert_eq!(file_ops.edited.iter().collect::<Vec<_>>(), ["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn heredoc_with_non_ascii_delimiter_passes_through() {
+        assert_eq!(strip_heredoc("cat <<é\na\né"), "cat <<é\na\né");
+        assert_eq!(strip_heredoc("cat <<'PATCH'\na\nPATCH\n"), "a");
     }
 }

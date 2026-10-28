@@ -1163,6 +1163,10 @@ impl RpcClient {
     ) -> RpcClientResult<()> {
         self.fire_and_forget(serde_json::json!({"type": "follow_up", "message": message, "images": images, "enqueueOrder": enqueue_order}), true).await
     }
+    pub async fn abort_with_intent(&self, intent: &str) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type":"abort","intent":intent}), true)
+            .await
+    }
     pub async fn abort(&self) -> RpcClientResult<()> {
         self.fire_and_forget(serde_json::json!({"type": "abort"}), true)
             .await
@@ -1319,6 +1323,58 @@ impl RpcClient {
             true,
         )
         .await
+    }
+    pub async fn set_session_context(
+        &self,
+        context: std::collections::BTreeMap<String, Option<String>>,
+    ) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type":"set_session_context","patch":context}),
+            true,
+        )
+        .await
+    }
+    pub async fn hold_input(
+        &self,
+        input_id: &str,
+        revision: u64,
+        text: &str,
+        parent_session_id: Option<&str>,
+    ) -> RpcClientResult<Value> {
+        let mut command = serde_json::json!({"type":"hold_input","inputId":input_id,"revision":revision,"text":text});
+        if let Some(parent) = parent_session_id {
+            command["parentSessionId"] = parent.into();
+        }
+        self.request_value(command, true).await
+    }
+    pub async fn withdraw_held_input(&self, input_id: &str) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type":"withdraw_held_input","inputId":input_id}),
+            true,
+        )
+        .await
+    }
+    pub async fn pause_for_run(
+        &self,
+        parent_session_id: &str,
+        parent_pause_seq: u64,
+        run_ref: maho_core::run_holds::RunRef,
+    ) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type":"pause_for_run","parentSessionId":parent_session_id,"parentPauseSeq":parent_pause_seq,"runRef":run_ref}),true).await
+    }
+    pub async fn resume_for_run(
+        &self,
+        parent_session_id: &str,
+        parent_pause_seq: u64,
+        resume_id: &str,
+        child_seq_cutoff: u64,
+    ) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type":"resume_for_run","parentSessionId":parent_session_id,"parentPauseSeq":parent_pause_seq,"resumeId":resume_id,"childSeqCutoff":child_seq_cutoff}),true).await
+    }
+    pub async fn resume_session_with_options(&self, options: Value) -> RpcClientResult<Value> {
+        let mut command = options;
+        command["type"] = "resume_session".into();
+        self.request_value(command, true).await
     }
     /// Release a held wake on the routed session (senpi `resumeSession`).
     pub async fn resume_session(&self) -> RpcClientResult<()> {

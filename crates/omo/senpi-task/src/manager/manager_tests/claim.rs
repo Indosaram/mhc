@@ -376,7 +376,11 @@ fn given_real_manager_under_collision_when_team_members_spawn_then_no_member_sta
     });
 
     if let Some(failure) = &result.failure {
-        assert!(!failure.message.contains("member_start_rejected"), "{}", failure.message);
+        assert!(
+            !failure.message.contains("member_start_rejected"),
+            "{}",
+            failure.message
+        );
     }
     assert!(result.failure.is_none(), "{:?}", result.failure);
     assert_eq!(result.spawned.len(), 1);

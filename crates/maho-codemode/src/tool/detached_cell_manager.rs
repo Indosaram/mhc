@@ -162,13 +162,13 @@ impl EvalDetachedCellManager {
             let Some((_,cell))=manager.cells.iter().find(|(id,_)|id==cell_id) else {return manager.peek(cell_id);};
             cell.clone()
         };
-        let (kernel,queued,detached,on_kill)={let cell=cell.lock().expect("managed cell lock");(cell.kernel.clone(),cell.source.state==EvalDetachedCellState::Queued,cell.source.detached,cell.on_kill.clone())};
+        let (kernel,queued,on_kill)={let cell=cell.lock().expect("managed cell lock");(cell.kernel.clone(),cell.source.state==EvalDetachedCellState::Queued,cell.on_kill.clone())};
         if queued {
             let removed=if let Some(kernel)=kernel {kernel.cancel_queued(cell_id,reason).await?} else {false};
             cell.lock().expect("managed cell lock").source.state_retained=Some(true);
             manager.lock().expect("cell manager lock").cancel_without_interrupt(&cell);
             if !removed && let Some(on_kill)=on_kill {on_kill(reason.into());}
-        } else if detached {
+        } else {
             let (settled,signal)=tokio::sync::watch::channel(false);
             cell.lock().expect("managed cell lock").interrupt_outcome=Some(signal);
             let cancelled=manager.lock().expect("cell manager lock").cancel_without_interrupt(&cell);

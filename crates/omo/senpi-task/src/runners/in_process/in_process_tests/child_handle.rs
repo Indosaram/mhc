@@ -32,11 +32,27 @@ fn failure_message(outcome: &RunnerOutcome) -> &str {
 fn resident_handle_forwards_captured_workpool_identity_to_child_session() {
     let fake = FakeSession::new("workpool-session");
     let handle = InProcessChildHandle::restored("st_00000019", fake.clone());
-    let identity = WorkpoolChildIdentity { task_id: "st_00000019".into(), state_dir: "/state/children/st_00000019".into(), run_epoch: 6 };
-    assert!(handle.rebind_workpool_identity(identity.clone()).expect("in-process session supports rebinding").is_ok());
-    assert_eq!(fake.workpool_identity(), Some(crate::runners::in_process::child_handle::WorkpoolChildIdentity {
-        task_id: identity.task_id, state_dir: identity.state_dir, run_epoch: identity.run_epoch,
-    }));
+    let identity = WorkpoolChildIdentity {
+        task_id: "st_00000019".into(),
+        state_dir: "/state/children/st_00000019".into(),
+        run_epoch: 6,
+    };
+    assert!(
+        handle
+            .rebind_workpool_identity(identity.clone())
+            .expect("in-process session supports rebinding")
+            .is_ok()
+    );
+    assert_eq!(
+        fake.workpool_identity(),
+        Some(
+            crate::runners::in_process::child_handle::WorkpoolChildIdentity {
+                task_id: identity.task_id,
+                state_dir: identity.state_dir,
+                run_epoch: identity.run_epoch,
+            }
+        )
+    );
 }
 
 #[test]
@@ -227,7 +243,7 @@ fn given_in_process_handle_when_disposed_via_seam_then_dispose_succeeds_and_outc
 
 #[test]
 fn given_an_explicit_final_text_policy_and_a_textless_turn_when_it_settles_then_the_outcome_is_a_child_turn_failed_error()
-{
+ {
     let fake = FakeSession::new("child-session-1");
     let handle = InProcessChildHandle::start_with_completion(
         "task-1",
@@ -248,7 +264,7 @@ fn given_an_explicit_final_text_policy_and_a_textless_turn_when_it_settles_then_
 
 #[test]
 fn given_the_turn_policy_and_a_textless_normally_settled_turn_when_it_settles_then_the_outcome_is_a_completed_empty_turn()
-{
+ {
     let fake = FakeSession::new("child-session-1");
     let handle = InProcessChildHandle::start_with_completion(
         "task-1",
@@ -264,7 +280,7 @@ fn given_the_turn_policy_and_a_textless_normally_settled_turn_when_it_settles_th
 
 #[test]
 fn given_the_turn_policy_when_a_restored_handle_with_no_transcript_text_drains_then_the_outcome_is_a_completed_empty_turn()
-{
+ {
     let fake = FakeSession::new("child-session-1");
     let handle = InProcessChildHandle::restored_with_completion(
         "task-1",
@@ -277,7 +293,7 @@ fn given_the_turn_policy_when_a_restored_handle_with_no_transcript_text_drains_t
 
 #[test]
 fn given_the_turn_policy_and_a_live_turn_that_emits_a_stop_reason_error_when_it_settles_then_the_failure_still_wins()
-{
+ {
     let fake = FakeSession::new("child-session-1");
     let handle = InProcessChildHandle::start_with_completion(
         "task-1",
@@ -299,7 +315,7 @@ fn given_the_turn_policy_and_a_live_turn_that_emits_a_stop_reason_error_when_it_
 
 #[test]
 fn given_the_turn_policy_and_a_live_turn_that_emits_a_stop_reason_aborted_when_it_settles_then_the_failure_still_wins()
-{
+ {
     let fake = FakeSession::new("child-session-1");
     let handle = InProcessChildHandle::start_with_completion(
         "task-1",
@@ -320,7 +336,7 @@ fn given_the_turn_policy_and_a_live_turn_that_emits_a_stop_reason_aborted_when_i
 
 #[test]
 fn given_the_turn_policy_and_a_prompt_that_rejects_when_the_turn_settles_then_the_outcome_is_a_child_prompt_failed_error()
-{
+ {
     let fake = FakeSession::new("child-session-1");
     let handle = InProcessChildHandle::start_with_completion(
         "task-1",
@@ -341,7 +357,7 @@ fn given_the_turn_policy_and_a_prompt_that_rejects_when_the_turn_settles_then_th
 
 #[test]
 fn given_the_turn_policy_and_an_aborted_turn_when_the_prompt_resolves_then_cancellation_wins_over_the_turn_policy()
-{
+ {
     let fake = FakeSession::new("child-session-1");
     let handle = InProcessChildHandle::start_with_completion(
         "task-1",
@@ -357,7 +373,7 @@ fn given_the_turn_policy_and_an_aborted_turn_when_the_prompt_resolves_then_cance
 
 #[test]
 fn given_the_turn_policy_when_an_idle_child_is_revived_with_a_follow_up_then_the_new_textless_turn_is_also_completed_empty()
-{
+ {
     let fake = FakeSession::new("child-session-1");
     let handle = InProcessChildHandle::start_with_completion(
         "task-1",
@@ -374,4 +390,27 @@ fn given_the_turn_policy_when_an_idle_child_is_revived_with_a_follow_up_then_the
     fake.emit(&assistant_end("", "stop", None));
     fake.resolve_prompt();
     assert_eq!(handle.wait_for_idle(), RunnerOutcome::completed(""));
+}
+
+#[test]
+fn staged_exact_turn_retains_first_result_after_a_later_turn_starts() {
+    let fake = FakeSession::new("staged-session");
+    let handle = InProcessChildHandle::restored("staged-task", fake.clone());
+    let first = handle.start_initial_turn("first").unwrap();
+    fake.wait_prompt_calls(1);
+    fake.emit(&assistant_end("first result", "stop", None));
+    fake.resolve_prompt();
+    assert_eq!(
+        handle.wait_for_idle(),
+        RunnerOutcome::completed("first result")
+    );
+    handle.follow_up_turn("second").unwrap();
+    fake.wait_prompt_calls(2);
+    assert_eq!((first.outcome)(), RunnerOutcome::completed("first result"));
+    fake.emit(&assistant_end("second result", "stop", None));
+    fake.resolve_prompt();
+    assert_eq!(
+        handle.wait_for_idle(),
+        RunnerOutcome::completed("second result")
+    );
 }

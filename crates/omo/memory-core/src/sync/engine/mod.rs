@@ -9,6 +9,7 @@ pub mod batches;
 pub mod engine;
 pub mod engine_deps;
 pub mod error;
+pub mod failure;
 pub mod journal;
 pub mod legacy_cycle;
 pub mod local_signal;
@@ -22,3 +23,11 @@ pub use adapters::http_transport::{HttpTransportOptions, SyncHttpError, create_h
 pub use engine::{EngineStatus, SyncEngine};
 pub use open::{DeviceSync, OpenDeviceSyncOptions, SyncSession, open_device_sync};
 pub use ports::{RefusalCode, Sealer, Transport, Verifier};
+
+pub use crate::sync::account::{
+    AccountSessionIdle, AccountSessionOptions, AccountSessionOutcome, device_keyring_from_material,
+    open_account_session,
+};
+pub use crate::sync::keyring_port::DeviceKeyMaterial;
+pub use crate::sync::pin_dir::sync_pin_dir;
+pub use failure::{SyncFailure, SyncFailureKind, describe_sync_failure, is_failure_shown};

@@ -108,11 +108,30 @@ pub struct WorkpoolChildIdentity {
 
 /// The host agent-session surface an in-process child drives. `prompt` blocks until the turn ends.
 pub trait ChildSession: Send + Sync {
+    fn priority_pairing_registry(
+        &self,
+    ) -> Option<&dyn crate::runners::pinned_model_equivalence::PriorityPairingRegistry> {
+        None
+    }
+    fn model(&self) -> Option<crate::runners::pinned_model_equivalence::ModelIdentity> {
+        None
+    }
+    fn hold_session(&self) -> Option<Arc<dyn super::native_run_pause::RunHoldSession>> {
+        None
+    }
+    fn run_pause(&self) -> Option<&dyn crate::pause::native_child_pause::NativeRunPause> {
+        None
+    }
     fn session_id(&self) -> String;
     fn prompt(&self, text: &str) -> Result<(), HostError>;
     fn steer(&self, text: &str) -> Result<(), HostError>;
     fn follow_up(&self, text: &str) -> Result<(), HostError>;
-    fn rebind_workpool_identity(&self, _identity: WorkpoolChildIdentity) -> Option<Result<(), HostError>> { None }
+    fn rebind_workpool_identity(
+        &self,
+        _identity: WorkpoolChildIdentity,
+    ) -> Option<Result<(), HostError>> {
+        None
+    }
     fn abort(&self) -> Result<(), HostError>;
     fn subscribe(&self, listener: ChildSessionListener) -> Unsubscribe;
     fn get_last_assistant_text(&self) -> Option<String>;
@@ -153,6 +172,7 @@ struct TrackedState {
     disposed: bool,
     turn: u64,
     outcome: Option<RunnerOutcome>,
+    outcomes: std::collections::HashMap<u64, RunnerOutcome>,
     observation: TurnObservation,
 }
 
@@ -222,6 +242,7 @@ pub struct InProcessChildHandle {
     session: Arc<dyn ChildSession>,
     tracked: Arc<Tracked>,
     completion: ChildCompletionPolicy,
+    native_pause: Option<super::native_run_pause::InProcessRunPause>,
     unsubscribe_observer: Mutex<Option<Unsubscribe>>,
 }
 
@@ -237,6 +258,7 @@ impl InProcessChildHandle {
                 disposed: false,
                 turn: 0,
                 outcome: Some(settled_session_outcome(session.as_ref(), completion)),
+                outcomes: std::collections::HashMap::new(),
                 observation: TurnObservation::default(),
             }),
             settled: Condvar::new(),
@@ -245,7 +267,15 @@ impl InProcessChildHandle {
         let unsubscribe = session.subscribe(Arc::new(move |event| {
             observer.lock().observation.observe(event);
         }));
+        let native_pause = session.hold_session().map(|hold| {
+            let child = session.clone();
+            super::native_run_pause::create_in_process_run_pause(
+                hold,
+                Arc::new(move || Self::watch_engine_turn(child.clone(), completion)),
+            )
+        });
         Arc::new(Self {
+            native_pause,
             task_id: task_id.to_string(),
             session,
             tracked,
@@ -254,9 +284,94 @@ impl InProcessChildHandle {
         })
     }
 
+    pub fn create_staged_child_handle(
+        task_id: &str,
+        session: Arc<dyn ChildSession>,
+        completion: ChildCompletionPolicy,
+    ) -> Arc<Self> {
+        Self::tracked(task_id, session, completion)
+    }
+
+    pub fn watch_engine_turn(
+        session: Arc<dyn ChildSession>,
+        completion: ChildCompletionPolicy,
+    ) -> super::native_run_pause::EngineTurnWatch {
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        let sender = Arc::new(Mutex::new(Some(send)));
+        let pending = sender.clone();
+        let observation = Arc::new(Mutex::new(TurnObservation {
+            baseline: session.get_last_assistant_text(),
+            ..Default::default()
+        }));
+        let observed = observation.clone();
+        let child = session.clone();
+        let started = std::sync::atomic::AtomicBool::new(false);
+        let unsubscribe = session.subscribe(Arc::new(move |event| {
+            if event["type"] == "agent_start" {
+                started.store(true, std::sync::atomic::Ordering::Release);
+            }
+            if !started.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
+            observed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .observe(event);
+            if event["type"] == "agent_end" {
+                let outcome = turn_outcome(
+                    child.as_ref(),
+                    &observed.lock().unwrap_or_else(PoisonError::into_inner),
+                    completion,
+                );
+                if let Some(sender) = pending
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+                {
+                    let _ = sender.send(outcome);
+                }
+            }
+        }));
+        let subscription = Arc::new(Mutex::new(Some(unsubscribe)));
+        let cancel_subscription = subscription.clone();
+        super::native_run_pause::EngineTurnWatch {
+            outcome: Box::new(move || {
+                let result = receive.recv().unwrap_or_else(|_| {
+                    RunnerOutcome::error(
+                        RunnerFailureKind::ChildTurnFailed,
+                        "engine turn watch cancelled",
+                    )
+                });
+                if let Some(unsubscribe) = subscription
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+                {
+                    unsubscribe();
+                }
+                result
+            }),
+            cancel: Box::new(move || {
+                sender.lock().unwrap_or_else(PoisonError::into_inner).take();
+                if let Some(unsubscribe) = cancel_subscription
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+                {
+                    unsubscribe();
+                }
+            }),
+        }
+    }
+
     /// `createChildHandle` with the DEFAULT `FinalText` policy; other callers keep this signature.
     pub fn start(task_id: &str, session: Arc<dyn ChildSession>, prompt_text: &str) -> Arc<Self> {
-        Self::start_with_completion(task_id, session, prompt_text, ChildCompletionPolicy::FinalText)
+        Self::start_with_completion(
+            task_id,
+            session,
+            prompt_text,
+            ChildCompletionPolicy::FinalText,
+        )
     }
 
     /// `createChildHandle`: start tracking and immediately run the initial prompt.
@@ -288,20 +403,20 @@ impl InProcessChildHandle {
         handle
     }
 
-    fn begin_turn(&self, text: &str) {
+    pub(crate) fn begin_turn(&self, text: &str) -> crate::pause::ports::ResumedChildTurn {
         // The host snapshots its transcript to answer this, so read it before taking the lock the
         // session event observer also needs; no turn is active here, so no event can race it.
-        let baseline = self
-            .session
-            .get_last_assistant_text()
-            .or_else(|| match &self.tracked.lock().outcome {
-                Some(RunnerOutcome::Completed { final_response })
-                    if !final_response.is_empty() =>
-                {
-                    Some(final_response.clone())
-                }
-                _ => None,
-            });
+        let baseline =
+            self.session
+                .get_last_assistant_text()
+                .or_else(|| match &self.tracked.lock().outcome {
+                    Some(RunnerOutcome::Completed { final_response })
+                        if !final_response.is_empty() =>
+                    {
+                        Some(final_response.clone())
+                    }
+                    _ => None,
+                });
         let turn = {
             let mut state = self.tracked.lock();
             state.aborted = false;
@@ -317,11 +432,14 @@ impl InProcessChildHandle {
         let tracked = Arc::clone(&self.tracked);
         let completion = self.completion;
         let text = text.to_string();
+        let exact_tracked = Arc::clone(&tracked);
         thread::spawn(move || {
             let prompted = session.prompt(&text);
             let outcome = {
                 let mut state = tracked.lock();
                 if state.turn != turn {
+                    state.outcomes.insert(turn, RunnerOutcome::Cancelled);
+                    tracked.settled.notify_all();
                     return;
                 }
                 let outcome = match prompted {
@@ -337,6 +455,8 @@ impl InProcessChildHandle {
             session.park_idle_memory();
             let mut state = tracked.lock();
             if state.turn != turn {
+                state.outcomes.insert(turn, outcome);
+                tracked.settled.notify_all();
                 return;
             }
             state.outcome = Some(if state.aborted {
@@ -344,8 +464,25 @@ impl InProcessChildHandle {
             } else {
                 outcome
             });
+            let outcome = state.outcome.clone().expect("settled turn");
+            state.outcomes.insert(turn, outcome);
             tracked.settled.notify_all();
         });
+        crate::pause::ports::ResumedChildTurn {
+            turn_id: turn.to_string(),
+            outcome: Box::new(move || {
+                let mut state = exact_tracked.lock();
+                loop {
+                    if let Some(outcome) = state.outcomes.remove(&turn) {
+                        return outcome;
+                    }
+                    state = exact_tracked
+                        .settled
+                        .wait(state)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
+            }),
+        }
     }
 
     fn turn_active(&self) -> bool {
@@ -403,7 +540,20 @@ impl InProcessChildHandle {
     }
 }
 
+pub fn dispose_rejected_session(session: &dyn ChildSession) {
+    session.dispose();
+}
+
 impl ManagedChildHandle for InProcessChildHandle {
+    fn start_initial_turn(&self, text: &str) -> Option<crate::pause::ports::ResumedChildTurn> {
+        Some(self.begin_turn(text))
+    }
+    fn run_pause(&self) -> Option<&dyn crate::pause::native_child_pause::NativeRunPause> {
+        self.native_pause
+            .as_ref()
+            .map(|pause| pause as &dyn crate::pause::native_child_pause::NativeRunPause)
+            .or_else(|| self.session.run_pause())
+    }
     fn task_id(&self) -> &str {
         &self.task_id
     }
@@ -424,8 +574,16 @@ impl ManagedChildHandle for InProcessChildHandle {
         self.follow_up_turn(text)
     }
 
-    fn rebind_workpool_identity(&self, identity: crate::manager::child_handle::WorkpoolChildIdentity) -> Option<Result<(), HostError>> {
-        self.session.rebind_workpool_identity(WorkpoolChildIdentity { task_id: identity.task_id, state_dir: identity.state_dir, run_epoch: identity.run_epoch })
+    fn rebind_workpool_identity(
+        &self,
+        identity: crate::manager::child_handle::WorkpoolChildIdentity,
+    ) -> Option<Result<(), HostError>> {
+        self.session
+            .rebind_workpool_identity(WorkpoolChildIdentity {
+                task_id: identity.task_id,
+                state_dir: identity.state_dir,
+                run_epoch: identity.run_epoch,
+            })
     }
 
     fn abort(&self) -> Result<(), HostError> {
@@ -445,9 +603,7 @@ impl ManagedChildHandle for InProcessChildHandle {
         self.session
             .get_last_assistant_text()
             .or_else(|| match &self.tracked.lock().outcome {
-                Some(RunnerOutcome::Completed { final_response })
-                    if !final_response.is_empty() =>
-                {
+                Some(RunnerOutcome::Completed { final_response }) if !final_response.is_empty() => {
                     Some(final_response.clone())
                 }
                 _ => None,

@@ -57,7 +57,9 @@ pub fn run_senpi_startup_migration_with_options<'a>(
 ) -> SenpiStartupMigrationResult {
     if home_dir.is_empty() {
         return SenpiStartupMigrationResult {
-            error: Some("Cannot migrate configuration because no home directory is available".into()),
+            error: Some(
+                "Cannot migrate configuration because no home directory is available".into(),
+            ),
             ..Default::default()
         };
     }
@@ -82,7 +84,11 @@ pub fn run_senpi_startup_migration_with_options<'a>(
                         } else {
                             PathOperations::Posix
                         },
-                        platform: options.platform.or(if cfg!(windows) { Some(config_migration::Platform::Win32) } else { None }),
+                        platform: options.platform.or(if cfg!(windows) {
+                            Some(config_migration::Platform::Win32)
+                        } else {
+                            None
+                        }),
                         tauri_config_dirs: None,
                     },
                 },
@@ -218,9 +224,10 @@ fn list_selectors(value: Option<&Value>, path: &str) -> Vec<(String, String)> {
             .filter_map(|(index, item)| {
                 let selector = match item {
                     Value::String(selector) => Some(selector.clone()),
-                    Value::Object(entry) => {
-                        entry.get("model").and_then(Value::as_str).map(str::to_string)
-                    }
+                    Value::Object(entry) => entry
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                     _ => None,
                 };
                 selector.map(|selector| (selector, format!("{path}[{index}]")))
@@ -230,10 +237,7 @@ fn list_selectors(value: Option<&Value>, path: &str) -> Vec<(String, String)> {
     }
 }
 
-fn unserved_devin_selectors(
-    config: &Value,
-    policy: &DevinSwe2Policy<'_>,
-) -> Vec<(String, String)> {
+fn unserved_devin_selectors(config: &Value, policy: &DevinSwe2Policy<'_>) -> Vec<(String, String)> {
     if !policy.available() {
         return Vec::new();
     }
@@ -253,7 +257,10 @@ fn unserved_devin_selectors(
             if let Some(selector) = entry.get("model").and_then(Value::as_str) {
                 selectors.push((selector.to_string(), format!("{base}.model")));
             }
-            selectors.extend(list_selectors(entry.get("models"), &format!("{base}.models")));
+            selectors.extend(list_selectors(
+                entry.get("models"),
+                &format!("{base}.models"),
+            ));
             if entry.contains_key("fallback_models") {
                 selectors.extend(list_selectors(
                     entry.get("fallback_models"),
@@ -369,13 +376,16 @@ impl Extension for ConfigStartupComponent {
             .unwrap_or_default();
         if !home.is_empty() {
             env.entry("HOME".into()).or_insert_with(|| home.clone());
-            env.entry("USERPROFILE".into()).or_insert_with(|| home.clone());
+            env.entry("USERPROFILE".into())
+                .or_insert_with(|| home.clone());
         }
         let home = home.as_str();
-        let migration = self
-            .run_migration
-            .as_ref()
-            .map_or_else(|| run_senpi_startup_migration(&cwd, &env, home), |run| run(&cwd));
+        // Native migration is synchronous: registration cannot return, nor config loading
+        // begin, until migration has completed (the upstream async registration guarantee).
+        let migration = self.run_migration.as_ref().map_or_else(
+            || run_senpi_startup_migration(&cwd, &env, home),
+            |run| run(&cwd),
+        );
         let config = self.load_config.as_ref().map_or_else(
             || {
                 maho_omo_config_resolution::load_senpi_omo_config(LoadOmoConfigOptions {
@@ -386,7 +396,7 @@ impl Extension for ConfigStartupComponent {
             },
             |load| load(&cwd),
         );
-let notices = notification_messages(&migration, &config, &DevinSwe2Policy::native());
+        let notices = notification_messages(&migration, &config, &DevinSwe2Policy::native());
         let reported = Arc::new(AtomicBool::new(false));
         api.on(
             EventKind::SessionStart,

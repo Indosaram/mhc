@@ -1,7 +1,14 @@
+// Launch metadata: provisional and not promoted until release is confirmed.
+pub const FABLE55_RELEASED:bool=false;
+pub const FABLE55_PROMOTE_DEFAULTS:bool=false;
+pub const fn recommended_fable_model(released:bool,promote_defaults:bool)->&'static str {
+    if released && promote_defaults {"claude-fable-5-5"}else{"claude-fable-5-1"}
+}
+#[cfg(test)] mod launch_tests {#[test] fn promotion_requires_both_flags(){for (released,promoted,expected) in [(false,false,"claude-fable-5-1"),(true,false,"claude-fable-5-1"),(false,true,"claude-fable-5-1"),(true,true,"claude-fable-5-5")] {assert_eq!(super::recommended_fable_model(released,promoted),expected);}}}
 use maho_ai::{model::Model,types::ThinkingLevel};
 
 pub const RECOMMENDED_DEFAULT_MODELS: &[(&str,ThinkingLevel)] = &[
-    ("claude-opus-5-5",ThinkingLevel::Medium),("claude-fable-5-1",ThinkingLevel::Xhigh),
+    ("claude-opus-5-5",ThinkingLevel::Medium),(recommended_fable_model(FABLE55_RELEASED,FABLE55_PROMOTE_DEFAULTS),ThinkingLevel::Xhigh),
     ("kimi-k3",ThinkingLevel::Max),("gpt-6-astra",ThinkingLevel::Xhigh),
     ("gpt-6.1-sol",ThinkingLevel::Medium),("glm-5.3",ThinkingLevel::Max),
 ];
@@ -11,7 +18,7 @@ const GPT_PROVIDERS:&[&str]=&["chatgpt-subscription","openai","github-copilot","
 const GLM_PROVIDERS:&[&str]=&["zai-coding-plan","opencode-go"];
 /// Providers serving a recommended model, best first (empty for an unknown id).
 pub fn ranked_providers(model_id:&str)->&'static[&'static str]{match model_id{
-    "claude-opus-5-5"|"claude-fable-5-1"=>CLAUDE_PROVIDERS,"kimi-k3"=>KIMI_PROVIDERS,
+    "claude-opus-5-5"|"claude-fable-5-1"|"claude-fable-5-5"=>CLAUDE_PROVIDERS,"kimi-k3"=>KIMI_PROVIDERS,
     "gpt-6-astra"|"gpt-6.1-sol"=>GPT_PROVIDERS,"glm-5.3"=>GLM_PROVIDERS,_=>&[]
 }}
 pub fn canonical_model_id(id:&str)->String{
@@ -43,8 +50,8 @@ pub fn find_available_recommendation<'a>(recommendations:&'a [Recommendation],av
     }
     None
 }
-pub fn can_auto_switch(mode:&str,provenance:Option<&str>)->bool{
-    mode!="app-server"&&matches!(provenance,Some("provider-default"|"first-available"))
+pub fn can_auto_switch(provenance:Option<&str>)->bool{
+    matches!(provenance,Some("provider-default"|"first-available"))
 }
 
 use maho_ext_api::{Extension,ExtensionApi,ExtensionContext,ExtensionEvent,EventKind,EventResult,FlagType,FlagValue,ExtensionMode,ModelSelectSource,NotificationType,ExtensionFailure};
@@ -71,7 +78,7 @@ impl Extension for RecommendedModels{
                     guard.disabled=runtime.get_flag("no-recommended-models")==Some(FlagValue::Boolean(true))||settings.get().get("warnings").and_then(|value|value.get("offRecommendedModel")).and_then(|value|value.as_bool())==Some(true);
                     let configured=settings.get().get("recommendedModels").and_then(|value|value.as_array()).map(|ids|ids.iter().filter_map(|id|id.as_str().map(str::to_owned)).collect::<Vec<_>>());
                     guard.recommendations=recommendations_for(configured.as_deref());
-                    guard.can_switch=can_auto_switch(if ctx.mode==ExtensionMode::AppServer{"app-server"}else{"other"},event.initial_model_provenance.as_deref());
+                    guard.can_switch=can_auto_switch(event.initial_model_provenance.as_deref());
                     if guard.disabled||!guard.can_switch||is_recommended(ctx.model.as_ref(),&guard.recommendations){return Ok(EventResult::None);}
                     let available=ctx.model_registry.get_available();
                     let target=find_available_recommendation(&guard.recommendations,&available,|model|ctx.model_registry.has_configured_auth(model)).map(|(recommendation,model)|(recommendation.clone(),model.clone()));

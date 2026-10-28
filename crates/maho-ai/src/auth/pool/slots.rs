@@ -681,6 +681,65 @@ fn merge_provided_pool(
     }
 }
 
+/// A login tried to store an API-key credential whose `key` is blank or missing (#3867).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("Refusing to save an empty API key")]
+pub struct EmptyApiKeyError;
+
+/// True when an API-key credential names a `key` that is blank, whitespace or empty string.
+pub fn has_blank_key(credential: &Credential) -> bool {
+    match credential {
+        Credential::ApiKey(api_key) => api_key
+            .key
+            .as_deref()
+            .is_some_and(|k| k.trim().is_empty()),
+        Credential::OAuth(_) => false,
+    }
+}
+
+/// True when a pooled API-key credential names a `key` that is blank, whitespace or empty string.
+pub fn has_blank_pooled_key(credential: &PooledCredential) -> bool {
+    if credential.credential_type != PooledCredentialType::ApiKey {
+        return false;
+    }
+    credential
+        .key
+        .as_deref()
+        .is_some_and(|k| k.trim().is_empty())
+}
+
+/// Drops a blank or whitespace `key` from an API-key credential; used only for providers that declare `keyOptional`.
+pub fn without_blank_key(mut credential: Credential) -> Credential {
+    if let Credential::ApiKey(ref mut api_key) = credential
+        && api_key
+            .key
+            .as_deref()
+            .is_some_and(|k| k.trim().is_empty())
+        {
+            api_key.key = None;
+        }
+    credential
+}
+
+/// Throws `EmptyApiKeyError` when an API-key credential names a `key` that is blank/whitespace.
+pub fn assert_login_key_present(credential: &Credential) -> Result<(), EmptyApiKeyError> {
+    if has_blank_key(credential) {
+        Err(EmptyApiKeyError)
+    } else {
+        Ok(())
+    }
+}
+
+pub fn assert_login_pooled_key_present(
+    credential: &PooledCredential,
+) -> Result<(), EmptyApiKeyError> {
+    if has_blank_pooled_key(credential) {
+        Err(EmptyApiKeyError)
+    } else {
+        Ok(())
+    }
+}
+
 pub enum LoginSlotOrigin {
     Generated,
     Provider,
@@ -691,6 +750,7 @@ pub fn append_login_slot(
     flat: PooledCredential,
     mut on_allocated: impl FnMut(&str, LoginSlotOrigin),
 ) -> Result<PooledCredential, String> {
+    assert_login_pooled_key_present(&flat).map_err(|e| e.to_string())?;
     // A pool holds one kind: a login of the other kind replaces the credential instead of joining
     // it as a slot nothing can project (senpi#3448). The caller backs up what it replaces.
     let current = stored.filter(|stored| stored.credential_type == flat.credential_type);
@@ -2190,5 +2250,62 @@ mod pool_resolution_tests {
             .expect("default slot");
         assert_eq!(default.access, Some("refreshed-r1".into()));
         assert_eq!(default.refresh, Some("r1-next".into()));
+    }
+
+    #[test]
+    fn append_login_slot_refuses_a_blank_api_key() {
+        let empty_key = PooledCredential {
+            credential_type: PooledCredentialType::ApiKey,
+            key: Some("".into()),
+            ..Default::default()
+        };
+        let whitespace_key = PooledCredential {
+            credential_type: PooledCredentialType::ApiKey,
+            key: Some("   ".into()),
+            ..Default::default()
+        };
+        assert!(append_login_slot(None, empty_key.clone(), |_, _| {}).is_err());
+        assert!(append_login_slot(None, whitespace_key.clone(), |_, _| {}).is_err());
+
+        let existing = PooledCredential {
+            credential_type: PooledCredentialType::ApiKey,
+            key: Some("primary".into()),
+            accounts: Some(vec![CredentialSlot {
+                name: "default".into(),
+                key: Some("primary".into()),
+                source: Some(CredentialSlotSource::Login),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert!(append_login_slot(Some(existing.clone()), empty_key, |_, _| {}).is_err());
+        assert!(append_login_slot(Some(existing), whitespace_key, |_, _| {}).is_err());
+
+        let env_only = PooledCredential {
+            credential_type: PooledCredentialType::ApiKey,
+            key: None,
+            ..Default::default()
+        };
+        assert!(append_login_slot(None, env_only, |_, _| {}).is_ok());
+    }
+
+    #[test]
+    fn without_blank_key_drops_blank_key_only() {
+        let cred = Credential::ApiKey(ApiKeyCredential {
+            key: Some("  ".into()),
+            ..Default::default()
+        });
+        let cleaned = without_blank_key(cred);
+        assert_eq!(cleaned.as_api_key().unwrap().key, None);
+
+        let valid = Credential::ApiKey(ApiKeyCredential {
+            key: Some("valid-key".into()),
+            ..Default::default()
+        });
+        let untouched = without_blank_key(valid);
+        assert_eq!(
+            untouched.as_api_key().unwrap().key.as_deref(),
+            Some("valid-key")
+        );
     }
 }

@@ -74,8 +74,17 @@ pub struct DesktopEngineRpcError {
     pub data: Option<JsonRpcErrorData>,
 }
 
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+#[error("{message}")]
+pub struct DesktopLaunchContextError {
+    pub message: String,
+    pub reason: String,
+}
+
 #[derive(Debug, thiserror::Error, Clone, PartialEq)]
 pub enum DesktopError {
+    #[error(transparent)]
+    LaunchContext(#[from] DesktopLaunchContextError),
     #[error(transparent)]
     Service(#[from] DesktopServiceError),
     #[error(transparent)]

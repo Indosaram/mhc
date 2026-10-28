@@ -1,4 +1,4 @@
-//! Port of omo-senpi `components/model-profile/resolve.ts` at omo `455dee62`: the pure resolver that
+//! Port of omo-senpi `components/model-profile/resolve.ts` at omo `v5.1.47`: the pure resolver that
 //! overlays `omo.json` `model_profiles` on the builtin table and picks the first rung the live
 //! registry can serve.
 //!
@@ -15,6 +15,11 @@
 //! counts as "that model". A rung that lists providers is served only by them, so a builtin lane
 //! never lands the session on a gateway's copy of its model (#9146); only a user's bare model id,
 //! which names no provider, matches anywhere.
+//!
+//! A builtin rung that none of its listed providers serves may still resolve on a provider the user
+//! DECLARED in `models.json` ([`crate::custom_providers`]), but only on an id declared for it, in
+//! declaration order (#10485): the declaration is the permission, so a provider's own catalog never
+//! lends a builtin lane an id the user never named.
 
 use std::collections::BTreeSet;
 
@@ -25,6 +30,7 @@ use maho_ext_api::JsonValue;
 use crate::builtin_profiles::{
     BuiltinModelProfile, ModelProfileFamily, ModelProfileTier, builtin_model_profiles,
 };
+use crate::custom_providers::DeclaredModelProvider;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelProfileSource {
@@ -37,6 +43,8 @@ pub enum ModelProfileSource {
 pub struct ModelProfileSummary {
     pub id: String,
     pub display_name: String,
+    /// The lane's one-line warning, when it has one; a picker renders it in bold.
+    pub caution: Option<String>,
     pub source: ModelProfileSource,
     pub family: Option<ModelProfileFamily>,
     pub tier: Option<ModelProfileTier>,
@@ -64,6 +72,9 @@ pub struct ResolveModelProfileInput<'a> {
     pub active: &'a str,
     /// The flat `provider/id` list the live senpi registry reports.
     pub available_models: &'a [String],
+    /// [`crate::custom_providers::custom_model_providers`]: models.json providers with their
+    /// declared model ids, in declaration order.
+    pub custom_providers: Option<&'a [DeclaredModelProvider]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -164,6 +175,10 @@ fn tier_of(value: &JsonValue) -> Option<ModelProfileTier> {
     }
 }
 
+fn caution_of(value: &JsonValue) -> Option<String> {
+    value.get("caution").and_then(JsonValue::as_str).map(str::to_owned)
+}
+
 /// The builtin table overlaid with `omo.json` `model_profiles`. A user entry replaces a builtin of
 /// the same name WHOLESALE - no per-field merge, so a label-only override does not inherit the
 /// builtin chain and is reported as `empty` rather than silently running builtin models under a
@@ -180,6 +195,7 @@ pub fn merge_model_profiles(
             let replaced = merged.get(id).map(|definition| definition.profile.clone());
             let family = family_of(entry).or_else(|| replaced.as_ref().and_then(|profile| profile.family));
             let tier = tier_of(entry).or_else(|| replaced.as_ref().and_then(|profile| profile.tier));
+            let caution = caution_of(entry).or_else(|| replaced.as_ref().and_then(|profile| profile.caution.clone()));
             let display_name = entry
                 .get("display_name")
                 .and_then(JsonValue::as_str)
@@ -197,6 +213,7 @@ pub fn merge_model_profiles(
                     profile: ModelProfileSummary {
                         id: id.clone(),
                         display_name,
+                        caution,
                         source: ModelProfileSource::User,
                         family,
                         tier,
@@ -214,6 +231,7 @@ fn builtin_definition(id: &str, builtin: &BuiltinModelProfile) -> ModelProfileDe
         profile: ModelProfileSummary {
             id: id.to_owned(),
             display_name: builtin.display_name.to_owned(),
+            caution: builtin.caution.map(str::to_owned),
             source: ModelProfileSource::Builtin,
             family: Some(builtin.family),
             tier: Some(builtin.tier),
@@ -296,15 +314,43 @@ fn match_scoped_user_rung(
     None
 }
 
+// A builtin rung falls back to a provider the user declared in models.json only on a model id the
+// user declared for it, served as the exact `<provider>/<model id>`: a gateway's re-published copy
+// carries a vendor-prefixed id, an undeclared provider is not in the list, and a built-in catalog
+// extended with other models does not serve this one, so #9146 still holds.
+fn match_custom_provider(
+    rung: &ModelProfileRung,
+    available: &indexmap::IndexSet<String>,
+    custom_providers: &[DeclaredModelProvider],
+) -> Option<RungMatch> {
+    let declared: Vec<String> = custom_providers
+        .iter()
+        .filter(|declared| {
+            !rung.providers.contains(&declared.provider)
+                && declared.model_ids.contains(&rung.model)
+        })
+        .map(|declared| declared.provider.clone())
+        .collect();
+    match_scoped_user_rung(
+        &ModelProfileRung { providers: declared, ..rung.clone() },
+        available,
+    )
+}
+
 fn match_profile_rung(
     rung: &ModelProfileRung,
     available: &indexmap::IndexSet<String>,
     definition: &ModelProfileDefinition,
+    custom_providers: &[DeclaredModelProvider],
 ) -> Option<RungMatch> {
     if definition.profile.source == ModelProfileSource::User && !rung.providers.is_empty() {
         return match_scoped_user_rung(rung, available);
     }
-    match_rung(rung, available)
+    let listed = match_rung(rung, available);
+    if listed.is_some() || definition.profile.source != ModelProfileSource::Builtin {
+        return listed;
+    }
+    match_custom_provider(rung, available, custom_providers)
 }
 
 /// Resolve the active `model_profile` against the live registry listing.
@@ -318,6 +364,7 @@ pub fn resolve_model_profile(input: &ResolveModelProfileInput<'_>) -> ModelProfi
         let profile = ModelProfileSummary {
             id: active.to_owned(),
             display_name: active.to_owned(),
+            caution: None,
             source: ModelProfileSource::Pin,
             family: None,
             tier: None,
@@ -359,9 +406,10 @@ pub fn resolve_model_profile(input: &ResolveModelProfileInput<'_>) -> ModelProfi
     }
 
     let mut skipped: Vec<String> = Vec::new();
+    let custom_providers = input.custom_providers.unwrap_or(&[]);
     if !available.is_empty() {
         for rung in &definition.models {
-            if let Some(matched) = match_profile_rung(rung, &available, definition) {
+            if let Some(matched) = match_profile_rung(rung, &available, definition, custom_providers) {
                 return ModelProfileResolution::Resolved {
                     profile: definition.profile.clone(),
                     provider: matched.provider,

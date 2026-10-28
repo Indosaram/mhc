@@ -4,20 +4,27 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use maho_agent::{
-    Agent, AgentContinuationOptions, AgentMessage, AgentOptions, AgentPromptInput, AgentTool, PartialAgentState,
-    StreamFn,
+    Agent, AgentContinuationOptions, AgentMessage, AgentOptions, AgentPromptInput, AgentTool,
+    PartialAgentState, StreamFn,
 };
 use maho_ai::types::{ModelThinkingLevel, StopReason, Usage};
 use maho_ai::utils::abort::AbortSignal;
 use maho_ai::utils::event_stream::AssistantMessageEventStream;
-use support::{assistant, message_stream, scripted_stream_fn, test_model, text_block, user_message};
+use support::{
+    assistant, message_stream, scripted_stream_fn, test_model, text_block, user_message,
+};
 
 fn unused_stream_fn() -> StreamFn {
-    Arc::new(|_model, _context, _options| message_stream(assistant(vec![text_block("ok")], StopReason::Stop)))
+    Arc::new(|_model, _context, _options| {
+        message_stream(assistant(vec![text_block("ok")], StopReason::Stop))
+    })
 }
 
 fn agent_with(stream_fn: StreamFn) -> Agent {
-    Agent::new(AgentOptions { stream_fn: Some(stream_fn), ..AgentOptions::default() })
+    Agent::new(AgentOptions {
+        stream_fn: Some(stream_fn),
+        ..AgentOptions::default()
+    })
 }
 
 #[test]
@@ -75,14 +82,18 @@ fn subscribes_and_unsubscribes_without_emitting_on_subscribe() {
 async fn emits_full_lifecycle_events_for_thrown_run_failures() {
     let failing: StreamFn = Arc::new(|_model, _context, _options| {
         let stream = AssistantMessageEventStream::assistant();
-        stream.fail(maho_ai::utils::event_stream::StreamError::new("provider exploded"));
+        stream.fail(maho_ai::utils::event_stream::StreamError::new(
+            "provider exploded",
+        ));
         stream
     });
     let agent = agent_with(failing);
     let events: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = Arc::clone(&events);
     agent.subscribe(Arc::new(move |event, _signal| {
-        sink.lock().unwrap().push(support::event_name(&event).to_owned());
+        sink.lock()
+            .unwrap()
+            .push(support::event_name(&event).to_owned());
         Box::pin(async {})
     }));
 
@@ -102,7 +113,11 @@ async fn emits_full_lifecycle_events_for_thrown_run_failures() {
         ]
     );
     let state = agent.state();
-    let last = state.messages().last().and_then(AgentMessage::as_assistant).expect("assistant message");
+    let last = state
+        .messages()
+        .last()
+        .and_then(AgentMessage::as_assistant)
+        .expect("assistant message");
     assert_eq!(last.stop_reason, StopReason::Error);
     assert_eq!(last.error_message.as_deref(), Some("provider exploded"));
     assert_eq!(state.error_message.as_deref(), Some("provider exploded"));
@@ -110,7 +125,10 @@ async fn emits_full_lifecycle_events_for_thrown_run_failures() {
 
 #[tokio::test]
 async fn passes_the_active_abort_signal_to_subscribers() {
-    let agent = agent_with(scripted_stream_fn(vec![assistant(vec![text_block("ok")], StopReason::Stop)]));
+    let agent = agent_with(scripted_stream_fn(vec![assistant(
+        vec![text_block("ok")],
+        StopReason::Stop,
+    )]));
     let seen = Arc::new(std::sync::Mutex::new(Vec::<bool>::new()));
     let sink = Arc::clone(&seen);
     agent.subscribe(Arc::new(move |_event, signal: AbortSignal| {
@@ -125,7 +143,10 @@ async fn passes_the_active_abort_signal_to_subscribers() {
 
 #[tokio::test]
 async fn steer_and_follow_up_queue_messages() {
-    let agent = agent_with(scripted_stream_fn(vec![assistant(vec![text_block("ok")], StopReason::Stop)]));
+    let agent = agent_with(scripted_stream_fn(vec![assistant(
+        vec![text_block("ok")],
+        StopReason::Stop,
+    )]));
     assert!(!agent.has_queued_messages());
     agent.steer(user_message("steering"));
     assert!(agent.has_queued_messages());
@@ -166,12 +187,20 @@ fn hanging_run() -> HangingRun {
         created.push(maho_ai::types::AssistantMessageEvent::Start {
             partial: assistant(Vec::new(), StopReason::Pending),
         });
-        if let Some(sender) = started_tx.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() {
+        if let Some(sender) = started_tx
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
             let _ = sender.send(());
         }
         created.clone()
     });
-    HangingRun { stream_fn, started, stream }
+    HangingRun {
+        stream_fn,
+        started,
+        stream,
+    }
 }
 
 #[tokio::test]
@@ -198,12 +227,16 @@ async fn prompt_while_streaming_panics() {
     let task = tokio::spawn(async move { runner.prompt(AgentPromptInput::text("first")).await });
     run.started.await.expect("run started");
     let second = agent.clone();
-    let second_task = tokio::spawn(async move { second.prompt(AgentPromptInput::text("second")).await });
+    let second_task =
+        tokio::spawn(async move { second.prompt(AgentPromptInput::text("second")).await });
     let outcome = second_task.await;
     agent.abort(None);
     run.stream.end(None);
     let _ = task.await;
-    assert!(outcome.is_err(), "a second prompt while streaming must panic");
+    assert!(
+        outcome.is_err(),
+        "a second prompt while streaming must panic"
+    );
 }
 
 #[tokio::test]
@@ -222,7 +255,11 @@ async fn set_tools_and_messages_round_trip() {
 async fn continue_run_without_messages_panics() {
     let agent = agent_with(unused_stream_fn());
     let runner = agent.clone();
-    let task = tokio::spawn(async move { runner.continue_run(AgentContinuationOptions::default()).await });
+    let task = tokio::spawn(async move {
+        runner
+            .continue_run(AgentContinuationOptions::default())
+            .await
+    });
     assert!(task.await.is_err());
 }
 
@@ -239,4 +276,31 @@ async fn session_id_and_timeouts_round_trip() {
     agent.set_max_retry_delay_ms(Some(7));
     assert_eq!(agent.max_retry_delay_ms(), Some(7));
     let _ = Usage::default();
+}
+
+#[tokio::test]
+async fn peek_and_remove_queued_messages() {
+    let agent = agent_with(unused_stream_fn());
+    let steering = user_message("steering");
+    let follow_up = user_message("follow_up");
+    agent.steer(steering.clone());
+    agent.follow_up(follow_up.clone());
+
+    // Without all: previews only the next queue batch (steering first)
+    assert_eq!(agent.peek_queued_messages(false), vec![steering.clone()]);
+    // With all: returns both queues combined without consuming
+    assert_eq!(
+        agent.peek_queued_messages(true),
+        vec![steering.clone(), follow_up.clone()]
+    );
+    // Messages remain queued after peek
+    assert!(agent.has_queued_messages());
+
+    // remove_queued_message removes the target message
+    assert!(agent.remove_queued_message(&steering));
+    assert_eq!(agent.peek_queued_messages(false), vec![follow_up.clone()]);
+    assert!(!agent.remove_queued_message(&steering));
+    assert!(agent.remove_queued_message(&follow_up));
+    assert_eq!(agent.peek_queued_messages(true), Vec::<AgentMessage>::new());
+    assert!(!agent.has_queued_messages());
 }

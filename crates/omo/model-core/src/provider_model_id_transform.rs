@@ -94,6 +94,8 @@ fn transform_model_for_provider_using_anthropic_behavior(provider: &str, model: 
         "kimi-coding" | "kimi-for-coding" => match model {
             "kimi-k3" => "k3".to_string(),
             "kimi-k3-256k" => "k3-256k".to_string(),
+            "kimi-k3.1-pro" => "k3.1-pro".to_string(),
+            "kimi-k3.1-pro-highspeed" => "k3.1-pro-highspeed".to_string(),
             _ => model.to_string(),
         },
         _ => model.to_string(),

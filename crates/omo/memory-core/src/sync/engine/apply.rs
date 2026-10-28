@@ -358,6 +358,7 @@ pub fn advance(deps: &EngineDeps, journal: &SyncJournal, start: CycleRecord) -> 
         save(&cycle, SavePoint::Committed)?;
     }
     if cycle.stage == CycleStage::Committed {
+        deps.repo.sync_index(&cycle.keys)?;
         adopt_landed_renders(deps, journal, &cycle)?;
         deps.store.persist()?;
         journal.record_applied(&cycle.batches)?;

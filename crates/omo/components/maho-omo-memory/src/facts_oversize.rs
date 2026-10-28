@@ -106,6 +106,7 @@ mod tests {
     fn envelope_refuses_launch_and_charges_frontiers() {
         let envelope = FactsPayloadEnvelope {
             version: 1,
+            agreement_event_version: Some(1),
             identity: "agent".into(),
             today: "2026-08-10".into(),
             known_people: vec![],
@@ -146,6 +147,7 @@ mod tests {
     fn entry_oversize_records_each_without_global_refusal() {
         let envelope = FactsPayloadEnvelope {
             version: 1,
+            agreement_event_version: Some(1),
             identity: "agent".into(),
             today: "2026-08-10".into(),
             known_people: vec![],

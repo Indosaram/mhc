@@ -10,10 +10,17 @@ pub struct MemoryPendingLedger {
 }
 
 #[derive(Clone, Debug)]
+pub struct ProjectScope {
+    pub memory_root: std::path::PathBuf,
+    pub auto_identity: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct MemoryIdentityContext {
     pub identity: String,
     pub identity_paths: MemoryIdentityPaths,
     pub durable_root: std::path::PathBuf,
+    pub project_scope: Option<ProjectScope>,
     pub binding: MemorySessionBinding,
     pub ledger: std::sync::Arc<std::sync::Mutex<MemoryPendingLedger>>,
 }
@@ -23,10 +30,12 @@ impl MemoryIdentityContext {
     /// the RPC snapshot share; clones of this context share it too.
     pub fn new(identity: String, identity_paths: MemoryIdentityPaths, binding: MemorySessionBinding) -> Self {
         let durable_root=identity_paths.root.clone();
-        Self { identity, identity_paths, durable_root, binding, ledger: std::sync::Arc::new(std::sync::Mutex::new(MemoryPendingLedger::default())) }
+        Self { identity, identity_paths, durable_root, project_scope: None, binding, ledger: std::sync::Arc::new(std::sync::Mutex::new(MemoryPendingLedger::default())) }
     }
 
     pub fn with_durable_root(mut self, durable_root: std::path::PathBuf) -> Self { self.durable_root=durable_root; self }
+
+    pub fn with_project_scope(mut self, scope: ProjectScope) -> Self { self.project_scope = Some(scope); self }
 
     pub fn repo_path(&self) -> &Path { &self.identity_paths.repo }
 

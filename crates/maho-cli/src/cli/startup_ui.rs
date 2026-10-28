@@ -44,6 +44,7 @@ pub fn load_theme_resources(
         let source = |theme: &Theme| theme.source_path.as_ref().map_or_else(|| "<builtin>".to_owned(), |path| path.display().to_string());
         if let Some(existing) = themes.iter().find(|existing| existing.name == theme.name) {
             diagnostics.push(ResourceDiagnostic {
+                category: None,
                 diagnostic_type: ResourceDiagnosticType::Collision,
                 message: format!("name \"{}\" collision", theme.name),
                 path: theme.source_path.as_ref().map(|path| path.display().to_string()),
@@ -64,7 +65,7 @@ pub fn load_theme_resources(
 }
 
 fn theme_warning(message: String, path: String) -> ResourceDiagnostic {
-    ResourceDiagnostic { diagnostic_type: ResourceDiagnosticType::Warning, message, path: Some(path), collision: None }
+    ResourceDiagnostic { category: None, diagnostic_type: ResourceDiagnosticType::Warning, message, path: Some(path), collision: None }
 }
 
 /// senpi `loadThemesFromDir`: every `*.json` file (symlinks followed) in `dir`.

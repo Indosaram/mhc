@@ -1,4 +1,4 @@
-//! Native gateway rules component crate.
+//! Native gateway component crate.
 //!
 //! Upstream counterpart: `packages/omo-senpi/src/components/gateway`.
 //!
@@ -6,6 +6,12 @@
 //! with an active binding get their scope's compiled behavioral rules as one
 //! `<operating-rules version="...">` block in the system prompt; a rules commit appends
 //! exactly one `rules_changed` delivery per affected session.
+//!
+//! The `thread` tree is the session gateway: durable deliveries between sessions with sender
+//! provenance, the relay that binds a session to a conversation thread, and the store extensions a
+//! session may call (`packages/omo-senpi/src/components/thread/`).
+
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod index;
 pub mod migrations;
@@ -13,6 +19,7 @@ pub mod paths;
 pub mod prompt;
 pub mod rules_block;
 pub mod store_extension;
+pub mod thread;
 
 pub use index::{has_scopes, GatewayComponent, GatewayComponentOptions};
 pub use migrations::{GATEWAY_RULES_EXTENSION_NAME, GATEWAY_RULES_MIGRATIONS};

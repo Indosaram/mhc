@@ -1,6 +1,7 @@
 //! Library side of the `mhc` binary: argument parsing and command dispatch (`cli`), the package
 //! manager commands (`install`/`remove`/`update`/`list`/`config`), `import-omo`, and the startup
 //! config and directory migrations. `src/main.rs` is the process entry point.
+#![recursion_limit = "256"]
 
 pub mod brand_dir_migration;
 pub mod cli;

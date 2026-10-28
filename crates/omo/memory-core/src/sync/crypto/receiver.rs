@@ -141,3 +141,46 @@ pub fn receiver_refusal(history: &[SyncEntry], entry: &SyncEntry) -> Option<Rece
         &BTreeSet::from([entry.seq()]),
     )
 }
+
+/// The service receiver positioned after verified keyring history.
+#[derive(Debug, Default)]
+pub struct HistoryReceiver {
+    receiver: super::vendor::sync_format::receive::KeyringReceiver,
+    last_seq: u64,
+    disagrees: bool,
+}
+impl HistoryReceiver {
+    pub fn positioned_after(history: &[SyncEntry]) -> Self {
+        let mut receiver = Self::default();
+        for entry in history {
+            if receiver.keyring(entry).is_some() {
+                receiver.disagrees = true;
+                break;
+            }
+        }
+        receiver
+    }
+    pub fn keyring(&mut self, entry: &SyncEntry) -> Option<ReceiverCheck> {
+        if self.disagrees {
+            return Some(RECEIVER_SEQ_MISMATCH);
+        }
+        let refused = self.receiver.receive(&entry.wire());
+        if refused.is_none() {
+            self.last_seq = entry.seq();
+        }
+        refused
+    }
+    pub fn batch(&self, entry: &SyncEntry) -> Option<ReceiverCheck> {
+        if self.disagrees {
+            return Some(RECEIVER_SEQ_MISMATCH);
+        }
+        if entry.seq() <= self.last_seq {
+            return Some(SEQ_NOT_INCREASING);
+        }
+        first_refusal_at(
+            &fold_refusal(&[entry.wire()]),
+            entry,
+            &BTreeSet::from([entry.seq()]),
+        )
+    }
+}

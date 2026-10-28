@@ -59,7 +59,7 @@ impl Extension for CursorCliExtension {
             }
         }
         let settings=self.settings.clone();
-        let config=ProviderConfig {name:Some(crate::oauth_login::PROVIDER_NAME.into()),base_url:Some(crate::oauth_login::PROVIDER_ID.into()),api:Some(crate::oauth_login::PROVIDER_ID.into()),
+        let config=ProviderConfig {owns_account_selection:true,name:Some(crate::oauth_login::PROVIDER_NAME.into()),base_url:Some(crate::oauth_login::PROVIDER_ID.into()),api:Some(crate::oauth_login::PROVIDER_ID.into()),
             stream_simple:Some(self.stream.clone()),models:Some(crate::models::static_models()),oauth:Some(self.oauth.clone()),fallback_eligible:Some(Arc::new(move || {let current=settings();!current.explicitly_disabled&&!crate::guardrails::force_refusal_pending(&current)})),..Default::default()};
         api.register_provider(crate::oauth_login::PROVIDER_ID,config.clone()).expect("Cursor CLI provider registration");
         if let Some((resolve,agent_dir,environment))=&self.catalog {

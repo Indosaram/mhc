@@ -49,15 +49,27 @@ pub trait ResidentHandle: Send + Sync {
     fn abort(&self) -> Result<(), HostError>;
     fn dispose(&self) -> Result<(), HostError>;
     fn terminate(&self) -> Result<(), HostError>;
+    fn mark_stopping(&self) {}
+    fn is_host_session(&self) -> bool {
+        false
+    }
+    fn publish_task_status(&self, _status: crate::state::TaskStatus) -> Result<(), HostError> {
+        Ok(())
+    }
 }
 
 /// The live-handle registry the lifecycle consults and prunes.
 pub trait ResidencyRegistry: Send + Sync {
+    fn owns_record(&self, _record: &TaskRecord) -> bool {
+        false
+    }
     fn get(&self, task_id: &str) -> Option<Arc<dyn ResidentHandle>>;
     fn entries(&self) -> Vec<Arc<dyn ResidentHandle>>;
     fn forget(&self, task_id: &str);
     fn has_pending_sends(&self, task_id: &str) -> bool;
-    fn try_begin_send(&self, _task_id: &str) -> bool { true }
+    fn try_begin_send(&self, _task_id: &str) -> bool {
+        true
+    }
     fn end_send(&self, _task_id: &str) {}
     /// Whether this process is mid-launch for `task_id`: its child may already run while no handle is
     /// registered yet, so reconcile must not treat the record as an orphan.
@@ -93,6 +105,7 @@ pub enum RespawnFailureCode {
     SpawnSpecUnavailable,
     SessionUnavailable,
     TeamInactive,
+    RunPaused,
     RespawnFailed,
 }
 
@@ -104,6 +117,7 @@ impl RespawnFailureCode {
             Self::SpawnSpecUnavailable => "spawn_spec_unavailable",
             Self::SessionUnavailable => "session_unavailable",
             Self::TeamInactive => "team_inactive",
+            Self::RunPaused => "run_paused",
             Self::RespawnFailed => "respawn_failed",
         }
     }

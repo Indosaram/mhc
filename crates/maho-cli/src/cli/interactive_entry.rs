@@ -964,6 +964,7 @@ async fn resolve_interactive_startup_theme(
                 .any(|diagnostic| diagnostic.path.as_deref() == Some(path.as_str()))
         {
             theme_diagnostics.push(maho_core::diagnostics::ResourceDiagnostic {
+                category: None,
                 diagnostic_type: maho_core::diagnostics::ResourceDiagnosticType::Error,
                 message: "Theme path does not exist".into(),
                 path: Some(path),

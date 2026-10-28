@@ -9,6 +9,12 @@ use crate::sync::item::ItemError;
 
 #[derive(Debug)]
 pub enum EngineError {
+    Account(super::super::account::http::AccountHttpError),
+    Recovery(super::super::recovery::RecoveryError),
+    Seal(super::super::account::sealer::SealRefusedError),
+    Auth,
+    Network,
+    StrandedLock(Vec<String>),
     Io(std::io::Error),
     Json(serde_json::Error),
     Item(ItemError),
@@ -25,6 +31,12 @@ pub type EngineResult<T> = Result<T, EngineError>;
 impl std::fmt::Display for EngineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Account(e) => e.fmt(f),
+            Self::Recovery(e) => e.fmt(f),
+            Self::Seal(e) => e.fmt(f),
+            Self::Auth => f.write_str("sync authentication failed"),
+            Self::Network => f.write_str("sync network request failed"),
+            Self::StrandedLock(paths) => write!(f, "stranded git locks: {}", paths.join(", ")),
             Self::Io(e) => e.fmt(f),
             Self::Json(e) => e.fmt(f),
             Self::Item(e) => e.fmt(f),

@@ -19,6 +19,9 @@ use crate::steering::DestructionPort;
 /// What the manager hands a runner (`ManagedStartSpec`).
 #[derive(Clone, Default)]
 pub struct ManagedStartSpec {
+    pub admission: Option<super::start_admission::StartAdmission>,
+    /// Launch-time only; never persisted in spawn specs.
+    pub traceparent: Option<String>,
     pub task_id: String,
     pub cwd: String,
     pub state_dir: String,
@@ -57,8 +60,24 @@ pub enum ManagedRunnerError {
 
 pub type ManagedRunnerResult = Result<Arc<dyn ManagedChildHandle>, ManagedRunnerError>;
 
+pub struct StagedManagedChild {
+    pub child: Arc<dyn ManagedChildHandle>,
+    pub first_prompt: String,
+    pub begin: Box<dyn FnOnce() -> crate::pause::ports::ResumedChildTurn + Send>,
+}
+
 pub trait ManagedRunner: Send + Sync {
     fn start(&self, spec: &ManagedStartSpec) -> ManagedRunnerResult;
+    /// `None` means this runner cannot create a child without sending its first prompt.
+    fn start_staged(
+        &self,
+        _spec: &ManagedStartSpec,
+    ) -> Option<Result<StagedManagedChild, ManagedRunnerError>> {
+        None
+    }
+    fn settle_teardowns(&self) -> Result<(), ManagedRunnerError> {
+        Ok(())
+    }
     /// `None` when the runner has no `resume` (TS optional method).
     fn resume(&self, _spec: &ManagedStartSpec, _session_path: &str) -> Option<ManagedRunnerResult> {
         None
@@ -83,6 +102,11 @@ impl ManagedRunners {
 /// The caller's start request (`ManagerStartSpec`).
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ManagerStartSpec {
+    #[serde(skip)]
+    pub admission: Option<super::start_admission::StartAdmission>,
+    #[serde(skip)]
+    pub resume_credential: Option<crate::pause::admission_barrier::ResumeCredential>,
+    pub parent_model: Option<String>,
     pub prompt: String,
     pub task_summary: Option<String>,
     pub parent_session_id: String,
@@ -200,6 +224,7 @@ pub struct StartFailure {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartResult {
+    Held(super::start_admission::HeldStart),
     Started(StartedTask),
     DepthDenied {
         reason: String,
@@ -239,6 +264,7 @@ pub enum MaxChildren {
 impl StartResult {
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::Held(_) => "held",
             Self::Started(_) => "started",
             Self::DepthDenied { .. } => "depth_denied",
             Self::PlanUnresolved(_) => "plan_unresolved",
@@ -260,6 +286,9 @@ pub enum OwnedStartResult {
         existing_fingerprint: String,
         requested_fingerprint: String,
     },
+    Held {
+        pause_seq: u64,
+    },
     NotStarted(StartResult),
 }
 
@@ -268,6 +297,7 @@ impl OwnedStartResult {
         match self {
             Self::Started { .. } => "started",
             Self::OwnerConflict { .. } => "owner_conflict",
+            Self::Held { .. } => "held",
             Self::NotStarted(result) => result.kind(),
         }
     }
@@ -288,7 +318,9 @@ pub struct ListedTask {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpawnAdmission {
     Admitted,
-    Evicted { evicted_task_id: String },
+    Evicted {
+        evicted_task_id: String,
+    },
     Rejected {
         message: String,
         max_children: Option<MaxChildren>,
@@ -340,7 +372,18 @@ impl Default for ManagerConfig {
 
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 
+pub type TraceparentFor = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+pub type PausedChildCallback =
+    Arc<dyn Fn(&TaskRecord, &crate::pause::ports::RunPauseOwner, u64) + Send + Sync>;
+
 pub struct TaskManagerOptions {
+    pub host_transport: Option<Arc<dyn crate::lifecycle::HostTransport>>,
+    pub on_paused_child: Option<PausedChildCallback>,
+    pub child_creation_port: Option<Arc<dyn crate::pause::ports::ChildCreationPort>>,
+    pub admission_barrier: Option<crate::pause::admission_barrier::AdmissionBarrier>,
+    pub on_held_admission: Option<super::start_admission::HeldCallback>,
+    pub child_pause_port: Option<Arc<dyn crate::pause::ports::ChildPausePort>>,
+    pub traceparent_for: Option<TraceparentFor>,
     pub store: crate::store::TaskRecordStore,
     pub runners: ManagedRunners,
     pub planner: ChildPlanner,
@@ -370,6 +413,13 @@ impl TaskManagerOptions {
         cwd: impl Into<String>,
     ) -> Self {
         Self {
+            host_transport: None,
+            on_paused_child: None,
+            child_creation_port: None,
+            admission_barrier: None,
+            on_held_admission: None,
+            child_pause_port: None,
+            traceparent_for: None,
             store,
             runners,
             planner,

@@ -16,11 +16,15 @@ use crate::model_chain::{
     BuildModelChainOptions, ChainRungCandidateOptions, RuntimeModelChain,
     build_runtime_model_chain, chain_rung_candidates,
 };
+use crate::model_exclusion::without_excluded_models;
 use crate::state::{ResolvedModelRecord, ResolvedModelSource};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResolveAgentOptions {
     pub model_override: Option<String>,
+    /// `omoConfig.exclude_models`: the registry is filtered through it before any candidate is read.
+    pub exclude_models: Option<Vec<String>>,
+    pub omo_config: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +94,20 @@ pub fn resolve_agent(
     registry: Option<&dyn SenpiModelRegistry>,
     options: &ResolveAgentOptions,
 ) -> AgentResolutionResult {
+    // `exclude_models` filters the registry before any candidate is read, so an excluded model never
+    // resolves even when the machine holds credentials for it.
+    let excluded = options.exclude_models.clone().or_else(|| {
+        options.omo_config.as_ref().and_then(crate::category::exclude_model_patterns)
+    }).unwrap_or_default();
+    let filtered;
+    let registry = match registry {
+        Some(inner) if !excluded.is_empty() => {
+            filtered = without_excluded_models(inner, Some(excluded.as_slice()));
+            Some(&filtered as &dyn SenpiModelRegistry)
+        }
+        other => other,
+    };
+    let config = options.omo_config.clone().unwrap_or_else(|| serde_json::json!({}));
     let mut available_agents: Vec<String> = agents
         .iter()
         .filter(|(_, definition)| definition.disable != Some(true))
@@ -204,8 +222,40 @@ pub fn resolve_agent(
         );
     }
 
+    for category in definition.categories.iter().flatten() {
+        if let Ok(crate::category::CategoryResolutionResult::Resolved { spec, .. }) =
+            crate::category::resolve_category(
+                category,
+                &config,
+                registry,
+                &crate::category::ResolveCategoryOptions::default(),
+            )
+        {
+            let found = ParsedModel {
+                provider: spec.provider.clone(),
+                model_id: spec.model_id.clone(),
+            };
+            let variant = definition.variant.clone().or(spec.variant.clone());
+            let reasoning = definition
+                .reasoning_effort
+                .clone()
+                .or(spec.reasoning_effort.clone());
+            return resolve(
+                found,
+                variant,
+                reasoning,
+                RuntimeModelChain {
+                    requested_model: spec.requested_model.clone(),
+                    fallback_models: spec.fallback_models.clone(),
+                },
+                available_agents,
+            );
+        }
+    }
+
     if let (Some(available), Some(chain)) = (&available_models, fallback_chain)
-        && let Some(DelegateModelResolutionResult::Resolved(resolution)) = resolve_model_for_delegate_task(
+        && let Some(DelegateModelResolutionResult::Resolved(resolution)) =
+            resolve_model_for_delegate_task(
             &DelegateModelResolutionInput {
                 fallback_chain: Some(chain.to_vec()),
                 available_models: available.iter().cloned().collect(),

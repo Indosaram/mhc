@@ -1,4 +1,4 @@
-//! Port of omo-senpi `components/model-profile/index.ts` at omo `455dee62`: the `model-profile`
+//! Port of omo-senpi `components/model-profile/index.ts` at omo `v5.1.47`: the `model-profile`
 //! component.
 //!
 // allow: SIZE_OK - the repository's port rule is one senpi source file per Rust module, so this
@@ -35,11 +35,12 @@ use maho_ext_api::{
     ExtensionRuntime, JsonValue, ModelRegistry, SendMessageOptions, SessionReason, ToolContent,
     CustomMessage,
 };
-use omo_config_core::LoadOmoConfigOptions;
+use omo_config_core::{LoadOmoConfigOptions, is_excluded_model};
 use maho_omo_config_resolution::{SenpiOmoConfigResult, load_senpi_omo_config};
 
 use crate::builtin_profiles::RETIRED_MODEL_PROFILE_IDS;
 use crate::credential_policy::credential_rotation_policy;
+use crate::custom_providers::custom_model_providers;
 use crate::default_profile::{ProbeState, new_probe_state, resolve_default_model_profile};
 use crate::notice::{auth_failed_details, notice_content};
 use crate::request_auth::{AuthFailure, probe_request_auth, sanitized_auth_error_detail};
@@ -134,7 +135,6 @@ fn mode_str(mode: ExtensionMode) -> Option<&'static str> {
     match mode {
         ExtensionMode::Tui => Some("tui"),
         ExtensionMode::Rpc => Some("rpc"),
-        ExtensionMode::AppServer => Some("app-server"),
         ExtensionMode::Json => Some("json"),
         ExtensionMode::Print => Some("print"),
     }
@@ -150,6 +150,15 @@ fn available_selectors(registry: &dyn ModelRegistry) -> Vec<String> {
 
 fn provider_of(selector: &str) -> &str {
     selector.split_once('/').map_or(selector, |(provider, _)| provider)
+}
+
+/// `omo.json` `exclude_models` as the config loader handed it over: a flat pattern list, absent when
+/// the key is not an array.
+fn exclude_models_of(config: &JsonValue) -> Option<Vec<String>> {
+    let JsonValue::Array(entries) = config.get("exclude_models")? else {
+        return None;
+    };
+    Some(entries.iter().filter_map(JsonValue::as_str).map(str::to_owned).collect())
 }
 
 fn log_skipped_candidate(logger: Option<&Arc<dyn ComponentLogger>>, failure: &AuthFailure) {
@@ -196,10 +205,17 @@ async fn resolve_with_request_auth(
     agent_dir: Option<&Path>,
     profiles: Option<&JsonValue>,
     active: &str,
+    exclude_models: Option<&[String]>,
     probes: &mut ProbeState,
     logger: Option<&Arc<dyn ComponentLogger>>,
 ) -> ProbedResolution {
-    let available = available_selectors(registry);
+    // An excluded model is never a candidate, a literal pin included: exclude_models wins
+    // everywhere.
+    let available: Vec<String> = available_selectors(registry)
+        .into_iter()
+        .filter(|selector| !is_excluded_model(selector.as_str(), exclude_models))
+        .collect();
+    let custom_providers = custom_model_providers(agent_dir);
     let ProbeState { excluded_providers, excluded_selectors, failures } = probes;
     // The rotation policy reads the registry's own auth-status port (a runtime API key turns
     // rotation off), never an injected stub.
@@ -217,6 +233,7 @@ async fn resolve_with_request_auth(
             profiles,
             active,
             available_models: &selectors,
+            custom_providers: Some(custom_providers.as_slice()),
         })
     };
 
@@ -342,6 +359,7 @@ impl Extension for ModelProfileComponent {
                     let config = load_config(&ctx.cwd).config;
                     let configured = config.get("model_profile").and_then(JsonValue::as_str);
                     let profiles = config.get("model_profiles").cloned();
+                    let exclude_models = exclude_models_of(&config);
                     let named = configured.filter(|value| !value.trim().is_empty());
                     let explicit = named.filter(|name| !is_retired_profile(name, profiles.as_ref()));
                     if let Some(name) = named.filter(|_| explicit.is_none()) {
@@ -360,6 +378,7 @@ impl Extension for ModelProfileComponent {
 
                     let mode = mode_str(ctx.mode);
                     let logger = ctx.logger.clone();
+                    let exclude_models = exclude_models.as_deref();
                     let (probed, probes) = if let Some(active) = explicit {
                         let mut probes = new_probe_state();
                         let probed = resolve_with_request_auth(
@@ -367,6 +386,7 @@ impl Extension for ModelProfileComponent {
                             Some(ctx.agent_dir.as_path()),
                             profiles.as_ref(),
                             active,
+                            exclude_models,
                             &mut probes,
                             logger.as_ref(),
                         ).await;
@@ -380,7 +400,7 @@ impl Extension for ModelProfileComponent {
                             new_probe_state(),
                             |profile_id, mut probes| async move {
                                 let probed = resolve_with_request_auth(
-                                    registry, agent_dir, profiles, profile_id, &mut probes, logger,
+                                    registry, agent_dir, profiles, profile_id, exclude_models, &mut probes, logger,
                                 ).await;
                                 (probed, probes)
                             },

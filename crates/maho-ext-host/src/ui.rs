@@ -43,6 +43,8 @@ impl LifecycleUi {
     }
 }
 impl ExtensionUi for LifecycleUi {
+    fn supports_subagent_cost(&self) -> bool { self.active(); self.inner.supports_subagent_cost() }
+    fn set_subagent_cost(&self, cost: Option<f64>) { self.active(); self.inner.set_subagent_cost(cost); }
     fn actions(&self) -> Option<&dyn ExtensionUiActions> { self.active(); self.inner.actions().map(|_| self as &dyn ExtensionUiActions) }
     fn factories(&self) -> Option<&dyn ExtensionUiFactories> { self.active(); self.inner.factories().map(|_| self as &dyn ExtensionUiFactories) }
     fn select<'a>(&'a self, title: &'a str, options: &'a [String], dialog: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {

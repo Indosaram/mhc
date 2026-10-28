@@ -1,15 +1,20 @@
 use std::time::Duration;
 pub async fn connect_and_refresh_mcp_catalog(entry:&mut crate::service_types::McpConnectionEntry,config:&crate::config_schema::McpServerConfig)->Result<(),crate::errors::McpError> {
+    let generation=entry.connection.generation();
+    if entry.connection.state()==crate::connection_types::ServerConnectionState::Disabled{return Ok(());}
     if let Err(error)=entry.auth_plan.ensure_fresh().await {
+        if !is_current_startup_attempt(&entry.connection,generation){return Ok(());}
         return Err(crate::health::mark_mcp_connection_needs_auth(&entry.connection,&error).unwrap_or(error));
     }
     let client=match entry.connection.connect().await {
         Ok(client)=>client,
-        Err(error)=>{let _=entry.logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&error.to_string(),None,None);return Ok(());}
+        Err(error)=>{if !is_current_startup_attempt(&entry.connection,generation){return Ok(());}let _=entry.logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&error.to_string(),None,None);return Ok(());}
     };
+    if !is_current_startup_attempt(&entry.connection,generation){return Ok(());}
     if entry.cache_refreshed_after_connect{return Ok(());}
     entry.cache_refreshed_after_connect=true;
     let result=crate::catalog_cache::collect_server_catalog_for_cache(&entry.connection,Duration::from_secs_f64(config.request_timeout_ms.unwrap_or(30000.0)/1000.0),&entry.config_hash).await;
+    if !is_current_startup_attempt(&entry.connection,generation){return Ok(());}
     match result {
         Ok(catalog)=>{
             if let Some(agent_dir)=&entry.agent_dir && let Err(error)=crate::catalog_cache::write_mcp_cached_server(agent_dir,&entry.name,catalog.clone()) {let _=entry.logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&format!("Failed to refresh MCP catalog cache: {error}"),None,None);}
@@ -19,6 +24,9 @@ pub async fn connect_and_refresh_mcp_catalog(entry:&mut crate::service_types::Mc
         Err(error)=>{let _=entry.logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&format!("Failed to refresh MCP catalog cache: {error}"),None,None);}
     }
     Ok(())
+}
+pub fn is_current_startup_attempt(connection:&crate::connection::ServerConnection,generation:u64)->bool {
+    connection.state()!=crate::connection_types::ServerConnectionState::Disabled && connection.generation()==generation
 }
 pub const MCP_STARTUP_RACE_MS:f64=250.0;
 /// Startup-race connect that never holds the entry lock across network I/O.
@@ -31,24 +39,30 @@ pub async fn connect_and_refresh_mcp_catalog_unlocked(handle:&std::sync::Arc<tok
         let entry=handle.lock().await;
         (crate::auth::context::ServerAuthPlan {mode:entry.auth_plan.mode,provider:entry.auth_plan.provider.clone(),refresh:entry.auth_plan.refresh.clone()},entry.connection.clone(),entry.logger.clone(),entry.agent_dir.clone(),entry.name.clone(),entry.config_hash.clone())
     };
+    let generation=connection.generation();
+    if connection.state()==crate::connection_types::ServerConnectionState::Disabled{return Ok(());}
     if let Err(error)=auth.ensure_fresh().await {
+        if !is_current_startup_attempt(&connection,generation){return Ok(());}
         return Err(crate::health::mark_mcp_connection_needs_auth(&connection,&error).unwrap_or(error));
     }
     let client=match connection.connect().await {
         Ok(client)=>client,
-        Err(error)=>{let _=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&error.to_string(),None,None);return Ok(());}
+        Err(error)=>{if !is_current_startup_attempt(&connection,generation){return Ok(());}let _=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&error.to_string(),None,None);return Ok(());}
     };
     {
         let mut entry=handle.lock().await;
+        if !is_current_startup_attempt(&connection,generation){return Ok(());}
         if entry.cache_refreshed_after_connect{return Ok(());}
         entry.cache_refreshed_after_connect=true;
     }
     let timeout=Duration::from_secs_f64(config.request_timeout_ms.unwrap_or(30000.0)/1000.0);
-    match crate::catalog_cache::collect_server_catalog_for_cache(&connection,timeout,&config_hash).await {
+    let result=crate::catalog_cache::collect_server_catalog_for_cache(&connection,timeout,&config_hash).await;
+    if !is_current_startup_attempt(&connection,generation){return Ok(());}
+    match result {
         Ok(catalog)=>{
             if let Some(agent_dir)=&agent_dir && let Err(error)=crate::catalog_cache::write_mcp_cached_server(agent_dir,&name,catalog.clone()) {let _=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&format!("Failed to refresh MCP catalog cache: {error}"),None,None);}
             crate::resources::ensure_mcp_resource_subscriptions(client.clone(),&catalog.resources,timeout).await;
-            handle.lock().await.cached_catalog=Some(catalog);
+            if connection.state()!=crate::connection_types::ServerConnectionState::Disabled && connection.generation()==generation{handle.lock().await.cached_catalog=Some(catalog);}
         }
         Err(error)=>{let _=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&format!("Failed to refresh MCP catalog cache: {error}"),None,None);}
     }

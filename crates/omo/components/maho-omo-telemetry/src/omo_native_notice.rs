@@ -43,6 +43,9 @@ pub fn register_omo_native_notice(
                 source: "omo-native-notice".into(),
                 error: Some(error),
                 error_kind: Some(telemetry_core::TelemetryDiagnosticErrorKind::Error),
+                entry_kind: None,
+                error_code: None,
+                count: None,
             });
         }
     };

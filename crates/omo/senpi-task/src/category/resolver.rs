@@ -18,6 +18,7 @@ use crate::model_chain::{
     BuildModelChainOptions, ChainRungCandidateOptions, ModelChainCandidate,
     available_chain_candidates, build_runtime_model_chain, chain_rung_candidates,
 };
+use crate::model_exclusion::without_excluded_models;
 use crate::state::{ResolvedModelRecord, ResolvedModelSource};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -243,8 +244,21 @@ fn available_category_names(
         .collect()
 }
 
+/// `omoConfig.exclude_models`, when the config declares any.
+pub(crate) fn exclude_model_patterns(config: &Value) -> Option<Vec<String>> {
+    let patterns: Vec<String> = config
+        .get("exclude_models")?
+        .as_array()?
+        .iter()
+        .filter_map(|entry| entry.as_str().map(str::to_string))
+        .collect();
+    Some(patterns)
+}
+
 /// Best-effort gated listing: a failing or malformed registry degrades to the ungated list.
 fn gated_available_categories(config: &Value, registry: &dyn SenpiModelRegistry) -> Vec<String> {
+    let patterns = exclude_model_patterns(config);
+    let registry = without_excluded_models(registry, patterns.as_deref());
     let parsed = registry
         .get_available()
         .ok()
@@ -341,7 +355,9 @@ pub fn builtin_category_chain_candidates(
     category_name: &str,
     registry: &dyn SenpiModelRegistry,
 ) -> Result<Vec<ModelChainCandidate>, HostError> {
-    let Some(chain) = category_fallback_chain(&omo_config_core::canonical_category_name(category_name)) else {
+    let Some(chain) =
+        category_fallback_chain(&omo_config_core::canonical_category_name(category_name))
+    else {
         return Ok(Vec::new());
     };
     let available: BTreeSet<String> = parse_available_models(&registry.get_available()?)
@@ -357,6 +373,11 @@ pub fn resolve_category(
     registry: &dyn SenpiModelRegistry,
     options: &ResolveCategoryOptions,
 ) -> Result<CategoryResolutionResult, HostError> {
+    // Every walk below (builtin rungs, user pins, runtime fallback chains, diagnostics) reads this
+    // view, so an excluded model is skipped exactly like a model whose provider has no login.
+    let excluded_registry =
+        without_excluded_models(registry, exclude_model_patterns(omo_config).as_deref());
+    let registry: &dyn SenpiModelRegistry = &excluded_registry;
     let available_categories = available_category_names(omo_config, None);
     let user_config = user_categories(omo_config).and_then(|user| user.get(category_name));
     if user_config.and_then(|user| user.get("disable")) == Some(&Value::Bool(true)) {

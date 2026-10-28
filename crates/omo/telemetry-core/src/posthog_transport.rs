@@ -31,6 +31,7 @@ struct Inner {
 /// Automatic flushes only run when `capture` is called inside a Tokio runtime; explicit `flush`
 /// and `shutdown` always deliver the queue.
 pub struct PostHogTelemetryTransport {
+    immediate: crate::posthog_immediate_send::ImmediateSender,
     inner: Arc<Inner>,
 }
 
@@ -41,6 +42,7 @@ impl PostHogTelemetryTransport {
             .build()
             .map_err(|error| TelemetryError::new(error.to_string()))?;
         Ok(Self {
+            immediate: crate::posthog_immediate_send::create_immediate_sender(api_key, options)?,
             inner: Arc::new(Inner {
                 api_key: api_key.to_string(),
                 options: options.clone(),
@@ -60,13 +62,17 @@ impl Inner {
         if self.options.disable_geoip {
             properties.insert("$geoip_disable".into(), true.into());
         }
-        json!({
+        let mut entry = json!({
             "type": "capture",
             "event": message.event,
             "distinct_id": message.distinct_id,
             "properties": properties,
-            "timestamp": to_iso_string(chrono::Utc::now()),
-        })
+            "timestamp": message.timestamp.clone().unwrap_or_else(|| to_iso_string(chrono::Utc::now())),
+        });
+        if let Some(uuid) = &message.uuid {
+            entry["uuid"] = uuid.clone().into();
+        }
+        entry
     }
 
     async fn flush(&self) -> Result<(), TelemetryError> {
@@ -140,12 +146,59 @@ impl TelemetryTransport for PostHogTelemetryTransport {
         Ok(())
     }
 
+    fn capture_immediate<'a>(
+        &'a self,
+        message: &'a TelemetryCaptureMessage,
+    ) -> Option<BoxFuture<'a, Result<(), crate::telemetry_delivery_error::TelemetryDeliveryError>>>
+    {
+        Some(self.immediate.send(message).boxed())
+    }
+    fn capture_durable(
+        &self,
+        message: TelemetryCaptureMessage,
+    ) -> BoxFuture<'_, Result<(), TelemetryError>> {
+        Box::pin(async move {
+            let mut entry = self.inner.to_batch_entry(&message);
+            if let Some(uuid) = message.properties.get("$insert_id").and_then(Value::as_str) {
+                entry["uuid"] = json!(uuid);
+            }
+            if let Some(seconds) = message.properties.get("$time").and_then(Value::as_f64)
+                && let Some(at) = chrono::DateTime::from_timestamp_millis((seconds * 1000.0) as i64)
+                {
+                    entry["timestamp"] = json!(to_iso_string(at));
+                }
+            let response = self
+                .inner
+                .http
+                .post(format!(
+                    "{}/batch/",
+                    self.inner.options.host.trim_end_matches('/')
+                ))
+                .json(&json!({"api_key":self.inner.api_key,"batch":[entry]}))
+                .send()
+                .await
+                .map_err(|error| TelemetryError::new(error.to_string()))?;
+            let status = response.status();
+            if status.is_success() {
+                Ok(())
+            } else {
+                Err(TelemetryError::new(format!(
+                    "PostHog durable request failed with status {status}"
+                )))
+            }
+        })
+    }
+
     fn flush(&self) -> Option<BoxFuture<'_, Result<(), TelemetryError>>> {
         Some(self.inner.flush().boxed())
     }
 
     fn shutdown(&self) -> BoxFuture<'_, Result<(), TelemetryError>> {
-        self.inner.flush().boxed()
+        async move {
+            self.immediate.shutdown().await;
+            self.inner.flush().await
+        }
+        .boxed()
     }
 }
 

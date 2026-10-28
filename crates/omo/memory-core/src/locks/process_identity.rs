@@ -6,8 +6,8 @@
 //! host. Both replacements are FFI (`bun:ffi` `dlopen` upstream); Rust has no safe binding for
 //! either in this workspace. This crate denies `unsafe_code` and opts in narrowly: unix liveness
 //! uses `libc::kill(pid, 0)` and macOS start identity uses `proc_pidinfo`, each in a small
-//! `#[allow(unsafe_code)]` helper. Windows keeps its pre-existing behavior (recorded platform
-//! blocker). Linux's `/proc` read is already in process and needs no FFI.
+//! `#[allow(unsafe_code)]` helper; Windows start identity uses `GetProcessTimes` the same way.
+//! Linux's `/proc` read is already in process and needs no FFI.
 
 #[cfg(any(target_os = "macos", target_os = "freebsd", windows))]
 use std::process::{Command, Output, Stdio};
@@ -181,14 +181,33 @@ fn probe_process_start_identity(pid: u32) -> Option<String> {
     }
 }
 
-/// Windows keeps its pre-existing behavior: the pinned fork-free replacement is `kernel32`
-/// `GetProcessTimes` behind `bun:ffi` `dlopen`, and neither this crate nor the workspace exposes a
-/// safe binding for it. Identity stays unavailable, which `locks/acquire.rs` already handles by
-/// comparing liveness alone (conservative: it never reclaims a live owner's lock).
+/// Windows start identity: the process creation `FILETIME` from `GetProcessTimes`, read in process
+/// through a `PROCESS_QUERY_LIMITED_INFORMATION` handle (no child process is forked).
 #[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
 fn read_windows_start_identity(pid: u32) -> Option<String> {
-    let _ = pid;
-    None
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // SAFETY: `OpenProcess` takes plain values; a null return means failure and is checked.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return None;
+    }
+    let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let (mut creation, mut exit, mut kernel, mut user) = (zero, zero, zero, zero);
+    // SAFETY: `handle` is a valid open process handle and the four out-pointers reference live
+    // `FILETIME` locals; the handle is closed exactly once below.
+    let ok = unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
+    // SAFETY: `handle` was opened above and is not used after this call.
+    unsafe { CloseHandle(handle) };
+    if ok == 0 {
+        return None;
+    }
+    let ticks = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
+    Some(format!("windows-process-creation-filetime:{ticks}"))
 }
 
 fn identity_scheme(identity: &str) -> Option<&str> {

@@ -127,7 +127,7 @@ async fn nested_request_settlement_records_usage_and_clears_intent() {
     let (lane, drive) = fixture();
     publish_attempt_intent(&lane, &drive).await.unwrap();
     publish_nested_request_intent(&lane, &drive, 0, "usage".into()).await.unwrap();
-    publish_nested_request_outcome(&lane, &drive, "usage".into(), maho_ai::types::Usage { input: 9, total_tokens: 9, ..Default::default() }).await.unwrap();
+    publish_nested_request_outcome(&lane, &drive, "usage".into(), maho_ai::types::Usage { context_usage: None, input: 9, total_tokens: 9, ..Default::default() }).await.unwrap();
     let OperationState::SummaryEffectPending(pending) = lane.state().operation.unwrap().state else { panic!("pending summary"); };
     assert!(pending.pending.request.is_none());
     assert_eq!(pending.pending.usage_ids, vec!["usage"]);

@@ -316,6 +316,7 @@ pub fn revive_claimed(
             payload,
         },
     )?;
+    super::host_session_record::clear_suspension_reason(context, &fresh.task_id)?;
     Ok(outcome(
         &fresh.task_id,
         ReconcileOutcomeKind::Resumed,

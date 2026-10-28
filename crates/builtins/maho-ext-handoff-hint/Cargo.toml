@@ -17,6 +17,9 @@ tokio = { workspace = true, features = ["rt", "time", "macros"] }
 
 [dev-dependencies]
 serde_json = "=1.0.149"
+maho-core = { path = "../../maho-core" }
+maho-ext-host = { path = "../../maho-ext-host" }
+tempfile.workspace = true
 
 [lints]
 workspace = true

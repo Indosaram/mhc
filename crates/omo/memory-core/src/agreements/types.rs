@@ -97,6 +97,13 @@ pub struct FactsKnownAgreement {
     pub n: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgreementSourceEvent {
+    pub session_id: String,
+    pub message_id: String,
+}
+
 /// One agreement record emitted by the facts extractor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "lowercase")]
@@ -105,11 +112,15 @@ pub enum AgreementExtractionRecord {
         applies: AgreementScope,
         text: String,
         date: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<AgreementSourceEvent>,
     },
     Reaffirm {
         id: String,
         date: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<AgreementSourceEvent>,
     },
 }

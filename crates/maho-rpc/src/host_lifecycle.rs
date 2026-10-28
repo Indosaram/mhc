@@ -886,10 +886,17 @@ const SHORT_TEMP_ROOT: &str = "/tmp";
 /// placed in the fallback is still collected.
 pub fn internal_host_dir_roots() -> Vec<std::path::PathBuf> {
     let primary = std::env::temp_dir();
-    if primary == std::path::Path::new(SHORT_TEMP_ROOT) {
-        vec![primary]
+    let shorter = std::path::PathBuf::from(SHORT_TEMP_ROOT);
+    let canonical_primary = std::fs::canonicalize(&primary).unwrap_or_else(|_| primary.clone());
+    let canonical_short = std::fs::canonicalize(&shorter).unwrap_or_else(|_| shorter.clone());
+    if canonical_primary == canonical_short {
+        vec![if primary.as_os_str().len() < shorter.as_os_str().len() {
+            primary
+        } else {
+            shorter
+        }]
     } else {
-        vec![primary, std::path::PathBuf::from(SHORT_TEMP_ROOT)]
+        vec![primary, shorter]
     }
 }
 fn internal_host_dir_root(name: &str) -> std::io::Result<std::path::PathBuf> {

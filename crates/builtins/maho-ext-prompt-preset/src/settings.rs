@@ -4,6 +4,7 @@ pub enum PromptPresetName {
  Auto,
  ClaudeFable5,
  ClaudeFable51,
+ ClaudeFable55,
  ClaudeOpus55,
  ClaudeOpus5,
  ClaudeSonnet55,
@@ -38,6 +39,7 @@ impl PromptPresetName {
  pub const fn as_str(self) -> &'static str { match self {
  Self::Auto => "auto",
  Self::ClaudeFable5 => "claude-fable-5",
+ Self::ClaudeFable55 => "claude-fable-5-5",
  Self::ClaudeFable51 => "claude-fable-5-1",
  Self::ClaudeOpus55 => "claude-opus-5-5",
  Self::ClaudeOpus5 => "claude-opus-5",
@@ -74,6 +76,7 @@ pub fn parse_prompt_preset(value: Option<&str>) -> Option<PromptPresetName> {
  match value? {
 "auto" => Some(PromptPresetName::Auto),
 "claude-fable-5" => Some(PromptPresetName::ClaudeFable5),
+"claude-fable-5-5" => Some(PromptPresetName::ClaudeFable55),
 "claude-fable-5-1" => Some(PromptPresetName::ClaudeFable51),
 "claude-opus-5-5" => Some(PromptPresetName::ClaudeOpus55),
 "claude-opus-5" => Some(PromptPresetName::ClaudeOpus5),
@@ -110,7 +113,7 @@ pub fn parse_prompt_preset(value: Option<&str>) -> Option<PromptPresetName> {
 pub fn load_prompt_preset_settings(project: Option<&str>, global: Option<&str>) -> PromptPresetName { parse_prompt_preset(project).or_else(|| parse_prompt_preset(global)).unwrap_or_default() }
 
 pub const VALID_PRESETS: &[&str] = &[
-    "auto", "claude-fable-5", "claude-fable-5-1", "claude-opus-5-5", "claude-opus-5",
+    "auto", "claude-fable-5-5", "claude-fable-5", "claude-fable-5-1", "claude-opus-5-5", "claude-opus-5",
     "claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-4-8", "claude-opus-4-7",
     "claude-opus-4-6", "claude-opus-4-5", "deepseek-v4-flash", "deepseek-v4-flash-0731",
     "deepseek-v4-1-flash", "deepseek-v4-pro", "glm-5.2", "glm-5.3", "gemini-4-argon",

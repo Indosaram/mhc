@@ -17,6 +17,10 @@ pub mod node_control_context;
 pub mod node_retry;
 pub mod node_send;
 pub mod owner;
+pub mod paused_child_recovery;
+pub mod paused_controls;
+#[cfg(test)]
+mod paused_workflow_tests;
 pub mod recovery;
 pub mod recovery_lease_watch;
 pub mod results;

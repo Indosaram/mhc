@@ -351,3 +351,50 @@ fn given_watermark_naming_sha_missing_from_history_when_consumed_then_it_reestab
         serde_json::json!({"version": 1, "lastNotifiedHead": head})
     );
 }
+
+#[test]
+fn paged_and_unbounded_scans_use_the_captured_commit() {
+    use crate::git::{GitExec, GitExecOptions, GitExecResult};
+    use std::sync::{Arc, Mutex};
+    struct Capture(Arc<Mutex<Vec<Vec<String>>>>);
+    impl GitExec for Capture {
+        fn run(&self, argv: &[String], _: &GitExecOptions) -> std::io::Result<GitExecResult> {
+            self.0.lock().unwrap().push(argv.to_vec());
+            let stdout = if argv.iter().any(|arg| arg == "rev-parse") {
+                format!("{}\n", "b".repeat(40))
+            } else if argv.iter().any(|arg| arg == "log")
+                && argv.iter().any(|arg| arg.contains("32"))
+            {
+                (0..super::SOUL_SCAN_PAGE).map(|_| format!("\x1e{}\x1fsubject\x1fOmo-Writer: memory-tool\x1fauthor\x1femail\x1fdate", "c".repeat(40))).collect()
+            } else {
+                String::new()
+            };
+            Ok(GitExecResult {
+                code: 0,
+                stdout,
+                stderr: String::new(),
+            })
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let repo = GitMemoryRepo::new(GitMemoryRepoOptions {
+        dir: root.path().join("repo"),
+        agent_id: "test".into(),
+        exec: Some(Arc::new(Capture(calls.clone()))),
+        install_hooks: None,
+    })
+    .unwrap();
+    super::write_watermark(root.path(), &"a".repeat(40)).unwrap();
+    super::consume_under_lock(&repo, root.path()).unwrap();
+    let calls = calls.lock().unwrap();
+    let logs: Vec<_> = calls
+        .iter()
+        .filter(|argv| argv.iter().any(|arg| arg == "log"))
+        .collect();
+    assert_eq!(logs.len(), 2);
+    for argv in logs {
+        assert!(argv.contains(&format!("{}..{}", "a".repeat(40), "b".repeat(40))));
+        assert!(!argv.iter().any(|arg| arg.ends_with("..HEAD")));
+    }
+}

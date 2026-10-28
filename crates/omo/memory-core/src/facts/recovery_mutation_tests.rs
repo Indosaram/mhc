@@ -14,6 +14,7 @@ fn test_transaction_fails_when_path_is_missing_from_initial_state() {
     let repo = crate::support::test_repo::init_test_repo(dir.path());
     let initial = HashMap::new();
     let recovery = FactsApplyRecovery {
+        agreement_event_version: None,
         version: 1,
         batch_id: "00000000-0000-4000-8000-000000000001".to_string(),
         head_before_apply: "head".to_string(),
@@ -71,6 +72,7 @@ fn test_transaction_rollback_reverts_performed_changes() {
         .expect("hash blob");
 
     let recovery = FactsApplyRecovery {
+        agreement_event_version: None,
         version: 1,
         batch_id: "00000000-0000-4000-8000-000000000002".to_string(),
         head_before_apply: "head".to_string(),

@@ -11,6 +11,7 @@ pub fn run_migration<'a>(
 ) -> Result<MigrationRunResult, MigrationError> {
     let id = options.id.clone();
     let mode = options.mode;
+    let should_run = options.should_run;
     let sources = options.sources.clone();
     let target_path = options.target_path.clone();
     let transform = Rc::new(options.transform);
@@ -23,7 +24,7 @@ pub fn run_migration<'a>(
             vec![MigrationPlan {
                 id: id.clone(),
                 mode,
-                should_run: None,
+                should_run: should_run.clone(),
                 sources: sources.clone(),
                 target_path: target_path.clone(),
                 transform: Box::new(move |s| t(s)),

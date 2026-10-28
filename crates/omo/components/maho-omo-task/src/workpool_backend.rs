@@ -11,6 +11,9 @@ pub struct NativeWorkpoolBackend {
 }
 
 impl WorkpoolToolBackend for NativeWorkpoolBackend {
+    fn attach<'a>(&'a self, session_id: &'a str) -> Pin<Box<dyn Future<Output = Result<(), WorkpoolError>> + Send + 'a>> {
+        Box::pin(async move { self.engine.lock().await.attach(session_id, None) })
+    }
     fn execute<'a>(&'a self, caller: &'a WorkpoolCaller, input: WorkpoolToolParams) -> Pin<Box<dyn Future<Output = Result<Value, WorkpoolError>> + Send + 'a>> {
         Box::pin(async move {
             let mut engine = self.engine.lock().await;

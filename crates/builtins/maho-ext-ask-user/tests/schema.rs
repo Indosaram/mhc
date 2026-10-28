@@ -33,6 +33,13 @@ fn option_bounds_and_empty_headers_follow_upstream(){
 }
 
 #[test]
+fn codex_rejects_duplicate_question_ids() {
+    let question=json!({"id":"choice","header":"Choice","question":"Pick?","options":[{"label":"A","description":"First"},{"label":"B","description":"Second"}]});
+    let args=json!({"wait_for_answer":true,"questions":[question.clone(),question]});
+    assert!(to_canonical(AskUserVariant::Codex,&args,"r".into(),None).is_err());
+}
+
+#[test]
 fn canonical_variant_limits_and_option_metadata() {
     for variant in [AskUserVariant::Codex, AskUserVariant::Claude] {
         let codex = variant == AskUserVariant::Codex;

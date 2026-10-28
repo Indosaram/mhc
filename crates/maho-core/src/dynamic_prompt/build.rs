@@ -37,8 +37,12 @@ pub struct DynamicPromptCoreContext {
     pub surface: PromptSurface,
 }
 
+pub type PromptPartsObserver<'a> = &'a dyn Fn(&[DynamicSystemPromptPart]);
 /// `BuildDynamicSystemPromptOptions`.
 pub struct BuildDynamicSystemPromptOptions<'a> {
+    pub custom_prompt: Option<String>,
+    pub append_system_prompt: Option<String>,
+    pub on_parts: Option<PromptPartsObserver<'a>>,
     pub cwd: String,
     pub selected_tools: Vec<String>,
     pub tool_snippets: HashMap<String, String>,
@@ -51,34 +55,30 @@ pub struct BuildDynamicSystemPromptOptions<'a> {
     pub surface: PromptSurface,
 }
 
-fn build_context_files_section(context_files: &[ContextFile]) -> String {
-    if context_files.is_empty() {
-        return String::new();
-    }
+pub use maho_ext_api::DynamicSystemPromptPart;
 
-    let mut lines: Vec<String> = vec![
-        "## Project Context".to_string(),
-        String::new(),
-        "Project instruction files (below, and in [Directory Context: ...] blocks injected during reads) bind files under their directory; deeper files win on conflict; explicit user instructions override.".to_string(),
-        String::new(),
-    ];
-    for context_file in context_files {
-        lines.push(format!("### {}", context_file.path));
-        lines.push(String::new());
-        lines.push(context_file.content.trim_end().to_string());
-        lines.push(String::new());
-    }
-    lines.join("\n").trim_end().to_string()
+fn part(name: &str, source: &str, text: String) -> DynamicSystemPromptPart {
+    DynamicSystemPromptPart { name: name.to_owned(), source: Some(source.to_owned()), text }
 }
 
-/// `buildDynamicSystemPrompt`.
 pub fn build_dynamic_system_prompt(options: &BuildDynamicSystemPromptOptions<'_>) -> String {
+    let parts = build_dynamic_system_prompt_parts(options);
+    if let Some(on_parts) = options.on_parts { on_parts(&parts); }
+    parts.iter().map(|part| part.text.as_str()).collect()
+}
+
+pub fn build_dynamic_system_prompt_parts(options: &BuildDynamicSystemPromptOptions<'_>) -> Vec<DynamicSystemPromptPart> {
+    if let Some(custom) = &options.custom_prompt {
+        let mut parts = vec![part("custom_prompt", "loader", custom.clone())];
+        if let Some(append) = &options.append_system_prompt { parts.push(part("append_system_prompt", "loader", format!("\n\n{append}"))); }
+        return parts;
+    }
     let tools = categorize_tools(&options.selected_tools);
 
     let tool_section =
         build_tool_section(&tools, &options.tool_snippets, &options.prompt_guidelines);
 
-    let mut sections: Vec<String> = match options.core_prompt {
+    let sections: Vec<String> = match options.core_prompt {
         Some(core_prompt) => vec![core_prompt(&DynamicPromptCoreContext {
             tools: tools.clone(),
             tool_section: tool_section.clone(),
@@ -103,35 +103,25 @@ pub fn build_dynamic_system_prompt(options: &BuildDynamicSystemPromptOptions<'_>
         ],
     };
 
-    let tuning = options
-        .tuning_section
-        .as_deref()
-        .map(str::trim)
-        .filter(|tuning| !tuning.is_empty());
-    if let Some(tuning) = tuning {
-        sections.push(String::new());
-        sections.push(tuning.to_string());
+    let mut parts = vec![part("core", "dynamic-prompt", sections.join("\n"))];
+    if let Some(tuning) = options.tuning_section.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        parts.push(part("tuning", "prompt-preset", format!("\n\n{tuning}")));
     }
-
-    let context_files_section = build_context_files_section(&options.context_files);
-    if !context_files_section.is_empty() {
-        sections.push(String::new());
-        sections.push(context_files_section);
+    if !options.context_files.is_empty() {
+        parts.push(part("project_context", "dynamic-prompt", "\n\n## Project Context\n\nProject instruction files (below, and in [Directory Context: ...] blocks injected during reads) bind files under their directory; deeper files win on conflict; explicit user instructions override.\n\n".to_owned()));
+        for (index, file) in options.context_files.iter().enumerate() {
+            let text = format!("### {}\n\n{}", file.path, file.content.trim_end());
+            parts.push(part("project_context", &file.path, if index + 1 == options.context_files.len() { text.trim_end().to_owned() } else { format!("{text}\n\n") }));
+        }
     }
-
-    let skills_section = format_skills_for_prompt(&options.skills, FileReadTool::Read);
-    if !skills_section.is_empty() {
-        sections.push(skills_section);
-    }
-
-    sections.push(String::new());
-    sections.push(build_workstation_section(&BuildWorkstationSectionOptions {
-        selected_tools: options.selected_tools.clone(),
-        dialect: options.workstation_dialect,
-        facts: None,
-    }));
-
-    sections.join("\n")
+    let skills = format_skills_for_prompt(&options.skills, FileReadTool::Read);
+    if !skills.is_empty() { parts.push(part("skills", "skills", format!("\n{skills}"))); }
+    let workstation = build_workstation_section(&BuildWorkstationSectionOptions {
+        selected_tools: options.selected_tools.clone(), dialect: options.workstation_dialect, facts: None,
+    });
+    parts.push(part("workstation", "dynamic-prompt", format!("\n\n{workstation}")));
+    if let Some(append) = &options.append_system_prompt { parts.push(part("append_system_prompt", "loader", format!("\n\n{append}"))); }
+    parts
 }
 
 #[cfg(test)]
@@ -144,6 +134,7 @@ mod tests {
         let mut tool_snippets: HashMap<String, String> = HashMap::new();
         tool_snippets.insert("read".to_string(), "Read file contents".to_string());
         BuildDynamicSystemPromptOptions {
+            custom_prompt: None, append_system_prompt: None, on_parts: None,
             cwd: "/work".to_string(),
             selected_tools: vec!["read".to_string()],
             tool_snippets,
@@ -172,7 +163,21 @@ mod tests {
             ),
             file_path,
             disable_model_invocation: false,
+            provenance: None,
+            allowed_set: None,
         }
+    }
+
+    #[test]
+    fn custom_and_appended_prompt_parts_are_exact() {
+        let mut options = options();
+        options.custom_prompt = Some("custom".into());
+        options.append_system_prompt = Some("append".into());
+        let parts = build_dynamic_system_prompt_parts(&options);
+        assert_eq!(parts.iter().map(|part| part.text.as_str()).collect::<String>(), build_dynamic_system_prompt(&options));
+        assert_eq!(parts[0].name, "custom_prompt");
+        assert_eq!(parts[1].name, "append_system_prompt");
+        assert_eq!(parts[0].source.as_deref(), Some("loader"));
     }
 
     #[test]

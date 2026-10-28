@@ -79,9 +79,9 @@ fn kernel_tool_scope_preserves_allow_and_deny_lists() {
 fn every_event_kind_roundtrips_without_duplicate_names() {
     let names: std::collections::BTreeSet<_> =
         EventKind::ALL.iter().map(|kind| kind.as_str()).collect();
-    // senpi types.ts adds provider_stream_event, agent_before_settle, session_control_wake, tool_activated,
-    // held_wakes_released.
-    assert_eq!(names.len(), 48);
+    // senpi-tip packages/coding-agent/src/core/extensions/types.ts includes
+    // ui_prompt_start, ui_prompt_end, and input_disposition as well as the wake events.
+    assert_eq!(names.len(), 51);
     for kind in EventKind::ALL {
         assert_eq!(EventKind::parse(kind.as_str()), Some(kind));
     }

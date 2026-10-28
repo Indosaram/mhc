@@ -44,9 +44,15 @@ pub mod speculative;
 pub mod todo_bridge;
 pub mod openai_remote_dependencies;
 pub mod context_pipeline;
+pub mod context_reduction_state;
 pub mod context_reduction_frontier;
+pub mod context_reduction_handoff;
+pub mod context_reduction_lifecycle;
+pub mod rejected_recovery;
 pub mod deterministic_fallback;
 pub mod openai_remote;
+
+const EMERGENCY_COMPACTION_INSTRUCTIONS: &str = "EMERGENCY: hard context limit reached. Produce an aggressive recovery summary that preserves current goal, constraints, files touched, tool outcomes, and exact next steps. Prefer concise factual state over transcript detail.";
 
 #[derive(Default)]
 pub struct CompactionExtension;
@@ -70,7 +76,9 @@ impl maho_ext_api::Extension for CompactionExtension {
             let generation=std::sync::Arc::clone(&generation);
             let live_api=std::sync::Arc::clone(&live_api);
             let lane=std::sync::Arc::clone(&lane);
+            let compaction_state=std::sync::Arc::clone(&state);
             api.on(maho_ext_api::EventKind::MessageEnd,std::sync::Arc::new(move |event,context| {
+                let compaction_state=std::sync::Arc::clone(&compaction_state);
                 let degradation=std::sync::Arc::clone(&degradation);let warm=std::sync::Arc::clone(&warm);let generation=std::sync::Arc::clone(&generation);let live_api=std::sync::Arc::clone(&live_api);let lane=std::sync::Arc::clone(&lane);
                 Box::pin(async move {
                     let maho_ext_api::ExtensionEvent::MessageEnd {message}=event else {return Ok(maho_ext_api::EventResult::None);};
@@ -80,19 +88,25 @@ impl maho_ext_api::Extension for CompactionExtension {
                         if let Some(job) = retired { job.cancel().await; }
                     }
                     if lane_policy::live_disables_senpi_compaction(&lane,context) {return Ok(maho_ext_api::EventResult::None);}
-                    let mut degradation=degradation.lock().await;
-                    // handle_message_end is a no-op outside the post-compaction window; skip serializing the message.
-                    if degradation.post_compaction_turns_remaining==0 {return Ok(maho_ext_api::EventResult::None);}
-                    let raw=serde_json::to_value(message).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-                    if !extension_wiring::is_monitorable_message(&raw) {return Ok(maho_ext_api::EventResult::None);}
-                    let content:Vec<_>=raw["content"].as_array().into_iter().flatten().map(|part|degradation_monitor::MonitoredMessageContentPart {kind:part["type"].as_str().unwrap_or_default(),text:part["text"].as_str()}).collect();
-                    degradation_monitor::handle_message_end(&mut degradation,degradation_monitor::MonitoredMessageEvent {role:raw["role"].as_str().unwrap_or_default(),content:&content},|instructions|async {
-                        let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
-                        match extension_wiring::apply_live_blocking_compaction(&live_api,context,next,instructions.into()).await {
+                    let content:Vec<_>;
+                    let raw;
+                    let trigger={
+                        let mut degradation=degradation.lock().await;
+                        // begin_recovery is a no-op outside the post-compaction window; skip serializing the message.
+                        if degradation.post_compaction_turns_remaining==0 {return Ok(maho_ext_api::EventResult::None);}
+                        raw=serde_json::to_value(message).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                        if !extension_wiring::is_monitorable_message(&raw) {return Ok(maho_ext_api::EventResult::None);}
+                        content=raw["content"].as_array().into_iter().flatten().map(|part|degradation_monitor::MonitoredMessageContentPart {kind:part["type"].as_str().unwrap_or_default(),text:part["text"].as_str()}).collect();
+                        degradation_monitor::begin_recovery(&mut degradation,&degradation_monitor::MonitoredMessageEvent {role:raw["role"].as_str().unwrap_or_default(),content:&content})
+                    };
+                    // The lock is released before applying: the resulting session_compact handler locks the same mutex.
+                    if trigger {
+                        let result=match extension_wiring::apply_live_blocking_compaction(&live_api,context,&generation,&warm,&compaction_state,degradation_monitor::RECOVERY_INSTRUCTIONS.into()).await {
                             Ok(result)=>degradation_monitor::RecoveryResult {applied:result==speculative::SpeculativeCompactionResult::Applied,reason:if result==speculative::SpeculativeCompactionResult::Failed {"failed"} else {"rejected"}.into()},
                             Err(_)=>degradation_monitor::RecoveryResult {applied:false,reason:"failed".into()},
-                        }
-                    },|message|context.ui.notify(message,maho_ext_api::NotificationType::Warning)).await;
+                        };
+                        if degradation_monitor::should_notify_recovery(&result) {context.ui.notify(degradation_monitor::RECOVERY_NOTIFICATION,maho_ext_api::NotificationType::Warning);}
+                    }
                     Ok(maho_ext_api::EventResult::None)
                 })
             }));
@@ -102,8 +116,10 @@ impl maho_ext_api::Extension for CompactionExtension {
             let compaction_state=std::sync::Arc::clone(&state);
             let live_api=std::sync::Arc::clone(&live_api);
             let generation=std::sync::Arc::clone(&generation);
+            let warm=std::sync::Arc::clone(&warm);
             let lane=std::sync::Arc::clone(&lane);
             api.on(kind,std::sync::Arc::new(move |event,context| {
+                let warm=std::sync::Arc::clone(&warm);
                 let degradation=std::sync::Arc::clone(&degradation);
                 let compaction_state=std::sync::Arc::clone(&compaction_state);
                 let live_api=std::sync::Arc::clone(&live_api);
@@ -124,9 +140,11 @@ impl maho_ext_api::Extension for CompactionExtension {
                     if recover {
                         let api=std::sync::Arc::clone(&live_api);
                         let context=context.clone();
-                        let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
+                        let generation=std::sync::Arc::clone(&generation);
+                        let warm=std::sync::Arc::clone(&warm);
+                        let compaction_state=std::sync::Arc::clone(&compaction_state);
                         tokio::spawn(async move {
-                            let _result=extension_wiring::apply_live_blocking_compaction(&api,&context,next,degradation_monitor::RECOVERY_INSTRUCTIONS.into()).await;
+                            let _result=extension_wiring::apply_live_blocking_compaction(&api,&context,&generation,&warm,&compaction_state,degradation_monitor::RECOVERY_INSTRUCTIONS.into()).await;
                         });
                     }
                     Ok(maho_ext_api::EventResult::None)
@@ -201,7 +219,7 @@ impl maho_ext_api::Extension for CompactionExtension {
         }
         {
             let latch = std::sync::Arc::new(std::sync::Mutex::new(emergency_prune::EmergencyPruneLatch::default()));
-            let reduction_state = std::sync::Arc::new(std::sync::Mutex::new(context_reduction_frontier::ContextReductionState::default()));
+            let tools_api = std::sync::Arc::clone(&live_api);
             let warm = std::sync::Arc::clone(&warm);
             let generation = std::sync::Arc::clone(&generation);
             let idle_state = std::sync::Arc::clone(&state);
@@ -282,47 +300,34 @@ impl maho_ext_api::Extension for CompactionExtension {
                     Ok(maho_ext_api::EventResult::None)
                 })
             }));
-            let state = std::sync::Arc::clone(&state);
-            let logger = std::sync::Arc::clone(&logger);
-            let context_lane = std::sync::Arc::clone(&lane);
-            let context_reduction_state = std::sync::Arc::clone(&reduction_state);
-            api.on(maho_ext_api::EventKind::Context, std::sync::Arc::new(move |event, context| {
-                let context_reduction_state = std::sync::Arc::clone(&context_reduction_state);
-                let result = (|| {
-                    let maho_ext_api::ExtensionEvent::Context { messages, entry_ids } = event else { return Ok(maho_ext_api::EventResult::None); };
-                    let lane_owns_compaction = lane_policy::live_disables_senpi_compaction(&context_lane, context);
-                    let append_only_transcript = lane_policy::live_has_append_only_transcript(context);
-                    let usage = context.get_context_usage()?;
-                    let settings = extension_wiring::live_settings(context)?;
-                    let window = usage.as_ref().map_or_else(||context.model.as_ref().map_or(200_000, |model|model.context_window), |usage|usage.context_window);
-                    let tokens = usage.and_then(|usage|usage.tokens).map(|tokens|tokens as f64);
-                    let state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let breaker_fallback = !lane_owns_compaction && circuit_breaker::is_tripped(&state, chrono::Utc::now().timestamp_millis() as f64)
-                        && tokens.is_some_and(|tokens|tokens >= window as f64 * policy::compute_effective_threshold(window as f64, state.last_yield));
-                    let raw = messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-                    let provider_native_path = openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref());
-                    let mut reduction_state = context_reduction_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    // Only the provider-native replay boundary reads the branch; skip the full branch copy otherwise.
-                    let branch_entries = if provider_native_path { speculative::branch_values(context) } else { Vec::new() };
-                    let output = context_pipeline::build_compaction_context(context_pipeline::CompactionContextInput {
-                        messages: &raw, entry_ids, model: context.model.as_ref(), branch_entries: &branch_entries, context_window: window,
-                        prompt_context_window: extension_wiring::get_prompt_context_window(window as f64, context.model.as_ref().map(|model|model.max_tokens as f64)) as u64,
-                        usage_tokens: tokens, provider_native_path,
-                        tool_admission_enabled: settings.ideal.tool_admission_enabled != Some(false), breaker_fallback, lane_owns_compaction,
-                        context_reduction_state: Some(&mut reduction_state), context_overhead_tokens: 0,
-                        unreduced_messages: None,
-                        reduction_ceiling_tokens: None, reduction_block_budget_ratio: None, append_only_transcript,
-                        emergency_prune_latch: &mut latch.lock().unwrap_or_else(std::sync::PoisonError::into_inner), reminder: None,
-                        now: chrono::Utc::now().timestamp_millis(),
-                    }).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-                    let mut logger=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let logger=logger.get_or_insert_with(||log::CompactionLogger::new(Some(&context.agent_dir),None,None));
-                    if breaker_fallback {logger.debug("breaker_deterministic_fallback",serde_json::json!({"route":"context-event","tokens":tokens.unwrap_or(0.)}).as_object());}
-                    if let Some((before,after))=output.emergency_prune_tokens {logger.debug("emergency_prune",serde_json::json!({"route":"context-event","tokensBefore":before,"tokens":after}).as_object());}
-                    let messages = output.messages.into_iter().map(maho_ext_api::AgentMessage::from).collect::<Vec<_>>();
-                    Ok(maho_ext_api::EventResult::Context { messages: Some(messages) })
-                })();
-                Box::pin(async move { result })
+            let policy_state = std::sync::Arc::clone(&state);
+            let policy_lane = std::sync::Arc::clone(&lane);
+            let log_logger = std::sync::Arc::clone(&logger);
+            let lifecycle = context_reduction_lifecycle::register_context_reduction_lifecycle(api, std::sync::Arc::clone(&tools_api), context_reduction_lifecycle::ContextReductionLifecycleOptions {
+                emergency_prune_latch: latch,
+                emergency_instructions: EMERGENCY_COMPACTION_INSTRUCTIONS.into(),
+                get_tools: std::sync::Arc::new(move || extension_wiring::summarization_tools(&tools_api)),
+                get_policy: std::sync::Arc::new(move |context| {
+                    let state = policy_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    context_reduction_lifecycle::ContextReductionPolicy {
+                        last_yield: state.last_yield,
+                        breaker_tripped: circuit_breaker::is_tripped(&state, chrono::Utc::now().timestamp_millis() as f64),
+                        lane_owns_compaction: lane_policy::live_disables_senpi_compaction(&policy_lane, context),
+                        append_only_transcript: lane_policy::live_has_append_only_transcript(context),
+                    }
+                }),
+                log: std::sync::Arc::new(move |context, event, fields| {
+                    let mut logger = log_logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let logger = logger.get_or_insert_with(|| log::CompactionLogger::new(Some(&context.agent_dir), None, None));
+                    logger.debug(event, fields.as_object());
+                }),
+            });
+            // senpi session_compact: an accepted compaction restarts the frontier.
+            api.on(maho_ext_api::EventKind::SessionCompact, std::sync::Arc::new(move |event, _| {
+                if matches!(event, maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Accepted { .. })) {
+                    lifecycle.reset();
+                }
+                Box::pin(async { Ok(maho_ext_api::EventResult::None) })
             }));
         }
         {
@@ -351,6 +356,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                         (claimed,retired)
                     }
                 } else {(None,None)};
+                let claimed_generation = generation.load(std::sync::atomic::Ordering::SeqCst);
                 let gate = if let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event {
                     let state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     if !event.signal.is_aborted() && !lane_policy::live_owns_compaction(&lane, context, event.reason) {
@@ -384,6 +390,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                 } else { Ok(()) };
                 let live_api = std::sync::Arc::clone(&live_api);
                 let pending = std::sync::Arc::clone(&pending);
+                let generation = std::sync::Arc::clone(&generation);
                 Box::pin(async move {
                     if let Some(job) = retired {job.cancel().await;}
                     if let Err(error) = result {
@@ -391,6 +398,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                         return Err(error);
                     }
                     let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { return Ok(maho_ext_api::EventResult::None); };
+                    let mut inherited = None;
                     if event.signal.is_aborted() {
                         if let Some(job) = claimed {job.cancel().await;}
                         return Ok(maho_ext_api::EventResult::None);
@@ -405,8 +413,10 @@ impl maho_ext_api::Extension for CompactionExtension {
                         if let Some(compaction) = settled.result {
                             return Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {compaction:Some(compaction),..Default::default()}));
                         }
+                        // senpi inheritedWarmFailure: only a current, unchanged transcript may reuse the warm failure.
+                        inherited = settled.error.filter(|_|generation.load(std::sync::atomic::Ordering::SeqCst)==claimed_generation && job.snapshot.expected_revision==context.get_message_revision().unwrap_or(u64::MAX));
                     }
-                    let result = extension_wiring::generate_core_route_compaction(&live_api, context, event).await;
+                    let result = extension_wiring::generate_core_route_compaction(&live_api, context, event, inherited).await;
                     if !matches!(&result, Ok(maho_ext_api::EventResult::SessionBefore(result)) if result.compaction.is_some()) {
                         pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|(id, _)|id != &event.request_id);
                     }
@@ -451,7 +461,11 @@ impl maho_ext_api::Extension for CompactionExtension {
             let idle_since_end = std::sync::Arc::clone(&idle_since_end);
             let reminder = std::sync::Arc::clone(&reminder);
             let lane = std::sync::Arc::clone(&lane);
-            api.on(maho_ext_api::EventKind::BeforeAgentStart, std::sync::Arc::new(move |event, context| {
+            api.on_with_options(maho_ext_api::EventKind::BeforeAgentStart, std::sync::Arc::new(move |event, context| {
+                // senpi: a preview composes a prompt no turn follows, so no compaction, reminder, or restoration.
+                if matches!(event, maho_ext_api::ExtensionEvent::BeforeAgentStart(event) if event.preview) {
+                    return Box::pin(async { Ok(maho_ext_api::EventResult::None) });
+                }
                 idle_since_end.store(false,std::sync::atomic::Ordering::SeqCst);
                 // PERF-DIVERGENCE(senpi compaction): upstream hands every session entry to the checkpoint lookup; we only materialize `custom` entries (the only ones it inspects) and move the owned strings instead of cloning them. The chosen checkpoint is identical.
                 let entries: Vec<_> = context.session_manager.get_entries().into_iter().filter(|entry| entry.kind == "custom").map(|entry| {
@@ -467,7 +481,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                     custom_type: message["customType"].as_str().unwrap_or_default().to_owned(),
                     content: vec![maho_ext_api::ToolContent::text(message["content"].as_str().unwrap_or_default())],
                     display: message["display"].as_bool().unwrap_or(false), details: message.get("details").cloned(),
-                })).transpose().map(|message| maho_ext_api::EventResult::BeforeAgentStart(maho_ext_api::BeforeAgentStartEventResult { message, system_prompt: None }));
+                })).transpose().map(|message| maho_ext_api::EventResult::BeforeAgentStart(maho_ext_api::BeforeAgentStartEventResult { system_prompt_parts: None, message, system_prompt: None }));
                 let state = std::sync::Arc::clone(&state);
                 let live_api = std::sync::Arc::clone(&live_api);
                 let warm = std::sync::Arc::clone(&warm);
@@ -487,13 +501,10 @@ impl maho_ext_api::Extension for CompactionExtension {
                     let hard = policy::is_at_hard_limit(tokens,window,geometry.reserve_tokens,additional);
                     let threshold = !tripped && policy::should_trigger_compaction(tokens.map(|tokens|tokens+additional),window,&settings,last_yield);
                     let in_flight = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|job|!job.completed());
-                    if settings.enabled && (hard || (threshold && !orchestration::should_defer_grace_band(tokens.unwrap_or(0.)+additional,geometry,window,in_flight,settings.ideal.grace_band_enabled))) {
-                        let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
-                        let retired = {warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()};
-                        if let Some(job) = retired {job.cancel().await;}
-                        if generation.load(std::sync::atomic::Ordering::SeqCst)!=next {return result;}
+                    // senpi: the hard-limit valve runs even with compaction disabled; `enabled` gates only the threshold.
+                    if hard || (settings.enabled && threshold && !orchestration::should_defer_grace_band(tokens.unwrap_or(0.)+additional,geometry,window,in_flight,settings.ideal.grace_band_enabled)) {
                         let instructions=if hard {"EMERGENCY: hard context limit reached. Produce an aggressive recovery summary that preserves current goal, constraints, files touched, tool outcomes, and exact next steps. Prefer concise factual state over transcript detail."} else {"Proactively compact before the next agent turn."};
-                        extension_wiring::apply_live_blocking_compaction(&live_api,context,next,instructions.into()).await?;
+                        extension_wiring::apply_live_blocking_compaction(&live_api,context,&generation,&warm,&state,instructions.into()).await?;
                     } else if settings.enabled && !tripped && !openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref()) && policy::should_start_speculative_compaction(tokens.map(|tokens|tokens+additional),window,&settings,last_yield,Some(geometry.lead_tokens)) {
                         let mut job=warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         if job.is_none() {let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;*job=speculative_job::start_live_speculative_job(&live_api,context,next,"Proactively compact before the next agent turn.".into())?;}
@@ -511,7 +522,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                     }
                     Ok(result)
                 })
-            }));
+            }), maho_ext_api::ExtensionHandlerOptions { preview_safe: true, ..Default::default() });
         }
         for kind in [maho_ext_api::EventKind::TurnEnd, maho_ext_api::EventKind::AgentEnd,
             maho_ext_api::EventKind::SessionCompact] {

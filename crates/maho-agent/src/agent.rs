@@ -101,6 +101,8 @@ fn default_convert_to_llm(messages: Vec<AgentMessage>) -> Vec<Message> {
 
 fn empty_usage() -> Usage {
     Usage {
+        context_usage: None,
+        cost_unknown: None,
         input: 0,
         output: 0,
         cache_read: 0,
@@ -123,7 +125,7 @@ pub(crate) fn default_model() -> Model {
         default_thinking_level: None,
         thinking_level_map: None,
         input: Vec::new(),
-        cost: maho_ai::types::ModelCost {
+        cost: maho_ai::types::ModelCost { unknown: None,
             effective_rates: None,
             input: 0.0,
             output: 0.0,
@@ -249,10 +251,28 @@ impl PendingMessageQueue {
         self.messages.drain(..end).collect()
     }
 
+    fn peek(&self) -> Vec<AgentMessage> {
+        let mut snapshot = Self {
+            messages: self.messages.clone(),
+            clear_generation: self.clear_generation,
+            mode: self.mode,
+        };
+        snapshot.drain()
+    }
+
     fn prepend(&mut self, messages: Vec<AgentMessage>) {
         let mut combined = messages;
         combined.append(&mut self.messages);
         self.messages = combined;
+    }
+
+    fn remove(&mut self, message: &AgentMessage) -> bool {
+        if let Some(index) = self.messages.iter().position(|m| m == message) {
+            self.messages.remove(index);
+            true
+        } else {
+            false
+        }
     }
 
     fn clear(&mut self) {
@@ -604,6 +624,17 @@ impl Agent {
             || lock(&self.inner.follow_up_queue).has_items()
     }
 
+    /// Preview selected messages without consuming them; `all` includes both queues.
+    pub fn peek_queued_messages(&self, all: bool) -> Vec<AgentMessage> {
+        let mut steering = lock(&self.inner.steering_queue).peek();
+        if all {
+            steering.extend(lock(&self.inner.follow_up_queue).peek());
+        } else if steering.is_empty() {
+            return lock(&self.inner.follow_up_queue).peek();
+        }
+        steering
+    }
+
     /// Returns true when `message` is still waiting in either pending queue.
     pub fn contains_queued_message(&self, message: &AgentMessage) -> bool {
         lock(&self.inner.steering_queue)
@@ -614,6 +645,12 @@ impl Agent {
                 .messages
                 .iter()
                 .any(|candidate| candidate == message)
+    }
+
+    /// Remove this exact message from whichever queue holds it; false when it is no longer queued.
+    pub fn remove_queued_message(&self, message: &AgentMessage) -> bool {
+        lock(&self.inner.steering_queue).remove(message)
+            || lock(&self.inner.follow_up_queue).remove(message)
     }
 
     /// Active abort signal for the current run, if any.
@@ -1566,7 +1603,8 @@ mod queue_ownership_tests {
     async fn provider_diagnostic_follows_error_projection_and_reset_lifecycle() {
         // Given: a terminal provider failure with structured quota evidence.
         let agent = Agent::new(options());
-        let diagnostic = maho_ai::types::ProviderDiagnostic { resets_at: None,
+        let diagnostic = maho_ai::types::ProviderDiagnostic {
+            resets_at: None,
             category: maho_ai::types::ProviderDiagnosticCategory::Quota,
             http_status: Some(429),
             code: Some("insufficient_quota".into()),

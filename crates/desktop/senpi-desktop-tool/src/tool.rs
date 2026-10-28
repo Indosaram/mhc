@@ -5,7 +5,7 @@ use maho_tools::definition::{ToolCall, ToolContent, ToolDefinition, ToolError, T
 use senpi_desktop_protocol::{
     AuditRecord, ComputerCallStep, ComputerDisplay, ComputerScreenshot, is_read_only_computer_call,
 };
-use senpi_desktop_run::context::{ComputerRunError, DesktopRunError};
+use senpi_desktop_run::context::DesktopRunError;
 use senpi_desktop_run::runtime::{
     ComputerRunHost, ComputerRunRequest, ExecuteTool, run_computer_code,
 };
@@ -15,7 +15,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::activation::ComputerHandle;
-use crate::cua_errors::computer_failure;
+use crate::cua_errors::{computer_failure, launch_context_failure};
 use crate::params::{CallStep, ComputerToolParams, DEFAULT_TIMEOUT_SECONDS, parse_computer_params};
 use crate::session::{ComputerHostContext, run_snapshot};
 use crate::tool_definition::computer_tool_definition;
@@ -126,10 +126,7 @@ pub async fn run_computer(
     timeout_seconds: f64,
     signal: Option<AbortSignal>,
 ) -> Result<ComputerToolResult, DesktopRunError> {
-    deps.handle
-        .activate(context)
-        .await
-        .map_err(|e| DesktopRunError::ComputerRun(ComputerRunError::window(e.to_string())))?;
+    deps.handle.activate(context).await.map_err(DesktopRunError::Engine)?;
 
     let snapshot = run_snapshot(&deps.handle.settings(), context, read_only);
     let timeout_ms = std::time::Duration::from_secs_f64(timeout_seconds).as_millis() as u64;
@@ -259,17 +256,23 @@ pub fn create_computer_tool(deps: ComputerToolDeps) -> ToolDefinition {
                     .await
                 }
                 ComputerToolParams::Capabilities => {
-                    if let Err(e) = handle.activate(&context).await {
-                        return Err(ToolError::Message(e.to_string()));
-                    }
-                    match handle.capabilities().await {
-                        Ok(Some(caps)) => Ok(value_result(
-                            serde_json::to_value(caps).ok(),
-                            "capabilities unavailable",
-                        )),
-                        Ok(None) => Ok(value_result(None, "capabilities unavailable")),
-                        Err(error) => return Err(ToolError::Message(error.to_string())),
-                    }
+                    // Like call/run, activation and capability-query permission failures are
+                    // structured tool results rather than thrown tool errors.
+                    let capabilities = async {
+                        handle
+                            .activate(&context)
+                            .await
+                            .map_err(DesktopRunError::Engine)?;
+                        match handle.capabilities().await {
+                            Ok(Some(caps)) => Ok(value_result(
+                                serde_json::to_value(caps).ok(),
+                                "capabilities unavailable",
+                            )),
+                            Ok(None) => Ok(value_result(None, "capabilities unavailable")),
+                            Err(error) => Err(DesktopRunError::Engine(error)),
+                        }
+                    };
+                    run_with_permission_catch(capabilities, &handle).await
                 }
                 ComputerToolParams::Close => {
                     handle
@@ -297,6 +300,23 @@ async fn run_with_permission_catch(
     match fut.await {
         Ok(res) => Ok(res),
         Err(err) => {
+            if let DesktopRunError::Engine(DesktopError::LaunchContext(launch)) = &err {
+                let failure = launch_context_failure(launch);
+                let json_val = serde_json::to_value(&failure).unwrap_or(Value::Null);
+                return Ok(ComputerToolResult {
+                    is_error: Some(true),
+                    content: vec![ComputerDisplay::Text {
+                        text: launch.message.clone(),
+                    }],
+                    details: ComputerToolDetails {
+                        value: Some(json_val),
+                        read_only: None,
+                        screenshots: None,
+                        audit: None,
+                        is_error: Some(true),
+                    },
+                });
+            }
             if let DesktopRunError::Engine(DesktopError::Rpc(rpc)) = &err
                 && let Some(senpi_desktop_protocol::JsonRpcErrorData::Engine(data)) = &rpc.data
                 && data.code == senpi_desktop_protocol::ErrorCode::PermissionDenied

@@ -593,6 +593,7 @@ impl FileAuthStorageBackend {
             .map_err(|error: CredentialStoreBusyError| error.message())?;
         let current = std::fs::read_to_string(&self.auth_path).ok();
         let (result, next) = action(current.as_deref())?;
+        guard.assert_held()?;
         if let Some(next) = next
             && !guard.broker_write(&next)?
         {
@@ -612,6 +613,7 @@ impl FileAuthStorageBackend {
             .map_err(|error: CredentialStoreBusyError| error.message())?;
         let current = std::fs::read_to_string(&self.auth_path).ok();
         let (result, next) = action(current.as_deref()).await?;
+        guard.assert_held()?;
         if let Some(next) = next {
             let path = self.auth_path.clone();
             tokio::task::spawn_blocking(move || {

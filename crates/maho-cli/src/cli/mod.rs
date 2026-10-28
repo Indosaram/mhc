@@ -1,7 +1,6 @@
 // Modules marked `#[cfg(feature = "omo")]` host the oh-my-openagent port (crates/omo/**,
 // LicenseRef-SUL-1.0) or are ports of its host side; the MIT profile (`--no-default-features`)
 // compiles them out. See docs/MIT-PROFILE.md.
-pub mod app_server;
 pub mod args;
 pub mod auth_check;
 pub mod auth_command;
@@ -76,7 +75,9 @@ pub mod omo_mount;
 #[cfg(feature = "omo")]
 pub mod omo_shipped;
 pub mod piped_stdin_options;
+pub mod print_prompt_sizes;
 pub mod project_trust;
+pub mod prompt_size_inventory;
 pub mod reasoning_host;
 #[cfg(feature = "omo")]
 pub mod recall_wiring;
@@ -88,6 +89,8 @@ pub mod startup;
 pub mod startup_loading_indicator;
 pub mod startup_ui;
 pub mod stdout_guard;
+#[cfg(feature = "omo")]
+pub mod task_host;
 #[cfg(feature = "omo")]
 pub mod task_runners;
 #[cfg(feature = "omo")]

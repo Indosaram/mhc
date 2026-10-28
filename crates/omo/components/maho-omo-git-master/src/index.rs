@@ -14,7 +14,7 @@ use maho_omo_config_resolution::load_senpi_omo_config;
 use omo_config_core::{LoadOmoConfigOptions, OmoConfigEnv, resolve_omo_git_master_settings};
 
 pub use crate::directive::{GitMasterCommitFooter, GitMasterSettings};
-use crate::skill_content::resolve_git_master_skill_additions;
+use crate::skill_content::{carries_attribution_directive, resolve_git_master_skill_additions};
 
 /// Upstream `GIT_MASTER_SKILL_PATH_SUFFIX`: only a read of the git-master skill is attributed.
 pub const GIT_MASTER_SKILL_PATH_SUFFIX: &str = "/git-master/SKILL.md";
@@ -122,7 +122,14 @@ impl Extension for GitMasterAttributionComponent {
                     {
                         *text = (additions.rewrite_skill_text)(text);
                     }
-                    if let Some(directive) = additions.directive {
+                    if let Some(directive) = additions.directive
+                        && !carries_attribution_directive(event.content.iter().filter_map(|item| {
+                            match item {
+                                ToolContent::Text { text, .. } => Some(text.as_str()),
+                                _ => None,
+                            }
+                        }))
+                    {
                         content.push(ToolContent::text(directive));
                     }
                     Ok(EventResult::ToolResult(ToolResultEventResult {
@@ -148,6 +155,10 @@ fn log_applied(logger: Option<&Arc<dyn ComponentLogger>>, settings: &GitMasterSe
     let details = JsonValue::Object(
         [
             ("commitFooter".to_owned(), commit_footer),
+            (
+                "includeCoAuthoredBy".to_owned(),
+                JsonValue::Bool(settings.include_co_authored_by),
+            ),
             (
                 "gitEnvPrefix".to_owned(),
                 JsonValue::String(settings.git_env_prefix.clone()),

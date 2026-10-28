@@ -41,3 +41,14 @@ async fn clearing_deferred_attach_does_not_cancel_the_connect() {
     send.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(5),completion).await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn disabled_and_superseded_attempts_are_not_current() {
+    use std::sync::{Arc,Mutex};
+    let root=tempfile::tempdir().unwrap();
+    let logger=Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("race",root.path(),None).unwrap()));
+    let connection=maho_ext_mcp::connection::ServerConnection::new("race",maho_ext_mcp::config_schema::McpServerConfig{enabled:Some(true),..Default::default()},None,logger);
+    let generation=connection.generation();assert!(is_current_startup_attempt(&connection,generation));
+    connection.bump_generation().await.unwrap();assert!(!is_current_startup_attempt(&connection,generation));
+    connection.disable().await.unwrap();assert!(!is_current_startup_attempt(&connection,connection.generation()));
+}

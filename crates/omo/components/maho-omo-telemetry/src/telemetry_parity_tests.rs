@@ -1,87 +1,193 @@
 use crate::{
-    index::SenpiTelemetryOptions, omo_native_consent::NativeConsent,
-    omo_native_session_summary::SessionSummaryRecorder, session_summary_window::*,
+    index::SenpiTelemetryOptions,
+    omo_native_session_summary::{
+        SessionSummaryOptions, SessionSummaryRecorder, SessionSummaryRecorder as Recorder,
+    },
+    session_summary_publisher::SummaryPublish,
+    session_summary_store::{
+        ConsentScope, Probes, RecordConsent, WindowRecord, create_summary_storage,
+    },
+    session_summary_window::{
+        EndedBy, SummaryMeta, SummaryTurn, add_turn, open_window, summary_properties, usd_of,
+    },
 };
+use futures::future::BoxFuture;
+use futures::FutureExt;
 use serde_json::json;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 
-#[test]
-fn summary_quantiles_models_and_full_precision_cost() {
-    let mut window = open_window(1000.0, &json!(1));
-    for (index, total) in [(1, 10), (2, 20), (3, 90)] {
-        let event = json!({"turnIndex":index,"message":{"role":"assistant","provider":"openai","model":"gpt-5.6-sol","stopReason":"error","usage":{"input":2,"output":3,"cacheRead":0,"cacheWrite":0,"totalTokens":total,"cost":{"total":0.000049}}},"toolResults":[{"isError":true}]});
-        let (properties, invalid) =
-            crate::omo_native_turns::turn_completed_properties(&event, "h").unwrap();
-        add_turn(&mut window, &properties, &event, invalid, 2000.0);
+fn turn_event() -> serde_json::Value {
+    json!({"turnIndex":1,"message":{"role":"assistant","provider":"openai","model":"gpt-5.6-sol","stopReason":"error","usage":{"input":2,"output":3,"cacheRead":0,"cacheWrite":0,"totalTokens":10,"cost":{"total":0.000049}}},"toolResults":[{"isError":true}]})
+}
+
+fn meta(ended_by: EndedBy, seq: u64) -> SummaryMeta {
+    SummaryMeta {
+        ended_by,
+        epoch: "0123456789abcdef".into(),
+        seq,
+        sample_rate: 0.05,
+        sampled: false,
+        session_role: "root".into(),
+        dropped_events: 0,
     }
-    let props = summary_properties("h", &window, 0, "shutdown", "main", 0.05);
+}
+
+#[test]
+fn summary_quantiles_models_and_integer_cost() {
+    let mut window = open_window(1000.0, 1.0);
+    for (index, total) in [(1_u64, 10_u64), (2, 20), (3, 90)] {
+        let mut event = turn_event();
+        event["turnIndex"] = json!(index);
+        event["message"]["usage"]["totalTokens"] = json!(total);
+        let (_, invalid, turn) = crate::omo_native_turns::turn_completed_properties(
+            &event,
+            "h",
+            0.05,
+            crate::session_role::TelemetrySessionRole::Root,
+        )
+        .expect("assistant turn");
+        add_turn(&mut window, &turn, 2000.0);
+        assert!(!invalid);
+    }
+    let props = summary_properties("h", &window, &meta(EndedBy::Shutdown, 0));
     assert_eq!(props["turns"], 3);
     assert_eq!(props["total_tokens_p50"], 20.0);
     assert_eq!(props["total_tokens_p95"], 90.0);
-    assert_eq!(props["cost_usd"], 0.0001);
+    // 0.000049 rounds to zero integer units of 1e-4, so the derived USD figure is exactly zero.
+    assert_eq!(props["cost_1e4"], 0.0);
+    assert_eq!(props["cost_usd"], 0.0);
     assert_eq!(props["tool_error_count"], 3.0);
     assert_eq!(props["error_turns"], 3.0);
     assert_eq!(props["m1_model"], "gpt-5.6-sol");
     assert_eq!(props["m2_model"], "none");
-    assert!(props["is_final"].as_bool().unwrap());
-    assert!(parse_window(&window).is_some());
+    assert_eq!(props["is_final"], true);
+    assert_eq!(props["session_role"], "root");
+    assert_eq!(props["summary_epoch"], "0123456789abcdef");
 }
 
 #[test]
-fn checkpoint_reload_and_opt_out_preserve_sequence_without_sending_revoked_window() {
-    let dir = tempfile::tempdir().unwrap();
-    let opted_in = Arc::new(AtomicBool::new(true));
-    let enabled = Arc::clone(&opted_in);
-    let consent = NativeConsent::new(
-        &SenpiTelemetryOptions {
-            env: Some(telemetry_core::TelemetryEnv::new()),
-            ..Default::default()
-        },
-        Arc::new(move |_| enabled.load(Ordering::SeqCst)),
-    );
-    consent.set_cwd(dir.path());
-    let rows = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&rows);
-    let mut recorder = SessionSummaryRecorder::new(
-        dir.path(),
-        consent,
-        Arc::new(move |name, props| captured.lock().unwrap().push((name.to_owned(), props))),
-        Arc::new(|| 1000.0),
-    );
-    let hash = "a".repeat(64);
-    let event = json!({"turnIndex":1,"message":{"role":"assistant","provider":"openai","model":"gpt-5.6-sol","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0.1}}}});
-    for _ in 0..50 {
-        recorder.record(&hash, &event, dir.path(), "main").unwrap();
+fn cost_is_rounded_once_and_usd_derives_from_the_integer() {
+    for (cost, units) in [(0.00015, 2.0), (0.123456, 1235.0), (0.000049, 0.0)] {
+        let mut event = turn_event();
+        event["message"]["usage"]["cost"]["total"] = json!(cost);
+        let (props, _, turn) = crate::omo_native_turns::turn_completed_properties(
+            &event,
+            "h",
+            0.05,
+            crate::session_role::TelemetrySessionRole::Root,
+        )
+        .expect("assistant turn");
+        assert_eq!(props["cost_1e4"], units, "{cost}");
+        assert_eq!(props["cost_usd"], usd_of(units));
+        assert_eq!(turn.cost_1e4, units);
     }
-    assert!(dir.path().join(format!("rollups/{hash}.json")).exists());
-    recorder.record(&hash, &event, dir.path(), "main").unwrap();
-    opted_in.store(false, Ordering::SeqCst);
-    recorder.purge().unwrap();
-    assert!(!dir.path().join(format!("rollups/{hash}.json")).exists());
-    opted_in.store(true, Ordering::SeqCst);
-    recorder.record(&hash, &event, dir.path(), "main").unwrap();
-    recorder
-        .finish(&hash, dir.path(), "reload", "main")
-        .unwrap();
-    recorder
-        .finish(&hash, dir.path(), "shutdown", "main")
-        .unwrap();
+}
+
+fn recorder(
+    dir: &std::path::Path,
+    consented: Arc<AtomicBool>,
+    rows: Arc<Mutex<Vec<serde_json::Value>>>,
+) -> Arc<Recorder> {
+    let publish: SummaryPublish = Arc::new(move |publication| {
+        rows.lock().unwrap().push(serde_json::Value::Object(publication.properties));
+        async { Ok(()) }.boxed() as BoxFuture<'static, _>
+    });
+    let storage = create_summary_storage(
+        dir,
+        crate::session_summary_owner::ProcessOwner {
+            pid: std::process::id(),
+            boot_id: "boot-self".into(),
+        },
+        Probes {
+            is_pid_alive: Some(Arc::new(|_| false)),
+            process_start_time: Some(Arc::new(|_| None)),
+        },
+        Some(Arc::new(|| 1000.0)),
+    );
+    SessionSummaryRecorder::new(SessionSummaryOptions {
+        is_consented: Arc::new(move |_| consented.load(Ordering::SeqCst)),
+        consent_scope: Arc::new(|| ConsentScope {
+            cwd: Some("/repo".into()),
+            config: None,
+        }),
+        is_scope_consented: Arc::new(|_| true),
+        storage,
+        publish,
+        session_role: crate::session_role::TelemetrySessionRole::Root,
+        sample_rate: Arc::new(|| 0.05),
+        now: Some(Arc::new(|| 1000.0)),
+        diagnostics: None,
+        dropped_events: None,
+        is_pid_alive: None,
+    })
+}
+
+fn summary_turn(index: u64) -> SummaryTurn {
+    SummaryTurn {
+        turn_index: index as f64,
+        provider: "openai".into(),
+        model_id: "gpt-5.6-sol".into(),
+        input_tokens: 1.0,
+        output_tokens: 1.0,
+        cache_read_tokens: 0.0,
+        cache_write_tokens: 0.0,
+        reasoning_tokens: 0.0,
+        total_tokens: 2.0,
+        cost_1e4: 1000.0,
+        usage_valid: true,
+        stop_reason: None,
+        tool_result_count: 0.0,
+        tool_error_count: 0.0,
+    }
+}
+
+#[tokio::test]
+async fn checkpoint_reload_and_opt_out_preserve_sequence_without_sending_revoked_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let consented = Arc::new(AtomicBool::new(true));
+    let rows = Arc::new(Mutex::new(Vec::new()));
+    let recorder = recorder(dir.path(), Arc::clone(&consented), Arc::clone(&rows));
+    let hash = "a".repeat(64);
+    for index in 1..=50 {
+        recorder.record_turn(&hash, summary_turn(index)).await;
+    }
+    assert!(dir
+        .path()
+        .join("session-summary")
+        .join(format!("{hash}.json"))
+        .exists());
+    assert_eq!(rows.lock().unwrap().len(), 1);
+    assert_eq!(rows.lock().unwrap()[0]["summary_seq"], 0);
+    assert_eq!(rows.lock().unwrap()[0]["turns"], 50);
+
+    // An opt-out mid-session deletes the window and sends nothing for it.
+    consented.store(false, Ordering::SeqCst);
+    recorder.purge_if_opted_out();
+    assert!(!dir
+        .path()
+        .join("session-summary")
+        .join(format!("{hash}.json"))
+        .exists());
+    consented.store(true, Ordering::SeqCst);
+
+    recorder.record_turn(&hash, summary_turn(51)).await;
+    recorder.finish(&hash, Some("reload")).await;
+    recorder.record_turn(&hash, summary_turn(52)).await;
+    recorder.finish(&hash, Some("shutdown")).await;
     let rows = rows.lock().unwrap();
-    let summaries: Vec<_> = rows
-        .iter()
-        .filter(|(name, _)| name == "session_summary")
-        .map(|(_, p)| p)
-        .collect();
-    assert_eq!(summaries.len(), 3);
-    assert_eq!(summaries[0]["summary_seq"], 0);
-    assert_eq!(summaries[0]["turns"], 50);
-    assert_eq!(summaries[1]["summary_seq"], 1);
-    assert_eq!(summaries[1]["ended_by"], "reload");
-    assert_eq!(summaries[2]["summary_seq"], 2);
-    assert_eq!(summaries[2]["turns"], 0);
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[1]["ended_by"], "reload");
+    // Upstream omo-native-session-summary.test.ts starts a new epoch after opt-out;
+    // uniqueness is the (epoch, seq) pair, not a process-global sequence number.
+    assert_eq!(rows[1]["summary_seq"], 0);
+    assert_eq!(rows[2]["ended_by"], "shutdown");
+    assert_eq!(rows[2]["summary_seq"], 1);
+    assert_ne!(rows[0]["summary_epoch"], rows[1]["summary_epoch"]);
+    assert_eq!(rows[1]["summary_epoch"], rows[2]["summary_epoch"]);
+    assert_eq!(rows[2]["is_final"], true);
 }
 
 #[test]
@@ -144,7 +250,10 @@ async fn live_opt_out_gates_feature_and_summary_emissions() {
     let captured = Arc::clone(&rows);
     let opted_in = Arc::new(AtomicBool::new(true));
     let enabled = Arc::clone(&opted_in);
+    let consent_clock = Arc::new(std::sync::atomic::AtomicU64::new(10_000));
+    let read_clock = Arc::clone(&consent_clock);
     let options = SenpiTelemetryOptions {
+        consent_now: Some(Arc::new(move || read_clock.load(Ordering::SeqCst) as f64)),
         env: Some(env(dir.path())),
         state_dir: Some(dir.path().join("native")),
         transport_factory: Some(Arc::new(move |_, _| {
@@ -173,6 +282,8 @@ async fn live_opt_out_gates_feature_and_summary_emissions() {
     .await;
     let before = rows.lock().unwrap().len();
     opted_in.store(false, Ordering::SeqCst);
+    // Upstream omo-native-component.test.ts advances the injected clock past the consent cache.
+    consent_clock.fetch_add(crate::omo_native_consent::CONSENT_CACHE_MS as u64 + 1, Ordering::SeqCst);
     dispatch(
         &api,
         ExtensionEvent::ToolResult(ToolResultEvent {
@@ -200,50 +311,85 @@ async fn live_opt_out_gates_feature_and_summary_emissions() {
     assert_eq!(rows.lock().unwrap().len(), before);
 }
 
-#[test]
-fn orphan_window_is_claimed_once_and_uses_originating_consent() {
+#[tokio::test]
+async fn orphan_window_is_claimed_once_and_uses_originating_consent() {
     let dir = tempfile::tempdir().unwrap();
-    let options = SenpiTelemetryOptions {
-        env: Some(telemetry_core::TelemetryEnv::new()),
-        ..Default::default()
-    };
-    let consent = NativeConsent::new(&options, Arc::new(|cwd| !cwd.ends_with("revoked")));
-    consent.set_cwd(dir.path());
-    let store = crate::session_summary_store::SummaryStore::new(dir.path());
-    for (hash, cwd) in [
-        ("b".repeat(64), dir.path().to_owned()),
-        ("c".repeat(64), dir.path().join("revoked")),
-    ] {
-        let mut value = crate::session_summary_store::rollup(
-            &hash,
-            2,
-            open_window(1000.0, &json!(1)),
-            &cwd,
-            1000.0,
-            "main",
-        );
-        value["pid"] = json!(2_147_483_647);
-        store.write(&value).unwrap();
-    }
-    let rows = Arc::new(Mutex::new(Vec::new()));
-    let captured = Arc::clone(&rows);
-    let mut recorder = SessionSummaryRecorder::new(
+    let rows: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let published = Arc::clone(&rows);
+    let publish: SummaryPublish = Arc::new(move |publication| {
+        published
+            .lock()
+            .unwrap()
+            .push(serde_json::Value::Object(publication.properties));
+        async { Ok(()) }.boxed() as BoxFuture<'static, _>
+    });
+    let storage = create_summary_storage(
         dir.path(),
-        consent,
-        Arc::new(move |name, props| captured.lock().unwrap().push((name.to_owned(), props))),
-        Arc::new(|| 1001.0),
+        crate::session_summary_owner::ProcessOwner {
+            pid: std::process::id(),
+            boot_id: "boot-self".into(),
+        },
+        Probes {
+            is_pid_alive: Some(Arc::new(|_| false)),
+            process_start_time: Some(Arc::new(|_| None)),
+        },
+        Some(Arc::new(|| 1001.0)),
     );
-    recorder
-        .finish(&"d".repeat(64), dir.path(), "shutdown", "main")
-        .unwrap();
+    for (hash, cwd) in [
+        ("b".repeat(64), "/repo".to_string()),
+        ("c".repeat(64), "/revoked".to_string()),
+    ] {
+        storage
+            .write_window(
+                &hash,
+                &WindowRecord {
+                    consent: RecordConsent::Enabled,
+                    scope: Some(ConsentScope {
+                        cwd: Some(cwd),
+                        config: None,
+                    }),
+                    session_hash: hash.clone(),
+                    session_role: crate::session_role::TelemetrySessionRole::Root,
+                    owner: crate::session_summary_owner::ProcessOwner {
+                        pid: 2_147_483_647,
+                        boot_id: "boot-dead".into(),
+                    },
+                    heartbeat_at: -1_000_000.0,
+                    epoch: Some("0123456789abcdef".into()),
+                    seq: 2,
+                    sample_rate: 0.05,
+                    window_id: Some("01234567-89ab-cdef-0123-456789abcdef".into()),
+                    window: Some(open_window(1000.0, 1.0)),
+                },
+            )
+            .unwrap();
+    }
+    let recorder = SessionSummaryRecorder::new(SessionSummaryOptions {
+        is_consented: Arc::new(|_| true),
+        consent_scope: Arc::new(|| ConsentScope {
+            cwd: Some("/repo".into()),
+            config: None,
+        }),
+        is_scope_consented: Arc::new(|scope| scope.cwd.as_deref() != Some("/revoked")),
+        storage,
+        publish,
+        session_role: crate::session_role::TelemetrySessionRole::Root,
+        sample_rate: Arc::new(|| 0.05),
+        now: Some(Arc::new(|| 1001.0)),
+        diagnostics: None,
+        dropped_events: None,
+        is_pid_alive: None,
+    });
+    recorder.recover().await;
     let rows = rows.lock().unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].1["ended_by"], "recovered");
-    assert_eq!(rows[0].1["summary_seq"], 2);
+    assert_eq!(rows[0]["ended_by"], "recovered");
+    assert_eq!(rows[0]["summary_seq"], 2);
+    // The revoked project's window is dropped unsent, not recovered.
     assert!(
         !dir.path()
-            .join(format!("rollups/{}.json", "c".repeat(64)))
+            .join("session-summary")
+            .join(format!("{}.json", "c".repeat(64)))
             .exists()
     );
-    assert!(store.claim_orphans(1002.0).unwrap().is_empty());
 }

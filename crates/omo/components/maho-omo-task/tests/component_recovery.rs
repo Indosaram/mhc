@@ -672,7 +672,7 @@ async fn recovery(case: Case) {
     }
     assert_eq!(
         wake.lock().expect("wake").as_slice(),
-        &[serde_json::json!({"source":"senpi-task","activeCount":0,"channels":[]})],
+        &[serde_json::json!({"source":"senpi-task","kind":"children","activeCount":0,"items":[],"channels":[]})],
         "registered startup awaits its owned resumption snapshot"
     );
     // Scope the guard in a lexical block so it is provably dropped before the AgentEnd await below.
@@ -772,7 +772,7 @@ async fn recovery(case: Case) {
     component.dispose();
     assert_eq!(
         wake.lock().expect("wake").last(),
-        Some(&serde_json::json!({"source":"senpi-task","activeCount":0,"channels":[]})),
+        Some(&serde_json::json!({"source":"senpi-task","kind":"children","activeCount":0,"items":[],"channels":[]})),
         "component disposal joins final clear emission"
     );
     assert!(

@@ -22,6 +22,7 @@ use crate::tools::task::foreground_wait::{
 
 fn ctx() -> TaskToolContext {
     TaskToolContext {
+        model: None,
         cwd: "/tmp/project".to_string(),
         session_id: "parent-1".to_string(),
         get_prompt_cache_safe_wait_seconds: None,
@@ -157,7 +158,10 @@ fn given_a_budgeted_foreground_child_when_it_settles_before_the_deadline_then_it
     let harness = default_manager();
     let task = started(harness.manager.start(&base_spec()));
     let budgeted = context_with_budget(Arc::new(|| Some(270)));
-    harness.in_process.wait_handle(&task.task_id).complete("done");
+    harness
+        .in_process
+        .wait_handle(&task.task_id)
+        .complete("done");
 
     // when
     let result = wait_for_foreground_task(&ForegroundWaitInput {

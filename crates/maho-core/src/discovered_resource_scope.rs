@@ -52,7 +52,7 @@ pub fn resolve_discovered_resource_paths(
             });
             DiscoveredResourcePath {
                 path: entry.path.clone(),
-                metadata: PathMetadata {
+                metadata: PathMetadata { skill_provenance: None,
                     source: get_extension_source_label(&entry.extension_path),
                     scope,
                     origin: crate::source_info::SourceOrigin::TopLevel,

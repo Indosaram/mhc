@@ -16,6 +16,7 @@ fn host() -> i64 {
 
 fn input() -> SuspendInput {
     SuspendInput {
+        own_task_id: None,
         parent_session_id: "parent-1".to_string(),
         reason: "quit".to_string(),
     }
@@ -23,6 +24,7 @@ fn input() -> SuspendInput {
 
 fn summary(in_process: usize, rpc: usize, pending: usize, disposed: usize) -> SuspendSummary {
     SuspendSummary {
+        stopped_owner: None,
         suspended_in_process: in_process,
         suspended_rpc: rpc,
         suspended_pending: pending,
@@ -135,6 +137,7 @@ fn rpc_running_resident_suspends_rpc_detached_keeping_pid() {
     ));
     let result = lifecycle(&temp.store, &registry, default_settings())
         .suspend_on_session_shutdown(&SuspendInput {
+            own_task_id: None,
             parent_session_id: "parent-1".to_string(),
             reason: "reload".to_string(),
         })

@@ -9,11 +9,12 @@ use maho_cli::cli::extension_registry::{
 
 #[test]
 fn pinned_builtin_order_matches_upstream() {
-    assert_eq!(BUILTIN_EXTENSION_IDS.len(), 44);
+    // senpi src/core/extensions/builtin/index.ts includes relocate-session in v5.1.47.
+    assert_eq!(BUILTIN_EXTENSION_IDS.len(), 45);
     let unique: BTreeSet<&str> = BUILTIN_EXTENSION_IDS.iter().copied().collect();
-    assert_eq!(unique.len(), 44);
+    assert_eq!(unique.len(), 45);
     assert_eq!(BUILTIN_EXTENSION_IDS[0], "loop-guard");
-    assert_eq!(BUILTIN_EXTENSION_IDS[43], "mcp");
+    assert_eq!(BUILTIN_EXTENSION_IDS[44], "mcp");
     assert_eq!(
         GLOBAL_DEFAULT_EXTENSION_IDS,
         ["diff", "files", "prompt-url-widget", "tps"]
@@ -33,6 +34,23 @@ fn registered_builtin_ids_follow_pinned_order() {
         .filter(|id| registered.contains(id))
         .collect();
     assert_eq!(registered, expected);
+}
+
+#[test]
+fn search_fallback_runs_before_provider_payload_injection() {
+    let search = BUILTIN_EXTENSION_IDS
+        .iter()
+        .position(|id| *id == "websearch")
+        .unwrap();
+    for provider in ["anthropic-web-search", "openai-web-search"] {
+        assert!(
+            search
+                < BUILTIN_EXTENSION_IDS
+                    .iter()
+                    .position(|id| *id == provider)
+                    .unwrap()
+        );
+    }
 }
 
 #[test]

@@ -69,9 +69,9 @@ pub static CATEGORY_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFal
             (
                 "artistry",
                 vec![
-                    rung(ANTHROPIC, "claude-fable-5", Some("xhigh")),
+                    rung(ANTHROPIC, "claude-fable-5-1", Some("max")),
+                    rung(ANTHROPIC, "claude-opus-5-5", Some("max")),
                     rung(KIMI, "kimi-k3", Some("max")),
-                    rung(ANTHROPIC, "claude-opus-5", Some("xhigh")),
                 ],
             ),
             (

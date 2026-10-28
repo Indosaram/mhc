@@ -7,6 +7,9 @@ license = "MIT"
 autotests = false
 
 [dependencies]
+serde_json.workspace = true
+chrono = { workspace = true, features = ["clock"] }
+uuid = { workspace = true, features = ["v4"] }
 maho-ext-api = { path = "../maho-ext-api" }
 maho-ai = { path = "../maho-ai" }
 async-trait = "=0.1.92"

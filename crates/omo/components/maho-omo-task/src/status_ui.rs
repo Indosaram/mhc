@@ -27,6 +27,8 @@ pub trait StatusUiTimers: Send + Sync {
 }
 pub trait StatusUiManager: Send + Sync {
     fn list(&self, session: &str) -> Vec<TaskRecord>;
+    fn list_all(&self) -> Vec<TaskRecord> { Vec::new() }
+    fn live_run_stats(&self, _task: &str) -> Option<crate::subagent_cost_ledger::LiveRunStats> { None }
     fn has_background_surface(&self) -> bool {
         false
     }
@@ -41,6 +43,11 @@ pub trait StatusUiManager: Send + Sync {
     }
 }
 impl StatusUiManager for TaskManager {
+    fn list_all(&self) -> Vec<TaskRecord> { self.list(&ListScope::All).into_iter().map(|entry| entry.record).collect() }
+    fn live_run_stats(&self, task: &str) -> Option<crate::subagent_cost_ledger::LiveRunStats> {
+        let (run_start_epoch, stats) = self.live_run_stats(task)?;
+        Some(crate::subagent_cost_ledger::LiveRunStats { run_start_epoch, stats })
+    }
     fn list(&self, session: &str) -> Vec<TaskRecord> {
         self.list(&ListScope::ParentSession(session.into()))
             .into_iter()
@@ -76,6 +83,7 @@ pub struct TaskStatusUi {
     pub timers: Arc<dyn StatusUiTimers>,
     pub now: Arc<dyn Fn() -> i64 + Send + Sync>,
     pub terminal_width: Arc<dyn Fn() -> Option<usize> + Send + Sync>,
+    cost_feed: Arc<crate::subagent_cost_feed::TreeCostFeed>,
     state: Mutex<State>,
 }
 impl TaskStatusUi {
@@ -86,7 +94,9 @@ impl TaskStatusUi {
         now: Arc<dyn Fn() -> i64 + Send + Sync>,
         terminal_width: Arc<dyn Fn() -> Option<usize> + Send + Sync>,
     ) -> Arc<Self> {
+        let cost_feed = crate::subagent_cost_feed::TreeCostFeed::new(manager.clone(), runtime.clone());
         Arc::new(Self {
+            cost_feed,
             manager,
             runtime,
             timers,
@@ -175,7 +185,9 @@ impl TaskStatusUi {
         }
         true
     }
+    pub fn observe_record(self: &Arc<Self>, change: &crate::store_mutation_observer::StoreMutation) { self.cost_feed.observe(change); }
     pub fn sync_now(self: &Arc<Self>) {
+        self.cost_feed.ensure_seeded();
         if !self.refresh_cached_records() {
             self.clear_live_refresh();
             return;
@@ -321,6 +333,7 @@ impl TaskStatusUi {
         }
     }
     pub fn dispose(&self) {
+        self.cost_feed.dispose();
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(handle) = state.pending.take() {
             self.timers.clear(handle);

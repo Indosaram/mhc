@@ -278,6 +278,9 @@ pub const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = CompactionSettings {
 
 /// Calculate total context tokens from provider usage.
 pub fn calculate_context_tokens(usage: &Usage) -> u64 {
+    if let Some(context) = usage.context_usage {
+        return context.map_or(0, |context| context.input + context.output);
+    }
     if usage.total_tokens > 0 {
         usage.total_tokens
     } else {
@@ -478,15 +481,8 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
         AgentMessage::Llm(Message::ToolResult(result)) => {
             return ceil_div(estimate_blocks_chars(&result.content), 4);
         }
-        AgentMessage::Llm(Message::System(system)) => {
-            return ceil_div(
-                maho_ai::utils::text::get_system_message_text(&system.content, &system.sections)
-                    .encode_utf16()
-                    .count(),
-                4,
-            );
-        }
-        AgentMessage::Llm(Message::ConfigurationUpdate(_)) => return 0,
+        // Pinned `estimateTokens` has no `system` case: system messages count as zero.
+        AgentMessage::Llm(Message::System(_) | Message::ConfigurationUpdate(_)) => return 0,
         AgentMessage::Custom(CustomAgentMessage::BashExecution(bash)) => {
             bash.command.encode_utf16().count() + bash.output.encode_utf16().count()
         }

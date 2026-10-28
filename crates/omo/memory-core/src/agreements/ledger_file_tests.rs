@@ -27,7 +27,11 @@ fn render_keeps_frontmatter_and_unparsed_lines() {
     let existing = format!("---\ndescription: Mine\n---\n{BODY}\nfree text\n");
     let items = agreement_items_of(Some(&existing));
     let rendered = render_agreements_file(Some(&existing), &items).expect("render");
-    assert_eq!(rendered, existing);
+    // Upstream agreements/ledger-file.ts snapshots legacy dates into the event journal.
+    let events = crate::agreements::events::serialize_agreement_events(
+        &crate::agreements::events::legacy_agreement_events(&items),
+    );
+    assert_eq!(rendered, format!("{existing}{}\n", events.join("\n")));
 }
 
 #[test]

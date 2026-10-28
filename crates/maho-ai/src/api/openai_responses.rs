@@ -569,6 +569,7 @@ fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
         failure_source: None,
         timing: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,
@@ -2478,7 +2479,7 @@ pub async fn warm_openai_responses_prompt_cache(
         .as_u64()
         .or_else(|| details["cache_creation_tokens"].as_u64())
         .unwrap_or(0);
-    let mut usage = Usage {
+    let mut usage = Usage { context_usage: None,
         input: raw["input_tokens"]
             .as_u64()
             .unwrap_or(0)

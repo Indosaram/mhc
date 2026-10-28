@@ -9,7 +9,7 @@ use maho_core::skills::{LoadSkillsFromDirOptions, load_skills_from_dir};
 
 fn main() {
     let dir = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
-    let result = load_skills_from_dir(&LoadSkillsFromDirOptions { dir: dir.clone(), source: "path".to_string() });
+    let result = load_skills_from_dir(&LoadSkillsFromDirOptions { dir: dir.clone(), source: "path".to_string(), ..Default::default() });
     let diagnostics: Vec<serde_json::Value> = result
         .diagnostics
         .iter()

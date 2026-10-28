@@ -27,26 +27,3 @@ pub fn should_run_idle_compaction(decision: &IdleCompactionDecision<'_>) -> bool
 pub fn should_warm_at_idle(decision: &IdleCompactionDecision<'_>) -> bool {
     is_idle_eligible(decision) && decision.tokens.is_some_and(|tokens| tokens >= decision.context_window * WARM_GENERATION_FLOOR_RATIO)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn app_server_mode_does_not_run_idle_compaction() {
-        let settings = maho_core::compaction::settings::default_compaction_settings();
-        let decision = IdleCompactionDecision {
-            will_retry: false,
-            aborted: false,
-            settings: &settings,
-            tokens: Some(190_000.0),
-            context_window: 200_000.0,
-            breaker_tripped: false,
-            last_yield: None,
-            mode: ExtensionMode::AppServer,
-        };
-        assert!(!should_run_idle_compaction(&decision));
-        assert!(!should_warm_at_idle(&decision));
-    }
-}
-

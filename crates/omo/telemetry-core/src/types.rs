@@ -17,6 +17,10 @@ pub type TelemetryCaptureProperties = Map<String, Value>;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TelemetryCaptureMessage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
     pub distinct_id: String,
     pub event: String,
     pub properties: TelemetryCaptureProperties,
@@ -29,13 +33,24 @@ pub enum TelemetryDiagnosticEvent {
     TelemetryActivityStateReadFailed,
     TelemetryActivityStateWriteFailed,
     TelemetryCaptureFailed,
+    TelemetryConsentFailed,
     TelemetryCpuInfoUnavailable,
+    TelemetryDropFlushFailed,
     TelemetryEventPropertyDropped,
     TelemetryEventPropertyRejected,
     TelemetryEventRejected,
+    TelemetryEventsDroppedByConsent,
+    TelemetryLegacyRollupsRemoved,
+    TelemetryOtlpPartialSuccess,
+    TelemetryOtlpSendFailed,
     TelemetryPosthogImportFailed,
     TelemetryPosthogInitFailed,
     TelemetryShutdownFailed,
+    TelemetrySpoolPurgeFailed,
+    TelemetrySpoolPurgeRefused,
+    TelemetrySpoolPurgeSkipped,
+    TelemetrySpoolSweepFailed,
+    TelemetrySpoolWriteFailed,
 }
 
 impl TelemetryDiagnosticEvent {
@@ -45,13 +60,24 @@ impl TelemetryDiagnosticEvent {
             Self::TelemetryActivityStateReadFailed => "telemetry_activity_state_read_failed",
             Self::TelemetryActivityStateWriteFailed => "telemetry_activity_state_write_failed",
             Self::TelemetryCaptureFailed => "telemetry_capture_failed",
+            Self::TelemetryConsentFailed => "telemetry_consent_failed",
+            Self::TelemetryDropFlushFailed => "telemetry_drop_flush_failed",
             Self::TelemetryCpuInfoUnavailable => "telemetry_cpu_info_unavailable",
             Self::TelemetryEventPropertyDropped => "telemetry_event_property_dropped",
             Self::TelemetryEventPropertyRejected => "telemetry_event_property_rejected",
             Self::TelemetryEventRejected => "telemetry_event_rejected",
+            Self::TelemetryEventsDroppedByConsent => "telemetry_events_dropped_by_consent",
+            Self::TelemetryLegacyRollupsRemoved => "telemetry_legacy_rollups_removed",
+            Self::TelemetryOtlpPartialSuccess => "telemetry_otlp_partial_success",
+            Self::TelemetryOtlpSendFailed => "telemetry_otlp_send_failed",
             Self::TelemetryPosthogImportFailed => "telemetry_posthog_import_failed",
             Self::TelemetryPosthogInitFailed => "telemetry_posthog_init_failed",
             Self::TelemetryShutdownFailed => "telemetry_shutdown_failed",
+            Self::TelemetrySpoolPurgeFailed => "telemetry_spool_purge_failed",
+            Self::TelemetrySpoolPurgeRefused => "telemetry_spool_purge_refused",
+            Self::TelemetrySpoolPurgeSkipped => "telemetry_spool_purge_skipped",
+            Self::TelemetrySpoolSweepFailed => "telemetry_spool_sweep_failed",
+            Self::TelemetrySpoolWriteFailed => "telemetry_spool_write_failed",
         }
     }
 }
@@ -103,25 +129,47 @@ impl fmt::Display for TelemetryError {
 
 impl std::error::Error for TelemetryError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TelemetrySpoolEntryKind {
+    Directory,
+    Symlink,
+    ForeignOwner,
+    Other,
+}
+
+impl TelemetrySpoolEntryKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Directory => "directory",
+            Self::Symlink => "symlink",
+            Self::ForeignOwner => "foreign_owner",
+            Self::Other => "other",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetryDiagnosticInput {
     pub event: TelemetryDiagnosticEvent,
     pub source: String,
     pub error: Option<TelemetryError>,
     pub error_kind: Option<TelemetryDiagnosticErrorKind>,
+    pub entry_kind: Option<TelemetrySpoolEntryKind>,
+    pub error_code: Option<String>,
+    pub count: Option<u64>,
 }
 
 impl TelemetryDiagnosticInput {
-    pub(crate) fn failure(
-        event: TelemetryDiagnosticEvent,
-        source: &str,
-        error: TelemetryError,
-    ) -> Self {
+    pub fn failure(event: TelemetryDiagnosticEvent, source: &str, error: TelemetryError) -> Self {
         Self {
             event,
             source: source.to_string(),
             error: Some(error),
             error_kind: Some(TelemetryDiagnosticErrorKind::Error),
+            entry_kind: None,
+            error_code: None,
+            count: None,
         }
     }
 }
@@ -224,6 +272,23 @@ impl TelemetryTransportOptions {
 /// no flush step, matching the optional `flush` of the TS contract.
 pub trait TelemetryTransport: Send + Sync {
     fn capture(&self, message: &TelemetryCaptureMessage) -> Result<(), TelemetryError>;
+    fn capture_immediate<'a>(
+        &'a self,
+        _message: &'a TelemetryCaptureMessage,
+    ) -> Option<BoxFuture<'a, Result<(), crate::telemetry_delivery_error::TelemetryDeliveryError>>>
+    {
+        None
+    }
+    fn traces(&self) -> Option<&dyn TurnTracing> {
+        None
+    }
+    /// Durable send: resolves only after acknowledgment, never merely after enqueueing.
+    fn capture_durable(
+        &self,
+        message: TelemetryCaptureMessage,
+    ) -> BoxFuture<'_, Result<(), TelemetryError>> {
+        Box::pin(async move { self.capture(&message) })
+    }
     fn flush(&self) -> Option<BoxFuture<'_, Result<(), TelemetryError>>>;
     fn shutdown(&self) -> BoxFuture<'_, Result<(), TelemetryError>>;
 }
@@ -239,4 +304,31 @@ pub struct TrackActiveInput {
     pub day_utc: String,
     pub distinct_id: String,
     pub reason: String,
+}
+
+/// Primitive-only turn attributes, corresponding to the OpenTelemetry public API.
+pub type TurnSpanAttributes = std::collections::BTreeMap<String, TurnSpanAttribute>;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum TurnSpanAttribute {
+    String(String),
+    Number(f64),
+    Boolean(bool),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnSpanStatus {
+    Ok,
+    Error,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TurnSpanStart {
+    pub attributes: TurnSpanAttributes,
+    pub parent_traceparent: Option<String>,
+}
+
+pub trait TurnTracing: Send + Sync {
+    fn start_turn(&self, start: TurnSpanStart) -> Option<crate::otel_turn_span::TurnSpanHandle>;
 }

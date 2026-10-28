@@ -29,6 +29,11 @@ impl MemoryNudgeWiring {
                     maho_ext_api::ExtensionEvent::ToolCall(call)=> {
                         let mut payload=serde_json::json!({"toolName":call.tool_name,"toolCallId":call.tool_call_id,"input":call.input});
                         wiring.inject_provenance(&mut payload,Some(id),resolve(id).as_ref());
+                        if payload["input"]["provenance"].is_object() {
+                            let entries = context.session_manager.get_branch().into_iter().map(|entry| entry.data).collect::<Vec<_>>();
+                            let claim = crate::memory_tool_provenance::resolve_claim_receipt(payload["input"]["source"].as_str().unwrap_or("inferred"), payload["input"]["user_quote"].as_str(), &entries, Some(&call.tool_call_id));
+                            payload["input"]["provenance"]["claim"] = serde_json::to_value(claim).expect("claim serializes");
+                        }
                         call.input=payload["input"].clone();
                     },
                     _=>{},

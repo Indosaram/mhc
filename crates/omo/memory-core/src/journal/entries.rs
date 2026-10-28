@@ -246,14 +246,18 @@ fn truncate_str(s: &str, limit: usize) -> &str {
 
 fn truncate_tool_result(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= TOOL_RESULT_TRUNCATE_LIMIT { return s.to_string(); }
+    if chars.len() <= TOOL_RESULT_TRUNCATE_LIMIT {
+        return s.to_string();
+    }
     let head_len = TOOL_RESULT_TRUNCATE_LIMIT * 3 / 4;
     let tail_len = TOOL_RESULT_TRUNCATE_LIMIT - head_len;
     let head: String = chars[..head_len].iter().collect();
     let tail: String = chars[chars.len() - tail_len..].iter().collect();
-    format!("{head}\n…[truncated {} chars]…\n{tail}", chars.len() - TOOL_RESULT_TRUNCATE_LIMIT)
+    format!(
+        "{head}\n…[truncated {} chars]…\n{tail}",
+        chars.len() - TOOL_RESULT_TRUNCATE_LIMIT
+    )
 }
-
 
 /// Project a single transcript message into normalized journal entries.
 pub fn project_transcript_entries(
@@ -262,9 +266,6 @@ pub fn project_transcript_entries(
 ) -> Vec<TranscriptEntry> {
     match message {
         TranscriptProjection::User { message_id, text } => {
-            if text.trim().is_empty() {
-                return Vec::new();
-            }
             vec![TranscriptEntry::Text(TextTranscriptEntry {
                 kind: "user".to_string(),
                 text: text.clone(),

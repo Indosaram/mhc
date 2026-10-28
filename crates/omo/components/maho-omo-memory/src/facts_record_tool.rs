@@ -40,6 +40,10 @@ pub struct FactsRecordParams {
     pub person: Option<FactsRecordPersonParams>,
     pub text: String,
     pub date: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_quote: Option<String>,
 }
 
 /// Parameter schema for `record_fact`, matching upstream TypeBox definition.
@@ -65,6 +69,8 @@ pub fn facts_record_parameters() -> serde_json::Value {
                     }
                 }
             },
+            "source": {"type":"string", "enum":["user","agent","inferred"]},
+            "user_quote": {"type":"string"},
             "text": { "type": "string" },
             "date": { "type": "string" }
         }
@@ -86,6 +92,7 @@ pub struct FactsRecordToolResult {
 
 /// Input configuration for creating a `record_fact` tool instance.
 pub struct FactsRecordToolInput {
+    pub exchanges: Vec<crate::consent_exchange::ConsentExchange>,
     pub extraction_path: PathBuf,
     pub max_records: Option<usize>,
     pub max_bytes: Option<usize>,
@@ -98,6 +105,9 @@ pub struct FactsRecordToolInput {
 
 /// The stateful facts record tool instance.
 pub struct FactsRecordTool {
+    exchanges: Vec<crate::consent_exchange::ConsentExchange>,
+    refused: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    ended: AtomicBool,
     active: Arc<AtomicBool>,
     count: Arc<AtomicUsize>,
     calls: Arc<AtomicUsize>,
@@ -149,11 +159,27 @@ impl FactsRecordTool {
             on_call();
         }
 
-        // Parse and validate using core extraction record validation
-        let record = match parse_facts_extraction_record(params, self.count.load(Ordering::Relaxed))
+        if self.ended.load(Ordering::Acquire) { return FactsRecordToolResult { text: "Fact rejected: the facts run has ended; stop calling record_fact".into(), is_error: true }; }
+        // Source and quote are model input; the saved receipt is always computed locally.
+        let mut fact = params.clone();
+        let source = fact.get("source").and_then(serde_json::Value::as_str).unwrap_or("inferred");
+        let quote = fact.get("user_quote").and_then(serde_json::Value::as_str);
+        let receipt = self.exchanges.iter().find_map(|exchange| {
+            let entries = [serde_json::json!({"role":"assistant", "text":exchange.proposal}), serde_json::json!({"role":"user", "text":exchange.reply})];
+            let receipt = crate::memory_tool_provenance::resolve_claim_receipt(source, quote, &entries, None);
+            (receipt.source == "user").then_some(receipt)
+        }).unwrap_or_else(|| crate::memory_tool_provenance::resolve_claim_receipt(source, quote, &[], None));
+        if let Some(object) = fact.as_object_mut() { object.remove("source"); object.remove("user_quote"); object.insert("receipt".into(), serde_json::json!(receipt)); }
+        let record = match parse_facts_extraction_record(&fact, self.count.load(Ordering::Relaxed))
         {
             Ok(rec) => rec,
-            Err(err) => return reject(&err.message),
+            Err(err) => {
+                let signature = params.to_string();
+                let first = self.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(signature);
+                if first { return reject(&format!("{}. Fix this call or skip this fact; the same call will not be accepted", err.message)); }
+                self.ended.store(true, Ordering::Release);
+                return reject(&format!("{}. This exact call was already refused, so the facts run ends here; facts recorded so far are kept", err.message));
+            }
         };
 
         let line = match serde_json::to_string(&record) {
@@ -234,7 +260,12 @@ impl FactsRecordTool {
                 let call_id = call.id;
                 Box::pin(async move {
                     let res = tool.execute(call_id, &params);
-                    if res.is_error {
+                    if tool.ended.load(Ordering::Acquire) {
+                        let mut result = ToolResult::text(res.text);
+                        result.is_error = Some(true);
+                        result.details = Some(serde_json::json!({"terminate":true}));
+                        Ok(result)
+                    } else if res.is_error {
                         Err(ToolError::Message(res.text))
                     } else {
                         Ok(ToolResult::text(res.text))
@@ -247,6 +278,9 @@ impl FactsRecordTool {
 
 pub fn create_facts_record_tool(input: FactsRecordToolInput) -> FactsRecordTool {
     FactsRecordTool {
+        exchanges: input.exchanges,
+        refused: Default::default(),
+        ended: AtomicBool::new(false),
         active: Arc::new(AtomicBool::new(true)),
         count: Arc::new(AtomicUsize::new(0)),
         calls: Arc::new(AtomicUsize::new(0)),
@@ -259,6 +293,24 @@ pub fn create_facts_record_tool(input: FactsRecordToolInput) -> FactsRecordTool 
         on_failure: input.on_failure,
         state: input.state,
     }
+}
+
+pub fn payload_exchanges(payload: &memory_core::facts::FactsPayload) -> Vec<crate::consent_exchange::ConsentExchange> {
+    let mut exchanges = Vec::new();
+    for entry in &payload.entries {
+        let mut proposal: Option<String> = entry.lead.as_ref().and_then(|item| match item {
+            memory_core::journal::entries::TranscriptEntry::Text(text) if text.kind == "assistant" && !text.text.trim().is_empty() => Some(text.text.clone()),
+            _ => None,
+        });
+        for item in &entry.entries {
+            if item.kind() == "reasoning" { continue; }
+            let text = match item { memory_core::journal::entries::TranscriptEntry::Text(text) => text.text.as_str(), _ => "" };
+            if item.kind() == "user" && !text.trim().is_empty()
+                && let Some(proposal) = &proposal { exchanges.push(crate::consent_exchange::ConsentExchange { proposal: proposal.clone(), reply: text.into() }); }
+            proposal = (item.kind() == "assistant" && !text.trim().is_empty()).then(|| text.to_owned());
+        }
+    }
+    exchanges
 }
 
 fn error_result(reason: &str) -> FactsRecordToolResult {

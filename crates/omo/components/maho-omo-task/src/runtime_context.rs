@@ -3,6 +3,7 @@ use maho_ext_api::{ExtensionContext, ExtensionMode, ExtensionUi, ModelRegistry};
 use senpi_task::completion::{ParentState, TransitionReason};
 
 pub struct TaskRuntimeContext {
+    hold_context: Option<ExtensionContext>,
     cwd: PathBuf,
     model_registry: Option<Arc<dyn ModelRegistry>>,
     idle: bool,
@@ -13,8 +14,9 @@ pub struct TaskRuntimeContext {
     mode: Option<ExtensionMode>,
 }
 impl TaskRuntimeContext {
-    pub fn new(cwd: PathBuf) -> Self { Self { cwd, model_registry: None, idle: true, transition: None, ui: None, session_id: None, session_file: None, mode: None } }
+    pub fn new(cwd: PathBuf) -> Self { Self { hold_context: None, cwd, model_registry: None, idle: true, transition: None, ui: None, session_id: None, session_file: None, mode: None } }
     pub fn capture_from(&mut self, ctx: &ExtensionContext) {
+        self.hold_context = Some(ctx.clone());
         if !ctx.cwd.as_os_str().is_empty() { self.cwd = ctx.cwd.clone(); }
         self.model_registry = Some(ctx.model_registry.clone());
         self.ui = Some(ctx.ui.clone());
@@ -22,6 +24,18 @@ impl TaskRuntimeContext {
         self.session_id = Some(ctx.session_manager.session_id().into());
         self.session_file = ctx.session_manager.session_file().map(ToOwned::to_owned);
         self.idle = (ctx.is_idle_fn)();
+    }
+    pub fn get_pause_state(&self) -> Result<serde_json::Value, maho_ext_api::ExtensionFailure> {
+        self.hold_context.as_ref().map_or_else(|| Ok(serde_json::json!({"pauseSeq": 0, "holds": []})), ExtensionContext::get_pause_state)
+    }
+    pub fn fence_run(&self, run_ref: serde_json::Value) -> Result<(), maho_ext_api::ExtensionFailure> {
+        self.hold_context.as_ref().ok_or_else(|| maho_ext_api::ExtensionFailure::new("Task run fencing is unavailable"))?.fence_run(run_ref)
+    }
+    pub fn release_run_fence(&self, run_ref: serde_json::Value) -> Result<bool, maho_ext_api::ExtensionFailure> {
+        let Some(ctx) = self.hold_context.as_ref() else { return Ok(false) };
+        if !ctx.session_manager.extension_context_actions().is_some_and(|actions| actions.supports_release_run_fence()) { return Ok(false) }
+        ctx.release_run_fence(run_ref)?;
+        Ok(true)
     }
     pub fn clear_ui(&mut self) { self.ui = None; }
     pub fn set_transition(&mut self, transition: Option<TransitionReason>) { self.transition = transition; }

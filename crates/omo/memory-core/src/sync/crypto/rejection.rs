@@ -14,7 +14,7 @@ impl RejectionCounter {
     pub fn last_event(&self) -> &str {
         &self.last
     }
-    pub(super) fn record(&mut self, reason: &'static str) {
+    pub(crate) fn record(&mut self, reason: &'static str) {
         self.count = self.count.saturating_add(1);
         self.last = format!("sync.batch.rejected {reason}");
         if let Some(log) = &mut self.log {

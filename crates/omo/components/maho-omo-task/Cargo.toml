@@ -17,9 +17,13 @@ chrono = "=0.4.45"
 team-core = { package = "maho-team-core", path = "../../team-core" }
 regex = "=1.12.3"
 utils = { package = "maho-utils", path = "../../utils" }
+maho-model-core.workspace = true
 maho-omo-lsp = { path = "../maho-omo-lsp" }
 maho-omo-git-master = { path = "../maho-omo-git-master" }
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+
+futures.workspace = true
+telemetry-core = { package = "maho-telemetry-core", path = "../../telemetry-core" }
 
 [dev-dependencies]
 maho-ai = { path = "../../../maho-ai" }

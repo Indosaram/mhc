@@ -18,3 +18,10 @@ async fn deliver(state:&mut DegradationMonitorState,text:Option<&str>,applied:bo
 #[tokio::test] async fn rejected_recovery_still_notifies() {let mut s=state();s.no_text_counter=2;assert_eq!(deliver(&mut s,None,false,"rejected").await,(1,1));}
 #[test] fn new_cycle_preserves_session_recovery_ceiling() {let mut s=state();s.recovery_attempts=3;s.no_text_counter=2;s.recovery_triggered_this_cycle=true;reset_on_session_compact(&mut s);assert_eq!(s.recovery_attempts,3);assert_eq!(s.no_text_counter,0);assert!(!s.recovery_triggered_this_cycle);}
 #[test] fn turn_end_expires_window_without_underflow() {let mut s=state();for _ in 0..6 {handle_turn_end(&mut s);}assert_eq!(s.post_compaction_turns_remaining,0);}
+#[test] fn begin_recovery_decides_without_running_the_compaction() {
+    let mut s=state();s.no_text_counter=2;
+    let content=[MonitoredMessageContentPart {kind:"step-start",text:None}];
+    assert!(begin_recovery(&mut s,&MonitoredMessageEvent {role:"assistant",content:&content}));
+    assert!(s.recovery_triggered_this_cycle);assert_eq!(s.recovery_attempts,1);
+    assert!(!begin_recovery(&mut s,&MonitoredMessageEvent {role:"assistant",content:&content}));
+}

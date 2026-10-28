@@ -12,7 +12,9 @@ use memory_core::recall::{
 };
 use serde_json::Value;
 
-use crate::recall_session_read::{RecallSessionSnapshot, RecallTranscriptTurn, judge_transcript, user_texts};
+use crate::recall_session_read::{
+    RecallSessionSnapshot, RecallTranscriptTurn, judge_transcript, user_texts,
+};
 
 /// Provenance recorded next to a Kibitzer-surfaced path in the session ledger.
 pub const GATE_SURFACE_HASH: &str = "kibitzer-gate";
@@ -50,7 +52,18 @@ pub struct CollectRecallCandidatesInput<'a> {
 pub fn collect_recall_candidates(
     input: CollectRecallCandidatesInput<'_>,
 ) -> Result<Option<CollectedRecallCandidates>, String> {
-    if input.recall_settings.get("enabled").and_then(Value::as_bool) == Some(false) {
+    collect_recall_candidates_with_projects(input, &[])
+}
+pub fn collect_recall_candidates_with_projects(
+    input: CollectRecallCandidatesInput<'_>,
+    projects: &[crate::project_recall_seats::ProjectRecallCorpus],
+) -> Result<Option<CollectedRecallCandidates>, String> {
+    if input
+        .recall_settings
+        .get("enabled")
+        .and_then(Value::as_bool)
+        == Some(false)
+    {
         return Ok(None);
     }
     let max_items = input
@@ -69,20 +82,42 @@ pub fn collect_recall_candidates(
         let reversed: Vec<String> = input.extra_texts.iter().rev().cloned().collect();
         plan_recall_queries(&texts, Some(&reversed))
     };
-    if queries.is_empty() || input.documents.is_empty() {
+    if queries.is_empty() || (input.documents.is_empty() && projects.is_empty()) {
         return Ok(None);
     }
 
     let surfaced = input.ledger.surfaced_paths(&input.snapshot.id);
-    let candidates = select_recall_candidates(
+    let candidates = crate::project_recall_seats::select_with_project_seats(
         input.documents,
-        &queries,
-        &SelectRecallOptions {
-            max_items,
-            surfaced: surfaced.clone(),
-            exclude_paths: Some(input.exclude_paths.clone()),
-            strategy: None,
-            expansions: None,
+        projects,
+        max_items,
+        |documents, extra, identity| {
+            let mut queries = queries.clone();
+            queries.extend_from_slice(extra);
+            select_recall_candidates(
+                documents,
+                &queries,
+                &SelectRecallOptions {
+                    max_items,
+                    surfaced: surfaced.clone(),
+                    exclude_paths: Some(
+                        input
+                            .exclude_paths
+                            .iter()
+                            .filter_map(|path| {
+                                if let Some(identity) = identity {
+                                    path.strip_prefix(&format!("@project/{identity}/"))
+                                        .map(str::to_owned)
+                                } else {
+                                    Some(path.clone())
+                                }
+                            })
+                            .collect(),
+                    ),
+                    strategy: None,
+                    expansions: None,
+                },
+            )
         },
     );
     if candidates.is_empty() {
@@ -173,6 +208,7 @@ mod tests {
         RecallNudge {
             path: path.to_string(),
             hint: hint.to_string(),
+            source: None,
         }
     }
 
@@ -205,7 +241,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let ledger = RecallLedger::new(dir.path());
         let documents = [
-            document("notes/a.md", "deploy", "rollback the canary before the release"),
+            document(
+                "notes/a.md",
+                "deploy",
+                "rollback the canary before the release",
+            ),
             document("notes/b.md", "unrelated", "nothing to see here"),
         ];
         let entries = [user_message("canary")];
@@ -306,8 +346,17 @@ mod tests {
         ];
         let injection = build_recall_injection(&nudges, "s1").expect("injection");
         assert_eq!(injection.session_id, "s1");
-        assert_eq!(injection.paths, vec!["a.md".to_string(), "b.md".to_string()]);
-        assert_eq!(injection.message_content.matches("<recalled-memory").count(), 2);
+        assert_eq!(
+            injection.paths,
+            vec!["a.md".to_string(), "b.md".to_string()]
+        );
+        assert_eq!(
+            injection
+                .message_content
+                .matches("<recalled-memory")
+                .count(),
+            2
+        );
     }
 
     #[test]

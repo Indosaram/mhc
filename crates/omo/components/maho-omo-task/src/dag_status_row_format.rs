@@ -48,7 +48,7 @@ pub fn run_rows_with_options(run: &DagRunSnapshot, activity: Option<&BTreeMap<St
     rows
 }
 
-fn rank(node:&DagNode)->u8 { match node.state { DagNodeState::Running=>0, DagNodeState::Pending|DagNodeState::Scheduled|DagNodeState::Blocked=>1, DagNodeState::Failed=>2, DagNodeState::Completed=>3, DagNodeState::Skipped|DagNodeState::Cancelled=>4 } }
+fn rank(node:&DagNode)->u8 { match node.state { DagNodeState::Running|DagNodeState::Paused=>0, DagNodeState::Pending|DagNodeState::Scheduled|DagNodeState::Blocked=>1, DagNodeState::Failed=>2, DagNodeState::Completed=>3, DagNodeState::Skipped|DagNodeState::Cancelled=>4 } }
 fn parsed_timestamp(value:Option<&str>)->Option<i64> { value.and_then(|value|chrono::DateTime::parse_from_rfc3339(value).ok()).map(|date|date.timestamp_millis()) }
 fn started_at_ms(node:&DagNode)->i64 { parsed_timestamp(node.started_at.as_deref()).unwrap_or(i64::MAX) }
 fn recency_ms(node:&DagNode)->i64 { parsed_timestamp(node.completed_at.as_deref().or(node.started_at.as_deref())).unwrap_or(0) }

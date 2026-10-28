@@ -469,7 +469,8 @@ fn project_node(
         DagNodeState::Pending
         | DagNodeState::Blocked
         | DagNodeState::Scheduled
-        | DagNodeState::Running => None,
+        | DagNodeState::Running
+        | DagNodeState::Paused => None,
     }
 }
 
@@ -488,7 +489,8 @@ fn project_snapshot(record: DagRunRecordV1) -> DagRunSnapshot {
         completed_at: record.completed_at,
         definition_fingerprint: record.definition_fingerprint,
         last_seq: record.checkpoint_seq,
-        counts: count_nodes(&record.nodes),
+        counts: count_dag_nodes(&record.nodes),
+        pause: record.pause,
         nodes: record.nodes,
         edges: record.edges,
         waves: record.waves,
@@ -500,13 +502,15 @@ fn project_snapshot(record: DagRunRecordV1) -> DagRunSnapshot {
     }
 }
 
-fn count_nodes(nodes: &[DagNode]) -> DagNodeCounts {
+pub fn count_dag_nodes(nodes: &[DagNode]) -> DagNodeCounts {
     let mut counts = DagNodeCounts {
         total: nodes.len(),
         ..DagNodeCounts::default()
     };
+    let mut paused = 0;
     for node in nodes {
         match node.state {
+            DagNodeState::Paused => paused += 1,
             DagNodeState::Pending => counts.pending += 1,
             DagNodeState::Blocked => counts.blocked += 1,
             DagNodeState::Scheduled => counts.scheduled += 1,
@@ -516,6 +520,9 @@ fn count_nodes(nodes: &[DagNode]) -> DagNodeCounts {
             DagNodeState::Cancelled => counts.cancelled += 1,
             DagNodeState::Skipped => counts.skipped += 1,
         }
+    }
+    if paused > 0 {
+        counts.paused = Some(paused);
     }
     counts
 }

@@ -17,7 +17,12 @@ fn base_spec() -> RpcRunnerSpec {
     RpcRunnerSpec {
         task_id: "st_1a2b3c4d".to_string(),
         cwd: tmp.join("project").to_string_lossy().into_owned(),
-        state_dir: tmp.join("project").join(".omo").join("senpi-task").to_string_lossy().into_owned(),
+        state_dir: tmp
+            .join("project")
+            .join(".omo")
+            .join("senpi-task")
+            .to_string_lossy()
+            .into_owned(),
         prompt: "do the work".to_string(),
         ..RpcRunnerSpec::default()
     }
@@ -498,7 +503,7 @@ fn given_member_extension_env_w2mem_when_building_then_identity_config_and_task_
 
 #[test]
 fn given_senpi_hides_rpc_entry_from_node_exports_when_building_a_fallback_spawn_then_it_uses_the_physical_dist_entry()
-{
+ {
     // `spawn-node-runtime.test.ts` bundles `spawn.ts` for Node, runs the fallback under `node`, and
     // asserts the resolved entry is the physical `dist/rpc-entry.js` rather than a Node export. The
     // Rust host is not a Node process, so the same fact is pinned on the descriptor the *default*
@@ -532,8 +537,32 @@ fn child_args_pass_permission_preset_only_when_explicit() {
     let default_args = build_child_args(&base_spec());
     assert!(!default_args.iter().any(|arg| arg == "--permission-preset"));
 
-    let explicit = RpcRunnerSpec { permission_preset: Some("full-access".to_string()), ..base_spec() };
+    let explicit = RpcRunnerSpec {
+        permission_preset: Some("full-access".to_string()),
+        ..base_spec()
+    };
     let args = build_child_args(&explicit);
-    let at = args.iter().position(|arg| arg == "--permission-preset").expect("flag present");
+    let at = args
+        .iter()
+        .position(|arg| arg == "--permission-preset")
+        .expect("flag present");
     assert_eq!(args[at + 1], "full-access");
+}
+
+#[test]
+fn delegating_trace_replaces_inherited_trace_and_missing_trace_strips_it() {
+    use crate::runners::rpc::spawn::TRACEPARENT_ENV;
+    let runtime = no_executable(runtime(env(&[(TRACEPARENT_ENV, "stale")])));
+    let mut spec = base_spec();
+    spec.member_env = Some(env(&[(TRACEPARENT_ENV, "also-stale")]));
+    assert!(
+        !build_rpc_spawn(&spec, &runtime)
+            .env
+            .contains_key(TRACEPARENT_ENV)
+    );
+    spec.traceparent = Some("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01".into());
+    assert_eq!(
+        build_rpc_spawn(&spec, &runtime).env.get(TRACEPARENT_ENV),
+        spec.traceparent.as_ref()
+    );
 }

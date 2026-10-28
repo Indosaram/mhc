@@ -17,7 +17,7 @@ use crate::paths::{canonicalize_path, is_local_path, lexical_resolve, resolve_pa
 use crate::prompt_templates::{load_prompt_templates, LoadPromptTemplatesOptions, PromptTemplate};
 use crate::resolved_paths_memo::{ResolvedPathsMemoKeyInput, memoize_resolved_paths, resolved_paths_memo_key};
 use crate::settings_manager::{InMemorySettingsStorage, SettingsManager, SettingsScope, SettingsStorage};
-use crate::skills::{load_skills, LoadSkillsOptions, LoadSkillsResult};
+use crate::skills::{LoadSkillsOptions, LoadSkillsResult};
 use crate::source_info::{create_source_info, SourceInfo, SourceOrigin, SourceScope};
 use crate::system_prompt::ContextFile;
 use crate::text::strip_bom;
@@ -217,7 +217,7 @@ pub fn snapshot_settings(settings: &SettingsManager) -> SettingsManager {
 }
 
 fn error_diagnostic(message: String, path: Option<String>) -> ResourceDiagnostic {
-    ResourceDiagnostic { diagnostic_type: ResourceDiagnosticType::Error, message, path, collision: None }
+    ResourceDiagnostic { category: None, diagnostic_type: ResourceDiagnosticType::Error, message, path, collision: None }
 }
 
 /// senpi `mergePaths`: resolve against cwd, keep the first canonical occurrence.
@@ -280,6 +280,7 @@ pub fn dedupe_prompts(prompts: Vec<PromptTemplate>) -> (Vec<PromptTemplate>, Vec
     for prompt in prompts {
         if let Some(existing) = kept.iter().find(|existing| existing.name == prompt.name) {
             diagnostics.push(ResourceDiagnostic {
+                category: None,
                 diagnostic_type: ResourceDiagnosticType::Collision,
                 message: format!("name \"/{}\" collision", prompt.name),
                 path: Some(prompt.file_path.clone()),
@@ -341,9 +342,9 @@ pub async fn load_resources_with_refresh(cwd: &str, agent_dir: &str, settings: S
     // Explicit -e resources keep CLI precedence even when they resolve through a package manifest.
     for resource in cli.skills.iter().chain(&cli.prompts).chain(&cli.hooks) {
         let metadata = if resource.metadata.scope == SourceScope::System {
-            PathMetadata { source: "cli".into(), scope: SourceScope::System, origin: SourceOrigin::TopLevel, base_dir: resource.metadata.base_dir.clone() }
+            PathMetadata { skill_provenance: Some(crate::skill_access::SkillProvenance { kind:crate::skill_access::SkillProvenanceKind::User, selected_root:resource.metadata.skill_provenance.as_ref().map_or_else(|| resource.path.clone(), |p| p.selected_root.clone()), project_root:None }),  source: "cli".into(), scope: SourceScope::System, origin: SourceOrigin::TopLevel, base_dir: resource.metadata.base_dir.clone() }
         } else {
-            PathMetadata { source: "cli".into(), scope: SourceScope::Temporary, origin: SourceOrigin::TopLevel, base_dir: None }
+            PathMetadata { skill_provenance: Some(crate::skill_access::SkillProvenance { kind:crate::skill_access::SkillProvenanceKind::User, selected_root:resource.metadata.skill_provenance.as_ref().map_or_else(|| resource.path.clone(), |p| p.selected_root.clone()), project_root:None }),  source: "cli".into(), scope: SourceScope::Temporary, origin: SourceOrigin::TopLevel, base_dir: None }
         };
         metadata_by_path.insert(resource.path.clone(), metadata);
     }
@@ -358,8 +359,11 @@ pub async fn load_resources_with_refresh(cwd: &str, agent_dir: &str, settings: S
 
     let skill_candidates = if inputs.no_skills { cli_skills } else { [cli_skills, enabled_skills].concat() };
     let skill_paths = dedupe_paths_by_package_identity(&merge_paths(cwd, skill_candidates, &inputs.additional_skill_paths));
+    let mut user_skill_roots: Vec<_> = resolved.skill_roots.iter().chain(&cli.skill_roots).filter(|root| root.kind == crate::skill_access::SkillProvenanceKind::User).map(|root| root.selected_root.clone()).collect();
+    user_skill_roots.extend(skill_paths.iter().filter(|path| metadata_by_path.get(*path).is_none_or(|metadata| metadata.scope != SourceScope::Project)).cloned());
+    let provenance_by_path = skill_paths.iter().map(|path| (path.clone(), metadata_by_path.get(path).and_then(|m| m.skill_provenance.clone()).unwrap_or(crate::skill_access::SkillProvenance { kind:crate::skill_access::SkillProvenanceKind::User, selected_root:path.clone(), project_root:None }))).collect();
     let mut skills = if inputs.no_skills && skill_paths.is_empty() { LoadSkillsResult::default() } else {
-        load_skills(&LoadSkillsOptions { cwd: cwd.to_owned(), agent_dir: agent_dir.to_owned(), skill_paths, include_defaults: false })
+        crate::skills::load_skills_with_provenance(&LoadSkillsOptions { cwd: cwd.to_owned(), agent_dir: agent_dir.to_owned(), skill_paths, include_defaults: false }, &provenance_by_path, &user_skill_roots)
     };
     for skill in &mut skills.skills {
         if let Some(info) = find_source_info(&skill.file_path, &metadata_by_path) { skill.source_info = info; }

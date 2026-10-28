@@ -75,7 +75,7 @@ async fn execute_mode(project: &Path, allow: bool, tool: &str, input: Value, per
 pub async fn mode_matrix() -> Result<(), Failure> {
     let root = tempfile::tempdir()?;
     let outcome = async {
-        for mode in [ExtensionMode::Print, ExtensionMode::Json, ExtensionMode::Rpc, ExtensionMode::AppServer] {
+        for mode in [ExtensionMode::Print, ExtensionMode::Json, ExtensionMode::Rpc] {
             for (rule, admitted) in [("",false),("edit:mode.txt=allow",true),("edit:mode.txt=deny",false)] {
                 let project = tempfile::tempdir_in(root.path())?;
                 let result = execute_mode(project.path(),false,"apply_patch",json!({"input":"*** Begin Patch\n*** Add File: mode.txt\n+admitted\n*** End Patch"}),rule,mode).await;

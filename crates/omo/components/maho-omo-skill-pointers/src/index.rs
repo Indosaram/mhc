@@ -1,9 +1,11 @@
+use fancy_regex::Regex as FancyRegex;
 use maho_ext_api::*;
 use regex::Regex;
-use fancy_regex::Regex as FancyRegex;
 use std::sync::{Arc, LazyLock};
 
-use crate::strip_quoted_regions::{strip_quoted_regions, NOT_AFTER_IDENTIFIER, NOT_INTO_IDENTIFIER, NOT_BEFORE_PATH};
+use crate::strip_quoted_regions::{
+    NOT_AFTER_IDENTIFIER, NOT_BEFORE_PATH, NOT_INTO_IDENTIFIER, strip_quoted_regions,
+};
 
 pub const MASS_ULW_CUSTOM_TYPE: &str = "omo-mass-ulw:skill-pointer";
 pub const ULW_PLAN_CUSTOM_TYPE: &str = "omo-ulw-plan:skill-pointer";
@@ -41,24 +43,24 @@ pub struct SkillPointerMessage {
 pub static BROWSER_COMPANION: LazyLock<SkillCompanion> = LazyLock::new(|| SkillCompanion {
     skill_name: "browser",
     custom_type: BROWSER_CUSTOM_TYPE,
-    expanded_block_pattern: LazyLock::new(|| {
-        match Regex::new(r#"(?i)<skill\s+name="browser""#) {
-            Ok(regex) => regex,
-            Err(error) => panic!("invalid browser skill block regex: {error}"),
-        }
+    expanded_block_pattern: LazyLock::new(|| match Regex::new(r#"(?i)<skill\s+name="browser""#) {
+        Ok(regex) => regex,
+        Err(error) => panic!("invalid browser skill block regex: {error}"),
     }),
     role: "reads its sources in the user's browser through the browser skill's attached engine",
     instruction: r#"arm every web lane with load_skills: ["browser"] and name that SKILL.md path in every web member brief, since team members carry no load_skills"#,
 });
 
-pub static ULTIMATE_BROWSING_COMPANION: LazyLock<SkillCompanion> = LazyLock::new(|| SkillCompanion {
-    skill_name: "ultimate-browsing",
-    custom_type: ULTIMATE_BROWSING_CUSTOM_TYPE,
-    expanded_block_pattern: LazyLock::new(|| {
-        Regex::new(r#"(?i)<skill\s+name="ultimate-browsing""#).expect("valid regex")
-    }),
-    role: "sends the hosts the user's browser cannot open to the ultimate-browsing skill",
-    instruction: r#"arm a lane that must reach a blocked host with load_skills: ["ultimate-browsing"]"#,
+pub static ULTIMATE_BROWSING_COMPANION: LazyLock<SkillCompanion> = LazyLock::new(|| {
+    SkillCompanion {
+        skill_name: "ultimate-browsing",
+        custom_type: ULTIMATE_BROWSING_CUSTOM_TYPE,
+        expanded_block_pattern: LazyLock::new(|| {
+            Regex::new(r#"(?i)<skill\s+name="ultimate-browsing""#).expect("valid regex")
+        }),
+        role: "sends the hosts the user's browser cannot open to the ultimate-browsing skill",
+        instruction: r#"arm a lane that must reach a blocked host with load_skills: ["ultimate-browsing"]"#,
+    }
 });
 
 static RESEARCH_COMPANIONS: LazyLock<[&SkillCompanion; 2]> =
@@ -70,7 +72,9 @@ const WORD_START: &str = r"(?<![A-Za-z0-9_])";
 const WORD_END: &str = r"(?![A-Za-z0-9_])";
 
 fn skill_name_pattern(body: &str) -> FancyRegex {
-    match FancyRegex::new(&format!(r"(?i){NOT_AFTER_IDENTIFIER}{WORD_START}{body}{WORD_END}{NOT_INTO_IDENTIFIER}{NOT_BEFORE_PATH}")) {
+    match FancyRegex::new(&format!(
+        r"(?i){NOT_AFTER_IDENTIFIER}{WORD_START}{body}{WORD_END}{NOT_INTO_IDENTIFIER}{NOT_BEFORE_PATH}"
+    )) {
         Ok(regex) => regex,
         Err(error) => panic!("invalid skill name regex: {error}"),
     }
@@ -81,9 +85,7 @@ static MASS_ALIAS: &str = r"(?:mass[\s-]*ulw|ulw[\s-]*mass|mulw|meth)";
 pub static TARGET_MASS_ULW: LazyLock<SkillPointerTarget> = LazyLock::new(|| SkillPointerTarget {
     skill_name: "mass-ulw",
     custom_type: MASS_ULW_CUSTOM_TYPE,
-    pattern: LazyLock::new(|| {
-        skill_name_pattern(MASS_ALIAS)
-    }),
+    pattern: LazyLock::new(|| skill_name_pattern(MASS_ALIAS)),
     expanded_block_pattern: LazyLock::new(|| {
         Regex::new(r#"(?i)<skill\s+name="mass-ulw""#).expect("valid regex")
     }),
@@ -95,9 +97,7 @@ pub static TARGET_MASS_ULW: LazyLock<SkillPointerTarget> = LazyLock::new(|| Skil
 pub static TARGET_ULW_PLAN: LazyLock<SkillPointerTarget> = LazyLock::new(|| SkillPointerTarget {
     skill_name: "ulw-plan",
     custom_type: ULW_PLAN_CUSTOM_TYPE,
-    pattern: LazyLock::new(|| {
-        skill_name_pattern(r"ulw[\s-]*plan")
-    }),
+    pattern: LazyLock::new(|| skill_name_pattern(r"ulw[\s-]*plan")),
     expanded_block_pattern: LazyLock::new(|| {
         Regex::new(r#"(?i)<skill\s+name="ulw-plan""#).expect("valid regex")
     }),
@@ -109,9 +109,7 @@ pub static TARGET_ULW_PLAN: LazyLock<SkillPointerTarget> = LazyLock::new(|| Skil
 pub static TARGET_ULW_LOOP: LazyLock<SkillPointerTarget> = LazyLock::new(|| SkillPointerTarget {
     skill_name: "ulw-loop",
     custom_type: ULW_LOOP_CUSTOM_TYPE,
-    pattern: LazyLock::new(|| {
-        skill_name_pattern(r"ulw[\s-]*loop")
-    }),
+    pattern: LazyLock::new(|| skill_name_pattern(r"ulw[\s-]*loop")),
     expanded_block_pattern: LazyLock::new(|| {
         Regex::new(r#"(?i)<skill\s+name="ulw-loop""#).expect("valid regex")
     }),
@@ -120,19 +118,20 @@ pub static TARGET_ULW_LOOP: LazyLock<SkillPointerTarget> = LazyLock::new(|| Skil
     companions: &[],
 });
 
-pub static TARGET_ULW_RESEARCH: LazyLock<SkillPointerTarget> = LazyLock::new(|| SkillPointerTarget {
-    skill_name: "ulw-research",
-    custom_type: ULW_RESEARCH_CUSTOM_TYPE,
-    pattern: LazyLock::new(|| {
-        skill_name_pattern(&format!(r"(?:ulw|{})[\s-]*research", MASS_ALIAS))
-    }),
-    expanded_block_pattern: LazyLock::new(|| {
-        Regex::new(r#"(?i)<skill\s+name="ulw-research""#).expect("valid regex")
-    }),
-    instruction: "orchestrate team-first maximum-saturation research",
-    extra: None,
-    companions: &*RESEARCH_COMPANIONS,
-});
+pub static TARGET_ULW_RESEARCH: LazyLock<SkillPointerTarget> =
+    LazyLock::new(|| SkillPointerTarget {
+        skill_name: "ulw-research",
+        custom_type: ULW_RESEARCH_CUSTOM_TYPE,
+        pattern: LazyLock::new(|| {
+            skill_name_pattern(&format!(r"(?:ulw|{})[\s-]*research", MASS_ALIAS))
+        }),
+        expanded_block_pattern: LazyLock::new(|| {
+            Regex::new(r#"(?i)<skill\s+name="ulw-research""#).expect("valid regex")
+        }),
+        instruction: "orchestrate team-first maximum-saturation research",
+        extra: None,
+        companions: &*RESEARCH_COMPANIONS,
+    });
 
 pub fn get_targets() -> [&'static SkillPointerTarget; 4] {
     [
@@ -143,11 +142,61 @@ pub fn get_targets() -> [&'static SkillPointerTarget; 4] {
     ]
 }
 
+pub fn binding_forms(command: &str, keyword: &str) -> FancyRegex {
+    let lead = r"^\s*(?:\[(?:Image|Pasted text)\b[^\]\n]*\]\s*)*";
+    let question = r"(?![\s\S]*[?？])";
+    FancyRegex::new(&format!(r"(?i){lead}/(?:skill:)?{command}(?=\s|$){question}|{lead}(?:run|start|use|do|execute)\s+{keyword}(?=\s*(?:$|[,!:;\n\x00]|\.(?:\s|$)|(?:to|on|for|with|and|now|here)\b)){question}|{lead}{keyword}\s*(?:(?:으로|로|를|을)\s*)?(?:돌려줘|실행해줘|써줘|해줘|돌려|실행해)(?=\s*(?:[.!\n]|$)){question}")).expect("valid binding forms")
+}
+
+pub fn binds(target: &SkillPointerTarget, visible: &str) -> bool {
+    const MASS: &str = r"(?:mass[\s-]*ulw|ulw[\s-]*mass|mulw)";
+    static MASS_BIND: LazyLock<FancyRegex> = LazyLock::new(|| {
+        binding_forms(r"(?:mass-ulw|mulw)", &format!(r"{MASS}(?:[\s-]*research)?"))
+    });
+    static RESEARCH_BIND: LazyLock<FancyRegex> = LazyLock::new(|| {
+        binding_forms(
+            r"(?:ulw-research|(?:mass-ulw|mulw)\s+research)",
+            &format!(r"(?:ulw|{MASS})[\s-]*research"),
+        )
+    });
+    match target.skill_name {
+        "mass-ulw" => MASS_BIND.is_match(visible).unwrap_or(false),
+        "ulw-research" => RESEARCH_BIND.is_match(visible).unwrap_or(false),
+        _ => false,
+    }
+}
+
+pub fn skill_mode(
+    target: &SkillPointerTarget,
+    mass_mode: bool,
+    scope: Option<&str>,
+    root: &str,
+) -> String {
+    let reads = if target.skill_name == "mass-ulw" {
+        format!("{root}mass-ulw/SKILL.md and its references/planning.md")
+    } else {
+        format!("{root}{}/SKILL.md", target.skill_name)
+    };
+    let dispatch = if target.skill_name == "mass-ulw" {
+        " The work runs as workflow runs started from an eval cell, their nodes executing in dependency-ordered waves; doing the job inline, or through one-off task spawns in place of workflow runs, does not satisfy this request. Where the ultrawork directive's general delegation guidance differs, this mode decides how lanes are dispatched."
+    } else if mass_mode {
+        " mass-ulw mode is active in the same message, so run the research waves as its workflow runs."
+    } else {
+        ""
+    };
+    let extra = target.extra.map(|f| f(scope)).unwrap_or_default();
+    let name = target.skill_name;
+    format!(
+        "<omo-{name}-mode>The user of this session invoked {name} in their own words, so this turn runs in {name} mode. This is binding: the block is produced only for the skill's slash command or a prompt that opens with a request to run it. Before any other tool call this turn, read {reads} in full with the read tool, then follow the skill: {}.{dispatch}{extra}</omo-{name}-mode>",
+        target.instruction
+    )
+}
+
 pub fn matched_skill_pointer_names(text: &str) -> Vec<&'static str> {
     let visible = strip_quoted_regions(text);
     let mut names = Vec::new();
     for target in get_targets() {
-        if target.pattern.is_match(&visible).unwrap_or(false) {
+        if target.pattern.is_match(&visible).unwrap_or(false) || binds(target, &visible) {
             names.push(target.skill_name);
         }
     }
@@ -282,11 +331,17 @@ impl Default for SkillPointersComponent {
     fn default() -> Self {
         Self {
             skills_root: std::env::var("OMO_SENPI_SKILLS_ROOT")
-                .ok().filter(|root| !root.is_empty())
+                .ok()
+                .filter(|root| !root.is_empty())
                 .map(std::path::PathBuf::from)
-                .or_else(|| std::env::current_exe().ok().and_then(|exe| exe.parent().map(|parent| parent.join("skills"))))
+                .or_else(|| {
+                    std::env::current_exe()
+                        .ok()
+                        .and_then(|exe| exe.parent().map(|parent| parent.join("skills")))
+                })
                 .unwrap_or_else(|| std::path::PathBuf::from("skills"))
-                .to_string_lossy().into_owned(),
+                .to_string_lossy()
+                .into_owned(),
         }
     }
 }
@@ -312,7 +367,11 @@ impl SkillPointersComponent {
 impl Extension for SkillPointersComponent {
     fn register(&self, api: &mut ExtensionApi) {
         let skills_root = self.normalized_skills_root();
-        let role_delegated = api.profile.session_context.get("role").is_some_and(|role| !role.is_empty());
+        let role_delegated = api
+            .profile
+            .session_context
+            .get("role")
+            .is_some_and(|role| !role.is_empty());
         let runtime = api.runtime.clone();
 
         api.on(
@@ -356,7 +415,7 @@ impl Extension for SkillPointersComponent {
                     let targets = get_targets();
                     let invoked: Vec<&SkillPointerTarget> = targets
                         .into_iter()
-                        .filter(|target| target.pattern.is_match(&visible).unwrap_or(false))
+                        .filter(|target| target.pattern.is_match(&visible).unwrap_or(false) || binds(target, &visible))
                         .filter(|target| skill_is_shipped(&skills_root, target.skill_name))
                         .collect();
 
@@ -364,12 +423,13 @@ impl Extension for SkillPointersComponent {
                         command_skill == Some(skill_name) || expanded_block.is_match(&input.text)
                     };
 
+                    let mass_mode = invoked.iter().any(|target| target.skill_name == "mass-ulw" && binds(target, &visible));
                     let mut pointers: Vec<SkillPointerMessage> = invoked
                         .iter()
                         .filter(|target| !already_loaded(target.skill_name, &target.expanded_block_pattern))
                         .map(|target| SkillPointerMessage {
                             custom_type: target.custom_type,
-                            content: skill_pointer(target, session_scope.as_deref(), &skills_root),
+                            content: if binds(target, &visible) { skill_mode(target, mass_mode, session_scope.as_deref(), &skills_root) } else { skill_pointer(target, session_scope.as_deref(), &skills_root) },
                         })
                         .collect();
 
@@ -383,7 +443,7 @@ impl Extension for SkillPointersComponent {
                             }
                             pointers.push(SkillPointerMessage {
                                 custom_type: companion.custom_type,
-                                content: companion_pointer(parent, companion, &skills_root),
+                                content: if binds(parent, &visible) { format!("<omo-{}-pointer>{} {}. Read the {} skill at {}{}/SKILL.md with the read tool in the same turn as the {} skill and {}.</omo-{}-pointer>", companion.skill_name, parent.skill_name, companion.role, companion.skill_name, skills_root, companion.skill_name, parent.skill_name, companion.instruction, companion.skill_name) } else { companion_pointer(parent, companion, &skills_root) },
                             });
                         }
                     }
@@ -435,6 +495,42 @@ mod tests {
     use super::matched_skill_pointer_names;
 
     #[test]
+    fn positive_binding_forms_and_exclusions() {
+        use super::*;
+        for text in [
+            "/mass-ulw fix",
+            "/skill:mass-ulw fix",
+            "run mass ulw on tests",
+            "use mulw to ship",
+            "mass ulw 돌려줘",
+            "mass ulw로 써줘",
+            "[Image #1] start ulw research now",
+        ] {
+            let visible = strip_quoted_regions(text);
+            assert!(
+                binds(&TARGET_MASS_ULW, &visible) || binds(&TARGET_ULW_RESEARCH, &visible),
+                "{text}"
+            );
+        }
+        for text in [
+            "mass-ulw the fix",
+            "run meth",
+            "run mass ulw.ts again",
+            "use mass ulw?",
+            "use mass ulw？",
+            "they run mass ulw",
+            "'run mass ulw'",
+            "[lead via coordinator -> lane, PR#1] run mass ulw",
+            "don't use mass ulw",
+        ] {
+            let visible = strip_quoted_regions(text);
+            assert!(!binds(&TARGET_MASS_ULW, &visible), "{text}");
+        }
+        let injected = skill_mode(&TARGET_MASS_ULW, true, None, "skills/");
+        assert!(matched_skill_pointer_names(&injected).is_empty());
+    }
+
+    #[test]
     fn suppresses_identifier_path_quoted_relayed_and_negated_mentions() {
         let cases = [
             "what happened in the mass-ulw-refactor session?",
@@ -467,7 +563,10 @@ mod tests {
     fn matches_standalone_chains_and_requests_after_clause_breaks() {
         let cases = [
             ("mass-ulw the migration", vec!["mass-ulw"]),
-            ("mass ulw-loop ship the refactor", vec!["mass-ulw", "ulw-loop"]),
+            (
+                "mass ulw-loop ship the refactor",
+                vec!["mass-ulw", "ulw-loop"],
+            ),
             ("ulw-plan.", vec!["ulw-plan"]),
             ("explain `ulw-plan`, then run ulw-loop", vec!["ulw-loop"]),
             ("Do not use ulw-plan, but run ulw-loop", vec!["ulw-loop"]),

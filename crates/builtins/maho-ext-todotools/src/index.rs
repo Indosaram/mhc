@@ -105,7 +105,7 @@ pub fn register_first_turn_hooks(api:&mut maho_ext_api::ExtensionApi) {
         let armed=crate::first_turn::should_arm_first_turn(&crate::first_turn::FirstTurnInput{preview:event.preview,trigger:&event.trigger,prompt:&event.prompt,branch_entries:&branch,todo_active,setting,mode:ctx.mode});
         if !armed {return Ok(maho_ext_api::EventResult::None);}
         *pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(PendingForce{force_named:setting=="force",logged:false});
-        Ok(maho_ext_api::EventResult::BeforeAgentStart(maho_ext_api::BeforeAgentStartEventResult{system_prompt:None,message:Some(maho_ext_api::CustomMessage{custom_type:crate::first_turn::FIRST_TURN_CUSTOM_TYPE.into(),content:vec![maho_ext_api::ToolContent::text(crate::first_turn::FIRST_TURN_REMINDER)],display:false,details:None})}))
+        Ok(maho_ext_api::EventResult::BeforeAgentStart(maho_ext_api::BeforeAgentStartEventResult{ system_prompt_parts: None,system_prompt:None,message:Some(maho_ext_api::CustomMessage{custom_type:crate::first_turn::FIRST_TURN_CUSTOM_TYPE.into(),content:vec![maho_ext_api::ToolContent::text(crate::first_turn::FIRST_TURN_REMINDER)],display:false,details:None})}))
     })}),maho_ext_api::ExtensionHandlerOptions{preview_safe:true,..Default::default()});}
     {let pending=pending.clone();api.on(maho_ext_api::EventKind::BeforeProviderRequest,std::sync::Arc::new(move |event,ctx|{let pending=pending.clone();Box::pin(async move {
         let maho_ext_api::ExtensionEvent::BeforeProviderRequest{payload,model,..}=event else {return Ok(maho_ext_api::EventResult::None)};
@@ -129,7 +129,7 @@ pub fn register_first_turn_hooks(api:&mut maho_ext_api::ExtensionApi) {
 }
 fn prompt_hook_result(event:&maho_ext_api::ExtensionEvent)->maho_ext_api::EventResult {
     match event {
-        maho_ext_api::ExtensionEvent::BeforeAgentStart(event)=>maho_ext_api::EventResult::BeforeAgentStart(maho_ext_api::BeforeAgentStartEventResult {
+        maho_ext_api::ExtensionEvent::BeforeAgentStart(event)=>maho_ext_api::EventResult::BeforeAgentStart(maho_ext_api::BeforeAgentStartEventResult { system_prompt_parts: None,
             system_prompt:Some(format!("{}\n{}",event.system_prompt,crate::prompt::TASK_MANAGEMENT_SECTION)),
             message:None,
         }),

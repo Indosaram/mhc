@@ -12,9 +12,16 @@ pub const PROMPT_CACHE_SAFE_WAIT_ENV: &str = "PI_PROMPT_CACHE_SAFE_WAIT_SECONDS"
 
 pub type PromptCacheSafeWaitSeconds = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParentModel {
+    pub provider: String,
+    pub id: String,
+}
+
 /// Minimal host tool context seen by the task tool.
 #[derive(Clone, Default)]
 pub struct TaskToolContext {
+    pub model: Option<ParentModel>,
     pub cwd: String,
     pub session_id: String,
     pub get_prompt_cache_safe_wait_seconds: Option<PromptCacheSafeWaitSeconds>,
@@ -55,7 +62,8 @@ fn parse_int(raw: &str) -> Option<i64> {
         return None;
     }
     let value = digits[..end].bytes().fold(0_i64, |acc, byte| {
-        acc.saturating_mul(10).saturating_add(i64::from(byte - b'0'))
+        acc.saturating_mul(10)
+            .saturating_add(i64::from(byte - b'0'))
     });
     Some(if negative { -value } else { value })
 }
@@ -91,7 +99,10 @@ pub fn wait_for_foreground_task(
         .deadline
         .unwrap_or_else(|| Duration::from_secs(u64::try_from(budget_seconds).unwrap_or(0)));
     let began = Instant::now();
-    match input.manager.wait_for(input.task_id, input.signal, Some(deadline)) {
+    match input
+        .manager
+        .wait_for(input.task_id, input.signal, Some(deadline))
+    {
         Ok(record) => Ok(ForegroundWaitResult::Completed {
             record: Box::new(record),
         }),

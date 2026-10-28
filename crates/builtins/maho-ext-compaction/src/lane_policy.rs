@@ -55,10 +55,43 @@ pub fn live_has_append_only_transcript(context: &maho_ext_api::ExtensionContext)
     let settings = maho_ext_anthropic_subscription::settings::load(&Value::Object(manager.get_global().clone()), &Value::Object(manager.get_project().clone()), &environment);
     settings.values.get("resumeMode").and_then(Value::as_str) != Some("off")
 }
-/// Live `lanePolicy.ownsCompaction(ctx, reason)`: manual requests stay senpi-owned on every lane.
+pub const COLD_SEED_OVERFLOW_DIAGNOSTIC: &str = "claude_sdk_oauth_cold_seed_overflow";
+
+/// senpi `isColdSeedOverflowMessage`: an assistant message carrying the cold-seed overflow diagnostic.
+pub fn is_cold_seed_overflow_message(message: &Value) -> bool {
+    message.get("role").and_then(Value::as_str) == Some("assistant")
+        && message.get("diagnostics").and_then(Value::as_array).is_some_and(|diagnostics| {
+            diagnostics.iter().any(|d| d.get("type").and_then(Value::as_str) == Some(COLD_SEED_OVERFLOW_DIAGNOSTIC))
+        })
+}
+
+/// senpi `lastTurnIsColdSeedOverflow`: only the newest assistant since the latest compaction counts.
+/// `branch` holds raw session entries (`type`, `message`).
+pub fn last_turn_is_cold_seed_overflow(branch: &[Value]) -> bool {
+    for entry in branch.iter().rev() {
+        match entry.get("type").and_then(Value::as_str) {
+            Some("compaction") => return false,
+            Some("message") if entry.get("message").and_then(|m| m.get("role")).and_then(Value::as_str) == Some("assistant") => {
+                return entry.get("message").is_some_and(is_cold_seed_overflow_message);
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Live `lanePolicy.ownsCompaction(ctx, reason)`: manual requests stay senpi-owned on every lane;
+/// overflow is senpi's only when the newest turn is a failed cold-seed.
 pub fn live_owns_compaction(policy: &std::sync::Mutex<CompactionLanePolicy>, context: &maho_ext_api::ExtensionContext, reason: maho_ext_api::CompactionReason) -> bool {
-    let sdk_owned = live_disables_senpi_compaction(policy, context);
-    !sdk_owned || matches!(reason, maho_ext_api::CompactionReason::Manual | maho_ext_api::CompactionReason::Overflow)
+    if !live_disables_senpi_compaction(policy, context) || reason == maho_ext_api::CompactionReason::Manual { return true; }
+    reason == maho_ext_api::CompactionReason::Overflow && {
+        let branch: Vec<Value> = context.session_manager.get_branch().into_iter().map(|entry| {
+            let mut value = entry.data;
+            value["type"] = Value::String(entry.kind);
+            value
+        }).collect();
+        last_turn_is_cold_seed_overflow(&branch)
+    }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompactBoundaryEntry {
@@ -93,6 +126,20 @@ mod tests {
         assert!(!is_sdk_native_compaction_lane(Some("anthropic-subscription"), Some("auto"), None));
         assert!(!is_sdk_native_compaction_lane(Some("anthropic-subscription"), Some("off"), Some("sdk")));
         assert!(!is_sdk_native_compaction_lane(Some("openai"), Some("auto"), Some("sdk")));
+    }
+
+    #[test]
+    fn overflow_ownership_requires_an_unsettled_cold_seed_overflow() {
+        use serde_json::json;
+        let failed = json!({"type":"message","message":{"role":"assistant","diagnostics":[{"type":COLD_SEED_OVERFLOW_DIAGNOSTIC}]}});
+        let plain = json!({"type":"message","message":{"role":"assistant"}});
+        let user = json!({"type":"message","message":{"role":"user"}});
+        let compaction = json!({"type":"compaction"});
+        assert!(last_turn_is_cold_seed_overflow(&[plain.clone(), failed.clone(), user.clone()]));
+        assert!(!last_turn_is_cold_seed_overflow(&[failed.clone(), plain.clone()]));
+        assert!(!last_turn_is_cold_seed_overflow(&[failed.clone(), compaction]));
+        assert!(!last_turn_is_cold_seed_overflow(&[]));
+        assert!(!is_cold_seed_overflow_message(&json!({"role":"user","diagnostics":[{"type":COLD_SEED_OVERFLOW_DIAGNOSTIC}]})));
     }
 
     #[test]

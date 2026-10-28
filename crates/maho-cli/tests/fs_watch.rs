@@ -20,7 +20,13 @@ async fn watcher_subscribes_before_write_and_delivers_filename() {
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     let watcher = watch_with_error_handler(directory.path(), move |kind, name| { let _ = sender.send((kind.to_owned(), name)); }, || panic!("watch error"), false).unwrap();
     std::fs::write(directory.path().join("changed"), b"data").unwrap();
-    let event = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.unwrap().unwrap();
+    // FSEvents can also report the watched root itself (an empty relative name); wait for the file's event.
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let event = receiver.recv().await.unwrap();
+            if event.1.as_deref() != Some("") { break event; }
+        }
+    }).await.unwrap();
     assert!(matches!(event.0.as_str(), "rename" | "change"));
     assert_eq!(event.1.as_deref(), Some("changed"));
     close_watcher(Some(watcher));

@@ -22,6 +22,7 @@ fn sample_batch() -> FactsBatch {
     FactsBatch {
         batch_id: "11111111-1111-4111-8111-111111111111".to_string(),
         records: vec![FactsExtractionRecord::Project {
+            receipt: None,
             text: "Uses Bun.".to_string(),
             date: "2026-08-10".to_string(),
         }],
@@ -70,6 +71,7 @@ fn test_rejects_tracked_worktree_drift_without_changing_index_or_worktree_bytes(
     let next = FactsBatch {
         batch_id: "22222222-2222-4222-8222-222222222222".to_string(),
         records: vec![FactsExtractionRecord::Project {
+            receipt: None,
             text: "Uses TypeScript.".to_string(),
             date: "2026-08-11".to_string(),
         }],
@@ -110,6 +112,7 @@ fn test_rejects_tracked_index_drift_without_rewriting_either_surface() {
     let next = FactsBatch {
         batch_id: "22222222-2222-4222-8222-222222222222".to_string(),
         records: vec![FactsExtractionRecord::Project {
+            receipt: None,
             text: "Uses TypeScript.".to_string(),
             date: "2026-08-11".to_string(),
         }],
@@ -178,10 +181,12 @@ fn test_restores_owned_partial_pre_post_residue_and_commits_the_exact_recorded_p
         batch_id: "33333333-3333-4333-8333-333333333333".to_string(),
         records: vec![
             FactsExtractionRecord::Project {
+            receipt: None,
                 text: "August.".to_string(),
                 date: "2026-08-10".to_string(),
             },
             FactsExtractionRecord::Project {
+            receipt: None,
                 text: "September.".to_string(),
                 date: "2026-09-01".to_string(),
             },
@@ -300,10 +305,12 @@ mod race_ports {
             batch_id: id.to_string(),
             records: vec![
                 FactsExtractionRecord::Project {
+            receipt: None,
                     text: "August.".to_string(),
                     date: "2026-08-10".to_string(),
                 },
                 FactsExtractionRecord::Project {
+            receipt: None,
                     text: "September.".to_string(),
                     date: "2026-09-01".to_string(),
                 },
@@ -352,6 +359,7 @@ mod race_ports {
             FactsBatch {
                 batch_id: "11111111-1111-4111-8111-111111111111".to_string(),
                 records: vec![FactsExtractionRecord::Project {
+            receipt: None,
                     text: "Initial August.".to_string(),
                     date: "2026-08-01".to_string(),
                 }],
@@ -399,6 +407,7 @@ mod race_ports {
             FactsBatch {
                 batch_id: "11111111-1111-4111-8111-111111111111".to_string(),
                 records: vec![FactsExtractionRecord::Project {
+            receipt: None,
                     text: "Initial August.".to_string(),
                     date: "2026-08-01".to_string(),
                 }],

@@ -17,6 +17,9 @@ const CHARS_PER_TOKEN: usize = 4;
 const ESTIMATED_IMAGE_CHARS: usize = 4800;
 
 pub fn calculate_context_tokens(usage: &Usage) -> u64 {
+    if let Some(context_usage) = usage.context_usage {
+        return context_usage.map_or(0, |context| context.input + context.output);
+    }
     if usage.total_tokens != 0 {
         usage.total_tokens
     } else {
@@ -263,5 +266,60 @@ mod tests {
         let tools_tokens =
             tokens_for_chars(r#"[{"name":"t","description":"d","parameters":{}}]"#.len());
         assert_eq!(estimate.tokens, 1 + 2 + 2 + tools_tokens);
+    }
+
+    #[test]
+    fn context_tokens_with_request_context_usage() {
+        let list = messages(json!([
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "api": "a",
+                "provider": "p",
+                "model": "m",
+                "usage": {
+                    "input": 7000,
+                    "output": 300,
+                    "cacheRead": 0,
+                    "cacheWrite": 0,
+                    "totalTokens": 9500,
+                    "contextUsage": {"input": 1900, "output": 100},
+                    "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}
+                },
+                "stopReason": "stop",
+                "timestamp": 100
+            },
+            {"role": "user", "content": "tail", "timestamp": 101}
+        ]));
+        let estimate = estimate_messages(&list);
+        assert_eq!(estimate.usage_tokens, 2000);
+        assert_eq!(estimate.tokens, 2000 + 1);
+        assert_eq!(estimate.last_usage_index, Some(0));
+
+        let null_list = messages(json!([
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "api": "a",
+                "provider": "p",
+                "model": "m",
+                "usage": {
+                    "input": 7000,
+                    "output": 300,
+                    "cacheRead": 0,
+                    "cacheWrite": 0,
+                    "totalTokens": 9500,
+                    "contextUsage": null,
+                    "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}
+                },
+                "stopReason": "stop",
+                "timestamp": 100
+            },
+            {"role": "user", "content": "tail", "timestamp": 101}
+        ]));
+        let null_estimate = estimate_messages(&null_list);
+        assert_eq!(null_estimate.usage_tokens, 0);
+        assert_eq!(null_estimate.last_usage_index, None);
+        assert_eq!(null_estimate.tokens, 2);
     }
 }

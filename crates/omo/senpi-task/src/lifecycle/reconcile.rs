@@ -337,6 +337,9 @@ fn reattach_legacy_record(
     };
     let handle = match (ports.respawn)(record, Some(&session_path)) {
         RespawnResult::Ok(handle) => handle,
+        RespawnResult::Failed { code: super::port::RespawnFailureCode::RunPaused, .. } => {
+            return Ok(ReconcileOutcome::deferred(&record.task_id, "run_paused"));
+        }
         RespawnResult::Failed { reason, .. } => {
             mark_lost(context, record, &format!("reattach failed: {reason}"))?;
             return Ok(outcome(&record.task_id, Lost, &reason));

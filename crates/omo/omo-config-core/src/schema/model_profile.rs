@@ -13,11 +13,14 @@ use crate::schema::fallback_models::{
 /// so requiring at least one entry would make a label-only override of a builtin profile drop the
 /// user's whole `categories`/`agents`/`teams` layer. "No models after merging the builtins" is a
 /// runtime report, not a schema error. `family` / `tier` are optional metadata a user overlay may
-/// set; they do not create an editor.
+/// set; they do not create an editor. `caution` is an optional one-line warning renderers show
+/// prominently; on an entry that replaces a builtin it carries over from that builtin when unset,
+/// like `display_name`.
 fn model_profile_input_spec() -> ObjectSpec {
     ObjectSpec {
         fields: vec![
             optional("display_name", string()),
+            optional("caution", string()),
             optional("family", enumeration(&["daily", "geeky"])),
             optional("tier", enumeration(&["normal", "heavy"])),
             optional(

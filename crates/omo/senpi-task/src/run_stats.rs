@@ -11,6 +11,7 @@ use crate::state::{CostReportStatus, DurationSourceStatus, TaskRunStats, TokenCo
 /// `message_start`, `tool_execution_end`, previous `message_end`) and closes on an assistant
 /// `message_end`, so `tokens_per_second` measures streaming speed and excludes tool time.
 pub struct RunStatsTracker<C: Fn() -> u64> {
+    pub run_start_epoch: i64,
     started_at: u64,
     now: C,
     turns: u64,
@@ -21,6 +22,7 @@ pub struct RunStatsTracker<C: Fn() -> u64> {
     cache_read_tokens_total: f64,
     cache_write_tokens_total: f64,
     turns_reporting_usage: u64,
+    turns_reporting_cost: u64,
     total_tokens: f64,
     generation_ms: u64,
     collapsed_windows: u64,
@@ -36,6 +38,7 @@ pub struct RunStatsTracker<C: Fn() -> u64> {
 
 pub fn create_run_stats_tracker<C: Fn() -> u64>(started_at: u64, now: C) -> RunStatsTracker<C> {
     RunStatsTracker {
+        run_start_epoch: 0,
         started_at,
         now,
         turns: 0,
@@ -46,6 +49,7 @@ pub fn create_run_stats_tracker<C: Fn() -> u64>(started_at: u64, now: C) -> RunS
         cache_read_tokens_total: 0.0,
         cache_write_tokens_total: 0.0,
         turns_reporting_usage: 0,
+        turns_reporting_cost: 0,
         total_tokens: 0.0,
         generation_ms: 0,
         collapsed_windows: 0,
@@ -124,7 +128,10 @@ impl<C: Fn() -> u64> RunStatsTracker<C> {
                 let Some(message) = assistant_message(event.message.as_ref()) else {
                     return false;
                 };
-                if matches!(message.get("stopReason").and_then(Value::as_str), Some("error" | "aborted")) {
+                if matches!(
+                    message.get("stopReason").and_then(Value::as_str),
+                    Some("error" | "aborted")
+                ) {
                     self.failed_turns += 1;
                     self.window_start = (self.now)();
                     return true;
@@ -145,7 +152,8 @@ impl<C: Fn() -> u64> RunStatsTracker<C> {
         self.generation_ms += window;
         self.window_start = timestamp;
         let usage = read_usage(message);
-        if message.get("usage").and_then(Value::as_object).is_some_and(|usage| !usage.is_empty()) {
+        let reported = reports_usage(&usage);
+        if reported {
             self.turns_reporting_usage += 1;
         }
         if window == 0 && usage.output.unwrap_or(0.0) > 0.0 {
@@ -154,9 +162,10 @@ impl<C: Fn() -> u64> RunStatsTracker<C> {
         self.output_tokens += usage.output.unwrap_or(0.0);
         self.input_tokens += usage.input.unwrap_or(0.0);
         self.total_tokens += usage.total.unwrap_or(0.0);
-        if let Some(cost) = usage.cost {
+        if let Some(cost) = usage.cost.filter(|_| reported) {
             self.cost_usd += cost;
             self.saw_cost = true;
+            self.turns_reporting_cost += 1;
         }
         let request_cache_read = usage.cache_read.unwrap_or(0.0);
         let request_cacheable =
@@ -182,7 +191,7 @@ impl<C: Fn() -> u64> RunStatsTracker<C> {
         } else {
             Some(runtime_ms)
         };
-        let positive = |value: f64| (value > 0.0).then_some(value as u64);
+        let positive = |value: f64| (value.is_finite() && value > 0.0).then_some(value as u64);
         TaskRunStats {
             runtime_ms,
             turns: self.turns,
@@ -203,8 +212,27 @@ impl<C: Fn() -> u64> RunStatsTracker<C> {
                 self.cacheable_tokens,
             ),
             duration_status: Some(DurationSourceStatus::Monotonic),
-            token_status: Some(if self.turns_reporting_usage == 0 { TokenCoverageStatus::Unavailable } else if self.turns_reporting_usage == self.turns { TokenCoverageStatus::Complete } else { TokenCoverageStatus::Partial }),
-            cost_status: Some(if self.saw_cost && self.cost_usd.is_finite() { CostReportStatus::Reported } else if self.saw_cost { CostReportStatus::Invalid } else { CostReportStatus::Unavailable }),
+            token_status: Some(if self.turns_reporting_usage == 0 {
+                TokenCoverageStatus::Unavailable
+            } else if self.turns_reporting_usage == self.turns {
+                TokenCoverageStatus::Complete
+            } else {
+                TokenCoverageStatus::Partial
+            }),
+            cost_status: Some(
+                if self.saw_cost
+                    && self.cost_usd.is_finite()
+                    && self.turns_reporting_cost < self.turns
+                {
+                    CostReportStatus::Partial
+                } else if self.saw_cost && self.cost_usd.is_finite() {
+                    CostReportStatus::Reported
+                } else if self.saw_cost {
+                    CostReportStatus::Invalid
+                } else {
+                    CostReportStatus::Unavailable
+                },
+            ),
         }
     }
 }
@@ -260,6 +288,20 @@ struct UsageFacts {
     cache_write: Option<f64>,
 }
 
+fn reports_usage(usage: &UsageFacts) -> bool {
+    [
+        usage.output,
+        usage.total,
+        usage.cost,
+        usage.input,
+        usage.cache_read,
+        usage.cache_write,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|value| value > 0.0)
+}
+
 fn read_usage(message: &Map<String, Value>) -> UsageFacts {
     let Some(usage) = message.get("usage").and_then(Value::as_object) else {
         return UsageFacts::default();
@@ -273,7 +315,7 @@ fn read_usage(message: &Map<String, Value>) -> UsageFacts {
     UsageFacts {
         output: first(["output", "output_tokens"]),
         total: first(["totalTokens", "total_tokens"]),
-        cost,
+        cost: cost.filter(|_| usage.get("costUnknown") != Some(&Value::Bool(true))),
         input: first(["input", "input_tokens"]),
         cache_read: first(["cacheRead", "cache_read_input_tokens"]),
         cache_write: first(["cacheWrite", "cache_creation_input_tokens"]),

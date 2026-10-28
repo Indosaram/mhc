@@ -70,6 +70,11 @@ pub enum SendOutcome {
         task_id: String,
         run_epoch: u64,
     },
+    Held {
+        task_id: String,
+        pause_seq: u64,
+        entry_id: String,
+    },
     Queued {
         task_id: String,
         queue_position: usize,
@@ -181,6 +186,15 @@ impl SendManager for TaskManager {
             SteeringSendOutcome::Revived { task_id, run_epoch } => SendOutcome::Revived {
                 task_id,
                 run_epoch: u64::try_from(run_epoch).unwrap_or_default(),
+            },
+            SteeringSendOutcome::Held {
+                task_id,
+                pause_seq,
+                entry_id,
+            } => SendOutcome::Held {
+                task_id,
+                pause_seq,
+                entry_id,
             },
             SteeringSendOutcome::Queued {
                 task_id,
@@ -403,6 +417,11 @@ pub enum SendResultDetails {
         run_epoch: u64,
         reason: String,
     },
+    Held {
+        task_id: String,
+        pause_seq: u64,
+        entry_id: String,
+    },
     Queued {
         task_id: String,
         queue_position: usize,
@@ -456,6 +475,7 @@ impl SendResultDetails {
             Self::Steered { .. } => "steered",
             Self::Revived { .. } => "revived",
             Self::Stale { .. } => "stale",
+            Self::Held { .. } => "held",
             Self::Queued { .. } => "queued",
             Self::NotContinuable { .. } => "not_continuable",
             Self::OneShotAgent { .. } => "one_shot_agent",

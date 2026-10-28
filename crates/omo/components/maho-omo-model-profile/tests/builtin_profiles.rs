@@ -45,8 +45,8 @@ fn labels_each_profile_by_lane_and_gives_every_profile_a_distinct_family_tier_pa
     let profiles = profiles();
     assert_eq!(profiles["daily-normal"].display_name, "Daily · Normal");
     assert_eq!(profiles["daily-heavy"].display_name, "Daily · Heavy");
-    assert_eq!(profiles["geeky-normal"].display_name, "Geeky · Normal");
-    assert_eq!(profiles["geeky-heavy"].display_name, "Geeky · Heavy");
+    assert_eq!(profiles["geeky-normal"].display_name, "Obsessive · Normal");
+    assert_eq!(profiles["geeky-heavy"].display_name, "Obsessive · Heavy");
     let pairs: Vec<String> = LANE_IDS
         .iter()
         .map(|id| format!("{}:{}", profiles[*id].family.as_str(), profiles[*id].tier.as_str()))
@@ -55,6 +55,16 @@ fn labels_each_profile_by_lane_and_gives_every_profile_a_distinct_family_tier_pa
     for id in EXPECTED_IDS {
         assert!(!profiles[id].description.is_empty(), "{id} carries a description");
     }
+}
+
+#[test]
+fn carries_the_bold_caution_only_on_the_obsessive_lanes() {
+    let profiles = profiles();
+    let caution = "NOT RECOMMENDED FOR WRITING OR EVERYDAY WORK.";
+    assert_eq!(profiles["geeky-normal"].caution, Some(caution));
+    assert_eq!(profiles["geeky-heavy"].caution, Some(caution));
+    assert_eq!(profiles["daily-normal"].caution, None);
+    assert_eq!(profiles["daily-heavy"].caution, None);
 }
 
 #[test]
@@ -178,7 +188,7 @@ fn runs_daily_heavy_as_fable_xhigh_only() {
 }
 
 #[test]
-fn runs_geeky_normal_as_gpt_61_sol_fast_then_gpt_61_sol_medium_on_the_oi_lanes_then_gpt_56_sol_medium_on_every_gpt_lane() {
+fn runs_geeky_normal_as_astra_medium_then_the_two_sol_tiers_medium_on_the_oi_lanes() {
     let models: Vec<(Vec<&str>, &str, Option<&str>)> = profiles()["geeky-normal"]
         .models
         .iter()
@@ -187,6 +197,11 @@ fn runs_geeky_normal_as_gpt_61_sol_fast_then_gpt_61_sol_medium_on_the_oi_lanes_t
     assert_eq!(
         models,
         [
+            (
+                vec!["chatgpt-subscription", "openai", "github-copilot", "opencode"],
+                "gpt-6-astra",
+                Some("medium")
+            ),
             (vec!["chatgpt-subscription", "openai"], "gpt-6.1-sol-fast", Some("medium")),
             (vec!["chatgpt-subscription", "openai"], "gpt-6.1-sol", Some("medium")),
             (vec!["chatgpt-subscription", "openai", "github-copilot", "opencode"], "gpt-5.6-sol", Some("medium")),

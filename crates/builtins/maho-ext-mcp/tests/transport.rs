@@ -184,3 +184,16 @@ async fn http_requests_after_initialize_carry_the_negotiated_protocol_version() 
     assert!(seen[1..].iter().all(|(_,version)|version.as_deref()==Some("2025-06-18")),"{seen:?}");
     client.close().await.unwrap();drop(client);stop.send(()).unwrap();tokio::time::timeout(Duration::from_secs(2),server).await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn project_policy_is_resolved_again_at_launch() {
+    use std::sync::{Arc,Mutex,atomic::{AtomicUsize,Ordering}};
+    use maho_ext_mcp::{transport::*,config_schema::*,transport_sdk::McpTransportSpec};
+    let root=tempfile::tempdir().unwrap();let logger=Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("policy",root.path(),None).unwrap()));
+    let config=McpServerConfig{transport:Some(Transport::Stdio),command:Some("old".into()),..Default::default()};
+    let mut transport=create_mcp_transport("policy",&config,None,logger).unwrap();let calls=Arc::new(AtomicUsize::new(0));let seen=calls.clone();
+    transport.project_policy=true;
+    transport.resolve_project_policy=Some(Arc::new(move ||{let count=seen.fetch_add(1,Ordering::SeqCst);Box::pin(async move {Ok(ProjectMcpMaterialization{config:McpServerConfig{transport:Some(Transport::Stdio),command:Some(format!("fresh-{count}")),..Default::default()},env:std::collections::BTreeMap::from([("ONLY".into(),count.to_string())])})})}));
+    for count in 0..2 {let McpTransportSpec::Stdio{command,env,..}=transport.resolve_before_start().await.unwrap() else{panic!("stdio")};assert_eq!(command,format!("fresh-{count}"));assert_eq!(env.len(),1);assert_eq!(env["ONLY"],count.to_string());}
+    assert_eq!(calls.load(Ordering::SeqCst),2);
+}

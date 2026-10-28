@@ -182,3 +182,63 @@ fn update_queue_ends_only_after_buffer_drains() {
     assert!(queue.take_next().is_some());
     assert!(queue.is_ended());
 }
+
+// ---- eval-handles/run-after-engine.ts `delivered` / `queued` ----
+
+fn send_ref() -> HandleRef {
+    HandleRef { kind: HandleKind::Agent, id: "task-1".into(), run_epoch: 0 }
+}
+
+#[test]
+fn send_delivered_reports_the_delivery_status_verbatim() {
+    let snapshot = RunAfterEngine::new(1, 1)
+        .delivered(&send_ref(), &record(TaskStatus::Running, 1), Some("held until the run resumes"))
+        .expect("delivered");
+    assert_eq!(snapshot.host_status, "held until the run resumes");
+    assert_eq!(snapshot.reference.run_epoch, 1);
+    assert_eq!(snapshot.phase, super::host::HandlePhase::Pending);
+}
+
+#[test]
+fn send_delivered_after_the_run_ended_reports_delivered_after_run_ended() {
+    let snapshot = RunAfterEngine::new(0, 0)
+        .delivered(&send_ref(), &record(TaskStatus::Completed, 0), None)
+        .expect("delivered");
+    assert_eq!(snapshot.host_status, "delivered_after_run_ended");
+    assert_eq!(snapshot.phase, super::host::HandlePhase::Succeeded);
+}
+
+#[test]
+fn send_queued_stays_queued_even_when_the_run_ended() {
+    let snapshot = RunAfterEngine::new(0, 0)
+        .queued(&send_ref(), &record(TaskStatus::Completed, 0))
+        .expect("queued");
+    assert_eq!(snapshot.host_status, "queued");
+    assert_eq!(snapshot.phase, super::host::HandlePhase::Succeeded);
+}
+
+#[test]
+fn send_refuses_a_run_that_was_rolled_back() {
+    let error = RunAfterEngine::new(0, 1)
+        .delivered(&send_ref(), &record(TaskStatus::Running, 1), None)
+        .expect_err("rolled back");
+    assert_eq!(error.code, EvalHandleErrorCode::SendRefused);
+}
+
+#[test]
+fn send_moved_run_answers_with_the_newer_epoch() {
+    let snapshot = RunAfterEngine::new(2, 0)
+        .queued(&send_ref(), &record(TaskStatus::Running, 2))
+        .expect("queued");
+    assert_eq!(snapshot.reference.run_epoch, 2);
+    assert_eq!(snapshot.host_status, "continued as epoch 2");
+}
+
+// ---- eval-handles/task-refs.ts `PHASES` ----
+
+#[test]
+fn a_paused_task_projects_to_the_pending_phase() {
+    let snapshot = task_snapshot(&record(TaskStatus::Paused, 3), send_ref(), "paused");
+    assert_eq!(snapshot.phase, super::host::HandlePhase::Pending);
+    assert_eq!(snapshot.revision, 6);
+}

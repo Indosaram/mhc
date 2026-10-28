@@ -1437,7 +1437,7 @@ mod tests {
         ResourceItem {
             path: "builtin:task".to_owned(),
             enabled: true,
-            metadata: PathMetadata {
+            metadata: PathMetadata { skill_provenance: None,
                 source: "builtin".to_owned(),
                 scope,
                 origin: SourceOrigin::TopLevel,

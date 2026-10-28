@@ -46,7 +46,11 @@ impl SessionRegistry {
                 Ok(crate::session_reattach::verify_transcript(&binding,&messages,&lane))
             }
         }).await?;
+        let retained_binding = self.bindings.get(input.session);
         let binding=admission.binding;
+        let lineage_seat = snapshot.as_ref().or(retained_binding.as_ref()).or(binding.as_ref()).map(|source| source.account_name.as_str());
+        let seat_changed = lineage_seat.map(|previous| previous != input.account);
+        let seat = crate::seat_digest::seat_digest(input.account, None);
         let decision = crate::session_continuity::decide(&ContinuityInput { entry: snapshot.as_ref(), binding: binding.as_ref(), current_hashes: &hashes, account_name: input.account, model_id: input.model, system_prompt_hash: &fingerprint.system_prompt_hash, toolset_hash: &fingerprint.toolset_hash, transcript_available: input.transcript_available && admission.transcript_available, cross_account_resume_supported: input.auth_lane != "config-dir", idle_expired: self.entries.get(input.session).is_some_and(|entry| entry.idle_expired(input.now)), invalidation_reason: self.bindings.invalidation_reason(input.session), credential_digest: None });
         let (from, resume, sdk_id) = match &decision {
             Decision::Delta { from } => (*from, None, snapshot.as_ref().expect("live entry").sdk_session_id.clone()),
@@ -69,7 +73,7 @@ impl SessionRegistry {
             let mut entry = match created {
                 Ok(entry) => entry,
                 Err(error) => {
-                    self.last_decisions.insert(input.session.into(), crate::session_observability::Observation { kind: "bootstrap".into(), reason: if input.signal.is_some_and(maho_ai::utils::abort::AbortSignal::aborted) { "resume_initialization_aborted" } else { "resume_initialization_failed" }.into(), delta_messages: hashes.len() - from, payload_bytes: None, collapsed_directives: None, session_id: Some(input.session.into()), settings_source: None });
+                    self.last_decisions.insert(input.session.into(), crate::session_observability::Observation { kind: "bootstrap".into(), reason: if input.signal.is_some_and(maho_ai::utils::abort::AbortSignal::aborted) { "resume_initialization_aborted" } else { "resume_initialization_failed" }.into(), delta_messages: hashes.len() - from, payload_bytes: None, collapsed_directives: None, session_id: Some(input.session.into()), settings_source: None, seat: Some(seat.clone()), seat_changed });
                     return Err(error);
                 }
             };
@@ -92,7 +96,7 @@ impl SessionRegistry {
             Decision::Flatten { reason } => ("flatten", reason.as_str(), hashes.len()),
         };
         let cold = matches!(decision, Decision::Bootstrap { .. } | Decision::Flatten { .. });
-        self.last_decisions.insert(input.session.into(), crate::session_observability::Observation { kind: if result.is_err() { "flatten" } else { kind }.into(), reason: result.as_ref().err().map_or_else(|| reason.into(), |error| crate::session_continuity::sanitize_reason(&error.to_string())), delta_messages: delta, payload_bytes: cold.then(|| crate::prompt_directive_dedupe::serialized_payload_bytes(&blocks)), collapsed_directives: None, session_id: Some(input.session.into()), settings_source: None });
+        self.last_decisions.insert(input.session.into(), crate::session_observability::Observation { kind: if result.is_err() { "flatten" } else { kind }.into(), reason: result.as_ref().err().map_or_else(|| reason.into(), |error| crate::session_continuity::sanitize_reason(&error.to_string())), delta_messages: delta, payload_bytes: cold.then(|| crate::prompt_directive_dedupe::serialized_payload_bytes(&blocks)), collapsed_directives: None, session_id: Some(input.session.into()), settings_source: None, seat: Some(seat.clone()), seat_changed });
         if result.is_err() || self.entries.get(input.session).is_some_and(|entry| entry.pump.state == crate::session_registry_state::SessionState::Closed) {
             let checkpoint = self.entries.get(input.session).map(|entry| {
                 let mut binding = crate::session_turn_attempt::binding_from_entry(entry, &entry.sent_hashes);

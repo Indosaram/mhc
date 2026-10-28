@@ -6,6 +6,8 @@ pub struct CompletionObservingStore { backing:TaskRecordStore,deps:CompletionBri
 pub fn create_completion_observing_store(backing:TaskRecordStore,deps:CompletionBridgeDeps)->CompletionObservingStore { CompletionObservingStore { backing,deps } }
 impl Deref for CompletionObservingStore { type Target=TaskRecordStore; fn deref(&self)->&Self::Target { &self.backing } }
 impl CompletionObservingStore {
+    /// The store this layer wraps, so an outer layer can re-wrap the same chain.
+    pub fn backing_store(&self) -> TaskRecordStore { self.backing.clone() }
     pub fn transition(&self,id:&str,transition:&TaskTransition)->Result<TaskTransitionResult,StoreError> {
         let result=self.backing.transition(id,transition)?;
         if result.applied && matches!(transition,TaskTransition::Complete{..}|TaskTransition::Fail{..}|TaskTransition::Cancel{..}|TaskTransition::Interrupt{..}|TaskTransition::Lose{..}) && result.record.status.is_terminal() {

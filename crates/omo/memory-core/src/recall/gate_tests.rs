@@ -14,6 +14,15 @@ fn nudge(path: &str, hint: &str) -> RecallNudge {
     RecallNudge {
         path: path.to_string(),
         hint: hint.to_string(),
+        source: None,
+    }
+}
+
+fn sourced_nudge(path: &str, hint: &str, source: &str) -> RecallNudge {
+    RecallNudge {
+        path: path.to_string(),
+        hint: hint.to_string(),
+        source: Some(source.to_string()),
     }
 }
 
@@ -145,7 +154,10 @@ fn given_a_hint_that_breaks_the_shape_budget_when_described_then_the_shape_reaso
 
 #[test]
 fn given_the_agent_addressing_hints_when_described_then_the_reason_is_addresses_agent() {
-    for hint in ADDRESSING_HINTS.iter().chain(KOREAN_ADDRESSING_HINTS.iter()) {
+    for hint in ADDRESSING_HINTS
+        .iter()
+        .chain(KOREAN_ADDRESSING_HINTS.iter())
+    {
         assert_eq!(
             describe_invalid_hint(hint),
             Some(InvalidHintReason::AddressesAgent),
@@ -160,14 +172,21 @@ fn given_the_observational_hints_when_described_then_no_reason_is_returned() {
         .iter()
         .chain(KOREAN_OBSERVATIONAL_HINTS.iter())
     {
-        assert_eq!(describe_invalid_hint(hint), None, "hint should be clean: {hint}");
+        assert_eq!(
+            describe_invalid_hint(hint),
+            None,
+            "hint should be clean: {hint}"
+        );
     }
 }
 
 #[test]
 fn given_an_agent_addressing_hint_when_revalidated_then_it_is_dropped_without_reserving_its_path() {
     let corrected = nudge(PATH, OBSERVATIONAL_HINTS[0]);
-    for hint in ADDRESSING_HINTS.iter().chain(KOREAN_ADDRESSING_HINTS.iter()) {
+    for hint in ADDRESSING_HINTS
+        .iter()
+        .chain(KOREAN_ADDRESSING_HINTS.iter())
+    {
         let options = single_option();
         assert!(validate_nudges(&[nudge(PATH, hint)], &options).is_empty());
         assert_eq!(
@@ -242,7 +261,7 @@ fn given_factual_hints_when_revalidated_then_they_survive_both_layers_unchanged(
 
 #[test]
 fn given_an_instruction_shaped_hint_from_an_older_session_when_checked_then_the_replay_predicate_accepts_it()
-{
+ {
     let stored = "Use the idle wake path.";
     assert!(is_valid_hint(stored));
     assert_eq!(
@@ -271,8 +290,100 @@ fn given_pending_nudges_when_written_and_taken_then_they_round_trip_and_the_file
 }
 
 #[test]
+fn given_a_project_nudge_with_a_readable_source_when_restored_from_disk_then_its_source_and_qualified_ledger_key_survive()
+ {
+    let dir = TempDir::new().expect("temp dir");
+    let source = dir
+        .path()
+        .join("project")
+        .join("reference")
+        .join("deploy.md")
+        .to_string_lossy()
+        .into_owned();
+    let nudge = sourced_nudge(
+        "@project/child-1234abcd/reference/deploy.md",
+        "Nightly deployment.",
+        &source,
+    );
+    PendingNudges::new(dir.path())
+        .write("project-session", std::slice::from_ref(&nudge))
+        .expect("write");
+
+    let restored = PendingNudges::new(dir.path()).take("project-session");
+
+    assert_eq!(restored, vec![nudge]);
+}
+
+#[test]
+fn given_a_nudge_without_a_source_when_written_then_its_payload_holds_only_the_path_and_hint() {
+    let dir = TempDir::new().expect("temp dir");
+    PendingNudges::new(dir.path())
+        .write("session-1", &[nudge(PATH, FACTUAL_HINTS[0])])
+        .expect("write");
+
+    let raw = fs::read_to_string(dir.path().join("session-1.json")).expect("read payload");
+    let payload: serde_json::Value = serde_json::from_str(&raw).expect("parse payload");
+    let entry = &payload["nudges"][0];
+    let keys: BTreeSet<&str> = entry
+        .as_object()
+        .expect("an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(keys, BTreeSet::from(["path", "hint"]));
+}
+
+#[test]
+fn given_a_nudge_with_a_source_when_written_then_its_payload_keeps_the_source() {
+    let dir = TempDir::new().expect("temp dir");
+    PendingNudges::new(dir.path())
+        .write(
+            "session-1",
+            &[sourced_nudge(
+                PATH,
+                FACTUAL_HINTS[0],
+                "/project/reference/a.md",
+            )],
+        )
+        .expect("write");
+
+    let raw = fs::read_to_string(dir.path().join("session-1.json")).expect("read payload");
+    let payload: serde_json::Value = serde_json::from_str(&raw).expect("parse payload");
+    assert_eq!(payload["nudges"][0]["source"], "/project/reference/a.md");
+}
+
+#[test]
+fn given_a_hand_edited_payload_with_a_bad_source_when_taken_then_the_whole_payload_is_rejected() {
+    for source in [
+        serde_json::json!(""),
+        serde_json::json!(null),
+        serde_json::json!(7),
+    ] {
+        let dir = TempDir::new().expect("temp dir");
+        fs::write(
+            dir.path().join("session-1.json"),
+            serde_json::json!({
+                "version": 1,
+                "sessionId": "session-1",
+                "writtenAt": crate::support::time::now_iso(),
+                "nudges": [{
+                    "path": "reference/a.md",
+                    "hint": "The note records the deploy gate.",
+                    "source": source,
+                }],
+            })
+            .to_string(),
+        )
+        .expect("write");
+
+        assert!(PendingNudges::new(dir.path()).take("session-1").is_empty());
+        assert!(fs::read_dir(dir.path()).expect("read dir").next().is_none());
+    }
+}
+
+#[test]
 fn given_a_hand_edited_payload_with_an_invalid_hint_when_taken_then_nothing_returns_and_the_file_is_deleted()
-{
+ {
     let dir = TempDir::new().expect("temp dir");
     fs::write(
         dir.path().join("session-1.json"),
@@ -312,7 +423,10 @@ fn given_a_foreign_session_payload_when_taken_then_it_is_left_for_its_real_owner
         .expect("write");
 
     assert!(pending.take("session-2").is_empty());
-    assert_eq!(pending.take("session-1"), vec![nudge(PATH, FACTUAL_HINTS[0])]);
+    assert_eq!(
+        pending.take("session-1"),
+        vec![nudge(PATH, FACTUAL_HINTS[0])]
+    );
 }
 
 #[test]
@@ -337,7 +451,10 @@ fn given_a_foreign_payload_when_deleted_then_it_is_left_alone() {
         .expect("write");
 
     pending.delete("session-2");
-    assert_eq!(pending.take("session-1"), vec![nudge(PATH, FACTUAL_HINTS[0])]);
+    assert_eq!(
+        pending.take("session-1"),
+        vec![nudge(PATH, FACTUAL_HINTS[0])]
+    );
 }
 
 #[test]
@@ -370,5 +487,8 @@ fn given_more_candidates_than_the_cap_when_validating_then_order_is_preserved_up
         &options,
     );
     let paths: BTreeSet<String> = accepted.into_iter().map(|entry| entry.path).collect();
-    assert_eq!(paths, BTreeSet::from(["a.md".to_string(), "b.md".to_string()]));
+    assert_eq!(
+        paths,
+        BTreeSet::from(["a.md".to_string(), "b.md".to_string()])
+    );
 }

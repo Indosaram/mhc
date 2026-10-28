@@ -53,6 +53,7 @@ impl std::fmt::Display for CrashInjected {
 impl std::error::Error for CrashInjected {}
 
 pub struct EngineDeps {
+    pub on_status_change: Option<Rc<dyn Fn()>>,
     pub repo: Rc<dyn SyncRepo>,
     pub store: Rc<dyn ItemStore>,
     pub transport: Rc<dyn Transport>,

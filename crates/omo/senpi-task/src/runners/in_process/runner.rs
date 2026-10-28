@@ -93,6 +93,16 @@ pub struct InProcessRunnerOptions {
     pub create_session: CreateChildSession,
 }
 
+pub struct StagedChild {
+    pub handle: Arc<InProcessChildHandle>,
+    pub prompt: String,
+}
+impl StagedChild {
+    pub fn begin(self) -> Result<Arc<InProcessChildHandle>, RunnerError> {
+        InProcessRunner::begin_staged(self.handle, self.prompt)
+    }
+}
+
 pub struct InProcessRunner {
     shared_parent_tools: Vec<ChildToolRef>,
     ui_only_tool_names: Vec<String>,
@@ -110,7 +120,35 @@ impl InProcessRunner {
         }
     }
 
+    pub fn start_staged(&self, spec: &ChildSpec) -> Result<StagedChild, RunnerError> {
+        let (handle, prompt) = self.create(spec)?;
+        Ok(StagedChild { handle, prompt })
+    }
+
     pub fn start(&self, spec: &ChildSpec) -> Result<Arc<InProcessChildHandle>, RunnerError> {
+        let staged = self.start_staged(spec)?;
+        staged.begin()
+    }
+
+    fn begin_staged(
+        handle: Arc<InProcessChildHandle>,
+        prompt: String,
+    ) -> Result<Arc<InProcessChildHandle>, RunnerError> {
+        handle.follow_up_turn(&prompt).map_err(|error| {
+            RunnerError::caused_by(
+                RunnerFailureKind::ChildPromptFailed,
+                error.message.clone(),
+                error,
+            )
+        })?;
+        Ok(handle)
+    }
+
+    /// Construct and subscribe the session without starting the first model turn.
+    pub fn create(
+        &self,
+        spec: &ChildSpec,
+    ) -> Result<(Arc<InProcessChildHandle>, String), RunnerError> {
         if spec.depth > self.max_depth {
             return Err(RunnerError::new(
                 RunnerFailureKind::DepthExceeded,
@@ -144,6 +182,10 @@ impl InProcessRunner {
             &self.ui_only_tool_names,
         );
         let session = (self.create_session)(options).map_err(create_failed)?;
+        if let Err(error) = super::pin_check::assert_pinned_model_honoured(spec, session.as_ref()) {
+            super::child_handle::dispose_rejected_session(session.as_ref());
+            return Err(error);
+        }
         // `"bare"` is the opt-out from the subagent ancestry wrapper: the spec's prompt is the whole
         // user message, byte-identical. Every other value (including absent) wraps it, which is what
         // all existing callers rely on.
@@ -161,11 +203,13 @@ impl InProcessRunner {
                 })
             }
         };
-        Ok(InProcessChildHandle::start_with_completion(
-            &spec.task_id,
-            session,
-            &prompt_text,
-            spec.completion.unwrap_or_default(),
+        Ok((
+            InProcessChildHandle::create_staged_child_handle(
+                &spec.task_id,
+                session,
+                spec.completion.unwrap_or_default(),
+            ),
+            prompt_text,
         ))
     }
 

@@ -113,6 +113,8 @@ pub struct DagRecoveryOptions {
     pub reattach: Option<Reattach>,
     pub ancestry: Option<DagSchedulerAncestry>,
     pub node_spawn_policy: Option<DagNodeSpawnPolicy>,
+    pub paused_children: Option<Arc<dyn crate::dag::paused_child_recovery::PausedChildRecoveryPort>>,
+    pub resume_credential: Option<crate::dag::types::ResumeCredential>,
 }
 
 struct RecoveryContext {
@@ -127,6 +129,8 @@ struct RecoveryContext {
     reattach: Option<Reattach>,
     ancestry: Option<DagSchedulerAncestry>,
     node_spawn_policy: Option<DagNodeSpawnPolicy>,
+    paused_children: Option<Arc<dyn crate::dag::paused_child_recovery::PausedChildRecoveryPort>>,
+    resume_credential: Option<crate::dag::types::ResumeCredential>,
 }
 
 pub struct DagRecovery {
@@ -156,6 +160,8 @@ pub fn create_dag_recovery(options: DagRecoveryOptions) -> DagRecovery {
             reattach: options.reattach,
             ancestry: options.ancestry,
             node_spawn_policy: options.node_spawn_policy,
+            paused_children: options.paused_children,
+            resume_credential: options.resume_credential,
         }),
     }
 }
@@ -182,6 +188,73 @@ impl DagRecovery {
     ) -> Vec<DagRecoveryOutcome> {
         resume_paused_runs(&self.context, parent_session_id, fork_source_session_id)
     }
+
+    pub fn install_resumed_run(
+        &self,
+        run_id: &DagRunId,
+        parent_session_id: &str,
+        pause_seq: u64,
+    ) -> Result<InstallResumedRunResult, String> {
+        self.install_resumed_run_with_credential(run_id, parent_session_id, pause_seq, None)
+    }
+
+    pub fn install_resumed_run_with_credential(
+        &self,
+        run_id: &DagRunId,
+        parent_session_id: &str,
+        pause_seq: u64,
+        credential: Option<crate::dag::types::ResumeCredential>,
+    ) -> Result<InstallResumedRunResult, String> {
+        let record = self
+            .context
+            .store
+            .read_checkpoint::<RecoverableRecord>(run_id)
+            .map_err(|e| e.to_string())?;
+        let Some(rec) = record else {
+            return Ok(InstallResumedRunResult::Skipped(DagRecoveryOutcome::Skipped {
+                run_id: run_id.clone(),
+                reason: DagRecoverySkipReason::NotPaused,
+                holder_pid: None,
+            }));
+        };
+        if rec.record.pause.as_ref().map(|p| p.pause_seq) != Some(pause_seq) {
+            return Ok(InstallResumedRunResult::Skipped(DagRecoveryOutcome::Skipped {
+                run_id: run_id.clone(),
+                reason: DagRecoverySkipReason::NotPaused,
+                holder_pid: None,
+            }));
+        }
+        let claim = claim_paused_run(&self.context, run_id, parent_session_id);
+        match claim {
+            ClaimedRun::Skipped(reason, holder_pid) => Ok(InstallResumedRunResult::Skipped(
+                DagRecoveryOutcome::Skipped {
+                    run_id: run_id.clone(),
+                    reason,
+                    holder_pid,
+                },
+            )),
+            ClaimedRun::Claimed(claimed) => {
+                let ctx = RecoveryContext {
+                    store: Arc::clone(&self.context.store),
+                    task_manager: Arc::clone(&self.context.task_manager),
+                    host_pid: self.context.host_pid,
+                    is_process_alive: Arc::clone(&self.context.is_process_alive),
+                    is_run_held_in_process: self.context.is_run_held_in_process.clone(),
+                    now: Arc::clone(&self.context.now),
+                    subscriber_ring: self.context.subscriber_ring,
+                    stop_admission: self.context.stop_admission.clone(),
+                    reattach: self.context.reattach.clone(),
+                    ancestry: self.context.ancestry,
+                    node_spawn_policy: self.context.node_spawn_policy.clone(),
+                    paused_children: self.context.paused_children.clone(),
+                    resume_credential: credential
+                        .or_else(|| self.context.resume_credential.clone()),
+                };
+                let installed = install_resumed_run(&ctx, *claimed)?;
+                Ok(InstallResumedRunResult::Installed(installed))
+            }
+        }
+    }
 }
 
 fn pause_runs_for_shutdown(
@@ -190,7 +263,8 @@ fn pause_runs_for_shutdown(
 ) -> Result<Vec<DagRunId>, crate::dag::store::DagStoreError> {
     let mut paused = Vec::new();
     for observed in list_run_records(&context.store) {
-        if observed.record.parent_session_id != parent_session_id
+        if observed.record.pause.as_ref().is_some_and(|p| p.reason == "user_stop")
+            || observed.record.parent_session_id != parent_session_id
             || !is_live_run_status(observed.record.status)
         {
             continue;
@@ -201,6 +275,7 @@ fn pause_runs_for_shutdown(
         let journal = recovery_journal(context, observed.clone(), None);
         journal.append(DagRunEventPayload::RunPaused {
             reason: Some("session_shutdown".to_string()),
+            pause_seq: None,
         })?;
         let run_id = observed.record.run_id.clone();
         context.store.with_run_lock(
@@ -236,6 +311,9 @@ fn resume_paused_runs(
 ) -> Vec<DagRecoveryOutcome> {
     let mut outcomes = Vec::new();
     for observed in list_run_records(&context.store) {
+        if observed.record.pause.as_ref().is_some_and(|p| p.reason == "user_stop") {
+            continue;
+        }
         let foreign = observed.record.parent_session_id != parent_session_id;
         let source = fork_source.map(str::trim).filter(|s| !s.is_empty());
         if foreign && source != Some(observed.record.parent_session_id.trim()) {
@@ -371,7 +449,105 @@ fn claim_orphaned_run(
         .unwrap_or(ClaimedRun::Skipped(DagRecoverySkipReason::NotPaused, None))
 }
 
+pub struct InstalledDagRun {
+    pub run_id: DagRunId,
+    pub scheduler: Arc<crate::dag::scheduler::DagSchedulerContext>,
+    pub settled: std::thread::JoinHandle<DagRecoveryOutcome>,
+}
+
+impl std::fmt::Debug for InstalledDagRun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InstalledDagRun")
+            .field("run_id", &self.run_id)
+            .finish()
+    }
+}
+
+impl InstalledDagRun {
+    pub fn wait(self) -> DagRecoveryOutcome {
+        self.settled.join().expect("validated recovery state is present")
+    }
+}
+
+pub enum InstallResumedRunResult {
+    Installed(InstalledDagRun),
+    Skipped(DagRecoveryOutcome),
+}
+
+impl std::fmt::Debug for InstallResumedRunResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Installed(installed) => f.debug_tuple("Installed").field(installed).finish(),
+            Self::Skipped(outcome) => f.debug_tuple("Skipped").field(outcome).finish(),
+        }
+    }
+}
+
+impl InstallResumedRunResult {
+    pub fn is_installed(&self) -> bool {
+        matches!(self, Self::Installed(_))
+    }
+
+    pub fn unwrap_installed(self) -> InstalledDagRun {
+        match self {
+            Self::Installed(installed) => installed,
+            Self::Skipped(outcome) => panic!("expected installed, got {outcome:?}"),
+        }
+    }
+}
+
 fn resume_claimed_run(context: &RecoveryContext, claimed: RecoverableRecord) -> DagRecoveryOutcome {
+    let run_id = claimed.record.run_id.clone();
+    match install_resumed_run(context, claimed) {
+        Ok(installed) => installed.wait(),
+        Err(_) => {
+            release_lease(context, &run_id);
+            DagRecoveryOutcome::Skipped {
+                run_id,
+                reason: DagRecoverySkipReason::NotPaused,
+                holder_pid: None,
+            }
+        }
+    }
+}
+
+fn install_resumed_run(
+    context: &RecoveryContext,
+    mut claimed: RecoverableRecord,
+) -> Result<InstalledDagRun, String> {
+    let run_id = claimed.record.run_id.clone();
+    if claimed
+        .record
+        .pause
+        .as_ref()
+        .is_some_and(|p| p.reason == "user_stop")
+        && let Some(paused_children) = &context.paused_children
+    {
+        let sched_opts = DagSchedulerOptions {
+            store: Arc::clone(&context.store),
+            task_manager: Arc::clone(&context.task_manager),
+            initial_record: claimed.record.clone(),
+            execution_mode: None,
+            ancestry: context.ancestry,
+            node_spawn_policy: context.node_spawn_policy.clone(),
+            subscriber_ring: context.subscriber_ring,
+            pre_attached_tasks: None,
+            schedule_retry: None,
+            now: Some(Arc::clone(&context.now)),
+            resume_credential: context.resume_credential.clone(),
+        };
+        if let Err(e) = crate::dag::paused_child_recovery::recover_paused_dag_children(
+            &sched_opts,
+            paused_children.as_ref(),
+        ) {
+            release_lease(context, &run_id);
+            return Err(e.to_string());
+        }
+        if let Ok(Some(fresh)) = context.store.read_checkpoint::<RecoverableRecord>(&run_id) {
+            claimed = fresh;
+        }
+    }
+
     let pending_errors = Arc::new(Mutex::new(BTreeMap::<DagNodeId, DagNodeError>::new()));
     let pending_terminal_results: Arc<Mutex<BTreeMap<DagNodeId, TaskRecord>>> =
         Arc::new(Mutex::new(BTreeMap::new()));
@@ -383,9 +559,15 @@ fn resume_claimed_run(context: &RecoveryContext, claimed: RecoverableRecord) -> 
             Arc::clone(&pending_terminal_results),
         )),
     );
-    let run_id = claimed.record.run_id.clone();
     let mut reused_outputs = HashMap::new();
     let mut pre_attached_tasks = BTreeMap::new();
+
+    if let Some(retry_targets) = &claimed.record.retry_on_resume
+        && !retry_targets.is_empty()
+    {
+        let _ = reset_recovery_nodes(&journal, retry_targets);
+    }
+
     reconcile_nodes(
         context,
         &journal,
@@ -394,8 +576,10 @@ fn resume_claimed_run(context: &RecoveryContext, claimed: RecoverableRecord) -> 
         &pending_terminal_results,
         &mut pre_attached_tasks,
     );
+
     let generation = journal.snapshot().record.generation + 1;
     let _ = journal.append(DagRunEventPayload::RunResumed { generation });
+
     let scheduler_result = create_dag_scheduler(DagSchedulerOptions {
         store: Arc::clone(&context.store),
         task_manager: Arc::clone(&context.task_manager),
@@ -407,28 +591,87 @@ fn resume_claimed_run(context: &RecoveryContext, claimed: RecoverableRecord) -> 
         pre_attached_tasks: (!pre_attached_tasks.is_empty()).then_some(pre_attached_tasks),
         schedule_retry: None,
         now: Some(Arc::clone(&context.now)),
+        resume_credential: context.resume_credential.clone(),
     });
-    let outcome = match scheduler_result {
-        Ok(scheduler) => match scheduler.run() {
+
+    let scheduler = match scheduler_result {
+        Ok(s) => s,
+        Err(e) => {
+            release_lease(context, &run_id);
+            return Err(e.to_string());
+        }
+    };
+
+    let scheduler_clone = Arc::clone(&scheduler);
+    let context_clone = Arc::new(RecoveryContext {
+        store: Arc::clone(&context.store),
+        task_manager: Arc::clone(&context.task_manager),
+        host_pid: context.host_pid,
+        is_process_alive: Arc::clone(&context.is_process_alive),
+        is_run_held_in_process: context.is_run_held_in_process.clone(),
+        now: Arc::clone(&context.now),
+        subscriber_ring: context.subscriber_ring,
+        stop_admission: context.stop_admission.clone(),
+        reattach: context.reattach.clone(),
+        ancestry: context.ancestry,
+        node_spawn_policy: context.node_spawn_policy.clone(),
+        paused_children: context.paused_children.clone(),
+        resume_credential: context.resume_credential.clone(),
+    });
+    let run_id_clone = run_id.clone();
+    let settled = std::thread::spawn(move || {
+        let outcome = match scheduler_clone.run() {
             Ok(record) => DagRecoveryOutcome::Resumed {
-                run_id: run_id.clone(),
+                run_id: run_id_clone.clone(),
                 record: Box::new(record),
                 reused_outputs,
             },
             Err(_) => DagRecoveryOutcome::Skipped {
-                run_id: run_id.clone(),
+                run_id: run_id_clone.clone(),
                 reason: DagRecoverySkipReason::NotPaused,
                 holder_pid: None,
             },
-        },
-        Err(_) => DagRecoveryOutcome::Skipped {
-            run_id: run_id.clone(),
-            reason: DagRecoverySkipReason::NotPaused,
-            holder_pid: None,
-        },
-    };
-    release_lease(context, &run_id);
-    outcome
+        };
+        release_lease(&context_clone, &run_id_clone);
+        outcome
+    });
+
+    Ok(InstalledDagRun {
+        run_id,
+        scheduler,
+        settled,
+    })
+}
+
+fn reset_recovery_nodes(
+    journal: &Arc<DagJournal<RecoverableRecord>>,
+    targets: &[DagNodeId],
+) -> Result<(), crate::dag::store::DagStoreError> {
+    for node_id in targets {
+        let snapshot = journal.snapshot();
+        let node = node_by_id(&snapshot.record, node_id);
+        let Some(node) = node else {
+            return Err(crate::dag::store::DagStoreError::Message(format!(
+                "unknown dag node \"{node_id}\""
+            )));
+        };
+        journal.append(DagRunEventPayload::NodeRetried {
+            node_id: node_id.clone(),
+            prior_task_id: node.task_id,
+            exec_attempt: node.exec_attempt.unwrap_or(0) + 1,
+            prompt_changed: false,
+            automatic: None,
+        })?;
+    }
+    for node in crate::dag::node_retry::skipped_dependents(&journal.snapshot().record, targets) {
+        journal.append(DagRunEventPayload::NodeTransitioned {
+            node_id: node.id,
+            from: DagNodeState::Skipped,
+            to: DagNodeState::Blocked,
+            reason: crate::dag::types::DagNodeTransitionReason::Retried,
+        })?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -461,7 +704,7 @@ fn reconcile_nodes(
                 continue;
             }
             DagNodeState::Failed | DagNodeState::Cancelled | DagNodeState::Skipped => continue,
-            DagNodeState::Scheduled | DagNodeState::Running => {}
+            DagNodeState::Scheduled | DagNodeState::Running | DagNodeState::Paused => {}
             DagNodeState::Pending | DagNodeState::Blocked => continue,
         }
 
@@ -488,11 +731,14 @@ fn reconcile_nodes(
 
         if task.is_none() && observed.state == DagNodeState::Scheduled && observed.task_id.is_none()
         {
-            let spec = start_spec(
+            let mut spec = start_spec(
                 &journal.snapshot().record,
                 &observed.id,
                 context.ancestry.map_or(0, |ancestry| ancestry.depth),
             );
+            if let Some(cred) = &context.resume_credential {
+                spec.resume_credential = Some(cred.clone());
+            }
             let owner = task_owner(
                 &journal.snapshot().record,
                 &observed.id,
@@ -500,6 +746,13 @@ fn reconcile_nodes(
             );
             let result = context.task_manager.start_owned(&spec, &owner);
             match result {
+                OwnedStartResult::Held { pause_seq } => {
+                    let _ = journal.append(DagRunEventPayload::RunPaused {
+                        reason: Some("user_stop".to_string()),
+                        pause_seq: Some(pause_seq),
+                    });
+                    continue;
+                }
                 OwnedStartResult::NotStarted(StartResult::ResidencyDenied { .. }) => {
                     let _ = journal.append(DagRunEventPayload::NodeTransitioned {
                         node_id: observed.id.clone(),
@@ -564,7 +817,7 @@ fn reconcile_nodes(
 
         if matches!(
             current_task.status,
-            TaskStatus::Pending | TaskStatus::Running
+            TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused
         ) {
             if !started_here
                 && context
@@ -641,7 +894,10 @@ fn fold_task_outcome(
     pending_errors: &Arc<Mutex<BTreeMap<DagNodeId, DagNodeError>>>,
     pending_terminal_results: &Arc<Mutex<BTreeMap<DagNodeId, TaskRecord>>>,
 ) {
-    if matches!(task.status, TaskStatus::Pending | TaskStatus::Running) {
+    if matches!(
+        task.status,
+        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused
+    ) {
         fail_node(
             journal,
             node_id,
@@ -937,6 +1193,10 @@ fn start_failure(result: &OwnedStartResult) -> (DagNodeErrorCode, String) {
             DagNodeErrorCode::StartFailed,
             format!("DAG task owner conflicts with existing task {task_id}"),
         ),
+        OwnedStartResult::NotStarted(StartResult::Held(_)) => (
+            DagNodeErrorCode::StartFailed,
+            "Task admission is held until the run resumes".into(),
+        ),
         OwnedStartResult::NotStarted(StartResult::DepthDenied { reason, .. }) => {
             (DagNodeErrorCode::DepthDenied, reason.clone())
         }
@@ -950,9 +1210,10 @@ fn start_failure(result: &OwnedStartResult) -> (DagNodeErrorCode, String) {
         OwnedStartResult::NotStarted(StartResult::ResidencyDenied { reason, .. }) => {
             (DagNodeErrorCode::ResidencyDenied, reason.clone())
         }
-        OwnedStartResult::Started { .. }
+        OwnedStartResult::Held { .. }
+        | OwnedStartResult::Started { .. }
         | OwnedStartResult::NotStarted(StartResult::Started(_)) => {
-            unreachable!("Started never reaches start_failure")
+            unreachable!("Held and Started never reach start_failure")
         }
     }
 }
@@ -975,7 +1236,7 @@ fn task_failure(status: TaskStatus, message: Option<&str>) -> (DagNodeErrorCode,
             DagNodeErrorCode::TaskCancelled,
             message.unwrap_or("task was cancelled").to_string(),
         ),
-        TaskStatus::Completed | TaskStatus::Pending | TaskStatus::Running => (
+        TaskStatus::Completed | TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused => (
             DagNodeErrorCode::TaskError,
             "task in a non-terminal-failure status".to_string(),
         ),

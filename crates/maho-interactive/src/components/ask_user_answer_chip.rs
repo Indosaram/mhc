@@ -15,13 +15,15 @@ use crate::theme::{Theme, ThemeColor};
 
 pub const ASK_USER_QUESTION_ENTRY: &str = "ask-user:question";
 
-static FRAME_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s)^\[Answer to question ([^\]\r\n]+)\]\r?\n(.*)$").expect("valid frame regex"));
+static FRAME_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?s)^\[Answer to question ([^\]\r\n]+)\]\r?\n(.*)$").expect("valid frame regex")
+});
 static NO_ANSWER_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:The user did not answer|The user dismissed|The pending question|This session has no user)")
         .expect("valid notice regex")
 });
-static WHITESPACE_RUN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").expect("valid whitespace regex"));
+static WHITESPACE_RUN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s+").expect("valid whitespace regex"));
 
 /// The frame type is owned by the builtin ask-user extension (plan todo 29); the chip only reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,7 +36,10 @@ pub fn parse_ask_user_answer_frame(text: &str) -> Option<AskUserAnswerFrame> {
     let captures = FRAME_PATTERN.captures(text)?;
     Some(AskUserAnswerFrame {
         request_id: captures.get(1)?.as_str().to_string(),
-        body: captures.get(2).map(|m| m.as_str().to_string()).unwrap_or_default(),
+        body: captures
+            .get(2)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default(),
     })
 }
 
@@ -78,7 +83,15 @@ fn summary_rows(frame: &AskUserAnswerFrame, headers: &[String]) -> Vec<String> {
     let mut answers: Vec<String> = Vec::new();
     let mut comment: Option<String> = None;
     let mut unanswered: Vec<String> = Vec::new();
-    for line in frame.body.split('\n') {
+    let lines: Vec<&str> = frame.body.split('\n').collect();
+    let cancelled_at = lines
+        .iter()
+        .position(|line| maho_ext_api::is_cancelled_with_answers_line(line));
+    for line in lines
+        .iter()
+        .skip(cancelled_at.map_or(0, |index| index + 1))
+        .copied()
+    {
         let Some(separator) = line.find(": ") else {
             continue;
         };
@@ -110,6 +123,9 @@ fn summary_rows(frame: &AskUserAnswerFrame, headers: &[String]) -> Vec<String> {
             }
         }
     }
+    if cancelled_at.is_some() {
+        answers.insert(0, "↳ (cancelled)".to_string());
+    }
     if answers.is_empty() {
         fallback_headers
             .iter()
@@ -136,7 +152,11 @@ impl AskUserAnswerChip {
     ) -> Self {
         let rows = summary_rows(frame, headers)
             .into_iter()
-            .map(|row| WHITESPACE_RUN.replace_all(&strip_terminal_sequences(&row), " ").into_owned())
+            .map(|row| {
+                WHITESPACE_RUN
+                    .replace_all(&strip_terminal_sequences(&row), " ")
+                    .into_owned()
+            })
             .collect();
         Self {
             rows,
@@ -194,5 +214,36 @@ impl Component for AskUserAnswerChip {
 
     fn dispose(&mut self) {
         self.full_body.borrow_mut().dispose();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn summary_rows_handles_normal_and_cancelled_frames() {
+        // Normal frame
+        let normal_frame = AskUserAnswerFrame {
+            request_id: "req1".into(),
+            body: "Option: Alpha\nUnanswered: Other".into(),
+        };
+        let rows = summary_rows(&normal_frame, &["Option".into()]);
+        assert_eq!(rows, vec!["↳ Option: Alpha", "↳ Other: (no answer)"]);
+
+        // Cancelled frame with pre-cancel failure text
+        let cancelled_body = format!(
+            "Some pre-cancel failure warning: ignore this\n{}\nChoice: Beta\nUnanswered: Gamma",
+            maho_ext_api::CANCELLED_BY_USER
+        );
+        let cancelled_frame = AskUserAnswerFrame {
+            request_id: "req2".into(),
+            body: cancelled_body,
+        };
+        let rows = summary_rows(&cancelled_frame, &["Choice".into()]);
+        assert_eq!(
+            rows,
+            vec!["↳ (cancelled)", "↳ Choice: Beta", "↳ Gamma: (no answer)"]
+        );
     }
 }

@@ -88,9 +88,6 @@ fn given_live_pid_with_different_process_start_when_acquisition_attempted_then_r
     let mut reused_pid_owner =
         create_lock_record("memory-write", CreateLockRecordOptions::default()).unwrap();
     let actual_start = get_process_start_identity(reused_pid_owner.pid);
-    #[cfg(target_os = "windows")]
-    assert!(actual_start.is_none());
-    #[cfg(not(target_os = "windows"))]
     assert!(actual_start.is_some());
     let actual_scheme = actual_start
         .as_deref()
@@ -105,15 +102,6 @@ fn given_live_pid_with_different_process_start_when_acquisition_attempted_then_r
 
     // #when
     let successor = create_lock_record("memory-write", CreateLockRecordOptions::default()).unwrap();
-    if cfg!(target_os = "windows") {
-        let error =
-            acquire_lock(&lock_path, &successor, &AcquireLockOptions::default()).unwrap_err();
-        match error {
-            AcquireLockError::Contention(c) => assert_eq!(c.owner, Some(reused_pid_owner)),
-            other => panic!("expected contention error on windows, got {other:?}"),
-        }
-        return;
-    }
     acquire_lock(&lock_path, &successor, &AcquireLockOptions::default()).unwrap();
 
     // #then

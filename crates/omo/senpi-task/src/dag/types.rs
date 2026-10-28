@@ -66,17 +66,19 @@ pub enum DagNodeState {
     Blocked,
     Scheduled,
     Running,
+    Paused,
     Completed,
     Failed,
     Cancelled,
     Skipped,
 }
 
-pub const DAG_NODE_STATES: [DagNodeState; 8] = [
+pub const DAG_NODE_STATES: [DagNodeState; 9] = [
     DagNodeState::Pending,
     DagNodeState::Blocked,
     DagNodeState::Scheduled,
     DagNodeState::Running,
+    DagNodeState::Paused,
     DagNodeState::Completed,
     DagNodeState::Failed,
     DagNodeState::Cancelled,
@@ -90,6 +92,7 @@ impl DagNodeState {
             Self::Blocked => "blocked",
             Self::Scheduled => "scheduled",
             Self::Running => "running",
+            Self::Paused => "paused",
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
@@ -100,7 +103,7 @@ impl DagNodeState {
     pub fn is_terminal(self) -> bool {
         match self {
             Self::Completed | Self::Failed | Self::Cancelled | Self::Skipped => true,
-            Self::Pending | Self::Blocked | Self::Scheduled | Self::Running => false,
+            Self::Pending | Self::Blocked | Self::Scheduled | Self::Running | Self::Paused => false,
         }
     }
 }
@@ -192,10 +195,11 @@ pub enum DagNodeErrorCode {
     TaskCancelled,
     ResumeTaskMissing,
     ResumeTaskOrphaned,
+    LostWhilePaused,
     JournalCorrupt,
 }
 
-pub const DAG_NODE_ERROR_CODES: [DagNodeErrorCode; 11] = [
+pub const DAG_NODE_ERROR_CODES: [DagNodeErrorCode; 12] = [
     DagNodeErrorCode::PlanUnresolved,
     DagNodeErrorCode::DepthDenied,
     DagNodeErrorCode::StartFailed,
@@ -206,6 +210,7 @@ pub const DAG_NODE_ERROR_CODES: [DagNodeErrorCode; 11] = [
     DagNodeErrorCode::TaskCancelled,
     DagNodeErrorCode::ResumeTaskMissing,
     DagNodeErrorCode::ResumeTaskOrphaned,
+    DagNodeErrorCode::LostWhilePaused,
     DagNodeErrorCode::JournalCorrupt,
 ];
 
@@ -317,8 +322,17 @@ pub struct DagBottleneck {
     pub blocked_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DagRunPause {
+    pub reason: String,
+    pub pause_seq: u64,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DagNodeCounts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<usize>,
     pub total: usize,
     pub pending: usize,
     pub blocked: usize,
@@ -377,6 +391,8 @@ pub struct DagRunSnapshot {
     pub bottlenecks: Vec<DagBottleneck>,
     pub diagnostics: Vec<DagDiagnostic>,
     pub counts: DagNodeCounts,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause: Option<DagRunPause>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amend_history: Option<Vec<AmendRecord>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -444,7 +460,7 @@ pub const DAG_NODE_TRANSITION_REASONS: [DagNodeTransitionReason; 13] = [
     DagNodeTransitionReason::Revived,
 ];
 
-pub const DAG_RUN_EVENT_TYPES: [&str; 17] = [
+pub const DAG_RUN_EVENT_TYPES: [&str; 26] = [
     "dag.run.created",
     "dag.run.started",
     "dag.run.paused",
@@ -462,9 +478,75 @@ pub const DAG_RUN_EVENT_TYPES: [&str; 17] = [
     "dag.definition.amended",
     "dag.diagnostic.added",
     "dag.stream.overflow",
+    "dag.guidance.added",
+    "dag.guidance.edited",
+    "dag.guidance.removed",
+    "dag.guidance.dispatching",
+    "dag.guidance.delivered",
+    "dag.node.cancel_requested",
+    "dag.node.retry-staged",
+    "dag.node.pause-recovered",
+    "dag.node.pause-lost",
 ];
 
-/// The journaled payload union: exactly 17 members, every one written with a WAL seq.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuidanceState {
+    Draft,
+    Dispatching,
+    Delivered,
+    Removed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GuidanceScope {
+    Run,
+    Node {
+        #[serde(rename = "nodeId")]
+        node_id: DagNodeId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuidanceDelivery {
+    pub task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Guidance {
+    pub id: String,
+    pub revision: u64,
+    pub scope: GuidanceScope,
+    pub text: String,
+    pub state: GuidanceState,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_at: Option<String>,
+    #[serde(default)]
+    pub deliveries: Vec<GuidanceDelivery>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuidanceErrorCode {
+    NotFound,
+    Frozen,
+    DuplicateId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("guidance error: {code:?}")]
+pub struct GuidanceError {
+    pub code: GuidanceErrorCode,
+}
+
+pub use crate::pause::admission_barrier::ResumeCredential;
+
+/// The journaled payload union; every member is written to the WAL with a WAL seq.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum DagRunEventPayload {
@@ -482,6 +564,8 @@ pub enum DagRunEventPayload {
     RunPaused {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        #[serde(rename = "pauseSeq", default, skip_serializing_if = "Option::is_none")]
+        pause_seq: Option<u64>,
     },
     #[serde(rename = "dag.run.resumed")]
     RunResumed { generation: u64 },
@@ -565,6 +649,24 @@ pub enum DagRunEventPayload {
         dropped_count: u64,
         recover_after_seq: u64,
     },
+    #[serde(rename = "dag.guidance.added")]
+    GuidanceAdded { guidance: Guidance },
+    #[serde(rename = "dag.guidance.edited")]
+    GuidanceEdited { guidance: Guidance },
+    #[serde(rename = "dag.guidance.removed")]
+    GuidanceRemoved { guidance: Guidance },
+    #[serde(rename = "dag.guidance.dispatching")]
+    GuidanceDispatching { guidance: Guidance },
+    #[serde(rename = "dag.guidance.delivered")]
+    GuidanceDelivered { guidance: Guidance },
+    #[serde(rename = "dag.node.cancel_requested", rename_all = "camelCase")]
+    NodeCancelRequested { node_id: DagNodeId },
+    #[serde(rename = "dag.node.retry-staged", rename_all = "camelCase")]
+    NodeRetryStaged { node_ids: Vec<DagNodeId> },
+    #[serde(rename = "dag.node.pause-recovered", rename_all = "camelCase")]
+    NodePauseRecovered { node_id: DagNodeId, child_seq: u64 },
+    #[serde(rename = "dag.node.pause-lost", rename_all = "camelCase")]
+    NodePauseLost { node_id: DagNodeId, error: DagNodeError },
 }
 
 /// The discriminator of a [`DagRunEventPayload`].
@@ -587,6 +689,15 @@ pub enum DagRunEventType {
     DefinitionAmended,
     DiagnosticAdded,
     StreamOverflow,
+    GuidanceAdded,
+    GuidanceEdited,
+    GuidanceRemoved,
+    GuidanceDispatching,
+    GuidanceDelivered,
+    NodeCancelRequested,
+    NodeRetryStaged,
+    NodePauseRecovered,
+    NodePauseLost,
 }
 
 impl DagRunEventType {
@@ -609,6 +720,15 @@ impl DagRunEventType {
             Self::DefinitionAmended => "dag.definition.amended",
             Self::DiagnosticAdded => "dag.diagnostic.added",
             Self::StreamOverflow => "dag.stream.overflow",
+            Self::GuidanceAdded => "dag.guidance.added",
+            Self::GuidanceEdited => "dag.guidance.edited",
+            Self::GuidanceRemoved => "dag.guidance.removed",
+            Self::GuidanceDispatching => "dag.guidance.dispatching",
+            Self::GuidanceDelivered => "dag.guidance.delivered",
+            Self::NodeCancelRequested => "dag.node.cancel_requested",
+            Self::NodeRetryStaged => "dag.node.retry-staged",
+            Self::NodePauseRecovered => "dag.node.pause-recovered",
+            Self::NodePauseLost => "dag.node.pause-lost",
         }
     }
 }
@@ -633,6 +753,15 @@ impl DagRunEventPayload {
             Self::DefinitionAmended { .. } => DagRunEventType::DefinitionAmended,
             Self::DiagnosticAdded { .. } => DagRunEventType::DiagnosticAdded,
             Self::StreamOverflow { .. } => DagRunEventType::StreamOverflow,
+            Self::GuidanceAdded { .. } => DagRunEventType::GuidanceAdded,
+            Self::GuidanceEdited { .. } => DagRunEventType::GuidanceEdited,
+            Self::GuidanceRemoved { .. } => DagRunEventType::GuidanceRemoved,
+            Self::GuidanceDispatching { .. } => DagRunEventType::GuidanceDispatching,
+            Self::GuidanceDelivered { .. } => DagRunEventType::GuidanceDelivered,
+            Self::NodeCancelRequested { .. } => DagRunEventType::NodeCancelRequested,
+            Self::NodeRetryStaged { .. } => DagRunEventType::NodeRetryStaged,
+            Self::NodePauseRecovered { .. } => DagRunEventType::NodePauseRecovered,
+            Self::NodePauseLost { .. } => DagRunEventType::NodePauseLost,
         }
     }
 }

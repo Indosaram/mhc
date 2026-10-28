@@ -109,7 +109,8 @@ impl TaskExecute<'_> {
             let isolated = item
                 .isolated
                 .or_else(|| {
-                    self.deps.tool
+                    self.deps
+                        .tool
                         .omo_config
                         .task
                         .as_ref()
@@ -177,11 +178,14 @@ impl TaskExecute<'_> {
                 &parent_session_id,
                 deps.tool,
                 &ctx.cwd,
+                ctx.model.as_ref(),
             );
             if let Some(skills) = skills {
                 lock(&skill_summaries).insert(item_key(item), skills);
             }
-            Ok(deps.tool.start_task(deps.manager, &spec, item_params.tools.as_deref()))
+            Ok(deps
+                .tool
+                .start_task(deps.manager, &spec, item_params.tools.as_deref()))
         };
         let skill_summary_for = |item: &ResolvedSpawnItem| -> Option<TaskSkillSummary> {
             lock(&skill_summaries).get(&item_key(item)).cloned()

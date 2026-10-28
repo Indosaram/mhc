@@ -2,7 +2,7 @@
 //!
 //! Ports senpi `src/extensions/index.ts` (`builtInExtensions`) and
 //! `src/core/extensions/builtin/index.ts` (`globalDefaultExtensionIds`, the ordered
-//! `builtinExtensions` list). The pinned id order is data and is preserved exactly; every id is
+//! `builtinExtensions` list). Search routing runs before provider payload injection; every id is
 //! bound to the real constructor of its owning crate when that constructor exists without host
 //! state. Ids whose constructor needs per-session host state are listed in
 //! [`deferred_builtin_extensions`] / [`deferred_user_extensions`] with the exact contract.
@@ -22,8 +22,8 @@ use maho_ext_llama::llama;
 /// senpi `globalDefaultExtensionIds` (`core/extensions/builtin/index.ts`).
 pub const GLOBAL_DEFAULT_EXTENSION_IDS: [&str; 4] = ["diff", "files", "prompt-url-widget", "tps"];
 
-/// Pinned `builtinExtensions` id order (`core/extensions/builtin/index.ts`).
-pub const BUILTIN_EXTENSION_IDS: [&str; 44] = [
+/// Builtin order, with search fallback routing before provider payload injection.
+pub const BUILTIN_EXTENSION_IDS: [&str; 45] = [
     "loop-guard",
     "hooks",
     "permission-system",
@@ -35,6 +35,7 @@ pub const BUILTIN_EXTENSION_IDS: [&str; 44] = [
     "prompt-preset",
     "todowrite",
     "redraws",
+    "websearch",
     "anthropic-web-search",
     "anthropic-bash",
     "openai-web-search",
@@ -49,7 +50,6 @@ pub const BUILTIN_EXTENSION_IDS: [&str; 44] = [
     "history-search",
     "help",
     "import-repro",
-    "websearch",
     "webfetch",
     "video-in",
     "look-at",
@@ -59,6 +59,7 @@ pub const BUILTIN_EXTENSION_IDS: [&str; 44] = [
     "loop",
     "cache-keepalive",
     "handoff-hint",
+    "relocate-session",
     "ttsr",
     "btw",
     "account",
@@ -118,6 +119,9 @@ fn model_fallback() -> Box<dyn Extension> {
                 == Some(maho_core::auth_storage::CredentialKind::Oauth)
         }),
     })
+}
+fn relocate_session() -> Box<dyn Extension> {
+    Box::new(maho_ext_relocate_session::RelocateSession)
 }
 fn recommended_models() -> Box<dyn Extension> {
     Box::new(maho_ext_recommended_models::RecommendedModels)
@@ -193,7 +197,17 @@ fn loop_extension() -> Box<dyn Extension> {
 fn websearch() -> Box<dyn Extension> {
     let home = std::path::PathBuf::from(maho_core::config::home_dir());
     let provider_native_bypass: maho_ext_websearch::index::ProviderNativeBypass =
-        Arc::new(|_| false);
+        Arc::new(|model| {
+            if maho_ext_anthropic_web_search::supports_native_anthropic_web_search(model) {
+                return maho_ext_anthropic_web_search::parse_enabled(
+                    std::env::var("PI_ANTHROPIC_WEB_SEARCH").ok().as_deref(),
+                );
+            }
+            maho_ext_openai_web_search::supports_native_openai_web_search(model)
+                && maho_ext_openai_web_search::parse_enabled(
+                    std::env::var("PI_OPENAI_WEB_SEARCH").ok().as_deref(),
+                )
+        });
     Box::new(maho_ext_websearch::WebsearchExtension {
         home,
         provider_native_bypass,
@@ -215,7 +229,7 @@ fn config_reload() -> Box<dyn Extension> {
 }
 
 /// Linked builtin factories, in the pinned `builtinExtensions` relative order.
-static BUILTIN_FACTORIES: [NativeExtension; 26] = [
+static BUILTIN_FACTORIES: [NativeExtension; 27] = [
     NativeExtension {
         id: "loop-guard",
         crate_name: "maho-ext-loop-guard",
@@ -240,6 +254,11 @@ static BUILTIN_FACTORIES: [NativeExtension; 26] = [
         id: "prompt-preset",
         crate_name: "maho-ext-prompt-preset",
         factory: prompt_preset,
+    },
+    NativeExtension {
+        id: "websearch",
+        crate_name: "maho-ext-websearch",
+        factory: websearch,
     },
     NativeExtension {
         id: "anthropic-web-search",
@@ -292,11 +311,6 @@ static BUILTIN_FACTORIES: [NativeExtension; 26] = [
         factory: help,
     },
     NativeExtension {
-        id: "websearch",
-        crate_name: "maho-ext-websearch",
-        factory: websearch,
-    },
-    NativeExtension {
         id: "webfetch",
         crate_name: "maho-ext-webfetch",
         factory: webfetch,
@@ -325,6 +339,11 @@ static BUILTIN_FACTORIES: [NativeExtension; 26] = [
         id: "loop",
         crate_name: "maho-ext-loop",
         factory: loop_extension,
+    },
+    NativeExtension {
+        id: "relocate-session",
+        crate_name: "maho-ext-relocate-session",
+        factory: relocate_session,
     },
     NativeExtension {
         id: "ttsr",

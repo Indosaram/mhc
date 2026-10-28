@@ -1,3 +1,5 @@
+pub type ListenerCallback = std::sync::Arc<std::sync::Mutex<Option<Box<dyn Fn(serde_json::Value) + Send + Sync>>>>;
+use crate::session_release_interrupt::BoxFuture;
 use crate::session_worker_protocol::{SESSION_WORKER_LIMITS, WorkerDisplay};
 pub fn apply_display(display: &mut WorkerDisplay, next: WorkerDisplay) -> bool {
     if next.revision < display.revision {
@@ -227,6 +229,39 @@ fn publish_output(
         "session_worker_output_denied",
     );
 }
+/// senpi `WorkerEventWriter.settleGrantDialog`: the grant dialog for `id` settled in this isolate, so the host may
+/// stop waiting for an answer and forget the connection it routed it to.
+pub fn publish_grant_settled(
+    publish: &dyn Fn(serde_json::Value),
+    id: &str,
+) {
+    publish(serde_json::json!({"type": "security_grant_settled", "id": id}));
+}
+
+/// The select a session's MCP grant flow asks through (senpi `ExtensionUIContext["select"]`).
+pub type GrantSelect =
+    std::sync::Arc<dyn Fn(&str, Vec<String>) -> BoxFuture<'static, Option<String>> + Send + Sync>;
+
+/// senpi `WorkerEventWriter.bindSecurityPresentations`: registers this connection's MCP grant presentation and mirrors
+/// every notice snapshot to the host, which owns presentation and replay. The returned hook detaches both, in the
+/// order the host stops trusting either.
+pub fn bind_security_presentations(
+    durable_id: &str,
+    attach_grant: impl FnOnce(&str, GrantSelect) -> Box<dyn Fn() + Send + Sync>,
+    subscribe_notices: impl FnOnce(Box<dyn Fn(serde_json::Value) + Send + Sync>) -> Box<dyn Fn() + Send + Sync>,
+    select: GrantSelect,
+    publish: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
+) -> Box<dyn Fn() + Send + Sync> {
+    let detach = attach_grant(durable_id, select);
+    let stop = subscribe_notices(Box::new(move |snapshot| {
+        publish(serde_json::json!({"type": "security_notice_snapshot", "snapshot": snapshot}));
+    }));
+    Box::new(move || {
+        detach();
+        stop();
+    })
+}
+
 impl WorkerState {
     /// Takes the roles the host says a connection declared, unless this isolate already has its own (senpi#3811).
     fn adopt_roles(&self, connection: Option<&str>, roles: Option<&[String]>) {
@@ -398,8 +433,11 @@ impl WorkerState {
                     return Err("session_closing".into());
                 };
                 self.adopt_roles(connection.as_deref(), roles.as_deref());
-                WORKER_CONNECTION
-                    .scope(connection, binding.handle(&command))
+                crate::multi_session_host::CURRENT_CONNECTION
+                    .scope(
+                        connection.clone(),
+                        WORKER_CONNECTION.scope(connection, binding.handle(&command)),
+                    )
                     .await?;
                 if let Some(session) = self.current() {
                     publish_snapshot(&self.port, session.runtime.session(), false);
@@ -420,6 +458,21 @@ impl WorkerState {
                 Ok(Some(W::ControlDone {
                     control: crate::session_worker_protocol::WorkerControlKind::CancelUi,
                 }))
+            }
+            H::CancelGrant { id } => {
+                // `binding?.handle({ type: "extension_ui_response", id, cancelled: true })`: the dialog nobody can
+                // present is answered cancelled here, so the session's grant flow resolves instead of hanging.
+                let binding = lock(&self.binding).clone();
+                if let Some(binding) = binding {
+                    binding
+                        .handle(&serde_json::json!({
+                            "type": "extension_ui_response",
+                            "id": id,
+                            "cancelled": true
+                        }))
+                        .await?;
+                }
+                Ok(None)
             }
             H::Close => {
                 self.closing
@@ -589,5 +642,64 @@ mod tests {
             Err("session_worker_snapshot_limit")
         );
         assert!(check_output_size(&serde_json::json!({}), false).is_ok());
+    }
+    #[test]
+    fn binding_security_presentations_mirrors_notices_and_detaches_both() {
+        let attached = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let listener: ListenerCallback =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let published = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let detached = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let publish = {
+            let published = std::sync::Arc::clone(&published);
+            std::sync::Arc::new(move |record| published.lock().unwrap().push(record))
+                as std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>
+        };
+        let detach = bind_security_presentations(
+            "durable-1",
+            {
+                let attached = std::sync::Arc::clone(&attached);
+                let detached = std::sync::Arc::clone(&detached);
+                move |durable_id: &str, _select| -> Box<dyn Fn() + Send + Sync> {
+                    attached.lock().unwrap().push(durable_id.to_owned());
+                    Box::new(move || {
+                        detached.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    })
+                }
+            },
+            {
+                let listener = std::sync::Arc::clone(&listener);
+                let stopped = std::sync::Arc::clone(&stopped);
+                move |subscribe: Box<dyn Fn(serde_json::Value) + Send + Sync>|
+                    -> Box<dyn Fn() + Send + Sync> {
+                    *listener.lock().unwrap() = Some(subscribe);
+                    Box::new(move || {
+                        stopped.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    })
+                }
+            },
+            std::sync::Arc::new(|_: &str, _: Vec<String>| {
+                Box::pin(async { None }) as BoxFuture<'static, Option<String>>
+            }),
+            publish,
+        );
+        // The grant presentation is registered under the durable id the host routes by.
+        assert_eq!(*attached.lock().unwrap(), vec!["durable-1".to_owned()]);
+        // Every notice snapshot the session publishes crosses to the host, which owns presentation.
+        {
+            let listener = listener.lock().unwrap();
+            let listener = listener.as_ref().expect("the notice stream is subscribed");
+            listener(serde_json::json!({"generation":1,"notices":[]}));
+        }
+        assert_eq!(
+            *published.lock().unwrap(),
+            vec![serde_json::json!({
+                "type":"security_notice_snapshot","snapshot":{"generation":1,"notices":[]}
+            })]
+        );
+        detach();
+        assert_eq!(detached.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(stopped.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

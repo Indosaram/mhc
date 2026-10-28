@@ -170,6 +170,13 @@ pub fn read_skill_markdown_source(file_path: &str) -> Result<String, std::io::Er
     Ok(decode_frontmatter_source(&bytes))
 }
 
+#[derive(Clone, Default)]
+pub struct SkillWalkOptions {
+    pub provenance: Option<crate::skill_access::SkillProvenance>,
+    pub allowed_set: Option<crate::skill_access::SkillAllowedSet>,
+    pub ancestry: Option<std::collections::BTreeSet<String>>,
+}
+
 /// `collectSkillEntries`.
 pub fn collect_skill_entries(
     dir: &str,
@@ -177,10 +184,38 @@ pub fn collect_skill_entries(
     ignore_matcher: Option<&IgnoreMatcher>,
     root_dir: Option<&str>,
 ) -> Vec<String> {
+    collect_skill_entries_with_options(dir, mode, ignore_matcher, root_dir, &SkillWalkOptions::default())
+}
+
+pub fn collect_skill_entries_with_options(
+    dir: &str,
+    mode: SkillDiscoveryMode,
+    ignore_matcher: Option<&IgnoreMatcher>,
+    root_dir: Option<&str>,
+    options: &SkillWalkOptions,
+) -> Vec<String> {
     let mut entries: Vec<String> = Vec::new();
     if !Path::new(dir).exists() {
         return entries;
     }
+
+    if let Some(ref prov) = options.provenance {
+        let allowed = options.allowed_set.as_ref().cloned().unwrap_or_default();
+        if let Err(e) = crate::skill_access::authorize_skill_path(Path::new(dir), Some(prov), &allowed, true) {
+            let _ = e;
+            return vec![dir.to_string()];
+        }
+    }
+
+    let canonical = std::fs::canonicalize(dir)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| dir.to_string());
+    if let Some(ref ancestry) = options.ancestry
+        && ancestry.contains(&canonical) {
+            return entries;
+        }
+    let mut descendants = options.ancestry.clone().unwrap_or_default();
+    descendants.insert(canonical);
 
     let root = root_dir.unwrap_or(dir).to_string();
     let mut matcher = ignore_matcher.cloned().unwrap_or_default();
@@ -238,7 +273,15 @@ pub fn collect_skill_entries(
             continue;
         }
 
-        let nested = collect_skill_entries(&full_path.to_string_lossy(), mode, Some(&matcher), Some(&root));
+        let mut child_options = options.clone();
+        child_options.ancestry = Some(descendants.clone());
+        let nested = collect_skill_entries_with_options(
+            &full_path.to_string_lossy(),
+            mode,
+            Some(&matcher),
+            Some(&root),
+            &child_options,
+        );
         entries.extend(nested);
     }
 
@@ -267,6 +310,14 @@ fn directory_and_file(path: &Path) -> Option<(bool, bool)> {
 /// `collectAutoSkillEntries`.
 pub fn collect_auto_skill_entries(dir: &str, mode: SkillDiscoveryMode) -> Vec<String> {
     collect_skill_entries(dir, mode, None, None)
+}
+
+pub fn collect_auto_skill_entries_with_options(
+    dir: &str,
+    mode: SkillDiscoveryMode,
+    options: &SkillWalkOptions,
+) -> Vec<String> {
+    collect_skill_entries_with_options(dir, mode, None, None, options)
 }
 
 #[cfg(test)]

@@ -24,15 +24,15 @@ use maho_tui::tui::{
 use crate::theme::{Theme, ThemeColor};
 
 use super::ask_user_countdown::AskUserCountdown;
-use super::ask_user_question_mouse::{is_question_mouse_action, AskUserQuestionTabs};
+use super::ask_user_question_mouse::{AskUserQuestionTabs, is_question_mouse_action};
 use super::ask_user_question_render::{
     render_comment_label, render_hints_line, render_notice, render_own_answer_label,
     render_question_line, render_question_list, render_submit_line, render_submit_summary,
     render_tab_labels, render_title,
 };
 use super::ask_user_question_state::{
-    format_countdown_label, AskUserQuestionState, QuestionAnswer, QuestionDraft, QuestionFocus,
-    QuestionRequest, QuestionResponse, QuestionStatus, NOT_ANSWERED_NOTICE,
+    AskUserQuestionState, NOT_ANSWERED_NOTICE, QuestionAnswer, QuestionDraft, QuestionFocus,
+    QuestionRequest, QuestionResponse, QuestionStatus, format_countdown_label,
 };
 use maho_tui::components::mouse_region::MouseRegion;
 
@@ -141,7 +141,9 @@ impl AskUserQuestionComponent {
         let pending: Rc<RefCell<Vec<AskUserAction>>> = Rc::new(RefCell::new(Vec::new()));
 
         let mut root = Container::new();
-        root.add_child(component_child(AskUserBorder { theme: options.theme.clone() }));
+        root.add_child(component_child(AskUserBorder {
+            theme: options.theme.clone(),
+        }));
         root.add_child(text_child_spacer(1));
         root.add_child(Rc::clone(&title_text) as Rc<RefCell<dyn Component>>);
         root.add_child(Rc::clone(&tab_text) as Rc<RefCell<dyn Component>>);
@@ -165,7 +167,9 @@ impl AskUserQuestionComponent {
         root.add_child(submit_region);
         root.add_child(Rc::clone(&hints_text) as Rc<RefCell<dyn Component>>);
         root.add_child(text_child_spacer(1));
-        root.add_child(component_child(AskUserBorder { theme: options.theme.clone() }));
+        root.add_child(component_child(AskUserBorder {
+            theme: options.theme.clone(),
+        }));
 
         let mut component = Self {
             state,
@@ -300,7 +304,12 @@ impl AskUserQuestionComponent {
     pub fn emit_progress(&mut self) {
         let mut draft = self.state.refresh_draft();
         if self.state.focus == QuestionFocus::OwnAnswer {
-            let live = self.own_answer_input.borrow().get_value().trim().to_string();
+            let live = self
+                .own_answer_input
+                .borrow()
+                .get_value()
+                .trim()
+                .to_string();
             if !live.is_empty() {
                 draft.answers.insert(
                     self.state.active_question().id.clone(),
@@ -325,7 +334,10 @@ impl AskUserQuestionComponent {
             countdown.dispose();
         }
         self.state.comment = Some(self.comment_input.borrow().get_value().to_string());
-        let response = self.state.build_response(status, auto_resolved_after_ms);
+        let mut response = self.state.build_response(status, auto_resolved_after_ms);
+        if status == QuestionStatus::Cancelled {
+            response.cancel_origin = Some("user".to_string());
+        }
         (self.done)(response);
     }
 
@@ -394,7 +406,12 @@ impl AskUserQuestionComponent {
             .active_question()
             .options
             .iter()
-            .map(|option| option.description.as_ref().is_some_and(|text| !text.is_empty()))
+            .map(|option| {
+                option
+                    .description
+                    .as_ref()
+                    .is_some_and(|text| !text.is_empty())
+            })
             .collect();
         {
             let mut list = self.list_container.borrow_mut();
@@ -409,7 +426,11 @@ impl AskUserQuestionComponent {
                 } else if option_index < option_count {
                     let index = option_index;
                     option_index += 1;
-                    list.add_child(mouse_region(child, self.pending.clone(), AskUserAction::ClickOption(index)));
+                    list.add_child(mouse_region(
+                        child,
+                        self.pending.clone(),
+                        AskUserAction::ClickOption(index),
+                    ));
                     description = option_descriptions[index];
                 } else {
                     list.add_child(mouse_region(

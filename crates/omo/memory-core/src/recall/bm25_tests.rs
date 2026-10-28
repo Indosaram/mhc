@@ -1,4 +1,7 @@
-use super::{RankedRecallDocument, RecallQueryExpansions, recall_expansion_weights, recall_terms, rank_recall_documents_bm25, tokenize_recall_text};
+use super::{
+    RankedRecallDocument, RecallQueryExpansions, rank_recall_documents_bm25,
+    recall_expansion_weights, recall_term_figures, recall_terms, tokenize_recall_text,
+};
 use crate::recall::provider::RecallDocument;
 use std::collections::BTreeSet;
 
@@ -15,15 +18,33 @@ fn queries(values: &[&str]) -> Vec<String> {
 }
 
 fn paths(ranked: &[RankedRecallDocument]) -> Vec<String> {
-    ranked.iter().map(|entry| entry.document.path.clone()).collect()
+    ranked
+        .iter()
+        .map(|entry| entry.document.path.clone())
+        .collect()
 }
 
 #[test]
 fn given_cjk_runs_when_tokenized_then_they_expand_into_bigrams_and_han_characters() {
-    assert_eq!(tokenize_recall_text("배포절차"), ["배포절차", "배포", "포절", "절차"]);
+    assert_eq!(
+        tokenize_recall_text("배포절차"),
+        ["배포절차", "배포", "포절", "절차"]
+    );
     assert_eq!(
         tokenize_recall_text("記憶検索 メモリ"),
-        ["記憶検索", "記憶", "憶検", "検索", "記", "憶", "検", "索", "メモリ", "メモ", "モリ"]
+        [
+            "記憶検索",
+            "記憶",
+            "憶検",
+            "検索",
+            "記",
+            "憶",
+            "検",
+            "索",
+            "メモリ",
+            "メモ",
+            "モリ"
+        ]
     );
 }
 
@@ -32,7 +53,11 @@ fn given_latin_text_when_tokenized_then_it_is_lowercased_and_kept_as_whole_words
     let tokens = tokenize_recall_text("Rollback The Canary");
     assert_eq!(
         tokens,
-        vec!["rollback".to_string(), "the".to_string(), "canary".to_string()]
+        vec![
+            "rollback".to_string(),
+            "the".to_string(),
+            "canary".to_string()
+        ]
     );
 }
 
@@ -91,11 +116,30 @@ fn given_a_document_holding_every_query_unit_when_widened_then_it_is_lifted_to_t
         related: None,
         note_line: None,
     };
-    let ranked = rank_recall_documents_bm25(
-        &documents,
-        &queries(&["alpha"]),
-        Some(&expansions),
+    let ranked = rank_recall_documents_bm25(&documents, &queries(&["alpha"]), Some(&expansions));
+    assert_eq!(
+        ranked.first().map(|entry| entry.document.path.clone()),
+        Some("b.md".to_string())
     );
-    assert_eq!(ranked.first().map(|entry| entry.document.path.clone()), Some("b.md".to_string()));
     assert!(ranked.first().is_some_and(|entry| entry.full_match));
+}
+
+#[test]
+fn given_an_indexed_document_when_its_figures_are_read_then_they_count_its_term_arrays() {
+    let document = doc("reference/x.md", "x", "y");
+    let _ = rank_recall_documents_bm25(std::slice::from_ref(&document), &queries(&["x"]), None);
+
+    let figures = recall_term_figures([&document]);
+
+    assert_eq!(figures.term_array_bytes, 16);
+    assert!(figures.vocabulary_terms >= 2);
+}
+
+#[test]
+fn given_a_document_never_indexed_when_its_figures_are_read_then_it_adds_no_term_bytes() {
+    let document = doc("reference/never.md", "n", "n");
+
+    let figures = recall_term_figures([&document]);
+
+    assert_eq!(figures.term_array_bytes, 0);
 }

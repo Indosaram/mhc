@@ -9,7 +9,6 @@ fn shared_host_is_off_unless_interactive_and_opted_in() {
     assert!(!should_join_shared_host(AppMode::Print, true, true));
     assert!(!should_join_shared_host(AppMode::Rpc, true, true));
     assert!(!should_join_shared_host(AppMode::Json, true, true));
-    assert!(!should_join_shared_host(AppMode::AppServer, true, true));
     assert!(!should_join_shared_host(AppMode::Interactive, false, false));
     assert!(should_join_shared_host(AppMode::Interactive, true, false));
     assert!(should_join_shared_host(AppMode::Interactive, false, true));
@@ -58,7 +57,7 @@ fn session_profile_keeps_the_shared_host_off_for_a_classic_launch() {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().to_string_lossy().into_owned();
     let settings = maho_core::settings_manager::SettingsManager::create(&dir, &dir, &dir, false);
-    for mode in [AppMode::Print, AppMode::Rpc, AppMode::Json, AppMode::AppServer] {
+    for mode in [AppMode::Print, AppMode::Rpc, AppMode::Json] {
         let profile = session_profile(mode, &settings, None, None);
         assert!(!profile.shared_host_enabled, "{mode:?}");
         assert_eq!(profile.session_kind, maho_ext_api::SessionKind::Interactive);

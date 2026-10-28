@@ -160,6 +160,9 @@ fn write(
             std::fs::create_dir_all(repo.dir.join("system")).map_err(|error| error.to_string())?;
             let rendered = render_agreements_file(existing.as_deref(), &next)
                 .map_err(|error| format!("{error:?}"))?;
+            let message = if memory_core::tools::claim_frontmatter::stripped_legacy_user_header(existing.as_deref(), &rendered) {
+                format!("{message}\n{}: {AGREEMENTS_PATH}", memory_core::tools::claim_frontmatter::PROVENANCE_STRIPPED_TRAILER)
+            } else { message.clone() };
             std::fs::write(repo.dir.join(AGREEMENTS_PATH), rendered)
                 .map_err(|error| error.to_string())?;
             let committed = repo
@@ -287,6 +290,16 @@ mod tests {
         let response = handle_agreements(&fake.deps, &context.ctx, "list").await;
         assert!(response.is_error());
         assert_eq!(response.text, NOT_INITIALIZED);
+    }
+
+    #[tokio::test]
+    async fn stripped_legacy_header_is_recorded_in_commit_provenance() {
+        // Legacy receipts use JSON-encoded string scalars, as in upstream
+        // memory-core/src/facts/extraction-legacy-header.test.ts.
+        let (_root,identity)=temp_identity();seeded_repo(&identity,vec![seed("system/agreements.md","---\ndescription: Agreements\nprovenance: \"user said yes\"\n---\n\n")]);
+        let fake=fake_deps(Some(identity.clone()),FakeDepsOverrides::default());let context=fake_command_context(FakeContextOptions::default());
+        let response=handle_agreements(&fake.deps,&context.ctx,"add never force push").await;assert!(!response.is_error(),"{}",response.text);
+        let repo=super::open_repo(&fake.deps,&identity).unwrap();let history=repo.log(None).unwrap();assert_eq!(history[0].trailers.get("Omo-Provenance-Stripped").map(String::as_str),Some(AGREEMENTS_PATH));
     }
 
     #[tokio::test]

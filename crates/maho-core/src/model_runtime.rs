@@ -525,6 +525,8 @@ struct AvailabilityState {
     /// Bumped whenever `snapshot` changes, so readers can recompute derived values (the footer's
     /// provider count) on change instead of on every frame.
     revision: u64,
+    busy_retries: u32,
+    busy_retry_pending: bool,
 }
 
 #[derive(Clone)]
@@ -548,6 +550,7 @@ pub struct ModelRuntime {
         Arc<std::sync::Mutex<Option<crate::settings_manager::ProviderSettingsSubscription>>>,
     /// senpi `poolStatePath` repository: the credential-pool sidecar written by rotating requests.
     pool_repository: Arc<crate::credential_pool::state_store::CredentialSlotRepository>,
+    outer_slot_state_retired: Arc<tokio::sync::Mutex<HashSet<String>>>,
     model_network_enabled: bool,
     model_refresh_timeout_ms: u64,
 }
@@ -685,6 +688,7 @@ impl ModelRuntime {
             provider_settings,
             provider_settings_subscription: Arc::new(std::sync::Mutex::new(None)),
             pool_repository,
+            outer_slot_state_retired: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             model_network_enabled,
             model_refresh_timeout_ms,
             availability: Arc::new(RwLock::new(AvailabilityState::default())),
@@ -897,13 +901,33 @@ impl ModelRuntime {
             auth,
         };
         guard.initialized = true;
+        guard.busy_retries = 0;
         guard.revision += 1;
         if error_seq == guard.error_seq {
             guard.error = None;
         }
         Ok(())
     }
-    async fn queue_availability_refresh(&self, signal: Option<AbortSignal>) -> Result<(), ModelsError> {
+    fn schedule_busy_availability_retry(&self) {
+        let delay = {
+            let mut state = self.availability_state();
+            if state.busy_retry_pending || state.busy_retries >= 5 { return; }
+            let delay = 250_u64 << state.busy_retries;
+            state.busy_retries += 1;
+            state.busy_retry_pending = true;
+            delay
+        };
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            runtime.availability_state().busy_retry_pending = false;
+            // The pass records its error before the retry task returns.
+            let _ = runtime.queue_availability_refresh(None).await;
+        });
+    }
+    fn queue_availability_refresh(&self, signal: Option<AbortSignal>) -> BoxFuture<'_, Result<(), ModelsError>> {
+        Box::pin(async move {
+
         let (seq, error_seq) = {
             let mut guard = self.availability_state();
             guard.refresh_seq += 1;
@@ -923,7 +947,11 @@ impl ModelRuntime {
                 guard.error = Some(error.clone());
             }
         }
+        if result.as_ref().is_err_and(|error| error.message.to_ascii_lowercase().contains("busy")) {
+            self.schedule_busy_availability_retry();
+        }
         result
+        })
     }
     async fn refresh_provider_availability(
         &self,
@@ -1835,12 +1863,25 @@ impl ModelRuntime {
     /// senpi `couldRotateCredentials`: rotation engages only when nothing pins the request to one
     /// credential (an explicit or runtime key, `credentials.rotation: false`) and the provider can
     /// hold more than one slot.
+    fn owns_account_selection(&self, provider_id: &str) -> bool {
+        self.extensions.read().unwrap_or_else(|p| p.into_inner()).get(provider_id).is_some_and(|provider| provider.owns_account_selection)
+    }
+    async fn retire_outer_slot_state(&self, provider_id: &str) -> Result<(), String> {
+        if !self.owns_account_selection(provider_id) { return Ok(()); }
+        let mut retired = self.outer_slot_state_retired.lock().await;
+        if retired.contains(provider_id) { return Ok(()); }
+        match self.pool_repository.clear_provider(provider_id).await {
+            Ok(_) => { retired.insert(provider_id.into()); Ok(()) },
+            Err(error) if error.to_ascii_lowercase().contains("busy") => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
     fn could_rotate_credentials(
         &self,
         model: &Model,
         request: &maho_ai::types::ProviderRequestOptions,
     ) -> Option<RotationContext> {
-        if request.api_key.is_some() || self.credentials.has_runtime_api_key(&model.provider) {
+        if self.owns_account_selection(&model.provider) || request.api_key.is_some() || self.credentials.has_runtime_api_key(&model.provider) {
             return None;
         }
         let policy = self
@@ -1959,7 +2000,9 @@ impl ModelRuntime {
         let tools = context.tools.clone().unwrap_or_default();
         let semaphores = self.provider_semaphores.clone();
         let rotation = self.could_rotate_credentials(model, &options.request);
+        let runtime = self.clone();
         let inner = Self::lazy_request(model, async move {
+            runtime.retire_outer_slot_state(&original.provider).await?;
             Self::apply_configured_headers(
                 &original,
                 config.as_ref(),
@@ -2031,7 +2074,9 @@ impl ModelRuntime {
         let tools = context.tools.clone().unwrap_or_default();
         let semaphores = self.provider_semaphores.clone();
         let rotation = self.could_rotate_credentials(model, &options.stream.request);
+        let runtime = self.clone();
         let inner = Self::lazy_request(model, async move {
+            runtime.retire_outer_slot_state(&original.provider).await?;
             Self::apply_configured_headers(
                 &original,
                 config.as_ref(),

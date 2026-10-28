@@ -59,6 +59,7 @@ pub fn suspend_session(state: &ChaosState) {
         let _ = engine
             .lifecycle
             .suspend_on_session_shutdown(&crate::lifecycle::SuspendInput {
+                own_task_id: None,
                 parent_session_id: CHAOS_SESSION.to_string(),
                 reason: "quit".to_string(),
             });
@@ -227,6 +228,21 @@ pub fn mass_revive_at_cap(state: &ChaosState) {
             runner_kind: None,
             host_session: None,
             cancel_requested: None,
+            parent_model: None,
+            parent_model_fallback: None,
+            fallback_closing_child: None,
+            start_queued: None,
+            revive_delivery_uncertain: None,
+            prior_runs_cost_usd: None,
+            queued_admission: None,
+            run_pause: None,
+            resumed_run_epoch: None,
+            burnt_epoch: None,
+            fallback_handoff_epoch: None,
+            revival_deferred_reason: None,
+            recovery_deadline_at: None,
+            residency_claim: None,
+            terminal_at: None,
         };
         if terminal {
             record.final_response = Some("already done".to_string());

@@ -347,6 +347,7 @@ impl maho_ext_api::EvalHandleHost for NativeEvalHandleHost {
                     delivered.run_epoch = run_epoch
                 }
                 senpi_task::steering::SendOutcome::Steered { .. }
+                | senpi_task::steering::SendOutcome::Held { .. }
                 | senpi_task::steering::SendOutcome::Queued { .. } => {}
                 senpi_task::steering::SendOutcome::Stale { reason, .. } => {
                     return Err(failure("Stale", &reason));
@@ -624,7 +625,7 @@ impl EvalHandleUpdateStream for HostUpdateStream {
 
 fn task_phase(status: TaskStatus) -> EvalHandlePhase {
     match status {
-        TaskStatus::Pending | TaskStatus::Running => EvalHandlePhase::Pending,
+        TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused => EvalHandlePhase::Pending,
         TaskStatus::Completed => EvalHandlePhase::Succeeded,
         TaskStatus::Error => EvalHandlePhase::Failed,
         TaskStatus::Cancelled | TaskStatus::Interrupted => EvalHandlePhase::Cancelled,

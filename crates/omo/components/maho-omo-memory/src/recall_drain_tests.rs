@@ -37,7 +37,7 @@ fn view(
 }
 
 fn nudge(path: &str, hint: &str) -> RecallNudge {
-    RecallNudge { path: path.into(), hint: hint.into() }
+    RecallNudge { path: path.into(), hint: hint.into(), source: None }
 }
 
 #[test]

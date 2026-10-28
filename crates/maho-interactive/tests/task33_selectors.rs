@@ -688,7 +688,7 @@ fn config_selector_groups_resources_and_toggles_them() {
             ResolvedResource {
                 path: "/home/u/.omo/agent/skills/alpha/SKILL.md".to_owned(),
                 enabled: true,
-                metadata: PathMetadata {
+                metadata: PathMetadata { skill_provenance: None,
                     source: "auto".to_owned(),
                     scope: SourceScope::User,
                     origin: SourceOrigin::TopLevel,
@@ -698,7 +698,7 @@ fn config_selector_groups_resources_and_toggles_them() {
             ResolvedResource {
                 path: "/home/u/.omo/agent/skills/beta/SKILL.md".to_owned(),
                 enabled: false,
-                metadata: PathMetadata {
+                metadata: PathMetadata { skill_provenance: None,
                     source: "auto".to_owned(),
                     scope: SourceScope::User,
                     origin: SourceOrigin::TopLevel,

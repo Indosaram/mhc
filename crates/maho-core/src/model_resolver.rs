@@ -593,6 +593,16 @@ pub enum InitialModelProvenance {
     ProviderDefault,
     FirstAvailable,
 }
+/// senpi `model-resolver.ts` `InitialModelProvenance` string union, as `session_start` carries it.
+pub fn initial_model_provenance_str(provenance: InitialModelProvenance) -> &'static str {
+    match provenance {
+        InitialModelProvenance::Cli => "cli",
+        InitialModelProvenance::Scoped => "scoped",
+        InitialModelProvenance::Settings => "settings",
+        InitialModelProvenance::ProviderDefault => "provider-default",
+        InitialModelProvenance::FirstAvailable => "first-available",
+    }
+}
 pub struct InitialModelResult {
     pub parsed: ParsedModelResult,
     pub fallback_message: Option<String>,

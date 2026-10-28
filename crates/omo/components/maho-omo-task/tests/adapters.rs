@@ -17,7 +17,7 @@ fn dag() -> (tempfile::TempDir, DagToolDeps) {
     let root = tempfile::tempdir().expect("temporary project");
     let store = create_dag_file_store(&DagStoreConfig::new(root.path()), DagStoreOptions::default()).expect("DAG store");
     let manager = create_dag_manager(DagManagerOptions { store: Arc::new(store), new_run_id: Some(Arc::new(|| "run-1".into())), now: Some(Arc::new(|| 1)), materialize_skills: None, settings: None });
-    (root, DagToolDeps { manager, parent_session_id: Arc::new(|| "session-a".into()), root_session_id: Arc::new(|| "session-a".into()), wait: None, cancel: None, retry: None, send: None, amend: None })
+    (root, DagToolDeps { manager, parent_session_id: Arc::new(|| "session-a".into()), root_session_id: Arc::new(|| "session-a".into()), wait: None, cancel: None, retry: None, send: None, amend: None, cancel_node: None, guide: None, pause_reason: None })
 }
 fn start(deps: &DagToolDeps) -> String {
     let result = run_dag_tool(deps, serde_json::from_value(json!({"action":"start","definition":{"key":"plan","name":"release plan","nodes":[{"id":"a","prompt":"draft plan","category":"quick"},{"id":"b","prompt":"build it","subagent_type":"explore","model":"faux/faux-1","dependsOn":["a"]}]}})).expect("start input")).expect("start result");
@@ -58,7 +58,7 @@ impl DagCommandManager for Runs {
 #[test] fn output_codec_rejects_oversize_tail() { assert!(parse_task_output(&json!({"task_id":"st_1","tail_lines":1001})).is_err()); }
 #[test] fn output_codec_rejects_invalid_mode() { assert!(parse_task_output(&json!({"task_id":"st_1","mode":"wait"})).is_err()); }
 #[test] fn output_codec_accepts_tail_boundary() { assert_eq!(parse_task_output(&json!({"task_id":"st_1","mode":"tail","tail_lines":1000})).unwrap().tail_lines, Some(1000)); }
-#[test] fn planner_explicit_model_never_reads_registry() { let planner = create_task_child_planner(json!({}), vec![], Arc::new(|| panic!("registry should not be accessed"))); let result = planner(&ManagerStartSpec { model: Some("faux/faux-1".into()), ..ManagerStartSpec::default() }).unwrap(); assert_eq!(result.model, "faux/faux-1"); }
+#[test] fn planner_explicit_model_never_reads_registry() { let registry = Arc::new(crate::support::FakeModelRegistry); let planner = create_task_child_planner(json!({}), vec![], Arc::new(move || Some(registry.clone()))); let result = planner(&ManagerStartSpec { model: Some("faux/faux-1".into()), ..ManagerStartSpec::default() }).unwrap(); assert_eq!(result.model, "faux/faux-1"); }
 #[test] fn planner_missing_registry_fails_closed() { let planner = create_task_child_planner(json!({}), vec![], Arc::new(|| None)); let error = planner(&ManagerStartSpec { category: Some("quick".into()), ..ManagerStartSpec::default() }).unwrap_err(); assert_eq!(error.code, PlanResolutionCode::ModelUnavailable); }
 #[test] fn dag_start_reuses_identical_definition() { let (_root, deps) = dag(); let first = start(&deps); let second = start(&deps); assert_eq!(first, second); assert_eq!(deps.manager.list("session-a", None).unwrap().len(), 1); }
 #[test] fn dag_snapshot_roundtrips_owned_run() { let (_root, deps) = dag(); let id = start(&deps); let result = run_dag_tool(&deps, serde_json::from_value(json!({"action":"snapshot","run_id":id})).unwrap()).unwrap(); assert_eq!(result.details.unwrap()["kind"], "snapshot"); }

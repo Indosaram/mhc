@@ -526,6 +526,7 @@ mod tests {
     fn collision_diagnostics_group_by_name() {
         use maho_core::diagnostics::{ResourceCollision, ResourceCollisionType};
         let collision = |loser: &str| ResourceDiagnostic {
+            category: None,
             diagnostic_type: ResourceDiagnosticType::Collision,
             message: String::new(),
             path: None,

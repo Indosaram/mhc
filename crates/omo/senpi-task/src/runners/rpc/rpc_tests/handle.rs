@@ -303,3 +303,26 @@ fn given_rpc_handle_that_crashed_when_managed_then_error_carries_stderr_tail() {
     assert_eq!(kind, RunnerFailureKind::ChildPromptFailed);
     assert!(message.contains("boom"), "{message}");
 }
+
+#[test]
+fn self_resumed_agent_start_rearms_the_settled_turn_and_notifies_after_reset() {
+    let (handle, client) = harness("self-resume");
+    client.emit(agent_end());
+    handle.wait_for_idle();
+    let (send, receive) = std::sync::mpsc::channel();
+    let subscription = handle.on_self_resumed(Arc::new(move || send.send(()).expect("resumed")));
+    client.emit(json!({"type":"agent_start"}));
+    receive
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("self resumed notification");
+    client.emit(json!({"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"second turn"}],"stopReason":"stop"}}));
+    client.emit(agent_end());
+    assert_eq!(
+        handle
+            .terminal_assistant_message()
+            .and_then(|message| message.text),
+        Some("second turn".into())
+    );
+    subscription();
+    handle.dispose_handle();
+}

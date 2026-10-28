@@ -36,6 +36,7 @@ pub type ClaimOnboarding = Arc<dyn Fn(&Path, &ClaimOwnerSeams) -> bool + Send + 
 pub struct OnboardingDependencies {
     /// The claim: defaults to the owner-recording claim (dead or pid-reused owner takeover, one winner).
     pub claim_onboarding: ClaimOnboarding,
+    pub is_onboarding_claimable: ClaimOnboarding,
     /// Records a finished onboarding; a failure is swallowed (fail-open).
     pub complete_onboarding: StateWrite,
     /// Clears claim and completion for `omo.onboarding.state.reset`.
@@ -60,6 +61,10 @@ impl Default for OnboardingDependencies {
     fn default() -> Self {
         Self {
             claim_onboarding: Arc::new(claim_onboarding_owned),
+            is_onboarding_claimable: Arc::new(|path, seams| {
+                let state = crate::claim_owner::read_onboarding_state(path, seams);
+                state.completed_at.is_none() && !state.in_progress
+            }),
             complete_onboarding: Arc::new(complete_onboarding),
             reset_onboarding: Arc::new(reset_onboarding),
             scan_environment: Arc::new(OnboardingScanEnvironment::default),
@@ -283,19 +288,10 @@ fn register_onboarding(
             + Sync,
     >;
     let with_inventory: WithInventory = {
-        let (inventory_scan, injected, start_history) = (
-            Arc::clone(&inventory_scan),
-            injected.clone(),
-            start_history.clone(),
-        );
+        let (inventory_scan, injected) = (Arc::clone(&inventory_scan), injected.clone());
         Arc::new(move |base: String| {
-            let (inventory_scan, injected, start_history) = (
-                Arc::clone(&inventory_scan),
-                injected.clone(),
-                start_history.clone(),
-            );
+            let (inventory_scan, injected) = (Arc::clone(&inventory_scan), injected.clone());
             Box::pin(async move {
-                start_history();
                 let result = if injected_facts && !scan_injected {
                     None
                 } else {
@@ -325,6 +321,13 @@ fn register_onboarding(
             }) as std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
         })
     };
+
+    let preview_inventory = Arc::clone(&with_inventory);
+    let inventory_text = Arc::clone(&with_inventory);
+    let with_inventory: WithInventory = Arc::new(move |base| {
+        start_history();
+        inventory_text(base)
+    });
 
     let claim = {
         let (pending, claiming, state_dir, deps) = (
@@ -498,27 +501,38 @@ fn register_onboarding(
     let prompt_skills = skills_root.clone();
     let prompt_forced = Arc::clone(&process_forced);
     let (prompt_claim, prompt_inventory) = (claim.clone(), Arc::clone(&with_inventory));
-    api.on(EventKind::BeforeAgentStart,Arc::new(move |event,ctx| {
+    let preview_pending = Arc::clone(&pending);
+    let preview_claiming = Arc::clone(&claiming);
+    let preview_dir = state_dir.clone();
+    let preview_deps = deps.clone();
+    api.on_with_options(EventKind::BeforeAgentStart,Arc::new(move |event,ctx| {
+        let pending = Arc::clone(&preview_pending);
+        let claiming = Arc::clone(&preview_claiming);
+        let state_dir = preview_dir.clone();
+        let deps = preview_deps.clone();
+        let inventory_text = Arc::clone(&preview_inventory);
         let runtime=prompt_runtime.clone();let skills_root=prompt_skills.clone();
         let process_forced=Arc::clone(&prompt_forced);
         let (claim,with_inventory)=(prompt_claim.clone(),Arc::clone(&prompt_inventory));
         Box::pin(async move {
             let ExtensionEvent::BeforeAgentStart(event)=event else {return Ok(EventResult::None);};
-            if event.trigger!="prompt" || event.preview || !eligible(ctx,session_kind,&runtime) {return Ok(EventResult::None);}
+            if event.trigger!="prompt" || !eligible(ctx,session_kind,&runtime) {return Ok(EventResult::None);}
             let forced=runtime.get_flag("onboard")==Some(FlagValue::Boolean(true))
                 && !*process_forced.lock().unwrap_or_else(PoisonError::into_inner);
-            if !claim(ctx,forced) {return Ok(EventResult::None);}
-            if forced { *process_forced.lock().unwrap_or_else(PoisonError::into_inner)=true; }
-            if ctx.mode==ExtensionMode::Tui {ctx.ui.set_widget("omo-onboarding",None,ExtensionWidgetOptions::default());}
+            if event.preview {
+                if pending.lock().unwrap_or_else(PoisonError::into_inner).is_some() || claiming.load(Ordering::SeqCst) || (!forced && !(deps.is_onboarding_claimable)(&state_dir, &deps.claim_owner_seams)) { return Ok(EventResult::None); }
+            } else if !claim(ctx,forced) {return Ok(EventResult::None);}
+            if !event.preview && forced { *process_forced.lock().unwrap_or_else(PoisonError::into_inner)=true; }
+            if !event.preview && ctx.mode==ExtensionMode::Tui {ctx.ui.set_widget("omo-onboarding",None,ExtensionWidgetOptions::default());}
             if ctx.session_manager.get_branch().iter().any(|entry| entry.kind=="custom_message" && entry.data.get("customType").and_then(JsonValue::as_str)==Some("omo-onboarding:context")) {
                 return Ok(EventResult::None);
             }
             let base=if forced {format!("Follow {skills_root}/onboarding/SKILL.md. Tour using their message.")}
                 else {format!("Answer fully; greet in their language; offer a one-line tour. On request/acceptance: Follow {skills_root}/onboarding/SKILL.md.")};
-            let content=with_inventory(base).await;
-            Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult {message:Some(CustomMessage {custom_type:"omo-onboarding:context".into(),content:vec![ToolContent::text(content)],display:false,details:None}),system_prompt:None}))
+            let content=if event.preview {inventory_text(base).await} else {with_inventory(base).await};
+            Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt_parts: None,message:Some(CustomMessage {custom_type:"omo-onboarding:context".into(),content:vec![ToolContent::text(content)],display:false,details:None}),system_prompt:None}))
         })
-    }));
+    }), ExtensionHandlerOptions { preview_safe: true, ..Default::default() });
 
     for kind in [
         EventKind::AgentStart,
@@ -678,7 +692,7 @@ mod tests {
 
     #[tokio::test]
     async fn previews_and_non_prompt_turns_do_not_claim() {
-        for (trigger, preview) in [("extension", false), ("delivery", false), ("prompt", true)] {
+        for (trigger, preview) in [("extension", false), ("delivery", false)] {
             let root = tempfile::tempdir().expect("isolated onboarding directory");
             let api = register(root.path());
             let ctx = test_support::context();
@@ -692,6 +706,77 @@ mod tests {
                 EventResult::BeforeAgentStart(_)
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn preview_matches_real_addition_without_claim_or_history() {
+        let root = tempfile::tempdir().expect("isolated directory");
+        let history = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = history.clone();
+        let mut api = register(root.path());
+        // Use a separate registration with a deterministic inventory and observable history seam.
+        api.registered.handlers.clear();
+        OnboardingComponent {
+            state_dir: root.path().into(),
+            skills_root: "/skills".into(),
+        }
+        .with_dependencies(OnboardingDependencies {
+            migration_facts: Some(Arc::new(|| Some("inventory".into()))),
+            session_history: Some(Arc::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                None
+            })),
+            ..Default::default()
+        })
+        .register(&mut api);
+        let ctx = test_support::context();
+        let preview = dispatch(&api, &mut prompt("prompt", true), &ctx).await;
+        assert!(matches!(preview, EventResult::BeforeAgentStart(_)));
+        assert!(!is_onboarding_complete(root.path()));
+        assert_eq!(history.load(Ordering::SeqCst), 0);
+        let real = dispatch(&api, &mut prompt("prompt", false), &ctx).await;
+        let content = |result: EventResult| match result {
+            EventResult::BeforeAgentStart(result) => result.message.expect("addition").content,
+            _ => panic!("missing addition"),
+        };
+        assert_eq!(
+            serde_json::to_value(content(preview)).unwrap(),
+            serde_json::to_value(content(real)).unwrap()
+        );
+        assert!(matches!(
+            dispatch(&api, &mut prompt("prompt", true), &ctx).await,
+            EventResult::None
+        ));
+    }
+
+    #[tokio::test]
+    async fn dead_owner_claim_is_previewable_without_takeover() {
+        let root = tempfile::tempdir().unwrap();
+        let seams = ClaimOwnerSeams {
+            pid: Some(12345),
+            get_pid_liveness: Some(Arc::new(|_| memory_core::locks::ProcessLiveness::Dead)),
+            ..Default::default()
+        };
+        assert!(claim_onboarding_owned(root.path(), &seams));
+        let marker = root.path().join(crate::state::ONBOARDING_MARKER);
+        let before = std::fs::read(&marker).unwrap();
+        let mut api = register(root.path());
+        api.registered.handlers.clear();
+        OnboardingComponent {
+            state_dir: root.path().into(),
+            skills_root: "/skills".into(),
+        }
+        .with_dependencies(OnboardingDependencies {
+            claim_owner_seams: seams,
+            migration_facts: Some(Arc::new(|| None)),
+            ..hermetic()
+        })
+        .register(&mut api);
+        assert!(matches!(
+            dispatch(&api, &mut prompt("prompt", true), &test_support::context()).await,
+            EventResult::BeforeAgentStart(_)
+        ));
+        assert_eq!(std::fs::read(marker).unwrap(), before);
     }
 
     #[tokio::test]

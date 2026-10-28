@@ -1,6 +1,7 @@
 //! CUA error recovery and translation matching upstream `src/cua-errors.ts`.
 
 use senpi_desktop_protocol::PermissionDeniedData;
+use senpi_desktop_service::rpc_client::DesktopLaunchContextError;
 use serde::{Deserialize, Serialize};
 
 fn engine_to_computer_code(code: &str) -> &'static str {
@@ -67,6 +68,20 @@ pub struct ComputerFailure {
     pub app: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relaunch_required: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+pub fn launch_context_failure(error: &DesktopLaunchContextError) -> ComputerFailure {
+    ComputerFailure {
+        code: "COMPUTER_LAUNCH_CONTEXT_REQUIRED".to_string(),
+        message: error.message.clone(),
+        permission: None,
+        settings_url: None,
+        app: None,
+        relaunch_required: None,
+        reason: Some(error.reason.clone()),
+    }
 }
 
 pub fn computer_failure(
@@ -93,5 +108,6 @@ pub fn computer_failure(
         settings_url: permission.map(|p| p.settings_url.clone()),
         app: permission.map(|p| p.app.clone()),
         relaunch_required: permission.map(|p| p.relaunch_required),
+        reason: None,
     }
 }

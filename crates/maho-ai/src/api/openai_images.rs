@@ -476,7 +476,7 @@ pub fn model_as_payload_model(model: &ImagesModel) -> crate::types::Model {
         default_thinking_level: None,
         thinking_level_map: None,
         input: model.input.clone(),
-        cost: crate::types::ModelCost {
+        cost: crate::types::ModelCost { unknown: None,
             effective_rates: None,
             input: model.cost.input,
             output: model.cost.output,
@@ -541,7 +541,7 @@ pub fn parse_usage(raw_usage: &Value, model: &ImagesModel) -> Usage {
         .and_then(Value::as_u64)
         .unwrap_or_else(|| input.saturating_sub(image_tokens));
     let image_rate = model.cost.image_input.unwrap_or(model.cost.input);
-    let mut usage = Usage {
+    let mut usage = Usage { context_usage: None,
         input,
         output,
         cache_read: 0,
@@ -553,6 +553,7 @@ pub fn parse_usage(raw_usage: &Value, model: &ImagesModel) -> Usage {
             .and_then(Value::as_u64)
             .unwrap_or(input + output),
         cost: UsageCost::default(),
+        ..Default::default()
     };
     usage.cost.input =
         (model.cost.input * text_tokens as f64 + image_rate * image_tokens as f64) / 1_000_000.0;

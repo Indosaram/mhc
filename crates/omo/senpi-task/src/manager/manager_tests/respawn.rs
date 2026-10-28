@@ -762,3 +762,68 @@ fn given_unreadable_session_path_when_respawned_then_no_continuation_and_respawn
 
     assert!(lock(&harness.handle.follow_ups).is_empty());
 }
+
+#[test]
+fn paused_respawn_has_no_continuation_prompt_and_reattach_keeps_epoch() {
+    let handle = RpcFake::new(CleanupStage::None, false);
+    let mut setup = Setup::new();
+    setup.rpc = Some(CapturingRpcRunner::new(Arc::clone(&handle)));
+    setup.host_pid = Some(HOST_PID);
+    let mut record = respawn_record();
+    record.host_pid = Some(HOST_PID);
+    record.status = TaskStatus::Paused;
+    record.notification.run_epoch = 7;
+    record.run_start_epoch = 7;
+    seed(&setup.project, &record);
+    let (manager, project) = setup.build();
+    let restored = expect_ok(manager.respawn(&record, Some(session_path())));
+    assert!(lock(&handle.follow_ups).is_empty());
+    assert!(matches!(
+        manager.reattach(&record, restored),
+        ReattachResult::Ok
+    ));
+    let fresh = project
+        .store()
+        .load(&record.task_id)
+        .expect("load")
+        .expect("record");
+    assert_eq!(fresh.status, TaskStatus::Paused);
+    assert_eq!(fresh.notification.run_epoch, 7);
+    assert_eq!(fresh.run_start_epoch, 7);
+}
+
+#[test]
+fn stop_during_trusted_respawn_rebuild_refuses_launch() {
+    let setup = Setup::new();
+    let project = setup.project;
+    let runner = FakeRunner::new();
+    let mut options = TaskManagerOptions::new(
+        project.store(),
+        ManagedRunners {
+            in_process: runner.clone(),
+            process: runner.clone(),
+        },
+        category_planner(&[]),
+        project.cwd(),
+    );
+    struct NoLaunch;
+    impl RpcRespawnRunner for NoLaunch {
+        fn start(&self, _: &RpcRunnerSpec) -> ManagedRunnerResult {
+            panic!("Stop must fence launch after rebuild")
+        }
+    }
+    options.rpc_respawn_runner = Some(Arc::new(NoLaunch));
+    let barrier = crate::pause::admission_barrier::AdmissionBarrier::default();
+    let stop = barrier.clone();
+    options.admission_barrier = Some(barrier);
+    options.trusted_respawn_launch = Some(Arc::new(move |record: &TaskRecord| {
+        stop.close(&record.root_session_id, 9);
+        Ok(None)
+    }));
+    let manager = create_task_manager(options);
+    let record = respawn_record();
+    seed(&project, &record);
+    let (_, code, _) = expect_failed(manager.respawn(&record, Some(session_path())));
+    assert_eq!(code, RespawnFailureCode::RunPaused);
+    assert_eq!(runner.started_count(), 0);
+}

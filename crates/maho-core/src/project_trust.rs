@@ -36,7 +36,6 @@ pub enum AppMode {
     Print,
     Json,
     Rpc,
-    AppServer,
 }
 
 impl AppMode {
@@ -46,7 +45,6 @@ impl AppMode {
             Self::Print => "print",
             Self::Json => "json",
             Self::Rpc => "rpc",
-            Self::AppServer => "app-server",
         }
     }
 }

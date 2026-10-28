@@ -46,8 +46,12 @@ impl WorkpoolStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(error(WorkpoolErrorCode::PoolNotFound, "Pool not found.")),
             Err(e) => return Err(io_error("Could not read pool record.", e)),
         }
-        let disk: DiskRecord = serde_json::from_str(&bytes).map_err(|e| corrupt(e.to_string()))?;
-        let record = disk.into_record()?;
+        let value: Value = serde_json::from_str(&bytes).map_err(|e| corrupt(e.to_string()))?;
+        super::record_schema::validate_record(&value).map_err(|e| corrupt(e.to_string()))?;
+        let disk: DiskRecord = serde_json::from_value(value).map_err(|e| corrupt(e.to_string()))?;
+        let mut record = disk.into_record()?;
+        let sidecar = read_pause_sidecar(&self.directory().join(format!("{pool_id}.pause.json")))?;
+        if let Some(pause) = sidecar.revisions.get(&record.revision.to_string()) { with_pause(&mut record, pause); }
         if record.pool_id != pool_id { return Err(corrupt("Pool identity does not match its file.")); }
         Ok(record)
     }
@@ -94,7 +98,7 @@ impl WorkpoolStore {
         if same_record(&next, &prior) { return Ok(prior); }
         let mut saved = next;
         saved.revision = prior.revision.saturating_add(1);
-        write_record(&path, &DiskRecord::from_record(&saved)?)?;
+        write_pool(&path, &saved)?;
         drop(_guard);
         let listener = self.mutation_listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         if let Some(listener) = listener { listener(); }
@@ -119,9 +123,9 @@ impl WorkpoolStore {
             return Ok(existing);
         }
         let id = format!("wp_{}", random_hex()?);
-        let record = WorkpoolRecord { version: 1, pool_id: id, name: input.name.clone(), parent_session_id: caller.session_id.clone(), root_session_id: caller.root_session_id.clone(), generation: 1, revision: 0, mode, agent: input.agent.clone(), worker_spec, status: super::types::WorkpoolStatus::Open, kernel_tool_names: input.tools.as_ref().filter(|v| !v.is_empty()).cloned(), items: vec![], workers: vec![], aggregate: None };
+        let record = WorkpoolRecord { hold: None, version: 1, pool_id: id, name: input.name.clone(), parent_session_id: caller.session_id.clone(), root_session_id: caller.root_session_id.clone(), generation: 1, revision: 0, mode, agent: input.agent.clone(), worker_spec, status: super::types::WorkpoolStatus::Open, kernel_tool_names: input.tools.as_ref().filter(|v| !v.is_empty()).cloned(), items: vec![], workers: vec![], aggregate: None };
         let path = self.path(&record.pool_id)?;
-        write_record(&path, &DiskRecord::from_record(&record)?)?;
+        write_pool(&path, &record)?;
         unlock_file(&lock);
         Ok(record)
     }
@@ -134,19 +138,78 @@ struct DiskRecord {
     worker_spec: Value, status: super::types::WorkpoolStatus,
     #[serde(skip_serializing_if = "Option::is_none", default)] kernel_tool_names: Option<Vec<String>>,
     items: Vec<super::types::WorkpoolItem>, workers: Vec<super::types::WorkpoolWorker>,
+    #[serde(skip_serializing_if = "Option::is_none", default)] hold: Option<super::types::WorkpoolHold>,
     #[serde(skip_serializing_if = "Option::is_none", default)] aggregate: Option<super::types::WorkpoolAggregate>,
 }
 
 impl DiskRecord {
     fn from_record(r: &WorkpoolRecord) -> Result<Self, WorkpoolError> {
-        Ok(Self { version:r.version, pool_id:r.pool_id.clone(), name:r.name.clone(), parent_session_id:r.parent_session_id.clone(), root_session_id:r.root_session_id.clone(), generation:r.generation, revision:r.revision, mode:r.mode, agent:r.agent.clone(), worker_spec:serde_json::json!({"start":r.worker_spec.start,"plan":r.worker_spec.plan}), status:r.status, kernel_tool_names:r.kernel_tool_names.clone(), items:r.items.clone(), workers:r.workers.clone(), aggregate:r.aggregate })
+        Ok(Self { hold:r.hold, version:r.version, pool_id:r.pool_id.clone(), name:r.name.clone(), parent_session_id:r.parent_session_id.clone(), root_session_id:r.root_session_id.clone(), generation:r.generation, revision:r.revision, mode:r.mode, agent:r.agent.clone(), worker_spec:serde_json::json!({"start":r.worker_spec.start,"plan":r.worker_spec.plan}), status:r.status, kernel_tool_names:r.kernel_tool_names.clone(), items:r.items.clone(), workers:r.workers.clone(), aggregate:r.aggregate })
     }
     fn into_record(self) -> Result<WorkpoolRecord, WorkpoolError> {
         let mut spec = self.worker_spec;
         let start = serde_json::from_value(spec.get_mut("start").map(Value::take).ok_or_else(|| corrupt("Missing worker spec start."))?).map_err(|e| corrupt(e.to_string()))?;
         let plan = serde_json::from_value(spec.get_mut("plan").map(Value::take).ok_or_else(|| corrupt("Missing worker spec plan."))?).map_err(|e| corrupt(e.to_string()))?;
-        Ok(WorkpoolRecord { version:self.version, pool_id:self.pool_id, name:self.name, parent_session_id:self.parent_session_id, root_session_id:self.root_session_id, generation:self.generation, revision:self.revision, mode:self.mode, agent:self.agent, worker_spec:WorkpoolSpec { start, plan }, status:self.status, kernel_tool_names:self.kernel_tool_names, items:self.items, workers:self.workers, aggregate:self.aggregate })
+        Ok(WorkpoolRecord { hold: self.hold, version:self.version, pool_id:self.pool_id, name:self.name, parent_session_id:self.parent_session_id, root_session_id:self.root_session_id, generation:self.generation, revision:self.revision, mode:self.mode, agent:self.agent, worker_spec:WorkpoolSpec { start, plan }, status:self.status, kernel_tool_names:self.kernel_tool_names, items:self.items, workers:self.workers, aggregate:self.aggregate })
     }
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PauseSidecar { revisions: std::collections::BTreeMap<String, PauseState> }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PauseState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hold: Option<super::types::WorkpoolHold>,
+    paused_workers: Vec<String>,
+    entry_ids: std::collections::BTreeMap<String, Vec<String>>,
+}
+fn read_pause_sidecar(path: &Path) -> Result<PauseSidecar, WorkpoolError> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(PauseSidecar::default()),
+        Err(e) => return Err(io_error("Could not read pause sidecar.", e)),
+    };
+    let sidecar: PauseSidecar = serde_json::from_slice(&bytes).map_err(|e| corrupt(e.to_string()))?;
+    if sidecar.revisions.values().any(|p| p.hold.as_ref().is_some_and(|h| h.pause_seq == 0)) { return Err(corrupt("Invalid pause sequence.")); }
+    Ok(sidecar)
+}
+fn split_pause(record: &WorkpoolRecord) -> (WorkpoolRecord, Option<PauseState>) {
+    let mut base = record.clone();
+    let mut pause = PauseState { hold: base.hold.take(), paused_workers: vec![], entry_ids: Default::default() };
+    for worker in &mut base.workers {
+        if worker.status == super::types::WorkpoolWorkerStatus::Paused {
+            pause.paused_workers.push(worker.task_id.clone());
+            worker.status = super::types::WorkpoolWorkerStatus::Busy;
+        }
+    }
+    for item in &mut base.items {
+        if let Some(delivery) = &mut item.delivery
+            && let Some(ids) = delivery.entry_ids.take() { pause.entry_ids.insert(item.item_id.clone(), ids); }
+    }
+    let present = pause.hold.is_some() || !pause.paused_workers.is_empty() || !pause.entry_ids.is_empty();
+    (base, present.then_some(pause))
+}
+fn with_pause(record: &mut WorkpoolRecord, pause: &PauseState) {
+    if pause.hold.is_some() { record.hold = pause.hold; }
+    for worker in &mut record.workers {
+        if pause.paused_workers.contains(&worker.task_id) { worker.status = super::types::WorkpoolWorkerStatus::Paused; }
+    }
+    for item in &mut record.items {
+        if let (Some(delivery), Some(ids)) = (&mut item.delivery, pause.entry_ids.get(&item.item_id)) { delivery.entry_ids = Some(ids.clone()); }
+    }
+}
+fn write_pool(path: &Path, record: &WorkpoolRecord) -> Result<(), WorkpoolError> {
+    let (base, pause) = split_pause(record);
+    if record.hold.as_ref().is_some_and(|h| h.pause_seq == 0) { return Err(corrupt("Invalid pause sequence.")); }
+    let pause_path = path.with_extension("pause.json");
+    let mut prior = read_pause_sidecar(&pause_path)?;
+    let had_prior = !prior.revisions.is_empty();
+    prior.revisions.retain(|revision, _| record.revision.checked_sub(1).is_some_and(|previous| revision == &previous.to_string()));
+    if let Some(pause) = pause { prior.revisions.insert(record.revision.to_string(), pause); }
+    if had_prior || !prior.revisions.is_empty() { write_record(&pause_path, &prior)?; }
+    write_record(path, &DiskRecord::from_record(&base)?)
 }
 
 fn error(code: WorkpoolErrorCode, message: &str) -> WorkpoolError { WorkpoolError::new(code, message) }
@@ -162,7 +225,7 @@ fn same_record(a: &WorkpoolRecord,b: &WorkpoolRecord) -> bool {
     a.version==b.version && a.pool_id==b.pool_id && a.name==b.name && a.parent_session_id==b.parent_session_id
         && a.root_session_id==b.root_session_id && a.generation==b.generation && a.revision==b.revision
         && a.mode==b.mode && a.status==b.status && a.items==b.items && a.workers==b.workers
-        && a.kernel_tool_names==b.kernel_tool_names && a.aggregate==b.aggregate
+        && a.hold==b.hold && a.kernel_tool_names==b.kernel_tool_names && a.aggregate==b.aggregate
         && (a.agent==b.agent || same_json(&a.agent,&b.agent))
         && same_json(&a.worker_spec.start,&b.worker_spec.start)
         && (a.worker_spec.plan==b.worker_spec.plan || same_json(&a.worker_spec.plan,&b.worker_spec.plan))
@@ -173,7 +236,7 @@ fn same_json<T: Serialize + ?Sized>(a: &T, b: &T) -> bool {
     canonical(&serde_json::to_value(a).unwrap_or(Value::Null))==canonical(&serde_json::to_value(b).unwrap_or(Value::Null))
 }
 fn random_hex() -> Result<String, WorkpoolError> { Ok(uuid::Uuid::new_v4().simple().to_string()) }
-fn write_record(path: &Path, record: &DiskRecord) -> Result<(), WorkpoolError> {
+fn write_record<T: Serialize>(path: &Path, record: &T) -> Result<(), WorkpoolError> {
     let parent=path.parent().ok_or_else(||corrupt("Pool path has no parent."))?;
     let temp=parent.join(format!(".tmp-{}",random_hex()?));
     let bytes=serde_json::to_vec(record).map_err(|e|corrupt(e.to_string()))?;
@@ -206,6 +269,38 @@ mod tests {
         let root=tempdir().expect("tempdir"); let s=WorkpoolStore::new(root.path()); let c=caller(); let r=s.create(&c,&input(),WorkpoolMode::Fresh,spec()).expect("create");
         let reopened=WorkpoolStore::new(root.path()); assert_eq!(reopened.load(&r.pool_id).expect("load").revision,0); assert_eq!(reopened.list().len(),1);
         let changed=reopened.mutate(&r.pool_id,|r|{let mut r=r.clone();r.status=super::super::types::WorkpoolStatus::Cancelled;r}).expect("mutate"); assert_eq!(changed.revision,1); assert_eq!(s.load(&r.pool_id).expect("persisted").revision,1);
+    }
+    #[test]
+    fn stopped_records_keep_r0_base_and_round_trip_pause_metadata() {
+        use super::super::types::*;
+        let root = tempdir().expect("root"); let store = WorkpoolStore::new(root.path());
+        let pool = store.create(&caller(), &input(), WorkpoolMode::Fresh, spec()).expect("create");
+        let stopped = store.mutate(&pool.pool_id, |pool| {
+            let mut next = pool.clone(); next.hold = Some(WorkpoolHold { reason: WorkpoolHoldReason::UserStop, pause_seq: 7 });
+            next.workers.push(WorkpoolWorker { task_id: "st_worker".into(), run_epoch: 0, status: WorkpoolWorkerStatus::Paused, completed_turns: 0, idle_since: 0 });
+            next.items.push(WorkpoolItem { key: "one".into(), input: 1.into(), item_id: "wi_one".into(), status: WorkpoolItemStatus::Assigned,
+                binding: Some(WorkpoolBinding { task_id: "st_worker".into(), run_epoch: 0, generation: pool.generation }),
+                delivery: Some(WorkpoolDelivery { phase: WorkpoolDeliveryPhase::Dispatching, message_sha256: None, entry_ids: Some(vec!["entry-1".into()]) }), data: None, error: None, yield_sha256: None }); next
+        }).expect("stop");
+        let loaded = WorkpoolStore::new(root.path()).load(&pool.pool_id).expect("reload");
+        assert_eq!(loaded.hold, stopped.hold); assert_eq!(loaded.workers, stopped.workers); assert_eq!(loaded.items, stopped.items);
+        let raw: Value = serde_json::from_slice(&fs::read(store.path(&pool.pool_id).expect("path")).expect("read")).expect("json");
+        assert!(raw.get("hold").is_none()); assert_eq!(raw["workers"][0]["status"], "busy"); assert!(raw["items"][0]["delivery"].get("entry_ids").is_none());
+        assert_eq!(store.list().len(), 1);
+        for entry in fs::read_dir(store.directory()).expect("directory") {
+            let path = entry.expect("entry").path();
+            if path.file_name().expect("name").to_string_lossy().len() == 40 {
+                let base: DiskRecord = serde_json::from_slice(&fs::read(path).expect("read")).expect("r0 base");
+                assert!(base.hold.is_none()); assert!(base.workers.iter().all(|w| w.status != WorkpoolWorkerStatus::Paused));
+            }
+        }
+        let base_path = store.path(&pool.pool_id).expect("path"); let old_base = fs::read(&base_path).expect("base");
+        store.mutate(&pool.pool_id, |p| { let mut next=p.clone(); next.hold=None; next }).expect("release");
+        // Simulate a crash after writing the sidecar but before replacing the base record.
+        fs::write(&base_path, old_base).expect("rollback base");
+        assert_eq!(store.load(&pool.pool_id).expect("previous revision").hold, stopped.hold);
+        fs::write(base_path.with_extension("pause.json"), r#"{"revisions":{"1":{"hold":{"reason":"user_stop","pauseSeq":0},"paused_workers":[],"entry_ids":{}}}}"#).expect("corrupt sidecar");
+        assert_eq!(store.load(&pool.pool_id).err().expect("invalid hold").code, WorkpoolErrorCode::StoreCorrupt);
     }
     #[test] fn missing_pool_is_typed() { let root=tempdir().expect("tempdir");let s=WorkpoolStore::new(root.path());assert_eq!(s.load("wp_00000000000000000000000000000000").err().expect("missing").code,WorkpoolErrorCode::PoolNotFound); }
     #[test] fn corrupt_record_is_typed() { let root=tempdir().expect("tempdir");let s=WorkpoolStore::new(root.path());let dir=root.path().join("workpools");fs::create_dir_all(&dir).expect("dir");fs::write(dir.join("wp_00000000000000000000000000000000.json"),"{").expect("write");assert_eq!(s.load("wp_00000000000000000000000000000000").err().expect("corrupt").code,WorkpoolErrorCode::StoreCorrupt); }

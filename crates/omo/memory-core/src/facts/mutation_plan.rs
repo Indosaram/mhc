@@ -63,6 +63,12 @@ impl std::error::Error for FactsPlanParentDirtyError {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FactsApplyRecovery {
     pub version: u32,
+    #[serde(
+        default,
+        rename = "agreementEventVersion",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agreement_event_version: Option<u32>,
     #[serde(rename = "batchId")]
     pub batch_id: String,
     #[serde(rename = "headBeforeApply")]
@@ -182,6 +188,7 @@ pub fn render_facts_note(
                     read_only: None,
                     kind: None,
                     aliases: None,
+                    extra: None,
                 },
                 String::new(),
             )
@@ -197,10 +204,27 @@ pub fn render_facts_note(
         if index > 0 {
             bullets.push('\n');
         }
-        bullets.push_str(&format!("- [{}] {}", record.date(), record.text()));
+        bullets.push_str(&format!(
+            "- [{}] {}",
+            record.date(),
+            super::display::fact_display_text(record)
+        ));
     }
     let body = format!("{existing_body}{prefix}{bullets}\n");
-    Ok(render_memory_file(&frontmatter, &body)?)
+    let previous = std::fs::read_to_string(&file_path)
+        .ok()
+        .and_then(|value| parse_memory_file(&value).ok());
+    let frontmatter = crate::tools::claim_frontmatter::stamp_receipt(
+        previous.as_ref(),
+        &frontmatter,
+        &body,
+        None,
+    );
+    let rendered = render_memory_file(&frontmatter, &body)?;
+    Ok(super::display::stamp_receipt(
+        std::fs::read_to_string(&file_path).ok().as_deref(),
+        rendered,
+    ))
 }
 
 /// Plan repository changes and produce an apply recovery envelope.
@@ -321,6 +345,7 @@ pub fn plan_facts_mutation(
 
     Ok(FactsApplyRecovery {
         version: 1,
+        agreement_event_version: (!agreement_records.is_empty()).then_some(1),
         batch_id: batch.batch_id.clone(),
         head_before_apply,
         records_hash: facts_records_hash(

@@ -81,7 +81,7 @@ impl MemoryComponent {
             && !is_memory_child_process(&self.options.env)
             && !(self.options.disabled)()
     }
-    fn sync_runner(&self) -> Option<Arc<dyn crate::sync_runner::SyncRunner>> {
+    pub fn sync_runner(&self) -> Option<Arc<dyn crate::sync_runner::SyncRunner>> {
         self.sync_runner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -132,7 +132,42 @@ impl MemoryComponent {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
                 crate::sync_runner::create_sync_runner(crate::sync_runner::SyncRunnerOptions {
                     logger: Arc::new(WarnLogger(hooks.warn.clone())),
-                    resolve_session: None,
+                    resolve_session: {
+                        let source =
+                            crate::device_session::account_source::create_cli_account_source(
+                                None,
+                                &self.options.env,
+                                None,
+                            )
+                            ?;
+                        let pins = PathBuf::from(
+                            self.options
+                                .env
+                                .get("HOME")
+                                .cloned()
+                                .unwrap_or_else(maho_core::config::home_dir),
+                        )
+                        .join(".omo/sync-device");
+                        let resolver =
+                            crate::device_session::resolver::create_device_session_resolver(
+                                source,
+                                pins,
+                                Arc::new(
+                                    crate::device_session::account_session::open_account_session,
+                                ),
+                            );
+                        let project_dir = self.options.cwd.clone();
+                        let profile = self
+                            .settings()?
+                            .get("agent")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned);
+                        Some(Arc::new(move |mut request: crate::device_session::resolver::SyncSessionRequest| {
+                            request.space.profile = profile.clone();
+                            request.space.project_dir = project_dir.clone();
+                            resolver(request)
+                        }) as crate::sync_runner::SyncSessionResolver)
+                    },
                     open: None,
                     close_wait: None,
                 }),
@@ -203,7 +238,7 @@ impl MemoryComponent {
                 sessions.insert(id.into(),MemorySessionState{enabled,context:None,memory_status_attempted:false,restart_notified:false,sync_repo:None,ui:Some(context.ui.clone())});
                 if !enabled{return Ok(None);}
                 let session_cwd=context.cwd.clone();
-                let identity=memory_core::identity::resolve::resolve_memory_identity(settings["agent"].as_str(),&session_cwd,&this.options.env).map_err(|error|error.to_string())?;
+                let identity=if memory_core::identity::is_auto_agent_value(settings["agent"].as_str()) { memory_core::identity::resolve_auto_identity(&session_cwd,&this.options.env,if settings["auto_identity"]=="git" { memory_core::identity::AutoIdentityMode::Git } else { memory_core::identity::AutoIdentityMode::Path }) } else { memory_core::identity::resolve::resolve_memory_identity(settings["agent"].as_str(),&session_cwd,&this.options.env) }.map_err(|error|error.to_string())?;
                 let entries=context.session_manager.get_entries();
                 let recorded=entries.iter().rev().find_map(|entry|{let data=&entry.data;if entry.kind!="custom"||data["customType"]!=MEMORY_BINDING_CUSTOM_TYPE{return None;}Some(crate::binding::MemorySessionBinding{identity:data["data"]["identity"].as_str()?.into(),repo_path_hash:data["data"]["repoPathHash"].as_str()?.into(),bound_at:data["data"]["boundAt"].as_f64()?})});
                 let adoption=crate::identity_adoption::adopt_session_identity(recorded.as_ref(),crate::identity_adoption::BoundIdentity{id:identity.id,paths:identity.paths.clone()},identity.paths.root.ancestors().nth(2).unwrap_or(&identity.paths.root),settings["agent"].as_str(),false);
@@ -213,7 +248,7 @@ impl MemoryComponent {
                 let run_token=format!("{:x}-{}-{}",((this.options.now)() as u64).max(1),std::process::id(),memory_core::support::random::random_uuid().replace('-',""));
                 let run_paths=crate::transient_identity::resolve_identity_run_paths(&adopted.id,adopted.paths.clone(),&memory_root,one_shot,Some(&run_token));
                 let binding=create_memory_binding(&adopted.id,&run_paths.paths.repo.to_string_lossy(),(this.options.now)());let value=serde_json::json!({"identity":binding.identity,"repoPathHash":binding.repo_path_hash,"boundAt":binding.bound_at});
-                let bound=MemoryIdentityContext::new(adopted.id,run_paths.paths,binding).with_durable_root(run_paths.durable_root);
+                let bound=MemoryIdentityContext::new(adopted.id,run_paths.paths,binding).with_durable_root(run_paths.durable_root).with_project_scope(crate::context::ProjectScope { memory_root, auto_identity: settings["auto_identity"].as_str().unwrap_or("project").to_owned() });
                 let state=sessions.get_mut(id).ok_or("Inserted memory session is missing")?;state.context=Some(bound.clone());this.supervisor.acquire();state.sync_repo=Some(bound.identity_paths.repo.clone());let sync_enabled=settings["sync"]["enabled"]==true;drop(sessions);
                 handle.append_entry(MEMORY_BINDING_CUSTOM_TYPE,Some(value)).map_err(|error|error.to_string())?;
                 Ok::<_,String>(Some((id.to_owned(),bound,sync_enabled)))

@@ -7,6 +7,7 @@
 //! prune bound, or a file with nothing valid left rejects the file with its validation diagnostic.
 
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::internal::plain_object::is_unsafe_object_key;
 use crate::internal::validate::safe_parse;
@@ -88,6 +89,36 @@ fn unknown_keys_diagnostic(path: &str, issue_paths: &[String]) -> OmoConfigDiagn
     }
 }
 
+/// Retired top-level sections: accepted and dropped silently; compared by digest.
+pub const RETIRED_SECTION_DIGESTS: [&str; 2] = [
+    "447f75a8ebdbdb79a57f0b8cebbfba183820cf54a8119ac01449b30499e5ef0e",
+    "4ea5ee68fea05586106890ded5733820bb77d919cda27bc4b8139b7cd33b8889",
+];
+
+/// The containers that hold config sections: the root, a root `[harness]` block, a named profile,
+/// and a named profile's `[harness]` block. Only there is a retired name a section rather than an
+/// application key that happens to share the spelling.
+const HARNESS_BLOCKS: [&str; 4] = ["[opencode]", "[native]", "[senpi]", "[codex]"];
+
+fn is_config_container(path: &[String]) -> bool {
+    match path.len() {
+        0 => true,
+        1 => HARNESS_BLOCKS.contains(&path[0].as_str()),
+        2 => path[0] == "profiles",
+        3 => path[0] == "profiles" && HARNESS_BLOCKS.contains(&path[2].as_str()),
+        _ => false,
+    }
+}
+
+fn sha256_hex(value: &str) -> String {
+    hex::encode(Sha256::digest(value.as_bytes()))
+}
+
+fn is_retired_section(key: &str) -> bool {
+    let digest = sha256_hex(&key.to_lowercase());
+    RETIRED_SECTION_DIGESTS.contains(&digest.as_str())
+}
+
 fn sanitize_unsafe_keys(value: &Value, path: &[String]) -> (Vec<UnrecognizedKeyIssue>, Value) {
     match value {
         Value::Array(items) => {
@@ -106,6 +137,9 @@ fn sanitize_unsafe_keys(value: &Value, path: &[String]) -> (Vec<UnrecognizedKeyI
             let mut issues = Vec::new();
             let mut sanitized = Map::new();
             for (key, entry) in map {
+                if is_config_container(path) && is_retired_section(key) {
+                    continue;
+                }
                 if is_unsafe_object_key(key) {
                     issues.push(UnrecognizedKeyIssue {
                         keys: vec![key.clone()],

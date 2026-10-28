@@ -39,9 +39,21 @@
           {
             "type": "string",
             "const": "amend"
+          },
+          {
+            "type": "string",
+            "const": "resume"
+          },
+          {
+            "type": "string",
+            "const": "cancel_node"
+          },
+          {
+            "type": "string",
+            "const": "guide"
           }
         ],
-        "description": "start creates or reuses a run from a definition; attach re-binds to a live run; snapshot reads current state; wait detaches by default against a live run (the session is woken on node completions and on settle) and blocks only with detach=false; cancel stops it. retry gives failed, cancelled, or skipped nodes a FRESH attempt on the same run (completed nodes keep their results and are never re-run); it requires the run to have settled. send delivers a message to ONE node's child: a running child is steered in place, a finished resident child is revived with its context intact; a child that cannot be continued is refused with node_not_continuable, and retry is then the remedy. amend submits an edited definition for the SAME run: unchanged completed nodes are cache-reused, and only changed or added nodes plus their transitive dependents re-run."
+        "description": "start creates or reuses a run from a definition; attach re-binds to a live run; snapshot reads current state; wait detaches by default against a live run (the session is woken on node completions and on settle) and blocks only with detach=false; cancel stops it. retry gives failed, cancelled, or skipped nodes a FRESH attempt on the same run (completed nodes keep their results and are never re-run); it requires the run to have settled. send delivers a message to ONE node's child: a running child is steered in place, a finished resident child is revived with its context intact; a child that cannot be continued is refused with node_not_continuable, and retry is then the remedy. amend submits an edited definition for the SAME run: unchanged completed nodes are cache-reused, and only changed or added nodes plus their transitive dependents re-run. On a run the user stopped: guide adds, edits, or removes guidance its nodes receive when the user resumes it; cancel_node cancels one node and its child while the run stays paused; resume is refused, because only the user's Resume restarts a stopped run."
       },
       "definition": {
         "type": "object",
@@ -147,6 +159,15 @@
       "prompt": {
         "type": "string",
         "description": "Replacement prompt for a retried node. retry only, and only with exactly one node id."
+      },
+      "guidance_id": {
+        "type": "string"
+      },
+      "text": {
+        "type": "string"
+      },
+      "remove": {
+        "type": "boolean"
       }
     }
   }

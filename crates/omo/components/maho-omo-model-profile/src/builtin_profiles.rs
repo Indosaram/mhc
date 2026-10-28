@@ -1,9 +1,9 @@
-//! Port of omo-senpi `components/model-profile/builtin-profiles.ts` at omo `455dee62`: the named
+//! Port of omo-senpi `components/model-profile/builtin-profiles.ts` at omo `v5.1.47`: the named
 //! model-chain table a human picks by lane.
 //!
 //! A model profile is a named, ordered model chain a human picks by lane ("Daily · Normal",
-//! "Geeky · Heavy") instead of by model id. It is not the `profiles` key in omo.json: that one is a
-//! VSCode-style config-layer overlay activated by `OMO_PROFILE`.
+//! "Obsessive · Heavy") instead of by model id. It is not the `profiles` key in omo.json: that one is
+//! a VSCode-style config-layer overlay activated by `OMO_PROFILE`.
 //!
 //! Every rung is `{ providers, model, variant? }` - the exact shape the category fallback chains
 //! use - and NOT a single `provider/model` string, so a Copilot-only, Bedrock-only or gateway-only
@@ -26,6 +26,9 @@
 //!
 //! Unset sessions start on Daily · Normal or the first resolving default lane.
 //! Every builtin is a lane; the retired `recommended` id starts the same default.
+//!
+//! Each Obsessive lane carries a one-line caution a picker renders in bold, and Obsessive · Normal
+//! heads with GPT-6 Astra on every GPT provider before falling back to the two-lane Sol rungs.
 
 use indexmap::IndexMap;
 
@@ -63,6 +66,8 @@ impl ModelProfileTier {
 pub struct BuiltinModelProfile {
     pub display_name: &'static str,
     pub description: &'static str,
+    /// One-line warning a picker renders in bold; set only where a lane must warn the user off.
+    pub caution: Option<&'static str>,
     /// Picker axes: every builtin is a lane.
     pub family: ModelProfileFamily,
     pub tier: ModelProfileTier,
@@ -91,8 +96,12 @@ const KIMI_PROVIDERS: &[&str] = &["kimi-coding", "kimi-for-coding", "moonshotai"
 const GLM_PROVIDERS: &[&str] = &["zai", "zai-coding-cn", "opencode-go"];
 const GPT_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai", "github-copilot", "opencode"];
 // GPT-6.1 Sol and its Fast tier are served only on the two OpenAI lanes (not Copilot or OpenCode Zen),
-// so their rungs list just those; GPT-5.6 Sol in Geeky · Normal keeps every GPT provider eligible.
+// so their rungs list just those; Obsessive · Normal heads with GPT-6 Astra on every GPT provider and
+// falls back through those two-lane rungs to GPT-5.6 Sol, which keeps the profile on every GPT provider.
 const GPT_6_1_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai"];
+
+/// The one-line warning both Obsessive lanes carry: they are for one hard task, not everyday work.
+const OBSESSIVE_CAUTION: &str = "NOT RECOMMENDED FOR WRITING OR EVERYDAY WORK.";
 
 const DAILY_NORMAL_MODELS: &[BuiltinRung] = &[
     BuiltinRung { providers: CLAUDE_PROVIDERS, model: "claude-opus-5-5", variant: Some("medium") },
@@ -102,6 +111,7 @@ const DAILY_NORMAL_MODELS: &[BuiltinRung] = &[
 const DAILY_HEAVY_MODELS: &[BuiltinRung] =
     &[BuiltinRung { providers: CLAUDE_PROVIDERS, model: "claude-fable-5-1", variant: Some("xhigh") }];
 const GEEKY_NORMAL_MODELS: &[BuiltinRung] = &[
+    BuiltinRung { providers: GPT_PROVIDERS, model: "gpt-6-astra", variant: Some("medium") },
     BuiltinRung { providers: GPT_6_1_PROVIDERS, model: "gpt-6.1-sol-fast", variant: Some("medium") },
     BuiltinRung { providers: GPT_6_1_PROVIDERS, model: "gpt-6.1-sol", variant: Some("medium") },
     BuiltinRung { providers: GPT_PROVIDERS, model: "gpt-5.6-sol", variant: Some("medium") },
@@ -122,6 +132,7 @@ pub fn builtin_model_profiles() -> IndexMap<&'static str, BuiltinModelProfile> {
         BuiltinModelProfile {
             display_name: "Daily · Normal",
             description: "Gets any task done without fuss.",
+            caution: None,
             family: ModelProfileFamily::Daily,
             tier: ModelProfileTier::Normal,
             models: DAILY_NORMAL_MODELS,
@@ -132,6 +143,7 @@ pub fn builtin_model_profiles() -> IndexMap<&'static str, BuiltinModelProfile> {
         BuiltinModelProfile {
             display_name: "Daily · Heavy",
             description: "Gets any task done, after thinking it over from more sides.",
+            caution: None,
             family: ModelProfileFamily::Daily,
             tier: ModelProfileTier::Heavy,
             models: DAILY_HEAVY_MODELS,
@@ -140,8 +152,9 @@ pub fn builtin_model_profiles() -> IndexMap<&'static str, BuiltinModelProfile> {
     profiles.insert(
         "geeky-normal",
         BuiltinModelProfile {
-            display_name: "Geeky · Normal",
-            description: "Works on one task and thinks it through.",
+            display_name: "Obsessive · Normal",
+            description: "Obsessive focus on one hard task.",
+            caution: Some(OBSESSIVE_CAUTION),
             family: ModelProfileFamily::Geeky,
             tier: ModelProfileTier::Normal,
             models: GEEKY_NORMAL_MODELS,
@@ -150,8 +163,9 @@ pub fn builtin_model_profiles() -> IndexMap<&'static str, BuiltinModelProfile> {
     profiles.insert(
         "geeky-heavy",
         BuiltinModelProfile {
-            display_name: "Geeky · Heavy",
-            description: "Works on one task and thinks it over from every side.",
+            display_name: "Obsessive · Heavy",
+            description: "Obsessive focus on one hard task, checked from every side.",
+            caution: Some(OBSESSIVE_CAUTION),
             family: ModelProfileFamily::Geeky,
             tier: ModelProfileTier::Heavy,
             models: GEEKY_HEAVY_MODELS,

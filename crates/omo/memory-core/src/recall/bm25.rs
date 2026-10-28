@@ -431,6 +431,36 @@ pub fn on_recall_documents_encoded(
     }
 }
 
+/// What the memory report reads for these documents: their cached term arrays and the process
+/// dictionary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RecallTermFigures {
+    /// Term id and count arrays the index keeps for these documents.
+    pub term_array_bytes: usize,
+    /// Terms in the process-wide dictionary.
+    pub vocabulary_terms: usize,
+}
+
+/// Sums the term-array bytes of the documents already indexed in the current generation.
+///
+/// A document the index never tokenized contributes nothing, so reading the figures never indexes
+/// one: the report must not pay for the corpus it measures.
+pub fn recall_term_figures<'a>(
+    documents: impl IntoIterator<Item = &'a RecallDocument>,
+) -> RecallTermFigures {
+    let mut term_array_bytes = 0usize;
+    for document in documents {
+        if let Some(terms) = RECALL_TERM_ACCESS.current(document) {
+            term_array_bytes += terms.ids.len() * std::mem::size_of::<u32>()
+                + terms.counts.len() * std::mem::size_of::<u32>();
+        }
+    }
+    RecallTermFigures {
+        term_array_bytes,
+        vocabulary_terms: RECALL_TERM_ACCESS.vocabulary_size(),
+    }
+}
+
 /// The index internals a persisted store needs to seed and snapshot document terms.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RecallTermAccess;

@@ -1,5 +1,6 @@
 //! Remote mirror synchronization and secret redaction.
 
+pub mod account;
 pub mod canonical_json;
 pub mod canonical_json_serialize;
 pub mod canonical_json_types;
@@ -9,6 +10,7 @@ pub mod hpke_sealed_box;
 pub mod item;
 pub mod keyring_port;
 pub mod mirror;
+pub mod pin_dir;
 pub mod recovery;
 pub mod redact;
 pub mod space;
@@ -32,3 +34,5 @@ pub use redact::{
     SECRET_PATTERN_SOURCES, SecretMatch, SecretPatternClass, contains_secret_like_material,
     redact_secret_like_material, redact_url, scan_secret_like_material,
 };
+
+pub use pin_dir::sync_pin_dir;

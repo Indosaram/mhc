@@ -38,6 +38,7 @@ impl StreamEventContext {
                     &self.model,
                     &mut self.output,
                     &event["message"]["usage"],
+                    crate::stream_protocol::UsageScope::RequestStart,
                 );
                 None
             }
@@ -48,6 +49,7 @@ impl StreamEventContext {
                     &self.model,
                     &mut self.output,
                     &event["usage"],
+                    crate::stream_protocol::UsageScope::RequestDelta,
                 );
                 None
             }

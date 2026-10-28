@@ -1,12 +1,11 @@
 # crates/maho-server
 
 ## OVERVIEW
-Backend JSON-RPC / WebSocket server, daemon protocols, and persistent session SQLite storage.
+Shared-host daemon protocols, clients, and persistent session SQLite storage.
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| App server routing | `src/app_server/` | Request handlers, HTTP endpoints, WebSocket upgrades |
 | RPC protocol definitions | `src/protocol/` | Message frames, serialization, and error schemas |
 | SQLite database storage | `src/sqlite/` | Session persistence, message logs, migrations |
 | Client SDK bindings | `src/client/` | In-process and network RPC client utilities |
@@ -17,7 +16,7 @@ Backend JSON-RPC / WebSocket server, daemon protocols, and persistent session SQ
 - Database transactions must ensure ACID guarantees across multi-row state mutations.
 - Keep protocol schema definitions backward-compatible with older clients.
 - Workspace lints enforced: zero unwrap across server logic.
-- WebSocket frames follow structured framing protocols matching upstream spec.
+- Daemon frames follow structured framing protocols matching upstream spec.
 - Connection states cleanly deregister upon TCP / socket teardown.
 
 ## ANTI-PATTERNS (THIS COMPONENT)

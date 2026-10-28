@@ -1929,8 +1929,10 @@ pub async fn prepare_compaction_threshold(
             break;
         }
     }
+    // Pinned: a compaction newer than the trigger, or one that cut the trigger out of the bounded
+    // path, already guards this checkpoint.
     if let Some(newest) = newest_compaction_index
-        && trigger_index.is_some_and(|trigger| newest >= trigger)
+        && trigger_index.is_none_or(|trigger| newest >= trigger)
     {
         return Ok(LaneContinue::Result { value: None });
     }
@@ -1942,7 +1944,7 @@ pub async fn prepare_compaction_threshold(
     };
     let prepared = prepare_compaction(&path, settings)
         .map_err(|error| session_invariant_error(error.to_string()))?;
-    let Some(prepared) = prepared else {
+    let Some(prepared) = prepared.filter(summarizes_history) else {
         return Ok(LaneContinue::Result { value: None });
     };
     if !should_compact(
@@ -1962,6 +1964,12 @@ pub async fn prepare_compaction_threshold(
     })
 }
 
+/// Pinned `summarizesHistory`: automatic compaction needs history before its cut; summarizing
+/// nothing only spends a provider request.
+fn summarizes_history(preparation: &CompactionPreparation) -> bool {
+    !preparation.messages_to_summarize.is_empty() || !preparation.turn_prefix_messages.is_empty()
+}
+
 /// Pinned `prepareOverflowCompaction`: prepare one overflow compaction before response settlement.
 pub async fn prepare_overflow_compaction(
     lane: &Arc<Lane>,
@@ -1975,6 +1983,7 @@ pub async fn prepare_overflow_compaction(
         .assistant
         .generation_context
         .overflow_recovery_used
+        || !generation.operation.settings.compaction.enabled
     {
         return Ok(None);
     }
@@ -1984,7 +1993,7 @@ pub async fn prepare_overflow_compaction(
     };
     let prepared = prepare_compaction(&path, generation.operation.settings.compaction)
         .map_err(|error| session_invariant_error(error.to_string()))?;
-    let Some(prepared) = prepared else {
+    let Some(prepared) = prepared.filter(summarizes_history) else {
         return Ok(None);
     };
     let task_id = (lane.session.id_generator())(None);

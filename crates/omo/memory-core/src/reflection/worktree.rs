@@ -7,7 +7,11 @@ use std::sync::Arc;
 use crate::git::GitMemoryRepo;
 use crate::git::exec::GitExec;
 
+use super::completion_repair::describe_dropped_entries;
 use super::completion_validation::validate_completion;
+use super::description_preflight::{
+    DescriptionPreflightWarn, preflight_reflection_descriptions,
+};
 use super::machine::ReflectionOutcome;
 use super::worktree_integration::{
     IntegrateValidatedReflectionInput, ReflectionIntegrationMode, ReflectionIntegrationResult,
@@ -201,11 +205,38 @@ where
         &mut dyn FnMut() -> Result<ReflectionIntegrationResult, String>,
     ) -> Result<ReflectionIntegrationResult, String>,
 {
+    finalize_reflection_worktree_with_warn(worktree, mode, with_writer_lock, None)
+}
+
+/// Finalizes a worktree with an optional diagnostic sink for the description preflight.
+pub fn finalize_reflection_worktree_with_warn<L>(
+    worktree: &ReflectionWorktree,
+    mode: ReflectionFinalizeMode,
+    with_writer_lock: L,
+    warn: Option<&DescriptionPreflightWarn<'_>>,
+) -> ReflectionFinalizeResult
+where
+    L: FnOnce(
+        &mut dyn FnMut() -> Result<ReflectionIntegrationResult, String>,
+    ) -> Result<ReflectionIntegrationResult, String>,
+{
     let mut status = ReflectionOutcome::Failed;
     let mut detail = None;
 
+    // Repair only length violations first: the gate drops an entry it cannot accept, so a trimmed
+    // description keeps the note instead of losing it.
+    let _ = preflight_reflection_descriptions(
+        worktree,
+        &worktree.base_commit_sha,
+        worktree.exec.as_ref(),
+        warn,
+    );
     let validation =
         validate_completion(worktree, &worktree.base_commit_sha, worktree.exec.as_ref());
+    let dropped_note = {
+        let dropped = validation.dropped();
+        (!dropped.is_empty()).then(|| describe_dropped_entries(dropped))
+    };
     match validation {
         super::completion_validation::CompletionValidation::DirtyUncommitted { detail: d } => {
             status = ReflectionOutcome::DirtyUncommitted;
@@ -217,10 +248,12 @@ where
         }
         super::completion_validation::CompletionValidation::NoChanges { .. } => {
             status = ReflectionOutcome::NoChanges;
+            detail = dropped_note;
         }
         super::completion_validation::CompletionValidation::Valid {
             tip_sha,
             changed_paths,
+            ..
         } => {
             let mut outside_allowed = false;
             if let ReflectionFinalizeMode::Auto {
@@ -263,7 +296,12 @@ where
 
                 let integrated = integrate_validated_reflection(worktree, input, with_writer_lock);
                 status = integrated.outcome;
-                detail = integrated.detail;
+                let joined = [integrated.detail, dropped_note]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<String>>()
+                    .join("; ");
+                detail = (!joined.is_empty()).then_some(joined);
             }
         }
     }

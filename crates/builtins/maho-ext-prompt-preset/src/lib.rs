@@ -1,3 +1,4 @@
+pub mod claude_fable_5_5;
 pub mod settings;
 pub mod presets;
 pub mod execution_tooling;
@@ -40,3 +41,5 @@ pub mod gpt_5_6;
 pub mod gpt_6_astra;
 pub mod index;
 pub use index::PromptPreset;
+
+pub mod contract;

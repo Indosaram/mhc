@@ -106,6 +106,7 @@ pub fn with_results(
         let merged = match (&reading.error, accounts.get(key)) {
             (Some(_), Some(previous)) => CachedReading {
                 windows: previous.windows.clone(),
+                plan: reading.plan.clone().or_else(|| previous.plan.clone()),
                 ..reading.clone()
             },
             _ => reading.clone(),
@@ -333,7 +334,9 @@ mod tests {
     #[test]
     fn results_need_the_claim_token_and_a_failure_keeps_previous_windows() {
         let mut cache = UsageCacheFile::default();
-        cache.accounts.insert("k".into(), reading(None, 0, 1));
+        let mut prev = reading(None, 0, 1);
+        prev.plan = Some("pro".into());
+        cache.accounts.insert("k".into(), prev);
         let claimed = with_claims(&cache, &["k".to_owned()], 5, "t");
         let results = HashMap::from([("k".to_owned(), reading(Some("rate limited"), 6, 9))]);
         let ignored = with_results(&claimed, &results, "stolen");
@@ -342,6 +345,7 @@ mod tests {
         assert!(folded.fetching.is_empty());
         assert_eq!(folded.accounts["k"].error.as_deref(), Some("rate limited"));
         assert_eq!(folded.accounts["k"].windows.len(), 1);
+        assert_eq!(folded.accounts["k"].plan.as_deref(), Some("pro"));
     }
 
     #[test]

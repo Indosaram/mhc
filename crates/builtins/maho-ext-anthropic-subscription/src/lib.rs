@@ -31,6 +31,7 @@ pub mod prompt_bridge;
 pub mod prompt_directive_dedupe;
 pub mod refusal;
 pub mod sdk_boundary;
+pub mod seat_digest;
 pub mod session_binding;
 pub mod session_binding_store;
 pub mod session_commit_boundary;

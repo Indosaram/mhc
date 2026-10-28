@@ -1,57 +1,23 @@
-//! Port of omo-senpi `components/git-master/directive.ts` at omo `455dee62`: the
-//! commit-attribution directive text, the resolved `git_master` settings view it reads, and the
-//! footer-text resolution.
-//!
-//! The directive prose is copied from the pinned source verbatim; it is model-facing text, so it
-//! carries no prose-pinning test (only the machine-consumed footer value and the no-trailer
-//! contract are asserted).
-
+//! Native git-master attribution directive and settings view.
 use maho_ext_api::JsonValue;
-
-/// Upstream `DEFAULT_COMMIT_FOOTER`: the builtin footer text used when `commit_footer` is `true`.
 pub const DEFAULT_COMMIT_FOOTER: &str =
     "Ultraworked with [omo](https://github.com/code-yeongyu/oh-my-openagent)";
-
-/// Upstream schema default of `git_master.git_env_prefix` (`GitEnvPrefixSchema.default(...)`).
+pub const COMMIT_ATTRIBUTION_OPEN_TAG: &str = "<commit_attribution>";
 pub const DEFAULT_GIT_ENV_PREFIX: &str = "GIT_MASTER=1";
-
-/// The resolved `git_master` settings: the typed view of the object returned by
-/// `omo_config_core::resolve_omo_git_master_settings`.
-///
-/// Commit-identity contract: commits our tooling causes in a user's repository carry the
-/// operator's own author/committer and never a GitHub-resolvable automation identity. The
-/// directive therefore only ever describes the opt-in body footer; `include_co_authored_by` is
-/// accepted for backward compatibility but no longer emits a `Co-authored-by` trailer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GitMasterSettings {
     pub commit_footer: GitMasterCommitFooter,
-    /// Upstream `include_co_authored_by`: a deprecated no-op. Kept on the parsed view so a
-    /// caller can observe the resolved value; the directive never reads it.
     pub include_co_authored_by: bool,
-    /// Upstream `git_env_prefix`: bash-form env assignments (`GIT_MASTER=1`) prefixed to every git
-    /// command the skill shows; the empty string disables the prefix.
     pub git_env_prefix: String,
 }
-
-/// Upstream `OmoGitMasterSettings["commit_footer"]` (`boolean | string`, default `false`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum GitMasterCommitFooter {
-    /// `false`: no attribution footer is emitted.
     #[default]
     Disabled,
-    /// `true`: the builtin [`DEFAULT_COMMIT_FOOTER`] text.
     Builtin,
-    /// A string replacing the builtin footer text.
     Custom(String),
 }
-
 impl GitMasterSettings {
-    /// Parses the resolved `git_master` object returned by the config owner's
-    /// `resolve_omo_git_master_settings`.
-    ///
-    /// That resolver materializes the schema defaults, so `commit_footer` is a boolean or a
-    /// string; a missing key (never produced by the resolver) falls back to the disabled default,
-    /// which is the schema's own `false`.
     pub fn from_resolved(resolved: &JsonValue) -> Self {
         let commit_footer = match resolved.get("commit_footer") {
             Some(JsonValue::Bool(true)) => GitMasterCommitFooter::Builtin,
@@ -61,7 +27,7 @@ impl GitMasterSettings {
         let include_co_authored_by = resolved
             .get("include_co_authored_by")
             .and_then(JsonValue::as_bool)
-            .unwrap_or(false);
+            .unwrap_or(true);
         let git_env_prefix = match resolved.get("git_env_prefix") {
             Some(JsonValue::String(text)) => text.clone(),
             _ => DEFAULT_GIT_ENV_PREFIX.to_owned(),
@@ -73,48 +39,46 @@ impl GitMasterSettings {
         }
     }
 }
-
-/// Upstream `buildGitMasterAttributionDirective`: the directive appended to the read result, or
-/// `None` when the footer is disabled.
-///
-/// `git_command_prefix` (upstream default `""`) is prepended to the example `git commit` line.
+/// Build the attribution directive, independently honoring the optional body footer and default-on trailer.
 pub fn build_git_master_attribution_directive(
     settings: &GitMasterSettings,
     git_command_prefix: &str,
 ) -> Option<String> {
-    let footer_text = resolve_footer_text(&settings.commit_footer)?;
-    let footer_line = format!("1. **Footer in the commit body:** {footer_text}");
-    let command_prefix = if git_command_prefix.is_empty() {
+    let footer_text = resolve_footer_text(&settings.commit_footer);
+    if footer_text.is_none() && !settings.include_co_authored_by {
+        return None;
+    }
+    let trailer = "Co-authored-by: sisyphus-dev-ai <sisyphus-dev-ai@users.noreply.github.com>";
+    let prefix = if git_command_prefix.is_empty() {
         String::new()
     } else {
         format!("{git_command_prefix} ")
     };
-    let example_line =
-        format!("{command_prefix}git commit -m \"{{Commit Message}}\" -m \"{footer_text}\"");
-
-    Some(
-        [
-            "<commit_attribution>",
-            "## Commit Footer (MANDATORY)",
-            "",
-            "Add omo attribution to EVERY commit you create:",
-            "",
-            footer_line.as_str(),
-            "",
-            "Do NOT add a Co-authored-by trailer.",
-            "",
-            "**Example:**",
-            "```bash",
-            example_line.as_str(),
-            "```",
-            "</commit_attribution>",
-        ]
-        .join("\n"),
-    )
+    let command = format!(
+        "{prefix}git {}commit -m \"{{Commit Message}}\"{}{}",
+        if settings.include_co_authored_by {
+            "-c trailer.ifexists=addIfDifferent "
+        } else {
+            ""
+        },
+        footer_text
+            .as_ref()
+            .map(|text| format!(" -m \"{text}\""))
+            .unwrap_or_default(),
+        if settings.include_co_authored_by {
+            format!(" --trailer \"{trailer}\"")
+        } else {
+            String::new()
+        }
+    );
+    let footer_line = footer_text
+        .as_ref()
+        .map(|text| format!("1. **Footer in the commit body:** {text}"))
+        .unwrap_or_default();
+    Some([COMMIT_ATTRIBUTION_OPEN_TAG, "## Commit Attribution", "", "Add attribution to EVERY commit:", "", &footer_line,
+        if settings.include_co_authored_by { "Co-author trailer, exactly once. Pass it with --trailer, never inside -m; trailer.ifexists=addIfDifferent deduplicates existing trailers. After squash, amend the message to remove duplicates." } else { "Do NOT add a Co-authored-by trailer." },
+        "", "**Example:**", "```bash", &command, "```", "</commit_attribution>"].join("\n"))
 }
-
-/// Upstream `resolveFooterText`: `false` disables the footer, a string replaces the builtin text,
-/// `true` uses [`DEFAULT_COMMIT_FOOTER`].
 fn resolve_footer_text(footer: &GitMasterCommitFooter) -> Option<String> {
     match footer {
         GitMasterCommitFooter::Disabled => None,

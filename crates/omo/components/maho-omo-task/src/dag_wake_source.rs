@@ -29,5 +29,9 @@ impl DagWakeSource {
         catch_unwind(AssertUnwindSafe(|| self.manager.snapshot(run_id, session))).ok().flatten()
     }
     pub fn emit_shutdown(&self) { self.publish(vec![]); }
-    fn publish(&self, channels: Vec<Value>) { self.events.emit(DAG_WAKE_SOURCE_STATE_EVENT, &json!({"source":DAG_WAKE_SOURCE,"activeCount":channels.len(),"channels":channels})); }
+    /// senpi#3864: a live workflow run is children's work, not a background job, so the published
+    /// state carries `kind: "children"` and continuation keeps the parent's lifecycle off "done".
+    fn publish(&self, channels: Vec<Value>) {
+        self.events.emit(DAG_WAKE_SOURCE_STATE_EVENT, &json!({"source":DAG_WAKE_SOURCE,"kind":"children","activeCount":channels.len(),"channels":channels}));
+    }
 }

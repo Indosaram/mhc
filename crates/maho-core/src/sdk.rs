@@ -53,8 +53,7 @@ pub struct CreateAgentSessionOptions {
     pub minimal_resources: bool,
     pub defer_extension_start: bool,
     pub session_profile: maho_ext_api::ExtensionSessionProfile,
-    /// The first `bind_extensions` call's bindings, built over the created session (pinned
-    /// `createBoundAppServerSession` binding a mode's handlers before `session_start`).
+    /// The first `bind_extensions` call's bindings, built over the created session before `session_start`.
     pub extension_bindings: Option<crate::agent_session::ExtensionBindingsFactory>,
     /// senpi `bindExtensions({ uiContext })`: the UI a mode binds before `session_start` runs.
     pub extension_ui: Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,
@@ -292,11 +291,29 @@ pub async fn create_agent_session(
         }
     }
     if model.is_none() {
-        model = settings
-            .get_string("defaultProvider")
-            .zip(settings.get_string("defaultModel"))
-            .and_then(|(provider, id)| registry.find(&provider, &id))
-            .or_else(|| registry.get_available().into_iter().next());
+        // senpi sdk.ts:333-345: findInitialModel picks the startup model and records its provenance,
+        // which session_start carries so an automatic pick (settings, provider default, first
+        // available) stays replaceable by a model profile.
+        let default_provider = settings.get_string("defaultProvider");
+        let default_model_id = settings.get_string("defaultModel");
+        let initial = crate::model_resolver::find_initial_model(
+            crate::model_resolver::InitialModelOptions {
+                cli_provider: None,
+                cli_model: None,
+                scoped_models: &[],
+                is_continuing: !context.messages.is_empty(),
+                default_provider: default_provider.as_deref(),
+                default_model_id: default_model_id.as_deref(),
+                model_thinking_levels: None,
+            },
+            &runtime,
+        )
+        .await?;
+        model = initial.parsed.model;
+        if options.initial_model_provenance.is_none() {
+            options.initial_model_provenance =
+                Some(crate::model_resolver::initial_model_provenance_str(initial.provenance).to_owned());
+        }
         // senpi sdk.ts:322-326: no model leaves a model-less session with the login guidance.
         match &model {
             None => {
@@ -314,7 +331,7 @@ pub async fn create_agent_session(
         .current_branch()
         .iter()
         .any(|entry| entry["type"] == "thinking_level_change");
-    let configured_thinking = model
+    let model_thinking = model
         .as_ref()
         .and_then(|model| {
             settings
@@ -322,13 +339,10 @@ pub async fn create_agent_session(
                 .and_then(|levels| levels.get(format!("{}/{}", model.provider, model.id)))
                 .and_then(serde_json::Value::as_str)
                 .and_then(ModelThinkingLevel::parse)
-        })
-        .or_else(|| {
-            settings
-                .get_string("defaultThinkingLevel")
-                .as_deref()
-                .and_then(ModelThinkingLevel::parse)
         });
+    let configured_thinking = model_thinking;
+    let explicit_thinking = options.thinking_level.is_some() || options.thinking_selection.is_some();
+    let mut thinking_level_source = if explicit_thinking { "explicit" } else if has_thinking_entry { "session" } else if model_thinking.is_some() { "global" } else if model.as_ref().and_then(|m| m.default_thinking_level).is_some() { "model-default" } else { "default" };
     let requested_thinking = options
         .thinking_level
         .map(ModelThinkingLevel::from)
@@ -344,6 +358,8 @@ pub async fn create_agent_session(
                 .flatten()
         })
         .or(configured_thinking)
+        .or_else(|| model.as_ref().and_then(|m| m.default_thinking_level))
+        .or_else(|| settings.get_string("defaultThinkingLevel").as_deref().and_then(ModelThinkingLevel::parse))
         .or(Some(ModelThinkingLevel::Medium));
     // senpi sdk.ts:360-365: without a model the level is "off" (`clamp_thinking_level_to_model(_, None)`).
     let thinking_level = match requested_thinking {
@@ -354,6 +370,7 @@ pub async fn create_agent_session(
         ),
         None => clamp_thinking_level_to_model(None, model.as_ref()),
     };
+    if requested_thinking != Some(thinking_level) && thinking_level_source != "default" { thinking_level_source = "clamped"; }
     let mut thinking_selection = options
         .thinking_selection
         .take()
@@ -370,7 +387,7 @@ pub async fn create_agent_session(
                 .flatten()
                 .and_then(|value| serde_json::from_value(value).ok())
         });
-    if thinking_selection.is_none() && !has_thinking_entry && configured_thinking.is_some() {
+    if thinking_selection.is_none() && !has_thinking_entry && (configured_thinking.is_some() || settings.get_string("defaultThinkingLevel").is_some()) {
         thinking_selection = Some(ThinkingSelection {
             level: thinking_level,
             source: maho_ai::types::ThinkingSelectionSource::Explicit,
@@ -473,11 +490,13 @@ pub async fn create_agent_session(
         manager.append_model_change(&model.provider, &model.id, None, None);
     }
     if context.messages.is_empty() || !has_thinking_entry {
-        manager.append_thinking_level_change(
+        manager.append_thinking_level_change_with_context(
             thinking_level.as_str(),
             thinking_selection.as_ref().map(|selection| {
                 serde_json::to_value(selection).expect("thinking selection serializes")
             }),
+            Some(thinking_level_source),
+            model.as_ref(),
         );
     }
     let resumed = !context.messages.is_empty();

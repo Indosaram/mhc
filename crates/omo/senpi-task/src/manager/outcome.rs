@@ -27,6 +27,12 @@ pub struct ErrorOutcomeInput {
 }
 
 pub trait OutcomeTrackerPorts: Send + Sync {
+    fn next_tracking_generation(&self, _task_id: &str) -> u64 {
+        0
+    }
+    fn tracking_generation(&self, _task_id: &str) -> u64 {
+        0
+    }
     fn store(&self) -> &TaskRecordStore;
     fn now_iso(&self) -> String;
     fn live_handle(&self, task_id: &str) -> Option<Arc<dyn ManagedChildHandle>>;
@@ -40,6 +46,9 @@ pub trait OutcomeTrackerPorts: Send + Sync {
     fn settle_isolation(&self, task_id: &str, merge: bool);
     /// Takes the pending cancel signal for THIS run (task id + epoch) before checking the released
     /// live handle. Defaults to "no pending cancel" for an implementer without cancels.
+    fn pause_settlement(&self, _task_id: &str, _epoch: i64) -> Option<PendingStop> {
+        None
+    }
     fn stop_settlement(&self, _task_id: &str, _epoch: i64) -> Option<PendingStop> {
         None
     }
@@ -60,7 +69,8 @@ pub fn owns_outcome(
         return false;
     }
     ports.try_load(task_id).is_some_and(|fresh| {
-        fresh.residency_state != ResidencyState::PersistedOnly
+        fresh.status == TaskStatus::Running
+            && fresh.residency_state != ResidencyState::PersistedOnly
             && fresh.residency_state != ResidencyState::RpcDetached
             && fresh.notification.run_epoch == epoch
     })
@@ -73,14 +83,51 @@ pub fn track_outcome(
     model: String,
     epoch: i64,
 ) {
+    let generation = ports.next_tracking_generation(&task_id);
     #[cfg(test)]
     test_barrier::track(Arc::as_ptr(&handle) as *const () as usize);
     std::thread::spawn(move || {
         let outcome = handle.wait_for_outcome();
-        settle_outcome(ports.as_ref(), &task_id, &handle, &model, epoch, outcome);
+        if ports.tracking_generation(&task_id) == generation {
+            settle_outcome(
+                ports.as_ref(),
+                &task_id,
+                &handle,
+                &model,
+                epoch,
+                generation,
+                outcome,
+            );
+        }
         ports.outcome_processed();
         #[cfg(test)]
         test_barrier::note_consume(Arc::as_ptr(&handle) as *const () as usize);
+    });
+}
+
+pub fn track_exact_outcome(
+    ports: Arc<dyn OutcomeTrackerPorts>,
+    task_id: String,
+    handle: Arc<dyn ManagedChildHandle>,
+    model: String,
+    epoch: i64,
+    outcome: crate::manager::child_handle::ExactTurnOutcome,
+) {
+    let generation = ports.next_tracking_generation(&task_id);
+    std::thread::spawn(move || {
+        let outcome = outcome();
+        if ports.tracking_generation(&task_id) == generation {
+            settle_outcome(
+                ports.as_ref(),
+                &task_id,
+                &handle,
+                &model,
+                epoch,
+                generation,
+                outcome,
+            );
+        }
+        ports.outcome_processed();
     });
 }
 
@@ -90,8 +137,37 @@ fn settle_outcome(
     handle: &Arc<dyn ManagedChildHandle>,
     model: &str,
     epoch: i64,
+    generation: u64,
     outcome: RunnerOutcome,
 ) {
+    if let Some(paused) = ports.pause_settlement(task_id, epoch) {
+        let settled = paused
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (settled, _) = paused
+            .1
+            .wait_timeout_while(settled, STOP_SETTLEMENT_WAIT, |done| !*done)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !*settled {
+            log_failure(
+                "senpi-task pause acknowledgement timed out",
+                task_id,
+                &"native pause did not settle",
+            );
+            return;
+        }
+        drop(settled);
+        if ports
+            .try_load(task_id)
+            .is_some_and(|r| r.notification.run_epoch == epoch && r.status == TaskStatus::Paused)
+        {
+            return;
+        }
+    }
+    if ports.tracking_generation(task_id) != generation {
+        return;
+    }
     if let Some(stopped) = ports.stop_settlement(task_id, epoch) {
         settle_stopped(ports, task_id, handle, model, epoch, stopped);
         return;

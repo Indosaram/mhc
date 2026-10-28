@@ -168,6 +168,7 @@ fn port_for(
     let revive_calls = Arc::clone(revive_calls);
     let dequeue_calls = Arc::clone(dequeue_calls);
     SteeringPort {
+        send_while_run_held: None,
         store: store.clone(),
         live_handle: Arc::new(move |task_id| lock(&live).get(task_id).cloned()),
         dequeue_pending: Arc::new(move |task_id| {
@@ -1053,4 +1054,83 @@ fn foreign_momus_child_with_all_scope_gets_the_one_shot_refusal() {
     };
     assert_eq!(message, momus_reminder());
     assert!(fake.steers().is_empty());
+}
+
+#[test]
+fn paused_cancel_retains_previous_status() {
+    let harness = harness();
+    let mut record = harness.seed_record();
+    record.status = TaskStatus::Paused;
+    harness.store.replace(&record).expect("paused");
+    let outcome = harness
+        .engine
+        .cancel_task(&record.task_id, None, CancelOptions::default())
+        .expect("cancel");
+    assert!(matches!(
+        outcome,
+        CancelOutcome::Cancelled {
+            previous_status: TaskStatus::Paused,
+            ..
+        }
+    ));
+    assert_eq!(harness.load(&record.task_id).status, TaskStatus::Cancelled);
+}
+#[test]
+fn held_send_intercepts_before_delivery_or_revival() {
+    let harness = harness();
+    let mut record = harness.seed_record();
+    record.status = TaskStatus::Paused;
+    harness.store.replace(&record).expect("paused");
+    let mut port = port_for(
+        &harness.store,
+        &harness.live,
+        Arc::clone(&harness.destruction),
+        &harness.revive_calls,
+        &harness.dequeue_calls,
+        false,
+    );
+    port.send_while_run_held = Some(Arc::new(|record, message| {
+        assert_eq!(message, "held message");
+        Some(Ok(SendOutcome::Held {
+            task_id: record.task_id.clone(),
+            pause_seq: 2,
+            entry_id: "entry".into(),
+        }))
+    }));
+    let engine = SteeringEngine::new(port);
+    assert!(matches!(
+        engine
+            .send_to_task(&SendInput::new(&record.task_id, "held message"))
+            .expect("held"),
+        SendOutcome::Held { pause_seq: 2, .. }
+    ));
+    assert_eq!(
+        harness.load(&record.task_id).notification.run_epoch,
+        record.notification.run_epoch
+    );
+    assert!(!engine.has_in_flight_send(&record.task_id));
+}
+#[test]
+fn revival_folds_only_reported_or_partial_positive_finite_spend() {
+    use crate::state::{CostReportStatus, TaskRunStats};
+    let harness = harness();
+    let mut record = harness.seed_record();
+    record.status = TaskStatus::Completed;
+    record.prior_runs_cost_usd = Some(1.0);
+    for (status, cost, expected) in [
+        (CostReportStatus::Reported, 0.5, 1.5),
+        (CostReportStatus::Partial, 0.25, 1.25),
+        (CostReportStatus::Unavailable, 4.0, 1.0),
+        (CostReportStatus::Reported, f64::INFINITY, 1.0),
+    ] {
+        record.run_stats = Some(TaskRunStats {
+            cost_status: Some(status),
+            cost_usd: Some(cost),
+            ..Default::default()
+        });
+        let revived = super::engine::build_revived(&record, now_iso());
+        assert_eq!(revived.prior_runs_cost_usd, Some(expected));
+        assert!(revived.run_stats.is_none());
+        assert_eq!(revived.run_start_epoch, record.notification.run_epoch + 1);
+    }
 }

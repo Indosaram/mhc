@@ -8,6 +8,7 @@ use serde_json::Value;
 use serde_json::json;
 use telemetry_core::CreateEventTelemetryClientInput;
 use telemetry_core::CreateTelemetryClientInput;
+use telemetry_core::EventTelemetryCaptureOptions;
 use telemetry_core::EventPropertyAllowlist;
 use telemetry_core::EventTelemetryClient;
 use telemetry_core::TelemetryDiagnosticEvent;
@@ -100,6 +101,48 @@ fn shared_properties() -> Value {
 }
 
 #[test]
+fn event_capture_options_preserve_valid_uuid_timestamp_and_reject_invalid_uuid() {
+    let fixture = Fixture::new();
+    let recorder = Recorder::new();
+    let diagnostics = DiagnosticsSink::default();
+    let allowlist = allowlist("session_started", &["reason"]);
+    let client = fixture.client(&recorder, &allowlist, Some(&diagnostics));
+    let timestamp = "2026-10-23T12:34:56.000Z".to_string();
+
+    client.capture_event_with_options(
+        "session_started",
+        &props(json!({"reason": "startup"})),
+        Some(&EventTelemetryCaptureOptions {
+            uuid: Some("01234567-89ab-cdef-0123-456789abcdef".into()),
+            timestamp: Some(timestamp.parse().unwrap()),
+            ..Default::default()
+        }),
+    );
+    client.capture_event_with_options(
+        "session_started",
+        &props(json!({"reason": "retry"})),
+        Some(&EventTelemetryCaptureOptions {
+            uuid: Some("not-a-uuid".into()),
+            timestamp: None,
+            ..Default::default()
+        }),
+    );
+
+    let messages = recorder.messages();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].uuid.as_deref(), Some("01234567-89ab-cdef-0123-456789abcdef"));
+    assert_eq!(messages[0].timestamp.as_deref(), Some(timestamp.as_str()));
+    assert_eq!(messages[0].properties.get("event_id").and_then(Value::as_str), messages[0].uuid.as_deref());
+    assert!(messages[1].uuid.as_deref().is_some_and(|uuid| uuid.len() == 36));
+    // A capture without an explicit timestamp is stamped now, never left absent.
+    assert!(messages[1]
+        .timestamp
+        .as_deref()
+        .is_some_and(|value| value.ends_with('Z') && value.len() == 24));
+    assert_eq!(diagnostics.events(), [TelemetryDiagnosticEvent::TelemetryEventPropertyRejected]);
+}
+
+#[test]
 fn unknown_properties_are_dropped_with_a_diagnostic() {
     let fixture = Fixture::new();
     let recorder = Recorder::new();
@@ -142,6 +185,7 @@ fn unknown_properties_are_dropped_with_a_diagnostic() {
         "count": 3,
         "label": "x".repeat(64),
     })));
+    expected.insert("event_id".into(), messages[0].uuid.clone().expect("event uuid").into());
     assert_eq!(
         Value::Object(messages[0].properties.clone()),
         Value::Object(expected)
@@ -388,10 +432,9 @@ fn malformed_values_and_empty_event_name_are_diagnosed_and_not_sent() {
 
     let messages = recorder.messages();
     assert_eq!(messages.len(), 1);
-    assert_eq!(
-        Value::Object(messages[0].properties.clone()),
-        shared_properties()
-    );
+    let mut expected = shared_properties();
+    expected["event_id"] = messages[0].uuid.clone().expect("event uuid").into();
+    assert_eq!(Value::Object(messages[0].properties.clone()), expected);
     assert_eq!(diagnostics.events().len(), 5);
 }
 

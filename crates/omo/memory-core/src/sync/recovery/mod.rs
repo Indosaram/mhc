@@ -25,7 +25,7 @@ pub mod write_hold;
 #[cfg(test)]
 mod recovery_tests;
 #[cfg(test)]
-mod testing;
+pub(crate) mod testing;
 
 pub use availability::{APPROVAL_PATH_MESSAGE, RecoveryAvailability, recovery_availability};
 pub use bridge::{ReferenceBridge, create_recovery_bridge};

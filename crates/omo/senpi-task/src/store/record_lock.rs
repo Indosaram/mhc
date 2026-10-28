@@ -17,8 +17,16 @@ pub fn with_task_record_lock<T>(
     record_path: &Path,
     operation: impl FnOnce() -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
+    with_task_record_lock_options(record_path, operation, LOCK_WAIT_TIMEOUT)
+}
+
+pub fn with_task_record_lock_options<T>(
+    record_path: &Path,
+    operation: impl FnOnce() -> Result<T, StoreError>,
+    holder_wait: Duration,
+) -> Result<T, StoreError> {
     let lock_path = lock_path_for(record_path);
-    acquire_lock(&lock_path)?;
+    acquire_lock(&lock_path, holder_wait)?;
     let result = operation();
     remove_if_present(&lock_path)?;
     result
@@ -30,7 +38,7 @@ fn lock_path_for(record_path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-fn acquire_lock(lock_path: &Path) -> Result<(), StoreError> {
+fn acquire_lock(lock_path: &Path, holder_wait: Duration) -> Result<(), StoreError> {
     let started = Instant::now();
     let mut retry = LOCK_RETRY_MIN;
     loop {
@@ -53,7 +61,7 @@ fn acquire_lock(lock_path: &Path) -> Result<(), StoreError> {
                     remove_if_present(lock_path)?;
                     continue;
                 }
-                if started.elapsed() >= LOCK_WAIT_TIMEOUT {
+                if started.elapsed() >= holder_wait {
                     return Err(StoreError::LockTimeout(lock_path.to_path_buf()));
                 }
                 std::thread::sleep(retry);

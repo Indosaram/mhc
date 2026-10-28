@@ -129,16 +129,21 @@ impl FactsFailureStore {
         &self,
         request: RecordFailureRequest,
     ) -> Result<FactsFailuresFile, FactsFailureStoreError> {
-        self.mutate(|entries, at_millis| {
-            apply_failure(&ApplyFailureInput {
-                entries: entries.to_vec(),
-                targets: request.targets.clone(),
-                failure_id: request.failure_id.clone(),
-                reason: request.reason,
-                detail: request.detail.clone(),
-                now: format_rfc3339_millis(at_millis),
-            })
-        })
+        let targets = request.targets.clone();
+        self.mutate(
+            |entries, at_millis| {
+                apply_failure(&ApplyFailureInput {
+                    entries: entries.to_vec(),
+                    targets: request.targets.clone(),
+                    failure_id: request.failure_id.clone(),
+                    reason: request.reason,
+                    detail: request.detail.clone(),
+                    now: format_rfc3339_millis(at_millis),
+                })
+            },
+            false,
+            &targets,
+        )
     }
 
     /// Clear failure records for endpoints that successfully processed.
@@ -146,7 +151,11 @@ impl FactsFailureStore {
         &self,
         targets: &[FactsFailureTarget],
     ) -> Result<FactsFailuresFile, FactsFailureStoreError> {
-        self.mutate(|entries, _at_millis| clear_on_success(entries, targets))
+        self.mutate(
+            |entries, _at_millis| clear_on_success(entries, targets),
+            false,
+            &[],
+        )
     }
 
     /// Manually clear failure records matching a filter for retry.
@@ -155,15 +164,24 @@ impl FactsFailureStore {
         filter: &FactsFailureFilter,
     ) -> Result<usize, FactsFailureStoreError> {
         let mut removed = 0;
-        self.mutate(|entries, _at_millis| {
-            let next = clear_for_retry(entries, filter);
-            removed = entries.len().saturating_sub(next.len());
-            next
-        })?;
+        self.mutate(
+            |entries, _at_millis| {
+                let next = clear_for_retry(entries, filter);
+                removed = entries.len().saturating_sub(next.len());
+                next
+            },
+            true,
+            &[],
+        )?;
         Ok(removed)
     }
 
-    fn mutate<F>(&self, change: F) -> Result<FactsFailuresFile, FactsFailureStoreError>
+    fn mutate<F>(
+        &self,
+        change: F,
+        retry: bool,
+        park_targets: &[FactsFailureTarget],
+    ) -> Result<FactsFailuresFile, FactsFailureStoreError>
     where
         F: FnOnce(&[FactsFailureRecord], i64) -> Vec<FactsFailureRecord>,
     {
@@ -177,8 +195,29 @@ impl FactsFailureStore {
                 updated_at: at_iso.clone(),
                 entries,
             };
+            if retry {
+                let removed: Vec<_> = current
+                    .entries
+                    .iter()
+                    .filter(|entry| !file.entries.contains(entry))
+                    .cloned()
+                    .collect();
+                super::parked::move_parked_entries(&self.layout, &removed, true)?;
+            }
             let rendered = render_failures_file(&file.entries, &file.updated_at);
             self.write_atomically(&rendered)?;
+            let parked: Vec<_> = file
+                .entries
+                .iter()
+                .filter(|entry| {
+                    park_targets.iter().any(|target| {
+                        target.conversation_id == entry.conversation_id
+                            && target.end_message_id == entry.end_message_id
+                    })
+                })
+                .cloned()
+                .collect();
+            super::parked::move_parked_entries(&self.layout, &parked, false)?;
             Ok(file)
         })
     }
@@ -244,7 +283,11 @@ impl FactsFailureStore {
             wait_timeout_ms: Some(self.lock_wait_ms),
             ..Default::default()
         };
-        with_lock(&self.lock_path, &record, &options, task).map_err(FactsFailureStoreError::from)
+        with_lock(&self.lock_path, &record, &options, || {
+            super::parked::migrate_parked_entries(&self.layout)?;
+            task()
+        })
+        .map_err(FactsFailureStoreError::from)
     }
 }
 

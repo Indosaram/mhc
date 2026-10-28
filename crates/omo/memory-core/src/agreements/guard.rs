@@ -24,12 +24,19 @@ pub fn describe_agreements_tool_violation(
     before: Option<&str>,
     after: Option<&str>,
 ) -> Option<String> {
+    let mut prior_receipts = before
+        .and_then(|content| parse_memory_file(content).ok())
+        .map(|file| parse_agreements_ledger(&file.body).receipts)
+        .unwrap_or_default();
     let items_before = read_agreements_body(before);
     let human_before: Vec<&AgreementItem> = items_before
         .iter()
         .filter(|item| item.by == AgreementAuthor::Human)
         .collect();
     let Some(after) = after else {
+        if !prior_receipts.is_empty() {
+            return Some("agreement event receipts cannot be removed by memory tools".to_string());
+        }
         if !human_before.is_empty() {
             return Some("system/agreements.md holds agreements your person wrote; only they can remove them (/agreements drop)".to_string());
         }
@@ -57,6 +64,12 @@ pub fn describe_agreements_tool_violation(
             "system/agreements.md is malformed: {}",
             parsed.diagnostics.join("; ")
         ));
+    }
+    prior_receipts.sort();
+    let mut after_receipts = parsed.receipts.clone();
+    after_receipts.sort();
+    if prior_receipts != after_receipts {
+        return Some("agreement event receipts are maintained by the facts extractor and cannot be edited by memory tools".to_string());
     }
     if let Some(counted) = describe_count_tampering(&items_before, &parsed.items) {
         return Some(counted);

@@ -162,3 +162,30 @@ fn given_three_waiters_one_removed_when_release_drains_then_both_survivors_grant
     release(&mut concurrency, CLAUDE);
     assert_eq!(*log.lock().expect("log"), ["second", "fourth"]);
 }
+
+#[test]
+fn persisted_waiter_restores_fifo_in_fresh_allocator_and_survives_second_stop() {
+    let mut old = limited(1);
+    old.try_acquire(CLAUDE, "holder", 1);
+    old.enqueue_epoch(
+        CLAUDE,
+        "paused",
+        7,
+        Box::new(|| panic!("withdrawn callback")),
+    );
+    let saved = old.withdraw(CLAUDE, "paused", 7).unwrap();
+    let serialized = serde_json::to_string(&saved).unwrap();
+    let mut fresh = limited(1);
+    assert!(fresh.try_acquire(CLAUDE, "holder", 1));
+    let (log, make) = recorder();
+    fresh.requeue(serde_json::from_str(&serialized).unwrap(), make("restored"));
+    fresh.enqueue_epoch(CLAUDE, "later", 8, make("later"));
+    assert!(fresh.drain().is_empty());
+    let again = fresh.withdraw(CLAUDE, "paused", 7).unwrap();
+    assert_eq!(again, saved);
+    fresh.requeue(again, make("resumed"));
+    release(&mut fresh, CLAUDE);
+    assert_eq!(*log.lock().unwrap(), ["resumed"]);
+    release(&mut fresh, CLAUDE);
+    assert_eq!(*log.lock().unwrap(), ["resumed", "later"]);
+}

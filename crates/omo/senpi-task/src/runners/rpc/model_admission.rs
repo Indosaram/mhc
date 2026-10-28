@@ -18,6 +18,16 @@ const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 /// A successful catalog is cached only briefly: a login or settings edit changes which models
 /// resolve, and nothing in this process observes that.
 pub const MODEL_CATALOG_CACHE_TTL_MS: i64 = 120_000;
+pub const MODEL_CATALOG_MAX_STALE_MS: i64 = 30 * 60_000;
+#[derive(Debug, Clone)]
+pub struct RpcModelAdmissionVerdict {
+    pub verdict: &'static str,
+    pub model: String,
+    pub profile_key: String,
+    pub elapsed_ms: i64,
+    pub catalog_age_ms: Option<i64>,
+}
+pub type InconclusiveListener = Arc<dyn Fn(RpcModelAdmissionVerdict) + Send + Sync>;
 
 static ANSI_ESCAPE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\x1B\[[0-?]*[ -/]*[@-~]").unwrap_or_else(|error| panic!("ansi regex: {error}"))
@@ -38,6 +48,8 @@ pub type RpcModelAdmission = Arc<dyn Fn(&RpcRunnerSpec) -> Result<(), RunnerFail
 
 #[derive(Clone, Default)]
 pub struct RpcModelAdmissionOptions {
+    pub exclude_models: Vec<String>,
+    pub on_inconclusive: Option<InconclusiveListener>,
     pub build_spawn: Option<CatalogSpawnBuilder>,
     pub probe: Option<ModelCatalogProbe>,
     pub now: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
@@ -124,7 +136,7 @@ fn trailing_chars(value: &str, limit: usize) -> String {
     value.chars().skip(count.saturating_sub(limit)).collect()
 }
 
-type CatalogResult = Result<(BTreeSet<String>, String), RunnerFailure>;
+type CatalogResult = Result<Option<(BTreeSet<String>, String)>, RunnerFailure>;
 
 #[derive(Clone)]
 struct CachedCatalog {
@@ -168,10 +180,13 @@ struct ProbeLeader {
 
 impl Drop for ProbeLeader {
     fn drop(&mut self) {
-        let outcome = self.outcome.take().unwrap_or_else(|| ModelCatalogProbeResult {
-            stderr: "catalog probe aborted".to_string(),
-            ..ModelCatalogProbeResult::default()
-        });
+        let outcome = self
+            .outcome
+            .take()
+            .unwrap_or_else(|| ModelCatalogProbeResult {
+                stderr: "catalog probe aborted".to_string(),
+                ..ModelCatalogProbeResult::default()
+            });
         *self
             .flight
             .result
@@ -187,7 +202,7 @@ impl Drop for ProbeLeader {
 
 fn build_catalog(model: &str, result: &ModelCatalogProbeResult) -> CatalogResult {
     if result.timed_out {
-        Err(admission_failure(model, "catalog probe timed out"))
+        Ok(None)
     } else if result.code != Some(0) {
         let detail = trailing_chars(result.stderr.trim(), 2_000);
         let code = result
@@ -203,11 +218,71 @@ fn build_catalog(model: &str, result: &ModelCatalogProbeResult) -> CatalogResult
             &format!("catalog probe exited {code}{suffix}"),
         ))
     } else {
-        Ok((
+        Ok(Some((
             parse_model_catalog(&result.stdout),
             trailing_chars(result.stderr.trim(), 1_000),
-        ))
+        )))
     }
+}
+
+fn base_model(model: &str) -> &str {
+    let mut base = model;
+    let (mut thinking, mut tier) = (false, false);
+    for _ in 0..2 {
+        let Some((stem, suffix)) = base.rsplit_once(':') else {
+            break;
+        };
+        if stem.is_empty() {
+            break;
+        }
+        if !thinking
+            && matches!(
+                suffix,
+                "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+            )
+        {
+            thinking = true;
+            base = stem;
+        } else if !tier && matches!(suffix, "auto" | "flex" | "priority" | "ultrafast") {
+            tier = true;
+            base = stem;
+        } else {
+            break;
+        }
+    }
+    base
+}
+fn lists(models: &BTreeSet<String>, model: &str) -> bool {
+    models.contains(model) || models.contains(base_model(model))
+}
+fn excluded(model: &str, patterns: &[String]) -> Option<String> {
+    let tails: Vec<&str> = model
+        .match_indices('/')
+        .map(|(i, _)| &model[i + 1..])
+        .collect();
+    let tails = if tails.is_empty() { vec![model] } else { tails };
+    patterns
+        .iter()
+        .find(|raw| {
+            let pattern = raw.trim();
+            if pattern.is_empty() {
+                return false;
+            }
+            let expression = format!(
+                "(?i)^{}$",
+                pattern
+                    .split('*')
+                    .map(regex::escape)
+                    .collect::<Vec<_>>()
+                    .join(".*")
+            );
+            let Ok(expression) = Regex::new(&expression) else {
+                return false;
+            };
+            tails.iter().any(|tail| expression.is_match(tail))
+                || (pattern.contains('/') && expression.is_match(model))
+        })
+        .cloned()
 }
 
 pub fn create_rpc_model_admission(options: RpcModelAdmissionOptions) -> RpcModelAdmission {
@@ -221,7 +296,15 @@ pub fn create_rpc_model_admission(options: RpcModelAdmissionOptions) -> RpcModel
     let now = options
         .now
         .unwrap_or_else(|| Arc::new(|| chrono::Utc::now().timestamp_millis()));
+    let on_inconclusive = options.on_inconclusive.unwrap_or_else(|| Arc::new(|verdict| {
+        utils::logger::log("senpi-task model admission inconclusive; admitting the start", Some(&json!({
+            "verdict": verdict.verdict, "model": verdict.model, "profileKey": verdict.profile_key,
+            "elapsedMs": verdict.elapsed_ms, "catalogAgeMs": verdict.catalog_age_ms,
+        })));
+    }));
+    let patterns = options.exclude_models;
     let catalogs: Arc<Mutex<HashMap<String, CachedCatalog>>> = Arc::default();
+    let last_good: Arc<Mutex<HashMap<String, CachedCatalog>>> = Arc::default();
     let in_flight: Arc<InFlightProbes> = Arc::default();
     Arc::new(move |spec| {
         let Some(model) = spec
@@ -232,84 +315,157 @@ pub fn create_rpc_model_admission(options: RpcModelAdmissionOptions) -> RpcModel
         else {
             return Ok(());
         };
+        if let Some(pattern) = excluded(base_model(model), &patterns) {
+            return Err(admission_failure(
+                model,
+                &format!("exclude_models in omo.json keeps it out ({pattern:?})"),
+            ));
+        }
+        let started_at = now();
         let descriptor = build_spawn(spec);
         let key = profile_key(&descriptor);
+        let probe_catalog = || {
+            let first = probe(&descriptor);
+            let result = if first.timed_out {
+                probe(&descriptor)
+            } else {
+                first
+            };
+            let catalog = build_catalog(model, &result);
+            if matches!(&catalog, Ok(Some(_))) {
+                last_good
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(
+                        key.clone(),
+                        CachedCatalog {
+                            catalog: catalog.clone(),
+                            cached_at: now(),
+                        },
+                    );
+            }
+            (result, catalog)
+        };
         let fresh = catalogs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&key)
             .filter(|cached| now() - cached.cached_at < MODEL_CATALOG_CACHE_TTL_MS)
             .cloned();
-        let catalog = match fresh {
-            Some(cached) => cached.catalog,
-            None => {
-                let (flight, leads) = {
-                    let mut slots = in_flight.lock().unwrap_or_else(PoisonError::into_inner);
-                    match slots.get(&key) {
-                        Some(flight) => (Arc::clone(flight), false),
-                        None => {
-                            let flight = Arc::new(InFlightProbe::default());
-                            slots.insert(key.clone(), Arc::clone(&flight));
-                            (flight, true)
-                        }
+        let catalog = if let Some(cached) = fresh {
+            cached.catalog
+        } else {
+            let (flight, leads) = {
+                let mut slots = in_flight.lock().unwrap_or_else(PoisonError::into_inner);
+                match slots.get(&key) {
+                    Some(flight) => (Arc::clone(flight), false),
+                    None => {
+                        let flight = Arc::new(InFlightProbe::default());
+                        slots.insert(key.clone(), Arc::clone(&flight));
+                        (flight, true)
                     }
-                };
-                if leads {
-                    let mut leader = ProbeLeader {
-                        in_flight: Arc::clone(&in_flight),
-                        key: key.clone(),
-                        flight,
-                        outcome: None,
-                    };
-                    let result = probe(&descriptor);
-                    let catalog = build_catalog(model, &result);
-                    let cached_at = now();
-                    let mut cache = catalogs.lock().unwrap_or_else(PoisonError::into_inner);
-                    // Expired entries are already ignored by lookups; evict them so distinct
-                    // profiles (per-task cwd) do not accumulate for the runner's lifetime.
-                    cache.retain(|_, cached| {
-                        cached_at - cached.cached_at < MODEL_CATALOG_CACHE_TTL_MS
-                    });
-                    cache.insert(
-                        key.clone(),
-                        CachedCatalog {
-                            catalog: catalog.clone(),
-                            cached_at,
-                        },
-                    );
-                    drop(cache);
-                    // The cache is filled before the slot is retired, so a later arrival hits it.
-                    leader.outcome = Some(result);
-                    drop(leader);
-                    catalog
-                } else {
-                    build_catalog(model, &flight.wait())
                 }
+            };
+            if leads {
+                let mut leader = ProbeLeader {
+                    in_flight: Arc::clone(&in_flight),
+                    key: key.clone(),
+                    flight,
+                    outcome: None,
+                };
+                let (result, catalog) = probe_catalog();
+                if matches!(&catalog, Ok(Some(_))) {
+                    catalogs
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .insert(
+                            key.clone(),
+                            CachedCatalog {
+                                catalog: catalog.clone(),
+                                cached_at: now(),
+                            },
+                        );
+                }
+                leader.outcome = Some(result);
+                drop(leader);
+                catalog
+            } else {
+                build_catalog(model, &flight.wait())
             }
         };
-        let verdict = catalog.and_then(|(models, stderr_tail)| {
-            if models.contains(model) {
-                return Ok(());
+        let admit_unjudged = || {
+            let at = now();
+            let good = last_good
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&key)
+                .cloned();
+            let age = good
+                .filter(|cached| {
+                    at - cached.cached_at <= MODEL_CATALOG_MAX_STALE_MS
+                        && matches!(&cached.catalog, Ok(Some((models, _))) if lists(models, model))
+                })
+                .map(|cached| at - cached.cached_at);
+            on_inconclusive(RpcModelAdmissionVerdict {
+                verdict: if age.is_some() {
+                    "stale_catalog"
+                } else {
+                    "inconclusive"
+                },
+                model: model.into(),
+                profile_key: key.clone(),
+                elapsed_ms: at - started_at,
+                catalog_age_ms: age,
+            });
+            Ok(())
+        };
+        let observed = match catalog {
+            Ok(Some(catalog)) => catalog,
+            Ok(None) => {
+                catalogs
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&key);
+                return admit_unjudged();
             }
-            let stderr = if stderr_tail.is_empty() {
-                String::new()
-            } else {
-                format!("; child stderr: {stderr_tail}")
-            };
-            Err(admission_failure(
-                model,
-                &format!(
-                    "model is not visible in the child profile (probed catalog has {} models{stderr}); forward its provider extension or child-visible settings",
-                    models.len()
-                ),
-            ))
-        });
-        if verdict.is_err() {
+            Err(error) => {
+                catalogs
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&key);
+                return Err(error);
+            }
+        };
+        if lists(&observed.0, model) {
+            return Ok(());
+        }
+        catalogs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
+        let (_, confirmed) = probe_catalog();
+        let Some((models, stderr_tail)) = confirmed? else {
+            return admit_unjudged();
+        };
+        if lists(&models, model) {
             catalogs
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .remove(&key);
+                .insert(
+                    key,
+                    CachedCatalog {
+                        catalog: Ok(Some((models, stderr_tail))),
+                        cached_at: now(),
+                    },
+                );
+            return Ok(());
         }
-        verdict
+        Err(admission_failure(
+            model,
+            &format!(
+                "model is not visible in the child profile after a confirming re-probe (probed catalog has {} models; child stderr: {stderr_tail}); forward its provider extension or child-visible settings",
+                models.len()
+            ),
+        ))
     })
 }

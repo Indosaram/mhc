@@ -148,7 +148,7 @@ pub fn select_account(
                 .min_by(f64::total_cmp),
             block_reason: candidates
                 .iter()
-                .any(|a| a.block_reason.as_deref() == Some("auth_error"))
+                .all(|a| a.block_reason.as_deref() == Some("auth_error"))
                 .then_some("auth_error"),
             unavailable_account,
         })
@@ -170,6 +170,15 @@ mod tests {
                 block_reason: None,
             })
             .into()
+    }
+    #[test]
+    fn mixed_blocks_are_not_classified_as_auth() {
+        let mut pool = accounts();
+        for account in &mut pool { account.blocked_until = Some(100.0); }
+        pool[0].block_reason = Some("auth_error".into());
+        assert_eq!(select_account(&pool, &Default::default(), 1.0).unwrap_err().block_reason, None);
+        for account in &mut pool { account.block_reason = Some("auth_error".into()); }
+        assert_eq!(select_account(&pool, &Default::default(), 1.0).unwrap_err().block_reason, Some("auth_error"));
     }
     #[test]
     fn key_precedence() {

@@ -13,7 +13,7 @@ impl Extension for PromptPreset {
             if has_user_system_prompt(&event.system_prompt_options) { return Ok(EventResult::None); }
             let prompt_preset = ctx.model_registry.prompt_preset(model);
             let Some(preset) = resolve_preset(metadata(model, prompt_preset.as_deref()), settings(ctx), builder_input(&event.system_prompt_options, ctx)) else { return Ok(EventResult::None); };
-            Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt: Some(with_user_appends(preset.prompt, &event.system_prompt_options)), ..Default::default() }))
+            Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt_parts: Some(with_user_append_parts(preset.parts, &event.system_prompt_options)), system_prompt: Some(with_user_appends(preset.prompt, &event.system_prompt_options)), ..Default::default() }))
         })));
         api.on(EventKind::SessionStart, Arc::new(|_event, ctx| Box::pin(async move {
             refresh_header(ctx, None);
@@ -50,12 +50,13 @@ fn settings(ctx: &ExtensionContext) -> PromptPresetName {
     load_prompt_preset_settings(settings.get_project().get("promptPreset").and_then(|value| value.as_str()), settings.get_global().get("promptPreset").and_then(|value| value.as_str()))
 }
 fn builder_input(options: &BuildSystemPromptOptions, ctx: &ExtensionContext) -> BuildDynamicSystemPromptOptions<'static> {
-    BuildDynamicSystemPromptOptions {
+    BuildDynamicSystemPromptOptions { custom_prompt: None, append_system_prompt: None, on_parts: None,
         cwd: if options.cwd.as_os_str().is_empty() { ctx.cwd.to_string_lossy().into_owned() } else { options.cwd.to_string_lossy().into_owned() },
             selected_tools: options.tools.clone(), tool_snippets: options.tool_snippets.iter().map(|(name, snippet)| (name.clone(), snippet.clone())).collect(), prompt_guidelines: options.prompt_guidelines.clone(),
         context_files: options.context_files.iter().map(|file| maho_core::system_prompt::ContextFile { path: file.path.clone(), content: file.content.clone() }).collect(),
         skills: options.skills.iter().map(|skill| maho_core::skills::Skill {
             name: skill.name.clone(), description: skill.description.clone(), file_path: skill.file_path.clone(), base_dir: skill.base_dir.clone(), disable_model_invocation: skill.disable_model_invocation,
+            provenance: None, allowed_set: None,
             source_info: maho_core::source_info::SourceInfo {
                 path: skill.source_info.path.clone(), source: skill.source_info.source.clone(), base_dir: skill.source_info.base_dir.clone(),
                 scope: match skill.source_info.scope { maho_ext_api::SourceScope::User => maho_core::source_info::SourceScope::User, maho_ext_api::SourceScope::Project => maho_core::source_info::SourceScope::Project, maho_ext_api::SourceScope::Temporary => maho_core::source_info::SourceScope::Temporary, maho_ext_api::SourceScope::System => maho_core::source_info::SourceScope::System },
@@ -67,4 +68,9 @@ fn builder_input(options: &BuildSystemPromptOptions, ctx: &ExtensionContext) -> 
 pub fn has_user_system_prompt(options: &BuildSystemPromptOptions) -> bool { options.custom_prompt.as_deref().is_some_and(|prompt| !prompt.is_empty()) }
 pub fn with_user_appends(prompt: String, options: &BuildSystemPromptOptions) -> String {
     match options.append_system_prompt.as_deref().filter(|append| !append.is_empty()) { Some(append) => format!("{prompt}\n\n{append}"), None => prompt }
+}
+
+pub fn with_user_append_parts(mut parts:Vec<maho_ext_api::DynamicSystemPromptPart>,options:&BuildSystemPromptOptions)->Vec<maho_ext_api::DynamicSystemPromptPart> {
+    if let Some(append)=options.append_system_prompt.as_deref().filter(|append|!append.is_empty()) {parts.push(maho_ext_api::DynamicSystemPromptPart{name:"append_system_prompt".into(),source:Some("loader".into()),text:format!("\n\n{append}")});}
+    parts
 }

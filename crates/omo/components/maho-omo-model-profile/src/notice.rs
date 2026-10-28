@@ -1,4 +1,4 @@
-//! Port of omo-senpi `components/model-profile/notice.ts` at omo `455dee62`: the notice content and
+//! Port of omo-senpi `components/model-profile/notice.ts` at omo `v5.1.47`: the notice content and
 //! the auth-failure details emitted with it.
 //!
 //! The notice text is model/user-facing prose carried verbatim from the pinned source; it is not
@@ -108,8 +108,13 @@ pub fn notice_content(
             } else {
                 format!("; {}", auth_failure_note(auth_failures, mode))
             };
+            let caution = profile
+                .caution
+                .as_ref()
+                .map(|caution| format!(" **{caution}**"))
+                .unwrap_or_default();
             format!(
-                "OmO Native: model profile {} selected {model}{reasoning}{skipped}{auth}; {MID_SESSION_NOTE}",
+                "OmO Native: model profile {} selected {model}{reasoning}{skipped}{auth}; {MID_SESSION_NOTE}{caution}",
                 profile_label(profile)
             )
         }

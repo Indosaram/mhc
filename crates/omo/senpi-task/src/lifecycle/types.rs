@@ -63,6 +63,7 @@ pub struct CleanupResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SuspendInput {
     pub parent_session_id: String,
+    pub own_task_id: Option<String>,
     pub reason: String,
 }
 
@@ -74,6 +75,7 @@ pub struct SuspendFailure {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SuspendSummary {
+    pub stopped_owner: Option<String>,
     pub suspended_in_process: usize,
     pub suspended_rpc: usize,
     pub suspended_pending: usize,

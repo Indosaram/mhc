@@ -14,7 +14,7 @@ fn session_zero_cost_is_absent() { assert!(!plain(&stats()).contains("$0.00")); 
 #[test]
 fn session_large_tokens_are_grouped() { let mut s = stats(); s["tokens"]["input"] = json!(1234567); assert!(plain(&s).contains("1,234,567")); }
 #[test]
-fn session_unknown_context_has_placeholder() { let mut s = stats(); s["contextUsage"] = json!({"tokens":null,"contextWindow":200000,"percent":null}); assert!(plain(&s).contains("— / 200,000 (—)")); }
+fn session_unknown_context_has_placeholder() { let mut s = stats(); s["contextUsage"] = json!({"tokens":null,"contextWindow":200000,"percent":null}); assert!(plain(&s).contains("- / 200,000 (-)")); }
 #[test]
 fn version_matches_generated_reference() {
     let cases: Vec<serde_json::Value> = serde_json::from_str(include_str!("golden/version-label.json")).expect("valid test fixture and successful operation");

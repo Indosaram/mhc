@@ -264,6 +264,16 @@ pub struct ToolChildJob {
     pub child_exited: Option<Arc<ToolChildExitedFn>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum ToolWorkspaceEffect {
+    Read,
+    #[default]
+    Write,
+}
+
+
 #[derive(Clone)]
 pub struct ToolDefinition {
     pub name: String,
@@ -282,6 +292,7 @@ pub struct ToolDefinition {
     pub constrained_sampling: Option<ConstrainedSampling>,
     pub render_shell: Option<RenderShell>,
     pub prepare_arguments: Option<PrepareArguments>,
+    pub workspace_effect: Option<ToolWorkspaceEffect>,
     pub execution_mode: Option<ToolExecutionMode>,
     pub execute: ToolExecutor,
     pub kernel_prelude: Option<KernelPrelude>,
@@ -314,6 +325,7 @@ impl ToolDefinition {
             constrained_sampling: None,
             render_shell: None,
             prepare_arguments: None,
+            workspace_effect: None,
             execution_mode: None,
             permission_parser: None,
             kernel_prelude: None,

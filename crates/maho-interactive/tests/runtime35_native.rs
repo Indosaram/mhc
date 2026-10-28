@@ -1776,6 +1776,8 @@ fn native_autocomplete_offers_skill_commands_only_while_enable_skill_commands_is
                 Default::default(),
             ),
             disable_model_invocation: false,
+            provenance: None,
+            allowed_set: None,
         }],
     );
     mode.handle_ui_request(
@@ -1961,6 +1963,147 @@ async fn non_wait_question_keeps_composer_until_answer_chord() {
         maho_ext_api::QuestionStatus::Answered
     );
     assert_eq!(mode.editor.editor.get_text(), "draftcontinued");
+}
+
+#[tokio::test]
+async fn empty_enter_opens_pending_question_and_submits_selection() {
+    use maho_ext_api::ExtensionUi;
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let ui = mode.extension_ui.clone();
+    let answer = ui.question(retained_question("empty-enter", false), Default::default());
+    println!("{}", mode.render(80).join("\n"));
+
+    mode.handle_input_at("\r", 0);
+    println!("{}", mode.render(80).join("\n"));
+    mode.handle_input_at(" ", 1);
+    mode.handle_input_at("\x1b[13;5u", 2);
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), answer)
+        .await.expect("bounded answer").expect("answer");
+    assert_eq!(response.status, maho_ext_api::QuestionStatus::Answered);
+    assert_eq!(response.answers["item"].selected, ["A"]);
+}
+
+#[tokio::test]
+async fn question_shortcuts_preserve_existing_composer_text() {
+    use maho_ext_api::ExtensionUi;
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.editor.editor.set_text("draft");
+    let ui = mode.extension_ui.clone();
+    let answer = ui.question(retained_question("existing-draft", false), Default::default());
+    mode.render(80);
+
+    mode.handle_input_at("1", 0);
+    mode.handle_input_at("x", 1);
+    assert_eq!(mode.editor.editor.get_text(), "draft1x");
+    mode.handle_input_at("\r", 2);
+
+    assert_eq!(mode.submit_editor().await.expect("chat submission"),
+        Some(maho_core::agent_session::PromptDisposition::Started));
+    mode.handle_input_at("\x1ba", 3);
+    mode.handle_input_at("1", 4);
+    mode.handle_input_at("\x1b[13;5u", 5);
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), answer)
+        .await.expect("bounded answer").expect("answer");
+    assert_eq!(response.status, maho_ext_api::QuestionStatus::Answered);
+    assert_eq!(response.answers["item"].selected, ["A"]);
+}
+
+#[tokio::test]
+async fn cycling_pending_questions_does_not_retarget_a_draft_reply() {
+    use maho_ext_api::ExtensionUi;
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let ui = mode.extension_ui.clone();
+    let first = ui.question(retained_question("cycle-first", false), Default::default());
+    let second = ui.question(retained_question("cycle-second", false), Default::default());
+    mode.render(80);
+    mode.handle_input_at("x", 0);
+
+    mode.handle_input_at("\x1b[1;3B", 1);
+    mode.handle_input_at("y", 2);
+    mode.handle_input_at("\r", 3);
+    mode.dispatch_submission().await.expect("comment submission");
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), first)
+        .await.expect("bounded first answer").expect("first answer");
+    assert_eq!(response.comment.as_deref(), Some("xy"));
+    drop(second);
+}
+
+#[tokio::test]
+async fn question_comment_accepts_batched_pasted_and_kitty_input() {
+    use maho_ext_api::ExtensionUi;
+    use maho_tui::tui::Component;
+    for (input, expected) in [
+        ("batched reply", "batched reply"),
+        ("\x1b[200~pasted reply\x1b[201~", "pasted reply"),
+        ("\x1b[97u", "a"),
+        ("\x1b[27;1;97~", "a"),
+    ] {
+        let (mut mode, _directory) = native_mode();
+        let ui = mode.extension_ui.clone();
+        let answer = ui.question(retained_question("comment", false), Default::default());
+        mode.render(80);
+
+        mode.handle_input_at(input, 0);
+        mode.handle_input_at("\r", 1);
+        assert_eq!(mode.dispatch_submission().await.expect("comment submission"),
+            Some(maho_core::agent_session::PromptDisposition::Handled));
+
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), answer)
+            .await.expect("bounded answer").expect("answer");
+        assert_eq!(response.status, maho_ext_api::QuestionStatus::CommentSubmitted);
+        assert_eq!(response.comment.as_deref(), Some(expected));
+    }
+}
+
+#[tokio::test]
+async fn pending_question_does_not_capture_dialog_digits() {
+    use maho_ext_api::ExtensionUi;
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let ui = mode.extension_ui.clone();
+    let answer = ui.question(retained_question("dialog-pending", false), Default::default());
+    let input = ui.input("Value", None, Default::default());
+    mode.render(80);
+
+    mode.handle_input_at("1", 0);
+    mode.handle_input_at("\r", 1);
+
+    assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), input)
+        .await.expect("bounded input").as_deref(), Some("1"));
+    drop(answer);
+}
+
+#[tokio::test]
+async fn blocking_and_async_questions_resolve_in_arrival_order() {
+    use maho_ext_api::ExtensionUi;
+    use maho_tui::tui::Component;
+    for blocking_first in [true, false] {
+        let (mut mode, _directory) = native_mode();
+        let ui = mode.extension_ui.clone();
+        let mut first_request = retained_question("mixed-first", blocking_first);
+        first_request.questions[0].multi_select = false;
+        let mut second_request = retained_question("mixed-second", !blocking_first);
+        second_request.questions[0].multi_select = false;
+        let first = ui.question(first_request, Default::default());
+        let second = ui.question(second_request, Default::default());
+        mode.render(80);
+
+        mode.handle_input_at("1", 0);
+        let first_response = tokio::time::timeout(std::time::Duration::from_secs(5), first)
+            .await.expect("bounded first answer").expect("first answer");
+        mode.render(80);
+        mode.handle_input_at("2", 1);
+        let second_response = tokio::time::timeout(std::time::Duration::from_secs(5), second)
+            .await.expect("bounded second answer").expect("second answer");
+
+        assert_eq!(first_response.answers["item"].selected, ["A"]);
+        assert_eq!(second_response.answers["item"].selected, ["B"]);
+    }
 }
 
 #[tokio::test]

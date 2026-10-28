@@ -5,6 +5,7 @@ use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 
 use super::*;
+use crate::model_exclusion::{excluded_model_pattern, is_excluded_model};
 use crate::delegate_adapter::DelegateFallbackEntry;
 use crate::host::SenpiModelRegistry;
 use crate::host::fake::{catalog_registry, model, registry};
@@ -1094,7 +1095,9 @@ fn resolve_override_without_registry_filters_allowlist() {
         &agents,
         None,
         &ResolveAgentOptions {
+            omo_config: None,
             model_override: text("openai/explicit"),
+            ..ResolveAgentOptions::default()
         },
     ));
     assert_eq!(result.model, "openai/explicit");
@@ -1521,5 +1524,78 @@ fn register_agent_feeds_process_wide_loader() {
             .agent("senpi-task-process-wide-probe")
             .and_then(|agent| agent.model.as_deref()),
         Some("process-wide")
+    );
+}
+
+// ---- model-exclusion.test.ts / resolve-agent.ts `withoutExcludedModels` ----
+
+#[test]
+fn excluded_model_pattern_matches_provider_scoped_tails_ignoring_case() {
+    let patterns = vec!["ANTHROPIC/*".to_string(), "   ".to_string()];
+    assert_eq!(
+        excluded_model_pattern("openrouter/anthropic/", &patterns),
+        Some("ANTHROPIC/*")
+    );
+    assert_eq!(excluded_model_pattern("openai/gpt-6.1-sol", &patterns), None);
+    assert_eq!(excluded_model_pattern("openrouter/anthropic/", &[]), None);
+}
+
+#[test]
+fn excluded_model_pattern_keeps_metacharacters_literal_and_blanks_inert() {
+    let patterns = vec!["  ".to_string(), "gpt-6.1-sol".to_string()];
+    assert!(is_excluded_model("openai/gpt-6.1-sol", &patterns));
+    assert!(!is_excluded_model("openai/gpt-6x1-sol", &patterns));
+    assert!(!is_excluded_model("openai/gpt-6.1-sol", &[]));
+}
+
+#[test]
+fn excluded_model_pattern_matches_a_bare_entry_on_every_provider() {
+    let patterns = vec!["gpt-6-luna-fast".to_string()];
+    assert!(is_excluded_model("openai/gpt-6-luna-fast", &patterns));
+    assert!(is_excluded_model("github-copilot/gpt-6-luna-fast", &patterns));
+    assert!(!is_excluded_model("openai/gpt-6-luna", &patterns));
+}
+
+#[test]
+fn resolve_skips_an_excluded_direct_candidate() {
+    let agents = roster(vec![AgentDefinition {
+        models: Some(vec![
+            AgentModelEntry::Model("openai/gpt-6-luna-fast".to_string()),
+            AgentModelEntry::Model("openai/gpt-6-luna".to_string()),
+        ]),
+        ..AgentDefinition::named("explore")
+    }]);
+    let models = registry(vec![
+        model("openai", "gpt-6-luna-fast"),
+        model("openai", "gpt-6-luna"),
+    ]);
+    let options = ResolveAgentOptions {
+        exclude_models: Some(vec!["gpt-6-luna-fast".to_string()]),
+        ..ResolveAgentOptions::default()
+    };
+    assert_eq!(
+        expect_resolved(resolve_agent("explore", &agents, Some(&models), &options)).model,
+        "openai/gpt-6-luna"
+    );
+}
+
+#[test]
+fn resolve_treats_an_excluded_only_model_as_unavailable() {
+    let agents = roster(vec![AgentDefinition {
+        model: text("openai/gpt-6-luna-fast"),
+        ..AgentDefinition::named("custom")
+    }]);
+    let models = registry(vec![model("openai", "gpt-6-luna-fast")]);
+    let options = ResolveAgentOptions {
+        exclude_models: Some(vec!["*luna*".to_string()]),
+        ..ResolveAgentOptions::default()
+    };
+    assert_eq!(
+        resolve_agent("custom", &agents, Some(&models), &options),
+        AgentResolutionResult::ModelUnavailable {
+            agent: "custom".to_string(),
+            attempted_model: text("openai/gpt-6-luna-fast"),
+            available_agents: vec!["custom".to_string()],
+        }
     );
 }

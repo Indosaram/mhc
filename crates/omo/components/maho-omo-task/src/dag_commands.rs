@@ -76,6 +76,7 @@ pub fn detail_text(run: &DagRunSnapshot, manager: &dyn DagCommandManager) -> Vec
 fn node_error_code(code: senpi_task::dag::types::DagNodeErrorCode) -> &'static str {
     use senpi_task::dag::types::DagNodeErrorCode::*;
     match code {
+        LostWhilePaused => "lost_while_paused",
         PlanUnresolved => "plan_unresolved", DepthDenied => "depth_denied", StartFailed => "start_failed",
         ResidencyDenied => "residency_denied", TaskError => "task_error", TaskInterrupted => "task_interrupted",
         TaskLost => "task_lost", TaskCancelled => "task_cancelled", ResumeTaskMissing => "resume_task_missing",

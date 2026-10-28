@@ -280,3 +280,51 @@ fn given_a_verbose_child_stderr_when_chunks_accumulate_then_the_internal_buffer_
     assert!(client.stderr_tail().chars().count() <= STDERR_TAIL_CAP);
     assert!(client.stderr_tail().starts_with('x'));
 }
+
+#[test]
+fn fallback_capability_refusal_and_expired_probe_never_prevent_the_prompt() {
+    for mode in ["supported", "refused", "unsupported", "silent"] {
+        let child = Arc::new(RpcChildProcess::spawn_command(fake_command(
+            "rpc",
+            &BTreeMap::from([("FAKE_FALLBACK".into(), mode.into())]),
+            true,
+        )));
+        let _guard = ChildGuard(child.clone());
+        let spawned = child.clone();
+        let runner = RpcProcessRunner::new(RpcProcessRunnerOptions {
+            fallback_chain_deadline_ms: Some(if mode == "silent" { 0 } else { 5000 }),
+            spawn_child: Some(Arc::new(move |_| spawned.clone())),
+            build_spawn: Some(Arc::new(|_| RpcSpawnDescriptor::default())),
+            model_admission: Some(Arc::new(|_| Ok(()))),
+            ..Default::default()
+        });
+        let handle = runner
+            .start(&RpcRunnerSpec {
+                task_id: "fallback-task".into(),
+                model: Some("p/m".into()),
+                fallback_models: Some(vec!["q/n".into()]),
+                prompt: "answer".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            handle.wait_for_outcome(),
+            crate::runners::RunnerOutcome::completed("answer")
+        );
+    }
+}
+
+#[test]
+fn identity_received_before_listener_is_replayed_without_waiting_for_another_event() {
+    let child = spawn_mode("rpc");
+    let _guard = ChildGuard(child.clone());
+    let client = client_for(&child);
+    client.send(json!({"type":"emit_identity"})).unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    let _listener = client
+        .on_durable_session_id(Arc::new(move |id| {
+            send.send(id.to_owned()).unwrap();
+        }))
+        .unwrap();
+    assert_eq!(receive.recv_timeout(WAIT).unwrap(), "durable-late");
+}

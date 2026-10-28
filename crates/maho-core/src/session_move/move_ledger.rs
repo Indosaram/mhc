@@ -5,13 +5,15 @@
 //! refused and the sender may safely take its session back. Every writer and the import's final rename share
 //! one lock per move.
 
+use super::move_landing::{Landing, LandingOutcome, lands_at, parse_landing, settled_landing};
+use super::move_ledger_lock::MoveRecordLocks;
+use super::move_steps::{MoveStep, move_step};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
 
 use super::bundle::{MoveId, parse_move_id};
-use crate::lockfile_policy::acquire_lock_async;
 use crate::session_sidecar_store::serialize_by_key;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +67,7 @@ impl FailReason {
 pub enum MoveStatus {
     Receiving,
     Accepted,
+    AcceptedRevoked,
     Declined { reason: DeclineReason },
     Failed { reason: FailReason },
 }
@@ -81,7 +84,7 @@ impl MoveRecord {
         match self {
             Self::Ready { .. } => "ready",
             Self::Status(MoveStatus::Receiving) => "receiving",
-            Self::Status(MoveStatus::Accepted) => "accepted",
+            Self::Status(MoveStatus::Accepted | MoveStatus::AcceptedRevoked) => "accepted",
             Self::Status(MoveStatus::Declined { .. }) => "declined",
             Self::Status(MoveStatus::Failed { .. }) => "failed",
         }
@@ -91,7 +94,10 @@ impl MoveRecord {
         matches!(
             self,
             Self::Status(
-                MoveStatus::Accepted | MoveStatus::Declined { .. } | MoveStatus::Failed { .. }
+                MoveStatus::Accepted
+                    | MoveStatus::AcceptedRevoked
+                    | MoveStatus::Declined { .. }
+                    | MoveStatus::Failed { .. }
             )
         )
     }
@@ -101,6 +107,9 @@ impl MoveRecord {
             Self::Ready { expires_at } => json!({"state": "ready", "expiresAt": expires_at}),
             Self::Status(MoveStatus::Receiving) => json!({"state": "receiving"}),
             Self::Status(MoveStatus::Accepted) => json!({"state": "accepted"}),
+            Self::Status(MoveStatus::AcceptedRevoked) => {
+                json!({"state": "accepted", "revoked": true})
+            }
             Self::Status(MoveStatus::Declined { reason }) => {
                 json!({"state": "declined", "reason": reason.as_str()})
             }
@@ -113,7 +122,6 @@ impl MoveRecord {
 
 /// How long a ready move waits for its bundle before it is declined as expired.
 pub const READY_TTL_MS: i64 = 10 * 60_000;
-const LOCK_WAIT_MS: u64 = 15_000;
 
 /// `MoveFencedError` (`code: "move_fenced"`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,11 +176,24 @@ impl From<std::io::Error> for MoveLedgerError {
     }
 }
 
+pub type MoveAnswer = MoveStatus;
+
+/// Parse only receiver answers; a ready record is never a signed status answer.
+pub fn parse_move_status(value: &Value) -> Option<MoveAnswer> {
+    match parse_record(value)? {
+        MoveRecord::Status(status) => Some(status),
+        MoveRecord::Ready { .. } => None,
+    }
+}
+
 fn parse_record(value: &Value) -> Option<MoveRecord> {
     let state = value.get("state")?.as_str()?;
     let reason = value.get("reason").and_then(Value::as_str);
     match state {
         "receiving" => Some(MoveRecord::Status(MoveStatus::Receiving)),
+        "accepted" if value.get("revoked").and_then(Value::as_bool) == Some(true) => {
+            Some(MoveRecord::Status(MoveStatus::AcceptedRevoked))
+        }
         "accepted" => Some(MoveRecord::Status(MoveStatus::Accepted)),
         "ready" => {
             let expires_at = value.get("expiresAt")?.as_str()?;
@@ -202,6 +223,7 @@ fn system_now_ms() -> i64 {
 pub struct MoveLedger {
     dir: PathBuf,
     now: Clock,
+    locks: MoveRecordLocks,
 }
 
 impl MoveLedger {
@@ -209,6 +231,7 @@ impl MoveLedger {
         Self {
             dir: dir.into(),
             now: Arc::new(system_now_ms),
+            locks: MoveRecordLocks::default(),
         }
     }
 
@@ -220,6 +243,7 @@ impl MoveLedger {
         Self {
             dir: dir.into(),
             now: Arc::new(now),
+            locks: MoveRecordLocks::default(),
         }
     }
 
@@ -242,7 +266,9 @@ impl MoveLedger {
             };
             match record {
                 MoveRecord::Ready { .. }
-                | MoveRecord::Status(MoveStatus::Receiving | MoveStatus::Accepted) => Ok(record),
+                | MoveRecord::Status(
+                    MoveStatus::Receiving | MoveStatus::Accepted | MoveStatus::AcceptedRevoked,
+                ) => Ok(record),
                 other => Err(MoveFencedError {
                     move_id: move_id.to_owned(),
                     record: other,
@@ -255,28 +281,38 @@ impl MoveLedger {
 
     /// Starts receiving a verified bundle. Only a move this device readied (and whose window is still open) may
     /// start; a bundle for a move it never readied is declined for good (`chunk_without_ready`).
-    pub async fn begin_receive(&self, move_id: &str) -> Result<(), MoveLedgerError> {
-        self.locked(move_id, || match self.current(move_id)? {
-            Some(MoveRecord::Status(MoveStatus::Accepted | MoveStatus::Receiving)) => Ok(()),
-            Some(MoveRecord::Ready { .. }) => {
-                Ok(self.write(move_id, &MoveRecord::Status(MoveStatus::Receiving))?)
+    pub async fn begin_receive(&self, move_id: &str, target: &str) -> Result<(), MoveLedgerError> {
+        self.locked(move_id, || {
+            let record = self.current(move_id)?;
+            let landing = self.landing(move_id)?;
+            if matches!(record, Some(MoveRecord::Ready { .. })) {
+                return self.write_landing(
+                    move_id,
+                    &MoveRecord::Status(MoveStatus::Receiving),
+                    &Landing {
+                        target: Some(target.into()),
+                        committing: false,
+                    },
+                );
             }
-            Some(other) => Err(MoveFencedError {
-                move_id: move_id.to_owned(),
-                record: other,
+            if lands_at(record.as_ref(), &landing, target) {
+                return Ok(());
             }
-            .into()),
-            None => {
-                let declined = MoveRecord::Status(MoveStatus::Declined {
-                    reason: DeclineReason::ChunkWithoutReady,
-                });
-                self.write(move_id, &declined)?;
-                Err(MoveFencedError {
-                    move_id: move_id.to_owned(),
-                    record: declined,
+            let record = match record {
+                Some(record) => record,
+                None => {
+                    let declined = MoveRecord::Status(MoveStatus::Declined {
+                        reason: DeclineReason::ChunkWithoutReady,
+                    });
+                    self.write(move_id, &declined)?;
+                    declined
                 }
-                .into())
+            };
+            Err(MoveFencedError {
+                move_id: move_id.into(),
+                record,
             }
+            .into())
         })
         .await
     }
@@ -292,9 +328,44 @@ impl MoveLedger {
         move_id: &str,
         moved_in: bool,
     ) -> Result<MoveStatus, MoveLedgerError> {
+        self.answer_status_with(move_id, moved_in, false, None)
+            .await
+    }
+
+    pub async fn answer_status_with(
+        &self,
+        move_id: &str,
+        moved_in: bool,
+        revoked: bool,
+        landed: Option<&dyn Fn(&str) -> LandingOutcome>,
+    ) -> Result<MoveStatus, MoveLedgerError> {
         self.locked(move_id, || {
-            let record = self.current(move_id)?;
-            if moved_in || matches!(record, Some(MoveRecord::Status(MoveStatus::Accepted))) {
+            let mut record = self.current(move_id)?;
+            let landing = self.landing(move_id)?;
+            if let (Some(read), Some(target)) = (landed, landing.target.as_deref())
+                && let Some(next) =
+                    settled_landing(record.as_ref(), landing.committing, read(target))
+                {
+                    self.write_landing(
+                        move_id,
+                        &next,
+                        &Landing {
+                            target: Some(target.into()),
+                            committing: false,
+                        },
+                    )?;
+                    record = Some(next);
+                }
+            if revoked {
+                return Ok(MoveStatus::AcceptedRevoked);
+            }
+            if let Some(MoveRecord::Status(
+                status @ (MoveStatus::Accepted | MoveStatus::AcceptedRevoked),
+            )) = &record
+            {
+                return Ok(status.clone());
+            }
+            if moved_in {
                 return Ok(MoveStatus::Accepted);
             }
             match record {
@@ -344,24 +415,124 @@ impl MoveLedger {
     pub async fn commit<T>(
         &self,
         move_id: &str,
+        target: &str,
         rename: impl FnOnce() -> Result<T, String>,
+        prepare: impl FnOnce() -> Result<(), String>,
     ) -> Result<T, MoveLedgerError> {
         self.locked(move_id, || {
-            if let Some(record) = self.read(move_id)?
-                && !matches!(
-                    record,
-                    MoveRecord::Status(MoveStatus::Receiving | MoveStatus::Accepted)
-                )
-            {
-                return Err(MoveFencedError {
-                    move_id: move_id.to_owned(),
-                    record,
-                }
-                .into());
+            let record = self.read(move_id)?;
+            if !lands_at(record.as_ref(), &self.landing(move_id)?, target) {
+                return Err(self.fenced(move_id, record));
             }
+            prepare().map_err(MoveLedgerError::Failed)?;
+            self.write_landing(
+                move_id,
+                &MoveRecord::Status(MoveStatus::Receiving),
+                &Landing {
+                    target: Some(target.into()),
+                    committing: true,
+                },
+            )?;
+            move_step(MoveStep::ImportStamped).map_err(MoveLedgerError::Failed)?;
             let result = rename().map_err(MoveLedgerError::Failed)?;
-            self.write(move_id, &MoveRecord::Status(MoveStatus::Accepted))?;
+            move_step(MoveStep::ImportRenamed).map_err(MoveLedgerError::Failed)?;
+            self.write_landing(
+                move_id,
+                &MoveRecord::Status(MoveStatus::Accepted),
+                &Landing {
+                    target: Some(target.into()),
+                    committing: false,
+                },
+            )?;
             Ok(result)
+        })
+        .await
+    }
+
+    pub async fn confirm_landed(
+        &self,
+        move_id: &str,
+        target: &str,
+        revoked: bool,
+    ) -> Result<(), MoveLedgerError> {
+        self.locked(move_id, || {
+            let record = self.read(move_id)?;
+            let landing = self.landing(move_id)?;
+            if record.as_ref().is_some_and(|r| {
+                !matches!(
+                    r,
+                    MoveRecord::Status(
+                        MoveStatus::Receiving | MoveStatus::Accepted | MoveStatus::AcceptedRevoked
+                    )
+                )
+            }) || landing
+                .target
+                .as_deref()
+                .is_some_and(|stored| stored != target)
+            {
+                return Err(self.fenced(move_id, record));
+            }
+            if matches!(
+                record,
+                Some(MoveRecord::Status(MoveStatus::AcceptedRevoked))
+            ) {
+                return Ok(());
+            }
+            self.write_landing(
+                move_id,
+                &MoveRecord::Status(if revoked {
+                    MoveStatus::AcceptedRevoked
+                } else {
+                    MoveStatus::Accepted
+                }),
+                &Landing {
+                    target: Some(target.into()),
+                    committing: false,
+                },
+            )
+        })
+        .await
+    }
+
+    pub async fn mark_revoked(&self, move_id: &str) -> Result<(), MoveLedgerError> {
+        self.locked(move_id, || {
+            if self.read(move_id)?.is_some_and(|r| {
+                !matches!(
+                    r,
+                    MoveRecord::Status(
+                        MoveStatus::Receiving | MoveStatus::Accepted | MoveStatus::AcceptedRevoked
+                    )
+                )
+            }) {
+                return Ok(());
+            }
+            let mut landing = self.landing(move_id)?;
+            landing.committing = false;
+            self.write_landing(
+                move_id,
+                &MoveRecord::Status(MoveStatus::AcceptedRevoked),
+                &landing,
+            )
+        })
+        .await
+    }
+
+    pub async fn fail_unless_landed(
+        &self,
+        move_id: &str,
+        reason: FailReason,
+        landed: impl FnOnce() -> bool,
+    ) -> Result<Option<MoveRecord>, MoveLedgerError> {
+        self.locked(move_id, || {
+            if landed() {
+                return self.current(move_id);
+            }
+            self.settle_locked(
+                move_id,
+                MoveRecord::Status(MoveStatus::Failed { reason }),
+                &[],
+            )
+            .map(Some)
         })
         .await
     }
@@ -375,16 +546,25 @@ impl MoveLedger {
         next: MoveRecord,
         keeps: &[&str],
     ) -> Result<MoveRecord, MoveLedgerError> {
-        self.locked(move_id, || {
-            if let Some(record) = self.current(move_id)?
-                && (record.is_final() || keeps.contains(&record.state()))
-            {
-                return Ok(record);
-            }
-            self.write(move_id, &next)?;
-            Ok(next.clone())
-        })
-        .await
+        self.locked(move_id, || self.settle_locked(move_id, next, keeps))
+            .await
+    }
+
+    fn settle_locked(
+        &self,
+        move_id: &str,
+        next: MoveRecord,
+        keeps: &[&str],
+    ) -> Result<MoveRecord, MoveLedgerError> {
+        if let Some(record) = self.current(move_id)?
+            && (record.is_final()
+                || keeps.contains(&record.state())
+                || self.landing(move_id)?.committing)
+        {
+            return Ok(record);
+        }
+        self.write(move_id, &next)?;
+        Ok(next)
     }
 
     /// The record, with a ready move whose window has passed declined as expired first (on disk, under the lock).
@@ -428,13 +608,55 @@ impl MoveLedger {
         })
     }
 
+    fn fenced(&self, move_id: &str, record: Option<MoveRecord>) -> MoveLedgerError {
+        match record {
+            Some(record) => MoveFencedError {
+                move_id: move_id.into(),
+                record,
+            }
+            .into(),
+            None => MoveLedgerError::Failed(format!("move_fenced: {move_id} has no record")),
+        }
+    }
+
+    fn landing(&self, move_id: &str) -> Result<Landing, MoveLedgerError> {
+        match std::fs::read_to_string(self.path(move_id)?) {
+            Ok(raw) => serde_json::from_str::<Value>(&raw)
+                .map(|v| parse_landing(&v))
+                .map_err(|e| MoveLedgerError::Failed(e.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Landing::default()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     fn write(&self, move_id: &str, record: &MoveRecord) -> Result<(), MoveLedgerError> {
+        self.write_landing(move_id, record, &Landing::default())
+    }
+
+    fn write_landing(
+        &self,
+        move_id: &str,
+        record: &MoveRecord,
+        landing: &Landing,
+    ) -> Result<(), MoveLedgerError> {
         let file = self.path(move_id)?;
+        self.locks
+            .assert_held(&file)
+            .map_err(MoveLedgerError::Failed)?;
         let temp = PathBuf::from(format!("{}.{}.tmp", file.display(), std::process::id()));
         let mut body = record.to_json();
+        if let Some(target) = &landing.target {
+            body["target"] = json!(target);
+        }
+        if landing.committing {
+            body["committing"] = json!(true);
+        }
         body["at"] =
             Value::String(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
         std::fs::write(&temp, format!("{body}\n"))?;
+        self.locks
+            .assert_held(&file)
+            .map_err(MoveLedgerError::Failed)?;
         std::fs::rename(&temp, &file)?;
         Ok(())
     }
@@ -448,14 +670,12 @@ impl MoveLedger {
         let key = file.to_string_lossy().into_owned();
         serialize_by_key(&key, async {
             std::fs::create_dir_all(&self.dir)?;
-            let _guard = acquire_lock_async(&key, LOCK_WAIT_MS)
+            let _guard = self
+                .locks
+                .hold(&file)
                 .await
-                .map_err(|error| {
-                    MoveLedgerError::Failed(format!(
-                        "Move record {key} stayed locked for {}ms",
-                        error.waited_ms
-                    ))
-                })?;
+                .map_err(MoveLedgerError::Failed)?;
+            self.locks.assert_held(&file).map_err(MoveLedgerError::Failed)?;
             work()
         })
         .await
@@ -489,12 +709,18 @@ mod tests {
             let first = ledger.prepare("m1").await.expect("prepare");
             clock.store(1_000_500, Ordering::SeqCst);
             assert_eq!(ledger.prepare("m1").await.expect("again"), first);
-            ledger.begin_receive("m1").await.expect("receive");
+            ledger
+                .begin_receive("m1", "/target")
+                .await
+                .expect("receive");
             assert_eq!(
                 ledger.prepare("m1").await.expect("receiving stays"),
                 MoveRecord::Status(MoveStatus::Receiving)
             );
-            let unknown = ledger.begin_receive("m2").await.expect_err("no ready");
+            let unknown = ledger
+                .begin_receive("m2", "/target")
+                .await
+                .expect_err("no ready");
             assert!(
                 matches!(unknown, MoveLedgerError::Fenced(ref fenced) if fenced.record == MoveRecord::Status(MoveStatus::Declined { reason: DeclineReason::ChunkWithoutReady }))
             );
@@ -555,7 +781,10 @@ mod tests {
             let clock = Arc::new(AtomicI64::new(0));
             let ledger = ledger(dir.path(), &clock);
             ledger.prepare("m1").await.expect("prepare");
-            ledger.begin_receive("m1").await.expect("receive");
+            ledger
+                .begin_receive("m1", "/target")
+                .await
+                .expect("receive");
             assert_eq!(
                 ledger
                     .decline("m1", DeclineReason::Cancelled)
@@ -591,8 +820,17 @@ mod tests {
             let clock = Arc::new(AtomicI64::new(0));
             let ledger = ledger(dir.path(), &clock);
             ledger.prepare("m1").await.expect("prepare");
-            ledger.begin_receive("m1").await.expect("receive");
-            assert_eq!(ledger.commit("m1", || Ok(7)).await.expect("commit"), 7);
+            ledger
+                .begin_receive("m1", "/target")
+                .await
+                .expect("receive");
+            assert_eq!(
+                ledger
+                    .commit("m1", "/target", || Ok(7), || Ok(()))
+                    .await
+                    .expect("commit"),
+                7
+            );
             assert_eq!(
                 ledger.answer_status("m1", false).await.expect("answer"),
                 MoveStatus::Accepted
@@ -602,7 +840,7 @@ mod tests {
                 .await
                 .expect("decline");
             assert!(matches!(
-                ledger.commit("m4", || Ok(())).await,
+                ledger.commit("m4", "/target", || Ok(()), || Ok(())).await,
                 Err(MoveLedgerError::Fenced(_))
             ));
         });

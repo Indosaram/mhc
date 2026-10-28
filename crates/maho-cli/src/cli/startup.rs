@@ -1,7 +1,6 @@
 use super::{args::{Args, Mode}, initial_message::{build_initial_message, InitialMessageResult}};
 use maho_core::project_trust::AppMode;
 pub fn resolve_app_mode(parsed: &Args, stdin_is_tty: bool, stdout_is_tty: bool) -> AppMode {
-    if parsed.mode.is_none() && parsed.messages.first().is_some_and(|message| message == "app-server") { return AppMode::AppServer; }
     match parsed.mode { Some(Mode::Rpc) => AppMode::Rpc, Some(Mode::Json) => AppMode::Json, Some(Mode::Text) | None => {
         if parsed.print || !stdin_is_tty || !stdout_is_tty { AppMode::Print } else { AppMode::Interactive }
     } }

@@ -1,5 +1,7 @@
 //! Markdown frontmatter parsing and rendering.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Error returned when frontmatter parsing or rendering fails.
@@ -17,7 +19,7 @@ impl std::fmt::Display for FrontmatterError {
 impl std::error::Error for FrontmatterError {}
 
 /// Parsed metadata extracted from a memory file's YAML frontmatter.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryFrontmatter {
     pub description: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -26,6 +28,20 @@ pub struct MemoryFrontmatter {
     pub kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aliases: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra: Option<BTreeMap<String, String>>,
+}
+
+impl MemoryFrontmatter {
+    pub fn new(description: impl Into<String>) -> Self {
+        Self {
+            description: description.into(),
+            read_only: None,
+            kind: None,
+            aliases: None,
+            extra: None,
+        }
+    }
 }
 
 /// A parsed memory file comprising structured frontmatter and a markdown body.
@@ -35,43 +51,24 @@ pub struct ParsedMemoryFile {
     pub body: String,
 }
 
+const CONTRACT_KEYS: &[&str] = &["description", "read_only", "kind", "aliases", "limit"];
+
+fn is_contract_key(key: &str) -> bool {
+    CONTRACT_KEYS.contains(&key)
+}
+
+fn is_extra_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 /// Parse a memory markdown file, extracting frontmatter and body.
 pub fn parse_memory_file(content: &str) -> Result<ParsedMemoryFile, FrontmatterError> {
-    let rest = if let Some(stripped) = content.strip_prefix("---\r\n") {
-        stripped
-    } else if let Some(stripped) = content.strip_prefix("---\n") {
-        stripped
-    } else {
-        return Err(FrontmatterError {
-            message: "frontmatter: target file is missing required frontmatter".to_string(),
-        });
-    };
-
-    let mut closing_start = None;
-    let mut body_start = None;
-    let mut line_start = 0;
-
-    for line in rest.split_inclusive('\n') {
-        let trimmed_line = line.trim_end_matches(['\r', '\n']);
-        if trimmed_line == "---" {
-            closing_start = Some(line_start);
-            body_start = Some(line_start + line.len());
-            break;
-        }
-        line_start += line.len();
-    }
-
-    let (frontmatter_text, body) = match (closing_start, body_start) {
-        (Some(c_start), Some(b_start)) => {
-            let fm = &rest[..c_start];
-            let fm = fm
-                .strip_suffix("\r\n")
-                .or_else(|| fm.strip_suffix('\n'))
-                .unwrap_or(fm);
-            let b = &rest[b_start..];
-            (fm, b.to_string())
-        }
-        _ => {
+    let (frontmatter_text, body) = match super::frontmatter_scalar::split_frontmatter(content) {
+        Some(res) => res,
+        None => {
             return Err(FrontmatterError {
                 message: "frontmatter: target file is missing required frontmatter".to_string(),
             });
@@ -82,16 +79,12 @@ pub fn parse_memory_file(content: &str) -> Result<ParsedMemoryFile, FrontmatterE
     let mut read_only: Option<String> = None;
     let mut kind: Option<String> = None;
     let mut aliases: Option<Vec<String>> = None;
+    let mut extra = BTreeMap::new();
 
-    for raw_line in frontmatter_text.split('\n') {
-        let line = raw_line.trim_end_matches('\r');
-        let idx = match line.find(':') {
-            Some(i) if i > 0 => i,
-            _ => continue,
-        };
-
-        let key = line[..idx].trim();
-        let value = line[idx + 1..].trim();
+    for entry in super::frontmatter_entries::frontmatter_entries(&frontmatter_text) {
+        let key = entry.key.as_str();
+        let value = entry.value.as_str();
+        let line = entry.line.as_str();
 
         if key == "description" {
             description = Some(super::frontmatter_scalar::decode_scalar_source(value));
@@ -101,6 +94,8 @@ pub fn parse_memory_file(content: &str) -> Result<ParsedMemoryFile, FrontmatterE
             kind = Some(super::frontmatter_scalar::decode_scalar_source(value));
         } else if key == "aliases" {
             aliases = Some(parse_aliases(value, line)?);
+        } else if key != "limit" && is_extra_key(key) {
+            extra.insert(key.to_string(), value.to_string());
         }
     }
 
@@ -108,11 +103,12 @@ pub fn parse_memory_file(content: &str) -> Result<ParsedMemoryFile, FrontmatterE
         Some(desc) if !desc.trim().is_empty() => desc,
         _ => {
             return Err(FrontmatterError {
-                message: "frontmatter: target file frontmatter is missing 'description'"
-                    .to_string(),
+                message: "frontmatter: target file frontmatter is missing 'description'".to_string(),
             });
         }
     };
+
+    let extra = if extra.is_empty() { None } else { Some(extra) };
 
     Ok(ParsedMemoryFile {
         frontmatter: MemoryFrontmatter {
@@ -120,6 +116,7 @@ pub fn parse_memory_file(content: &str) -> Result<ParsedMemoryFile, FrontmatterE
             read_only,
             kind,
             aliases,
+            extra,
         },
         body,
     })
@@ -130,7 +127,7 @@ pub fn render_memory_file(
     frontmatter: &MemoryFrontmatter,
     body: &str,
 ) -> Result<String, FrontmatterError> {
-    let description = frontmatter.description.trim();
+    let description = sanitize_frontmatter_value(&frontmatter.description);
     if description.is_empty() {
         return Err(FrontmatterError {
             message: "frontmatter: 'description' must not be empty".to_string(),
@@ -138,10 +135,9 @@ pub fn render_memory_file(
     }
 
     let mut lines = Vec::new();
-    lines.push("---".to_string());
     lines.push(format!(
         "description: {}",
-        super::frontmatter_scalar::render_string_scalar(&sanitize_frontmatter_value(description))
+        super::frontmatter_scalar::render_string_scalar(&description)
     ));
 
     if let Some(read_only) = &frontmatter.read_only {
@@ -149,7 +145,10 @@ pub fn render_memory_file(
     }
 
     if let Some(kind) = &frontmatter.kind {
-        lines.push(format!("kind: {}", super::frontmatter_scalar::render_string_scalar(&sanitize_frontmatter_value(kind))));
+        lines.push(format!(
+            "kind: {}",
+            super::frontmatter_scalar::render_string_scalar(&sanitize_frontmatter_value(kind))
+        ));
     }
 
     if let Some(aliases) = &frontmatter.aliases {
@@ -159,14 +158,81 @@ pub fn render_memory_file(
         lines.push(format!("aliases: {json_aliases}"));
     }
 
-    lines.push("---".to_string());
-
-    let header = lines.join("\n");
-    if body.is_empty() {
-        Ok(format!("{header}\n"))
-    } else {
-        Ok(format!("{header}\n{body}"))
+    if let Some(extra) = &frontmatter.extra {
+        for (key, raw) in extra {
+            if !is_extra_key(key) || is_contract_key(key) {
+                return Err(FrontmatterError {
+                    message: format!("frontmatter: '{key}' is not a valid extra frontmatter key"),
+                });
+            }
+            lines.push(format!(
+                "{key}: {}",
+                super::frontmatter_scalar::render_raw_scalar(&sanitize_frontmatter_value(raw))
+            ));
+        }
     }
+
+    let header_text = lines.join("\n");
+    let header = format!("---\n{header_text}\n---");
+    let rendered = if body.is_empty() {
+        format!("{header}\n")
+    } else {
+        format!("{header}\n{body}")
+    };
+
+    assert_strict_round_trip(&header_text, &rendered, frontmatter, &description)?;
+
+    Ok(rendered)
+}
+
+fn assert_strict_round_trip(
+    header_text: &str,
+    rendered: &str,
+    frontmatter: &MemoryFrontmatter,
+    sanitized_description: &str,
+) -> Result<(), FrontmatterError> {
+    if let Some(violation) =
+        super::frontmatter_validation::describe_header_grammar_violation(header_text)
+    {
+        return Err(FrontmatterError {
+            message: format!("frontmatter: rendered header is not strict YAML: {violation}"),
+        });
+    }
+
+    let reparsed = parse_memory_file(rendered)?.frontmatter;
+    let mut mismatches = Vec::new();
+    if reparsed.description != sanitized_description {
+        mismatches.push("description");
+    }
+    if reparsed.read_only != frontmatter.read_only {
+        mismatches.push("read_only");
+    }
+    if let Some(kind) = &frontmatter.kind
+        && reparsed.kind.as_deref() != Some(&sanitize_frontmatter_value(kind)) {
+            mismatches.push("kind");
+        }
+    if serde_json::to_string(&reparsed.aliases).unwrap_or_default()
+        != serde_json::to_string(&frontmatter.aliases).unwrap_or_default()
+    {
+        mismatches.push("aliases");
+    }
+    if let Some(extra) = &frontmatter.extra {
+        for key in extra.keys() {
+            if reparsed.extra.as_ref().and_then(|e| e.get(key)).is_none() {
+                mismatches.push(key.as_str());
+            }
+        }
+    }
+    if !mismatches.is_empty() {
+        return Err(FrontmatterError {
+            message: format!(
+                "frontmatter: rendered header does not round-trip ({})",
+                mismatches.join(", ")
+            ),
+        });
+    }
+
+    Ok(())
 }
 
 /// Sanitize a frontmatter value to a single line by collapsing any newline sequence to a space.

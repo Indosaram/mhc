@@ -124,6 +124,11 @@ fn base_record(input: &DagDefinition, node_states: &[(&str, DagNodeState)]) -> R
         amend_history: None,
         lease_holder_pid: None,
         previous_lease_holder_pid: None,
+        guidance: None,
+        retry_on_resume: None,
+        cancel_requested_nodes: None,
+        paused_child_acks: None,
+        pause: None,
     };
     RecoverableRecord {
         record,
@@ -160,7 +165,7 @@ fn given_a_paused_run_after_wave_one_when_the_session_restarts_then_the_incomple
         stop_admission: None,
         reattach: None,
         ancestry: None,
-        node_spawn_policy: None,
+        node_spawn_policy: None, paused_children: None, resume_credential: None,
     });
 
     let outcomes = std::thread::spawn({
@@ -204,6 +209,7 @@ fn state_str(state: DagNodeState) -> &'static str {
         DagNodeState::Pending => "pending",
         DagNodeState::Blocked => "blocked",
         DagNodeState::Scheduled => "scheduled",
+        DagNodeState::Paused => "paused",
         DagNodeState::Running => "running",
         DagNodeState::Completed => "completed",
         DagNodeState::Failed => "failed",
@@ -233,7 +239,7 @@ fn given_no_injected_liveness_probe_when_a_paused_runs_previous_holder_is_this_l
         stop_admission: None,
         reattach: None,
         ancestry: None,
-        node_spawn_policy: None,
+        node_spawn_policy: None, paused_children: None, resume_credential: None,
     });
 
     let outcomes = recovery.resume_paused_runs(PARENT_SESSION_ID);
@@ -265,7 +271,7 @@ fn given_a_paused_own_host_run_without_a_registered_scheduler_when_it_resumes_th
     let recovery = create_dag_recovery(DagRecoveryOptions {
         store: Arc::clone(&store), task_manager: Arc::new(harness.manager), host_pid: Some(101),
         is_process_alive: Some(Arc::new(|_| true)), is_run_held_in_process: None, now: None,
-        subscriber_ring: None, stop_admission: None, reattach: None, ancestry: None, node_spawn_policy: None,
+        subscriber_ring: None, stop_admission: None, reattach: None, ancestry: None, node_spawn_policy: None, paused_children: None, resume_credential: None,
     });
     let outcomes = recovery.resume_paused_runs(PARENT_SESSION_ID);
     assert!(matches!(outcomes.first(), Some(DagRecoveryOutcome::Resumed { .. })));
@@ -293,7 +299,7 @@ fn given_no_injected_liveness_probe_when_a_paused_runs_previous_holder_pid_does_
         stop_admission: None,
         reattach: None,
         ancestry: None,
-        node_spawn_policy: None,
+        node_spawn_policy: None, paused_children: None, resume_credential: None,
     });
 
     let done = std::thread::spawn(move || {
@@ -336,7 +342,7 @@ fn given_a_paused_run_owned_by_another_parent_session_when_recovery_scans_then_i
         stop_admission: None,
         reattach: None,
         ancestry: None,
-        node_spawn_policy: None,
+        node_spawn_policy: None, paused_children: None, resume_credential: None,
     });
 
     let outcomes = recovery.resume_paused_runs(PARENT_SESSION_ID);
@@ -364,7 +370,7 @@ fn given_a_dead_immediate_fork_source_when_the_child_session_resumes_then_the_ru
     let recovery = create_dag_recovery(DagRecoveryOptions {
         store: Arc::clone(&store), task_manager: Arc::new(harness.manager), host_pid: Some(101),
         is_process_alive: Some(Arc::new(|_| false)), is_run_held_in_process: None, now: None,
-        subscriber_ring: None, stop_admission: None, reattach: None, ancestry: Some(DagSchedulerAncestry { depth: 2 }), node_spawn_policy: None,
+        subscriber_ring: None, stop_admission: None, reattach: None, ancestry: Some(DagSchedulerAncestry { depth: 2 }), node_spawn_policy: None, paused_children: None, resume_credential: None,
     });
     let outcomes = recovery.resume_paused_runs_from("child-session", Some(" source-session "));
     assert!(matches!(outcomes.first(), Some(DagRecoveryOutcome::Adopted { .. })));
@@ -409,7 +415,7 @@ fn given_a_live_resident_child_when_recovery_resumes_then_it_is_handed_to_the_sc
         is_process_alive: Some(Arc::new(|_| false)), is_run_held_in_process: None, now: None,
         subscriber_ring: None, stop_admission: None,
         reattach: Some(Arc::new(move |_, task_id| { let _ = reattach_tx.send(task_id.to_string()); })),
-        ancestry: None, node_spawn_policy: None,
+        ancestry: None, node_spawn_policy: None, paused_children: None, resume_credential: None,
     });
     let (resumed_tx, resumed_rx) = mpsc::channel();
     let run_id_for_listener = run_id();
@@ -457,7 +463,7 @@ fn given_running_tasks_without_a_local_resident_handle_when_recovery_resumes_the
     let recovery = create_dag_recovery(DagRecoveryOptions {
         store: Arc::clone(&store), task_manager: Arc::new(harness.manager), host_pid: Some(101),
         is_process_alive: Some(Arc::new(|_| false)), is_run_held_in_process: None, now: None,
-        subscriber_ring: None, stop_admission: None, reattach: None, ancestry: None, node_spawn_policy: None,
+        subscriber_ring: None, stop_admission: None, reattach: None, ancestry: None, node_spawn_policy: None, paused_children: None, resume_credential: None,
     });
     let result = recovered(recovery.resume_paused_runs(PARENT_SESSION_ID));
     assert_eq!(result.nodes[0].error.as_ref().map(|e| e.code), Some(DagNodeErrorCode::ResumeTaskOrphaned));
@@ -552,7 +558,7 @@ fn given_own_host_lease_holder_when_no_scheduler_is_registered_then_recovery_cla
     let recovery = create_dag_recovery(DagRecoveryOptions {
         store: Arc::clone(&store), task_manager: Arc::new(harness.manager), host_pid: Some(101),
         is_process_alive: Some(Arc::new(|_| true)), is_run_held_in_process: Some(Arc::new(|_| false)),
-        now: None, subscriber_ring: None, stop_admission: None, reattach: None, ancestry: None, node_spawn_policy: None,
+        now: None, subscriber_ring: None, stop_admission: None, reattach: None, ancestry: None, node_spawn_policy: None, paused_children: None, resume_credential: None,
     });
     assert!(!recovery.resume_paused_runs(PARENT_SESSION_ID).is_empty());
 }
@@ -568,7 +574,7 @@ fn given_own_host_lease_holder_with_registered_scheduler_when_recovery_claims_th
     let recovery = create_dag_recovery(DagRecoveryOptions {
         store: Arc::clone(&store), task_manager: Arc::new(harness.manager), host_pid: Some(101),
         is_process_alive: Some(Arc::new(|_| true)), is_run_held_in_process: Some(Arc::new(|_| true)),
-        now: None, subscriber_ring: None, stop_admission: None, reattach: None, ancestry: None, node_spawn_policy: None,
+        now: None, subscriber_ring: None, stop_admission: None, reattach: None, ancestry: None, node_spawn_policy: None, paused_children: None, resume_credential: None,
     });
     assert_eq!(recovery.resume_paused_runs(PARENT_SESSION_ID), vec![DagRecoveryOutcome::Skipped {
         run_id: run_id(), reason: DagRecoverySkipReason::LiveLease, holder_pid: Some(101),
@@ -589,7 +595,7 @@ fn given_an_ordinary_session_resume_when_a_foreign_run_exists_then_foreign_check
     let recovery = create_dag_recovery(DagRecoveryOptions {
         store: Arc::clone(&store), task_manager: Arc::new(harness.manager), host_pid: Some(101),
         is_process_alive: Some(Arc::new(|_| false)), is_run_held_in_process: None, now: None,
-        subscriber_ring: None, stop_admission: None, reattach: None, ancestry: None, node_spawn_policy: None,
+        subscriber_ring: None, stop_admission: None, reattach: None, ancestry: None, node_spawn_policy: None, paused_children: None, resume_credential: None,
     });
     assert!(recovery.resume_paused_runs(PARENT_SESSION_ID).is_empty());
     assert_eq!(store.read_checkpoint::<RecoverableRecord>(&run_id()).expect("read").expect("foreign"), before);
@@ -626,7 +632,7 @@ fn given_a_live_run_when_shutdown_pause_starts_then_admission_stops_before_pause
         })),
         reattach: None,
         ancestry: None,
-        node_spawn_policy: None,
+        node_spawn_policy: None, paused_children: None, resume_credential: None,
     });
 
     let paused = recovery.pause_runs_for_shutdown(PARENT_SESSION_ID);
@@ -644,7 +650,7 @@ fn given_a_live_run_when_shutdown_pause_starts_then_admission_stops_before_pause
 
 fn recovery_for(store: &Arc<DagFileStore>, manager: Arc<crate::manager::TaskManager>) -> DagRecovery {
     create_dag_recovery(DagRecoveryOptions {
-        store: Arc::clone(store), task_manager: manager, host_pid: Some(101), is_process_alive: Some(Arc::new(|_| false)), is_run_held_in_process: None, now: None, subscriber_ring: None, stop_admission: None, reattach: None, ancestry: None, node_spawn_policy: None,
+        store: Arc::clone(store), task_manager: manager, host_pid: Some(101), is_process_alive: Some(Arc::new(|_| false)), is_run_held_in_process: None, now: None, subscriber_ring: None, stop_admission: None, reattach: None, ancestry: None, node_spawn_policy: None, paused_children: None, resume_credential: None,
     })
 }
 
@@ -773,12 +779,12 @@ fn two_recovery_managers_observe_one_live_claim_and_one_resume() {
     let release = Arc::new(crate::manager::manager_tests::fakes::dag_fake::Gate::default());
     let reattach_release = Arc::clone(&release);
     let first = create_dag_recovery(DagRecoveryOptions {
-        store: Arc::clone(&store), task_manager: Arc::clone(&manager), host_pid: Some(101), is_process_alive: Some(Arc::new(|pid| pid == 101 || pid == 202)), is_run_held_in_process: None, now: None, subscriber_ring: None, stop_admission: None, reattach: Some(Arc::new(move |_, _| { claimed_tx.send(()).unwrap(); reattach_release.wait(); })), ancestry: None, node_spawn_policy: None,
+        store: Arc::clone(&store), task_manager: Arc::clone(&manager), host_pid: Some(101), is_process_alive: Some(Arc::new(|pid| pid == 101 || pid == 202)), is_run_held_in_process: None, now: None, subscriber_ring: None, stop_admission: None, reattach: Some(Arc::new(move |_, _| { claimed_tx.send(()).unwrap(); reattach_release.wait(); })), ancestry: None, node_spawn_policy: None, paused_children: None, resume_credential: None,
     });
     let first_thread = std::thread::spawn(move || first.resume_paused_runs(PARENT_SESSION_ID));
     claimed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     let second = create_dag_recovery(DagRecoveryOptions {
-        store: second_store, task_manager: Arc::clone(&manager), host_pid: Some(202), is_process_alive: Some(Arc::new(|pid| pid == 101 || pid == 202)), is_run_held_in_process: None, now: None, subscriber_ring: None, stop_admission: None, reattach: None, ancestry: None, node_spawn_policy: None,
+        store: second_store, task_manager: Arc::clone(&manager), host_pid: Some(202), is_process_alive: Some(Arc::new(|pid| pid == 101 || pid == 202)), is_run_held_in_process: None, now: None, subscriber_ring: None, stop_admission: None, reattach: None, ancestry: None, node_spawn_policy: None, paused_children: None, resume_credential: None,
     });
     assert_eq!(second.resume_paused_runs(PARENT_SESSION_ID), vec![DagRecoveryOutcome::Skipped { run_id: run_id(), reason: DagRecoverySkipReason::LiveLease, holder_pid: Some(101) }]);
     release.release();

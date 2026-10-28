@@ -38,12 +38,12 @@ pub const SECRET_PATTERN_SOURCES: [(SecretPatternClass, &str, &str); 5] = [
     ),
     (
         SecretPatternClass::CredentialAssignment,
-        r#"\b(?:bearer|token|api[_-]?key|secret|password|passwd|pwd)\s*[=:]\s*[^\s"'<>,}\])]{1,256}"#,
+        r#"\b(?:bearer|token|api[_-]?key|secret|password|passwd|pwd)\s*[=:]\s*(?!(?:process\.env\.[A-Za-z_][A-Za-z0-9_]*|os\.environ(?:\.get\(|\[)?|env\.[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\{\{[^}\n]*\}\}|\[(?:redacted|filtered)\]|(?:redacted|filtered)|(?:bearer|changeme|placeholder|example|none|null|undefined|true|false))(?![^\s"'<>,}\])]))[^\s"'<>,}\])]{1,256}"#,
         "i",
     ),
     (
         SecretPatternClass::AuthorizationHeader,
-        r#"\bAuthorization\s*:\s*Bearer\s+[^\s"'<>,}\])]{1,256}"#,
+        r#"\bAuthorization\s*:\s*Bearer\s+(?!(?:process\.env\.[A-Za-z_][A-Za-z0-9_]*|os\.environ(?:\.get\(|\[)?|env\.[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\{\{[^}\n]*\}\}|\[(?:redacted|filtered)\]|(?:redacted|filtered)|(?:bearer|changeme|placeholder|example|none|null|undefined|true|false))(?![^\s"'<>,}\])]))[^\s"'<>,}\])]{1,256}"#,
         "i",
     ),
     (
@@ -57,7 +57,7 @@ pub const SECRET_PATTERN_SOURCES: [(SecretPatternClass, &str, &str); 5] = [
         "",
     ),
 ];
-const SPLIT_CREDENTIAL_ASSIGNMENT: &str = r#"(?:a\s*u\s*t\s*h\s*o\s*r\s*i\s*z\s*a\s*t\s*i\s*o\s*n|p\s*a\s*s\s*s\s*w\s*(?:o\s*r\s*)?d|s\s*e\s*c\s*r\s*e\s*t|t\s*o\s*k\s*e\s*n|a\s*p\s*i\s*[_-]?\s*k\s*e\s*y)\s*[:=]\s*[^\s"'<>,}\])]{6,256}"#;
+const SPLIT_CREDENTIAL_ASSIGNMENT: &str = r#"(?:a\s*u\s*t\s*h\s*o\s*r\s*i\s*z\s*a\s*t\s*i\s*o\s*n|p\s*a\s*s\s*s\s*w\s*(?:o\s*r\s*)?d|s\s*e\s*c\s*r\s*e\s*t|t\s*o\s*k\s*e\s*n|a\s*p\s*i\s*[_-]?\s*k\s*e\s*y)\s*[:=]\s*(?!(?:process\.env\.[A-Za-z_][A-Za-z0-9_]*|os\.environ(?:\.get\(|\[)?|env\.[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\{\{[^}\n]*\}\}|\[(?:redacted|filtered)\]|(?:redacted|filtered)|(?:bearer|changeme|placeholder|example|none|null|undefined|true|false))(?![^\s"'<>,}\])]))[^\s"'<>,}\])]{6,256}"#;
 
 /// Compiled once. Upstream keeps a non-global and a global copy of every pattern
 /// only because a JavaScript `RegExp` carries `lastIndex` state; `regress`
@@ -724,5 +724,62 @@ mod audit_regression_tests {
         let value = format!("alice@{}:repo", "a".repeat(257));
         let redacted = redact_url(&value);
         assert_eq!(redacted, value);
+    }
+}
+
+#[cfg(test)]
+mod reference_value_tests {
+    use super::contains_secret_like_material;
+    #[test]
+    fn references_are_not_credentials() {
+        for text in [
+            "Authorization: Bearer <key>",
+            "client_secret=[FILTERED]",
+            r#"JSON.stringify({ password: process.env.TH_PASSWORD || "" })"#,
+            "password: os.environ",
+            "token: $GITHUB_TOKEN",
+            "token = ${GITHUB_TOKEN}",
+            "api_key: {{ api_key }}",
+            "secret: REDACTED",
+            "password: null",
+            "token: undefined",
+            "secret: example",
+            "Authorization: Bearer",
+            "token: process.env.GITHUB_TOKEN",
+            r#"secret: os.environ["SECRET"]"#,
+            "api_key: env.API_KEY",
+            "token: {{ secrets.TOKEN }}",
+        ] {
+            assert!(
+                !contains_secret_like_material(text),
+                "reference was detected: {text}"
+            );
+        }
+    }
+    #[test]
+    fn concatenated_literals_still_match() {
+        for text in [
+            "password: hunter2Abrx9",
+            "token=nullable-9fQ2xK7",
+            "secret: exampleValue123",
+            "api_key: $ecretValue9!x",
+            "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",
+            "client_secret=abcDEF123456",
+            "a p i _ k e y : hunter2Abrx9",
+            "sk-proj-AbCdEf123456",
+            "AKIAABCDEFGHIJKLMNOP",
+            "ghp_Ab3dEf5hJ7kL9mN1pQ3rS5tU7vW9xY1zB3C5",
+            "password=process.env.X||hunter2real",
+            "token={{x}}realsecretvalue",
+            "secret: os.environDEFAULT9xQ",
+            "api_key=env.FOO.realtail9xQ",
+            "token: ${FOO}realsecret",
+            "token: [FILTERED]realsecret",
+        ] {
+            assert!(
+                contains_secret_like_material(text),
+                "credential was missed: {text}"
+            );
+        }
     }
 }
