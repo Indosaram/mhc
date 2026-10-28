@@ -71,8 +71,8 @@ fn choice_follows_manifests_thresholds_and_collapses() {
     assert!(chosen.contains(&"crates/core".to_owned()), "{chosen:?}");
     assert!(chosen.contains(&"crates/tiny".to_owned()), "{chosen:?}");
     assert!(chosen.contains(&"web/src/app".to_owned()), "{chosen:?}");
-    // `web` is a pass-through, `web/src` collapses into its single child, `crates/core/src`
-    // collapses too? no: it has 25 files but its parent has a manifest, both stay eligible.
+    // `crates`, `web` and `web/src` have no files of their own.
+    assert!(!chosen.contains(&"crates".to_owned()), "{chosen:?}");
     assert!(!chosen.contains(&"web".to_owned()), "{chosen:?}");
     assert!(!chosen.contains(&"web/src".to_owned()), "{chosen:?}");
     assert!(!chosen.contains(&"docs".to_owned()));
@@ -92,15 +92,24 @@ fn choice_follows_manifests_thresholds_and_collapses() {
 #[test]
 fn plan_orders_deepest_first_with_actions_and_children() {
     let dir = fixture();
-    write(dir.path(), "crates/tiny/AGENTS.md", "# tiny\n\nA tiny binary.\n");
+    write(
+        dir.path(),
+        "crates/tiny/AGENTS.md",
+        "# tiny\n\nA tiny binary.\n",
+    );
     let a = analyze(dir.path());
-    let read = |rel: &str, name: &str| std::fs::read_to_string(dir.path().join(rel).join(name)).ok();
+    let read =
+        |rel: &str, name: &str| std::fs::read_to_string(dir.path().join(rel).join(name)).ok();
     let p = plan(&a, &Settings::default(), false, &read);
     let depths: Vec<usize> = p.targets.iter().map(|t| t.depth).collect();
     let mut sorted = depths.clone();
     sorted.sort_by(|a, b| b.cmp(a));
     assert_eq!(depths, sorted);
-    let tiny = p.targets.iter().find(|t| t.path == "crates/tiny").expect("tiny");
+    let tiny = p
+        .targets
+        .iter()
+        .find(|t| t.path == "crates/tiny")
+        .expect("tiny");
     assert_eq!(tiny.action, Action::Keep);
     let root = p.targets.iter().find(|t| t.path == ".").expect("root");
     assert_eq!(root.action, Action::Create);
@@ -108,9 +117,17 @@ fn plan_orders_deepest_first_with_actions_and_children() {
     assert!(root.children.contains(&"web/src/app".to_owned()));
     assert!(!root.children.contains(&"crates/core/src".to_owned()));
     let updated = plan(&a, &Settings::default(), true, &read);
-    let tiny = updated.targets.iter().find(|t| t.path == "crates/tiny").expect("tiny");
+    let tiny = updated
+        .targets
+        .iter()
+        .find(|t| t.path == "crates/tiny")
+        .expect("tiny");
     assert_eq!(tiny.action, Action::Update);
-    assert!(tiny.existing.as_deref().is_some_and(|e| e.contains("A tiny binary")));
+    assert!(
+        tiny.existing
+            .as_deref()
+            .is_some_and(|e| e.contains("A tiny binary"))
+    );
     let json = serde_json::to_value(&updated).expect("json");
     assert!(json["targets"][0].get("existing").is_none());
     assert!(json["targets"][0]["action"].is_string());
@@ -127,7 +144,11 @@ fn prompts_carry_facts_children_and_rules() {
     assert!(text.contains("Cargo.toml"));
     assert!(text.contains("`crates/core`: core — the engine"));
     assert!(text.contains("about 120 lines"));
-    let core = p.targets.iter().find(|t| t.path == "crates/core").expect("core");
+    let core = p
+        .targets
+        .iter()
+        .find(|t| t.path == "crates/core")
+        .expect("core");
     let text = file_prompt(core, &[]);
     assert!(text.contains("`crates/core`"));
     assert!(text.contains("tests: present"));
@@ -138,12 +159,26 @@ fn prompts_carry_facts_children_and_rules() {
 
 #[test]
 fn answers_are_cleaned_and_summarised() {
-    assert_eq!(clean_answer("```markdown\n# A\n\nbody\n```\n"), "# A\n\nbody\n");
+    assert_eq!(
+        clean_answer("```markdown\n# A\n\nbody\n```\n"),
+        "# A\n\nbody\n"
+    );
     assert_eq!(clean_answer("  # A\nbody  "), "# A\nbody\n");
-    assert_eq!(clean_answer("```rust\nfn main(){}\n```"), "```rust\nfn main(){}\n```\n");
+    assert_eq!(
+        clean_answer("```rust\nfn main(){}\n```"),
+        "```rust\nfn main(){}\n```\n"
+    );
     assert_eq!(clean_answer("  \n"), "");
-    assert_eq!(summary("# Core\n\nThe engine.\nIt runs.\n\n## Next\n"), "Core — The engine. It runs.");
-    assert_eq!(summary(&format!("# T\n\n{}", "a".repeat(700))).chars().count(), 600);
+    assert_eq!(
+        summary("# Core\n\nThe engine.\nIt runs.\n\n## Next\n"),
+        "Core — The engine. It runs."
+    );
+    assert_eq!(
+        summary(&format!("# T\n\n{}", "a".repeat(700)))
+            .chars()
+            .count(),
+        600
+    );
 }
 
 struct Fake {
@@ -157,7 +192,10 @@ impl Runner for Fake {
         if self.fail_in.as_deref().is_some_and(|f| dir.ends_with(f)) {
             return Err("boom".into());
         }
-        let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         Ok(format!("```md\n# {name}\n\nAbout {name}.\n```"))
     }
 }
@@ -185,8 +223,20 @@ fn generation_writes_deepest_first_and_feeds_summaries_up() {
     let fresh = fixture();
     let a = analyze(fresh.path());
     let p = plan(&a, &Settings::default(), false, &|_, _| None);
-    let report = generate(&p, &mut Fake { calls: Vec::new(), fail_in: None }, true);
-    assert!(report.outcomes.iter().all(|(_, o)| matches!(o, Outcome::Preview(..))));
+    let report = generate(
+        &p,
+        &mut Fake {
+            calls: Vec::new(),
+            fail_in: None,
+        },
+        true,
+    );
+    assert!(
+        report
+            .outcomes
+            .iter()
+            .all(|(_, o)| matches!(o, Outcome::Preview(..)))
+    );
     assert!(!fresh.path().join("AGENTS.md").exists());
 }
 
@@ -194,23 +244,57 @@ fn generation_writes_deepest_first_and_feeds_summaries_up() {
 fn cli_plan_json_and_errors() {
     let dir = fixture();
     let args = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-    let mut never = |_model: Option<String>| -> Box<dyn Runner> { panic!("no model run for --plan") };
-    let out = cli::run(&args(&["--plan", "--json"]), dir.path(), Settings::default(), &mut never);
+    let mut never =
+        |_model: Option<String>| -> Box<dyn Runner> { panic!("no model run for --plan") };
+    let out = cli::run(
+        &args(&["--plan", "--json"]),
+        dir.path(),
+        Settings::default(),
+        &mut never,
+    );
     assert_eq!(out.code, 0, "{out:?}");
     let value: serde_json::Value = serde_json::from_str(&out.stdout).expect("json");
-    assert_eq!(value["targets"].as_array().map(|t| t.last().map(|l| l["path"].clone())), Some(Some(".".into())));
-    let out = cli::run(&args(&["--plan", "--max-dirs", "1"]), &dir.path().join("crates"), Settings::default(), &mut never);
+    assert_eq!(
+        value["targets"]
+            .as_array()
+            .map(|t| t.last().map(|l| l["path"].clone())),
+        Some(Some(".".into()))
+    );
+    let out = cli::run(
+        &args(&["--plan", "--max-dirs", "1"]),
+        &dir.path().join("crates"),
+        Settings::default(),
+        &mut never,
+    );
     assert!(out.stdout.contains("create  ."), "{}", out.stdout);
     assert_eq!(out.stdout.lines().count(), 2);
-    let out = cli::run(&args(&["--frob"]), dir.path(), Settings::default(), &mut never);
+    let out = cli::run(
+        &args(&["--frob"]),
+        dir.path(),
+        Settings::default(),
+        &mut never,
+    );
     assert_eq!(out.code, 2);
-    let out = cli::run(&args(&["--max-depth", "x"]), dir.path(), Settings::default(), &mut never);
+    let out = cli::run(
+        &args(&["--max-depth", "x"]),
+        dir.path(),
+        Settings::default(),
+        &mut never,
+    );
     assert_eq!(out.code, 2);
     let mut fake = |model: Option<String>| -> Box<dyn Runner> {
         assert_eq!(model.as_deref(), Some("p/m"));
-        Box::new(Fake { calls: Vec::new(), fail_in: None })
+        Box::new(Fake {
+            calls: Vec::new(),
+            fail_in: None,
+        })
     };
-    let out = cli::run(&args(&["--model", "p/m"]), dir.path(), Settings::default(), &mut fake);
+    let out = cli::run(
+        &args(&["--model", "p/m"]),
+        dir.path(),
+        Settings::default(),
+        &mut fake,
+    );
     assert_eq!(out.code, 0, "{out:?}");
     assert!(out.stdout.ends_with("written, 0 kept, 0 failed"));
 }
@@ -219,8 +303,13 @@ fn cli_plan_json_and_errors() {
 fn settings_from_config_and_environment() {
     let view = serde_json::json!({"init_deep": {"advise": true, "max_depth": 5, "max_dirs": 0, "min_files": 7}});
     let s = Settings::from_view(Some(&view), &|_| None);
-    assert_eq!((s.max_depth, s.max_dirs, s.min_files, s.advise), (5, 1, 7, true));
-    let off = Settings::from_view(Some(&view), &|k| (k == "MAHO_CONTEXT_ADVICE").then(|| "0".into()));
+    assert_eq!(
+        (s.max_depth, s.max_dirs, s.min_files, s.advise),
+        (5, 1, 7, true)
+    );
+    let off = Settings::from_view(Some(&view), &|k| {
+        (k == "MAHO_CONTEXT_ADVICE").then(|| "0".into())
+    });
     assert!(!off.advise);
 }
 
@@ -233,7 +322,10 @@ fn advisor_suggests_once_per_root_and_respects_opt_outs() {
     assert!(text.contains("/init-deep"));
     assert!(advisor::advise_once(home.path(), dir.path(), &settings).is_none());
     let other = fixture();
-    let off = Settings { advise: false, ..Settings::default() };
+    let off = Settings {
+        advise: false,
+        ..Settings::default()
+    };
     assert!(advisor::advise_once(home.path(), other.path(), &off).is_none());
     write(other.path(), "AGENTS.md", "# x\n");
     assert!(advisor::advise_once(home.path(), other.path(), &settings).is_none());

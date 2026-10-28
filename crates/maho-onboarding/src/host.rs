@@ -58,9 +58,7 @@ pub fn resolve_provider<'a>(
     answer: &str,
 ) -> Option<&'a ProviderChoice> {
     let answer = answer.trim();
-    providers
-        .iter()
-        .find(|p| p.id.eq_ignore_ascii_case(answer))
+    providers.iter().find(|p| p.id.eq_ignore_ascii_case(answer))
 }
 
 #[cfg(test)]
@@ -110,7 +108,12 @@ pub(crate) mod fake {
             self.log.push(format!("model {provider}/{model}"));
             Ok(())
         }
-        fn mark_complete(&mut self, version: u32, provider: &str, model: &str) -> Result<(), String> {
+        fn mark_complete(
+            &mut self,
+            version: u32,
+            provider: &str,
+            model: &str,
+        ) -> Result<(), String> {
             self.log.push(format!("done {version} {provider}/{model}"));
             Ok(())
         }
@@ -135,7 +138,10 @@ mod tests {
             1,
         )
         .expect("apply");
-        assert_eq!(host.log, ["key beta sk-1", "model beta/b1", "done 1 beta/b1"]);
+        assert_eq!(
+            host.log,
+            ["key beta sk-1", "model beta/b1", "done 1 beta/b1"]
+        );
     }
 
     #[test]

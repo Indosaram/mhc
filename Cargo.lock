@@ -3792,6 +3792,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-context-files"
+version = "0.0.0"
+dependencies = [
+ "ignore",
+ "maho-config",
+ "maho-ext-api",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "maho-core"
 version = "0.0.0"
 dependencies = [

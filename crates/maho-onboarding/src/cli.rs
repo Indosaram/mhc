@@ -272,7 +272,14 @@ mod tests {
     fn non_interactive_applies_provider_key_and_model() {
         let mut host = FakeHost::sample();
         let out = go(
-            &["--provider", "beta", "--api-key-env", "KEY_VAR", "--yes", "--json"],
+            &[
+                "--provider",
+                "beta",
+                "--api-key-env",
+                "KEY_VAR",
+                "--yes",
+                "--json",
+            ],
             &mut host,
             false,
             &[],
@@ -281,14 +288,24 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&out.stdout).expect("json");
         assert_eq!(value["model"], "beta/b1");
         assert_eq!(value["stored_key"], true);
-        assert_eq!(host.log, ["key beta sk-env", "model beta/b1", "done 1 beta/b1"]);
+        assert_eq!(
+            host.log,
+            ["key beta sk-env", "model beta/b1", "done 1 beta/b1"]
+        );
     }
 
     #[test]
     fn stdin_key_and_qualified_model() {
         let mut host = FakeHost::sample();
         let out = go(
-            &["--provider", "alpha", "--api-key-stdin", "--model", "alpha/a2", "-y"],
+            &[
+                "--provider",
+                "alpha",
+                "--api-key-stdin",
+                "--model",
+                "alpha/a2",
+                "-y",
+            ],
             &mut host,
             false,
             &[],
@@ -331,7 +348,11 @@ mod tests {
     fn check_reports_versions() {
         let mut host = FakeHost::sample();
         let out = go(&["--check"], &mut host, false, &[]);
-        assert!(out.stdout.contains("setup would run: yes"), "{}", out.stdout);
+        assert!(
+            out.stdout.contains("setup would run: yes"),
+            "{}",
+            out.stdout
+        );
         assert_eq!(go(&["--help"], &mut host, false, &[]).code, 0);
     }
 }

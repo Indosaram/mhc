@@ -52,7 +52,10 @@ impl Settings {
             }
         }
         if env(ADVICE_ENV).is_some_and(|v| {
-            matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no")
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "off" | "no"
+            )
         }) {
             out.advise = false;
         }
@@ -118,7 +121,8 @@ pub fn choose(analysis: &Analysis, settings: &Settings) -> Vec<String> {
         .filter(|f| f.path != ".")
         .filter(|f| f.depth <= settings.max_depth)
         .filter(|f| !f.manifests.is_empty() || f.subtree_code_files >= settings.min_files)
-        .filter(|f| !(f.files == 0 && f.child_dirs.len() == 1))
+        // Grouping directories (no files of their own, e.g. `crates/`) leave it to their children.
+        .filter(|f| f.files > 0)
         .collect();
     // Single-child collapse: drop a candidate whose code all sits in exactly one candidate child.
     let paths: Vec<String> = candidates.iter().map(|f| f.path.clone()).collect();

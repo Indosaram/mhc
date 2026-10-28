@@ -136,7 +136,10 @@ mod tests {
         let init = run(&args(&["init"]), &home);
         assert_eq!(init.code, 0);
         assert!(init.stdout.contains("created "));
-        assert!(init.stdout.ends_with(&format!("agent home ready: {}", home.root().display())));
+        assert!(
+            init.stdout
+                .ends_with(&format!("agent home ready: {}", home.root().display()))
+        );
         let show = run(&[], &home);
         assert_eq!(show.code, 0, "{}", show.stdout);
         assert!(show.stdout.contains("sessions"));

@@ -43,7 +43,9 @@ mod tests {
         let outcome = write_model_profile(&env_for(dir.path()), "offline", "m1").expect("write");
         assert!(outcome.backup.is_none());
         let text = std::fs::read_to_string(dir.path().join(".omo/omo.jsonc")).expect("file");
-        let value = maho_support::parse_jsonc_lenient(&text).value.expect("parse");
+        let value = maho_support::parse_jsonc_lenient(&text)
+            .value
+            .expect("parse");
         assert_eq!(value["model_profile"], "setup");
         assert_eq!(value["model_profiles"]["setup"]["models"][0], "offline/m1");
     }
@@ -61,7 +63,9 @@ mod tests {
         assert!(outcome.backup.is_some());
         let text = std::fs::read_to_string(dir.path().join(".omo/omo.jsonc")).expect("file");
         assert!(text.contains("// keep me"));
-        let value = maho_support::parse_jsonc_lenient(&text).value.expect("parse");
+        let value = maho_support::parse_jsonc_lenient(&text)
+            .value
+            .expect("parse");
         assert_eq!(value["telemetry"]["enabled"], true);
         assert_eq!(value["model_profiles"]["setup"]["models"][0], "p/m");
     }

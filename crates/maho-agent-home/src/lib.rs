@@ -129,7 +129,12 @@ impl AgentHome {
             entry("settings", self.settings_file(), Kind::File, false),
             entry("sessions", self.agent.join("sessions"), Kind::Dir, false),
             entry("skills", self.agent.join("skills"), Kind::Dir, false),
-            entry("extensions", self.agent.join("extensions"), Kind::Dir, false),
+            entry(
+                "extensions",
+                self.agent.join("extensions"),
+                Kind::Dir,
+                false,
+            ),
             entry("prompts", self.agent.join("prompts"), Kind::Dir, false),
             entry("bin", self.agent.join("bin"), Kind::Dir, false),
             entry("state", self.state_dir(), Kind::Dir, false),

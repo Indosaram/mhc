@@ -47,7 +47,10 @@ impl Extension for ContextFilesExtension {
         ));
         api.register_command(
             COMMAND,
-            Some("Write AGENTS.md context files for this repository, one per significant directory".into()),
+            Some(
+                "Write AGENTS.md context files for this repository, one per significant directory"
+                    .into(),
+            ),
             Some("[update]".into()),
             Arc::new(move |args, ctx| {
                 let sender = Arc::clone(&sender);
@@ -62,10 +65,8 @@ impl Extension for ContextFilesExtension {
                         UserMessageContent::Text(text),
                         SendUserMessageOptions::default(),
                     ) {
-                        ctx.ui.notify(
-                            &format!("/init-deep: {error}"),
-                            NotificationType::Error,
-                        );
+                        ctx.ui
+                            .notify(&format!("/init-deep: {error}"), NotificationType::Error);
                     }
                     Ok(())
                 })

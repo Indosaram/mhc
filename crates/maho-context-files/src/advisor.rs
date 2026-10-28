@@ -33,7 +33,10 @@ pub fn record(state: &Path, root: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let temp = state.with_extension(format!("tmp-{}", std::process::id()));
-    std::fs::write(&temp, serde_json::to_string_pretty(&roots).unwrap_or_default())?;
+    std::fs::write(
+        &temp,
+        serde_json::to_string_pretty(&roots).unwrap_or_default(),
+    )?;
     std::fs::rename(&temp, state)
 }
 
