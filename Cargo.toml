@@ -8,6 +8,7 @@ members = [
     "crates/maho-git-bash",
     "crates/maho-side-panel",
     "crates/maho-workflow",
+    "crates/maho-workpool",
     "crates/maho-x-search",
     "crates/maho-ai",
     "crates/maho-agent",

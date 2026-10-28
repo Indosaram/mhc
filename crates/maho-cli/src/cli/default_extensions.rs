@@ -130,6 +130,13 @@ pub fn mit_config_factories() -> Vec<NativeExtensionFactory> {
             ))),
         ),
         factory("task", super::delegation::extension()),
+        factory(
+            "workpool",
+            maho_workpool::WorkerExtension {
+                agent_dir: std::path::PathBuf::from(maho_core::config::get_agent_dir()),
+                tasks: Some(super::delegation::extension()),
+            },
+        ),
         factory("memory", super::long_term_memory::extension()),
         factory("browser", super::browser_automation::extension()),
         factory("telemetry", super::usage_stats::extension()),
@@ -919,6 +926,7 @@ mod mit_tests {
                 "<builtin:format>",
                 "<builtin:lsp>",
                 "<builtin:task>",
+                "<builtin:workpool>",
                 "<builtin:memory>",
                 "<builtin:browser>",
                 "<builtin:telemetry>",
