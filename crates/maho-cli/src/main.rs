@@ -1002,8 +1002,8 @@ fn omo_entry_unavailable(argv: &[String]) -> Option<i32> {
 /// context files (`mhc init-deep`). `None` means argv names none of them.
 #[cfg(not(feature = "omo"))]
 fn run_mit_home_entry(argv: &[String]) -> Option<Result<(), String>> {
-    let rest = &argv[1..];
-    let code = match argv.first().map(String::as_str)? {
+    let (entry, rest) = argv.split_first()?;
+    let code = match entry.as_str() {
         "home" => Ok(maho_cli::cli::user_home::run_home_command(rest)),
         "setup" => maho_cli::cli::first_run::run_setup_command(rest),
         "init-deep" => maho_cli::cli::project_context::run_init_deep_command(rest),
