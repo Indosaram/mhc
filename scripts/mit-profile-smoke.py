@@ -41,6 +41,11 @@ and then answers in text, and checks that:
   instructions; a stdio MCP server configured in `<agent dir>/mcp.json` is started, its tool is
   offered as `mcp_smokefake_echo` and a model call to it returns the server's answer; the builtin
   remote MCP servers (`context7`, `grep_app`) are not declared in offline mode;
+- the session gateway (`maho-gateway`): an RPC session registers as a live session (`mhc gateway
+  list --json`); `mhc gateway send` delivers a message into it, which reaches its model with the
+  gateway header; a `-p` run whose model calls `session_list` and `session_send` relays a message
+  into the same RPC session; the session is unlisted after it exits; `MAHO_GATEWAY=0` hides the
+  tools;
 - `mhc doctor` reports the configuration sources and resolves a pinned model profile;
 - the omo-only entries report that they are unavailable (`mhc ulw-loop`, `--memory-supervisor`).
 
@@ -86,6 +91,13 @@ TELEMETRY_PROMPT = "telemetry smoke prompt text that must never be exported"
 SKILL_MARKER = "mit-profile-skill-ok"
 SKILL_BODY = "bundled smoke skill instructions: say the magic word"
 MCP_ECHO = "mcp-smoke-ping"
+GATEWAY_TOOLS = {"session_list", "session_send"}
+GATEWAY_CLI_TEXT = "gateway-cli-ping"
+GATEWAY_AGENT_TEXT = "gateway-agent-ping"
+GATEWAY_CLI_MARKER = "mit-profile-gateway-cli-ok"
+GATEWAY_AGENT_MARKER = "mit-profile-gateway-agent-ok"
+GATEWAY_RELAY_MARKER = "mit-profile-gateway-relay-ok"
+GATEWAY_HEADER = "[gateway message from "
 FAKE_MCP_SERVER = r"""
 import json, sys
 for line in sys.stdin:
@@ -642,6 +654,160 @@ def skills_mcp_smoke(mhc: str, home: pathlib.Path, work: pathlib.Path, agent: pa
     return None
 
 
+def all_text(payload: dict) -> str:
+    parts = []
+    for message in payload.get("messages") or []:
+        content = message.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            parts.extend(str(part.get("text", "")) for part in content if isinstance(part, dict))
+    return "\n".join(parts)
+
+
+class GatewayModel(http.server.BaseHTTPRequestHandler):
+    """RPC receiver: answers a marker per delivered text. `-p` sender: session_list, session_send, done."""
+    requests: list[dict] = []
+    target = ""
+
+    def log_message(self, *_args) -> None:
+        pass
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("content-length", "0"))
+        payload = json.loads(self.rfile.read(length) or b"{}")
+        GatewayModel.requests.append(payload)
+        text = all_text(payload)
+        results = sum(1 for message in payload.get("messages") or [] if message.get("role") == "tool")
+        call = None
+        if "relay to the rpc session" in text:
+            if results == 0:
+                call = ("session_list", {})
+            elif results == 1:
+                call = ("session_send", {"to": GatewayModel.target, "message": GATEWAY_AGENT_TEXT})
+            else:
+                answer = GATEWAY_RELAY_MARKER
+        elif GATEWAY_AGENT_TEXT in text:
+            answer = GATEWAY_AGENT_MARKER
+        elif GATEWAY_CLI_TEXT in text:
+            answer = GATEWAY_CLI_MARKER
+        else:
+            answer = "idle"
+        if call:
+            body = sse([
+                chunk({"role": "assistant", "tool_calls": [{
+                    "index": 0, "id": f"call_gw_{results}", "type": "function",
+                    "function": {"name": call[0], "arguments": json.dumps(call[1])},
+                }]}),
+                chunk({}, "tool_calls"),
+            ])
+        else:
+            body = sse([chunk({"role": "assistant", "content": answer}), chunk({}, "stop")])
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def gateway_smoke(mhc: str, home: pathlib.Path, work: pathlib.Path, agent: pathlib.Path, env: dict) -> str | None:
+    import time
+
+    gw_env = {**env, "MAHO_GATEWAY_DIR": str(home / "gateway-store")}
+    gw_env.pop("MAHO_GATEWAY", None)
+
+    def gateway(*argv: str) -> subprocess.CompletedProcess:
+        return subprocess.run([mhc, "gateway", *argv], cwd=work, env=gw_env, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=60)
+
+    def received(marker: str) -> bool:
+        return any(marker in json.dumps(p) for p in GatewayModel.requests) or marker in "".join(out_lines)
+
+    model = http.server.ThreadingHTTPServer(("127.0.0.1", 0), GatewayModel)
+    threading.Thread(target=model.serve_forever, daemon=True).start()
+    (agent / "models.json").write_text(models_json(model.server_port))
+    out_lines: list[str] = []
+    rpc = subprocess.Popen([mhc, "--mode", "rpc", "--offline", "--no-session", "--model", "offline/offline"],
+                           cwd=work, env=gw_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, text=True)
+    threading.Thread(target=lambda: out_lines.extend(iter(rpc.stdout.readline, "")), daemon=True).start()
+    err_lines: list[str] = []
+    threading.Thread(target=lambda: err_lines.extend(iter(rpc.stderr.readline, "")), daemon=True).start()
+    try:
+        records = []
+        deadline = time.time() + 60
+        while time.time() < deadline and not records:
+            listed = gateway("list", "--json")
+            records = json.loads(listed.stdout or "[]") if listed.returncode == 0 else []
+            if not records:
+                time.sleep(0.3)
+        if len(records) != 1:
+            return f"the RPC session did not register with the gateway (records: {records})\nstderr: {''.join(err_lines)[-3000:]}"
+        session_id = records[0]["session_id"]
+        if records[0].get("pid") != rpc.pid:
+            return f"gateway record names pid {records[0].get('pid')}, the RPC session is {rpc.pid}"
+        sent = gateway("send", "--from", "smoke", session_id[:8], GATEWAY_CLI_TEXT)
+        if sent.returncode != 0 or session_id not in sent.stdout:
+            return f"`mhc gateway send` failed (exit {sent.returncode})\nstdout: {sent.stdout}\nstderr: {sent.stderr}"
+        deadline = time.time() + 60
+        while time.time() < deadline and not received(GATEWAY_CLI_MARKER):
+            time.sleep(0.3)
+        cli_requests = [p for p in GatewayModel.requests if GATEWAY_CLI_TEXT in all_text(p)]
+        if not cli_requests or not received(GATEWAY_CLI_MARKER):
+            return f"the delivered message did not start a turn in the RPC session\nstdout: {''.join(out_lines)[-3000:]}\nstderr: {''.join(err_lines)[-3000:]}"
+        delivered = all_text(cli_requests[0])
+        if GATEWAY_HEADER + "smoke (command line)" not in delivered:
+            return f"the delivered message lacks the gateway header\nmodel input: {delivered[-2000:]}"
+        if list((home / "gateway-store" / "inbox" / session_id).glob("*.json")):
+            return "the delivered message is still in the inbox"
+
+        GatewayModel.target = session_id
+        relay = subprocess.run(
+            [mhc, "-p", "--offline", "--no-session", "--model", "offline/offline", "relay to the rpc session"],
+            cwd=work, env=gw_env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+        if relay.returncode != 0 or GATEWAY_RELAY_MARKER not in relay.stdout:
+            return f"relay run failed (exit {relay.returncode})\nstdout: {relay.stdout}\nstderr: {relay.stderr}"
+        relay_requests = [p for p in GatewayModel.requests if "relay to the rpc session" in all_text(p)]
+        offered = tool_names(relay_requests[0])
+        if not GATEWAY_TOOLS <= offered:
+            return f"gateway tools not offered (offered: {sorted(offered)})"
+        results = tool_text(relay_requests[-1])
+        if session_id not in results or "Sent to session" not in results:
+            return f"session_list/session_send results are wrong\ntool results: {results[:2000]}"
+        deadline = time.time() + 60
+        while time.time() < deadline and not received(GATEWAY_AGENT_MARKER):
+            time.sleep(0.3)
+        agent_requests = [p for p in GatewayModel.requests
+                          if GATEWAY_AGENT_TEXT in all_text(p) and "relay to the rpc session" not in all_text(p)]
+        if not agent_requests or GATEWAY_HEADER + "session " not in all_text(agent_requests[0]):
+            return f"the relayed message did not reach the RPC session's model with the agent header\nstdout: {''.join(out_lines)[-3000:]}"
+    finally:
+        try:
+            rpc.stdin.close()
+        except OSError:
+            pass
+        try:
+            rpc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            rpc.kill()
+            rpc.wait()
+        model.shutdown()
+    after = gateway("list")
+    if after.stdout.strip() != "No live sessions.":
+        return f"the RPC session is still listed after it exited: {after.stdout}"
+    off = subprocess.run(
+        [mhc, "-p", "--offline", "--no-session", "--model", "offline/offline", "relay to the rpc session"],
+        cwd=work, env={**gw_env, "MAHO_GATEWAY": "0"}, stdin=subprocess.DEVNULL, capture_output=True,
+        text=True, timeout=120)
+    off_requests = [p for p in GatewayModel.requests[-3:] if "relay to the rpc session" in all_text(p)]
+    if off_requests and GATEWAY_TOOLS & tool_names(off_requests[-1]):
+        return f"gateway tools offered with MAHO_GATEWAY=0 (exit {off.returncode})"
+    print("ok   gateway: RPC session registered, mhc gateway send delivered into it with the gateway header, "
+          "a -p run relayed through session_list/session_send, unlisted after exit, MAHO_GATEWAY=0 hides the tools")
+    return None
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         sys.stderr.write(__doc__ or "")
@@ -942,6 +1108,10 @@ def main() -> int:
             print("skip browser run (set MHC_SMOKE_BROWSER to a Chromium executable)")
 
         failure = skills_mcp_smoke(mhc, home, work, agent, env)
+        if failure:
+            return fail(failure)
+
+        failure = gateway_smoke(mhc, home, work, agent, env)
         if failure:
             return fail(failure)
 
