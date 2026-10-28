@@ -3472,6 +3472,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-agent-home"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "maho-ai"
 version = "0.0.0"
 dependencies = [
@@ -3583,11 +3593,13 @@ dependencies = [
  "indexmap",
  "libproc",
  "maho-agent",
+ "maho-agent-home",
  "maho-ai",
  "maho-browser",
  "maho-chord",
  "maho-codemode",
  "maho-config",
+ "maho-context-files",
  "maho-core",
  "maho-delegate-core",
  "maho-ext-account",
@@ -3665,6 +3677,7 @@ dependencies = [
  "maho-omo-memory",
  "maho-omo-task",
  "maho-omo-telemetry",
+ "maho-onboarding",
  "maho-process-env",
  "maho-rpc",
  "maho-senpi-task",
@@ -3684,6 +3697,7 @@ dependencies = [
  "photon-rs",
  "regex",
  "reqwest 0.12.28",
+ "rpassword",
  "semver",
  "serde",
  "serde_json",
@@ -3778,6 +3792,18 @@ dependencies = [
  "maho-omo-config-core",
  "maho-utils",
  "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "maho-context-files"
+version = "0.0.0"
+dependencies = [
+ "ignore",
+ "maho-config",
+ "maho-ext-api",
  "serde",
  "serde_json",
  "tempfile",
@@ -5713,6 +5739,16 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "maho-onboarding"
+version = "0.0.0"
+dependencies = [
+ "maho-config",
+ "maho-support",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

@@ -695,6 +695,9 @@ fn sections(include_gateway: bool) -> Vec<Field> {
     ];
     if include_gateway {
         out.push(f("gateway", map(Rule::Any)));
+        // Read by maho-onboarding (`setup.enabled`) and maho-context-files (`init_deep.*`).
+        out.push(f("setup", map(Rule::Any)));
+        out.push(f("init_deep", map(Rule::Any)));
     }
     out
 }

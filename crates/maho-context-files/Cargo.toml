@@ -1,0 +1,20 @@
+[package]
+name = "maho-context-files"
+description = "Hierarchical project context files for mhc's MIT profile: repository analysis (ignore-aware walk, languages, manifests, entry points, tests), choice of directories, neutral prompts, AGENTS.md generation through child mhc -p runs (mhc init-deep), the /init-deep command and a once-per-repository session-start advisor. Clean-room spec docs/cleanroom/specs/init-deep.md from oh-my-pi's MIT /init prompt and senpi nested AGENTS.md loading."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-ext-api = { path = "../maho-ext-api" }
+maho-config = { path = "../maho-config" }
+ignore = "=0.4.33"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

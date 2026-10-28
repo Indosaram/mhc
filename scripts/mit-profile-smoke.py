@@ -46,6 +46,18 @@ and then answers in text, and checks that:
   gateway header; a `-p` run whose model calls `session_list` and `session_send` relays a message
   into the same RPC session; the session is unlisted after it exits; `MAHO_GATEWAY=0` hides the
   tools;
+- the agent home (`maho-agent-home`): `mhc home init` creates the layout in a fresh home, `mhc home
+  --json` reports it, a group-readable `auth.json` is flagged and `mhc home repair` fixes it;
+- first-run setup (`maho-onboarding`): `mhc setup --provider ... --model ... --api-key-env ... --yes`
+  stores the key in `auth.json`, the default model in `settings.json` and the `setup` model profile
+  in `omo.jsonc` (resolved by `mhc doctor`) and records the setup state; an unknown provider and a
+  missing `--yes` are refused; when `tmux` is on PATH an interactive start without a usable model
+  runs the setup prompts (provider, key without echo, model) before the session;
+- project context files (`maho-context-files`): `mhc init-deep --plan --json` chooses the root and
+  a package directory of a fixture repository; an RPC session there suggests `/init-deep` once;
+  `mhc init-deep` writes both `AGENTS.md` files deepest first through child `mhc -p` runs with
+  read-only tools on the loopback model, the root prompt carrying the child's summary; a rerun
+  keeps them;
 - `mhc doctor` reports the configuration sources and resolves a pinned model profile;
 - the omo-only entries report that they are unavailable (`mhc ulw-loop`, `--memory-supervisor`).
 
@@ -59,12 +71,16 @@ import http.server
 import json
 import os
 import pathlib
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 
 MARKER = "mit-profile-smoke-ok"
+CONTEXT_MARKER = "context-smoke"
+SKIP_SETUP_ENV = "MAHO_SKIP_SETUP"
 REQUIRED_TOOLS = {"read", "write", "edit"}
 # Tools the omo port registers; none may appear in the MIT profile.
 OMO_TOOL_PREFIXES = ("task", "team_", "workpool", "memory", "x_search", "omo_")
@@ -809,6 +825,245 @@ def gateway_smoke(mhc: str, home: pathlib.Path, work: pathlib.Path, agent: pathl
     return None
 
 
+class ContextModel(http.server.BaseHTTPRequestHandler):
+    """init-deep children: answers a fenced context file naming the directory it was asked about."""
+    requests: list[dict] = []
+
+    def log_message(self, *_args) -> None:
+        pass
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("content-length", "0"))
+        payload = json.loads(self.rfile.read(length) or b"{}")
+        ContextModel.requests.append(payload)
+        text = all_text(payload)
+        name = "pkg-core" if "the directory `crates/core`" in text else "repo-root"
+        answer = f"```markdown\n# {name}\n\n{CONTEXT_MARKER} {name} summary.\n```"
+        body = sse([chunk({"role": "assistant", "content": answer}), chunk({}, "stop")])
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def home_setup_smoke(mhc: str, home: pathlib.Path, work: pathlib.Path, agent: pathlib.Path, env: dict) -> str | None:
+    """`mhc home` (layout, bootstrap, auth privacy) and non-interactive `mhc setup`."""
+    fresh = home / "fresh-home"
+    fresh.mkdir()
+    fresh_agent = fresh / ".omo" / "agent"
+    home_env = {**env, "HOME": str(fresh), "USERPROFILE": str(fresh), "MAHO_CODING_AGENT_DIR": str(fresh_agent)}
+
+    def run(*argv: str, run_env: dict = home_env, stdin=subprocess.DEVNULL) -> subprocess.CompletedProcess:
+        return subprocess.run([mhc, *argv], cwd=work, env=run_env, stdin=stdin, capture_output=True,
+                              text=True, timeout=120)
+
+    init = run("home", "init")
+    if init.returncode != 0 or "agent home ready:" not in init.stdout:
+        return f"`mhc home init` failed (exit {init.returncode})\nstdout: {init.stdout}\nstderr: {init.stderr}"
+    for name in ("sessions", "skills", "extensions", "prompts", "bin"):
+        if not (fresh_agent / name).is_dir():
+            return f"`mhc home init` did not create {fresh_agent / name}"
+    if not (fresh / ".omo" / "state").is_dir():
+        return "`mhc home init` did not create ~/.omo/state"
+    shown = run("home", "--json")
+    report = json.loads(shown.stdout or "{}") if shown.returncode == 0 else {}
+    if len(report.get("entries", [])) != 13 or report.get("setup_version") != 0:
+        return f"`mhc home --json` is wrong (exit {shown.returncode})\nstdout: {shown.stdout}\nstderr: {shown.stderr}"
+    if os.name == "posix":
+        (fresh_agent / "auth.json").write_text("{}")
+        os.chmod(fresh_agent / "auth.json", 0o644)
+        flagged = run("home")
+        if flagged.returncode != 1 or "secret file is not private" not in flagged.stdout:
+            return f"`mhc home` did not flag a group-readable auth.json (exit {flagged.returncode})\n{flagged.stdout}"
+        repaired = run("home", "repair")
+        if repaired.returncode != 0 or (os.stat(fresh_agent / "auth.json").st_mode & 0o777) != 0o600:
+            return f"`mhc home repair` did not make auth.json private\n{repaired.stdout}\n{repaired.stderr}"
+    print("ok   mhc home: layout report, init created the agent home, auth.json privacy flagged and repaired")
+
+    (fresh_agent / "models.json").write_text(json.dumps({"providers": {"offline": {
+        "api": "openai-completions", "baseUrl": "http://127.0.0.1:9/v1",
+        "models": [{"id": "offline", "reasoning": False, "input": ["text"],
+                    "contextWindow": 128000, "maxTokens": 4096},
+                   {"id": "second", "reasoning": False, "input": ["text"],
+                    "contextWindow": 128000, "maxTokens": 4096}],
+    }}}))
+    bad = run("setup", "--provider", "no-such-provider", "--yes")
+    if bad.returncode != 2 or "unknown provider" not in bad.stderr:
+        return f"`mhc setup` accepted an unknown provider (exit {bad.returncode})\n{bad.stderr}"
+    no_yes = run("setup", "--provider", "offline")
+    if no_yes.returncode != 2 or "--yes" not in no_yes.stderr:
+        return f"`mhc setup` without --yes and without a terminal should refuse (exit {no_yes.returncode})\n{no_yes.stderr}"
+    done = run("setup", "--provider", "offline", "--model", "offline/second", "--api-key-env", "SMOKE_SETUP_KEY",
+               "--yes", "--json", run_env={**home_env, "SMOKE_SETUP_KEY": "sk-smoke-setup"})
+    result = json.loads(done.stdout or "{}") if done.returncode == 0 else {}
+    if result.get("model") != "offline/second" or result.get("stored_key") is not True:
+        return f"`mhc setup --provider` failed (exit {done.returncode})\nstdout: {done.stdout}\nstderr: {done.stderr}"
+    auth = json.loads((fresh_agent / "auth.json").read_text())
+    if auth.get("offline", {}).get("key") != "sk-smoke-setup" or auth["offline"].get("type") != "api_key":
+        return f"the API key was not stored in auth.json: {auth}"
+    settings = json.loads((fresh_agent / "settings.json").read_text())
+    if settings.get("defaultProvider") != "offline" or settings.get("defaultModel") != "second":
+        return f"settings.json default model not written: {settings}"
+    config = (fresh / ".omo" / "omo.jsonc").read_text()
+    if '"model_profile": "setup"' not in config or "offline/second" not in config:
+        return f"omo.jsonc model profile not written:\n{config}"
+    state = json.loads((fresh / ".omo" / "state" / "setup.json").read_text())
+    if state.get("version") != 1 or state.get("model") != "offline/second":
+        return f"setup state not recorded: {state}"
+    check = run("setup", "--check")
+    if check.returncode != 0 or "setup would run: no" not in check.stdout:
+        return f"`mhc setup --check` after setup should report nothing to run\n{check.stdout}\n{check.stderr}"
+    doctor = run("doctor")
+    if "setup" not in doctor.stdout or "offline/second" not in doctor.stdout:
+        return f"`mhc doctor` does not resolve the setup model profile\nstdout: {doctor.stdout}\nstderr: {doctor.stderr}"
+    print("ok   mhc setup: non-interactive provider key + default model written to auth.json, settings.json and "
+          "the omo.jsonc model profile; setup state recorded; unknown provider and missing --yes refused")
+
+    tmux = shutil.which("tmux", path=env.get("PATH"))
+    if not tmux:
+        print("skip first-run gate: tmux not on PATH")
+        return None
+    gate = home / "gate-home"
+    gate_agent = gate / ".omo" / "agent"
+    gate_agent.mkdir(parents=True)
+    (gate_agent / "models.json").write_text((fresh_agent / "models.json").read_text())
+    gate_env = {k: v for k, v in home_env.items() if not k.endswith("_API_KEY")}
+    gate_env.update({"HOME": str(gate), "USERPROFILE": str(gate), "MAHO_CODING_AGENT_DIR": str(gate_agent),
+                     "PI_OFFLINE": "1", "TERM": "xterm-256color"})
+    gate_env.pop(SKIP_SETUP_ENV, None)
+    socket = str(home / "gate-tmux.sock")
+    tmux_cmd = lambda *args: subprocess.run([tmux, "-S", socket, *args], capture_output=True, text=True, env=gate_env)
+    script = home / "gate.sh"
+    script.write_text(f"#!/bin/sh\ncd {shlex.quote(str(work))}\nexec {shlex.quote(mhc)} --offline\n")
+    os.chmod(script, 0o755)
+    tmux_cmd("new-session", "-d", "-s", "gate", "-x", "160", "-y", "50", str(script))
+
+    def pane() -> str:
+        return tmux_cmd("capture-pane", "-p", "-t", "gate").stdout
+
+    def wait_for(text: str, seconds: float = 60) -> bool:
+        import time
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if text in pane():
+                return True
+            time.sleep(0.3)
+        return False
+
+    try:
+        if not wait_for("Provider (number or id):"):
+            return f"the first-run gate did not ask for a provider\npane:\n{pane()}"
+        tmux_cmd("send-keys", "-t", "gate", "offline", "Enter")
+        if not wait_for("API key for offline"):
+            return f"the first-run gate did not ask for a key\npane:\n{pane()}"
+        tmux_cmd("send-keys", "-t", "gate", "sk-gate-key", "Enter")
+        if not wait_for("Default model [offline]:"):
+            return f"the first-run gate did not ask for a model\npane:\n{pane()}"
+        if "sk-gate-key" in pane():
+            return "the API key was echoed on the terminal"
+        tmux_cmd("send-keys", "-t", "gate", "2", "Enter")
+        if not wait_for("setup complete: offline/second"):
+            return f"the first-run gate did not complete\npane:\n{pane()}"
+    finally:
+        tmux_cmd("kill-server")
+    auth = json.loads((gate_agent / "auth.json").read_text())
+    if auth.get("offline", {}).get("key") != "sk-gate-key":
+        return f"the first-run gate did not store the key: {auth}"
+    if json.loads((gate / ".omo" / "state" / "setup.json").read_text()).get("version") != 1:
+        return "the first-run gate did not record the setup state"
+    print("ok   first-run gate: an interactive start without a usable model asked for provider, key (no echo) "
+          "and model in tmux, stored them and recorded the setup state")
+    return None
+
+
+def context_files_smoke(mhc: str, home: pathlib.Path, work: pathlib.Path, agent: pathlib.Path, env: dict) -> str | None:
+    """`mhc init-deep` against a fixture repository through the loopback model, and the advisor."""
+    import time
+
+    repo = home / "ctx-repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "Cargo.toml").write_text("[workspace]\nmembers = [\"crates/core\"]\n")
+    core = repo / "crates" / "core"
+    (core / "src").mkdir(parents=True)
+    (core / "Cargo.toml").write_text("[package]\nname = \"core\"\n")
+    (core / "src" / "lib.rs").write_text("pub fn run() {}\n")
+    for i in range(24):
+        (core / "src" / f"m{i}.rs").write_text(f"pub fn f{i}() {{}}\n")
+    (repo / "crates" / "notes.txt").write_text("not code\n")
+
+    model = http.server.ThreadingHTTPServer(("127.0.0.1", 0), ContextModel)
+    threading.Thread(target=model.serve_forever, daemon=True).start()
+    (agent / "models.json").write_text(models_json(model.server_port))
+    ctx_env = {**env, "PI_OFFLINE": "1"}
+    ctx_env.pop("MAHO_CONTEXT_ADVICE", None)
+    try:
+        plan = subprocess.run([mhc, "init-deep", "--plan", "--json"], cwd=repo / "crates", env=ctx_env,
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        doc = json.loads(plan.stdout or "{}") if plan.returncode == 0 else {}
+        paths = [t.get("path") for t in doc.get("targets", [])]
+        if paths != ["crates/core", "."] or ContextModel.requests:
+            return f"`mhc init-deep --plan` is wrong (exit {plan.returncode})\nstdout: {plan.stdout}\nstderr: {plan.stderr}"
+
+        rpc = subprocess.Popen([mhc, "--mode", "rpc", "--offline", "--no-session", "--model", "offline/offline"],
+                               cwd=repo, env=ctx_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True)
+        out_lines: list[str] = []
+        threading.Thread(target=lambda: out_lines.extend(iter(rpc.stdout.readline, "")), daemon=True).start()
+        try:
+            deadline = time.time() + 60
+            while time.time() < deadline and "/init-deep" not in "".join(out_lines):
+                time.sleep(0.3)
+        finally:
+            try:
+                rpc.stdin.close()
+            except OSError:
+                pass
+            try:
+                rpc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                rpc.kill()
+                rpc.wait()
+        advice = "".join(out_lines)
+        if "has no AGENTS.md" not in advice or "/init-deep" not in advice:
+            return f"the RPC session did not suggest /init-deep\nstdout: {advice[-3000:]}"
+        recorded = json.loads((home / ".omo" / "state" / "context-advice.json").read_text())
+        if str(repo) not in recorded:
+            return f"the advice was not recorded once for the repository: {recorded}"
+
+        run = subprocess.run([mhc, "init-deep", "--model", "offline/offline"], cwd=repo, env=ctx_env,
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300)
+        if run.returncode != 0 or "context files: 2 written, 0 kept, 0 failed" not in run.stdout:
+            return f"`mhc init-deep` failed (exit {run.returncode})\nstdout: {run.stdout}\nstderr: {run.stderr}"
+        core_file = (core / "AGENTS.md").read_text()
+        root_file = (repo / "AGENTS.md").read_text()
+        if not core_file.startswith("# pkg-core\n") or "```" in core_file:
+            return f"crates/core/AGENTS.md is wrong:\n{core_file}"
+        if not root_file.startswith("# repo-root\n"):
+            return f"AGENTS.md is wrong:\n{root_file}"
+        if len(ContextModel.requests) < 2:
+            return "the model was not called once per directory"
+        first, last = all_text(ContextModel.requests[0]), all_text(ContextModel.requests[-1])
+        if "the directory `crates/core`" not in first:
+            return f"the deepest directory was not written first\nfirst prompt: {first[-2000:]}"
+        if "`crates/core`: pkg-core" not in last:
+            return f"the root prompt does not carry the child's summary\nlast prompt: {last[-2000:]}"
+        offered = set().union(*(tool_names(p) for p in ContextModel.requests))
+        if offered & {"write", "edit", "bash"} or "read" not in offered:
+            return f"init-deep children must only get read-only tools (offered: {sorted(offered)})"
+        again = subprocess.run([mhc, "init-deep", "--model", "offline/offline"], cwd=repo, env=ctx_env,
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+        if again.returncode != 0 or "0 written, 2 kept" not in again.stdout:
+            return f"a second `mhc init-deep` should keep the files\nstdout: {again.stdout}\nstderr: {again.stderr}"
+    finally:
+        model.shutdown()
+    print("ok   init-deep: plan chose the root and crates/core, an RPC session suggested /init-deep once, "
+          "child mhc -p runs (read-only tools) wrote both AGENTS.md deepest first with the child summary in the root prompt, "
+          "a rerun kept them")
+    return None
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         sys.stderr.write(__doc__ or "")
@@ -1113,6 +1368,14 @@ def main() -> int:
             return fail(failure)
 
         failure = gateway_smoke(mhc, home, work, agent, env)
+        if failure:
+            return fail(failure)
+
+        failure = home_setup_smoke(mhc, home, work, agent, env)
+        if failure:
+            return fail(failure)
+
+        failure = context_files_smoke(mhc, home, work, agent, env)
         if failure:
             return fail(failure)
 
