@@ -1,0 +1,19 @@
+[package]
+name = "maho-skills"
+description = "MIT-profile skill support for mhc on top of the senpi skill loader in maho-core: the bundled skill root, disabled_skills filtering, the skill tool (skill files and skill-relative paths, oh-my-pi skill:// resolution rules) and the /skill command."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-ext-api = { path = "../maho-ext-api" }
+maho-config = { path = "../maho-config" }
+serde_json.workspace = true
+
+[dev-dependencies]
+maho-core = { path = "../maho-core" }
+tempfile.workspace = true
+
+[lints]
+workspace = true

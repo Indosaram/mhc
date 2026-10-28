@@ -85,7 +85,7 @@ impl SessionRegistry {
         }
         let blocks = if matches!(decision, Decision::Bootstrap { .. } | Decision::Flatten { .. }) {
             let blocks = crate::prompt_bridge::build_prompt_blocks(input.context["messages"].as_array().expect("messages"), input.custom, input.tool_note);
-            crate::prompt_directive_dedupe::dedupe_ultrawork_blocks(&blocks).blocks
+            crate::prompt_directive_dedupe::dedupe_registered_directive_blocks(&blocks).blocks
         } else { crate::session_sync::build_delta_prompt_blocks(&messages[from..], input.custom) };
         let entry = self.entries.get_mut(input.session).expect("admitted entry");
         let result = crate::session_turn_attempt::run(entry, maho_ai::utils::uuid::uuidv7(None)?, json!({"role":"user","content":blocks}), &hashes, (input.now, input.signal), &mut self.bindings, deliver).await;

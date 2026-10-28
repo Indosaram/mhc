@@ -175,7 +175,7 @@ pub fn stream_anthropic_subscription(
             query = Some(handle);
             let messages = context_json["messages"].as_array().ok_or_else(|| anyhow::anyhow!("Context messages are not an array"))?;
             let blocks = crate::prompt_bridge::build_prompt_blocks(messages, &resolved.to_sdk, tool_note.as_deref());
-            let blocks = crate::prompt_directive_dedupe::dedupe_ultrawork_blocks(&blocks).blocks;
+            let blocks = crate::prompt_directive_dedupe::dedupe_registered_directive_blocks(&blocks).blocks;
             let handle = query.as_mut().expect("query started");
             handle.send(crate::prompt_bridge::prompt_message(blocks)).await?;
             let mut saw_stream = false;

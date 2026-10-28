@@ -13,7 +13,7 @@ pub fn create_omo_native_product_config() -> telemetry_core::TelemetryProductCon
     config.product_name="omo-native".into();
     config
 }
-pub const BUILTIN_SKILL_NAMES: &[&str] = &["ast-grep", "browser", "coding-agent-sessions", "dag-library", "data-scientist", "debugging", "frontend", "git-master", "give-me-tips", "hyperplan", "init-deep", "lsp-setup", "mass-ulw", "onboarding", "programming", "refactor", "remove-ai-slops", "review-work", "ulw-execute", "ultimate-browsing", "ultrawork", "ulw-loop", "ulw-plan", "ulw-research", "visual-qa", "visualize"];
+pub const BUILTIN_SKILL_NAMES: &[&str] = &["adversarial-plan", "ast-grep", "browser", "coding-agent-sessions", "dag-library", "data-scientist", "debugging", "frontend", "git-master", "give-me-tips", "init-deep", "lsp-setup", "onboarding", "programming", "refactor", "remove-ai-slops", "review-work", "ulw-execute", "ultimate-browsing", "ultrawork", "ulw-loop", "ulw-plan", "ulw-research", "visual-qa", "visualize"];
 pub use crate::event_schemas::{BUILTIN_CATEGORY_NAMES, EVENT_PROPERTY_ALLOWLISTS, OMO_NATIVE_COMMON_PROPERTY_SCHEMAS, OMO_NATIVE_EVENT_SCHEMAS, OMO_NATIVE_PROPERTY_ALLOWLISTS, omo_native_event_schemas, builtin_category_names, curated_agents};
 /// Shipped v5.1.38 builtin skill vocabulary.
 pub fn pinned_skill_names()->Vec<String> {BUILTIN_SKILL_NAMES.iter().map(|name|(*name).to_string()).collect()}

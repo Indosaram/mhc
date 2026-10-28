@@ -35,7 +35,7 @@ impl ContinuityNoticeTracker {
                     else { format!("{:.1}MB", bytes / (1024. * 1024.)) };
                 text.push_str(&format!(" - sent {size}"));
                 if let Some(collapsed) = details["collapsedDirectives"].as_f64().filter(|count| *count > 0.) {
-                    text.push_str(&format!(", {collapsed} duplicate ultrawork blocks collapsed"));
+                    text.push_str(&format!(", {collapsed} duplicate directive blocks collapsed"));
                 }
             }
             return Some(theme.fg(ThemeColor::Muted, &text));

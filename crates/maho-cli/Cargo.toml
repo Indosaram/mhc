@@ -6,6 +6,29 @@ publish.workspace = true
 license = "MIT"
 autotests = false
 
+# `omo` links the oh-my-openagent port under crates/omo/** (LicenseRef-SUL-1.0) and the maho-cli
+# modules that host it. It is on by default so the shipped binary keeps every feature; the MIT
+# profile is `--no-default-features`, which links no crate under crates/omo/** (docs/MIT-PROFILE.md;
+# enforced by the `mit-profile` CI job).
+[features]
+default = ["omo"]
+omo = [
+    "dep:maho-omo",
+    "dep:maho-omo-task",
+    "dep:maho-omo-config-resolution",
+    "dep:maho-omo-config-core",
+    "dep:maho-omo-memory",
+    "dep:maho-omo-telemetry",
+    "dep:maho-omo-lsp",
+    "dep:ulw-loop-core",
+    "dep:memory-core",
+    "dep:lsp-daemon",
+    "dep:senpi-task",
+    "dep:delegate-core",
+    "maho-ext-pi-comment-checker/omo-core",
+    "maho-ext-hooks/claude-plugins",
+]
+
 [dependencies]
 chrono = { workspace = true, features = ["clock"] }
 uuid = { workspace = true, features = ["v4"] }
@@ -51,9 +74,37 @@ maho-ext-host = { path = "../maho-ext-host" }
 maho-ext-mcp = { path = "../builtins/maho-ext-mcp" }
 maho-ext-permission-system = { path = "../builtins/maho-ext-permission-system" }
 maho-ext-recommended-models = { path = "../builtins/maho-ext-recommended-models" }
-maho-omo-task = { path = "../omo/components/maho-omo-task" }
+maho-config = { path = "../maho-config" }
+maho-model-select = { path = "../maho-model-select" }
+# MIT LSP client/tools; mounted as `<builtin:lsp>` in the MIT profile only (the omo build mounts its own).
+maho-lsp = { path = "../maho-lsp", features = ["extension"] }
+# MIT subagent delegation; mounted as `<builtin:task>` in the MIT profile only (the omo build mounts its own).
+maho-task = { path = "../maho-task" }
+# MIT long-term memory (mnemopi port); mounted as `<builtin:memory>` and served by `mhc memory` in the MIT profile only.
+maho-memory = { path = "../maho-memory" }
+# MIT browser automation + computer use; mounted as `<builtin:browser>` in the MIT profile only.
+maho-browser = { path = "../maho-browser" }
+# MIT telemetry (usage ledger, `mhc usage`, opt-in OTLP export); mounted as `<builtin:telemetry>` in the MIT profile only.
+maho-telemetry = { path = "../maho-telemetry" }
+# MIT task workspace isolation (git worktree / copy) behind `<builtin:task>` and the read-only git tools (`<builtin:git>`); MIT profile only.
+maho-isolation = { path = "../maho-isolation" }
+maho-git = { path = "../maho-git" }
+# MIT team runs (`team_*` tools, `/team`) and tmux/cmux panes for delegated tasks, attached to `<builtin:task>`; MIT profile only.
+maho-team = { path = "../maho-team" }
+# MIT skill support (bundled root, disabled_skills, `skill` tool, `/skill`) and builtin MCP servers (context7, grep_app) on maho-ext-mcp; mounted as `<builtin:skills>` / `<builtin:mcp-builtins>` in the MIT profile only.
+maho-skills = { path = "../maho-skills" }
+maho-mcp-builtins = { path = "../maho-mcp-builtins" }
+# MIT session gateway (`session_list`/`session_send`, inbox delivery into long-lived sessions, `mhc gateway list|send`); mounted as `<builtin:gateway>` in the MIT profile only.
+maho-gateway = { path = "../maho-gateway" }
+# MIT agent home (`mhc home`), first-run setup (`mhc setup`, first-run gate) and project context
+# files (`mhc init-deep`, `<builtin:context-files>`); used by the MIT profile only.
+maho-agent-home = { path = "../maho-agent-home" }
+maho-onboarding = { path = "../maho-onboarding" }
+maho-context-files = { path = "../maho-context-files" }
+rpassword = "=7.5.4"
+maho-omo-task = { path = "../omo/components/maho-omo-task", optional = true }
 maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }
-maho-ext-hooks = { path = "../builtins/maho-ext-hooks" }
+maho-ext-hooks = { path = "../builtins/maho-ext-hooks", default-features = false }
 maho-ext-relocate-session = { path = "../builtins/maho-ext-relocate-session" }
 maho-ext-prompt-preset = { path = "../builtins/maho-ext-prompt-preset" }
 maho-ext-anthropic-bash = { path = "../builtins/maho-ext-anthropic-bash" }
@@ -77,17 +128,17 @@ maho-ext-ferryx-agent-state = { path = "../extensions/maho-ext-ferryx-agent-stat
 maho-ext-herdr-agent-state = { path = "../extensions/maho-ext-herdr-agent-state" }
 maho-ext-orca-agent-status = { path = "../extensions/maho-ext-orca-agent-status" }
 maho-ext-orca-titlebar-spinner = { path = "../extensions/maho-ext-orca-titlebar-spinner" }
-maho-omo = { path = "../omo/maho-omo" }
-ulw-loop-core = { path = "../omo/ulw-loop-core" }
-maho-omo-config-resolution = { path = "../omo/components/maho-omo-config-resolution" }
-maho-omo-config-core = { path = "../omo/omo-config-core" }
-maho-omo-memory = { path = "../omo/components/maho-omo-memory" }
-maho-omo-telemetry = { path = "../omo/components/maho-omo-telemetry" }
-memory-core = { package = "maho-memory-core", path = "../omo/memory-core" }
-maho-omo-lsp = { path = "../omo/components/maho-omo-lsp" }
-lsp-daemon = { package = "maho-lsp-daemon", path = "../omo/lsp-daemon" }
-senpi-task = { package = "maho-senpi-task", path = "../omo/senpi-task" }
-delegate-core = { package = "maho-delegate-core", path = "../omo/delegate-core" }
+maho-omo = { path = "../omo/maho-omo", optional = true }
+ulw-loop-core = { path = "../omo/ulw-loop-core", optional = true }
+maho-omo-config-resolution = { path = "../omo/components/maho-omo-config-resolution", optional = true }
+maho-omo-config-core = { path = "../omo/omo-config-core", optional = true }
+maho-omo-memory = { path = "../omo/components/maho-omo-memory", optional = true }
+maho-omo-telemetry = { path = "../omo/components/maho-omo-telemetry", optional = true }
+memory-core = { package = "maho-memory-core", path = "../omo/memory-core", optional = true }
+maho-omo-lsp = { path = "../omo/components/maho-omo-lsp", optional = true }
+lsp-daemon = { package = "maho-lsp-daemon", path = "../omo/lsp-daemon", optional = true }
+senpi-task = { package = "maho-senpi-task", path = "../omo/senpi-task", optional = true }
+delegate-core = { package = "maho-delegate-core", path = "../omo/delegate-core", optional = true }
 indexmap.workspace = true
 maho-ext-anthropic-subscription = { path = "../builtins/maho-ext-anthropic-subscription" }
 maho-ext-cursor-cli-oauth = { path = "../builtins/maho-ext-cursor-cli-oauth" }

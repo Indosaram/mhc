@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // Flags coloured one-side bars on any box and accent outlines on rounded cards in CSS, Tailwind and JSX.
-// Usage: bun check-accent-stripes.ts [--json] <file-or-dir>...   Exit 0 clean, 1 findings, 2 usage or unreadable target.
+// Usage: bun check-accent-stripes.ts [--json] <file-or-dir>...
+// Exit codes: 0 = clean, 1 = findings, 2 = usage error or unreadable/nonexistent target (reported on stderr).
 import { readFileSync } from "node:fs"
 import { FIX_HINT, RULE_MESSAGES } from "./accent-stripes/findings"
 import { lintFiles, type SourceFile } from "./accent-stripes/lint"

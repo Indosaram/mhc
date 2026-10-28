@@ -1,0 +1,16 @@
+[package]
+name = "maho-support"
+description = "Small shared helpers (JSONC, atomic writes, path containment, logging hook, PATH lookup)."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+serde_json = { workspace = true, features = ["preserve_order"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

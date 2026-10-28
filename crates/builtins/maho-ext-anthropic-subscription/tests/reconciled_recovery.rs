@@ -7,7 +7,7 @@ use maho_ext_anthropic_subscription::{
     options::{build_query_configuration, QueryOptionsInput},
     prompt_append::{agents, skills},
     prompt_bridge::build_prompt_blocks,
-    prompt_directive_dedupe::{dedupe_ultrawork_blocks, serialized_payload_bytes},
+    prompt_directive_dedupe::{DirectiveTag, dedupe_directive_blocks, serialized_payload_bytes},
     prompt_append::{project_rules, REGION_END, REGION_START},
     session_binding::{binding_from_stored_branch, binding_marker, stored_binding_from_entry, StoredBindingAnchor, BINDING_ENTRY_TYPE},
     session_continuity::{decide, prefix_digest, ContinuityInput, Decision, Snapshot},
@@ -253,11 +253,11 @@ fn history_envelope_keeps_user_anchor_and_prompt_message_fields() {
 
 #[test]
 fn directive_payload_fixture_collapses_to_latest_and_reduces_size() {
-    let body="x".repeat(20_000);let directive=format!("<ultrawork-mode>{body}</ultrawork-mode>");
+    let body="x".repeat(20_000);let directive=format!("<focus-mode>{body}</focus-mode>");
     let blocks:Vec<_>=(0..10).map(|n|if n%2==0 {json!({"type":"text","text":directive})}else {json!({"type":"text","text":format!("plain user message {n}")})}).collect();
-    let raw=serialized_payload_bytes(&blocks);let deduped=dedupe_ultrawork_blocks(&blocks);
+    let raw=serialized_payload_bytes(&blocks);let deduped=dedupe_directive_blocks(&blocks, &DirectiveTag::new("focus-mode", "focus"));
     assert_eq!(deduped.collapsed_directives,4);assert!(serialized_payload_bytes(&deduped.blocks)<raw);
-    assert_eq!(deduped.blocks.iter().filter_map(|v|v["text"].as_str()).map(|s|s.matches("<ultrawork-mode>").count()).sum::<usize>(),1);
+    assert_eq!(deduped.blocks.iter().filter_map(|v|v["text"].as_str()).map(|s|s.matches("<focus-mode>").count()).sum::<usize>(),1);
 }
 
 #[test]
@@ -452,13 +452,13 @@ fn serialized_payload_bytes_sum_text_and_ignore_non_text_blocks() {
 #[test]
 fn directive_deduplication_reduces_large_repeated_payload() {
     let body = "x".repeat(20_000);
-    let directive = format!("<ultrawork-mode>{body}</ultrawork-mode>");
+    let directive = format!("<focus-mode>{body}</focus-mode>");
     let blocks: Vec<_> = (0..10).map(|i| if i%2==0 {json!({"type":"text","text":directive})} else {json!({"type":"text","text":format!("plain {i}")})}).collect();
     let raw = serialized_payload_bytes(&blocks);
-    let result = dedupe_ultrawork_blocks(&blocks);
+    let result = dedupe_directive_blocks(&blocks, &DirectiveTag::new("focus-mode", "focus"));
     assert_eq!(result.collapsed_directives, 4);
     assert!(serialized_payload_bytes(&result.blocks) < raw);
-    assert_eq!(result.blocks.iter().filter_map(|block|block["text"].as_str()).map(|text|text.matches("<ultrawork-mode>").count()).sum::<usize>(), 1);
+    assert_eq!(result.blocks.iter().filter_map(|block|block["text"].as_str()).map(|text|text.matches("<focus-mode>").count()).sum::<usize>(), 1);
 }
 
 #[test]

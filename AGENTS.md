@@ -29,13 +29,13 @@ crates/
 ├── builtins/            # 43 builtin extensions (maho-ext-*)
 ├── extensions/          # 14 native ports of user extensions (see PINS.md)
 ├── vendor/              # maho-grep, maho-pty
+├── desktop/             # senpi-desktop-*: computer-use engine and platform backends (MIT)
 └── omo/                 # oh-my-openagent port (SUL-1.0)
     ├── maho-omo/        # omo composition root: registers the components
     ├── components/      # 33 omo feature components (maho-omo-*: task, memory, lsp, ultrawork, ...)
     ├── senpi-task/      # Multi-agent DAG workflow runner, supervisor, category dispatch
     ├── memory-core/     # Git-backed persistent memory filesystem, identity profiles
     ├── omo-config-core/ # omo.json(c) schema, loader, migrations
-    ├── senpi-desktop-*/ # computer-use engine and platform backends
     └── ...              # *-core libraries, boulder-state, get-worker, utils; sibling binaries lsp-daemon, ast-grep-mcp, git-bash-mcp
 tools/                   # parity audit, golden fixtures, packaging, QA drivers (bun)
 assets/                  # omo-latest skill overlay, omo.schema.json, readme images

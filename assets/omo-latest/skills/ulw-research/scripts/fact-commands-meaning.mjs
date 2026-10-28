@@ -8,7 +8,8 @@
 // fidelity-calibration.jsonl: a header with the promotion criterion on first write, then per run
 // one run line plus one line per flagged pair. The run id hashes the inputs only, so a rerun or a
 // --dispute rerun of the same inputs replaces that run's lines in place (disputes carry forward)
-// instead of counting a second run. Neither command calls a model or the network.
+// instead of counting a second run. Both refuse an unlocked brief (fidelity_interview_incomplete) before
+// reading anything else. Neither command calls a model or the network.
 
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
@@ -18,7 +19,8 @@ import { countDefects } from "./contracts.mjs"
 import { ledgerFrom, markdownAsHtml, readEdition, sessionOf } from "./fact-commands-verify.mjs"
 import { pairsChangedSince } from "./fact-commands-polish.mjs"
 import { extractPairs, PAIR_KINDS } from "./fact-pairs.mjs"
-import { FIDELITY_INCOMPLETE, meaningCheckEnabled, requireLockedBrief } from "./fidelity-brief.mjs"
+import { FIDELITY_INCOMPLETE } from "./fidelity-brief.mjs"
+import { briefPathOf, lockedBrief, meaningCheckEnabled } from "./fidelity-policy.mjs"
 import { MEANING_RECORD, writeFidelityRecord } from "./fidelity-records.mjs"
 import { blocksDelivery } from "./gates-fidelity.mjs"
 import { ingestVerdicts, unverifiedDefects, VERDICT_SCHEMA } from "./meaning-check.mjs"
@@ -36,25 +38,15 @@ const inSession = (session, name, flag) => {
 	return join(session, name)
 }
 
-function briefState(flags, session) {
-	const path = flags.brief ?? inSession(session, "brief.md", "--brief")
-	const lock = requireLockedBrief(path)
-	if (lock.exitCode === 2) throw new CliError(`${path}: malformed ## Fidelity block: ${lock.errors.join("; ")}`)
-	return { path, locked: lock.locked, off: !meaningCheckEnabled(lock.parsed) }
-}
-
 function runPairs(args) {
 	const [report] = args.positionals
 	const { flags } = args
 	if (!report) throw new CliError("usage: fact pairs <report> [--format html|md] [--ledger F] [--claims claims.json] [--changed-since <fill-map.json>] [--brief brief.md] [--out pairs.json]")
 	const session = sessionOf(flags)
 	const out = resolve(flags.out ?? inSession(session, PAIRS_FILE, "--out"))
-	const brief = briefState(flags, session)
-	if (!brief.locked) {
-		const json = { command: "fact pairs", status: "fail", exitCode: 1, error: "fidelity_interview_incomplete", message: `${brief.path} has no locked ## Fidelity block` }
-		return { json, summary: `fact pairs: ${json.message}`, exitCode: 1 }
-	}
-	if (brief.off) {
+	const { parsed, refusal } = lockedBrief("fact pairs", flags)
+	if (refusal) return refusal
+	if (!meaningCheckEnabled(parsed)) {
 		const record = { schemaVersion: 1, skipped: true, reason: "meaning check: off", pairs: [] }
 		writeJsonAtomic(out, record)
 		return { json: { command: "fact pairs", status: "skipped", exitCode: 0, data: { out, ...record } }, summary: "fact pairs: skipped (meaning check: off)", exitCode: 0 }
@@ -125,23 +117,23 @@ function recordCalibration(path, lines, runId, pairsSha) {
 }
 
 /** A `{ skipped: true }` pairs file is accepted only when the locked brief turns the meaning check off. */
-function skippedRefusal(flags, session) {
-	const brief = briefState(flags, session)
-	if (!brief.locked) return { error: FIDELITY_INCOMPLETE, message: `${brief.path} has no locked ## Fidelity block, so a skipped meaning check cannot be accepted` }
-	if (!brief.off) return { error: "meaning_check_required", message: `${flags.pairs} says skipped but ${brief.path} has meaning check on; rerun fact pairs` }
+function skippedRefusal(flags, parsed) {
+	if (meaningCheckEnabled(parsed)) return { error: "meaning_check_required", message: `${flags.pairs} says skipped but ${briefPathOf(flags)} has meaning check on; rerun fact pairs` }
 	return null
 }
 
 function runMeaningCheck(args) {
 	const { flags } = args
-	const usage = "usage: fact meaning-check --pairs pairs.json --verdicts cheap.json [--verdicts strong.json] [--dispute P<n> --reason TEXT] [--run-id ID] [--calibration F] [--out F]"
+	const usage = "usage: fact meaning-check --pairs pairs.json --verdicts cheap.json [--verdicts strong.json] [--dispute P<n> --reason TEXT] [--run-id ID] [--calibration F] [--brief brief.md] [--out F]"
 	if (flags.pairs === undefined || !Array.isArray(flags.verdicts)) throw new CliError(usage)
 	const session = sessionOf(flags)
+	const { parsed, refusal } = lockedBrief("fact meaning-check", flags)
+	if (refusal) return { ...refusal, json: { ...refusal.json, error: FIDELITY_INCOMPLETE } }
 	const pairsText = readFileSync(flags.pairs, "utf8")
 	const pairsDoc = readJsonFile(flags.pairs)
 	if (pairsDoc?.skipped === true) {
-		const refusal = skippedRefusal(flags, session)
-		if (refusal !== null) return { json: { command: "fact meaning-check", status: "fail", exitCode: 1, ...refusal }, summary: `fact meaning-check: ${refusal.message}`, exitCode: 1 }
+		const skipped = skippedRefusal(flags, parsed)
+		if (skipped !== null) return { json: { command: "fact meaning-check", status: "fail", exitCode: 1, ...skipped }, summary: `fact meaning-check: ${skipped.message}`, exitCode: 1 }
 		return { json: { command: "fact meaning-check", status: "skipped", exitCode: 0, defects: [] }, summary: JSON.stringify({ command: "fact meaning-check", status: "skipped" }), exitCode: 0 }
 	}
 	if (typeof pairsDoc?.artifact_sha256 !== "string" || typeof pairsDoc.report !== "string") throw new CliError(`${flags.pairs} names no artifact_sha256 and report, so the meaning record cannot be bound to an edition; rerun fact pairs`)

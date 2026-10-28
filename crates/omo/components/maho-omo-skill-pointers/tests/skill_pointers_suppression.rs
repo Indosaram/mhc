@@ -146,3 +146,22 @@ async fn given_suppression_conditions_when_the_text_has_no_keyword_then_nothing_
     let result = dispatch_input(&harness, "ordinary follow-up", InputSource::Interactive, None, "test-session").await;
     expect_no_injection(&harness, &result);
 }
+
+#[tokio::test]
+async fn given_a_real_skills_root_when_a_matched_skill_is_not_shipped_then_its_pointer_is_withheld() {
+    let root = std::env::temp_dir().join(format!("skill-pointers-shipped-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("ulw-plan")).expect("create skill dir");
+    std::fs::write(root.join("ulw-plan").join("SKILL.md"), "---\nname: ulw-plan\n---\n").expect("write SKILL.md");
+    let root_str = format!("{}/", root.display());
+    assert!(skill_is_shipped(&root_str, "ulw-plan"));
+    assert!(!skill_is_shipped(&root_str, "mass-ulw"));
+    assert!(skill_is_shipped("/definitely/not/a/skills/root/", "mass-ulw"));
+
+    let harness = setup_harness(&root_str);
+    let result = dispatch_input(&harness, "mass ulw plan it out", InputSource::Interactive, None, "test-session").await;
+    expect_pointer_injections(&harness, &result, &[
+        ExpectedPointer { custom_type: ULW_PLAN_CUSTOM_TYPE, skill_name: "ulw-plan" },
+    ]);
+    let _ = std::fs::remove_dir_all(&root);
+}

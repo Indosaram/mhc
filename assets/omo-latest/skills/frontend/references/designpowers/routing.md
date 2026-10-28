@@ -1,20 +1,20 @@
 # designpowers Routing Contract
 
-`designpowers` routes design operating-layer guidance inside the existing frontend skill. It is not a replacement for `/frontend`, `/visual-qa`, `/ulw-plan`, `/ulw-execute`, `/review-work`, or any OpenAgent skill, and it must not create a second planner, builder, verification harness, or orchestration API.
+`designpowers` routes design operating-layer guidance inside the existing frontend skill. It is not a replacement for `/frontend`, `/visual-qa`, the harness's plan command, the harness's execute command, `/review-work`, or any harness skill, and it must not create a second planner, builder, verification harness, or orchestration API.
 
 ## Phase Routing
 
 | User intent or workflow phase | Load or instruct | Required handoff from designpowers |
 |---|---|---|
-| Ambiguous or multi-step web UI request; any request needing a plan | `/ulw-plan` plus this reference's `lane-a-direction.md` | Provide design discovery prompts, target users, inclusive personas, taste direction, open owner decisions, and design debt policy as planning inputs. |
-| Approved plan execution; continuing an OpenAgent plan | `/ulw-execute` plus `lane-b-execution.md` | Keep execution under Boulder/ledger discipline and include current design-state constraints in worker assignments. |
+| Ambiguous or multi-step web UI request; any request needing a plan | The harness's plan command plus this reference's `lane-a-direction.md` | Provide design discovery prompts, target users, inclusive personas, taste direction, open owner decisions, and design debt policy as planning inputs. |
+| Approved plan execution; continuing an harness plan | The harness's execute command plus `lane-b-execution.md` | Keep execution under the execute command's ledger discipline and include current design-state constraints in worker assignments. |
 | Building, styling, redesigning, auditing, or performance-checking a web UI | frontend `design` + `perfection`; add `lane-b-execution.md` when designpowers context affects implementation | Preserve the frontend `DESIGN.md` gate, design/perfection routing, React tooling, real-browser checks, and implementation standards. |
 | Screenshots, visual regressions, clone fidelity, layout quality, alpha/CJK checks, or design QA | `/visual-qa` plus `lane-c-review.md` | Run objective evidence capture before design judgment and feed the same artifacts into persona/accessibility/heuristic review. |
 | Final implementation approval, QA my work, review changes, or significant completed implementation | `/review-work` plus `lane-c-review.md` and `lane-d-memory.md` | Include the design brief, state file path, visual artifacts, unresolved design debt, and accessibility-debt acknowledgements as review inputs. |
 
-## Planning Through `/ulw-plan`
+## Planning Through the Harness's Plan Command
 
-When planning is needed, `designpowers` supplies design-specific context and lets `/ulw-plan` own the plan artifact. Do not write a separate design plan. The Prometheus plan should receive:
+When planning is needed, `designpowers` supplies design-specific context and lets the harness's plan command own the plan artifact. Do not write a separate design plan. The plan should receive:
 
 - product or page goal;
 - primary tasks and user journeys;
@@ -25,9 +25,9 @@ When planning is needed, `designpowers` supplies design-specific context and let
 - verification expectations: frontend checks, visual QA artifacts, persona walkthroughs, and review-work sign-off;
 - explicit Must Not Have constraints, including prohibited bridge/canvas tooling.
 
-## Execution Through `/ulw-execute`
+## Execution Through the Harness's Execute Command
 
-When a plan is approved or selected, `/ulw-execute` remains the orchestrator. `designpowers` only enriches worker prompts with design context from `.omo/frontend-design/state.md` and the selected plan. Worker prompts should carry:
+When a plan is approved or selected, the harness's execute command remains the orchestrator. `designpowers` only enriches worker prompts with design context from `.omo/frontend-design/state.md` and the selected plan. Worker prompts should carry:
 
 - the exact plan checkbox and files in scope;
 - design-state constraints that affect the task;
@@ -35,7 +35,7 @@ When a plan is approved or selected, `/ulw-execute` remains the orchestrator. `d
 - required `/visual-qa` loading for rendered visual proof;
 - the design debt rule: unresolved accessibility debt cannot disappear into a summary.
 
-Direct implementation outside `/ulw-execute` is not part of this routing contract when a Prometheus plan is active.
+Direct implementation outside the harness's execute command is not part of this routing contract when a plan is active.
 
 ## UI Build Through Frontend `design` And `perfection`
 

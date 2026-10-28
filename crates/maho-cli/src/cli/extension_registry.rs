@@ -620,7 +620,10 @@ fn orca_prefill() -> Box<dyn Extension> {
 }
 
 /// Linked user/omo extension ports (`crates/extensions/*`) whose crate publishes the constructor.
-static USER_FACTORIES: [NativeExtension; 13] = [
+/// `pi-comment-checker` uses the SUL `comment-checker-core` helpers with `omo` and the MIT
+/// `maho-comment-checker` crate without it.
+const USER_FACTORY_COUNT: usize = 13;
+static USER_FACTORIES: [NativeExtension; USER_FACTORY_COUNT] = [
     NativeExtension {
         id: "pi-ast-grep",
         crate_name: "maho-ext-pi-ast-grep",

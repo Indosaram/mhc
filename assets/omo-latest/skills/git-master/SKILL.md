@@ -1,6 +1,6 @@
 ---
 name: git-master
-description: "Handles git work: atomic commits, rebase, squash, blame, bisect, reflog, and history questions. Use whenever a task needs a commit or a git-history investigation; skip for ordinary code edits."
+description: "Git specialist for commit splitting, history rewriting (rebase, squash, fixup), and archaeology (blame, bisect, pickaxe log, reflog). Load when a task creates commits or asks who/when/why a change happened; not needed for plain file edits."
 ---
 
 # Git Master
