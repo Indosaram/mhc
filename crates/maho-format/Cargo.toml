@@ -1,0 +1,21 @@
+[package]
+name = "maho-format"
+description = "Format after edit for mhc's MIT profile: after write/edit/apply_patch, run the project's formatter (biome, prettier or bun format, rustfmt, gofmt, ruff; optional LSP formatting) on the changed files and tell the model when a file changed. Clean-room spec docs/cleanroom/specs/post-edit-format.md."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-ext-api = { path = "../maho-ext-api" }
+maho-config = { path = "../maho-config" }
+maho-lsp = { path = "../maho-lsp", features = ["extension"] }
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "process", "time", "sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "process", "time", "sync"] }
+
+[lints]
+workspace = true
