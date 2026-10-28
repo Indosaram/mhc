@@ -21,7 +21,8 @@ first). The MIT stage holds `mhc`, `mhc-launcher`, the `mhc-lsp` LSP daemon when
 `profile: "mit"`. It refuses a payload whose `mhc ulw-loop` does not report "not available in this
 build", refuses the SUL/OmO staging flags, and `--verify-only` rejects a stage containing
 `licenses/SUL-1.0.md`, skills, the omo schema or a SUL sibling (`ast-grep-mcp`, `lsp-daemon`,
-`omo-git-bash`). Builtin skills come back with the Phase 4 asset work.
+`omo-git-bash`). The skill loader supports a bundled `skills/` root beside the binary (or
+`MAHO_SKILLS_ROOT`), but staging the MIT skill set there is Phase 4 asset work.
 
 ## What it includes
 
@@ -213,15 +214,44 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
     dependencies, quality-gate hooks. The default (`omo`) build links `maho-team` but mounts it
     nowhere.
 
+- Skills (`maho-skills`; the `skill` tool's path rules ported from the MIT oh-my-pi @ f59bbac
+  `skill://` protocol, the rest from `docs/cleanroom/specs/skills.md`), mounted as
+  `<builtin:skills>` on top of the senpi skill loader in `maho-core` (discovery of
+  `<agent dir>/skills`, `~/.agents/skills`, trusted-project `.omo/skills` and ancestor
+  `.agents/skills`, settings paths, packages, `--skill`/`--no-skills`; `SKILL.md` front matter
+  validation; the `<available_skills>` prompt listing; `/skill:<name>`):
+  - bundled skill root: `$MAHO_SKILLS_ROOT`, else `skills/` beside the executable, contributed
+    with the lowest precedence (a user/project skill of the same name wins); also used by the app
+    server's `skills/list`. The MIT staging does not ship a skill set yet (Phase 4);
+  - `disabled_skills` from `omo.jsonc` (union over layers) removes those skills from the prompt
+    listing and from the `skill` tool;
+  - the `skill` tool returns a skill's `SKILL.md` body (front matter removed) in a
+    `<skill name location>` block with its directory, plus optional `User:` arguments, or with
+    `<skill>/<relative path>` a file or directory listing inside the skill (no absolute paths,
+    no `..`, no symlink escape, files up to 256 KiB);
+  - `/skill` lists the loaded skills (scope, `disabled`/`user-only`), `/skill <name>` shows one.
+  - Not included: `skill://` URLs in `read`/`bash`, namespaced collision aliases, a skill
+    registry.
+- MCP: the client is the senpi port `maho-ext-mcp`, mounted in every build (stdio and streamable
+  HTTP, `<agent dir>/mcp.json` and trusted-project `.omo/mcp.json`, tools named
+  `mcp_<server>_<tool>`, `/mcp enable|disable`). `<builtin:mcp-builtins>` (`maho-mcp-builtins`,
+  from `docs/cleanroom/specs/mcp.md`) declares two remote servers on it, `context7`
+  (`https://mcp.context7.com/mcp`, bearer token from `CONTEXT7_API_KEY` when set) and `grep_app`
+  (`https://mcp.grep.app`), lazy and without OAuth. They are not declared with
+  `MAHO_BUILTIN_MCPS=0`, in offline mode, with `mcp.builtins: false`, or per name in
+  `mcp.disabled_builtins` (`omo.jsonc`); an `mcp.json` entry of the same name replaces one.
+  No web-search MCP is added (the `websearch`/`webfetch` builtins cover it). The default (`omo`)
+  build links `maho-skills` and `maho-mcp-builtins` but mounts neither.
+
 ## What is compiled out (needs the `omo` feature)
 
 | Area | In the MIT profile |
 | --- | --- |
 | omo mount (`<builtin:omo>`): its task/subagent tools, `team_*`, `workflow`/DAG, `workpool`, `/task-kill`, `/dag` | not registered (MIT `<builtin:task>` provides `task`, `task_output`, `task_list`, `task_resume`, `task_cancel`, `/tasks`, and from `maho-team` `team_create`, `team_members`, `team_message`, `team_wait`, `team_stop`, `/team`) |
 | omo memory tools and commands (`/remember`, `/dream`, `/reflect`, `/search`, `/people`, `/palace`, `/init`, `/doctor`, `/facts`, `/memfs`, ...), the omo recall sidecar, facts child, git-backed Markdown memory | not registered (MIT `<builtin:memory>` provides `retain`, `recall`, `memory_get`, `memory_forget`, first-turn auto-recall and `/memory`) |
-| ast-grep MCP; builtin MCPs (context7, grep_app); `x_search`; omo browser bridge | not registered (MIT `<builtin:browser>` provides the `browser` and `computer` tools) |
+| ast-grep MCP; the omo builtin MCPs; `x_search`; omo browser bridge | not registered (MIT `<builtin:browser>` provides the `browser` and `computer` tools; MIT `<builtin:mcp-builtins>` declares `context7` and `grep_app`) |
 | gateway, onboarding, init-deep advisor, git-master, omo telemetry | not registered (MIT `<builtin:telemetry>` provides the usage ledger, `mhc usage` and opt-in OTLP export; MIT `<builtin:git>` provides read-only git inspection tools) |
-| bundled omo skills (`OMO_SENPI_SKILLS_ROOT`, the `skills/` root beside the executable) and the packaged root in app-server `skills/list` | not registered; settings and project skill paths still load |
+| bundled omo skills (`OMO_SENPI_SKILLS_ROOT`) and the omo skill tools/commands | not registered (MIT `<builtin:skills>` provides the bundled root via `MAHO_SKILLS_ROOT` or `skills/` beside the executable, app-server `skills/list` included, `disabled_skills`, the `skill` tool and `/skill`) |
 | `builtin:task-member` (`--extension builtin:task-member`) | unknown native extension error |
 | Claude Code plugin hooks (`maho-ext-hooks` feature `claude-plugins`) | not discovered; `~/.claude/settings.json` and project `.claude/settings*.json` hooks still load |
 | `mhc ulw-loop`, `--memory-supervisor`, `--child-bootstrap` | print "not available in this build", exit 1 (`--omo-memory-mcp` now starts the MIT memory MCP server) |
@@ -255,7 +285,11 @@ mass-ulw, persona prompts) are removed, not ported.
    `mhc memory import-legacy` + `mhc memory search` work on a legacy Markdown store, that the
    memory MCP server answers over stdio (`--memory-mcp`, `--omo-memory-mcp`), that (when
    `MHC_SMOKE_BROWSER` names a Chromium executable) a model-driven `browser` call returns the page's
-   snapshot with refs and a `computer` screenshot of the tab is taken, that model calls are written to the usage
+   snapshot with refs and a `computer` screenshot of the tab is taken, that a user skill and a
+   bundled skill (`MAHO_SKILLS_ROOT`) are listed in the system prompt while a `disabled_skills`
+   entry is not, that a model-driven `skill` call returns the bundled skill, that a stdio MCP
+   server from `<agent dir>/mcp.json` is started and its tool `mcp_smokefake_echo` answers a model
+   call, that the builtin remote MCP servers are absent offline, that model calls are written to the usage
    ledger and exported to a loopback OTLP collector (traces, metrics, logs, no content) while
    `DO_NOT_TRACK=1` stops the export and `MAHO_TELEMETRY=0` stops both, that `mhc usage`
    (`--json`, `--status`) reports the ledger, that `mhc doctor` reports the config sources and resolves a pinned
