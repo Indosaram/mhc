@@ -5648,6 +5648,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-onboarding"
+version = "0.0.0"
+dependencies = [
+ "maho-config",
+ "maho-support",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "maho-process-env"
 version = "0.0.0"
 
