@@ -25,7 +25,6 @@ const ALL_SUBCOMMANDS: &[&str] = &[
     "auth",
     "doctor",
     "import-omo",
-    "ulw-loop",
     "schedule",
     "models discover",
     "mini",
