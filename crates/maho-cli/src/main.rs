@@ -158,6 +158,10 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     #[cfg(not(feature = "omo"))]
+    if let Some(result) = run_mit_home_entry(&argv) {
+        return result;
+    }
+    #[cfg(not(feature = "omo"))]
     if argv.first().map(String::as_str) == Some("usage") {
         return maho_cli::cli::usage_stats::run_usage_command(&argv[1..]).map(|code| {
             if code != 0 {
@@ -937,6 +941,9 @@ fn run() -> Result<(), String> {
             maho_cli::cli::list_models::list_models(&runtime, Some(search))
         ));
     }
+    // MIT profile: first-run setup prompts before the first interactive session on a terminal.
+    #[cfg(not(feature = "omo"))]
+    maho_cli::cli::first_run::first_run_gate(&parsed);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1019,6 +1026,23 @@ fn omo_entry_unavailable(argv: &[String]) -> Option<i32> {
         "{name} is not available in this build (MIT profile, built without the `omo` feature).\n"
     ));
     Some(1)
+}
+/// MIT profile entries for the agent home (`mhc home`), first-run setup (`mhc setup`) and project
+/// context files (`mhc init-deep`). `None` means argv names none of them.
+#[cfg(not(feature = "omo"))]
+fn run_mit_home_entry(argv: &[String]) -> Option<Result<(), String>> {
+    let rest = &argv[1..];
+    let code = match argv.first().map(String::as_str)? {
+        "home" => Ok(maho_cli::cli::user_home::run_home_command(rest)),
+        "setup" => maho_cli::cli::first_run::run_setup_command(rest),
+        "init-deep" => maho_cli::cli::project_context::run_init_deep_command(rest),
+        _ => return None,
+    };
+    Some(code.map(|code| {
+        if code != 0 {
+            std::process::exit(code);
+        }
+    }))
 }
 /// MIT profile memory entries (`maho-memory`): `mhc memory ...` and the memory MCP stdio server
 /// (`--memory-mcp`, or the legacy `--omo-memory-mcp` name). `None` means argv names neither.
