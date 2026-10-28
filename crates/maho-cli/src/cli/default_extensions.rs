@@ -141,6 +141,7 @@ pub fn mit_config_factories() -> Vec<NativeExtensionFactory> {
         factory("gateway", super::session_gateway::extension()),
         factory("context-files", super::project_context::extension()),
         factory("approval-gates", maho_approval_gates::ApprovalGates),
+        factory("side-panel", maho_side_panel::SidePanelExtension::default()),
         factory(
             "feedback",
             maho_feedback::FeedbackExtension::with_product_version(
@@ -929,6 +930,7 @@ mod mit_tests {
                 "<builtin:gateway>",
                 "<builtin:context-files>",
                 "<builtin:approval-gates>",
+                "<builtin:side-panel>",
                 "<builtin:feedback>",
                 "<builtin:x-search>"
             ]
