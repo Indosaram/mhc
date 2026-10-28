@@ -15,17 +15,8 @@ These skill directories were replaced with the MIT-licensed copies published in
 | remove-ai-slops | same; restored a top-level heading |
 | git-master | same; frontmatter `description` rewritten by mhc |
 | ast-grep | same |
-| ultrawork | adapted to mhc's tool surface (`task`, `todo`, `eval`, `workflow`); Codex subagent/TOML routing sections replaced by an mhc delegation section; Codex-only `agents/` dropped |
-| ulw-execute | same; Codex harness compatibility table replaced by mhc delegation notes |
-| ulw-loop | same; driven through `mhc ulw-loop` (the `--codex-goal-json` flag keeps its historical name) |
-| ulw-plan | same; planning delegated to `task` children |
-| ulw-research | same; research lanes on `task`/teams |
 
-The `ultrawork` and `ulw-*` rows were added on 2026-10-27 from the same
-lazycodex commit; their manifest entries carry the source
-`lazycodex@75b01747:plugins/omo/skills/<name>/<path> (MIT)`.
-
-No content from the SUL-1.0 OmO upstream (`assets/omo-latest` previous bytes,
+No content from the SUL-1.0 OmO upstream (the earlier skill overlay bytes,
 `oh-my-openagent`) remains in these directories.
 
 ## Clean-room skills (2026-10-26)
@@ -47,15 +38,10 @@ Written by implementers who were given only a functional spec and the MIT base
 
 ## Removed
 
-- `mass-ulw` (2026-10-27): dropped from the bundle and listed under `retired` in
-  `manifest.json`; graph work goes through the `workflow` tool directly.
+- `ultrawork`, `ulw-execute`, `ulw-loop`, `ulw-plan`, `ulw-research`, `mass-ulw` (2026-10-28):
+  dropped with the OmO workflow features they drove.
 - `hyperplan` (2026-10-26): replaced by `adversarial-plan`.
 
-## Still SUL-1.0
+## License
 
-No skill under `assets/omo-latest/skills` is SUL-1.0 any more. Out of scope
-for this file: the runtime crates under `crates/omo/**` (for example
-`maho-omo-mass-ulw`, `maho-omo-ultrawork`, `maho-omo-skill-pointers`,
-`maho-omo-onboarding`, `maho-omo-init-deep-advisor`) remain
-`LicenseRef-SUL-1.0`, as does the pool-root developer doc
-`assets/omo-latest/skills/AGENTS.md` (`poolDocs`), which is not a skill.
+Every skill in this directory is MIT. `manifest.json` lists each file with its sha256.
