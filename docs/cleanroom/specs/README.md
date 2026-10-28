@@ -23,6 +23,17 @@ does it.
 | [agent-home.md](agent-home.md) | Phase 3 step 5a: the per-user agent home over the senpi agent dir — layout, bootstrap with private directories, `auth.json` privacy check/repair, first-run setup state (legacy markers honoured), `mhc home` | `agent-home` (replaced by `crates/maho-agent-home`) |
 | [onboarding.md](onboarding.md) | Phase 3 step 5b: first-run setup — versioned steps and gates (from MIT oh-my-pi's setup wizard), provider key and default model prompts, non-interactive `mhc setup`, applying via `auth.json`, `settings.json` and the `maho-config` writer, `setup.enabled` | `onboarding` (replaced by `crates/maho-onboarding`) |
 | [init-deep.md](init-deep.md) | Phase 3 step 5c: hierarchical `AGENTS.md` context files — repository analysis, directory choice, plan, neutral prompts, `mhc init-deep`, `/init-deep`, the once-per-repository advisor, `init_deep.*` keys (from MIT oh-my-pi's `/init` prompt and senpi nested AGENTS.md loading) | `init-deep-advisor` (replaced by `crates/maho-context-files`) |
+| [workflow-dag.md](workflow-dag.md) | Phase 4: staged multi-agent workflows (definition, validation, waves, node lifecycle, retries, recovery), the `workflow` tool and `/dag` | workflow part of `senpi-task`, `maho-omo-task` |
+| [workpool.md](workpool.md) | Phase 4: keyed work queues (`workpool` tool: create/push/close/inspect/cancel/yield, fresh vs keep-alive workers, aggregate on close) | workpool part of `senpi-task`, `maho-omo-task` |
+| [task-control.md](task-control.md) | Phase 4: messaging and cancelling child tasks (`task_send`, `task_cancel`, `/task-kill`) and the team tasklist | control parts of `senpi-task`, `team-core`, `maho-omo-task` |
+| [ast-grep.md](ast-grep.md) | Phase 4: structural search/rewrite tools served over stdio MCP, backed by the `ast-grep` binary | `ast-grep-mcp`, `maho-omo-ast-grep` |
+| [claude-plugin-hooks.md](claude-plugin-hooks.md) | Phase 4: discovering Claude Code settings and plugin hooks for the MIT hook runtime in `maho-ext-hooks` | `claude-code-compat-core` |
+| [post-edit-format.md](post-edit-format.md) | Phase 4: formatting files changed by edit/write tools | `maho-omo-formatter`, `maho-omo-post-mutation` |
+| [question-gates.md](question-gates.md) | Phase 4: marking approval-style questions to the ask-user tool as required | `maho-omo-question-gates` |
+| [feedback.md](feedback.md) | Phase 4: `/feedback`, `/bug` and the feedback RPCs | `maho-omo-feedback` |
+| [side-panel.md](side-panel.md) | Phase 4: secondary TUI panel for background tasks and status | `maho-omo-side-panel` |
+| [x-search.md](x-search.md) | Phase 4: X search tool through the xAI API | `maho-omo-x-search` |
+| [git-bash-mcp.md](git-bash-mcp.md) | Phase 4: Windows Git Bash command runner over stdio MCP | `git-bash-mcp` |
 
 ## Roles (plan §5)
 

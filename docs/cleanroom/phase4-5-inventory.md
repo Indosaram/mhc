@@ -68,11 +68,11 @@ LOC = lines of `.rs` in the crate (tracked files).
 | senpi-task | 137990 | covered + spec | maho-task; gaps -> `workflow-dag`, `workpool`, `task-control` |
 | team-core | 10875 | covered + spec | maho-team (`team.md`); gap -> `task-control` (team tasklist) |
 | telemetry-core | 12036 | covered | maho-telemetry (`telemetry.md`) |
-| tmux-core | 3820 | spec | `tmux-panes` |
+| tmux-core | 3820 | covered | maho-team (`team.md`, tmux/cmux panes) |
 | ulw-loop-core | 15163 | dropped | ulw-loop |
 | utils | 26393 | covered | maho-support (`utils.md`) |
 
-Tally (58 crates): covered 31, covered + spec 3, spec 11, dropped 11, deferred 2.
+Tally (58 crates): covered 32, covered + spec 3, spec 10, dropped 11, deferred 2.
 
 ## Non-crate items
 
@@ -99,8 +99,7 @@ Only behavior with no existing spec in `docs/cleanroom/specs/`:
 8. `feedback`: `/feedback` and `/bug` commands that assemble a report bundle.
 9. `side-panel`: secondary TUI panel for background task/status views.
 10. `x-search`: X/Twitter search tool via the xAI API.
-11. `git-bash-mcp`: Windows Git Bash command runner exposed as a stdio MCP server.
-12. `tmux-panes`: open team/child sessions in tmux panes when running inside tmux.
+11. `git-bash-mcp`: Windows Git Bash command runner exposed as a stdio MCP server (`isolation.md` lists the old crate as replaced but no MIT crate serves it; packaging still ships the sibling binary on Windows).
 
 ## Dropped (OmO-original, no replacement)
 
