@@ -671,3 +671,53 @@ fn load_native_resolves_the_catalog() {
     let r = load_native(&cwd, &t.env());
     assert_eq!(r.view["categories"]["q"]["model"], json!("p/m"));
 }
+
+#[test]
+fn mcp_section_is_accepted_with_its_default() {
+    let t = Tree::new();
+    t.write(
+        "home/.omo/omo.jsonc",
+        r#"{"mcp": {"disabled_builtins": ["grep_app"]}}"#,
+    );
+    let cwd = t.mkdir("home");
+    let r = load(
+        &LoadOptions::new(&cwd)
+            .with_env(t.env())
+            .with_account_home(None),
+    );
+    assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+    assert_eq!(r.view["mcp"]["builtins"], json!(true));
+    assert_eq!(r.view["mcp"]["disabled_builtins"], json!(["grep_app"]));
+    let t2 = Tree::new();
+    t2.write("home/.omo/omo.jsonc", r#"{"mcp": {"builtins": "no"}}"#);
+    let cwd = t2.mkdir("home");
+    let r = load(
+        &LoadOptions::new(&cwd)
+            .with_env(t2.env())
+            .with_account_home(None),
+    );
+    assert!(!r.diagnostics.is_empty());
+}
+
+#[test]
+fn disabled_mcp_builtins_are_a_union_across_layers() {
+    let t = Tree::new();
+    t.write(
+        "home/.omo/omo.jsonc",
+        r#"{"mcp": {"disabled_builtins": ["context7"]}}"#,
+    );
+    t.write(
+        "home/proj/.omo/omo.jsonc",
+        r#"{"mcp": {"disabled_builtins": [" grep_app ", "context7", 3]}}"#,
+    );
+    let cwd = t.mkdir("home/proj");
+    let r = load(
+        &LoadOptions::new(&cwd)
+            .with_env(t.env())
+            .with_account_home(None),
+    );
+    assert_eq!(
+        collect_disabled_mcp_builtins(&r.layers, &Harness::Native, None),
+        vec!["context7".to_owned(), "grep_app".to_owned()]
+    );
+}
