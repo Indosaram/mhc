@@ -782,6 +782,14 @@ def gateway_smoke(mhc: str, home: pathlib.Path, work: pathlib.Path, agent: pathl
                           if GATEWAY_AGENT_TEXT in all_text(p) and "relay to the rpc session" not in all_text(p)]
         if not agent_requests or GATEWAY_HEADER + "session " not in all_text(agent_requests[0]):
             return f"the relayed message did not reach the RPC session's model with the agent header\nstdout: {''.join(out_lines)[-3000:]}"
+        before = len(GatewayModel.requests)
+        off = subprocess.run(
+            [mhc, "-p", "--offline", "--no-session", "--model", "offline/offline", "relay to the rpc session"],
+            cwd=work, env={**gw_env, "MAHO_GATEWAY": "0"}, stdin=subprocess.DEVNULL, capture_output=True,
+            text=True, timeout=120)
+        off_requests = [p for p in GatewayModel.requests[before:] if "relay to the rpc session" in all_text(p)]
+        if not off_requests or GATEWAY_TOOLS & tool_names(off_requests[0]):
+            return f"gateway tools offered with MAHO_GATEWAY=0 (exit {off.returncode})\nstderr: {off.stderr[-2000:]}"
     finally:
         try:
             rpc.stdin.close()
@@ -796,13 +804,6 @@ def gateway_smoke(mhc: str, home: pathlib.Path, work: pathlib.Path, agent: pathl
     after = gateway("list")
     if after.stdout.strip() != "No live sessions.":
         return f"the RPC session is still listed after it exited: {after.stdout}"
-    off = subprocess.run(
-        [mhc, "-p", "--offline", "--no-session", "--model", "offline/offline", "relay to the rpc session"],
-        cwd=work, env={**gw_env, "MAHO_GATEWAY": "0"}, stdin=subprocess.DEVNULL, capture_output=True,
-        text=True, timeout=120)
-    off_requests = [p for p in GatewayModel.requests[-3:] if "relay to the rpc session" in all_text(p)]
-    if off_requests and GATEWAY_TOOLS & tool_names(off_requests[-1]):
-        return f"gateway tools offered with MAHO_GATEWAY=0 (exit {off.returncode})"
     print("ok   gateway: RPC session registered, mhc gateway send delivered into it with the gateway header, "
           "a -p run relayed through session_list/session_send, unlisted after exit, MAHO_GATEWAY=0 hides the tools")
     return None
