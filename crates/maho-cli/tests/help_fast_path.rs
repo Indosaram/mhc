@@ -28,7 +28,6 @@ const ALL_SUBCOMMANDS: &[&str] = &[
     "ulw-loop",
     "schedule",
     "models discover",
-    "senpi-install",
     "mini",
 ];
 
