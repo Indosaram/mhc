@@ -8,8 +8,10 @@
 //! `maho_model_select::resolve_delegate_model` over the `categories`/`agents` configuration
 //! (`maho-config`). Workspace isolation and team/pane presentation are traits
 //! ([`isolation::WorkspaceIsolation`], [`isolation::TaskObserver`]) implemented elsewhere; post-run
-//! checks plug in through `maho_lsp::hooks`.
+//! checks plug in through `maho_lsp::hooks`. [`control`] adds `task_send`, the full
+//! `task_cancel` contract and `/task-kill` (`docs/cleanroom/specs/task-control.md`).
 pub mod agents;
+pub mod control;
 pub mod extension;
 pub mod ids;
 pub mod isolation;
@@ -21,10 +23,14 @@ pub mod settings;
 pub mod summary;
 
 pub use agents::{AgentDefinition, AgentSource, Discovery, bundled_agents, discover};
-pub use extension::{AddonCommand, AddonHandler, AddonTool, Notifier, TOOL_NAMES, TaskAddon, TaskExtension, TaskScope};
+pub use control::{Caller, GatewaySteer, Outcome, SteerChannel};
+pub use extension::{
+    AddonCommand, AddonHandler, AddonTool, KILL_COMMAND, Notifier, TOOL_NAMES, TaskAddon,
+    TaskExtension, TaskScope,
+};
 pub use manager::{SpawnRequest, TaskManager, TaskManagerOptions};
 pub use models::{ModelChoice, ModelContext, ModelRequest, choose_model};
 pub use isolation::{IsolatedWorkspace, TaskObserver, WorkspaceIsolation};
-pub use record::{StateDir, TaskRecord, TaskStatus};
+pub use record::{PendingMessage, StateDir, TaskRecord, TaskStatus};
 pub use runner::{CancelToken, ProcessRunner, RunOutcome, RunSpec, TaskRunner};
 pub use settings::TaskSettings;

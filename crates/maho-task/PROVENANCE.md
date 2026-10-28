@@ -30,3 +30,17 @@
 - No SUL source (`crates/omo/**`, including `senpi-task`, `maho-omo-task`, `delegate-core`,
   `isolation-core`, `team-core`, `tmux-core`; the omo-gated `maho-cli` task modules) was opened.
 - Tests were written for this crate from the spec; no upstream or OmO fixtures were reused.
+
+## Task control and team tasklist (Phase 4)
+
+- Method: **C** (clean room).
+- Spec: `docs/cleanroom/specs/task-control.md` at spec commit `8f3d2e29` (plus the files it
+  references: `task.md`, `team.md`, `gateway.md`).
+- Allowed inputs of the implementing session: the spec files under `docs/cleanroom/specs/`,
+  `AGENTS.md`, and the MIT code already in this checkout (`crates/maho-task`, `crates/maho-team`,
+  `crates/maho-gateway`, `crates/maho-ext-api`, `crates/maho-tools`, `crates/maho-config`,
+  `crates/maho-cli/src/cli/{delegation,team_view,session_gateway,default_extensions}.rs`).
+- No forbidden input was read: nothing under `crates/omo/**`, `assets/omo-latest/**`,
+  `assets/omo.schema.json` or `.omo/**`, no oh-my-openagent / OmO / lazycodex source or URL, no
+  git history of removed paths, and no other machine's copy of this repository.
+- Tests were written new from the spec's numbered acceptance tests (§6); no fixtures were reused.

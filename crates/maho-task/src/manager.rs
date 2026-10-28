@@ -6,7 +6,7 @@ use crate::agents::AgentDefinition;
 use crate::ids::{IdAllocator, name_from_task};
 use crate::isolation::{TaskObserver, WorkspaceIsolation};
 use crate::models::ModelChoice;
-use crate::record::{StateDir, TaskRecord, TaskStatus, now_ms, pid_alive, reconcile};
+use crate::record::{PendingMessage, StateDir, TaskRecord, TaskStatus, now_ms, pid_alive, reconcile};
 use crate::runner::{CancelToken, RunOutcome, RunSpec, TaskRunner};
 use crate::settings::TaskSettings;
 use crate::summary::format_result;
@@ -53,17 +53,41 @@ pub struct SpawnRequest {
     pub pane: Option<bool>,
     /// Skip the background-delivery callback for this task.
     pub quiet: bool,
+    /// Session that spawns the task (recorded for ownership checks).
+    pub owner_session: Option<String>,
+    /// Root session of the spawning session.
+    pub root_session: Option<String>,
 }
 
 struct Live {
     cancel: CancelToken,
     done: tokio::sync::watch::Receiver<bool>,
+    /// Distinguishes launches of the same id (a settled run must not remove its successor).
+    generation: u64,
+}
+
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A steering delivery written into a running child's inbox, kept until the run settles.
+#[derive(Clone, Debug)]
+pub(crate) struct WrittenSteer {
+    pub path: PathBuf,
+    pub message: PendingMessage,
 }
 
 pub struct TaskManager {
     options: TaskManagerOptions,
     ids: Mutex<IdAllocator>,
     live: Mutex<HashMap<String, Live>>,
+    /// Serializes record writes so the pending list is never lost to a concurrent save.
+    io: Mutex<()>,
+    /// Tasks with a `task_send` or cancel in progress.
+    busy: Mutex<std::collections::HashSet<String>>,
+    /// Live tasks being cancelled, with the reason to record.
+    cancelling: Mutex<HashMap<String, Option<String>>>,
+    /// Steering deliveries written per task during its current run.
+    steers: Mutex<HashMap<String, Vec<WrittenSteer>>>,
+    steer: Mutex<Option<Arc<dyn crate::control::SteerChannel>>>,
     slots: Option<Arc<tokio::sync::Semaphore>>,
     on_settled: Mutex<Option<SettledCallback>>,
 }
@@ -118,9 +142,78 @@ impl TaskManager {
             options,
             ids: Mutex::new(ids),
             live: Mutex::default(),
+            io: Mutex::default(),
+            busy: Mutex::default(),
+            cancelling: Mutex::default(),
+            steers: Mutex::default(),
+            steer: Mutex::default(),
             slots,
             on_settled: Mutex::default(),
         })
+    }
+
+    /// Sets the channel that steers running children (`None` = sends to a running task are
+    /// queued as a follow-up run).
+    pub fn set_steer_channel(&self, channel: Option<Arc<dyn crate::control::SteerChannel>>) {
+        *lock(&self.steer) = channel;
+    }
+
+    pub(crate) fn steer_channel(&self) -> Option<Arc<dyn crate::control::SteerChannel>> {
+        lock(&self.steer).clone()
+    }
+
+    pub(crate) fn busy(&self) -> &Mutex<std::collections::HashSet<String>> {
+        &self.busy
+    }
+
+    pub(crate) fn cancelling(&self) -> &Mutex<HashMap<String, Option<String>>> {
+        &self.cancelling
+    }
+
+    pub(crate) fn steers(&self) -> &Mutex<HashMap<String, Vec<WrittenSteer>>> {
+        &self.steers
+    }
+
+    pub(crate) fn live_here(&self, id: &str) -> bool {
+        self.is_live(id)
+    }
+
+    pub(crate) fn cancel_token(&self, id: &str) -> Option<CancelToken> {
+        lock(&self.live).get(id).map(|live| live.cancel.clone())
+    }
+
+    /// Saves `record`, keeping the pending list stored on disk (the pending list is only changed
+    /// through [`TaskManager::update`]).
+    fn persist(&self, record: &TaskRecord) {
+        let _io = lock(&self.io);
+        let mut record = record.clone();
+        if let Some(stored) = self.options.state.load(&record.id) {
+            record.pending_messages = stored.pending_messages;
+        }
+        let _ = self.options.state.save(&record);
+    }
+
+    /// Loads, changes and saves the record of `id` under the record lock.
+    ///
+    /// # Errors
+    /// Unknown id or a write error.
+    pub(crate) fn update<T>(
+        &self,
+        id: &str,
+        change: impl FnOnce(&mut TaskRecord) -> T,
+    ) -> Result<(TaskRecord, T), String> {
+        let _io = lock(&self.io);
+        let mut record = self
+            .options
+            .state
+            .load(id)
+            .ok_or_else(|| format!("Unknown task \"{id}\""))?;
+        let value = change(&mut record);
+        self.options
+            .state
+            .save(&record)
+            .map_err(|error| format!("cannot save the task record: {error}"))?;
+        Ok((record, value))
     }
 
     pub fn state(&self) -> &StateDir {
@@ -148,7 +241,7 @@ impl TaskManager {
         let live_before = self.is_live(id);
         let mut record = self.options.state.load(id)?;
         if reconcile(&mut record, live_before || self.is_live(id)) {
-            let _ = self.options.state.save(&record);
+            self.persist(&record);
         }
         Some(record)
     }
@@ -163,7 +256,7 @@ impl TaskManager {
             .map(|mut record| {
                 let owned = live.contains(&record.id) || self.is_live(&record.id);
                 if reconcile(&mut record, owned) {
-                    let _ = self.options.state.save(&record);
+                    self.persist(&record);
                 }
                 record
             })
@@ -247,6 +340,10 @@ impl TaskManager {
             group: request.group.clone(),
             pane: request.pane,
             quiet: request.quiet,
+            name: request.name.clone().filter(|name| !name.trim().is_empty()),
+            owner_session: request.owner_session.clone(),
+            root_session: request.root_session.clone(),
+            pending_messages: Vec::new(),
         };
         state
             .save(&record)
@@ -266,7 +363,7 @@ impl TaskManager {
         prompt: Option<&str>,
         background: bool,
     ) -> Result<TaskRecord, String> {
-        let Some(mut record) = self.get(id) else {
+        let Some(record) = self.get(id) else {
             return Err(format!("Unknown task \"{id}\""));
         };
         if record.status.is_active() {
@@ -278,25 +375,21 @@ impl TaskManager {
         if record.isolated && self.options.isolation.is_none() {
             return Err(format!("Task \"{id}\" ran isolated and cannot be resumed here"));
         }
-        record.status = TaskStatus::Queued;
-        record.runs += 1;
-        record.background = background;
-        record.pid = None;
-        record.exit_code = None;
-        record.error = None;
-        record.started_at_ms = now_ms();
-        record.finished_at_ms = None;
-        record.changed_files.clear();
-        record.hook_notes.clear();
-        self.options
-            .state
-            .save(&record)
-            .map_err(|error| format!("cannot save the task record: {error}"))?;
         let prompt = prompt
             .map(str::trim)
             .filter(|p| !p.is_empty())
             .unwrap_or(DEFAULT_RESUME_PROMPT)
             .to_owned();
+        // Messages left over from an earlier parent process run first, then the new prompt.
+        let (record, prompt) = self.update(&record.id, |record| {
+            let mut texts: Vec<String> = std::mem::take(&mut record.pending_messages)
+                .into_iter()
+                .map(|message| message.text)
+                .collect();
+            texts.push(prompt);
+            prepare_next_run(record, background);
+            texts.join("\n\n")
+        })?;
         self.launch(record.clone(), prompt);
         Ok(record)
     }
@@ -304,27 +397,51 @@ impl TaskManager {
     fn launch(self: &Arc<Self>, record: TaskRecord, prompt: String) {
         let cancel = CancelToken::default();
         let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+        let generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         lock(&self.live).insert(
             record.id.clone(),
             Live {
                 cancel: cancel.clone(),
                 done: done_rx,
+                generation,
             },
         );
         let manager = Arc::clone(self);
         tokio::spawn(async move {
             let id = record.id.clone();
-            let settled = manager.execute(record, prompt, cancel).await;
-            let _ = done_tx.send(true);
-            lock(&manager.live).remove(&id);
-            if settled.background && !settled.quiet {
-                let callback = lock(&manager.on_settled).clone();
-                if let Some(callback) = callback {
-                    let text = manager.envelope(&settled);
-                    callback(&settled, &text);
+            let mut next = (record, prompt);
+            let settled = loop {
+                let settled = manager.execute(next.0, next.1, cancel.clone()).await;
+                match manager.follow_up(&settled) {
+                    Some(follow_up) => {
+                        // Each settled run of a background task is reported, also when queued
+                        // messages start another run right away.
+                        manager.deliver(&settled);
+                        next = follow_up;
+                    }
+                    None => break settled,
+                }
+            };
+            lock(&manager.cancelling).remove(&id);
+            {
+                let mut live = lock(&manager.live);
+                if live.get(&id).is_some_and(|entry| entry.generation == generation) {
+                    live.remove(&id);
                 }
             }
+            let _ = done_tx.send(true);
+            manager.deliver(&settled);
         });
+    }
+
+    fn deliver(&self, settled: &TaskRecord) {
+        if settled.background && !settled.quiet {
+            let callback = lock(&self.on_settled).clone();
+            if let Some(callback) = callback {
+                let text = self.envelope(settled);
+                callback(settled, &text);
+            }
+        }
     }
 
     async fn execute(&self, mut record: TaskRecord, prompt: String, cancel: CancelToken) -> TaskRecord {
@@ -342,8 +459,24 @@ impl TaskManager {
         if cancel.is_cancelled() {
             return self.finish(record, &RunOutcome { cancelled: true, ..RunOutcome::default() }, Vec::new());
         }
-        record.status = TaskStatus::Running;
-        let _ = state.save(&record);
+        let mut prompt = prompt;
+        {
+            // The first run of a queued task carries the messages sent while it waited.
+            let _io = lock(&self.io);
+            if let Some(stored) = state.load(&record.id) {
+                let texts: Vec<String> = stored
+                    .pending_messages
+                    .into_iter()
+                    .map(|message| message.text)
+                    .collect();
+                if !texts.is_empty() {
+                    prompt = format!("{prompt}\n\n{}", texts.join("\n\n"));
+                }
+            }
+            record.pending_messages.clear();
+            record.status = TaskStatus::Running;
+            let _ = state.save(&record);
+        }
         for observer in &self.options.observers {
             observer.started_in(&record, state);
         }
@@ -385,6 +518,7 @@ impl TaskManager {
             output_path: state.output_path(&record.id),
             log_path: state.log_path(&record.id),
             sessions_dir: state.sessions_dir(),
+            root_session: record.root_session.clone(),
         };
         let pid_slot: Arc<Mutex<Option<u32>>> = Arc::default();
         let pid_writer = Arc::clone(&pid_slot);
@@ -399,7 +533,7 @@ impl TaskManager {
                     *lock(&pid_writer) = pid;
                     let mut running = running;
                     running.pid = pid;
-                    let _ = state.save(&running);
+                    self.persist(&running);
                 }),
             )
             .await;
@@ -430,20 +564,71 @@ impl TaskManager {
     fn finish(&self, mut record: TaskRecord, outcome: &RunOutcome, notes: Vec<String>) -> TaskRecord {
         record.exit_code = outcome.exit_code;
         record.error.clone_from(&outcome.error);
-        record.status = if outcome.cancelled {
+        let cancel_reason = lock(&self.cancelling).get(&record.id).cloned();
+        // A cancel recorded by another process (task-control.md §2) is final too.
+        let cancelled_elsewhere = self
+            .options
+            .state
+            .load(&record.id)
+            .filter(|stored| stored.status == TaskStatus::Cancelled);
+        if let Some(stored) = &cancelled_elsewhere {
+            record.error.clone_from(&stored.error);
+        }
+        record.status = if outcome.cancelled || cancel_reason.is_some() || cancelled_elsewhere.is_some() {
             TaskStatus::Cancelled
         } else if outcome.succeeded() {
             TaskStatus::Completed
         } else {
             TaskStatus::Failed
         };
+        if let Some(Some(reason)) = cancel_reason {
+            record.error = Some(reason);
+        }
         record.finished_at_ms = Some(now_ms());
         record.hook_notes = notes;
-        let _ = self.options.state.save(&record);
+        if record.status == TaskStatus::Cancelled {
+            // Cancel is final: the pending list is dropped with it.
+            let _io = lock(&self.io);
+            record.pending_messages.clear();
+            let _ = self.options.state.save(&record);
+        } else {
+            self.persist(&record);
+        }
         for observer in &self.options.observers {
             observer.finished_in(&record, &self.options.state);
         }
         record
+    }
+
+    /// After a run settled: reclaims steering deliveries the child did not drain, then starts the
+    /// pending messages as one follow-up run (task-control.md §1, §1.1).
+    fn follow_up(&self, settled: &TaskRecord) -> Option<(TaskRecord, String)> {
+        let written = lock(&self.steers).remove(&settled.id).unwrap_or_default();
+        let reclaimed: Vec<PendingMessage> = written
+            .into_iter()
+            .filter(|steer| std::fs::remove_file(&steer.path).is_ok())
+            .map(|steer| steer.message)
+            .collect();
+        if settled.status == TaskStatus::Cancelled || lock(&self.cancelling).contains_key(&settled.id) {
+            return None;
+        }
+        let (record, texts) = self
+            .update(&settled.id, |record| {
+                record.pending_messages.extend(reclaimed);
+                record.pending_messages.sort_by_key(|message| message.created_at);
+                if record.pending_messages.is_empty() {
+                    return Vec::new();
+                }
+                let texts: Vec<String> = std::mem::take(&mut record.pending_messages)
+                    .into_iter()
+                    .map(|message| message.text)
+                    .collect();
+                let background = record.background;
+                prepare_next_run(record, background);
+                texts
+            })
+            .ok()?;
+        (!texts.is_empty()).then(|| (record, texts.join("\n\n")))
     }
 
     /// Waits until `id` settles or `timeout` passes (`None` = no limit); returns the current
@@ -488,7 +673,7 @@ impl TaskManager {
             live.cancel.cancel();
             return format!("Cancelling task {id}");
         }
-        let Some(mut record) = self.options.state.load(id) else {
+        let Some(record) = self.options.state.load(id) else {
             return format!("Unknown task \"{id}\"");
         };
         if !record.status.is_active() {
@@ -497,15 +682,31 @@ impl TaskManager {
         if let Some(pid) = record.pid.filter(|pid| pid_alive(*pid)) {
             terminate(pid);
         }
-        record.status = TaskStatus::Cancelled;
-        record.finished_at_ms = Some(now_ms());
-        let _ = self.options.state.save(&record);
+        let _ = self.update(id, |record| {
+            record.status = TaskStatus::Cancelled;
+            record.pending_messages.clear();
+            record.finished_at_ms = Some(now_ms());
+        });
         format!("Cancelled task {id}")
     }
 }
 
+/// Resets `record` for another run in the same session.
+fn prepare_next_run(record: &mut TaskRecord, background: bool) {
+    record.status = TaskStatus::Queued;
+    record.runs += 1;
+    record.background = background;
+    record.pid = None;
+    record.exit_code = None;
+    record.error = None;
+    record.started_at_ms = now_ms();
+    record.finished_at_ms = None;
+    record.changed_files.clear();
+    record.hook_notes.clear();
+}
+
 #[cfg(unix)]
-fn terminate(pid: u32) {
+pub(crate) fn terminate(pid: u32) {
     if let Ok(raw) = i32::try_from(pid) {
         let _ = nix::sys::signal::kill(
             nix::unistd::Pid::from_raw(raw),
@@ -514,8 +715,18 @@ fn terminate(pid: u32) {
     }
 }
 
-#[cfg(not(unix))]
-fn terminate(_pid: u32) {}
+#[cfg(windows)]
+pub(crate) fn terminate(pid: u32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn terminate(_pid: u32) {}
 
 #[cfg(test)]
 mod tests {
@@ -594,6 +805,8 @@ mod tests {
             group: None,
             pane: None,
             quiet: false,
+            owner_session: None,
+            root_session: None,
         }
     }
 

@@ -2,6 +2,7 @@
 //! the `/team` command, contributed to the task extension as a [`TaskAddon`] (spec §2).
 use crate::panes::PaneObserver;
 use crate::settings::TeamLimits;
+use crate::tasklist::{self, Filter, ItemStatus, LEAD, Tasklist};
 use crate::team::{MemberSpec, Team, team_names};
 use maho_ext_api::{ToolContent, ToolError, ToolResult};
 use maho_task::{AddonCommand, AddonTool, CancelToken, TaskAddon, TaskScope};
@@ -16,6 +17,10 @@ pub const TOOL_NAMES: &[&str] = &[
     "team_message",
     "team_wait",
     "team_stop",
+    "team_task_create",
+    "team_task_list",
+    "team_task_get",
+    "team_task_update",
 ];
 
 /// The team addon; `panes` (when given) lets `team_members` report pane ids and open errors.
@@ -66,6 +71,169 @@ fn resolve(scope: &TaskScope, team: Option<&str>) -> Result<Arc<Team>, String> {
     };
     Team::find(&manager, &name, &limits(scope), scope.notifier())
         .ok_or_else(|| format!("Unknown team \"{name}\""))
+}
+
+/// `team_message`: the result `task_send` returns unchanged for `<team>/<member>` targets.
+///
+/// # Errors
+/// Unknown team or member, stopped member, empty message.
+pub fn message_team(
+    scope: &TaskScope,
+    team: Option<&str>,
+    member: &str,
+    message: &str,
+) -> Result<ToolResult, String> {
+    let team = resolve(scope, team)?;
+    let lines = team.message(member, message)?;
+    Ok(text_result(lines.join("\n"), json!({"team": team.name()})))
+}
+
+fn kind_result(kind: &str, text: String, mut details: Value) -> ToolResult {
+    if let Some(map) = details.as_object_mut() {
+        map.insert("kind".into(), json!(kind));
+    }
+    text_result(text, details)
+}
+
+fn invalid(text: impl Into<String>) -> ToolResult {
+    kind_result("invalid_arguments", text.into(), json!({}))
+}
+
+/// The tasklist of the named (or only) team, with the team's member names.
+fn team_list(scope: &TaskScope, params: &Value) -> Result<(String, Tasklist, Vec<String>), String> {
+    let team = resolve(scope, str_param(params, "team"))?;
+    let name = team.name();
+    let members = team.file().members.into_iter().map(|m| m.name).collect();
+    Ok((
+        name.clone(),
+        Tasklist::new(&scope.manager().state().root, &name),
+        members,
+    ))
+}
+
+fn id_param(params: &Value, key: &str) -> Option<u64> {
+    let value = params.get(key)?;
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|text| text.trim().trim_start_matches('#').parse().ok()))
+}
+
+fn task_create(scope: &TaskScope, params: &Value) -> Result<ToolResult, String> {
+    let (team, list, _) = team_list(scope, params)?;
+    let Some(subject) = str_param(params, "subject") else {
+        return Ok(invalid("Missing required parameter: subject"));
+    };
+    let description = params
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut blocked_by = Vec::new();
+    for value in params
+        .get("blocked_by")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        match id_param(&json!({"id": value}), "id") {
+            Some(id) => blocked_by.push(id),
+            None => return Ok(invalid(format!("blocked_by holds {value}, which is not an item id"))),
+        }
+    }
+    let item = list.create(subject, description, blocked_by)?;
+    let mut text = format!(
+        "Created item #{} in team {team}: {}",
+        item.id,
+        tasklist::shorten(&item.subject)
+    );
+    if !item.blocked_by.is_empty() {
+        text.push_str(&format!(
+            " (blocked by {})",
+            item.blocked_by
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    Ok(kind_result("created", text, json!({"team": team, "item": item})))
+}
+
+fn task_list(scope: &TaskScope, params: &Value) -> Result<ToolResult, String> {
+    let (team, list, _) = team_list(scope, params)?;
+    let status = match str_param(params, "status") {
+        Some(text) => match ItemStatus::parse(text) {
+            Some(status) => Some(status),
+            None => return Ok(invalid(format!("Unknown status \"{text}\""))),
+        },
+        None => None,
+    };
+    let filter = Filter {
+        status,
+        owner: str_param(params, "owner").map(str::to_owned),
+    };
+    let (items, skipped) = list.list(&filter);
+    for path in &skipped {
+        maho_ext_api::diagnostic(&format!(
+            "team tasklist: skipped unreadable item file {}",
+            path.display()
+        ));
+    }
+    Ok(text_result(
+        tasklist::list_text(&items),
+        json!({"team": team, "count": items.len(), "items": items}),
+    ))
+}
+
+fn task_get(scope: &TaskScope, params: &Value) -> Result<ToolResult, String> {
+    let (team, list, _) = team_list(scope, params)?;
+    let Some(id) = id_param(params, "id") else {
+        return Ok(invalid("Missing required parameter: id"));
+    };
+    Ok(match list.get(id) {
+        Some(item) => text_result(tasklist::item_text(&item), json!({"team": team, "item": item})),
+        None => {
+            let refusal = tasklist::Refusal::NotFound { id };
+            text_result(refusal.reason(), refusal.details())
+        }
+    })
+}
+
+fn task_update(scope: &TaskScope, params: &Value) -> Result<ToolResult, String> {
+    let (team, list, members) = team_list(scope, params)?;
+    let Some(id) = id_param(params, "id") else {
+        return Ok(invalid("Missing required parameter: id"));
+    };
+    let Some(status_text) = str_param(params, "status") else {
+        return Ok(invalid("Missing required parameter: status"));
+    };
+    let Some(status) = ItemStatus::parse(status_text) else {
+        return Ok(invalid(format!("Unknown status \"{status_text}\"")));
+    };
+    let owner = str_param(params, "owner").unwrap_or(LEAD);
+    if owner != LEAD && !members.iter().any(|member| member == owner) {
+        return Ok(invalid(format!(
+            "\"{}\" is not a member of team {team} (members: {}; or `lead`)",
+            tasklist::shorten(owner),
+            members.join(", ")
+        )));
+    }
+    Ok(match list.update(id, status, owner)? {
+        Ok(item) => kind_result(
+            "updated",
+            format!(
+                "Item #{} is {}{}: {}",
+                item.id,
+                item.status.as_str(),
+                item.owner
+                    .as_deref()
+                    .map(|o| format!(" (owner {})", tasklist::shorten(o)))
+                    .unwrap_or_default(),
+                tasklist::shorten(&item.subject)
+            ),
+            json!({"team": team, "item": item}),
+        ),
+        Err(refusal) => text_result(refusal.reason(), refusal.details()),
+    })
 }
 
 /// Member items of a `teams.<name>` template (spec §6).
@@ -356,12 +524,14 @@ You receive a team update when each member finishes; use team_wait to collect re
                     "message": {"type": "string"}
                 }, "required": ["member", "message"]}),
                 wrap(|scope, params, _| async move {
-                    let team = resolve(&scope, str_param(&params, "team"))?;
                     let member =
                         str_param(&params, "member").ok_or("Missing required parameter: member")?;
-                    let lines =
-                        team.message(member, str_param(&params, "message").unwrap_or_default())?;
-                    Ok(text_result(lines.join("\n"), json!({"team": team.name()})))
+                    message_team(
+                        &scope,
+                        str_param(&params, "team"),
+                        member,
+                        str_param(&params, "message").unwrap_or_default(),
+                    )
                 }),
             ),
             tool(
@@ -420,7 +590,62 @@ You receive a team update when each member finishes; use team_wait to collect re
                     ))
                 }),
             ),
+            tool(
+                "team_task_create",
+                "Team Task Create",
+                "Add a work item to the team's shared tasklist (status `pending`). `blocked_by` lists item ids that must be completed before this one can be claimed. Items are records only; they do not start members.",
+                json!({"type": "object", "properties": {
+                    "team": {"type": "string"},
+                    "subject": {"type": "string", "description": "Short title"},
+                    "description": {"type": "string"},
+                    "blocked_by": {"type": "array", "items": {"type": "integer"}, "description": "Ids of items this one waits for"}
+                }, "required": ["subject", "description"]}),
+                wrap(|scope, params, _| async move { task_create(&scope, &params) }),
+            ),
+            tool(
+                "team_task_list",
+                "Team Task List",
+                "List the team's tasklist items by id, optionally only those with an exact `status` (pending, claimed, in_progress, completed, deleted) and/or `owner`.",
+                json!({"type": "object", "properties": {
+                    "team": {"type": "string"},
+                    "status": {"type": "string", "enum": ["pending", "claimed", "in_progress", "completed", "deleted"]},
+                    "owner": {"type": "string"}
+                }}),
+                wrap(|scope, params, _| async move { task_list(&scope, &params) }),
+            ),
+            tool(
+                "team_task_get",
+                "Team Task Get",
+                "Show every field of one tasklist item.",
+                json!({"type": "object", "properties": {
+                    "team": {"type": "string"},
+                    "id": {"type": "integer"}
+                }, "required": ["id"]}),
+                wrap(|scope, params, _| async move { task_get(&scope, &params) }),
+            ),
+            tool(
+                "team_task_update",
+                "Team Task Update",
+                "Move a tasklist item: pending -> claimed -> in_progress -> completed, or any status -> deleted. Claiming (also pending -> in_progress) sets the owner and needs every blocker completed. Moves other than delete must come from the owner. `owner` acts on behalf of a member (default `lead`).",
+                json!({"type": "object", "properties": {
+                    "team": {"type": "string"},
+                    "id": {"type": "integer"},
+                    "status": {"type": "string", "enum": ["pending", "claimed", "in_progress", "completed", "deleted"]},
+                    "owner": {"type": "string", "description": "Member name acting, or `lead` (default)"}
+                }, "required": ["id", "status"]}),
+                wrap(|scope, params, _| async move { task_update(&scope, &params) }),
+            ),
         ]
+    }
+
+    fn route_message(
+        &self,
+        scope: &TaskScope,
+        group: &str,
+        member: &str,
+        message: &str,
+    ) -> Option<Result<ToolResult, String>> {
+        Some(message_team(scope, Some(group), member, message))
     }
 
     fn commands(&self) -> Vec<AddonCommand> {
