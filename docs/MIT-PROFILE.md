@@ -15,7 +15,7 @@ mhc still reads the shared on-disk configuration (`~/.omo/agent`, `~/.omo/omo.js
 1. `python3 scripts/check-mit-profile.py` walks the normal dependency graph of every workspace
    member (`cargo tree --workspace`) and fails when a package resolves under `crates/omo/` or names
    a SUL license; `--self-test` checks the gate itself first.
-2. `cargo deny --workspace --config deny-mit.toml check licenses` checks the dependency graph of the
+2. `cargo deny --workspace check --config deny-mit.toml licenses` checks the dependency graph of the
    whole workspace against the MIT-compatible license allowlist, with workspace crates included
    (`[licenses.private] ignore = false`).
 3. `cargo clippy -p maho-cli --lib --bins -- -D warnings` and a build.
