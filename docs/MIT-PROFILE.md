@@ -242,6 +242,24 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
   `mcp.disabled_builtins` (`omo.jsonc`); an `mcp.json` entry of the same name replaces one.
   No web-search MCP is added (the `websearch`/`webfetch` builtins cover it). The default (`omo`)
   build links `maho-skills` and `maho-mcp-builtins` but mounts neither.
+- Session gateway (`maho-gateway`, from `docs/cleanroom/specs/gateway.md`; delivery shape is the
+  MIT senpi session-control contract already in `maho-core`, inbox model from the MIT
+  pi-agent-teams mailbox), mounted as `<builtin:gateway>`:
+  - long-lived sessions (TUI, `--mode rpc`, app server; not `-p`/JSON runs, so not task children)
+    write an endpoint record to `<agent dir>/gateway/sessions/<id>.json` (`$MAHO_GATEWAY_DIR`
+    moves the store) and poll `inbox/<id>/` (`gateway.poll_ms`, default 500); each delivery is
+    handed to the session as a displayed `session_control_delivery` message (steer or follow-up,
+    starting a turn when idle) whose text opens with
+    `[gateway message from <sender> · hop <n> · id <id>]` and a note that it is not from the user;
+    the record is removed when the session ends; records of dead processes are pruned;
+  - tools `session_list` (other live sessions) and `session_send` (`to`: id, name or unique id
+    prefix; `message`; `mode`: `followUp` | `steer`); relays are capped by `gateway.max_hops`
+    (default 3; reset by user input);
+  - shell: `mhc gateway list [--json]`, `mhc gateway send <session> <message…> [--steer]
+    [--from <user>]`;
+  - `MAHO_GATEWAY=0` or `gateway.enabled: false` turns it off.
+  - Not included: holding a delivery while the user has an unsent draft, turn-epoch checks for
+    steers, a control socket, external chat bridges.
 
 ## What is compiled out (needs the `omo` feature)
 
@@ -250,7 +268,7 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
 | omo mount (`<builtin:omo>`): its task/subagent tools, `team_*`, `workflow`/DAG, `workpool`, `/task-kill`, `/dag` | not registered (MIT `<builtin:task>` provides `task`, `task_output`, `task_list`, `task_resume`, `task_cancel`, `/tasks`, and from `maho-team` `team_create`, `team_members`, `team_message`, `team_wait`, `team_stop`, `/team`) |
 | omo memory tools and commands (`/remember`, `/dream`, `/reflect`, `/search`, `/people`, `/palace`, `/init`, `/doctor`, `/facts`, `/memfs`, ...), the omo recall sidecar, facts child, git-backed Markdown memory | not registered (MIT `<builtin:memory>` provides `retain`, `recall`, `memory_get`, `memory_forget`, first-turn auto-recall and `/memory`) |
 | ast-grep MCP; the omo builtin MCPs; `x_search`; omo browser bridge | not registered (MIT `<builtin:browser>` provides the `browser` and `computer` tools; MIT `<builtin:mcp-builtins>` declares `context7` and `grep_app`) |
-| gateway, onboarding, init-deep advisor, git-master, omo telemetry | not registered (MIT `<builtin:telemetry>` provides the usage ledger, `mhc usage` and opt-in OTLP export; MIT `<builtin:git>` provides read-only git inspection tools) |
+| omo gateway, onboarding, init-deep advisor, git-master, omo telemetry | not registered (MIT `<builtin:gateway>` provides `session_list`, `session_send` and `mhc gateway list|send`; MIT `<builtin:telemetry>` provides the usage ledger, `mhc usage` and opt-in OTLP export; MIT `<builtin:git>` provides read-only git inspection tools) |
 | bundled omo skills (`OMO_SENPI_SKILLS_ROOT`) and the omo skill tools/commands | not registered (MIT `<builtin:skills>` provides the bundled root via `MAHO_SKILLS_ROOT` or `skills/` beside the executable, app-server `skills/list` included, `disabled_skills`, the `skill` tool and `/skill`) |
 | `builtin:task-member` (`--extension builtin:task-member`) | unknown native extension error |
 | Claude Code plugin hooks (`maho-ext-hooks` feature `claude-plugins`) | not discovered; `~/.claude/settings.json` and project `.claude/settings*.json` hooks still load |
@@ -289,7 +307,9 @@ mass-ulw, persona prompts) are removed, not ported.
    bundled skill (`MAHO_SKILLS_ROOT`) are listed in the system prompt while a `disabled_skills`
    entry is not, that a model-driven `skill` call returns the bundled skill, that a stdio MCP
    server from `<agent dir>/mcp.json` is started and its tool `mcp_smokefake_echo` answers a model
-   call, that the builtin remote MCP servers are absent offline, that model calls are written to the usage
+   call, that the builtin remote MCP servers are absent offline, that an RPC session registers with
+   the gateway, receives `mhc gateway send` and a `session_send` relay from a `-p` run (both with the
+   gateway header) and is unlisted after it exits while `MAHO_GATEWAY=0` hides the tools, that model calls are written to the usage
    ledger and exported to a loopback OTLP collector (traces, metrics, logs, no content) while
    `DO_NOT_TRACK=1` stops the export and `MAHO_TELEMETRY=0` stops both, that `mhc usage`
    (`--json`, `--status`) reports the ledger, that `mhc doctor` reports the config sources and resolves a pinned
