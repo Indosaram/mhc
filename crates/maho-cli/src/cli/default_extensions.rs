@@ -118,6 +118,12 @@ pub fn mit_config_factories() -> Vec<NativeExtensionFactory> {
         ),
         factory("model-profile", maho_model_select::ModelProfileExtension),
         factory(
+            "format",
+            maho_format::FormatExtension::from_env(Some(std::path::PathBuf::from(
+                maho_core::config::get_agent_dir(),
+            ))),
+        ),
+        factory(
             "lsp",
             maho_lsp::extension::LspExtension::from_env(Some(std::path::PathBuf::from(
                 maho_core::config::get_agent_dir(),
@@ -130,8 +136,14 @@ pub fn mit_config_factories() -> Vec<NativeExtensionFactory> {
         factory("git", super::git_tools::extension()),
         factory("skills", super::skill_library::extension()),
         factory("mcp-builtins", super::builtin_mcp::extension()),
+        factory("git-bash", maho_git_bash::GitBashMcpExtension),
         factory("gateway", super::session_gateway::extension()),
         factory("context-files", super::project_context::extension()),
+        factory("approval-gates", maho_approval_gates::ApprovalGates),
+        factory(
+            "x-search",
+            maho_x_search::XSearchExtension::new(maho_core::config::get_agent_dir()),
+        ),
     ]
 }
 
@@ -896,6 +908,7 @@ mod mit_tests {
                 "<builtin:config-notices>",
                 "<builtin:config-hot-reload>",
                 "<builtin:model-profile>",
+                "<builtin:format>",
                 "<builtin:lsp>",
                 "<builtin:task>",
                 "<builtin:memory>",
@@ -904,8 +917,11 @@ mod mit_tests {
                 "<builtin:git>",
                 "<builtin:skills>",
                 "<builtin:mcp-builtins>",
+                "<builtin:git-bash>",
                 "<builtin:gateway>",
-                "<builtin:context-files>"
+                "<builtin:context-files>",
+                "<builtin:approval-gates>",
+                "<builtin:x-search>"
             ]
         );
     }
