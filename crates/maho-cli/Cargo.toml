@@ -76,6 +76,7 @@ maho-feedback = { path = "../maho-feedback" }
 maho-format = { path = "../maho-format" }
 maho-git-bash = { path = "../maho-git-bash" }
 maho-x-search = { path = "../maho-x-search" }
+maho-workflow = { path = "../maho-workflow" }
 maho-mcp-builtins = { path = "../maho-mcp-builtins" }
 # MIT session gateway (`session_list`/`session_send`, inbox delivery into long-lived sessions, `mhc gateway list|send`); mounted as `<builtin:gateway>` in the MIT profile only.
 maho-gateway = { path = "../maho-gateway" }

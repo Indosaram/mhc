@@ -6,6 +6,7 @@ members = [
     "crates/maho-feedback",
     "crates/maho-format",
     "crates/maho-git-bash",
+    "crates/maho-workflow",
     "crates/maho-x-search",
     "crates/maho-ai",
     "crates/maho-agent",
