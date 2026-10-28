@@ -3646,6 +3646,7 @@ dependencies = [
  "maho-ext-video-in",
  "maho-ext-webfetch",
  "maho-ext-websearch",
+ "maho-gateway",
  "maho-git",
  "maho-interactive",
  "maho-isolation",
