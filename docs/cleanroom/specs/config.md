@@ -65,8 +65,9 @@ file).
 
 The home directory used for every path in this spec is, in order: the `HOME` value of the
 environment passed to the loader, else `USERPROFILE`, else the current working directory. The
-value is made absolute and normalised to forward slashes on all platforms (drive letters keep
-their form, e.g. `C:/Users/me`). `XDG_CONFIG_HOME`, `APPDATA` and `~/.config` are **never**
+value is made absolute and lexically normalised; on Windows it keeps native separators and its
+prefix (e.g. `C:\Users\me`, or a verbatim `\\?\` path as given) so it compares equal to paths the
+operating system returns. `XDG_CONFIG_HOME`, `APPDATA` and `~/.config` are **never**
 consulted for the harness configuration.
 
 Separately, the **account home** is the operating-system account's home directory (on Unix the

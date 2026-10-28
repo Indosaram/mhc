@@ -56,8 +56,33 @@ pub fn copy_mtime(src: &Path, dst: &Path) {
     let Ok(mtime) = fs::metadata(src).and_then(|meta| meta.modified()) else {
         return;
     };
-    if let Ok(file) = fs::File::open(dst) {
+    if let Ok(file) = open_for_times(dst) {
         let _ = file.set_modified(mtime);
+    }
+}
+
+/// Opens `path` (file or directory) so its timestamps can be set. Unix sets times through any
+/// descriptor the owner holds. Windows `SetFileTime` needs a handle with `FILE_WRITE_ATTRIBUTES`
+/// (a plain `File::open` is read-only and fails with "Access is denied"), and a directory handle
+/// needs `FILE_FLAG_BACKUP_SEMANTICS`.
+///
+/// # Errors
+/// The path could not be opened.
+pub fn open_for_times(path: &Path) -> io::Result<fs::File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // winnt.h FILE_WRITE_ATTRIBUTES; winbase.h FILE_FLAG_BACKUP_SEMANTICS.
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+    }
+    #[cfg(not(windows))]
+    {
+        fs::File::open(path)
     }
 }
 
@@ -195,7 +220,7 @@ mod tests {
         fs::write(src.join("sub/f.txt"), "x").expect("write");
         fs::write(src.join("skip.me"), "x").expect("write");
         let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
-        fs::File::open(src.join("sub/f.txt"))
+        open_for_times(&src.join("sub/f.txt"))
             .and_then(|f| f.set_modified(old))
             .expect("mtime");
         #[cfg(unix)]

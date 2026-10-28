@@ -428,13 +428,23 @@ impl Store {
             .map_err(sql_err)
     }
 
+    /// Active working rows. "Now" comes from [`now_iso`], the clock that stamps `valid_until`:
+    /// SQLite's `'now'` reads a coarser OS clock on Windows that can lag it by a tick.
+    fn count_active_working(&self) -> Result<i64> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM working_memory WHERE superseded_by IS NULL AND (valid_until IS NULL OR valid_until > ?1)",
+                [now_iso()],
+                |row| row.get(0),
+            )
+            .map_err(sql_err)
+    }
+
     /// Row counts of this bank.
     pub fn stats(&self) -> Result<Stats> {
         Ok(Stats {
             working: self.count("SELECT COUNT(*) FROM working_memory")?,
-            working_active: self.count(
-                "SELECT COUNT(*) FROM working_memory WHERE superseded_by IS NULL AND (valid_until IS NULL OR valid_until > strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
-            )?,
+            working_active: self.count_active_working()?,
             episodic: self.count("SELECT COUNT(*) FROM episodic_memory")?,
             scratchpad: self.count("SELECT COUNT(*) FROM scratchpad")?,
             triples: self.count("SELECT COUNT(*) FROM triples")?,

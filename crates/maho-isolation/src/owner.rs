@@ -69,9 +69,10 @@ fn pid_alive(pid: u32) -> bool {
     }
 }
 
+/// No signal 0 off Unix: the workspace's `tasklist` probe (an unknown pid is reported dead).
 #[cfg(not(unix))]
-fn pid_alive(_pid: u32) -> bool {
-    true
+fn pid_alive(pid: u32) -> bool {
+    maho_tool_child::group_ownership::process_is_live(pid)
 }
 
 /// Whether the marker in `base` names a process that is still running (unknown = alive).
