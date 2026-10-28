@@ -1,0 +1,19 @@
+[package]
+name = "maho-mcp-builtins"
+description = "MIT-profile builtin MCP servers for mhc (context7, grep_app) declared on the senpi MCP client port maho-ext-mcp, with on/off rules from MAHO_BUILTIN_MCPS, offline mode and the omo.jsonc mcp.builtins / mcp.disabled_builtins keys."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-ext-api = { path = "../maho-ext-api" }
+maho-config = { path = "../maho-config" }
+serde_json.workspace = true
+
+[dev-dependencies]
+maho-ext-mcp = { path = "../builtins/maho-ext-mcp" }
+tempfile.workspace = true
+
+[lints]
+workspace = true

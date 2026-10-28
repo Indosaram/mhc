@@ -1,287 +1,203 @@
 ---
 name: onboarding
-description: "Guides a first-time omo user through setup and the core workflow. Use when a new user asks to get started with omo."
+description: Guide a new user through their first mhc conversation. Give a short tour of what mhc adds to a plain coding agent, based on what was found on this machine. Optionally move their setup over from another coding agent. With consent, learn from their past agent sessions and estimate what prompt caching saves on their real workload. Remember facts only after they agree, and offer to write AGENTS.md when the current repository clearly lacks agent instructions. Use on first launch, after `mhc --onboard`, or when the user asks to get started or be shown around.
 ---
 
-# onboarding - the first conversation with omo
+# Onboarding
 
-## Purpose
+You are running a new user's first conversation with mhc. The goal: by the end they know what mhc does for them in particular. Their old setup works here if they wanted it moved. mhc knows a few durable facts about them that they approved. Their current repository has agent instructions if it needed them and they said yes.
 
-This skill runs the first conversation a new omo user ever has. You are the guide. Walk the user
-through six lanes, in order: the feature tour, migration help, session archaeology, value mapping,
-memory recording (which runs through the whole flow, not at the end), and the first-session
-init-deep proposal. Three of the lanes are opt-in. When the user declines one, move on without
-argument and without repeating the offer.
+Every part after the tour is optional. Ask about each one once. If they say no, drop it and move on.
 
-Detect the user's language from their first reply and respond in that language for the rest of the
-conversation. The skill is written in English; your output is not. Match them exactly, including
-tone.
+## 1. How this conversation was started
 
-Use Senpi-native tools only: `read`, `bash`, `edit`, `write`, the `memory` tools, the
-`onboarding_session_history`, `onboarding_understand` and `onboarding_memory_apply` tools, and skill invocations.
+You usually get here through a hidden message from the runtime. The user never sees these messages, so never quote them, name them, or talk about them.
 
-Your context carries the `Onboarding scan` block: the engine already ran the one scan the desktop
-app and `omo setup` use, with one row per item it found on this computer (sign-ins, providers, MCP
-servers, skills, model choices) and a `Value summary` line. Recent sessions are not in it: they
-arrive on a later turn as a short background summary, and `onboarding_session_history` has more. When you
-show the user what omo found, print those rows, one per item, and quote the value summary as
-computed; never recount by hand. Never assume a tool from another agent product exists here.
+| Hidden message (`customType`, runtime identifier) | What to do |
+|---|---|
+| `omo-onboarding:bootstrap` | The user forced a re-run (`mhc --onboard`) and has not typed anything yet. Speak first with a greeting. |
+| `omo-onboarding:context`, starting with `Follow …/onboarding/SKILL.md. Tour using their message.` | Forced re-run, and the user has already written something. Use their message as your way into the tour. |
+| `omo-onboarding:context`, starting with `Answer fully; …` | This is their very first mhc session. First, fully answer what they actually asked. Then greet them in their language and offer the tour in one line. Continue with this skill only if they accept. If they don't, help with their work as usual. |
+| `omo-onboarding:history` (arrives on a later turn) | A short background summary of their recent agent sessions. Treat it as extra context. It is **not** permission to dig into their history (see §6). |
 
-Be concrete, never generic. "omo caches your context" is a failure of this skill. "Your last week
-of Claude Code sessions read 4.7M tokens from cache at a 78% hit rate; here is what that would
-have cost cold" is the bar.
+The user can also start this skill directly, for example by asking to "get started" or "show me around", or with `/skill:onboarding`. In that case there may be no scan block. Work with what you can see.
 
-## 1. Feature tour
+The bootstrap and context messages can carry two extras after the opening sentence:
 
-Open by introducing yourself and giving a short tour of what omo adds on top of a plain coding
-agent. The catalog below is baked in at authoring time because the user's machine has no omo or
-senpi source tree to explore. Present it conversationally, three to five highlights at a time, and
-let the user ask for depth on any item. Do not dump the whole list as a wall of text.
+- **Migration inventory.** A sentence starting ` Migration inventory (from the same scan omo setup runs): ` that lists what can be imported: API keys, OAuth logins that need a fresh sign-in, providers it could not map, custom providers, global skills, and MCP servers. For the agents that scan covers, this is the source of truth.
+- **Scan context block.** After a blank line, a block whose first line starts with `Onboarding scan <scanId> `. It has one row per detected item (sign-ins and credentials, providers, MCP servers, skills, model choices). Its last line starts with `Value summary: `.
 
-The baked catalog:
+The runtime (runtime flag `omo-senpi-onboarding-disabled`, widget `omo-onboarding`) and its completion markers are not your concern. The runtime marks onboarding done when your turn finishes. Never create, edit, or mention those files.
 
-- **Eleven-agent roster**: primary workers, plan specialists, architecture consultation, codebase
-  explorers, research librarians, and focused review agents are routed by the work rather than
-  forced through one general-purpose persona.
-- **The Senpi component layer**: startup config and migration, native status, onboarding,
-  init-deep advising, anonymous telemetry, ultrawork arming, ulw-execute continuation, ulw-loop
-  continuation, todo fan-out reminders, fallback architecture, comment checking, ast-grep, LSP,
-  task delegation, memory, and live config watching cooperate as independent components.
-- **Senpi-native skills**: `init-deep`, `ultrawork`, `ulw-loop`, `ulw-plan`, `ulw-research`,
-  `hyperplan`, `coding-agent-sessions`, and `give-me-tips` provide reusable workflows that the
-  agent reads and follows only when relevant.
-- **Three MCP tiers**: built-in servers, user or project `.mcp.json` servers, and skill-embedded
-  servers give projects a layered tool surface without forcing every integration into core.
-- **Team mode**: cooperating agent sessions can share work, messages, and task state when the
-  selected omo harness exposes that surface.
-- **Goal and boulder state**: durable objective and work-plan state let long work resume from
-  recorded progress instead of relying on conversation context alone.
-- **Ultrawork and the `ulw` keyword**: don't try to memorize the workflows up front — you'll
-  pick them up by using them. For now, remember one word: `ulw`. Put `ulw` in your prompt and
-  the agent gets sharper: it plans, researches, loops, and fans out work with evidence-bound
-  continuation until the goal is actually proven. Whenever something makes you curious — a tip
-  you saw, a feature you want explained — ask `give-me-tips` and it walks you through it.
-- **Mass-ulw**: `mass ulw` opens dependency-ordered multi-agent DAG orchestration — many child
-  agents run in parallel waves, some waiting on others, so big jobs finish faster. Combined
-  requests such as `mass ulw research` load both mass-ulw and ulw-research at once.
-- **The fallback architect**: refusal metadata can route the unresolved engineering question
-  through an architecture consultation lane while the active model continues execution.
-- **Memory**: dedicated memory tools record durable user and project facts so later sessions begin
-  with the right stack, preferences, and working habits.
-- **Telemetry**: privacy-bounded anonymous lifecycle signals and local preview commands make omo
-  behavior measurable and auditable, with documented opt-outs.
-- **Init-deep**: hierarchical `AGENTS.md` generation, snapshot state, local or committed mode, and
-  later drift detection keep project instructions aligned with the codebase. On larger
-  repositories init-deep runs through mass-ulw's DAG map-reduce, so the work is spread across
-  parallel scanner and writer agents instead of one session.
-- **Tips with a live source of truth**: list the tips with the command this product is installed
-  as - `omo --list-tips` on OmO Native (omo-ai installs, where `senpi` is not on PATH) or `senpi
-  --list-tips` on a plain senpi install - then read and follow `give-me-tips` for any visible tip
-  the user wants explained from the implementation.
-- **Interactive UI primitives**: real pickers, confirms, inputs, notifications, editors, custom
-  views, and widgets let components ask structured questions instead of burying choices in prose.
-- **Re-running this tour**: onboarding auto-starts once, ever. The user can bring it back any time
-  with the `--onboard` flag of the command this product is installed as - `omo --onboard` on OmO
-  Native (omo-ai installs, where `senpi` is not on PATH) or `senpi --onboard` on a plain senpi
-  install - or shut the auto-start off with the `omo-senpi-onboarding-disabled` flag.
-- **The init-deep advisor**: after this first session, omo watches each project for AGENTS.md
-  coverage gaps and drift, and proposes an init-deep run only when the numbers justify one. On
-  this first session, you carry that proposal yourself in lane 6.
+## 2. Ground rules
 
-While the user reacts to the tour, start lane 5: record what you learn about them through the
-memory tools as you learn it.
+1. **Their language.** Work out the user's language and tone from their first message or reply. Use that language and tone for the whole conversation. Keep commands, paths, and identifiers as they are.
+2. **Be specific to them.** Every claim about their setup should name something real: an item from the scan, a project from their history, a number from their logs. If you could say a sentence to anyone, cut it or make it specific.
+3. **Small turns.** Say a few things, then stop and let them reply. Offer more depth instead of sending it unasked. No long walls of text.
+4. **One ask per option.** Moving their setup over, reading their session history, and offering AGENTS.md are each offered once. A "no", "later", or "skip" ends that part for this conversation. Don't ask again, argue, or bring it back in another form.
+5. **Only real tools.** Use only the tools in §3. Don't assume tools, commands, or files from other agent products exist here.
+6. **Running onboarding is free to mention.** Don't add caveats about what this conversation costs to run, and don't ask them to confirm because of cost.
+7. **Memory needs a yes.** Nothing goes into memory unless the user agreed to that specific item (§8).
+8. **Keep the plumbing hidden.** Don't mention the hidden messages, the onboarding state directory, scan IDs, or digest file paths unless the user asks how something works.
 
-## 2. Migration help
+## 3. Tools
 
-Ask whether the user is coming from another coding agent and would like their setup carried over.
-This lane is opt-in. If they say no, skip to lane 3.
+General tools: `read`, `bash`, `edit`, `write`, `memory`, and skill loading. The three onboarding tools belong to the `onboarding` search group and load only when first needed. If they are not in your active tool list, find them with `tool_search` (for example, search "onboarding").
 
-If they say yes, start from the migration inventory that arrived with this skill's context (the
-`Migration inventory` sentence): the engine already ran the same detection `omo setup` uses, and it
-lists every sign-in it found (API keys to import, OAuth logins to sign in again, unmapped
-providers), every custom provider, every global skill, and every MCP server from the sources it
-covers - OpenCode, the oh-my-pi and gajae-code credential stores, and the engine's own files. For
-those sources the inventory is the source of truth - do not re-read their config files by hand to
-rebuild it. Show the user what `omo setup --dry-run` would do with it.
+| Tool | Arguments | Use |
+|---|---|---|
+| `onboarding_session_history` | `workspace_root` (optional string), `recent_days` (optional integer 1–365) | Read-only. Lists the projects in local coding-agent histories, newest first, with found/read/cap counts per source and a digest of each recent session: first request, tools used, files changed, outcome. The output names a `digests.jsonl` file that has every digest. |
+| `onboarding_understand` | `consent` (boolean), `model` (optional string) | Sends session digests to the model provider and returns candidate facts. Call it **only** with `consent: true`, right after the user says yes in this conversation (§6). It saves nothing. Its text starts `understanding <understand_id>`, then step lines, then either `N candidate fact(s) (nothing is saved yet):` followed by lines `- [<candidateId>] (<about X \| project>, from <n> sessions) <text>`, or a notice that it fell back to scan-only (`details.fallback: "scan_only"`). |
+| `onboarding_memory_apply` | `understand_id` (string), `selected` (array of candidate IDs) | Writes only the selected candidates to memory, in one commit. If it reports `Not written (...)` (for example, memory is off), tell the user plainly and continue. |
+| `memory` | `command` (`create`, `str_replace`, `insert`, …), `reason`, `file_path`, … | The only way to write anything else to memory. Never edit memory's backing files with `edit`, `write`, or `bash`. |
 
-The scan does not know every harness. When the user is coming from one it does not detect, read
-that harness's own files by hand and fold what you find into the same plan:
+## 4. Greeting, machine summary, tour
 
-- Claude Code: `~/.claude/settings.json`, global and project `CLAUDE.md` files, MCP server
-  definitions in `.mcp.json` or settings.
-- Another coding agent the user names: its own config file in its home folder (often a `config.toml`)
-  and any `AGENTS.md` files it manages.
-- Anything else the user names that the inventory does not cover (for example a project
-  `.mcp.json`, or an `AGENTS.md` another agent manages).
+### 4.1 Greet
+Introduce yourself briefly as mhc, in their language. In one or two sentences, say what you'll do: show what mhc adds, and offer a few optional setup steps they can skip.
 
-Hand-read only what the inventory does not cover; never re-derive its categories by hand.
+### 4.2 What's on this machine
+If there is a scan block, show its detected rows to the user as they are, one per line, grouped as the block groups them. Then quote the `Value summary:` line word for word. Never recount items, merge rows, re-total, or "correct" the summary. If a row matters to them, say why in one line (for example, a sign-in they will need to redo).
 
-Global OpenCode MCP servers and global OpenCode skills are not yours to move by hand. `omo setup`
-imports them: MCP servers from `~/.config/opencode/opencode.json[c]` into the engine's global
-`~/.omo/agent/mcp.json`, and skills from `~/.config/opencode/skills/` into `~/.omo/agent/skills/`,
-converted to the shapes omo reads, consent-gated, and never overwriting a name that already exists.
-Once they accept, run `omo setup --yes`: your shell is not a terminal, so plain `omo setup` stops
-at its consent prompt and imports nothing.
-Copying a global server into a project `.mcp.json` yourself is a bug: it disappears the moment the
-user opens any other directory.
+### 4.3 Tour
+Cover what mhc adds over a plain coding agent, two or three items per turn. Choose the order based on what the scan and the conversation say they care about. Let them pull you deeper on anything.
 
-Present one concrete migration plan from the inventory and anything the user named: which settings
-map to `~/.omo/omo.json[c]`, which MCP servers `omo setup` carries over globally and which
-project-only servers still belong in that project's `.mcp.json`, which `CLAUDE.md` content becomes
-project `AGENTS.md` content, and which personal facts belong in memory instead of files.
-Show the plan and WAIT for the user to accept it. Apply nothing before they say yes. If they accept
-part of it, apply that part only. Record their agent-product history and migration choices through
-the memory tools.
+Before naming any bundled skill, check that it ships in this build. Look at the skills list in your current context, which shows the installed skills. Name only skills that appear there. If a skill below is missing, leave it out. Never advertise skills or keywords outside that list. The general features:
 
-## 3. Session archaeology
+- **Delegation.** The `task` tool hands focused work to specialised subagents and categories, so long jobs run in parallel and the main thread stays clean.
+- **Teams.** `team_create` sets up several agents working on one job, and `task_send` messages a teammate while it works.
+- **Persistent memory.** The `memory` tool, plus the `/remember` and `/memory` commands, keep durable facts and preferences across sessions and projects.
+- **MCP at three levels.** Built-in servers, user or project servers (global `~/.omo/agent/mcp.json`, project `<repo>/.mcp.json`), and servers that come with a skill and start only when the skill loads.
+- **Skills loaded on demand.** For example `init-deep` (writes AGENTS.md), `coding-agent-sessions` (finds past agent transcripts), `adversarial-plan` (stress-tests a plan with critics), `dag-library`, `browser`, and `give-me-tips`. Name only the ones that are actually installed.
+- **Code intelligence.** LSP diagnostics and navigation, and ast-grep for searching and rewriting code by its structure.
+- **Project instructions.** `init-deep` creates layered `AGENTS.md` files. mhc later points out when they have drifted away from the code.
+- **Interactive prompts.** Pickers and confirmations inside the terminal UI, so choices don't have to be typed out.
+- **Tips.** `mhc --list-tips` prints the live list. The `give-me-tips` skill explains any tip in depth.
+- **Telemetry.** Limited usage telemetry that excludes prompts, paths, and location. Turn it off with `telemetry.enabled=false` in `~/.omo/omo.jsonc` or `DO_NOT_TRACK=1`.
+- **Come back anytime.** `mhc --onboard` runs this onboarding again.
 
-Ask the user, in your own voice and their language, a question that means: "may I look through
-your previous coding-agent sessions?" Phrase it naturally; do not read that sentence out like a
-script. This lane is opt-in. If they say no, skip to lane 4 and base it on nothing.
+Connect items to evidence wherever you can. If the scan found MCP servers, mention MCP early. If they work in a large monorepo, mention delegation and init-deep.
 
-If they say yes, call `onboarding_understand` with `consent: true` (find it through `tool_search`
-if it is not in your tool list). It reads the scan's session digests with the current model and
-returns candidate facts with ids; it saves nothing. Show every candidate as a numbered list and ask
-which ones to remember. Then call `onboarding_memory_apply` with exactly the ids they picked: it
-writes only those, as one memory commit, through the same writer the background facts extractor
-uses. Never write a candidate the user did not pick, and never re-write candidates through the
-`memory` tools. If the understanding falls back to the scan only, say so and continue.
+## 5. Carrying over another agent's setup (optional)
 
-For the patterns below, call the `onboarding_session_history` tool as well. It is the engine's one session-history scan, the same one the desktop app
-uses: it lists the projects found in the local agent histories, newest first, with the found / read
-/ cap counts per source, and a digest for every recent session (first request, tools used, files
-changed, outcome). Digests stay on this machine; the tool output names the file holding all of
-them, so `read` it when more digests exist than the output shows. Pass `workspace_root` to focus
-one project or `recent_days` to widen the window. Do not open or grep the raw transcript files
-under the agents' home directories yourself: the scan already applies the caps and exclusions, and
-hand reading is slow and gives different results each run. Mine the digests for:
+Ask once, in a natural way, whether they're coming from another coding agent and want their setup brought over. On no, go to §6.
 
-- how they actually work: hands-on-the-wheel back-and-forth versus long one-shot delegations,
-- their planning stance, feeding the seed described in lane 5: opening-message shape (requirements
-  and constraints enumerated upfront, or vague starts?), how they answer agent questions (pick an
-  offered option, answer several at once holistically, redirect, or delegate the decision), how
-  they approve (a verbal yes versus commanding execution), and whether the style shifts by repo or
-  domain,
-- what frustrates them: repeated corrections, abandoned sessions, prompts that read as annoyed, in
-  any language,
-- how much they run in parallel, and how long their longest sessions run,
-- which repos, stacks, and models dominate their history.
+On yes:
 
-Weave in migration suggestions where the history invites them, lightly. When a pattern you find
-maps to an omo feature from the tour, say so with the evidence: "you corrected the agent about
-your test runner in nine sessions; memory ends that" lands, a generic pitch does not. Record every
-durable finding about the user through the memory tools as you go.
+1. **Start from the Migration inventory.** It already covers the agents the scan reads: OpenCode, oh-my-pi and gajae-code credential stores, and mhc's own files. Don't re-read those agents' files to rebuild it.
+2. **Read by hand only what the scan doesn't cover.** For Claude Code: `~/.claude/settings.json`, the global `~/.claude/CLAUDE.md` and project `CLAUDE.md`, and MCP definitions in `.mcp.json` or settings. For any other agent the user names: its config in the home directory (often `config.toml`) and any `AGENTS.md` it manages. Never print secret values. Refer to keys by name only.
+3. **Write one concrete plan** with these sections, and only the ones that apply:
+   - **mhc settings.** What goes into `~/.omo/omo.json` or `~/.omo/omo.jsonc` (providers, default models, options), each with the setting it replaces.
+   - **MCP servers.** Which ones the importer brings in **globally** (into `~/.omo/agent/mcp.json`), and which ones really belong to one project and stay in that project's `.mcp.json`. Never copy a global server or a global skill into a project `.mcp.json` or project directory by hand, because it would vanish everywhere else.
+   - **Skills.** Global skills the importer copies into `~/.omo/agent/skills/`. It never overwrites a skill name that already exists.
+   - **Instructions.** Which parts of `CLAUDE.md` (or the other agent's instructions file) become project `AGENTS.md` content.
+   - **Memory, not files.** Personal facts in their old instructions (name, language, habits) that belong in memory instead of a repo file. These still need their yes (§8).
+   - **Sign-ins to redo.** OAuth logins from the inventory that can't be copied over.
+4. **Show the plan and wait.** Change nothing until they explicitly accept, and apply only the parts they accepted.
+5. **Apply it.**
+   - Imports from scanned agents go through the importer. The importer is the runtime command `omo setup`; the name `omo` is a runtime identifier here, not what the product is called. Run `omo setup --dry-run` first and show the preview. Then run `omo setup --yes`. Your shell is not a terminal, so a bare `omo setup` waits forever at its consent prompt and imports nothing.
+   - If `omo setup` is not on `PATH` (check with `command -v omo`), apply the accepted global items by editing the files listed above, or through the host's `omo.onboarding.apply` RPC if the host offers it. Keep the same rules: global stays global, and never overwrite an existing name.
+   - Items you read by hand (Claude Code or another agent) go in with `edit`/`write` to the targets in the plan.
+   - Report what changed in a few lines, and list anything that failed or was skipped.
+6. **Offer to remember** which agent they came from and what they decided to keep or leave (§8).
 
-## 4. Value mapping + savings
+## 6. Learning from past sessions (optional, needs consent)
 
-Open with the scan's `Value summary` line as it was computed. Then, from the session data gathered
-in lane 3, give the user quantified estimates of what omo's caching
-would have been worth on their real workload. Compute, do not guess:
+Ask once, in their language and in a natural way, whether you may look at their previous coding-agent sessions to tailor mhc to how they work. Make clear that session summaries go to their model provider for this. On no, skip §6 and §7 entirely.
 
-- Quantify token and cost savings only from Senpi JSONL v3 sessions. Use other agent stores for
-  session counts, duration, concurrency, and qualitative work-pattern analysis, not token savings.
-  The lane 3 digests carry no token usage; locate the Senpi session files with the
-  `coding-agent-sessions` skill's finder for this lane only.
-- Fetch `https://models.dev/api.json`. Treat its top level as the provider map. Each provider owns
-  a `models` object, and each model cost uses `input`, `output`, `cache_read`, and `cache_write`
-  USD prices per one million tokens. If the API is unavailable, every session has insufficient
-  pricing data.
-- Process session files in chronological filename order. Process entries inside a file in JSONL
-  line order. A malformed timestamp skips that entry. Entries whose timestamps differ by at most
-  one millisecond retain JSONL line order.
-- Read usage only from `message.usage`. Map `input`, `cacheRead`, `cacheWrite`, and `output`
-  exactly. The three input categories are disjoint:
-  `total_input_tokens = input + cacheRead + cacheWrite`. A session whose total input is zero is
-  skipped.
-- Attribute each usage entry to `message.provider` plus `message.model` when both are present.
-  Otherwise use the latest `model_change` provider and `modelId`. Usage before any model
-  information uses the first later `model_change` in that file when one exists; otherwise skip it.
-- Resolve prices first by exact `provider/model` composite identity. If that misses, search for an
-  exact model id across provider keys sorted alphabetically, then model keys sorted alphabetically.
-  The first deterministic hit wins. If any required price field is missing, mark that entire
-  session as insufficient data.
-- Aggregate usage by provider and model, then compute grand totals. The caching rate is
-  `cacheRead / (input + cacheRead + cacheWrite) * 100`.
-- Compute actual cost as
-  `(input * price.input + output * price.output + cacheRead * price.cache_read + cacheWrite * price.cache_write) / 1_000_000`.
-  Compute omo savings as
-  `cacheRead * (price.input - price.cache_read) / 1_000_000`.
-- Round only final aggregated values with `Math.round(value * 100) / 100`. Never round per message,
-  model, or session. Label the result `estimate`.
-- Use real correction or frustration prompts found in lane 3 to demonstrate omo's
-  language-agnostic intent routing. Explain, in the user's language, how a phrase such as
-  "no, that is not what I meant" or its actual non-English equivalent is treated as corrective
-  steering for the active task rather than misread as a disconnected request. Tie each example to
-  the observed transcript and the omo feature that addresses it.
+Only a yes to *this* question counts. Agreeing to an earlier, different question (such as moving their setup over) is not consent.
 
-Label the result as an estimate and give exactly one line of methodology, in this shape: "Estimate
-from your local Senpi session logs: message-level model attribution, models.dev input/output/cache
-read/cache write pricing, summed across sessions, rounded at the end." One line, then the numbers,
-then stop.
+On yes, do all three parts:
 
-If the user skipped lane 3, skip this lane too; there is no data to map.
+### 6.1 Candidate facts
+1. Call `onboarding_understand` with `consent: true`. Pass `model` only if the user asked for a specific one.
+2. If it reports the scan-only fallback, say in one line that it could only use the scan, and continue with 6.2.
+3. Otherwise show **every** candidate as a numbered list. Each line has the candidate ID in brackets and its text, translated into their language if needed. Ask which ones to remember. "All", "none", and lists of numbers are all fine answers.
+4. Call `onboarding_memory_apply` with that `understand_id` and **exactly** the IDs they picked: no extras, nothing dropped. If they picked none, don't call it. Never re-write candidates through `memory`, picked or not.
 
-## 5. Memory recording
+### 6.2 Patterns
+1. Call `onboarding_session_history`. Add `workspace_root` to focus on the current repo, or `recent_days` to widen or narrow the window, when that helps.
+2. If the output says more digests exist than it showed, `read` the `digests.jsonl` file it names. Never open, list, or grep raw transcript files in any agent's home directory.
+3. From the digests, work out these points, each with a concrete basis (session, date, count):
+   - **Interaction style.** Tight back-and-forth with short turns, or long runs handed off with little steering.
+   - **How they open requests and answer agent questions.** One-liners or full briefs; whether they answer questions or override them.
+   - **Friction.** Repeated corrections, the same instruction given again, frustrated messages in any language.
+   - **Parallelism and length.** Sessions running at the same time, typical session length.
+   - **Where they work.** The main repositories, stacks, and models.
 
-This lane has no fixed position: it runs through the entire flow. Nothing is written before the
-user chooses it: facts from the session history go through the lane 3 selection, and anything
-else you learn is proposed in one line and written through the `memory` tools only after the user
-agrees. Worth recording:
+### 6.3 Connecting patterns to mhc
+Share the findings in a few short turns. Tie each to an mhc feature and the evidence. For example: "you told the agent to use pnpm in five separate sessions, and memory would keep that." Or: "you often had three sessions open on one repo, and delegation or teams would do that in one place." If the history shows things worth carrying over that §5 missed (an MCP server they use constantly, a skill they rely on), mention them in a sentence. If §5 was declined, don't reopen it as a migration offer. Offer to remember durable findings (§8).
 
-- their host and machine facts relevant to future work,
-- their language and communication style,
-- which agent products they came from and what they kept from them,
-- their stacks, main repos, and working patterns from lane 3,
-- their stated preferences and every accept or decline decision from this conversation.
+## 7. What caching is worth to them (only if §6 was accepted)
 
-Write durable personal and cross-project facts through the memory tool into `system/human.md`.
-Write repository-specific stack, commands, constraints, and migration decisions through the memory
-tool into `system/project.md`. Do not edit those backing files directly.
+1. Restate the scan's `Value summary:` line word for word. It is the starting point.
+2. Then **calculate, never guess**, what prompt caching is worth. Token money comes **only** from mhc's own session logs (JSONL, session format version 3). Other agents' histories only provide counts, durations, how many sessions ran at once, and patterns. They never provide dollar figures.
+3. Find the logs. Use the `coding-agent-sessions` skill's finder, `scripts/find-agent-sessions.py list --platform senpi`. That platform value covers mhc and pi-style logs. The default location is `~/.omo/agent/sessions/`. Use the finder for this and nothing else.
+4. Run this skill's calculator on what it found:
+   ```bash
+   node <this skill's dir>/scripts/savings-estimate.mjs <session-file-or-dir>...
+   ```
+   It fetches prices from `https://models.dev/api.json`. Use `--models <path-or-url>` to point it at another catalog. If the catalog can't be reached, it marks every non-empty session as insufficient data instead of inventing prices.
+5. Present the result in this order, then stop:
+   - One line on the method, in your own words, translated: the figures come from local mhc logs, each message is matched to the model that produced it, it is priced with models.dev's separate input, output, cache-read, and cache-write rates, and the totals are summed and then rounded.
+   - The numbers, clearly labelled as an estimate: cache hit rate (`cacheRatePct`), actual spend (`actualCost`), what the same work would have cost without caching (`baselineCost`), and the difference (`savings`). Add the per-model breakdown only if it adds something.
+   - If `insufficientSessions` or `zeroInputSessions` is not zero, say how many sessions were left out and why in a few words.
+   - If there are no usable mhc logs yet, say so in one line. That's expected on a first install.
+6. **Steering, not new requests.** If §6.2 found real correction or frustration messages, quote one or two in their original language and name the session each came from. Explain that mhc treats a message like that, sent mid-task, as steering for the task in progress rather than as a new, unrelated request. Then add the feature that would have prevented it, such as memory for a repeated rule, or AGENTS.md for a repo convention.
 
-Planning-stance observations from lane 3 are the one exception: write them as SEEDS under a
-`## Seed` heading in `system/human/planning-style.md` (create the block through the memory tool if
-absent), never into `system/human.md`. Seeds are inferences and MUST stay weak:
+## 8. Remembering
 
-- Phrase every seed as a hypothesis ("appears to enumerate upfront and delegate the rest"), never
-  a conclusion, and set `confidence: low` ALWAYS - never medium or high, however consistent the
-  history looks. Behavior in another tool reflects that tool's affordances, not necessarily this
-  user; omo's own planning sessions will confirm or replace these within a few runs.
-- Record full provenance on every seed line: the source harness name(s) (e.g. Claude Code,
-  Co&#x64;ex, OpenCode), the model(s) under which the pattern was mainly observed, the session ids
-  mined, and today's date as `seeded:`. Format:
-  `- [YYYY-MM-DD] (seed) appears to <hypothesis + context> <!-- src: <harness>/<session-id>,...; harness: <names>; model: <models>; seeded: YYYY-MM-DD; pattern: inferred-from-external-sessions; confidence: low -->`
-- Seeds carry interaction STYLE only - never session content, code, file paths, or secrets.
+Nothing goes into memory without the user's yes:
 
-Record facts, not narration. "Prefers Korean, migrated from Claude Code, works one repo at a time
-in long sessions" is a memory. "The user went through onboarding today" is not.
+- Session-derived candidates are written only through the selection in §6.1.
+- Everything else: propose it in one line (what you would save, and where in plain words), and call `memory` only after a yes. You may group a few related facts into one proposal. A no is final for that fact.
 
-## 6. First-session init-deep proposal
+**What's worth keeping:** machine and host facts that matter for future work (OS, shell, package managers, GPUs, and so on); their language and how they like to be addressed; agents they came from and what they kept; their stacks, main repositories, and working patterns; preferences they stated; and every accept or decline from this conversation, so no later session asks again. Write facts, not narration. "Prefers Korean, terse replies" is good. "Did onboarding today" is not.
 
-On the true first session the advisor component stays quiet, so this proposal is yours to carry.
-Before saying anything about it, run the same eligibility gate the advisor uses, in this order:
+**Where it goes:**
 
-1. The current directory must be inside a git repository. Check with
-   `git rev-parse --show-toplevel`. Not a repo: ineligible.
-2. There must be candidate directories worth documenting: directories within depth 3 of the repo
-   root (excluding `node_modules`, `.git`, `dist`, `build`, `vendor`, `.next`, `__pycache__`,
-   `.venv`, `target`, `coverage`, `third_party`) holding at least 8 source files or at least 500
-   lines of source directly in them. Zero candidates: ineligible, regardless of anything else.
-3. Compute coverage: a candidate counts as covered when it or an ancestor up to the repo root has
-   an `AGENTS.md`. The missing ratio is uncovered candidates over all candidates. Below 0.50:
-   ineligible. A new project with candidates and no `AGENTS.md` anywhere is missing ratio 1.0 and
-   eligible.
+| Kind | `file_path` |
+|---|---|
+| Personal or cross-project facts, language, preferences, onboarding decisions | `system/human.md` |
+| Facts about this repository: stack, commands, constraints, migration decisions for it | `system/project.md` |
+| Working-style guesses drawn from other tools' sessions | `system/human/working-style.md` |
 
-If any gate fails, skip this lane SILENTLY. Do not mention AGENTS.md, do not explain why you are
-not proposing, do not hint that a check ran. Close the conversation warmly instead.
+Use `str_replace` or `insert` to add to an existing file. Use `create` with a one-line `description` when the file doesn't exist yet. Always give a short `reason`.
 
-If all gates pass, ask in the user's language: "want me to set up AGENTS.md for this project?"
-This is opt-in. On yes, read the `init-deep` skill at its SKILL.md path and follow it. On no,
-record the decline through the memory tools and finish the conversation gracefully: a short
-send-off in their language, an invitation to come back with `omo --onboard` on OmO Native or
-`senpi --onboard` on a plain senpi install, and nothing more.
+**Working-style hypotheses.** Anything you inferred about how they work, from another tool's sessions, is a guess, not a fact. Write each one as a single tentative line, always marked low confidence, with where it came from. Use this shape:
 
-After init-deep finishes, tell the user in their language that init-deep ran through mass-ulw's
-DAG orchestration — the work was spread across parallel child agents in dependency-ordered
-waves rather than done by one session. Then introduce mass-ulw: `mass ulw` is how you bring that
-same multi-agent orchestration to any big job, and combined requests such as `mass ulw
-research`, `mass ulw loop`, and `mass ulw plan` load mass-ulw alongside each of those workflows.
+```
+- [low confidence] Seems to prefer handing off whole tasks over step-by-step steering. (basis: <harness>; models <model ids>; sessions <session ids>; noted <YYYY-MM-DD>)
+```
+
+Keep these lines free of session content, code, file paths, repository names, and secrets. If the user corrects a hypothesis, replace it with what they said and drop the low-confidence tag.
+
+## 9. Closing: the AGENTS.md check
+
+Before you say anything about AGENTS.md, check eligibility silently:
+
+```bash
+node <this skill's dir>/scripts/init-deep-gate.mjs "$PWD"
+```
+
+It applies the same rules as mhc's init-deep advisor:
+
+1. The working directory is inside a git repository (`git rev-parse --show-toplevel` succeeds).
+2. At least one candidate directory exists: up to 3 levels below the repo root, not inside `node_modules`, `.git`, `dist`, `build`, `vendor`, `.next`, `__pycache__`, `.venv`, `target`, `coverage`, or `third_party`, and holding directly at least 8 source files or at least 500 source lines. Source extensions: ts tsx js jsx py go rs java kt swift rb php c cpp cs scala lua ex exs zig dart.
+3. Uncovered candidates divided by all candidates is at least 0.5. A candidate is covered if it, or any directory above it up to the root, has an `AGENTS.md`.
+
+Its JSON has `eligible` and a `reason` (`not-git`, `no-candidates`, `covered`, `eligible`). If node is missing, check the three rules yourself with `git` and `find`. Don't count by eye.
+
+- **Not eligible:** say nothing about AGENTS.md, the check, or why. Close warmly. Recap in one or two lines what was set up, and mention that `mhc --onboard` runs onboarding again.
+- **Eligible:** ask once, in their language, whether you should set up `AGENTS.md` for this project, and what that gives them (agents get the repo's conventions without being told each time).
+  - Yes: `read` `<skills_root>/init-deep/SKILL.md` and follow it from there.
+  - No: offer to remember the decline (§8). Then close with a short send-off that mentions `mhc --onboard` for coming back later.
+
+## 10. Checklist before you finish
+
+- Each optional part was asked at most once, and each no was respected straight away.
+- `onboarding_understand` was called only with `consent: true`, after an explicit yes to the history question.
+- `onboarding_memory_apply` got exactly the IDs the user picked.
+- Every memory write had a yes and went through `memory` or `onboarding_memory_apply`.
+- Scan rows and the `Value summary:` line were shown as given. Dollar figures came only from the calculator run on mhc logs.
+- AGENTS.md came up only when the check passed.

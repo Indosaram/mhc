@@ -1,7 +1,7 @@
 use std::{fs, io, path::{Path, PathBuf}, process::{Command, Stdio}, time::Duration};
 use crate::constants::SOURCE_EXTENSIONS;
 
-const DRIFT_EXCLUDES: &[&str] = &[":(exclude)AGENTS.md", ":(exclude,glob)**/AGENTS.md", ":(exclude).omo/init-deep.json"];
+const DRIFT_EXCLUDES: &[&str] = &[":(exclude)AGENTS.md", ":(exclude,glob)**/AGENTS.md", ":(exclude).mhc/init-deep.json", ":(exclude).omo/init-deep.json"];
 
 pub fn run(root: &Path, args: &[&str]) -> io::Result<String> {
     let mut command = Command::new("git");
@@ -129,7 +129,7 @@ pub(crate) mod tests {
     #[cfg(unix)]
     #[test] fn newline_filename() { let (t,_)=repo(); fs::write(t.path().join("we\nird.ts"),"a\nb").unwrap(); commit(t.path()); assert_eq!(git_tracked_file_count(t.path()).unwrap(),3); }
     #[test] fn touched() { let (t,sha)=repo(); fs::write(t.path().join("src/a.ts"),"changed").unwrap(); commit(t.path()); assert_eq!(git_touched_files_since(t.path(),&sha).unwrap(),vec!["src/a.ts"]); }
-    #[test] fn documentation_excluded() { let (t,sha)=repo(); fs::create_dir(t.path().join(".omo")).unwrap(); for name in ["AGENTS.md","src/AGENTS.md",".omo/init-deep.json"] { fs::write(t.path().join(name),"docs").unwrap(); } commit(t.path()); assert!(git_touched_files_since(t.path(),&sha).unwrap().is_empty()); }
+    #[test] fn documentation_excluded() { let (t,sha)=repo(); fs::create_dir(t.path().join(".omo")).unwrap(); fs::create_dir(t.path().join(".mhc")).unwrap(); for name in ["AGENTS.md","src/AGENTS.md",".mhc/init-deep.json",".omo/init-deep.json"] { fs::write(t.path().join(name),"docs").unwrap(); } commit(t.path()); assert!(git_touched_files_since(t.path(),&sha).unwrap().is_empty()); }
     #[test] fn churn() { let (t,sha)=repo(); fs::write(t.path().join("src/a.ts"),(0..12).map(|i|format!("line{i}")).collect::<Vec<_>>().join("\n")).unwrap(); commit(t.path()); assert_eq!(git_churn_loc(t.path(),&sha).unwrap(),4); }
     #[test] fn binary_churn() { let (t,sha)=repo(); fs::write(t.path().join("blob.bin"),b"\0\x01\x02binary\0").unwrap(); commit(t.path()); assert_eq!(git_churn_loc(t.path(),&sha).unwrap(),0); }
     #[test] fn total_loc() { let (t,_)=repo(); assert_eq!(git_total_loc(t.path()).unwrap(),18); }

@@ -14,7 +14,11 @@
 // Destructive overwrite is reserved behind --reset, and --reset refuses to discard
 // a hand-edited file unless --force is also passed.
 //
-// WRITE BOUNDARY: the planner's Write/Edit tools are gated to .omo/*.md but Bash is not, so this script self-guards its writes to the .omo/ tree.
+// WRITE BOUNDARY: the prometheus-md-only hook gates Write/Edit but NOT Bash, so
+// this node:fs script writes out of band of that hook. It self-guards THIS script's
+// own writes to resolve under .omo/ (it does not, and cannot, contain other Bash
+// commands; it only guarantees the mandated generator never escapes .omo). Mirrors
+// packages/omo-opencode/src/hooks/prometheus-md-only/path-policy.ts.
 
 import { lstat, mkdir, writeFile, readFile, realpath } from "node:fs/promises";
 import { dirname, join, relative, resolve, isAbsolute } from "node:path";
@@ -52,7 +56,8 @@ export function parseArgs(argv) {
 	return { slug, intent, reset, force, draftOnly, reviewRequired };
 }
 
-// WRITE BOUNDARY: the planner's Write/Edit tools are gated to .omo/*.md but Bash is not, so this script self-guards its writes to the .omo/ tree.
+// Resolve a project-relative path and confine it under .omo/ - the script's own
+// enforcement of the prometheus planner write boundary.
 export function resolveSafeOmoPath(cwd, relPath) {
 	const resolved = resolve(cwd, relPath);
 	const rel = relative(cwd, resolved);

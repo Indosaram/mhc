@@ -92,6 +92,20 @@ fn missing_local_cli_extension_path_is_reported_and_remote_sources_are_not() {
     assert_eq!(errors[0].message, format!("Extension path does not exist: {resolved}"));
 }
 
+#[cfg(not(feature = "omo"))]
+#[test]
+fn builtin_task_member_is_unknown_without_the_omo_feature() {
+    let (sources, builtins) = split_builtin_specifiers(&["builtin:task-member".to_owned(), "/opt/ext/pi-ast-grep.rs".to_owned()]);
+
+    assert_eq!(sources, vec!["/opt/ext/pi-ast-grep.rs".to_owned()]);
+    assert!(builtins.factories.is_empty());
+    assert_eq!(builtins.errors.len(), 1);
+    assert_eq!(builtins.errors[0].kind, UserExtensionErrorKind::UnknownNativeExtension);
+    assert_eq!(builtins.errors[0].path, "builtin:task-member");
+}
+
+// `builtin:task-member` is the omo task port's member extension (MIT profile: unknown).
+#[cfg(feature = "omo")]
 #[test]
 fn builtin_cli_specifiers_resolve_to_linked_factories_and_keep_other_sources() {
     let (sources, builtins) = split_builtin_specifiers(&["builtin:task-member".to_owned(), "/opt/ext/pi-ast-grep.rs".to_owned(), "builtin:missing".to_owned()]);

@@ -3,8 +3,8 @@
 use super::types::TipDefinition;
 
 pub const DAG_TIPS: &[TipDefinition] = &[
-    TipDefinition { id: "dag.one-keyword-mastery", bindings: &[], requires_command: Some("dag"), render: |_k| "One keyword makes you a master of graph engineering: say \"mass-ulw\" and your work becomes a dependency graph that schedules itself.".to_string() },
-    TipDefinition { id: "dag.what-it-is", bindings: &[], requires_command: Some("dag"), render: |_k| "Trigger \"mass-ulw\" when some tasks must wait for others - describe the work, get a graph that runs in the right order.".to_string() },
+    TipDefinition { id: "dag.one-keyword-mastery", bindings: &[], requires_command: Some("dag"), render: |_k| "Ask for a workflow graph and your work becomes a dependency graph that schedules itself.".to_string() },
+    TipDefinition { id: "dag.what-it-is", bindings: &[], requires_command: Some("dag"), render: |_k| "Reach for a workflow graph when some tasks must wait for others - describe the work, get a graph that runs in the right order.".to_string() },
     TipDefinition { id: "dag.parallel-waves", bindings: &[], requires_command: Some("dag"), render: |_k| "A graph run executes in waves: everything with no pending dependency starts at once, the rest starts the moment it is unblocked.".to_string() },
     TipDefinition { id: "dag.depends-on", bindings: &[], requires_command: Some("dag"), render: |_k| "Say what needs what - review after implementation, docs after both - and the ordering is enforced for you.".to_string() },
     TipDefinition { id: "dag.categories", bindings: &[], requires_command: Some("dag"), render: |_k| "Each node in the graph picks its own worker category, so cheap steps stay cheap and hard steps get the strong model.".to_string() },

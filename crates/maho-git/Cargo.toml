@@ -1,0 +1,20 @@
+[package]
+name = "maho-git"
+description = "Git support for mhc: a git command runner (diffs, numstat, temporary-index snapshots, patch apply), unified-diff parsing, and the read-only git tools git_overview, git_file_diff, git_hunk and recent_commits (ported from the MIT oh-my-pi agentic-commit tools)."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-ext-api = { path = "../maho-ext-api" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

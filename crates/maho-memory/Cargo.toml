@@ -1,0 +1,23 @@
+[package]
+name = "maho-memory"
+description = "Long-term agent memory on SQLite (port of the MIT mnemopi engine): store, lexical recall, retain/recall tools with first-turn auto-recall, a stdio MCP server, and an importer for the legacy Markdown memory store."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-config = { path = "../maho-config" }
+maho-ext-api = { path = "../maho-ext-api" }
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+chrono = { workspace = true, features = ["clock", "std"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

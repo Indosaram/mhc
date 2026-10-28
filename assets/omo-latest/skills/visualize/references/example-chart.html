@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Median build time fell 33% after week W38</title>
+<style>
+:root{color-scheme:light dark}
+html,body{margin:0;padding:0;background:var(--background, light-dark(#ffffff, #121417));color:var(--foreground, light-dark(#16181d, #e8eaee));font-family:var(--font-sans, system-ui, -apple-system, "Segoe UI", sans-serif)}
+main{width:100%;max-width:100%;box-sizing:border-box}
+h1{font-size:1.05rem;font-weight:600;margin:0 0 .25rem;line-height:1.35}
+.sub{margin:0 0 .9rem;font-size:.85rem;color:var(--muted-foreground, light-dark(#5b6270, #9aa1ad))}
+.plot{display:grid;grid-template-columns:2.6rem 1fr;height:220px}
+.yaxis{position:relative;font-size:.72rem;color:var(--muted-foreground, light-dark(#5b6270, #9aa1ad));font-variant-numeric:tabular-nums}
+.yaxis span{position:absolute;right:.4rem;transform:translateY(50%)}
+.area{position:relative;height:220px}
+.area svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+.val{position:absolute;transform:translate(-50%,-.2rem);font-size:.72rem;font-variant-numeric:tabular-nums;color:var(--foreground, light-dark(#16181d, #e8eaee))}
+.xaxis{display:flex;margin-left:2.6rem;font-size:.75rem;color:var(--muted-foreground, light-dark(#5b6270, #9aa1ad))}
+.xaxis span{flex:1;text-align:center}
+.unit{margin:.35rem 0 0 2.6rem;font-size:.72rem;color:var(--muted-foreground, light-dark(#5b6270, #9aa1ad))}
+.legend{display:flex;flex-wrap:wrap;gap:.9rem;margin:.6rem 0 0 2.6rem;font-size:.75rem}
+.sw{display:inline-block;width:.7rem;height:.7rem;border-radius:2px;margin-right:.3rem;vertical-align:-1px}
+.empty{height:220px;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;color:var(--muted-foreground, light-dark(#5b6270, #9aa1ad));font-size:.85rem;background:var(--muted, light-dark(#f3f4f6, #1b1e23));border-radius:var(--radius, 8px)}
+.empty-h{font-weight:600;color:var(--foreground, light-dark(#16181d, #e8eaee));margin:0 0 .3rem}
+.empty p{margin:0;max-width:28rem;padding:0 1rem}
+details{margin-top:1rem;font-size:.75rem;color:var(--muted-foreground, light-dark(#5b6270, #9aa1ad))}
+pre{white-space:pre-wrap;word-break:break-word;font-family:var(--font-mono, ui-monospace, Menlo, monospace);margin:.4rem 0 0}
+</style></head>
+<body><main>
+<h1>Median build time fell 33% after week W38</h1>
+<p class="sub">Six weeks of CI builds on the main branch. W39 is the first full week with the dependency cache enabled.</p>
+<section data-role="figure">
+<div class="plot" role="img" aria-label="Median build time fell 33% after week W38">
+  <div class="yaxis"><span style="bottom:0.00%">0</span><span style="bottom:25.00%">125</span><span style="bottom:50.00%">250</span><span style="bottom:75.00%">375</span><span style="bottom:100.00%">500</span></div>
+  <div class="area">
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      <line x1="0" x2="100" y1="100.00" y2="100.00" vector-effect="non-scaling-stroke" style="stroke:var(--border, light-dark(#e2e5ea, #2c313a))"/><line x1="0" x2="100" y1="75.00" y2="75.00" vector-effect="non-scaling-stroke" style="stroke:var(--border, light-dark(#e2e5ea, #2c313a))"/><line x1="0" x2="100" y1="50.00" y2="50.00" vector-effect="non-scaling-stroke" style="stroke:var(--border, light-dark(#e2e5ea, #2c313a))"/><line x1="0" x2="100" y1="25.00" y2="25.00" vector-effect="non-scaling-stroke" style="stroke:var(--border, light-dark(#e2e5ea, #2c313a))"/><line x1="0" x2="100" y1="0.00" y2="0.00" vector-effect="non-scaling-stroke" style="stroke:var(--border, light-dark(#e2e5ea, #2c313a))"/>
+      <rect x="3.00" y="17.60" width="10.67" height="82.40" style="fill:var(--chart-2, light-dark(#8a94a6, #6b7486))"><title>W36: 412 s</title></rect><rect x="19.67" y="20.40" width="10.67" height="79.60" style="fill:var(--chart-2, light-dark(#8a94a6, #6b7486))"><title>W37: 398 s</title></rect><rect x="36.33" y="19.00" width="10.67" height="81.00" style="fill:var(--chart-2, light-dark(#8a94a6, #6b7486))"><title>W38: 405 s</title></rect><rect x="53.00" y="39.80" width="10.67" height="60.20" style="fill:var(--chart-1, light-dark(#2563eb, #60a5fa))"><title>W39: 301 s</title></rect><rect x="69.67" y="47.60" width="10.67" height="52.40" style="fill:var(--chart-1, light-dark(#2563eb, #60a5fa))"><title>W40: 262 s</title></rect><rect x="86.33" y="49.00" width="10.67" height="51.00" style="fill:var(--chart-1, light-dark(#2563eb, #60a5fa))"><title>W41: 255 s</title></rect>
+    </svg>
+    <span class="val" style="left:8.33%;bottom:82.40%">412</span><span class="val" style="left:25.00%;bottom:79.60%">398</span><span class="val" style="left:41.67%;bottom:81.00%">405</span><span class="val" style="left:58.33%;bottom:60.20%">301</span><span class="val" style="left:75.00%;bottom:52.40%">262</span><span class="val" style="left:91.67%;bottom:51.00%">255</span>
+  </div>
+</div>
+<div class="xaxis"><span>W36</span><span>W37</span><span>W38</span><span>W39</span><span>W40</span><span>W41</span></div>
+<p class="unit">Median build time, seconds, by ISO week</p>
+<div class="legend"><span><i class="sw" style="background:var(--chart-2, light-dark(#8a94a6, #6b7486))"></i>Before cache</span><span><i class="sw" style="background:var(--chart-1, light-dark(#2563eb, #60a5fa))"></i>With cache</span></div>
+</section>
+<details data-role="method"><summary>How these numbers were computed</summary><pre>rows = csv(example-data.csv); keep week, median_build_s;
+change = (mean(last 3 weeks) - mean(first 3 weeks)) / mean(first 3 weeks)</pre><p>Illustrative sample data shipped with this skill (6 rows, none dropped).</p></details>
+</main></body></html>

@@ -35,6 +35,8 @@ export const DEFECT_CODES = deepFreeze({
 	chart_without_figure: { severity: "major", integrity: false, hint: "Wrap the image or chart in a figure container with a caption." },
 	chart_svg_no_text: { severity: "major", integrity: false, hint: "Give the chart a title, axis labels, units, and value labels as SVG text." },
 	chart_svg_missing_labels: { severity: "minor", integrity: false, hint: "Add the missing title, axis ticks, or unit label to the chart." },
+	report_without_visual: { severity: "major", integrity: false, hint: "Add at least one captioned visual of the findings: a chart from the data table, a rendered Mermaid diagram, or a figure image (references/report-visualization.md)." },
+	image_missing_alt: { severity: "minor", integrity: false, hint: "Give the image an alt attribute that states what it shows, not its file name; mark a purely decorative image alt=\"\" with role=\"presentation\"." },
 	korean_serif_font: { severity: "major", integrity: false, hint: "Use a gothic (sans) Korean family; serif and brush families are banned by the design spec." },
 	section_without_citation: { severity: "major", integrity: false, hint: "Cite at least one source inside this section or merge it into a cited one." },
 	missing_closing_section: { severity: "blocker", integrity: true, hint: "Add the closing section that explains how the report was made (method, sources, gates)." },
@@ -60,6 +62,7 @@ export const DEFECT_CODES = deepFreeze({
 	fidelity_interview_incomplete: { severity: "blocker", integrity: true, hint: "A fidelity field is pending or missing in brief.md; answer the open question or record its default, then rerun." },
 	derived_not_allowed: { severity: "blocker", integrity: true, hint: "The brief allows no derived or assumed numbers; cite a source row directly or change the brief with the requester." },
 	source_outside_floor: { severity: "blocker", integrity: true, hint: "The row's source is outside the source floor the brief records; use a source the brief allows or remove the fact." },
+	brief_changed: { severity: "blocker", integrity: true, hint: "The edition's fill map was not written under the current ## Fidelity block (it changed after fill, or the map predates the binding); re-run fact fill, then fact verify." },
 	snapshot_hash_mismatch: { severity: "blocker", integrity: true, hint: "The source snapshot changed after it was pinned; re-snapshot the source and re-register its rows." },
 	chart_value_untraceable: { severity: "blocker", integrity: true, hint: "A chart value, tick, or data file does not match its ledger-backed data source; re-render the chart from the exported data." },
 	quote_unbound: { severity: "blocker", integrity: true, hint: "A direct quotation has no ledger quote row; register it with fact quote and insert it through its placeholder." },
@@ -97,7 +100,7 @@ export const DEFECT_CODES = deepFreeze({
 export const FIDELITY_CODES = Object.freeze([
 	"unresolved_placeholder", "value_mismatch", "unit_mismatch", "quote_not_verbatim", "claim_status_invalid",
 	"incompatible_operands", "pointer_label_mismatch", "quote_anchor_unresolved", "unit_duplicated", "polish_diff_fail",
-	"fidelity_interview_incomplete", "derived_not_allowed", "source_outside_floor", "snapshot_hash_mismatch",
+	"fidelity_interview_incomplete", "derived_not_allowed", "source_outside_floor", "brief_changed", "snapshot_hash_mismatch",
 	"chart_value_untraceable", "quote_unbound", "edition_unverified", "untraceable_number", "unsupported_verification", "claim_kind_mismatch",
 	"conflicting_readings", "hedge_dropped", "direction_flipped", "causality_added", "qualifier_dropped", "unbound_sentence",
 	"meaning_drift_confirmed", "meaning_unverified", "polish_edit_rejected", "polish_hedging_decreased", "polish_text_churn", "snapshot_mismatch",
@@ -108,7 +111,7 @@ export const FIDELITY_CODES = Object.freeze([
 const FIDELITY_SET = new Set(FIDELITY_CODES)
 
 const LAYOUT_PREFIX = "layout_"
-/** Codes checkStatic can raise (G1-G15). */
+/** Codes checkStatic can raise (G1-G17). */
 export const STATIC_CODES = Object.freeze(
 	Object.keys(DEFECT_CODES).filter(
 		(code) => !code.startsWith(LAYOUT_PREFIX) && code !== "missing_promised_deliverable" && !FIDELITY_SET.has(code),
@@ -132,16 +135,7 @@ export const GATE_STATUSES = Object.freeze(["pass", "fail", "not_run"])
 export const LINEAGE_MODES = Object.freeze(["inline", "section"])
 export const ANSWERED_BY = Object.freeze(["user", "default", "request", "pending"])
 export const REPAIR_DEFAULTS = Object.freeze({ maxAttempts: 3, plateauLimit: 2, wallClockMs: 15 * 60 * 1000 })
-export const DESIGN_SPEC_SECTIONS = Object.freeze([
-	"Extracted from",
-	"Tokens",
-	"Typography",
-	"Layout",
-	"Structure",
-	"Figures",
-	"Citations",
-	"Open questions",
-])
+export const DESIGN_SPEC_SECTIONS = Object.freeze(["Extracted from", "Tokens", "Typography", "Layout", "Structure", "Figures", "Citations", "Open questions"])
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
 

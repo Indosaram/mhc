@@ -8,6 +8,10 @@ const GLOBAL: &str="init-deep-advisor-declined-global";
 const PROJECTS: &str="init-deep-advisor-declined-projects";
 const COOLDOWNS: &str="init-deep-advisor-cooldowns";
 const PROPOSALS: &str="init-deep-advisor-proposals";
+/// Snapshot the init-deep skill writes after a run (`.mhc/init-deep.json`, repo-relative).
+pub const SNAPSHOT_PATH: &str=".mhc/init-deep.json";
+/// Where older init-deep runs left the snapshot; read only when `SNAPSHOT_PATH` is absent.
+pub const LEGACY_SNAPSHOT_PATH: &str=".omo/init-deep.json";
 #[derive(Debug,Clone,Serialize,Deserialize,PartialEq)]
 #[serde(rename_all="camelCase")]
 pub struct InitDeepSnapshotV1 { pub commit_sha:String,pub file_count:f64,pub loc:f64,pub timestamp:f64,pub mode:SuggestedMode }
@@ -37,7 +41,12 @@ pub fn is_cooling_down(dir:&Path,repo:&str,now:f64) -> bool { now<read_cooldown_
 pub fn write_last_proposed_head(dir:&Path,repo:&str,head:&str,now:f64) -> io::Result<()> { write_atomic(&dir.join(PROPOSALS).join(repo),json!({"lastProposedHead":head,"lastProposedAt":now})) }
 pub fn read_last_proposed_head(dir:&Path,repo:&str) -> Option<String> { read_json(&dir.join(PROPOSALS).join(repo)).and_then(|v|v.get("lastProposedHead").and_then(Value::as_str).map(str::to_owned)) }
 pub fn read_snapshot(root:&Path) -> SnapshotReadResult {
-    let raw=match fs::read_to_string(root.join(".omo/init-deep.json")) { Ok(s)=>s,Err(e) if e.kind()==io::ErrorKind::NotFound=>return SnapshotReadResult::Missing,Err(_)=>return SnapshotReadResult::Invalid };
+    let read=|relative:&str| fs::read_to_string(root.join(relative));
+    let raw=match read(SNAPSHOT_PATH) {
+        Ok(s)=>s,
+        Err(e) if e.kind()==io::ErrorKind::NotFound=>match read(LEGACY_SNAPSHOT_PATH) { Ok(s)=>s,Err(e) if e.kind()==io::ErrorKind::NotFound=>return SnapshotReadResult::Missing,Err(_)=>return SnapshotReadResult::Invalid },
+        Err(_)=>return SnapshotReadResult::Invalid,
+    };
     let Ok(snapshot)=serde_json::from_str::<InitDeepSnapshotV1>(&raw) else { return SnapshotReadResult::Invalid; };
     if [snapshot.file_count,snapshot.loc,snapshot.timestamp].iter().any(|n|!n.is_finite() || *n<0.0) { return SnapshotReadResult::Invalid; }
     SnapshotReadResult::Valid(snapshot)
@@ -46,7 +55,8 @@ pub fn read_snapshot(root:&Path) -> SnapshotReadResult {
 mod tests {
     use super::*;
     use crate::git_helpers::{run,tests::repo};
-    fn snapshot(root:&Path,raw:&str) { fs::create_dir_all(root.join(".omo")).unwrap(); fs::write(root.join(".omo/init-deep.json"),raw).unwrap(); }
+    fn snapshot_at(root:&Path,relative:&str,raw:&str) { let path=root.join(relative); fs::create_dir_all(path.parent().unwrap()).unwrap(); fs::write(path,raw).unwrap(); }
+    fn snapshot(root:&Path,raw:&str) { snapshot_at(root,SNAPSHOT_PATH,raw); }
     fn valid() -> Value { json!({"commitSha":"bbbb","fileCount":12,"loc":3400,"timestamp":1700000000000_u64,"mode":"committed"}) }
     #[test] fn state_dir() { assert!(get_advisor_state_dir(Path::new("home/omo-senpi/omo-native")).ends_with("omo-native/init-deep-advisor-state")); }
     #[test] fn hash_stable() { let (t,_)=repo(); let a=repo_hash(t.path()).unwrap(); assert_eq!(a,repo_hash(t.path()).unwrap()); assert_eq!(a.len(),64); assert!(a.bytes().all(|b|b.is_ascii_hexdigit())); }
@@ -64,6 +74,8 @@ mod tests {
     #[test] fn head_malformed() { let t=tempfile::tempdir().unwrap(); fs::create_dir(t.path().join(PROPOSALS)).unwrap(); fs::write(t.path().join(PROPOSALS).join("bad"),"{not json").unwrap(); write_atomic(&t.path().join(PROPOSALS).join("typed"),json!({"lastProposedHead":42})).unwrap(); assert!(read_last_proposed_head(t.path(),"bad").is_none()); assert!(read_last_proposed_head(t.path(),"typed").is_none()); }
     #[test] fn snapshot_missing() { let t=tempfile::tempdir().unwrap(); assert_eq!(read_snapshot(t.path()),SnapshotReadResult::Missing); }
     #[test] fn snapshot_valid() { let t=tempfile::tempdir().unwrap(); snapshot(t.path(),&valid().to_string()); assert!(matches!(read_snapshot(t.path()),SnapshotReadResult::Valid(_))); }
+    #[test] fn snapshot_legacy_fallback() { let t=tempfile::tempdir().unwrap(); snapshot_at(t.path(),LEGACY_SNAPSHOT_PATH,&valid().to_string()); assert!(matches!(read_snapshot(t.path()),SnapshotReadResult::Valid(s) if s.commit_sha=="bbbb")); }
+    #[test] fn snapshot_current_wins_over_legacy() { let t=tempfile::tempdir().unwrap(); snapshot_at(t.path(),LEGACY_SNAPSHOT_PATH,&valid().to_string()); snapshot(t.path(),"{not json"); assert_eq!(read_snapshot(t.path()),SnapshotReadResult::Invalid); let mut v=valid(); v["commitSha"]=json!("cccc"); snapshot(t.path(),&v.to_string()); assert!(matches!(read_snapshot(t.path()),SnapshotReadResult::Valid(s) if s.commit_sha=="cccc")); }
     #[test] fn snapshot_extra_fields() { let t=tempfile::tempdir().unwrap(); let mut v=valid(); v["futureField"]=json!({"nested":true}); snapshot(t.path(),&v.to_string()); assert!(matches!(read_snapshot(t.path()),SnapshotReadResult::Valid(_))); }
     #[test] fn snapshot_bad_json() { let t=tempfile::tempdir().unwrap(); snapshot(t.path(),"{not json"); assert_eq!(read_snapshot(t.path()),SnapshotReadResult::Invalid); }
     #[test] fn snapshot_nonobject() { let t=tempfile::tempdir().unwrap(); for raw in ["[]","null","true","\"a string\"","42"] { snapshot(t.path(),raw); assert_eq!(read_snapshot(t.path()),SnapshotReadResult::Invalid); } }

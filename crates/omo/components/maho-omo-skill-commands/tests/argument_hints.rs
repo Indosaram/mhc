@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use maho_core::frontmatter::parse_frontmatter;
 use maho_omo_skill_commands::read_bundled_skill_names;
 
-const ARGUMENT_READING_SKILLS: [&str; 9] =
-    ["hyperplan", "init-deep", "mass-ulw", "refactor", "remove-ai-slops", "ulw-execute", "ulw-loop", "ulw-plan", "ulw-research"];
+const ARGUMENT_READING_SKILLS: [&str; 8] =
+    ["adversarial-plan", "init-deep", "refactor", "remove-ai-slops", "ulw-execute", "ulw-loop", "ulw-plan", "ulw-research"];
 
 /// The selected overlay is the packaging lane's deliverable. A checkout that has not staged it must
 /// fail loudly rather than pass on a substitute.
@@ -75,7 +75,7 @@ fn given_a_shipped_skill_whose_body_consumes_the_typed_text_when_its_frontmatter
 }
 
 #[test]
-fn given_a_name_staged_from_both_pools_when_the_selected_overlay_resolves_it_then_the_senpi_native_copy_wins() {
+fn given_the_selected_overlay_when_it_declares_the_ulw_skills_then_they_resolve_to_the_mit_lazycodex_copies() {
     let manifest_path = selected_assets_root().join("manifest.json");
     assert!(manifest_path.is_file(), "the selected overlay manifest is required at {}", manifest_path.display());
     let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&manifest_path).expect("manifest")).expect("manifest json");
@@ -84,8 +84,10 @@ fn given_a_name_staged_from_both_pools_when_the_selected_overlay_resolves_it_the
         manifest["skills"][name].as_array().and_then(|files| files.iter().find(|file| file["path"] == "SKILL.md")).and_then(|file| file["source"].as_str()).map(str::to_owned)
     };
 
-    // ulw-execute ships only from the shared pool; ulw-plan is shadowed by the senpi-native copy.
-    assert_eq!(skill_source("ulw-execute").as_deref(), Some("packages/shared-skills/skills/ulw-execute/SKILL.md"));
-    assert_eq!(skill_source("ulw-plan").as_deref(), Some("packages/omo-senpi/skills/ulw-plan/SKILL.md"));
+    // The ulw skills ship from the MIT lazycodex copies, not from either SUL upstream pool.
+    for name in ["ulw-execute", "ulw-plan"] {
+        assert_eq!(skill_source(name), Some(format!("lazycodex@75b01747:plugins/omo/skills/{name}/SKILL.md (MIT)")), "{name}");
+    }
     assert!(manifest["skills"].get("onboarding").is_some());
+    assert!(manifest["skills"].get("mass-ulw").is_none(), "mass-ulw is retired");
 }

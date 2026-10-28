@@ -1,10 +1,7 @@
 //! Concrete default factories shared by print, RPC and interactive startup.
 use maho_ext_api::{Extension, ExtensionActions, ExtensionFailure};
 use maho_ext_host::loader::{NativeAsyncExtensionFactory, NativeExtensionFactory};
-use std::{
-    rc::Rc,
-    sync::{Arc, OnceLock},
-};
+use std::{rc::Rc, sync::Arc};
 
 pub fn configure_rpc_html_theme_with_paths(
     session: &maho_core::agent_session::AgentSession,
@@ -102,6 +99,44 @@ fn factory<E: Extension + 'static>(name: &str, extension: E) -> NativeExtensionF
     }
 }
 
+/// MIT profile: startup config notices (migration + load diagnostics), the config hot-reload watch,
+/// the session-start model profile and the LSP tools (`maho-lsp`, linking through the `mhc-lsp`
+/// daemon when it sits beside the executable), the subagent delegation tools (`maho-task`),
+/// long-term memory (`maho-memory`), the browser/computer-use tools (`maho-browser`) and telemetry
+/// (`maho-telemetry`: local usage ledger, opt-in OTLP export) and the read-only git tools
+/// (`maho-git`); delegated tasks can run isolated (`maho-isolation`) and as teams with tmux/cmux
+/// panes (`maho-team`); skill support (`maho-skills`: bundled root, `disabled_skills`, the `skill`
+/// tool, `/skill`), the builtin MCP servers (`maho-mcp-builtins`) and the session gateway
+/// (`maho-gateway`: `session_list`/`session_send`, inbox delivery) and project context files
+/// (`maho-context-files`: `/init-deep`, session-start suggestion). The `omo` build mounts its
+/// own equivalents through the omo glue (it has no browser/computer tools).
+#[cfg(not(feature = "omo"))]
+pub fn mit_config_factories() -> Vec<NativeExtensionFactory> {
+    vec![
+        factory("config-notices", maho_config::ext::ConfigNotices::default()),
+        factory(
+            "config-hot-reload",
+            maho_config::ext::ConfigHotReload::default(),
+        ),
+        factory("model-profile", maho_model_select::ModelProfileExtension),
+        factory(
+            "lsp",
+            maho_lsp::extension::LspExtension::from_env(Some(std::path::PathBuf::from(
+                maho_core::config::get_agent_dir(),
+            ))),
+        ),
+        factory("task", super::delegation::extension()),
+        factory("memory", super::long_term_memory::extension()),
+        factory("browser", super::browser_automation::extension()),
+        factory("telemetry", super::usage_stats::extension()),
+        factory("git", super::git_tools::extension()),
+        factory("skills", super::skill_library::extension()),
+        factory("mcp-builtins", super::builtin_mcp::extension()),
+        factory("gateway", super::session_gateway::extension()),
+        factory("context-files", super::project_context::extension()),
+    ]
+}
+
 pub fn async_factories(factories: Vec<NativeExtensionFactory>) -> Vec<NativeAsyncExtensionFactory> {
     factories
         .into_iter()
@@ -180,23 +215,35 @@ pub fn assembled_factories_with_mcp_registry(
     agent_dir: &str,
 ) -> Vec<NativeAsyncExtensionFactory> {
     let mut assembled = factories_with_mcp_registry(widget_sender, parent.clone(), mcp_registry);
-    let env = std::env::vars().collect();
-    let process_cwd = std::env::current_dir().unwrap_or_default();
-    match super::omo_mount::OmoMount::for_parent(
-        parent,
-        &process_cwd,
-        std::path::Path::new(&maho_core::config::get_agent_dir()),
-        env,
-    ) {
-        Ok(mount) => assembled.extend(async_factories(vec![mount.factory()])),
-        Err(error) => assembled.push(NativeAsyncExtensionFactory {
-            path: "<builtin:omo>".into(),
-            source_info: builtin_source_info("<builtin:omo>"),
-            factory: Arc::new(move |_| {
-                let error = error.clone();
-                Box::pin(async move { Err(ExtensionFailure::new(error)) })
+    // The omo mount (task, memory, lsp, ... components from crates/omo) is linked only with the
+    // `omo` feature; the MIT profile mounts the builtins alone.
+    #[cfg(feature = "omo")]
+    {
+        let env = std::env::vars().collect();
+        let process_cwd = std::env::current_dir().unwrap_or_default();
+        match super::omo_mount::OmoMount::for_parent(
+            parent,
+            &process_cwd,
+            std::path::Path::new(&maho_core::config::get_agent_dir()),
+            env,
+        ) {
+            Ok(mount) => assembled.extend(async_factories(vec![mount.factory()])),
+            Err(error) => assembled.push(NativeAsyncExtensionFactory {
+                path: "<builtin:omo>".into(),
+                source_info: builtin_source_info("<builtin:omo>"),
+                factory: Arc::new(move |_| {
+                    let error = error.clone();
+                    Box::pin(async move { Err(ExtensionFailure::new(error)) })
+                }),
             }),
-        }),
+        }
+    }
+    // The MIT profile mounts the clean-room config and model-profile extensions instead
+    // (`maho-config`, `maho-model-select`; docs/MIT-PROFILE.md).
+    #[cfg(not(feature = "omo"))]
+    {
+        drop(parent);
+        assembled.extend(async_factories(mit_config_factories()));
     }
     assembled.extend(super::oauth_providers::runtime_oauth_factories(
         settings, cwd, agent_dir,
@@ -647,6 +694,7 @@ pub type TaskParent = Arc<
         Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>,
     >,
 >;
+#[cfg(feature = "omo")]
 struct Task {
     parent: TaskParent,
     runtime: Arc<maho_omo::OmoRuntime>,
@@ -666,6 +714,7 @@ struct Task {
     environment: std::collections::BTreeMap<String, String>,
 }
 
+#[cfg(feature = "omo")]
 pub fn task_entry(
     parent: TaskParent,
     environment: std::collections::BTreeMap<String, String>,
@@ -690,7 +739,9 @@ pub fn task_entry(
         .register(api);
     })
 }
+#[cfg(feature = "omo")]
 struct Registry(Arc<dyn maho_ext_api::ModelRegistry>);
+#[cfg(feature = "omo")]
 impl senpi_task::host::SenpiModelRegistry for Registry {
     fn get_available(&self) -> Result<serde_json::Value, senpi_task::host::HostError> {
         serde_json::to_value(self.0.get_available()).map_err(|error| senpi_task::host::HostError {
@@ -703,6 +754,7 @@ impl senpi_task::host::SenpiModelRegistry for Registry {
             .map(|model| serde_json::to_value(model).expect("model serialization"))
     }
 }
+#[cfg(feature = "omo")]
 impl Extension for Task {
     fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
         // pin `task/index.ts:51,61-71`: registerTaskFlags runs at load time (after the member-process
@@ -739,7 +791,7 @@ impl Extension for Task {
                 let Some(parent) = parent.get().and_then(|parent| parent()) else { return Ok(maho_ext_api::EventResult::None); };
                 if registered.load(std::sync::atomic::Ordering::Acquire) { return Ok(maho_ext_api::EventResult::None); }
                 let executor = tokio::runtime::Handle::current(); let weak = parent.weak_accessor();
-                let workpool_ref = Arc::new(OnceLock::<std::sync::Weak<tokio::sync::Mutex<senpi_task::workpool::engine::WorkpoolEngine>>>::new());
+                let workpool_ref = Arc::new(std::sync::OnceLock::<std::sync::Weak<tokio::sync::Mutex<senpi_task::workpool::engine::WorkpoolEngine>>>::new());
                 let event_ref = workpool_ref.clone();
                 let event_executor = executor.clone();
                 let workpool_events: super::task_runners::WorkpoolEvents = Arc::new(move |event| {
@@ -956,7 +1008,9 @@ impl Extension for Task {
         }));
     }
 }
+#[cfg(feature = "omo")]
 pub(super) struct TaskActions(pub(super) TaskParent);
+#[cfg(feature = "omo")]
 impl TaskActions {
     fn actions(&self) -> Result<Arc<dyn ExtensionActions>, ExtensionFailure> {
         self.0
@@ -966,6 +1020,7 @@ impl TaskActions {
             .ok_or_else(|| ExtensionFailure::new("Task parent retired"))
     }
 }
+#[cfg(feature = "omo")]
 impl ExtensionActions for TaskActions {
     fn send_message(
         &self,
@@ -1210,5 +1265,34 @@ impl Extension for Todo {
             }),
         }
         .register(api);
+    }
+}
+
+#[cfg(all(test, not(feature = "omo")))]
+mod mit_tests {
+    #[test]
+    fn mit_profile_mounts_the_mit_extensions_in_order() {
+        let paths: Vec<String> = super::mit_config_factories()
+            .into_iter()
+            .map(|factory| factory.path)
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "<builtin:config-notices>",
+                "<builtin:config-hot-reload>",
+                "<builtin:model-profile>",
+                "<builtin:lsp>",
+                "<builtin:task>",
+                "<builtin:memory>",
+                "<builtin:browser>",
+                "<builtin:telemetry>",
+                "<builtin:git>",
+                "<builtin:skills>",
+                "<builtin:mcp-builtins>",
+                "<builtin:gateway>",
+                "<builtin:context-files>"
+            ]
+        );
     }
 }

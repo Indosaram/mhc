@@ -770,7 +770,7 @@ fn category_member(name: &str) -> Member {
     )
 }
 
-fn hyperplan_member(name: &str, category: &str) -> Member {
+fn adversarial_plan_member(name: &str, category: &str) -> Member {
     Member::category(
         name,
         category,
@@ -898,9 +898,9 @@ fn validator_accepts_teams_with_exactly_8_members() {
     validate_spec(&n_members(8)).expect("8 members allowed");
 }
 
-fn hyperplan_spec(members: Vec<Member>) -> TeamSpec {
+fn adversarial_plan_spec(name: &str, members: Vec<Member>) -> TeamSpec {
     TeamSpec {
-        name: "hyperplan".into(),
+        name: name.into(),
         lead_agent_id: "architect".into(),
         members,
         ..base_team_spec()
@@ -908,26 +908,28 @@ fn hyperplan_spec(members: Vec<Member>) -> TeamSpec {
 }
 
 #[test]
-fn validator_rejects_hyperplan_teams_missing_adversarial_categories() {
-    let spec = hyperplan_spec(vec![
-        hyperplan_member("researcher", "deep"),
-        hyperplan_member("architect", "ultrabrain"),
-    ]);
-    assert_eq!(
-        validate_spec(&spec).expect_err("missing").to_string(),
-        "Hyperplan team must include category 'unspecified-low'."
-    );
+fn validator_rejects_adversarial_plan_teams_missing_adversarial_categories() {
+    for name in ["adversarial-plan", "hyperplan"] {
+        let spec = adversarial_plan_spec(name, vec![
+            adversarial_plan_member("researcher", "deep"),
+            adversarial_plan_member("architect", "ultrabrain"),
+        ]);
+        assert_eq!(
+            validate_spec(&spec).expect_err("missing").to_string(),
+            "Adversarial-plan team must include category 'unspecified-low'."
+        );
+    }
 }
 
 #[test]
-fn validator_accepts_hyperplan_teams_with_required_categories() {
-    let spec = hyperplan_spec(vec![
-        hyperplan_member("skeptic", "unspecified-low"),
-        hyperplan_member("validator", "unspecified-high"),
-        hyperplan_member("architect", "ultrabrain"),
-        hyperplan_member("creative", "artistry"),
+fn validator_accepts_adversarial_plan_teams_with_required_categories() {
+    let spec = adversarial_plan_spec("adversarial-plan", vec![
+        adversarial_plan_member("skeptic", "unspecified-low"),
+        adversarial_plan_member("validator", "unspecified-high"),
+        adversarial_plan_member("architect", "ultrabrain"),
+        adversarial_plan_member("creative", "artistry"),
     ]);
-    validate_spec(&spec).expect("hyperplan valid");
+    validate_spec(&spec).expect("adversarial-plan valid");
 }
 
 #[test]

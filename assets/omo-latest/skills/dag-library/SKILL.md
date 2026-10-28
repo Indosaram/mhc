@@ -1,70 +1,156 @@
 ---
 name: dag-library
-description: "Stores a DAG definition once and re-runs it by name, instead of pasting the definition into every run. Use when the user wants to save a DAG, run a saved one, or schedule the same multi-agent graph repeatedly."
-metadata:
-  short-description: Store and re-run named dag definitions
+description: Save a multi-agent workflow graph under a name and start it again later (on demand or on a schedule) without retyping the definition. Use when the user wants to keep, re-run, or repeat a graph by name; not for designing a brand-new one-off graph.
 ---
 
 # dag-library
 
-Use this skill when the user wants to KEEP a dag definition and run it again later — the graph is an asset, not a one-off. For authoring a brand-new graph, read `mass-ulw` first; this skill covers the storage-and-rerun half.
+A small personal/team library of `workflow` definitions. Each entry is one JSON file; running it means "read the file, give it a fresh key, fill placeholders, call `workflow` start".
 
-## The shape
+This skill only stores and replays graphs. To design a new graph from scratch, compose it with the harness's `workflow` tool (or whatever graph-authoring skill your build ships). Come back here once the graph exists and the user wants to keep it.
 
-A stored definition is a plain dag definition JSON file named `<name>.json` in one of the library dirs. First hit wins:
+## When to use
 
-1. `$OMO_DAG_LIBRARY` (multiple dirs, separated by `:` — or by `;` on Windows, so drive-letter paths survive)
-2. `$PWD/.omo/dags`
-3. `$HOME/.omo/dags`
+- "Save / keep this graph", "store what we just ran".
+- "Run the `<name>` graph again", "re-run last night's audit".
+- "Do this every night / every release" — the same pipeline on a cadence.
 
-```json
-{
-  "key": "nightly-audit",
-  "name": "Nightly audit",
-  "nodes": [
-    { "id": "audit", "category": "unspecified-low", "prompt": "Audit docs/ for stale claims; write findings to /tmp/audit-{{key}}.md." },
-    { "id": "verify", "category": "quick", "prompt": "Verify each finding in /tmp/audit-{{key}}.md against src/.", "dependsOn": ["audit"] }
-  ]
-}
-```
+Skip it for a graph that will run once and never again.
 
-String values may carry placeholders, filled at load time: `{{key}}` (the final rotated key — use it in file paths so reruns never clobber each other), `{{date}}` (UTC YYYYMMDD), `{{datetime}}` (UTC YYYYMMDD-HHmmss). Node prompts must still stand alone: `dependsOn` is ordering only, so pass data between nodes through files, exactly as in mass-ulw.
+## The library
 
-## Running it — JS eval cell, two lines
+A stored definition is a file `<name>.json` whose content is exactly a `workflow` `definition` object: `{ "key", "name", "nodes" }`.
 
-The extension publishes `library.js` next to `sdk.js` at `OMO_DAG_SDK_ROOT`:
+Names: letters, digits, `.`, `-`, `_` only. Anything containing `/`, `\` or `..` is refused.
+
+Lookup order (first hit wins):
+
+1. Every directory in `MHC_DAG_LIBRARY`, split on the platform path delimiter (`:` on Unix, `;` on Windows so `C:\...` survives).
+2. `<cwd>/.mhc/dags/` — project library, can be committed and shared.
+3. `<home>/.mhc/dags/` — user library, follows the user across projects.
+
+If nothing matches, say so and list every directory that was searched (the helper's error already does).
+
+## Helper
+
+`scripts/dag-lib.mjs` (JS) and `scripts/dag_lib.py` (Python) live in this skill's directory and implement the rules below. Below, `SKILL_DIR` means the absolute path of the folder holding this file.
+
+| Function | What it does |
+|---|---|
+| `load(name, { suffix })` | find, validate, rotate key, fill placeholders; returns `{ definition, path, baseKey, key }`; **does not start** |
+| `start(name, { suffix })` | `load` + `tool.workflow({ action: "start", definition })`; returns `{ runId, reused, warnings, key, path }` |
+| `waitFor(runId)` | `tool.workflow({ action: "wait", run_id, detach: false })` — blocks until `completed` / `failed` / `cancelled` |
+| `save(name, definition, { scope, force })` | validate and write `<scope root>/.mhc/dags/<name>.json`; refuses to overwrite without `force` |
+| `searchDirs()` / `locate(name)` | show the search path / where a name resolves |
+
+Shell use: `node $SKILL_DIR/scripts/dag-lib.mjs where | load <name> [--suffix S|--no-suffix] | save <name> --scope user|project [--force] < def.json`.
+
+## Key rotation — read this before every run
+
+`workflow` start is idempotent: the same `key` with the same graph in one session hands back the existing run (`reused: true`) instead of doing the work again. So the stored `key` is only a **base**:
+
+| You pass | Final key | Effect |
+|---|---|---|
+| nothing (default) | `<base>-<UTC YYYYMMDD-HHmmss>` | always a new run |
+| `suffix: "2026-10-26"` or `"v1.4.0"` | `<base>-<suffix>` | same suffix → same run (safe to re-issue after a crash); new suffix → new run |
+| `suffix: ""` | `<base>` | deliberate reuse of the previous result; only when the user asks for it |
+
+A node failed inside a suffixed run? Do **not** invent a new suffix. Call `workflow` with `action: "retry"` (and `node_ids`, or `node_id` + a new `prompt`) on that same `run_id`, or `action: "amend"` with an edited definition. Completed nodes keep their results.
+
+## Placeholders
+
+Any string in the definition may contain:
+
+- `{{key}}` → the rotated key of this run
+- `{{date}}` → UTC `YYYYMMDD`
+- `{{datetime}}` → UTC `YYYYMMDD-HHmmss`
+
+Substitution happens after rotation, so `{{key}}` is the final key.
+
+Rules for authors:
+
+- Put `{{key}}` in every output path a node writes (`reports/{{key}}/findings.md`). Otherwise the next run overwrites the last one.
+- `dependsOn` orders nodes; it does **not** move data. Nodes hand results to each other through files, and each prompt must make sense to a reader who has seen nothing else.
+- Prompts must be English, and should carry the markers `TASK:`, `DELIVERABLE:`, `SCOPE:`, `VERIFY:`, `STOP WHEN`. Graphs with two or more nodes should include a node whose id or prompt is about verifying/auditing. Without these, `start` returns lint warnings.
+
+A complete example lives at `references/example-nightly-check.json`.
+
+## Running
+
+### JS code-mode cell
+
+All kernel helpers are async — await every one.
 
 ```js
-const lib = await import(`${env("OMO_DAG_SDK_ROOT")}/library.js`)
-const run = await lib.start("nightly-audit")
-const result = await run.done()
+const lib = await import(`${SKILL_DIR}/scripts/dag-lib.mjs`);
+const run = await lib.start("nightly-check");              // or { suffix: "20261026" }
+if (run.warnings.length) print("lint warnings:", run.warnings);
+const settled = await lib.waitFor(run.runId);               // omit to let the session be woken instead
+print({ key: run.key, run_id: run.runId, reused: run.reused, status: settled?.status ?? settled });
 ```
 
-`await lib.load(name)` returns the filled definition without starting it; `await lib.start(name)` loads and starts in one call and returns the same handle shape as `sdk.start` (`run_id`, `done()`, `cancel(reason)`). Both are async — the kernel's `read` global is async, so never call them un-awaited.
+Without the helper (same steps by hand):
 
-## Key rotation — the one rule that matters
+```js
+const base = JSON.parse(await read(".mhc/dags/nightly-check.json"));
+const t = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15); // YYYYMMDD-HHmmss UTC
+const key = `${base.key}-${t}`;
+const vars = { key, date: t.slice(0, 8), datetime: t };
+const definition = JSON.parse(JSON.stringify({ ...base, key }).replace(/\{\{(key|date|datetime)\}\}/g, (_, k) => vars[k]));
+const started = await tool.workflow({ action: "start", definition });
+const settled = await tool.workflow({ action: "wait", run_id: started.run_id, detach: false });
+```
 
-The dag engine keys idempotency on `key` + graph fingerprint: re-starting the same key with the same graph REUSES the old run instead of running again. So the library treats the stored `key` as a BASE key and rotates it on every load:
+(The string-replace shortcut is fine because the three values contain no characters that need JSON escaping.)
 
-- `lib.start("nightly-audit")` → key becomes `nightly-audit-<UTC YYYYMMDD-HHmmss>`: every call is a fresh run. This is the default because wanting a fresh run is the common case.
-- `lib.start("nightly-audit", { suffix: "20260818" })` → key becomes `nightly-audit-20260818`: explicit suffix, so re-running the same logical run reuses it (idempotent recovery), while a new day gets a new run. Recovering a FAILED node inside such a run is `retry`/`amend` on that run id, not a new suffix.
-- `lib.start("nightly-audit", { suffix: "" })` → key stays `nightly-audit`: full idempotency; only reach for this when reusing the previous result is exactly what you want.
-
-## Python cells
-
-Python cannot import the ESM library. Reproduce the same semantics with plain dicts — read the file, rotate the key, fill placeholders, call `tool.workflow`:
+### Python code-mode cell
 
 ```python
-import json
-from datetime import datetime, timezone
-defn = json.loads(read(f"{env('HOME')}/.omo/dags/nightly-audit.json"))
-stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-defn["key"] = f"{defn['key']}-{stamp}"
-text = json.dumps(defn).replace("{{key}}", defn["key"]).replace("{{date}}", stamp[:8]).replace("{{datetime}}", stamp)
-run = tool.workflow({"action": "start", "definition": json.loads(text)})
-result = tool.workflow({"action": "wait", "run_id": run["run_id"], "detach": False})  # detach=False keeps the cell-blocking wait; the bare tool action detaches against a live run
+import importlib.util, os
+spec = importlib.util.spec_from_file_location("dag_lib", os.path.join(SKILL_DIR, "scripts", "dag_lib.py"))
+dag_lib = importlib.util.module_from_spec(spec); spec.loader.exec_module(dag_lib)
+
+loaded = dag_lib.load("nightly-check")                 # suffix="20261026" or suffix="" as needed
+started = tool.workflow({"action": "start", "definition": loaded["definition"]})
+settled = tool.workflow({"action": "wait", "run_id": started["run_id"], "detach": False})
 ```
 
-## Saving a new definition
+Pass `"detach": False` explicitly: a bare `wait` on a live run detaches and returns at once. If the kernel's `tool.*` helpers are coroutines, prefix each call with `await` (or use `await dag_lib.start_async(name, tool.workflow)`).
 
-When the user asks to save the current graph: write it as `<name>.json` into `$HOME/.omo/dags` (user-level, survives cwd changes) or `<repo>/.omo/dags` (project-level, shareable through git if the team commits it), then confirm by running it once via `lib.start`. Names are letters, digits, dot, dash, underscore — the library rejects path-shaped names.
+### Outside code mode
+
+Read the file with the normal read tool, rotate the key and fill placeholders yourself following the table above, then call `workflow` with `action: "start"` and the filled definition. Use `action: "wait"` with `detach: false` if you need to block.
+
+### Load only
+
+To inspect a definition or feed it to `amend`, call `load` (or `node dag-lib.mjs load <name>`) and stop there; nothing runs.
+
+### Inspecting runs
+
+`/dag` lists the session's graph runs; `/dag <run>` shows one run's wave tree.
+
+## Saving
+
+1. Settle the scope. User library (`~/.mhc/dags`) if it is the user's own habit; project library (`<repo>/.mhc/dags`) if the team should share or commit it. Ask if the request does not make this clear.
+2. Pick and validate a name.
+3. Make sure the definition follows the author rules (`{{key}}` in output paths, prompt markers, a verify node).
+4. If a file of that name exists, tell the user and get a yes before overwriting (`force`).
+5. Write it (`save(...)` creates the directory).
+6. Verify by starting it once through the library path with default rotation and report the `run_id` — unless the user said not to. A run costs real agent work: if the graph is large or slow, confirm before this step.
+
+## Scheduling
+
+For "run it every X", hand the cadence to whatever scheduler the harness offers. The scheduled action is simply: load `<name>` by name with default rotation (or a `{{date}}`-style suffix such as today's UTC date, so a retried trigger on the same day reuses instead of duplicating) and start it. This skill does not schedule anything itself.
+
+## What to report
+
+After a run: definition name, final key, `run_id`, `reused`, terminal status, and where outputs went (the `{{key}}` paths). Show any lint `warnings` from `start`; never drop them silently.
+
+After a save: absolute file path, scope, and the verification run's `run_id` and status (or that the user skipped it).
+
+## Hard rules
+
+- No un-rotated key unless the user explicitly wants the previous run back.
+- No path-shaped names; nothing written outside the library directories.
+- Every async kernel helper is awaited.
+- Node prompts are English.

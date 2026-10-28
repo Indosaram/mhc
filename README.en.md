@@ -21,7 +21,7 @@
 - **Your existing setup just works.** mhc reads the same `~/.omo` config, models, auth and agents as OmO.
 - **Everything included.** Subagents, `ultrawork` / `ulw-loop` workflows, long-term memory, LSP, ast-grep, MCP, web search and builtin skills ship in the release.
 - **Any model.** Anthropic, OpenAI, Gemini, DeepSeek, Qwen, Kimi, ZAI, MiniMax, OpenRouter, Ollama, Bedrock, Azure and more.
-- **A fraction of the memory.** On the same `mass-ulw` workflow (3 parallel child agents + join), mhc peaked at 83-86 MB of anonymous memory and OmO at 1356-1398 MB, about 16x less, in the same wall time. Method, raw numbers and how to rerun it: [docs/memory-benchmark.md](docs/memory-benchmark.md).
+- **A fraction of the memory.** On the same fixed workflow DAG (3 parallel child agents + join), in a historical measurement, mhc peaked at 83-86 MB of anonymous memory and OmO at 1356-1398 MB, about 16x less, in the same wall time. Method, raw numbers and how to rerun it: [docs/memory-benchmark.md](docs/memory-benchmark.md).
 
 ## Privacy and safety defaults
 
@@ -124,7 +124,7 @@ For security vulnerability reporting and policy, see [SECURITY.md](SECURITY.md).
 
 Each part keeps the license of the project it ports:
 
-- `crates/maho-*`, `crates/builtins`, `crates/extensions`, `crates/vendor` port [senpi](https://github.com/code-yeongyu/senpi) under **MIT** ([LICENSES/MIT.txt](LICENSES/MIT.txt)).
-- `crates/omo/**` except `crates/omo/senpi-desktop-*` (MIT, ports senpi) ports [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) under the **Sustainable Use License 1.0** ([LICENSES/SUL-1.0.md](LICENSES/SUL-1.0.md)): use, copy, modify and prepare derivative works for your own internal business purposes or for non-commercial or personal use; distribute only free of charge for non-commercial purposes; notices must be preserved.
+- `crates/maho-*`, `crates/builtins`, `crates/extensions`, `crates/desktop`, `crates/vendor` port [senpi](https://github.com/code-yeongyu/senpi) under **MIT** ([LICENSES/MIT.txt](LICENSES/MIT.txt)).
+- `crates/omo/**` ports [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) under the **Sustainable Use License 1.0** ([LICENSES/SUL-1.0.md](LICENSES/SUL-1.0.md)): use, copy, modify and prepare derivative works for your own internal business purposes or for non-commercial or personal use; distribute only free of charge for non-commercial purposes; notices must be preserved.
 
 mhc is a modified derivative of both projects (a Rust reimplementation of their TypeScript sources), as the Sustainable Use License requires us to state.

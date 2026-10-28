@@ -161,7 +161,6 @@ fn show_welcome(ctx: &ExtensionContext) {
                 "Welcome to {}. Ask anything.",
                 maho_core::config::app_command()
             ),
-            "Use ulw for full workflows.".into(),
         ])),
         ExtensionWidgetOptions::default(),
     );

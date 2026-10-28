@@ -4,7 +4,7 @@ use crate::error::{Result, TeamCoreError};
 use crate::types::{EligibilityVerdict, Member, MemberKind, TeamSpec, agent_eligibility};
 
 const MAX_TEAM_MEMBERS: usize = 8;
-const HYPERPLAN_REQUIRED_CATEGORIES: [&str; 4] = [
+const ADVERSARIAL_PLAN_REQUIRED_CATEGORIES: [&str; 4] = [
     "unspecified-low",
     "unspecified-high",
     "ultrabrain",
@@ -54,11 +54,12 @@ pub fn validate_spec(spec: &TeamSpec) -> Result<()> {
             None,
         ));
     }
-    validate_hyperplan_composition(spec)
+    validate_adversarial_plan_composition(spec)
 }
 
-fn validate_hyperplan_composition(spec: &TeamSpec) -> Result<()> {
-    if spec.name != "hyperplan" {
+/// The `adversarial-plan` skill's critic team (`hyperplan` is its retired name, still checked).
+fn validate_adversarial_plan_composition(spec: &TeamSpec) -> Result<()> {
+    if !matches!(spec.name.as_str(), "adversarial-plan" | "hyperplan") {
         return Ok(());
     }
     let categories: Vec<&str> = spec
@@ -67,11 +68,11 @@ fn validate_hyperplan_composition(spec: &TeamSpec) -> Result<()> {
         .filter(|member| member.kind == MemberKind::Category)
         .filter_map(|member| member.category.as_deref())
         .collect();
-    for category in HYPERPLAN_REQUIRED_CATEGORIES {
+    for category in ADVERSARIAL_PLAN_REQUIRED_CATEGORIES {
         if !categories.contains(&category) {
             return Err(TeamCoreError::spec_validation(
-                format!("Hyperplan team must include category '{category}'."),
-                "HYPERPLAN_REQUIRED_CATEGORY_MISSING",
+                format!("Adversarial-plan team must include category '{category}'."),
+                "ADVERSARIAL_PLAN_REQUIRED_CATEGORY_MISSING",
                 Some("members"),
                 None,
             ));

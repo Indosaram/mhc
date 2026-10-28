@@ -1,4 +1,6 @@
-use comment_checker_core::{HookInput, ResolveCommentCheckerBinaryInput};
+#[cfg(feature = "omo-core")]
+use crate::checker::ResolveCommentCheckerBinaryInput;
+use crate::checker::HookInput;
 use std::{path::{Path, PathBuf}, process::Stdio, time::Duration};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
@@ -13,6 +15,7 @@ pub struct RunResult {
     pub stdout: Option<String>, pub stderr: Option<String>,
 }
 
+#[cfg(feature = "omo-core")]
 pub fn resolve_binary(source_path: &Path) -> Option<PathBuf> {
     let exists = |path: &str| Path::new(path).exists();
     let binary_name = if cfg!(windows) { "comment-checker.exe" } else { "comment-checker" };
@@ -26,7 +29,15 @@ pub fn resolve_binary(source_path: &Path) -> Option<PathBuf> {
             break;
         }
     }
-    comment_checker_core::resolve_comment_checker_binary(&ResolveCommentCheckerBinaryInput { binary_name, cached_binary_path: None, exists_sync: &exists, import_meta_url: source_path.to_str(), package_name: None }).map(PathBuf::from)
+    crate::checker::resolve_comment_checker_binary(&ResolveCommentCheckerBinaryInput { binary_name, cached_binary_path: None, exists_sync: &exists, import_meta_url: source_path.to_str(), package_name: None }).map(PathBuf::from)
+}
+
+/// The installed `@code-yeongyu/comment-checker` package nearest `source_path` (platform package,
+/// then `vendor/<platform-arch>`, then `bin/`), then `COMMENT_CHECKER_BINARY`/`PATH` fallbacks.
+#[cfg(not(feature = "omo-core"))]
+pub fn resolve_binary(source_path: &Path) -> Option<PathBuf> {
+    let lookup = crate::checker::BinaryLookup::from_env(Some(source_path.to_owned()));
+    crate::checker::resolve_binary(&lookup)
 }
 
 async fn read_output(mut stream: impl AsyncRead + Unpin, name: &str) -> std::io::Result<String> {

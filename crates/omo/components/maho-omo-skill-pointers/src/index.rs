@@ -265,6 +265,18 @@ pub fn ulw_loop_tool_sentence(session_scope: Option<&str>) -> String {
     }
 }
 
+/// Whether `skill_name` ships under `skills_root`. A pointer to a skill whose directory is
+/// gone (a retired skill such as `mass-ulw`) would send the model to a file that does not
+/// exist, so it is withheld. When the root itself is not a readable directory the install
+/// layout is unknown and the pointer is kept.
+pub fn skill_is_shipped(skills_root: &str, skill_name: &str) -> bool {
+    let root = std::path::Path::new(if skills_root.is_empty() { "skills" } else { skills_root });
+    if !root.is_dir() {
+        return true;
+    }
+    root.join(skill_name).join("SKILL.md").is_file()
+}
+
 pub fn skill_pointer(
     target: &SkillPointerTarget,
     session_scope: Option<&str>,
@@ -404,6 +416,7 @@ impl Extension for SkillPointersComponent {
                     let invoked: Vec<&SkillPointerTarget> = targets
                         .into_iter()
                         .filter(|target| target.pattern.is_match(&visible).unwrap_or(false) || binds(target, &visible))
+                        .filter(|target| skill_is_shipped(&skills_root, target.skill_name))
                         .collect();
 
                     let already_loaded = |skill_name: &str, expanded_block: &Regex| -> bool {

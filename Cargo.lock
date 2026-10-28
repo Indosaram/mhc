@@ -3472,6 +3472,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-agent-home"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "maho-ai"
 version = "0.0.0"
 dependencies = [
@@ -3547,6 +3557,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-browser"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "maho-ext-api",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tungstenite",
+]
+
+[[package]]
 name = "maho-chord"
 version = "0.0.0"
 dependencies = [
@@ -3571,9 +3593,13 @@ dependencies = [
  "indexmap",
  "libproc",
  "maho-agent",
+ "maho-agent-home",
  "maho-ai",
+ "maho-browser",
  "maho-chord",
  "maho-codemode",
+ "maho-config",
+ "maho-context-files",
  "maho-core",
  "maho-delegate-core",
  "maho-ext-account",
@@ -3634,9 +3660,16 @@ dependencies = [
  "maho-ext-video-in",
  "maho-ext-webfetch",
  "maho-ext-websearch",
+ "maho-gateway",
+ "maho-git",
  "maho-interactive",
+ "maho-isolation",
+ "maho-lsp",
  "maho-lsp-daemon",
+ "maho-mcp-builtins",
+ "maho-memory",
  "maho-memory-core",
+ "maho-model-select",
  "maho-omo",
  "maho-omo-config-core",
  "maho-omo-config-resolution",
@@ -3644,9 +3677,14 @@ dependencies = [
  "maho-omo-memory",
  "maho-omo-task",
  "maho-omo-telemetry",
+ "maho-onboarding",
  "maho-process-env",
  "maho-rpc",
  "maho-senpi-task",
+ "maho-skills",
+ "maho-task",
+ "maho-team",
+ "maho-telemetry",
  "maho-test-support",
  "maho-tool-child",
  "maho-tools",
@@ -3659,6 +3697,7 @@ dependencies = [
  "photon-rs",
  "regex",
  "reqwest 0.12.28",
+ "rpassword",
  "semver",
  "serde",
  "serde_json",
@@ -3705,6 +3744,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-comment-checker"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "maho-comment-checker-core"
 version = "0.0.0"
 dependencies = [
@@ -3719,6 +3767,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-config"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "maho-core",
+ "maho-ext-api",
+ "maho-support",
+ "nix 0.28.0",
+ "percent-encoding",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "maho-config-migration"
 version = "0.0.0"
 dependencies = [
@@ -3726,6 +3792,18 @@ dependencies = [
  "maho-omo-config-core",
  "maho-utils",
  "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "maho-context-files"
+version = "0.0.0"
+dependencies = [
+ "ignore",
+ "maho-config",
+ "maho-ext-api",
  "serde",
  "serde_json",
  "tempfile",
@@ -4436,6 +4514,7 @@ dependencies = [
 name = "maho-ext-pi-comment-checker"
 version = "0.0.0"
 dependencies = [
+ "maho-comment-checker",
  "maho-comment-checker-core",
  "maho-ext-api",
  "maho-ext-host",
@@ -4544,14 +4623,6 @@ dependencies = [
  "regex",
  "serde_json",
  "tokio",
-]
-
-[[package]]
-name = "maho-ext-quiet-model-profile"
-version = "0.0.0"
-dependencies = [
- "maho-ext-api",
- "maho-omo-model-profile",
 ]
 
 [[package]]
@@ -4766,6 +4837,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-gateway"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "maho-config",
+ "maho-ext-api",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "maho-get-worker"
 version = "0.0.0"
 dependencies = [
@@ -4774,6 +4859,17 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "maho-git"
+version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -4835,6 +4931,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-isolation"
+version = "0.0.0"
+dependencies = [
+ "maho-config",
+ "maho-git",
+ "maho-task",
+ "nix 0.28.0",
+ "serde",
+ "serde_json",
+ "similar",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "maho-isolation-core"
 version = "0.0.0"
 dependencies = [
@@ -4848,6 +4959,20 @@ dependencies = [
  "sha1",
  "tempfile",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "maho-lsp"
+version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "nix 0.28.0",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -4887,12 +5012,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-mcp-builtins"
+version = "0.0.0"
+dependencies = [
+ "maho-config",
+ "maho-ext-api",
+ "maho-ext-mcp",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "maho-mcp-stdio-core"
 version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "maho-memory"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "maho-config",
+ "maho-ext-api",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]
@@ -4937,6 +5088,21 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "maho-model-select"
+version = "0.0.0"
+dependencies = [
+ "maho-ai",
+ "maho-config",
+ "maho-ext-api",
+ "maho-ext-recommended-models",
+ "maho-support",
+ "regex",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -5576,6 +5742,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-onboarding"
+version = "0.0.0"
+dependencies = [
+ "maho-config",
+ "maho-support",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "maho-process-env"
 version = "0.0.0"
 
@@ -5920,6 +6096,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-skills"
+version = "0.0.0"
+dependencies = [
+ "maho-config",
+ "maho-core",
+ "maho-ext-api",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "maho-support"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "maho-task"
+version = "0.0.0"
+dependencies = [
+ "maho-config",
+ "maho-ext-api",
+ "maho-lsp",
+ "maho-model-select",
+ "nix 0.28.0",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "maho-team"
+version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-lsp",
+ "maho-task",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "maho-team-core"
 version = "0.0.0"
 dependencies = [
@@ -5937,6 +6162,22 @@ dependencies = [
  "thiserror 2.0.20",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "maho-telemetry"
+version = "0.0.0"
+dependencies = [
+ "jiff",
+ "maho-config",
+ "maho-ext-api",
+ "percent-encoding",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

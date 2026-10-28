@@ -7,10 +7,13 @@ static GLOBAL_ALLOCATOR: maho_tool_child::allocator::MahoAllocator =
     maho_tool_child::allocator::ALLOCATOR;
 
 fn main() {
-    let hook_args: Vec<String> = std::env::args().skip(1).collect();
-    if hook_args.first().is_some_and(|arg| arg == "--memory-hook") {
-        let cwd = match std::env::current_dir() { Ok(cwd) => cwd, Err(error) => { eprintln!("{error}"); std::process::exit(1); } };
-        std::process::exit(maho_omo_memory::worker::spawn_supervisor_support::run_memory_hook(&hook_args[1..], &cwd));
+    #[cfg(feature = "omo")]
+    {
+        let hook_args: Vec<String> = std::env::args().skip(1).collect();
+        if hook_args.first().is_some_and(|arg| arg == "--memory-hook") {
+            let cwd = match std::env::current_dir() { Ok(cwd) => cwd, Err(error) => { eprintln!("{error}"); std::process::exit(1); } };
+            std::process::exit(maho_omo_memory::worker::spawn_supervisor_support::run_memory_hook(&hook_args[1..], &cwd));
+        }
     }
     // senpi `internal-role.ts`: a process the engine started as a tool child becomes one before anything else runs.
     maho_cli::internal_role::run_internal_role();
@@ -145,6 +148,36 @@ fn run() -> Result<(), String> {
         &startup_env,
         &maho_cli::cli::setup::startup_process_env(&argv, &startup_env),
     );
+    // Before the root `--help`/`--version` fast path, so `mhc ulw-loop --help` reports the entry is
+    // missing instead of printing the root help.
+    #[cfg(not(feature = "omo"))]
+    if let Some(code) = omo_entry_unavailable(&argv) {
+        std::process::exit(code);
+    }
+    #[cfg(not(feature = "omo"))]
+    if let Some(result) = run_memory_entry(&argv) {
+        return result;
+    }
+    #[cfg(not(feature = "omo"))]
+    if argv.first().map(String::as_str) == Some("gateway") {
+        let code = maho_cli::cli::session_gateway::run_gateway_command(&argv[1..]);
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+    #[cfg(not(feature = "omo"))]
+    if let Some(result) = run_mit_home_entry(&argv) {
+        return result;
+    }
+    #[cfg(not(feature = "omo"))]
+    if argv.first().map(String::as_str) == Some("usage") {
+        return maho_cli::cli::usage_stats::run_usage_command(&argv[1..]).map(|code| {
+            if code != 0 {
+                std::process::exit(code);
+            }
+        });
+    }
     if let Some(text) = root_metadata_output(
         &argv,
         maho_cli::cli::grok_neo_gate::is_grok_neo_enabled(&startup_env),
@@ -166,34 +199,11 @@ fn run() -> Result<(), String> {
     // senpi loads its prebuilt native platform addon on demand; the Rust ports are registered once.
     maho_tui::native_platform::register_builtin_native_platform_helper();
     maho_tools::managed_tools::set_managed_tool_resolver(std::sync::Arc::new(ensure_managed_tool));
-    if argv.first().is_some_and(|arg| arg == "ulw-loop") {
-        let code = ulw_loop_core::cli::main_cli(&argv);
-        if code != 0 {
-            std::process::exit(code);
-        }
-        return Ok(());
-    }
-    let memory_role = argv.first().map(String::as_str);
-    if memory_role == Some(maho_omo_memory::mcp_memory_server::MEMORY_MCP_ENTRY_FLAG) {
-        return maho_omo_memory::mcp_memory_server::run_memory_mcp_stdio_entry();
-    }
-    if memory_role == Some("--memory-supervisor") || memory_role == Some("--child-bootstrap") {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| error.to_string())?;
-        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-        let args: &[String] = if memory_role == Some("--memory-supervisor") {
-            &argv[1..]
-        } else {
-            &argv
-        };
-        return runtime.block_on(maho_omo_memory::worker::memory_run_supervisor::run_entry(
-            args,
-            &executable,
-            &[],
-            memory_terminal_gate,
-        ));
+    #[cfg(feature = "omo")]
+    register_omo_keywords();
+    #[cfg(feature = "omo")]
+    if let Some(result) = run_omo_entry(&argv) {
+        return result;
     }
     use maho_cli::experimental::process::{
         INTERNAL_PROCESS_ENV, InternalProcessRole, parse_internal_process_role,
@@ -902,6 +912,9 @@ fn run() -> Result<(), String> {
             maho_cli::cli::list_models::list_models(&runtime, Some(search))
         ));
     }
+    // MIT profile: first-run setup prompts before the first interactive session on a terminal.
+    #[cfg(not(feature = "omo"))]
+    maho_cli::cli::first_run::first_run_gate(&parsed);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -920,6 +933,107 @@ fn report_startup_settings_diagnostics(cwd: &std::path::Path) -> Result<(), Stri
     maho_cli::cli::runtime::report_startup_settings_diagnostics(&settings);
     Ok(())
 }
+/// The omo port's mode keywords and injected directive tag. The MIT crates only collapse
+/// registered directive tags and light the prompt border for registered keywords, so they name
+/// none of these themselves.
+#[cfg(feature = "omo")]
+fn register_omo_keywords() {
+    maho_ext_anthropic_subscription::prompt_directive_dedupe::register_directive_tag(
+        "ultrawork-mode",
+        "ultrawork",
+    );
+    maho_interactive::components::neon_border::register_glow_keywords(&["ultrawork", "ulw"]);
+}
+/// Entries served by the oh-my-openagent port (crates/omo, `omo` feature): `mhc ulw-loop`, the
+/// memory MCP stdio server, and the memory supervisor / child-bootstrap roles. `None` means argv
+/// names none of them.
+#[cfg(feature = "omo")]
+fn run_omo_entry(argv: &[String]) -> Option<Result<(), String>> {
+    if argv.first().is_some_and(|arg| arg == "ulw-loop") {
+        let code = ulw_loop_core::cli::main_cli(argv);
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Some(Ok(()));
+    }
+    let memory_role = argv.first().map(String::as_str);
+    if memory_role == Some(maho_omo_memory::mcp_memory_server::MEMORY_MCP_ENTRY_FLAG) {
+        return Some(maho_omo_memory::mcp_memory_server::run_memory_mcp_stdio_entry());
+    }
+    if memory_role == Some("--memory-supervisor") || memory_role == Some("--child-bootstrap") {
+        return Some((|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())?;
+            let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+            let args: &[String] = if memory_role == Some("--memory-supervisor") {
+                &argv[1..]
+            } else {
+                argv
+            };
+            runtime.block_on(maho_omo_memory::worker::memory_run_supervisor::run_entry(
+                args,
+                &executable,
+                &[],
+                memory_terminal_gate,
+            ))
+        })());
+    }
+    None
+}
+
+/// The MIT profile (no `omo` feature) links none of the omo entries; asking for one prints why and
+/// exits non-zero instead of falling through to an interactive session.
+#[cfg(not(feature = "omo"))]
+fn omo_entry_unavailable(argv: &[String]) -> Option<i32> {
+    let entry = argv.first().map(String::as_str)?;
+    let name = match entry {
+        "ulw-loop" => "mhc ulw-loop",
+        "--memory-supervisor" | "--child-bootstrap" => "the memory supervisor",
+        _ => return None,
+    };
+    maho_core::output_guard::maho_write_stderr(&format!(
+        "{name} is not available in this build (MIT profile, built without the `omo` feature).\n"
+    ));
+    Some(1)
+}
+/// MIT profile entries for the agent home (`mhc home`), first-run setup (`mhc setup`) and project
+/// context files (`mhc init-deep`). `None` means argv names none of them.
+#[cfg(not(feature = "omo"))]
+fn run_mit_home_entry(argv: &[String]) -> Option<Result<(), String>> {
+    let (entry, rest) = argv.split_first()?;
+    let code = match entry.as_str() {
+        "home" => Ok(maho_cli::cli::user_home::run_home_command(rest)),
+        "setup" => maho_cli::cli::first_run::run_setup_command(rest),
+        "init-deep" => maho_cli::cli::project_context::run_init_deep_command(rest),
+        _ => return None,
+    };
+    Some(code.map(|code| {
+        if code != 0 {
+            std::process::exit(code);
+        }
+    }))
+}
+/// MIT profile memory entries (`maho-memory`): `mhc memory ...` and the memory MCP stdio server
+/// (`--memory-mcp`, or the legacy `--omo-memory-mcp` name). `None` means argv names neither.
+#[cfg(not(feature = "omo"))]
+fn run_memory_entry(argv: &[String]) -> Option<Result<(), String>> {
+    use maho_cli::cli::long_term_memory as memory;
+    let first = argv.first().map(String::as_str)?;
+    if memory::MCP_ENTRY_FLAGS.contains(&first) {
+        return Some(memory::run_mcp(&argv[1..]));
+    }
+    if first != "memory" {
+        return None;
+    }
+    Some(memory::run_memory_command(&argv[1..]).map(|code| {
+        if code != 0 {
+            std::process::exit(code);
+        }
+    }))
+}
+#[cfg(feature = "omo")]
 fn memory_terminal_gate(
     directory: &std::path::Path,
     operation: &mut dyn FnMut() -> Result<(), String>,

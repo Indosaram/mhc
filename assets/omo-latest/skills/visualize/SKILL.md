@@ -1,35 +1,88 @@
 ---
 name: visualize
-description: "Builds a self-contained HTML page (chart, table, diagram, dashboard) to show inline in a thread. Use before calling show_html_page, html_preview or html_render, or whenever an answer reads better as a page than as prose."
+description: Build a single self-contained HTML chart, table, diagram or small dashboard that is shown inline next to a reply, when it reads better than prose. Covers offline-only pages, host theme colours, traceable numbers, lint, and looking at the rendered page in light/dark and phone width before showing it. Load before any call that displays HTML to the user.
 ---
 
-# Visualize
+# visualize
 
-A page shown inline sits beside a reply, in the reader's theme, and is read in a few seconds. It earns its place only by being clearer than the paragraph it replaces. This skill owns what is particular to such a page. The data work belongs to `data-scientist` and the design work to `frontend`: load those skills for their parts instead of improvising them here.
+Three ideas drive everything here:
 
-## The loop
+1. **Earn the page.** Make one only when a reader gets the point faster from it than from a paragraph or a short markdown table.
+2. **Every number has a trail.** The reader can see how each figure was produced.
+3. **Look before you show.** Never present a page you have not rendered and inspected yourself.
 
-Do these in order. Never show a page you have not looked at.
+Not for whole websites or apps (that is frontend work), and not for a five-row table that reads fine in markdown.
 
-1. **Data: load `data-scientist`.** Compute every figure with its engines (DuckDB or Polars), at the grain the reader needs, and follow its `references/visualization.md` for which chart answers which question. Keep the query: every number on the page must trace back to it.
-2. **Design: load `frontend`.** Use it for hierarchy, type, spacing and states. This page's constraints replace its design-system gate: the page brings no palette or fonts of its own and uses the theme the host injects (below).
-3. **Build one self-contained page** under the constraints below and the Draft guard in `frontend`.
-4. **Lint before you render.** Run `bun $SKILL_DIR/../frontend/scripts/perfection/check-accent-stripes.ts <page file>` (the script ships with `frontend`, next to this skill; write a page you built as a string to a file first). Exit 1 means a coloured edge bar or an accent outline is in the page: remove it and rerun. Nothing is previewed or shown until it exits 0.
-5. **Preview and look.** Render with `html_preview` in dark and in light, at the reply's width and at 390 px. Read the screenshot and the console, fix what you see, and preview again. Where `html_preview` is not offered, open the page file in a browser through the `browser` skill and capture the same four views.
-6. **Show it** with `show_html_page` (OmO) or `html_render` (other hosts), with the height the preview measured. Then write only what the page does not already say.
+`SKILL_DIR` below means the folder that contains this file.
 
-## Constraints of an inline page
+## Step 0 — find out how pages can be shown here
 
-- **No network.** Inline every script, style, font and image (`data:` URIs); the sandbox blocks every request, so a CDN library leaves a blank chart. Draw with hand-written SVG when a library cannot be inlined.
-- **Theme from the host.** Color only through the injected custom properties: `--background`, `--foreground`, `--muted`, `--muted-foreground`, `--card`, `--border`, `--primary`, `--accent`, `--destructive`, `--warning`, `--success`, the series colors `--chart-1` to `--chart-6`, and `--font-sans`, `--font-mono`, `--radius`. They hold in both themes and change live; a literal color does neither. A page opened outside the app gets only a few of them, so give each a fallback for both themes: `var(--chart-2, light-dark(#0d9488, #2dd4bf))`.
-- **Part of the reply, not a card.** Fluid width, no outer padding, border or banner. Give charts fixed pixel heights, not heights that scale with the width. A fluid SVG stretched with `preserveAspectRatio="none"` stretches its text too, so put axis labels in HTML beside it, positioned by percentage.
-- **Readable without scripts.** On the web a page first renders with scripts off, until the reader presses Run page. Put the figure itself in markup or SVG, and use scripts only for interaction.
-- **Traceable.** Show how the numbers were computed in a small, muted "How this was computed" block (the query or aggregation), and state caveats near the figure when they change how a number reads: dropped rows, a partial window, a small sample.
-- **Designed empty and error states.** No data, or a failed query, is stated in the same visual language, never as a blank frame.
-- **Links.** A link opens only after the reader confirms it in the app, which shows its full address. Keep data out of link addresses.
+Check the session's tool list (or `tool_search`) — do not assume. Then use the first that applies:
 
-## Before you show it
+| Case | What exists | Display | Review |
+|---|---|---|---|
+| A | an HTML **display** tool (e.g. `show_html_page`, `html_render`, or an mhc equivalent added later) | call it with the page and the measured height | its own preview, or case B/C for screenshots |
+| B | an HTML **preview/screenshot** tool (e.g. `html_preview`) | deliver the file (case C) | use it for the four views |
+| C | neither — **the normal mhc situation today** | write the file and give its path / attach it as the result | open the file through the harness `browser` skill and take the screenshots there |
 
-- The title states the finding, not the dataset name.
-- Axis labels carry units, numbers use tabular figures and a sensible precision, and nothing clips at 390 px.
-- The series colors separate in both themes, and the console is clean.
+Never call a display or preview tool that is not in the list. If no way to render exists at all (no tool, no browser), say plainly in the reply that the page was not visually checked.
+
+## Procedure — each step gates the next
+
+### 1. Compute the data
+- Load the data-analysis skill if the harness has one (mhc ships `data-scientist`; optional).
+- Produce every figure with a query or aggregation you can rerun, at the grain the reader needs. Keep the exact query/aggregation text: it goes on the page.
+- Pick the chart that answers the question: bars for comparing categories, a line for change over time, a histogram or dot plot for distributions, a node-link diagram for dependencies, a table when exact values matter more than shape.
+
+### 2. Design
+- Load the frontend/design skill if available for hierarchy, type scale, spacing, empty and error states.
+- The page rules below **override** that skill: no palette or font of your own; colours and fonts come from the host.
+
+### 3. Build one self-contained HTML file following the page rules.
+A working reference: `scripts/build-example.mjs` renders `references/example-data.csv` into `references/example-chart.html` (and `--empty` into `references/example-empty.html`).
+
+### 4. Lint — must pass before any preview or display
+- Write the page to a file if you only have it as a string.
+- Run the accent-stripe check from the sibling frontend skill:
+  `bun $SKILL_DIR/../frontend/scripts/perfection/check-accent-stripes.ts <page.html>` (add `--json` for machine output; `npx tsx` works if bun is missing). Non-zero exit = coloured edge stripes or accent outlines found: remove them and rerun until it exits 0. If that script is not installed, skip and note "accent-stripe lint skipped: script not available".
+- Run this skill's own check: `node $SKILL_DIR/scripts/check-inline-page.mjs <page.html>`. It flags external requests, literal colours outside `var()` fallbacks, unknown or fallback-less variables, non-theme fonts, a missing "how computed" block (`data-role="method"`), and a figure (`data-role="figure"`) with no static markup. Fix and rerun until clean.
+
+### 5. Look at it
+Render four views: **light and dark** × **reply-column width and 390 px**. For each: read the screenshot, read the console, fix, repeat until clean. Measure the rendered content height (document body height) for step 6.
+- Case C: open the file via the `browser` skill; set the window width and the colour scheme there (or emulate `prefers-color-scheme`).
+- If Playwright and a Chromium binary are available locally, `python3 $SKILL_DIR/scripts/preview-local.py <page.html> <out_dir> [--reply-width 720] [--no-js]` does all four views with network blocked and reports height, horizontal overflow, clipped elements and console errors.
+- Also check once with JavaScript disabled: the figure must still be there.
+
+### 6. Show it
+With the case A tool (pass the measured height if it takes one), or deliver the file path / attachment (cases B, C).
+
+### 7. Write the reply
+Only what the page does not already say: the takeaway in a sentence, a caveat that matters, what to do next. Don't narrate the chart.
+
+## Page rules
+
+- **Offline only.** Zero network requests. Inline all CSS, JS, fonts and images (`data:` URIs). No CDN libraries; if a library cannot be inlined, draw the SVG by hand.
+- **Host theme for colour and type.** Use only these custom properties:
+  `--background --foreground --muted --muted-foreground --card --border --primary --accent --destructive --warning --success --chart-1 --chart-2 --chart-3 --chart-4 --chart-5 --chart-6 --font-sans --font-mono --radius`
+  Every `var()` carries a fallback that works in both themes, e.g. `var(--chart-1, light-dark(#2563eb, #60a5fa))` with `:root{color-scheme:light dark}`. A page opened outside the host may get none of these variables. No literal colours anywhere except inside fallbacks.
+- **Blend into the reply.** Fluid width. No outer padding, border, card frame or banner around the whole page.
+- **Fixed chart heights** in pixels, never aspect-ratio scaling. Never stretch an SVG unevenly if it contains text: let a `preserveAspectRatio="none"` SVG hold only shapes, and position axis and value labels in HTML by percentage beside it (see the example).
+- **Static first.** The figure is plain markup/SVG that renders with scripts off; JS may only add interaction (tooltips, toggles). Some hosts show pages with scripts disabled until the user allows them.
+- **Traceable.** A small, muted "how these numbers were computed" section containing the actual query or aggregation. Caveats that change the reading (rows dropped, partial period, tiny sample) sit next to the figure they affect, not in a footnote.
+- **Empty and error states** designed in the same style — never a blank box.
+- **Links.** Expect the host may ask the user to confirm before opening a link and show the full URL. Never put data in URLs.
+
+## Before showing — all must be true
+
+- [ ] The title states the finding, not the dataset name.
+- [ ] Axes are labelled with units; numbers use tabular figures and sensible precision.
+- [ ] Nothing clips or overflows at 390 px.
+- [ ] Series are distinguishable in both themes.
+- [ ] Console is free of errors.
+- [ ] Accent-stripe lint passed (or skipped with the reason stated) and `check-inline-page.mjs` is clean.
+
+## Output
+
+- One HTML file meeting the page rules, with its path recorded when delivered as a file.
+- Shown through the host tool or delivered as a file, plus a short reply that does not repeat the page.
+- If a preview step could not be done, say so; never claim a check you did not run.

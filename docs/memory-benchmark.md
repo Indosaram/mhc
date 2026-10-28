@@ -5,7 +5,7 @@ workflow, how that was measured, and how to rerun it.
 
 ## Result
 
-Both agents ran the same `mass-ulw` workflow (a 4-node DAG with three parallel child agents and a
+Both agents ran the same fixed workflow DAG (a 4-node DAG with three parallel child agents and a
 join), each in its own fresh Docker container. Each agent got 1 warm-up run and then 3 measured
 runs, and every measured run finished the DAG and wrote its output. All figures cover the whole
 container: the agent itself, every child agent and every subprocess.
@@ -29,6 +29,11 @@ Anonymous memory is the number to compare. It counts what the processes allocate
 (the mhc binary, OmO's `node_modules` and JS bundles), and the kernel can drop it under pressure.
 
 Runs were consistent: each agent's anon peak varied by at most 3% across its three runs.
+
+These figures are historical: they were measured on 2026-10-19 with an earlier version of the
+prompt that also told the agent to load the since-retired `mass-ulw` skill before running the DAG.
+The DAG, the inputs and the measurement were the same as the method below describes; the current
+prompt drops only that skill instruction. Rerun the benchmark for numbers on the current build.
 
 ## Why the gap
 
@@ -61,7 +66,7 @@ Runs were consistent: each agent's anon peak varied by at most 3% across its thr
 Each run gives the agent the same prompt in non-interactive mode (`-p`):
 
 ```text
-mass-ulw 스킬을 사용해서 workflow 도구로 아래 고정 DAG를 정확히 한 번 실행해. 노드를 추가하거나 바꾸지 마.
+workflow 도구로 아래 고정 DAG를 정확히 한 번 실행해. 노드를 추가하거나 바꾸지 마.
 - a: /bench/work/a.txt 를 읽고 한 문장으로 요약 (category quick)
 - b: /bench/work/b.txt 를 읽고 한 문장으로 요약 (category quick)
 - c: /bench/work/c.txt 를 읽고 한 문장으로 요약 (category quick)
@@ -69,10 +74,10 @@ mass-ulw 스킬을 사용해서 workflow 도구로 아래 고정 DAG를 정확�
 완료되면 "DONE" 한 줄만 출력해.
 ```
 
-The prompt asks the agent to use the mass-ulw skill to run this fixed DAG through the workflow tool
+The prompt asks the agent to run this fixed DAG through the workflow tool
 exactly once, without adding or changing nodes, and to print "DONE" when it finishes.
 
-Each input file is 40 lines (`a line 1` ... `a line 40`). The agent reads the mass-ulw skill, starts
+Each input file is 40 lines (`a line 1` ... `a line 40`). The agent starts
 the DAG with the `workflow` tool, three child agents (a, b, c) run in parallel, a fourth (join) runs
 after them, and the main session checks the result. A run counts only if `/bench/work/out.txt`
 exists and is non-empty afterwards (`out_ok=yes`).

@@ -21,7 +21,7 @@
 - **直接沿用现有配置。** 与 OmO 读取同一套 `~/.omo` 配置、模型、认证和智能体设置。
 - **功能开箱即全。** 子智能体、`ultrawork` / `ulw-loop` 工作流、长期记忆、LSP、ast-grep、MCP、网页搜索和内置技能都随发布包提供。
 - **支持各家模型。** Anthropic、OpenAI、Gemini、DeepSeek、通义千问、Kimi、智谱 ZAI、MiniMax、OpenRouter、Ollama、Bedrock、Azure 等。
-- **内存占用低得多。** 在同一个 `mass-ulw` 工作流（3 个并行子智能体 + 汇总）上，mhc 的匿名内存峰值为 83-86 MB，OmO 为 1356-1398 MB，约少 16 倍，耗时相同。测量方法、原始数据和复现步骤见 [docs/memory-benchmark.md](docs/memory-benchmark.md)（英文）。
+- **内存占用低得多。** 在同一个固定工作流 DAG（3 个并行子智能体 + 汇总）上（历史测量），mhc 的匿名内存峰值为 83-86 MB，OmO 为 1356-1398 MB，约少 16 倍，耗时相同。测量方法、原始数据和复现步骤见 [docs/memory-benchmark.md](docs/memory-benchmark.md)（英文）。
 
 ## 隐私与安全默认设置
 
@@ -124,7 +124,7 @@ mhc 仍在积极开发中，与上游的一致性尚未全部完成。上游版�
 
 各部分沿用其所移植项目的许可证：
 
-- `crates/maho-*`、`crates/builtins`、`crates/extensions`、`crates/vendor` 移植自 [senpi](https://github.com/code-yeongyu/senpi)，采用 **MIT**（[LICENSES/MIT.txt](LICENSES/MIT.txt)）。
-- `crates/omo/**`（`crates/omo/senpi-desktop-*` 除外，后者为 MIT，移植自 senpi）移植自 [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent)，采用 **Sustainable Use License 1.0**（[LICENSES/SUL-1.0.md](LICENSES/SUL-1.0.md)）：允许用于自身内部业务目的或非商业/个人用途的使用、复制、修改及制作衍生作品；仅限免费用于非商业目的的分发；必须保留许可声明与版权声明。
+- `crates/maho-*`、`crates/builtins`、`crates/extensions`、`crates/desktop`、`crates/vendor` 移植自 [senpi](https://github.com/code-yeongyu/senpi)，采用 **MIT**（[LICENSES/MIT.txt](LICENSES/MIT.txt)）。
+- `crates/omo/**` 移植自 [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent)，采用 **Sustainable Use License 1.0**（[LICENSES/SUL-1.0.md](LICENSES/SUL-1.0.md)）：允许用于自身内部业务目的或非商业/个人用途的使用、复制、修改及制作衍生作品；仅限免费用于非商业目的的分发；必须保留许可声明与版权声明。
 
 本软件是上述两个项目的修改衍生作品（其 TypeScript 源码的 Rust 重新实现），此声明为 Sustainable Use License 所要求。

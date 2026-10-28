@@ -961,9 +961,9 @@ pub struct InteractiveMode {
     working_started_ms: Option<f64>,
     working_message: Option<String>,
     working_visible: bool,
-    /// Set when an ulw-family prompt is submitted; the editor keeps its neon border until the agent
+    /// Set when a prompt naming a glow keyword is submitted; the editor keeps its neon border until the agent
     /// run ends (the prompt future can settle before the run does) or the submission fails.
-    ulw_turn_glow: bool,
+    keyword_turn_glow: bool,
     editor_host: Rc<dyn maho_tui::components::editor::EditorTuiHost>,
     hidden_thinking_label: String,
     history_expansion: Vec<Box<dyn FnMut(bool)>>,
@@ -1256,8 +1256,8 @@ impl InteractiveMode {
             || self.tool_args_reveal.timer_fps.is_some()
             || self.tool_reveal.timer_fps.is_some()
             || !self.chat.is_fully_hydrated()
-            || self.ulw_turn_glow
-            || crate::components::neon_border::has_ulw_keyword(&self.editor.editor.get_text())
+            || self.keyword_turn_glow
+            || crate::components::neon_border::has_glow_keyword(&self.editor.editor.get_text())
             || self
                 .tool_cards
                 .iter()
@@ -2691,7 +2691,7 @@ impl InteractiveMode {
             detach_mcp_grant_presentation: None,
             unsubscribe_security_notices: None,
             mounted_side_column: None,
-            ulw_turn_glow: false,
+            keyword_turn_glow: false,
             theme_rebuild_pending: false,
             provider_count_key: None,
             footer_data: Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(
@@ -6437,11 +6437,11 @@ impl InteractiveMode {
         if self.pending_turn.is_some() {
             // A turn is already in flight: park the enqueue so this frame can paint the cleared
             // editor before `prompt` runs. Order is the park order.
-            self.ulw_turn_glow |= crate::components::neon_border::has_ulw_keyword(text);
+            self.keyword_turn_glow |= crate::components::neon_border::has_glow_keyword(text);
             self.park_prompt_enqueue(text.to_owned(), options);
             return Ok(PromptDisposition::Started);
         }
-        self.ulw_turn_glow = crate::components::neon_border::has_ulw_keyword(text);
+        self.keyword_turn_glow = crate::components::neon_border::has_glow_keyword(text);
         self.start_turn(text.to_owned(), options);
         Ok(PromptDisposition::Started)
     }
@@ -7920,7 +7920,7 @@ impl InteractiveMode {
             self.pending_turn = None;
             self.frame_dirty = true;
             if let Err(error) = result {
-                self.ulw_turn_glow = false;
+                self.keyword_turn_glow = false;
                 self.show_status(error);
                 self.clear_provisional_turn_feedback();
             }
@@ -11673,8 +11673,8 @@ impl InteractiveMode {
                 }
             }
             AgentSessionEvent::BashExecutionUpdate { delta, .. } => { if let Some((component, _)) = &self.pending_bash { component.borrow_mut().append_output(delta); } }
-            AgentSessionEvent::AgentIdle | AgentSessionEvent::AgentSettled => { self.agent_idle = true; self.working_started_ms = None; self.ulw_turn_glow = false; }
-            AgentSessionEvent::SessionAbort => { self.agent_idle = true; self.working_started_ms = None; self.ulw_turn_glow = false; self.clear_status_indicator(Some(StatusIndicatorKind::Retry)); }
+            AgentSessionEvent::AgentIdle | AgentSessionEvent::AgentSettled => { self.agent_idle = true; self.working_started_ms = None; self.keyword_turn_glow = false; }
+            AgentSessionEvent::SessionAbort => { self.agent_idle = true; self.working_started_ms = None; self.keyword_turn_glow = false; self.clear_status_indicator(Some(StatusIndicatorKind::Retry)); }
             AgentSessionEvent::EntryAppended { entry } if entry.kind == "custom" => self.add_custom_entry_to_chat(&entry.data),
             _ => {}
         }
@@ -13273,7 +13273,7 @@ impl InteractiveMode {
                     self.rebuild_history_keeping_status();
                 }
                 self.agent_idle = true;
-                self.ulw_turn_glow = false;
+                self.keyword_turn_glow = false;
                 self.active_tool_executions.clear();
                 self.refresh_active_tool_execution_terminal_title();
                 self.pending_tools.clear();
@@ -14588,8 +14588,8 @@ impl InteractiveMode {
     fn render_prompt_editor(&mut self, width: usize) -> Vec<String> {
         self.update_editor_border_color();
         let mut lines = self.editor.render(width);
-        if self.ulw_turn_glow
-            || crate::components::neon_border::has_ulw_keyword(&self.editor.editor.get_text())
+        if self.keyword_turn_glow
+            || crate::components::neon_border::has_glow_keyword(&self.editor.editor.get_text())
         {
             crate::components::neon_border::apply_neon_border(
                 &mut lines,

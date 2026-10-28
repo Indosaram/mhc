@@ -23,6 +23,9 @@ Commands:
   mhc models discover           Discover available models from providers
   mhc senpi-install             Install or uninstall the Senpi companion plugin
   mhc mini                      Experimental minimal TUI client
+  mhc gateway <list|send>       List or message live gateway sessions (MIT profile build only)
+  mhc usage [--json]            Show the local usage ledger (MIT profile build only)
+  mhc home | setup | init-deep  Agent home, first-run setup, project context files (MIT profile build only)
   mhc <command> --help          Show help for install/remove/uninstall/update/list/config/auth
 
 Options:

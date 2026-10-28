@@ -1,184 +1,128 @@
 ---
 name: give-me-tips
-description: "Explains any senpi tip in depth, including Tip: lines in the TUI. Use when the user asks about a tip, what a tipped feature does, or which tips they can see."
-metadata:
-  short-description: Deep, verified, brag-worthy explanations of any senpi tip
+description: Explains mhc tips in depth. Use when the user quotes or asks about a "Tip:" line from the mhc terminal (at startup or while the agent is working), names a tip id, asks how a feature a tip advertised really works, asks which tips exist or which ones they personally can see, wonders why a tip keeps or never appears, or wants tips switched off. Pulls the live tip list with `mhc --list-tips`, reads the user's settings.json to work out which tips are visible to them, then reads the mhc source behind the feature so the answer describes real triggers, mechanics, settings and limits instead of repeating the one-line hint.
 ---
 
-# give-me-tips - explain any senpi tip, in depth
+# give-me-tips
 
-## Purpose
+A tip is one line of text. The user has already read it. Your job is to explain the machinery behind it: what triggers the feature, what mhc actually does step by step, what can be configured, and where it stops. Every answer is built at run time from three sources, in this order: the live tip list, the user's settings, and the mhc source code. Do not answer from memory.
 
-Senpi shows the user tips: startup tips, working tips, and `Tip:` lines injected by omo
-components. When the user asks about any of them - "what was that Tip: line", "what does this tip
-mean", "how does that feature work" - this skill produces a DEEP explanation of that exact tip, in
-the USER'S language (match the language they asked in, always).
+## Ground rules
 
-Specific over generic, every time. "It retries on failure" is a failure of this skill. "It detects
-the refusal from the stopDetails on the assistant message_end event, gates on the architect
-category in your .omo/omo.json, and only then injects the directive" is the bar. The user asked
-because the tip made them curious; reward that curiosity with the real mechanism, not a summary of
-the tip text they already read.
+- **Language.** Answer in the language the user wrote in. Keep tip ids, file paths, flags, slash commands and setting keys exactly as they are.
+- **Proportion.** Open with a two-to-three-sentence answer to what they asked, then give the detail.
+- **Tone.** Be precise and openly interested in how the thing is built. Prefer concrete mechanics (events, files, keys, defaults, limits) over adjectives. No sales language.
+- **No canned essays.** Nothing in this skill describes a particular tip's feature. Derive each explanation fresh from the list and the code.
+- **Code beats the hint.** If the tip text and the implementation disagree, say so plainly and describe what the code does.
 
-## Query the live tip list FIRST
+## Step 1: get the live tip list
 
-Never explain from memory. Get the ground truth of what tips exist:
+Run:
 
-1. Run the tip-listing flag of the command this product is installed as: `omo --list-tips`
-   under OmO Native (omo-ai installs; the session environment carries `OMO_NATIVE=1` and
-   `OMO_BIN`), or `senpi --list-tips` under a plain senpi install. Never spell it `senpi` on an
-   OmO Native machine: package managers link only the top-level `omo` bin, so `senpi` is not on
-   PATH there. If the brand command is not on PATH either (bunx/npx launches), invoke the
-   launcher the `OMO_BIN` variable points at: `"$OMO_BIN" --list-tips`. The command prints JSON:
-   `[{id, text, requiresCommand?}]`. Match the user's tip against this list by id or by text
-   fragment.
-2. If the flag is unavailable on this senpi version, fall back to reading the catalog sources
-   directly at `packages/coding-agent/src/modes/interactive/tips/catalog/` inside the installed
-   `@code-yeongyu/senpi` package (find it via the senpi install path or node_modules) or in a
-   local clone of code-yeongyu/senpi.
+```bash
+mhc --list-tips
+```
 
-Then - and this is the part most explanations get wrong - **available tips DIFFER per user**. The
-catalog is the superset; what THIS user can actually see is gated by:
+If `mhc` is not on PATH, use the command the user launched this session with (a branded build of mhc may install under a different command name; it accepts the same flag).
 
-- the `tips` toggle in the senpi agent dir `settings.json` (tips can be off entirely),
-- `tipsHistory` in that same settings/state, which drives cooldown rotation so a tip the user saw
-  recently will not reappear for a while,
-- `requiresCommand` gating: a tip tied to a command only shows when that command is available,
-- keybinding availability: some tips reference bindings the user's setup may not have.
+The output is a JSON array, one object per catalog entry:
 
-Read the senpi agent dir `settings.json` (and its tips history state) BEFORE explaining, and tell
-the user which tips they personally can encounter and why - not the full catalog as if everyone
-sees everything.
+```json
+{ "id": "<tip id>", "text": "<rendered tip>", "requiresCommand": "<command>" }
+```
 
-## Verify before explaining
+- `text` has key placeholders filled with the **default** keybindings (several keys joined with `/`). The user's own keys may differ.
+- `requiresCommand` appears only on tips tied to a slash command or feature that may not exist in every session.
+- This array is the whole catalog. It is not what any one user sees (see Step 3).
 
-Never invent behavior. A tip is a one-line promise; the truth lives in code. Before writing the
-explanation, read the actual feature implementation:
+### Matching the user's tip
 
-- senpi itself: `code-yeongyu/senpi`, under `packages/coding-agent/` (the tips catalog lives at
-  `packages/coding-agent/src/modes/interactive/tips/catalog/`; the features the tips point at live
-  in the surrounding packages),
-- omo components: `code-yeongyu/oh-my-openagent`, under `packages/omo-senpi/`.
+1. If they gave an id, look it up exactly.
+2. Otherwise take a distinctive fragment of what they quoted, collapse whitespace on both sides, and search the `text` fields. Ignore key names in the quote when matching, since their bindings may not be the defaults. A leading `Tip: ` is part of the display, not the text.
+3. Several candidates: pick the best fit, and mention the others by id.
+4. No candidate: it may be a component notice rather than a catalog tip (see "Notices that look like tips"). Check that before telling the user the tip is unknown.
 
-Cite the concrete file paths you read in your explanation. If the code and the tip text disagree,
-the code wins - say so and show what it actually does.
+### If the flag does not work
 
-## Tone: BRAG
+If the command is missing, errors out, or rejects `--list-tips`, read the catalog from source and tell the user you did so:
 
-These tips exist because someone engineered something genuinely impressive, and a flat doc summary
-betrays that. Lead with the most impressive engineering behind the tip - the clever detection, the
-race that had to be closed, the state machine hiding under one sentence - and showcase it. The user
-should finish the explanation feeling like they got a tour of the engine room, not a sticker
-reading. Concrete mechanics over adjectives: name the events, the gates, the file paths, the exact
-order of operations.
+- Local checkout of mhc if one is present (look in the working directory and its parents, or ask where it is); otherwise the public repository `https://github.com/Indosaram/mhc` at the same paths.
+- `crates/maho-interactive/src/tips/registry.rs` — `TIP_DEFINITIONS`, the groups concatenated in display order.
+- `crates/maho-interactive/src/tips/catalog/*.rs` — one file per group (model, input, session, workspace, settings, cli, subagent, memory, dag, computer, ethos, ...).
+- `crates/maho-interactive/src/tips/catalog/types.rs` — each `TipDefinition` has an `id`, a `bindings` list, an optional `requires_command`, and a `render` function that builds the text from key names.
 
-## The Fable-5-refusal tip specifically
+## Step 2: read the code behind the feature
 
-When the user asks about the tip that appears after a Fable 5 refusal ("Fable 5 refused, but its
-refusals should not wear you down..."), explain the full fallback-architect pipeline, citing
-`packages/omo-senpi/src/components/fallback-architect/`:
+Before describing behavior, open the implementation of whatever the tip advertises: the slash command handler, the setting it reads, the tool, or the component. Find it by searching the mhc source for the command name, the setting key, a phrase from the tip, or the id. For orientation only: a memory-related tip will lead somewhere under `crates/omo/components/maho-omo-memory/`; interactive UI behaviour usually lives in `crates/maho-interactive/`; CLI flags in `crates/maho-cli/src/cli/`.
 
-1. **Refusal detection** (`detection.ts`): the component watches `message_end` events and applies
-   the same refusal semantics senpi's own retry classifier uses - stopReason checked FIRST (so an
-   abort or normal stop carrying stale stopDetails can never masquerade as a refusal), then
-   stopDetails of type refusal/sensitive, plus the Anthropic usage-policy errorMessage pattern for
-   provider-side blocks that carry no stopDetails at all.
-2. **Architect category gate** (`architect-gate.ts`): on a `model_select` with source "fallback"
-   moving AWAY from claude-fable-5 with a refusal pending, the component checks the user's own omo
-   config for an active architect category. No architect category, no nudge - the feature never
-   pretends depth is reachable when it is not.
-3. **Hidden directive** (`directive.ts`, customType `omo-fallback-architect:directive`,
-   display:false): the fallback model gets a hidden 5-step playbook - decompose the problem,
-   consult `task(category: "architect")` with one self-contained query per part (the architect
-   consultant IS Fable 5, reached through a lane its refusal cannot block), run independent
-   consultations in parallel, and split refused queries into smaller benign sub-questions instead
-   of resending. The directive also tells the model the user was shown the visible tip, so the
-   two never contradict each other.
-4. **Visible tip** (`tip-message.ts`, customType `omo-fallback-architect:tip`, display:true):
-   rendered as a dim `Tip:` block via a registered message renderer. It names the ACTUAL fallback
-   model the session landed on, reassures the user that the refused question is still being
-   reasoned through in essence, and notes Fable-5-grade depth stays reachable through the
-   architect category.
+Then explain, from what you read:
 
-The engineering worth bragging about: the refusal never deletes the user's question. Detection
-arms on the exact assistant message that preceded the switch (a later successful answer disarms
-it), reminders ride inside queued prompts instead of burning extra assistant turns, and the whole
-nudge self-cancels the moment Fable 5 becomes the active model again or senpi reverts the
-fallback. One refusal triggers a coordinated downgrade in visibility with zero downgrade in
-reachable reasoning depth.
+- **Trigger** — the exact command, key, setting, or flag.
+- **Sequence** — what mhc does when it fires: events, messages, files or state it writes, settings it consults, defaults and limits it applies.
+- **Control** — how to enable, disable, or tune it.
+- **Edges** — notable failure modes, interactions, or conditions under which it does nothing.
 
-## The Kibitzer recollection notice specifically
+List the file paths you actually opened. If no source is reachable at all, say the explanation is unverified and keep to what the tip text itself states; do not invent internals.
 
-When the user asks about the `✦ Kibitzer` line that shows up mid-session
-("recalled memory: ..."), or about the memory tip that promises stored memory can resurface on its own, explain the
-whole resident Kibitzer sidecar, citing `packages/omo-senpi/src/components/memory/kibitzer/` and
-`packages/memory-core/src/recall/`. This is NOT the periodic save reminder: `memory.nudge` in
-`nudge-wiring.ts` asks the agent to WRITE memory every N user turns, while Kibitzer only READS
-memory and hands one hint back. Keep the two apart in the explanation.
+## Step 3: work out what this user can see
 
-1. **Candidate collection** (`recall-wiring.ts`, `recall-session-read.ts`,
-   `recall-query-planner-tools.ts`): on every prompt and `tool_call` the component snapshots the
-   live session synchronously (the host disposes the ctx once the handler returns), runs a lexical
-   planner over the user-only text window plus the last 8 tool-argument payloads, and scores memory
-   files against it. Memory-owned hidden channels are excluded from the window, so a previous hint
-   can never seed the next query.
-2. **One resident sidecar per session** (`kibitzer/index.ts`, `kibitzer/sidecar.ts`,
-   `kibitzer/events.ts`): each main session owns ONE quick-category in-process child, created lazily
-   and disposed at session shutdown. Every prompt, `tool_call` and `tool_result` reaches it as a
-   bounded event - secrets redacted before truncation, tool args capped at 400 characters, result
-   heads at 600, assistant text at 1500, prompts at 4000, `eval.summary` preferred over code, the
-   newest 20 events kept and older ones folded into a one-line digest. Events only buffer; a model
-   turn (a wake) happens only when the batch carries a memory path this sidecar has not judged and
-   the session has not surfaced. An idle child is revived with a follow-up; a running turn is steered.
-3. **Wake governance** (`kibitzer/wake-policy.ts`, `kibitzer/wake-slot.ts`): before a wake the
-   sidecar takes one slot of a machine-wide lease (memory-core's `recall-wake` lock domain,
-   `memory.recall.max_concurrent_wakes`, default 2, FIFO tickets, dead-owner recovery); when every
-   slot is busy it keeps buffering and retries at the next hook, never dropping an event. A wake is
-   limited to `memory.recall.tool_budget` tool calls (default 8) and 90 seconds; hitting either
-   ends the wake without counting as a failure, and nudges accepted before the cut are still
-   delivered. Accepted-nudge cooldown is 2 wakes per 10 minutes per session. When the child's own
-   context passes 60% of `memory.recall.sidecar_max_tokens` (default 48000) it is replaced by a
-   fresh child seeded with the delivered paths, the rejected paths, a one-line task summary and the
-   last cursor. A failed child is disposed and recreated after a jittered exponential backoff
-   (1 s doubling to 5 min) with every buffered event kept.
-4. **Exactly five read-only tools** (`kibitzer/tools/`, persona at
-   `packages/memory-core/src/recall/assets/kibitzer-persona.md`): `read` and `grep` inside the
-   workspace, `session_entries(since)` over the parent transcript minus memory-owned hidden entries,
-   `memory` with only `search` and `read` over the committed memory corpus, and `nudge(path,
-   hint)`. No `bash`, `edit`, `write`, and no tool that writes memory: the sidecar can look before
-   it speaks, but it cannot act. Its instruction is that silence is the default: it nudges only when
-   a stored memory would change the agent's next action (it contradicts the current approach,
-   records a past failure of it, answers a question the agent is about to re-derive, or names a
-   constraint being ignored). Topical similarity alone is rejected.
-5. **Hint contract** (`kibitzer/tools/nudge.ts`, `kibitzer/nudge-tool.ts`,
-   `packages/memory-core/src/recall/gate.ts`): the path must be one the sidecar was offered this
-   lifetime or found through its own `memory` search, must not already be surfaced this session,
-   and must not be a `system/` path; the hint is one factual present-tense sentence, at most 200
-   characters (`NUDGE_HINT_MAX_CHARS`), single line, and secret-like text is rejected. The parent
-   re-validates every accepted nudge against the same rules plus `memory.recall.max_items`
-   (default 2, range 1 to 5, counted per wake) before anything is persisted.
-6. **Delivery** (`kibitzer/delivery.ts`, `recall-drain.ts`): accepted nudges are marked surfaced in
-   the session ledger at ACCEPT time, so a later wake can't repeat them. The model-facing half
-   is a hidden `omo-kibitzer:recall` message (`display: false`) carrying a `<recalled-memory
-   source="[[path]]">` block that says the memory is a hint, not current state, and must be
-   verified. It is steered in at the next `tool_result` when nothing else is pending, ridden in on
-   another source's idle flush, or drained into the next prompt. A compaction of the main session
-   drops everything delivery still holds, but never the sidecar itself - it keeps its context.
-7. **The visible half** (`kibitzer/notice.ts`): because senpi draws nothing for the hidden message,
-   the component appends an `omo-kibitzer:nudged` entry and renders it as Kibitzer advice:
-   a single fixed `Kibitzer` title (`✦ Kibitzer`, accent tone; opener-era records carry a retired
-   `opener` field that is ignored) over `recalled memory: <hint>`,
-   `recalled memory: ...` for a second nudge, and the source paths in dim text. Expanding the entry reveals the caveat that it's a hint, not current
-   state. The record keeps `via` (`steer`, `wake`, or `prompt`) for forensics, but no provenance is
-   ever drawn. It's a transcript entry, not a toast: nothing pops over the input, and the renderer
-   is fail-closed, so a malformed record draws nothing rather than a half-formed notice.
+Do this whenever the user asks what they can see, why a tip does or does not appear, or how to turn tips off; for other questions, add a short visibility note if it matters.
 
-What's worth bragging about: the user sees one calm line, and behind it a resident read-only
-judge that remembers what it already judged, five tools that can only look, a machine-wide cap on
-how many judges think at once, a per-wake tool budget and deadline, a 200-character hint budget, a
-ledger that guarantees a memory surfaces at most once per session, and a sidecar that reseeds
-itself before its own context runs out. A judge that finds nothing says nothing, and that silence
-is the designed outcome, not a failure; a failing model backs off quietly instead of spamming
-notices. Its audit trail is the child's own session JSONL under
-`recall/sidecars/<encoded-session>/` - no per-run directories. Turn the whole thing off with
-`memory.recall.enabled: false`, the only off switch.
+**Find the settings file.** It is `settings.json` inside the agent directory:
+
+- `$MAHO_CODING_AGENT_DIR`, if set and non-empty (a branded build uses its own `<PREFIX>_CODING_AGENT_DIR`);
+- otherwise `~/.omo/agent/` for standalone mhc;
+- a branded build with a flat layout may keep it directly in its config folder in the home directory.
+
+If the file does not exist, defaults apply: tips on, startup tip shown, no history.
+
+**Keys that matter:**
+
+| Key | Default | Effect |
+|---|---|---|
+| `tips` | `true` | `false` turns off both startup and working tips. |
+| `quietStartup` | `false` | `true` hides the startup tip; working tips still show. |
+| `tipsHistory` | empty | Map of tip id → last time shown (milliseconds since epoch). Updated every time a tip is displayed. |
+
+User key overrides live in `keybindings.json` in the same agent directory.
+
+**How the next tip is chosen** (`crates/maho-interactive/src/tips/scheduler.rs`, `select_tip`). mhc walks the catalog in registry order and:
+
+1. skips ids in the exclude set (for working tips, the ones already shown this session — `working_tip.rs`);
+2. skips a tip that lists bindings when none of those bindings maps to any key for this user;
+3. skips a tip whose `requiresCommand` is not available in the session;
+4. returns the first remaining tip that has never been shown (absent from `tipsHistory`); if every remaining tip has been shown, returns the one shown longest ago.
+
+So a user works through unseen tips first, then cycles by least recently seen, and a tip tied to an unavailable command or to keys they have unbound never shows up. Check the call sites (startup in `startup_tip.rs` and its caller, working tips in `working_tip.rs`) to see which of these gates are actually wired up in the build you are reading, and report what the code does.
+
+**What to report:**
+
+- whether tips are on at all, and whether the startup tip is hidden;
+- which tips are excluded and why (command not available, keys unbound);
+- which have been shown and roughly when (turn the millisecond timestamps into dates or "n days ago");
+- which unseen tip is likely next, by the rule above.
+
+Never present the whole catalog as though this user sees all of it.
+
+## Listing mode
+
+When asked for "all tips" or "the tips I can see":
+
+- group them (by catalog group, inferred from the id prefix or the source file, or by gate);
+- give each one its id and a one-line gist in your own words;
+- mark any that are hidden for this user and the reason (gated command, unbound keys, tips off, startup hidden);
+- offer to go deep on any one of them.
+
+## Turning tips off or on
+
+Explain `tips` and `quietStartup` and where the settings file lives. Edit the user's `settings.json` only when they explicitly ask you to; when you do, change just that key, keep the rest of the JSON intact, and show what changed.
+
+## Notices that look like tips
+
+Some messages in the UI read like tips but come from components, not from the catalog, so they will not be in `--list-tips`. Examples are the notice shown when mhc falls back to another model, and the notice shown when stored memory is recalled into the conversation. They are rendered as custom message types such as `omo-fallback-architect:tip`, `omo-fallback-architect:notice`, or `omo-kibitzer:nudged`.
+
+Handle every such case the same way: search the mhc source (`crates/omo/components/`, `crates/maho-cli/src/cli/`) for the exact text the user saw or for the custom type, find the component that emits it, and explain from that code — the condition that triggers it, what the component does, and the switch that controls it (for instance a settings key such as `memory.recall.enabled`, if that is what the code reads). Tell the user this is a component notice, not a catalog tip.
+
+## Startup tip format, for recognising quotes
+
+A startup tip is printed as `Tip: <text>` with newlines in the text collapsed to spaces, followed by a line pointing to this skill. Working tips use the same catalog, appear while the agent is busy, and do not repeat within a session.

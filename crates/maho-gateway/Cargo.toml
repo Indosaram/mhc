@@ -1,0 +1,22 @@
+[package]
+name = "maho-gateway"
+description = "Session gateway for mhc's MIT profile: message a running session from another session or the shell (live-session store, per-session file inbox, delivery as a session_control_delivery custom message on the senpi engine contract, session_list/session_send tools, mhc gateway list|send). Clean-room spec docs/cleanroom/specs/gateway.md from MIT senpi and pi-agent-teams sources."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-ext-api = { path = "../maho-ext-api" }
+maho-config = { path = "../maho-config" }
+chrono = { workspace = true, features = ["clock", "std"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+tokio = { workspace = true, features = ["rt"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

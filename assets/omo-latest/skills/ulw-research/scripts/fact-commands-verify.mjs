@@ -8,6 +8,11 @@
 // escaped HTML projection (same line numbers) and checked with its fill map, which is the only
 // record of where its values sit; LaTeX is verified through its Markdown source.
 //
+// The locked brief is re-judged here, not only at fill: the edition's fill map (--fill-map, else
+// `<report>.fill-map.json` when present) must carry the current brief's brief_sha256
+// (brief_changed), and policyErrors re-runs over every data-fact the edition carries, so an
+// edition that violates the current derived-numbers or source-floor rule fails here too.
+//
 // The delivery barrier that reads these records (and every other fidelity record) is
 // fidelity-records.mjs.
 
@@ -19,6 +24,7 @@ import { countDefects } from "./contracts.mjs"
 import { recompute } from "./fact-derive.mjs"
 import { readLedger } from "./fact-ledger.mjs"
 import { validateLedger } from "./fact-ledger-schema.mjs"
+import { briefBindingErrors, fillPolicy, lockedBrief, policyErrors } from "./fidelity-policy.mjs"
 import { FIDELITY_RECORD, writeFidelityRecord } from "./fidelity-records.mjs"
 import { blocksDelivery, checkFidelity } from "./gates-fidelity.mjs"
 import { parseMarkdown } from "./md-lite.mjs"
@@ -159,8 +165,11 @@ export function runFactVerify(args) {
 	const [report] = args.positionals
 	const { flags } = args
 	if (!report) throw new CliError("usage: fact verify <report> [--format html|md] [--sources D] [--claims claims.json] [--fill-map F] [--brief brief.md] [--out fidelity-defects.json]")
-	const edition = readEdition(report, flags)
 	const sessionDir = sessionDirOf(flags)
+	const { parsed, refusal } = lockedBrief("fact verify", flags)
+	if (refusal) return refusal
+	const policy = fillPolicy(parsed)
+	const edition = readEdition(report, flags)
 	const claimsPath = flags.claims ?? join(sessionDir, "claims.json")
 	const briefPath = flags.brief ?? join(sessionDir, "brief.md")
 	const ledger = readLedger(sessionDir)
@@ -174,10 +183,15 @@ export function runFactVerify(args) {
 		baseDir: dirname(resolve(report)),
 		recompute,
 	})
-	const counts = countDefects(result.defects)
-	const status = result.defects.some(blocksDelivery) ? "fail" : "pass"
+	const checked = projected?.html ?? edition.text
+	const pointers = [...checked.matchAll(/\bdata-fact="([^"]+)"/gu)].map((match) => ({ token: match[0], start: match.index, parsed: { id: match[1] } }))
+	const mapPath = flags["fill-map"] ?? `${report}.fill-map.json`
+	const bound = existsSync(mapPath) ? briefBindingErrors(readJsonFile(mapPath), mapPath, parsed) : []
+	const defects = [...bound, ...policyErrors(checked, pointers, ledger, sessionDir, policy).errors, ...result.defects]
+	const counts = countDefects(defects)
+	const status = defects.some(blocksDelivery) ? "fail" : "pass"
 	const exitCode = status === "fail" ? 1 : 0
 	const out = resolve(flags.out ?? join(sessionDir, FIDELITY_RECORD))
-	const record = writeFidelityRecord(out, "fidelity", { command: "fact verify", status, exitCode, format: edition.format, report: resolve(report), artifact_sha256: sha256Of(edition.text), defects: result.defects, counts, gatesRun: result.gatesRun })
+	const record = writeFidelityRecord(out, "fidelity", { command: "fact verify", status, exitCode, format: edition.format, report: resolve(report), artifact_sha256: sha256Of(edition.text), defects, counts, gatesRun: result.gatesRun })
 	return { json: { ...record, out }, summary: `fact verify: ${status.toUpperCase()} - ${counts.blocker} blocker, ${counts.major} major, ${counts.minor} minor`, exitCode }
 }

@@ -1,0 +1,18 @@
+[package]
+name = "maho-agent-home"
+description = "Agent home for mhc's MIT profile: the per-user layout over the senpi agent dir (~/.omo root, agent dir, sessions/skills/extensions/prompts/bin/state), bootstrap with private directories, auth.json privacy check and repair, first-run setup state, and mhc home. Clean-room spec docs/cleanroom/specs/agent-home.md from MIT senpi config paths."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+chrono = { workspace = true, features = ["clock", "std"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

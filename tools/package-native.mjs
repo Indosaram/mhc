@@ -3,8 +3,17 @@
 // resources, retain the licenses, and write a hash manifest that can be re-verified.
 //
 //   bun tools/package-native.mjs --binary <path/to/mhc> --output <staging-dir>
+//   bun tools/package-native.mjs --mit --output <staging-dir> [--binary <path/to/mhc>]
 //   bun tools/package-native.mjs --verify-only <staging-dir>
 //   bun tools/package-native.mjs --self-test
+//
+// MIT profile (`--mit`, docs/MIT-PROFILE.md): stages an `mhc` built from maho-cli with
+// `--no-default-features` (no crates/omo). Without --binary it builds one first
+// (`cargo build --release --locked -p maho-cli --no-default-features --bins`). The binary must report
+// `mhc ulw-loop` as unavailable, so a default (omo) build is refused. Only MIT executables (mhc,
+// mhc-launcher, optionally the MIT desktop engine) and the MIT/third-party notices are staged: no
+// SUL-1.0 licence text, no OmO skills, no omo config schema, no SUL siblings (lsp-daemon,
+// ast-grep-mcp, omo-git-bash). The manifest records `profile: "mit"` and verify() enforces it.
 //
 // The staged layout is exactly what the native runtime resolves at startup:
 //
@@ -82,6 +91,7 @@
 //   --schema <path>        published config JSON Schema to stage (default: <repo-root>/assets/omo.schema.json)
 //   --force                overwrite an existing non-empty staging directory
 //   --verify-only <dir>    verify an existing staging directory against its manifest
+//   --mit                  stage the MIT profile (see above); --binary is optional and built when absent
 //   --self-test            run the deterministic fixture self-test
 //
 // The script never writes to a real install path: --output is mandatory and must be named
@@ -125,12 +135,14 @@ const SCHEMA_ASSET_SOURCE = `assets/${SCHEMA_ASSET_NAME}`;
 const GIT_BASH_MCP_NAME = `omo-git-bash${EXE_SUFFIX}`;
 
 // Binary sibling: the native desktop engine. Upstream resolves it via desktop-service child
-// (`crates/omo/senpi-desktop-service/src/child.rs`), which looks for `senpi-desktop-engine` beside
+// (`crates/desktop/senpi-desktop-service/src/child.rs`), which looks for `senpi-desktop-engine` beside
 // the running executable. It is staged from `--desktop-engine-binary` (default: <binary dir>/senpi-desktop-engine):
 // in the selected product staging (`--skill-source latest`) it is REQUIRED: an absent sibling refuses
 // the selected delivery, and verify() enforces the declared sibling in the staged manifest. In the
 // pinned baseline it stays optional (absent means no sibling and no placeholder).
 const DESKTOP_ENGINE_NAME = `senpi-desktop-engine${EXE_SUFFIX}`;
+// MIT LSP mux daemon (crates/maho-lsp, `[[bin]] mhc-lsp`): the MIT profile's LSP daemon sibling.
+const MIT_LSP_DAEMON_NAME = `mhc-lsp${EXE_SUFFIX}`;
 
 // The browser skill's engine runtime. Upstream materializes it at build/prepack time from the root
 // `omowright` devDependency into `skills/browser/runtime/omowright/` (gitignored, shipped through the
@@ -176,6 +188,24 @@ export const LICENSE_FILES = [
 	{ name: "node-zod-LICENSE", source: "LICENSES/node/zod-LICENSE" },
 ];
 
+// The MIT profile retains only the MIT text and the notices of MIT-profile code: no SUL-1.0 text, no
+// mixed-license root LICENSE, and none of the skill/browser-runtime notices (those assets are not staged).
+export const MIT_PROFILE = "mit";
+export const MIT_LICENSE_FILES = [
+	{ name: "MIT.txt", source: "LICENSES/MIT.txt" },
+	{ name: "THIRD_PARTY_LICENSES.md", source: "THIRD_PARTY_LICENSES.md" },
+	{ name: "maho-ext-webfetch-LICENSE-READABILITY.txt", source: "crates/builtins/maho-ext-webfetch/LICENSE-READABILITY.txt" },
+	{ name: "maho-ext-webfetch-LICENSE-TURNDOWN.txt", source: "crates/builtins/maho-ext-webfetch/LICENSE-TURNDOWN.txt" },
+	{ name: "maho-ext-webfetch-LICENSE-HTMLPARSER2.txt", source: "crates/builtins/maho-ext-webfetch/LICENSE-HTMLPARSER2.txt" },
+	{ name: "maho-ext-omo-zcode-oauth-LICENSE", source: "crates/extensions/maho-ext-omo-zcode-oauth/LICENSE" },
+	{ name: "maho-ext-pi-webfetch-THIRD_PARTY_NOTICES.md", source: "crates/extensions/maho-ext-pi-webfetch/THIRD_PARTY_NOTICES.md" },
+	{ name: "maho-ext-pi-rules-THIRD_PARTY_NOTICES.md", source: "crates/extensions/maho-ext-pi-rules/THIRD_PARTY_NOTICES.md" },
+];
+// What an MIT-profile binary prints for an omo-only entry (crates/maho-cli/src/main.rs).
+const MIT_UNAVAILABLE_MARKER = "is not available in this build";
+// Paths an MIT stage must never contain.
+const MIT_FORBIDDEN_PATHS = [`${LICENSES_DIR}/SUL-1.0.md`, SKILLS_DIR, CONDITIONAL_SKILLS_DIR, SCHEMA_ASSET_NAME, LSP_DAEMON_NAME, AST_GREP_MCP_NAME, GIT_BASH_MCP_NAME];
+
 // Pinned oh-my-openagent skill roots, in override order: the senpi-native skills win over the
 // shared pool, exactly as packages/omo-senpi/plugin/scripts/sync-skills.mjs does.
 const SKILL_SOURCE_ROOTS = ["packages/omo-senpi/skills", "packages/shared-skills/skills"];
@@ -187,6 +217,7 @@ const IGNORED_FILE_NAMES = new Set([".gitignore", ".npmignore", "pyrightconfig.j
 function usage() {
 	console.log(`usage: bun tools/package-native.mjs --binary <mhc> --output <dir> [--launcher-binary <path>] [--build-version <v>] [--ast-grep-mcp <path>] [--lsp-daemon-binary <path>] [--desktop-engine-binary <path>] [--omo-root <dir>] [--repo-root <dir>] [--schema <path>] [--force]
        bun tools/package-native.mjs --binary <mhc> --output <dir> --skill-source latest --git-bash-binary <path> [--lsp-daemon-binary <path>] [--desktop-engine-binary <path>] --omowright-runtime <dir> [--latest-assets <dir>]
+       bun tools/package-native.mjs --mit --output <dir> [--binary <mhc>] [--launcher-binary <path>] [--build-version <v>] [--desktop-engine-binary <path>] [--mhc-lsp-binary <path>] [--repo-root <dir>] [--force]
        bun tools/package-native.mjs --verify-only <dir>
        bun tools/package-native.mjs --self-test`);
 }
@@ -815,6 +846,190 @@ export async function stage(options) {
 	return { ok: true, output, manifestPath: join(output, MANIFEST_NAME), manifest };
 }
 
+// ---------- MIT profile ----------
+
+/** Build the MIT-profile bins (maho-cli without the `omo` feature) and return the built `mhc` path. */
+async function buildMitBinary(repoRoot) {
+	const command = ["cargo", "build", "--release", "--locked", "-p", "maho-cli", "-p", "maho-lsp", "--no-default-features", "--bins"];
+	console.log(`package-native: building the MIT profile: ${command.join(" ")}`);
+	const child = Bun.spawn(command, { cwd: repoRoot, stdout: "inherit", stderr: "inherit", stdin: "ignore" });
+	const code = await child.exited;
+	if (code !== 0) throw new Error(`MIT-profile build failed (${command.join(" ")} exited ${code})`);
+	const targetDir = process.env.CARGO_TARGET_DIR ? resolve(repoRoot, process.env.CARGO_TARGET_DIR) : join(repoRoot, "target");
+	return join(targetDir, "release", CLI_BINARY_NAME);
+}
+
+/**
+ * Refuse a payload that links the omo port: an MIT-profile `mhc` answers `mhc ulw-loop` with a
+ * non-zero exit and the "not available in this build" notice. A payload that cannot run here (a
+ * cross build, signalled by --build-version) is not probed.
+ */
+async function mitProfileErrors(binary, canRun) {
+	if (!canRun) return [];
+	let child;
+	try {
+		child = Bun.spawn([binary, "ulw-loop"], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+	} catch (error) {
+		return [`cannot run ${binary} ulw-loop to confirm the MIT profile: ${error.message}`];
+	}
+	const timer = setTimeout(() => child.kill(), 30000);
+	try {
+		const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+		if (code === 0 || !`${stdout}${stderr}`.includes(MIT_UNAVAILABLE_MARKER)) {
+			return [`${binary} is not an MIT-profile build: \`mhc ulw-loop\` exited ${code} without "${MIT_UNAVAILABLE_MARKER}" (build maho-cli with --no-default-features)`];
+		}
+		return [];
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+export async function stageMit(options) {
+	const repoRoot = resolveRepoRoot(options.repoRoot);
+	for (const [flag, value] of [["--skill-source", options.skillSource], ["--latest-assets", options.latestAssets], ["--git-bash-binary", options.gitBashBinary], ["--omowright-runtime", options.omowrightRuntime], ["--schema", options.schema], ["--omo-root", options.omoRoot], ["--ast-grep-mcp", options.astGrepMcp], ["--lsp-daemon-binary", options.lspDaemonBinary]]) {
+		if (value !== undefined && value !== null) throw new Error(`${flag} stages SUL/OmO assets and is not accepted with --mit`);
+	}
+	const binary = resolve(options.binary ?? (await (options.build ?? buildMitBinary)(repoRoot)));
+	if (!existsSync(binary) || !(await stat(binary)).isFile()) throw new Error(`--binary is not a regular file: ${binary}`);
+	const launcher = resolve(options.launcherBinary ?? join(dirname(binary), LAUNCHER_NAME));
+	if (!existsSync(launcher) || !(await stat(launcher)).isFile()) {
+		throw new Error(`mhc launcher not found at ${launcher}: build the maho-cli bins (cargo build -p maho-cli --no-default-features --bins) or pass --launcher-binary`);
+	}
+	const profile = await mitProfileErrors(binary, !options.buildVersion);
+	if (profile.length > 0) throw new Error(profile.join("\n"));
+	const buildVersion = options.buildVersion ? normalizeBuildVersion(options.buildVersion, "--build-version") : await payloadBuildVersion(binary);
+	let desktopEngine = null;
+	if (options.desktopEngineBinary !== undefined && options.desktopEngineBinary !== null) {
+		desktopEngine = resolve(options.desktopEngineBinary);
+		if (!existsSync(desktopEngine) || !(await stat(desktopEngine)).isFile()) throw new Error(`--desktop-engine-binary is not a regular file: ${desktopEngine}`);
+	}
+	// The MIT LSP daemon sibling: --mhc-lsp-binary (required to exist), else `mhc-lsp` beside the
+	// payload when it was built (mhc falls back to in-process language servers without it).
+	let mitLspDaemon = null;
+	if (options.mhcLspBinary !== undefined && options.mhcLspBinary !== null) {
+		mitLspDaemon = resolve(options.mhcLspBinary);
+		if (!existsSync(mitLspDaemon) || !(await stat(mitLspDaemon)).isFile()) throw new Error(`--mhc-lsp-binary is not a regular file: ${mitLspDaemon}`);
+	} else if (existsSync(join(dirname(binary), MIT_LSP_DAEMON_NAME)) && (await stat(join(dirname(binary), MIT_LSP_DAEMON_NAME))).isFile()) {
+		mitLspDaemon = join(dirname(binary), MIT_LSP_DAEMON_NAME);
+	}
+	const output = resolve(options.output);
+	if (output === sep || output === resolve(homedir())) throw new Error(`refusing to stage into ${output}`);
+	const outputExists = existsSync(output);
+	if (outputExists && (await readdir(output)).length > 0 && !options.force) throw new Error(`staging directory is not empty: ${output} (pass --force to overwrite)`);
+	const licenseSources = new Map();
+	for (const license of MIT_LICENSE_FILES) {
+		const source = join(repoRoot, license.source);
+		if (!existsSync(source)) throw new Error(`license text missing from the checkout: ${license.source}`);
+		licenseSources.set(license.name, source);
+	}
+	const pins = await parsePins(repoRoot);
+	if (typeof pins.senpi !== "string" || !COMMIT_PATTERN.test(pins.senpi)) throw new Error(`pin senpi must be a full 40-hex commit (found ${JSON.stringify(pins.senpi)})`);
+
+	if (outputExists) await rm(output, { recursive: true, force: true });
+	await mkdir(join(output, LICENSES_DIR), { recursive: true });
+	const executables = [];
+	await copyExecutable(binary, join(output, CLI_BINARY_NAME));
+	executables.push(await fileEntry(output, CLI_BINARY_NAME, binary));
+	await copyExecutable(launcher, join(output, LAUNCHER_NAME));
+	executables.push(await fileEntry(output, LAUNCHER_NAME, launcher));
+	if (desktopEngine !== null) {
+		await copyExecutable(desktopEngine, join(output, DESKTOP_ENGINE_NAME));
+		executables.push(await fileEntry(output, DESKTOP_ENGINE_NAME, desktopEngine));
+	}
+	if (mitLspDaemon !== null) {
+		await copyExecutable(mitLspDaemon, join(output, MIT_LSP_DAEMON_NAME));
+		executables.push(await fileEntry(output, MIT_LSP_DAEMON_NAME, mitLspDaemon));
+	}
+	const licenses = [];
+	for (const license of MIT_LICENSE_FILES) {
+		const relPath = `${LICENSES_DIR}/${license.name}`;
+		await copyFile(licenseSources.get(license.name), join(output, relPath));
+		licenses.push(await fileEntry(output, relPath, license.source));
+	}
+	const layout = { binary: CLI_BINARY_NAME, launcher: LAUNCHER_NAME, licenses: LICENSES_DIR, manifest: MANIFEST_NAME };
+	if (desktopEngine !== null) layout.desktopEngine = DESKTOP_ENGINE_NAME;
+	if (mitLspDaemon !== null) layout.lspDaemon = MIT_LSP_DAEMON_NAME;
+	const manifest = {
+		schemaVersion: SCHEMA_VERSION,
+		generator: "tools/package-native.mjs",
+		profile: MIT_PROFILE,
+		layout,
+		versions: { mhc: buildVersion },
+		pins: { senpi: pins.senpi },
+		executables,
+		licenses,
+	};
+	await writeFile(join(output, MANIFEST_NAME), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+	const verification = await verify(output);
+	if (!verification.ok) throw new Error(`staged manifest failed self-verification:\n  ${verification.errors.join("\n  ")}`);
+	return { ok: true, output, manifestPath: join(output, MANIFEST_NAME), manifest };
+}
+
+async function verifyMit(directory, manifest) {
+	const errors = [];
+	if (manifest.schemaVersion !== SCHEMA_VERSION) errors.push(`unsupported schemaVersion: ${JSON.stringify(manifest.schemaVersion)} (expected ${SCHEMA_VERSION})`);
+	const expectedLayout = { binary: CLI_BINARY_NAME, launcher: LAUNCHER_NAME, licenses: LICENSES_DIR, manifest: MANIFEST_NAME };
+	for (const [key, value] of Object.entries(expectedLayout)) {
+		if (manifest.layout?.[key] !== value) errors.push(`layout.${key} must be ${JSON.stringify(value)} (found ${JSON.stringify(manifest.layout?.[key])})`);
+	}
+	const allowedLayout = new Set([...Object.keys(expectedLayout), "desktopEngine", "lspDaemon"]);
+	for (const key of Object.keys(manifest.layout ?? {})) {
+		if (!allowedLayout.has(key)) errors.push(`layout.${key} is not part of the MIT profile`);
+	}
+	if (manifest.layout?.desktopEngine !== undefined && manifest.layout.desktopEngine !== DESKTOP_ENGINE_NAME) {
+		errors.push(`layout.desktopEngine must be ${JSON.stringify(DESKTOP_ENGINE_NAME)} (found ${JSON.stringify(manifest.layout.desktopEngine)})`);
+	}
+	if (manifest.layout?.lspDaemon !== undefined && manifest.layout.lspDaemon !== MIT_LSP_DAEMON_NAME) {
+		errors.push(`layout.lspDaemon must be ${JSON.stringify(MIT_LSP_DAEMON_NAME)} in the MIT profile (found ${JSON.stringify(manifest.layout.lspDaemon)})`);
+	}
+	for (const key of ["skills", "conditionalSkills", "schema", "sources"]) {
+		if (manifest[key] !== undefined) errors.push(`${key} is not part of the MIT profile`);
+	}
+	if (typeof manifest.pins?.senpi !== "string" || !COMMIT_PATTERN.test(manifest.pins.senpi)) errors.push(`pin senpi must be a full 40-hex commit (found ${JSON.stringify(manifest.pins?.senpi)})`);
+	if (typeof manifest.versions?.mhc !== "string" || !BUILD_VERSION_PATTERN.test(manifest.versions.mhc)) {
+		errors.push(`versions.mhc must be the payload build version (found ${JSON.stringify(manifest.versions?.mhc)})`);
+	}
+	const executables = Array.isArray(manifest.executables) ? manifest.executables : [];
+	const licenses = Array.isArray(manifest.licenses) ? manifest.licenses : [];
+	const allowedExecutables = new Set([CLI_BINARY_NAME, LAUNCHER_NAME, DESKTOP_ENGINE_NAME, MIT_LSP_DAEMON_NAME]);
+	const allowedLicenses = new Set(MIT_LICENSE_FILES.map((license) => `${LICENSES_DIR}/${license.name}`));
+	for (const entry of [...executables, ...licenses]) {
+		if (entry === null || typeof entry !== "object" || typeof entry.path !== "string") {
+			errors.push("manifest entry without a path");
+			continue;
+		}
+		const absolute = join(directory, entry.path);
+		if (!existsSync(absolute)) {
+			errors.push(`missing: ${entry.path}`);
+			continue;
+		}
+		const info = await stat(absolute);
+		if (!info.isFile()) {
+			errors.push(`not a regular file: ${entry.path}`);
+			continue;
+		}
+		if (info.size !== entry.size) errors.push(`size mismatch: ${entry.path} (${info.size} != ${entry.size})`);
+		if ((await sha256(absolute)) !== entry.sha256) errors.push(`sha256 mismatch: ${entry.path}`);
+		if (modeString(info.mode) !== entry.mode) errors.push(`mode mismatch: ${entry.path} (${modeString(info.mode)} != ${entry.mode})`);
+	}
+	for (const entry of executables) if (typeof entry?.path === "string" && !allowedExecutables.has(entry.path)) errors.push(`executable not part of the MIT profile: ${entry.path}`);
+	for (const entry of licenses) if (typeof entry?.path === "string" && !allowedLicenses.has(entry.path)) errors.push(`license not part of the MIT profile: ${entry.path}`);
+	for (const required of [CLI_BINARY_NAME, LAUNCHER_NAME]) {
+		if (!executables.some((entry) => entry?.path === required)) errors.push(`required executable missing from the manifest: ${required}`);
+	}
+	if (manifest.layout?.desktopEngine !== undefined && !executables.some((entry) => entry?.path === DESKTOP_ENGINE_NAME)) {
+		errors.push(`declared desktop engine sibling is missing from the manifest executables: ${DESKTOP_ENGINE_NAME}`);
+	}
+	for (const relPath of allowedLicenses) {
+		if (!licenses.some((entry) => entry?.path === relPath)) errors.push(`required license missing from the manifest: ${relPath}`);
+	}
+	for (const relPath of MIT_FORBIDDEN_PATHS) {
+		if (existsSync(join(directory, relPath))) errors.push(`SUL/OmO asset present in an MIT-profile stage: ${relPath}`);
+	}
+	for (const error of await glibcCeilingErrors(directory)) errors.push(error);
+	return { ok: errors.length === 0, errors, manifest };
+}
+
 // ---------- GLIBC ceiling ----------
 
 const DEFAULT_GLIBC_CEILING = "2.28";
@@ -902,6 +1117,8 @@ export async function verify(directory) {
 	if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) {
 		return { ok: false, errors: [`${MANIFEST_NAME} is not a manifest object`], manifest };
 	}
+	if (manifest.profile === MIT_PROFILE) return verifyMit(directory, manifest);
+	if (manifest.profile !== undefined) return { ok: false, errors: [`unknown manifest profile: ${JSON.stringify(manifest.profile)}`], manifest };
 	// The manifest is the package proof, so verification requires its concrete identity: the exact
 	// schema version and the exact layout the runtime resolves. An empty or foreign object must not
 	// pass just because its optional arrays are absent.
@@ -1495,6 +1712,35 @@ async function selfTest() {
 		await writeFile(join(runtimeDroppedDir, MANIFEST_NAME), `${JSON.stringify(runtimeDropped, null, 2)}\n`);
 		const runtimeDroppedResult = await verify(runtimeDroppedDir);
 		check("a declared runtime file missing from the manifest is rejected", !runtimeDroppedResult.ok && runtimeDroppedResult.errors.some((error) => error.includes("browser runtime file is not in the hashed manifest") && error.includes("index.js")));
+
+		// MIT profile: only MIT executables and notices, and a default (omo) payload is refused.
+		const mitBin = join(root, "mit-bin");
+		await mkdir(mitBin, { recursive: true });
+		await writeFile(join(mitBin, "mhc"), `#!/bin/sh\nif [ "$1" = ulw-loop ]; then echo "mhc ulw-loop ${MIT_UNAVAILABLE_MARKER} (MIT profile)" >&2; exit 1; fi\necho v2026.1.2-mit\n`);
+		await chmod(join(mitBin, "mhc"), 0o755);
+		await writeFile(join(mitBin, LAUNCHER_NAME), "#!/bin/sh\necho launcher\n");
+		const mitOut = join(root, "mit-out");
+		const mitResult = await stageMit({ binary: join(mitBin, "mhc"), output: mitOut, repoRoot: realRepo, build: async () => { throw new Error("must not build when --binary is given"); } });
+		check("MIT stage records profile mit and verifies", mitResult.manifest.profile === MIT_PROFILE && (await verify(mitOut)).ok);
+		check("MIT stage ships no SUL licence, skills, schema or SUL siblings", MIT_FORBIDDEN_PATHS.every((relPath) => !existsSync(join(mitOut, relPath))) && existsSync(join(mitOut, LICENSES_DIR, "MIT.txt")));
+		check("MIT stage has exactly mhc and the launcher", JSON.stringify(mitResult.manifest.executables.map((entry) => entry.path).sort()) === JSON.stringify([LAUNCHER_NAME, "mhc"].sort()));
+		await writeFile(join(mitBin, MIT_LSP_DAEMON_NAME), "#!/bin/sh\necho mhc-lsp\n");
+		await chmod(join(mitBin, MIT_LSP_DAEMON_NAME), 0o755);
+		const mitLspOut = join(root, "mit-lsp-out");
+		const mitLspResult = await stageMit({ binary: join(mitBin, "mhc"), output: mitLspOut, repoRoot: realRepo, build: async () => { throw new Error("must not build when --binary is given"); } });
+		check("MIT stage ships the mhc-lsp daemon sibling when built", mitLspResult.manifest.layout.lspDaemon === MIT_LSP_DAEMON_NAME && existsSync(join(mitLspOut, MIT_LSP_DAEMON_NAME)) && !existsSync(join(mitLspOut, LSP_DAEMON_NAME)) && (await verify(mitLspOut)).ok);
+		await expectReject("MIT stage refuses a named mhc-lsp sibling that is not a file", stageMit({ binary: join(mitBin, "mhc"), output: join(root, "mit-lsp-missing"), repoRoot: realRepo, mhcLspBinary: join(mitBin, "nope") }), "not a regular file");
+		await expectReject("MIT stage refuses a default (omo) payload", stageMit({ binary: join(binDir, "mhc"), launcherBinary: join(mitBin, LAUNCHER_NAME), output: join(root, "mit-omo"), repoRoot: realRepo }), "is not an MIT-profile build");
+		await expectReject("MIT stage refuses SUL asset flags", stageMit({ binary: join(mitBin, "mhc"), output: join(root, "mit-flags"), repoRoot: realRepo, skillSource: "latest" }), "not accepted with --mit");
+		let builtWith = null;
+		await stageMit({ output: join(root, "mit-built"), repoRoot: realRepo, build: async (repoRoot) => { builtWith = repoRoot; return join(mitBin, "mhc"); } });
+		check("MIT stage builds the payload when --binary is absent", builtWith === realRepo);
+		const mitTampered = join(root, "mit-tampered");
+		await copyTree(mitOut, mitTampered);
+		await mkdir(join(mitTampered, LICENSES_DIR), { recursive: true });
+		await writeFile(join(mitTampered, LICENSES_DIR, "SUL-1.0.md"), "sul\n");
+		const mitTamperedResult = await verify(mitTampered);
+		check("MIT verify rejects a SUL licence in the stage", !mitTamperedResult.ok && mitTamperedResult.errors.some((error) => error.includes("SUL-1.0.md")));
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
@@ -1518,10 +1764,12 @@ async function main(argv) {
 	let gitBashBinary = null;
 	let lspDaemonBinary = null;
 	let desktopEngineBinary = null;
+	let mhcLspBinary = null;
 	let omowrightRuntime = null;
 	let schema = null;
 	let verifyOnly = null;
 	let force = false;
+	let mit = false;
 	let self = false;
 	let cursor = 0;
 	const next = (flag) => {
@@ -1543,10 +1791,12 @@ async function main(argv) {
 		else if (argument === "--git-bash-binary") gitBashBinary = next(argument);
 		else if (argument === "--lsp-daemon-binary") lspDaemonBinary = next(argument);
 		else if (argument === "--desktop-engine-binary") desktopEngineBinary = next(argument);
+		else if (argument === "--mhc-lsp-binary") mhcLspBinary = next(argument);
 		else if (argument === "--omowright-runtime") omowrightRuntime = next(argument);
 		else if (argument === "--schema") schema = next(argument);
 		else if (argument === "--verify-only") verifyOnly = next(argument);
 		else if (argument === "--force") force = true;
+		else if (argument === "--mit") mit = true;
 		else if (argument === "--self-test") self = true;
 		else if (argument === "--help" || argument === "-h") {
 			usage();
@@ -1564,6 +1814,17 @@ async function main(argv) {
 		console.error(`package-native: verification failed for ${resolve(verifyOnly)}`);
 		for (const error of result.errors) console.error(`  ${error}`);
 		process.exit(1);
+	}
+	if (mit) {
+		if (output === null) usageError("--output is required");
+		const options = { binary, output, launcherBinary, buildVersion, repoRoot, force, desktopEngineBinary, mhcLspBinary };
+		for (const [key, value] of Object.entries({ skillSource, latestAssets, gitBashBinary, omowrightRuntime, schema, omoRoot, astGrepMcp, lspDaemonBinary })) {
+			if (value !== null) options[key] = value;
+		}
+		const result = await stageMit(options);
+		console.log(`package-native: staged the MIT profile: ${result.manifest.executables.length} executable(s) and ${result.manifest.licenses.length} license(s) into ${result.output}`);
+		console.log(`package-native: manifest ${result.manifestPath}`);
+		return;
 	}
 	if (binary === null || output === null) usageError("--binary and --output are required");
 	const result = await stage({ binary, output, astGrepMcp, launcherBinary, buildVersion, omoRoot, repoRoot, force, skillSource, latestAssets, gitBashBinary, lspDaemonBinary, desktopEngineBinary, omowrightRuntime, schema });

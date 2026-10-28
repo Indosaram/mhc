@@ -5082,8 +5082,9 @@ async fn real_loop_renders_live_frame_before_held_delta_then_completes() {
 }
 
 #[tokio::test]
-async fn real_loop_keeps_ulw_glow_until_the_ulw_turn_ends() {
+async fn real_loop_keeps_keyword_glow_until_the_keyword_turn_ends() {
     use maho_tui::tui::Component;
+    maho_interactive::components::neon_border::register_glow_keywords(&["spk"]);
     let mut gated = gated_native_mode();
     let heavy_borders = |gated: &mut GatedMode| {
         gated
@@ -5093,11 +5094,11 @@ async fn real_loop_keeps_ulw_glow_until_the_ulw_turn_ends() {
             .filter(|line| maho_tui::utils::strip_terminal_sequences(line).starts_with('━'))
             .count()
     };
-    gated.mode.handle_input("ulw hi");
+    gated.mode.handle_input("spk hi");
     assert_eq!(
         heavy_borders(&mut gated),
         2,
-        "typing ulw lights the editor border"
+        "typing a glow keyword lights the editor border"
     );
     gated.mode.handle_input("\r");
     pump_until(&mut gated, |gated| {
@@ -5111,7 +5112,7 @@ async fn real_loop_keeps_ulw_glow_until_the_ulw_turn_ends() {
     assert_eq!(
         heavy_borders(&mut gated),
         2,
-        "the glow stays while the ulw turn runs"
+        "the glow stays while the keyword turn runs"
     );
     let _ = gated.gate.send(true);
     pump_until(&mut gated, |gated| !gated.mode.has_pending_turn()).await;

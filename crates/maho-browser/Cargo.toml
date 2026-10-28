@@ -1,0 +1,22 @@
+[package]
+name = "maho-browser"
+description = "Browser automation over the Chrome DevTools Protocol (pipe or WebSocket transport, accessibility snapshots with element refs, input, screenshots) and computer use (browser viewport or a desktop/sandbox daemon), with the `browser` and `computer` agent tools."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-ext-api = { path = "../maho-ext-api" }
+serde_json.workspace = true
+base64.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+# ws:// only (local DevTools endpoints); no TLS.
+tungstenite = { version = "=0.28.0", default-features = false, features = ["handshake"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

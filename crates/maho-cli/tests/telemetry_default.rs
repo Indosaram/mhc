@@ -256,6 +256,9 @@ async fn telemetry_defaults_to_disabled_recording_zero_requests() {
     let _ = recorder.shutdown.send(());
 }
 
+// Telemetry is recorded by the omo telemetry component; the MIT profile sends none (the
+// disabled-by-default test above still holds there).
+#[cfg(feature = "omo")]
 #[tokio::test]
 async fn telemetry_enabled_records_requests_with_geoip_disabled() {
     let temp = tempfile::tempdir().expect("tempdir");

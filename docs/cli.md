@@ -27,6 +27,7 @@ message; every other positional argument is a message.
 | `mhc import-omo [--from <dir>] [--force]` | Copy `settings.json`, `models.json`, `keybindings.json`, `auth.json`, `sessions/` and linked user-extension markers from an OmO agent directory (default `~/.omo/agent`) into the active agent directory. Only needed when the active directory is not `~/.omo/agent` (for example with `MAHO_CODING_AGENT_DIR` set); source and destination must differ. |
 | `mhc doctor` | Read-only diagnostics: omo config load, project trust, category models and packaged resources. |
 | `mhc ulw-loop <command>` | The ulw-loop goal ledger (`create-goals`, `status`, `criteria`, `record-evidence`, `checkpoint`, ...). `mhc ulw-loop help` prints the full usage. |
+| `mhc gateway list [--json]` / `mhc gateway send <session> <message…> [--steer] [--from <user>]` | MIT profile only (`--no-default-features`): list the live sessions that accept gateway messages, or deliver a message into one (session id, name or unique id prefix). See docs/MIT-PROFILE.md. |
 | `mhc schedule <command>` | Schedule and manage background task executions. |
 | `mhc models discover` | Discover and test available model provider endpoints. |
 | `mhc senpi-install` | Install or uninstall the Senpi companion plugin for editor integration. |

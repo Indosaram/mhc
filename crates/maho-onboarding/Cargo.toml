@@ -1,0 +1,18 @@
+[package]
+name = "maho-onboarding"
+description = "First-run setup for mhc's MIT profile: versioned setup steps and their selection gates (ported from oh-my-pi's MIT setup wizard), an interactive line-prompt flow and a non-interactive mhc setup path choosing a provider key and a default model, applied through a host (auth.json, settings.json) and the maho-config writer (omo.jsonc). Clean-room spec docs/cleanroom/specs/onboarding.md."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-config = { path = "../maho-config" }
+serde_json.workspace = true
+
+[dev-dependencies]
+maho-support = { path = "../maho-support" }
+tempfile.workspace = true
+
+[lints]
+workspace = true

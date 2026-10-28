@@ -1,0 +1,23 @@
+[package]
+name = "maho-model-select"
+description = "Model reference grammar, availability matching, delegated-task model choice and session-start model profiles."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-config = { path = "../maho-config" }
+maho-support = { path = "../maho-support" }
+maho-ai = { path = "../maho-ai" }
+maho-ext-api = { path = "../maho-ext-api" }
+maho-ext-recommended-models = { path = "../builtins/maho-ext-recommended-models" }
+serde_json = { workspace = true, features = ["preserve_order"] }
+regex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true
