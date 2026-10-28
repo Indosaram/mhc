@@ -142,7 +142,7 @@ fn definition(
 
 fn to_result(outcome: ToolOutcome) -> AgentToolResult {
     let mut result = AgentToolResult::text(outcome.text);
-    result.details = Some(outcome.details);
+    result.details = outcome.details;
     if outcome.is_error {
         result.is_error = Some(true);
     }

@@ -4782,6 +4782,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-gateway"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "maho-config",
+ "maho-ext-api",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "maho-get-worker"
 version = "0.0.0"
 dependencies = [
