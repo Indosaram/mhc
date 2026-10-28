@@ -533,7 +533,7 @@ impl Extension for MemoryExtension {
                         details: Some(json!({"ids": results.iter().map(|r| r.id.clone()).collect::<Vec<_>>()})),
                     });
                 }
-                Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { message, system_prompt }))
+                Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt_parts: None, message, system_prompt }))
             })
         }));
         let command_memory = Arc::clone(&memory);

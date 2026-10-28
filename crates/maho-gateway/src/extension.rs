@@ -26,7 +26,7 @@ pub struct GatewayExtension {
 pub fn receives_in(mode: ExtensionMode) -> bool {
     matches!(
         mode,
-        ExtensionMode::Tui | ExtensionMode::Rpc | ExtensionMode::AppServer
+        ExtensionMode::Tui | ExtensionMode::Rpc
     )
 }
 

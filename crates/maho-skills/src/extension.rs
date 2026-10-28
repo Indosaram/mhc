@@ -102,6 +102,7 @@ impl Extension for SkillsExtension {
                     Ok(match filter_prompt(&event.system_prompt, &disabled) {
                         Some(system_prompt) => {
                             EventResult::BeforeAgentStart(BeforeAgentStartEventResult {
+                                system_prompt_parts: None,
                                 message: None,
                                 system_prompt: Some(system_prompt),
                             })

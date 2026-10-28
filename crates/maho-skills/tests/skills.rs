@@ -37,6 +37,8 @@ fn skill_dir(root: &Path, name: &str, description: &str, extra: &str) -> Skill {
             ..SourceInfo::default()
         },
         disable_model_invocation: extra.contains("disable-model-invocation: true"),
+        provenance: None,
+        allowed_set: None,
     }
 }
 
@@ -48,6 +50,8 @@ fn core_skill(skill: &Skill) -> maho_core::skills::Skill {
         base_dir: skill.base_dir.clone(),
         source_info: maho_core::source_info::SourceInfo::default(),
         disable_model_invocation: skill.disable_model_invocation,
+        provenance: None,
+        allowed_set: None,
     }
 }
 

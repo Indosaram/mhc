@@ -328,7 +328,7 @@ impl Extension for ModelProfileExtension {
                             failure.fingerprint
                         ));
                     }
-                    let rpc = matches!(ctx.mode, ExtensionMode::Rpc | ExtensionMode::AppServer);
+                    let rpc = matches!(ctx.mode, ExtensionMode::Rpc);
                     if let ProfileResolution::Resolved {
                         provider,
                         model_id,
