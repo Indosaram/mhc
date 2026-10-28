@@ -1,8 +1,8 @@
 # Configuration
 
-mhc shares OmO's on-disk configuration: by default it reads and writes the same files the
-TypeScript OmO on senpi uses, so an existing OmO setup (providers, models, auth, agents) works
-without copying anything. Only the environment-variable prefix stays mhc's own (`MAHO_`).
+mhc keeps its configuration under `~/.omo`, the same on-disk layout OmO on senpi uses, so an
+existing setup there (providers, models, auth, agents) works without copying anything. The
+environment-variable prefix is mhc's own (`MAHO_`).
 
 ## Locations
 
@@ -17,16 +17,13 @@ without copying anything. Only the environment-variable prefix stays mhc's own (
 | `~/.omo/agent/mcp.json` | MCP servers; also read from `<project>/.omo/mcp.json` and `<project>/.mcp.json`. |
 | `~/.omo/agent/sessions/` | Session transcripts, one directory per project. Override with `--session-dir` or `MAHO_CODING_AGENT_SESSION_DIR`. |
 | `~/.omo/agent/skills/`, `prompts/`, `themes/`, `extensions/` | User skills, prompt templates, themes and extension markers. |
-| `~/.omo/omo.jsonc` (or `omo.json`) | OmO harness config: `agents`, `categories`, `task`, `memory`, `team_mode`, ... The JSON Schema ships as `omo.schema.json` beside the binary. |
+| `~/.omo/omo.jsonc` (or `omo.json`) | Harness config: `agents`, `categories`, `task`, `memory`, `model_profile`, `mcp`, `gateway`, `telemetry`, ... |
 | `<project>/.omo/settings.json` | Project settings overrides (used only when the project is trusted). |
-| `<project>/.omo/omo.jsonc` | Project OmO config, merged over the user file; the nearest ancestor directories are searched. |
+| `<project>/.omo/omo.jsonc` | Project harness config, merged over the user file; the nearest ancestor directories are searched. |
 | `<project>/AGENTS.md`, `CLAUDE.md` | Project instructions (disable with `--no-context-files`). |
 
-`mhc doctor` reports which omo config files were loaded, the trust state of the current project and
-whether every category resolves to an available model.
-
-If you keep a separate agent directory (for example `MAHO_CODING_AGENT_DIR=~/.maho/agent`),
-`mhc import-omo` copies settings, models, keybindings, auth and sessions over from `~/.omo/agent`.
+`mhc doctor` reports which config files were found and loaded, config problems, and how the active
+model profile resolves against the available models.
 
 ## Session retention
 
@@ -34,9 +31,9 @@ Sessions are kept forever by default. Set `sessionRetentionDays` in `settings.js
 from 1 to 36500 to delete idle `*.jsonl` sessions older than that many days from the default
 sessions directory at startup (a custom `--session-dir` is never pruned). Other values (0, negative,
 fractional) are rejected with a warning and nothing is pruned. Running sessions are protected by a
-`<session>.jsonl.lock` sidecar file and are skipped. Note: OmO does not acquire mhc's `.jsonl.lock`
-sidecar lock, so an idle session open only in OmO older than `sessionRetentionDays` could be pruned if
-retention is enabled.
+`<session>.jsonl.lock` sidecar file and are skipped. Other programs sharing the sessions directory do not
+take mhc's `.jsonl.lock` sidecar lock, so an idle session open only in such a program could be pruned
+if retention is enabled.
 
 ## Settings reference
 
@@ -61,16 +58,14 @@ one that is set wins. The table uses the canonical spelling shown by `mhc --help
 | --- | --- |
 | `MAHO_CODING_AGENT_DIR` | Agent directory (default `~/.omo/agent`). Also recognized as `OMO_CODING_AGENT_DIR`, `SENPI_CODING_AGENT_DIR`, `PI_CODING_AGENT_DIR`. |
 | `MAHO_CODING_AGENT_SESSION_DIR` | Session storage directory (overridden by `--session-dir`). |
-| `MAHO_MEMORY_HOME` | Root of the persistent memory store (default `~/.omo/memory`). |
+| `MAHO_MEMORY_HOME` | Legacy Markdown memory store read by `mhc memory import-legacy` (default `~/.omo/memory`). |
 | `PI_OFFLINE` | `1`/`true`/`yes` disables startup network operations (same as `--offline`). |
 | `PI_PACKAGE_DIR` | Override the package directory (resources beside the executable). |
-| `OMO_SENPI_SKILLS_ROOT` | Override the builtin skills root (default `<executable dir>/skills`). |
-| `OMO_SENPI_DISABLED` | Disable the OmO feature layer. |
+| `MAHO_SKILLS_ROOT` | Override the bundled skills root (default `<executable dir>/skills`). |
 | `PI_RULES_DISABLED`, `PI_RULES_MAX_RULE_CHARS`, `PI_RULES_MAX_RESULT_CHARS` | Builtin rules switch and size caps. |
 | `PI_TELEMETRY` | Override install telemetry when set to `1`/`true`/`yes` (force enable) or `0`/`false`/`no` (force disable), taking precedence over the `enableInstallTelemetry` setting. |
 | `DO_NOT_TRACK` | Standard privacy variable: `1`/`true`/`yes` disables all telemetry and usage event dispatch across all subsystems. |
-| `OMO_DISABLE_POSTHOG` | `1`/`true`/`yes` explicitly disables OmO PostHog telemetry event dispatch. |
-| `OMO_SEND_ANONYMOUS_TELEMETRY` | `0`/`false`/`no` opts out of anonymous telemetry collection. |
+| `MAHO_TELEMETRY`, `MAHO_USAGE_STATS` | `0` turns off all telemetry, or only the local usage ledger (see [features.md](features.md)). |
 | `OMO_CODING_AGENT_DIR` | Legacy / compatibility alias for `MAHO_CODING_AGENT_DIR` to override the agent directory. |
 | `PI_SHARE_VIEWER_URL` | Base URL for `/share`. |
 | `<PROVIDER>_API_KEY` | Provider credentials: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `AWS_*` for Bedrock, `AZURE_OPENAI_*`, ... `mhc --help` lists all of them. |

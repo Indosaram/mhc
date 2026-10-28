@@ -1,31 +1,15 @@
 # License
 
-This repository is mixed-licensed: each directory carries the license of the upstream
-project it ports, so different parts of the tree are under different terms.
-
-## MIT
-
-Applies to `crates/maho-*`, `crates/builtins`, `crates/extensions`, `crates/vendor`,
-and every other file not listed under SUL-1.0 below. These port
+This repository is licensed under the MIT License, except for the third-party components
+listed below, which keep their own licenses. It ports
 [senpi](https://github.com/code-yeongyu/senpi) (MIT).
 Full text: `LICENSES/MIT.txt`
 
-## Sustainable Use License 1.0 (SUL-1.0)
-
-Applies to `crates/omo/**` except `crates/omo/senpi-desktop-*` (MIT, ports senpi), which ports
-[oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent).
-Full text: `LICENSES/SUL-1.0.md`
-
-The SUL-1.0 portions may be used, copied, modified, and used to prepare derivative works
-for your own internal business purposes or for non-commercial or personal use. They may be
-distributed or provided to others only free of charge for non-commercial purposes. All
-licensing, copyright, or other notices of the licensor must be preserved.
-
 ## Distributed binaries
 
-The shipped `mhc` executable links SUL-1.0 code, so its distribution is governed by
-SUL-1.0 as well as MIT. Distribution of the combined binary is permitted only free of
-charge for non-commercial purposes, and all notices must be preserved.
+The shipped `mhc` executable and its sibling binaries are built only from the MIT sources in
+this repository plus the third-party components below, so they may be used, modified and
+redistributed, including commercially, under the MIT License and those components' terms.
 
 ## Third-party components
 
@@ -40,9 +24,3 @@ Portions of this software incorporate or derive from third-party works:
 - `assets/omo-latest/skills/frontend/LICENSE-Apache-2.0.txt` (Apache-2.0)
 - `assets/omo-latest/skills/ast-grep/LICENSE` (MIT)
 - Rust crate dependencies: `THIRD_PARTY_LICENSES.md`
-
-## Modification notice
-
-This software is a modified derivative of both upstream projects: it is a Rust
-reimplementation of their TypeScript sources, not the original code. This notice is
-provided as required by the Sustainable Use License.
