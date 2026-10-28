@@ -25,6 +25,10 @@ pub mod extension_registry;
 pub mod file_processor;
 #[cfg(not(feature = "omo"))]
 pub mod git_tools;
+#[cfg(not(feature = "omo"))]
+pub mod builtin_mcp;
+#[cfg(not(feature = "omo"))]
+pub mod skill_library;
 pub mod global_default_shims;
 pub mod gpt_account_host;
 pub mod grok_neo_gate;
