@@ -34,6 +34,7 @@ members = [
     "crates/maho-gateway",
     "crates/maho-agent-home",
     "crates/maho-onboarding",
+    "crates/maho-context-files",
     "crates/builtins/maho-ext-account",
     "crates/builtins/maho-ext-anthropic-bash",
     "crates/builtins/maho-ext-anthropic-subscription",
