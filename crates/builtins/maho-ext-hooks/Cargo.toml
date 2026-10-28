@@ -5,14 +5,7 @@ edition.workspace = true
 publish.workspace = true
 license = "MIT"
 
-# `claude-plugins` discovers installed Claude Code plugins' hooks through the SUL
-# `claude-code-compat-core` crate (crates/omo). maho-cli's MIT profile builds without it.
-[features]
-default = ["claude-plugins"]
-claude-plugins = ["dep:claude-code-compat-core"]
-
 [dependencies]
-claude-code-compat-core = { path = "../../omo/claude-code-compat-core", optional = true }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = { version = "=1.0.149", features = ["preserve_order"] }
 sha2 = "=0.10.9"

@@ -22,7 +22,7 @@ version="$today-$next"
 
 cd "$root"
 export MHC_BUILD_VERSION="$version"
-CARGO_INCREMENTAL=0 cargo build --release -p maho-cli -p maho-ast-grep-mcp -p maho-lsp-daemon -p maho-git-bash-mcp -p maho-senpi-desktop-engine --bins
+CARGO_INCREMENTAL=0 cargo build --release -p maho-cli -p maho-senpi-desktop-engine --bins
 
 mkdir -p "$install_dir" "$bin_dir"
 work="$(mktemp -d "$install_dir/.dev-install.XXXXXX")"

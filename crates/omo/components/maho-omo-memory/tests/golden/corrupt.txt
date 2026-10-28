@@ -1,1 +1,0 @@
-frontmatter: target file is missing required frontmatter

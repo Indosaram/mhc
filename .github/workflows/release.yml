@@ -163,7 +163,7 @@ jobs:
             fi
             echo "Building candidate pair: A=$VER_A and B=$VER_B"
             export MHC_BUILD_VERSION="${VER_A#v}"
-            build_release -p maho-cli -p maho-ast-grep-mcp -p maho-lsp-daemon -p maho-git-bash-mcp -p maho-senpi-desktop-engine --bins
+            build_release -p maho-cli -p maho-senpi-desktop-engine --bins
             test "$(./target/release/mhc$EXE --version | tr -d '\r')" = "$MHC_BUILD_VERSION"
             test -f "target/release/mhc-launcher$EXE"
             mkdir -p target/release-A target/release-B
@@ -177,7 +177,7 @@ jobs:
             export MHC_BUILD_VERSION="${CANDIDATE_VERSION:+${CANDIDATE_VERSION#v}}"
             export MHC_BUILD_VERSION="${MHC_BUILD_VERSION:-${TAG:+${TAG#v}}}"
             export MHC_BUILD_VERSION="${MHC_BUILD_VERSION:-0.0.0-cache}"
-            build_release -p maho-cli -p maho-ast-grep-mcp -p maho-lsp-daemon -p maho-git-bash-mcp -p maho-senpi-desktop-engine --bins
+            build_release -p maho-cli -p maho-senpi-desktop-engine --bins
             test "$(./target/release/mhc$EXE --version | tr -d '\r')" = "$MHC_BUILD_VERSION"
             test -f "target/release/mhc-launcher$EXE"
           fi
