@@ -354,7 +354,6 @@ fn settings_from_config_and_env() {
 fn only_long_lived_modes_receive() {
     assert!(receives_in(ExtensionMode::Tui));
     assert!(receives_in(ExtensionMode::Rpc));
-    assert!(receives_in(ExtensionMode::AppServer));
     assert!(!receives_in(ExtensionMode::Print));
     assert!(!receives_in(ExtensionMode::Json));
 }

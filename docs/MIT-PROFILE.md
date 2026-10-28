@@ -28,7 +28,7 @@ build", refuses the SUL/OmO staging flags, and `--verify-only` rejects a stage c
 
 Everything outside the omo port:
 
-- interactive TUI, print (`-p`), RPC, app-server, multi-session host and the mini/coordinator
+- interactive TUI, print (`-p`), RPC, multi-session host and the mini/coordinator
   processes;
 - every provider, OAuth login and model catalog;
 - builtin tools: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, and the rest of `maho-tools`;
@@ -269,7 +269,7 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
 | omo memory tools and commands (`/remember`, `/dream`, `/reflect`, `/search`, `/people`, `/palace`, `/init`, `/doctor`, `/facts`, `/memfs`, ...), the omo recall sidecar, facts child, git-backed Markdown memory | not registered (MIT `<builtin:memory>` provides `retain`, `recall`, `memory_get`, `memory_forget`, first-turn auto-recall and `/memory`) |
 | ast-grep MCP; the omo builtin MCPs; `x_search`; omo browser bridge | not registered (MIT `<builtin:browser>` provides the `browser` and `computer` tools; MIT `<builtin:mcp-builtins>` declares `context7` and `grep_app`) |
 | omo gateway, onboarding, init-deep advisor, git-master, omo telemetry | not registered (MIT `<builtin:gateway>` provides `session_list`, `session_send` and `mhc gateway list|send`; MIT `<builtin:telemetry>` provides the usage ledger, `mhc usage` and opt-in OTLP export; MIT `<builtin:git>` provides read-only git inspection tools) |
-| bundled omo skills (`OMO_SENPI_SKILLS_ROOT`) and the omo skill tools/commands | not registered (MIT `<builtin:skills>` provides the bundled root via `MAHO_SKILLS_ROOT` or `skills/` beside the executable, app-server `skills/list` included, `disabled_skills`, the `skill` tool and `/skill`) |
+| bundled omo skills (`OMO_SENPI_SKILLS_ROOT`) and the omo skill tools/commands | not registered (MIT `<builtin:skills>` provides the bundled root via `MAHO_SKILLS_ROOT` or `skills/` beside the executable, `disabled_skills`, the `skill` tool and `/skill`) |
 | `builtin:task-member` (`--extension builtin:task-member`) | unknown native extension error |
 | Claude Code plugin hooks (`maho-ext-hooks` feature `claude-plugins`) | not discovered; `~/.claude/settings.json` and project `.claude/settings*.json` hooks still load |
 | `mhc ulw-loop`, `--memory-supervisor`, `--child-bootstrap` | print "not available in this build", exit 1 (`--omo-memory-mcp` now starts the MIT memory MCP server) |
