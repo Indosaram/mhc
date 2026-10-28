@@ -31,9 +31,9 @@ const BOUND: Duration = Duration::from_secs(5);
 #[derive(Clone, Debug)]
 enum Event {
     Repaint,
-    Mount(MountMode),
+    Mount,
     Unmount,
-    Notify(String, NotificationType),
+    Notify(String),
     Viewer(Viewer),
     Pick(Vec<String>),
 }
@@ -81,7 +81,7 @@ impl TestHost {
         self.events()
             .into_iter()
             .filter_map(|e| match e {
-                Event::Notify(m, _) => Some(m),
+                Event::Notify(m) => Some(m),
                 _ => None,
             })
             .collect()
@@ -138,16 +138,16 @@ impl PanelHost for TestHost {
         let _ = self.repaints.send(());
     }
 
-    fn mount(&self, mode: MountMode) {
-        self.push(Event::Mount(mode));
+    fn mount(&self, _mode: MountMode) {
+        self.push(Event::Mount);
     }
 
     fn unmount(&self) {
         self.push(Event::Unmount);
     }
 
-    fn notify(&self, message: &str, kind: NotificationType) {
-        self.push(Event::Notify(message.into(), kind));
+    fn notify(&self, message: &str, _kind: NotificationType) {
+        self.push(Event::Notify(message.into()));
     }
 
     fn open_viewer(&self, viewer: Viewer) {
@@ -322,7 +322,7 @@ fn t05_column_hidden_below_min_columns_and_shown_again_without_remount() {
     let mounts = host
         .events()
         .iter()
-        .filter(|e| matches!(e, Event::Mount(_)))
+        .filter(|e| matches!(e, Event::Mount))
         .count();
     assert_eq!(mounts, 1);
 }

@@ -88,7 +88,7 @@ pub trait WorkerHost: Send + Sync {
 }
 
 /// Where a worker task's pool lives.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkerEntry {
     /// The parent's task state dir (holds `workpools/`).
     pub state_dir: PathBuf,

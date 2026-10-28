@@ -9,7 +9,7 @@ use crate::settings::Settings;
 use crate::MUTATION_TOOLS;
 use maho_ext_api::{
     EventKind, EventResult, Extension, ExtensionApi, ExtensionEvent, ToolContent,
-    ToolResultEventResult, ToolSessionManager as _,
+    ToolResultEventResult,
 };
 use maho_lsp::config::ConfigPaths;
 use maho_lsp::manager::LspManagerOptions;
