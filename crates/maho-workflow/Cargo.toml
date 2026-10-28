@@ -1,0 +1,25 @@
+[package]
+name = "maho-workflow"
+description = "Workflow runs for mhc's delegated tasks: validated dependency graphs of child tasks scheduled in waves, with retries, amendments, user pause/guidance, durable run records and journals, recovery, retention, the `workflow` tool and `/dag` (clean-room spec docs/cleanroom/specs/workflow-dag.md)."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-ext-api = { path = "../maho-ext-api" }
+maho-task = { path = "../maho-task" }
+maho-skills = { path = "../maho-skills" }
+hex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "test-util"] }
+
+[lints]
+workspace = true
