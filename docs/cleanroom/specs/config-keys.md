@@ -19,7 +19,7 @@ whole string must match.
   `legacy_migrations`. Unknown keys are removed with a diagnostic (config.md §4.4).
 - `[native]` / `[senpi]` / `[codex]`: may contain `side_panel`, `formatOnMutation`, `gateway`,
   `categories`, `agents`, `git_master`, `task`, `teams`, `models`, `model_profiles`,
-  `model_profile`, `memory`, `telemetry`, `computer`, `disabled_skills` (same shapes as top level,
+  `model_profile`, `memory`, `telemetry`, `computer`, `disabled_skills`, `mcp` (same shapes as top level,
   all optional, no defaults inside the block).
 - `[opencode]`: object with arbitrary content (never interpreted by mhc).
 - `profiles.<name>`: may contain the same keys as a typed harness block **except `gateway`**, plus
@@ -159,6 +159,14 @@ Owner: Phase 1 (model fields) / Phase 2 task (execution fields)
 Owner: Phase 1 (config.md §9) / Phase 3 skill loader
 
 - `disabled_skills` : array<string>
+
+## `mcp`
+
+Owner: Phase 3 skill/MCP step (mcp.md §3). Added by the MIT profile; not present in older files.
+
+- `mcp` : object
+- `mcp.builtins` : boolean [default=true]
+- `mcp.disabled_builtins` : array<string>
 
 ## `profiles`
 

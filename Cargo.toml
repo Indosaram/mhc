@@ -29,6 +29,8 @@ members = [
     "crates/maho-git",
     "crates/maho-isolation",
     "crates/maho-team",
+    "crates/maho-skills",
+    "crates/maho-mcp-builtins",
     "crates/builtins/maho-ext-account",
     "crates/builtins/maho-ext-anthropic-bash",
     "crates/builtins/maho-ext-anthropic-subscription",

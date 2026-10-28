@@ -4941,6 +4941,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-mcp-builtins"
+version = "0.0.0"
+dependencies = [
+ "maho-config",
+ "maho-ext-api",
+ "maho-ext-mcp",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "maho-mcp-stdio-core"
 version = "0.0.0"
 dependencies = [
@@ -5971,6 +5982,17 @@ dependencies = [
  "tokio-tungstenite",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "maho-skills"
+version = "0.0.0"
+dependencies = [
+ "maho-config",
+ "maho-core",
+ "maho-ext-api",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

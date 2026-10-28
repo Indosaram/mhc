@@ -685,6 +685,13 @@ fn sections(include_gateway: bool) -> Vec<Field> {
         ),
         f("computer", computer()),
         f("disabled_skills", array(s())),
+        f(
+            "mcp",
+            obj(vec![
+                d("builtins", Rule::Bool, json!(true)),
+                f("disabled_builtins", array(s())),
+            ]),
+        ),
     ];
     if include_gateway {
         out.push(f("gateway", map(Rule::Any)));

@@ -39,7 +39,7 @@ pub use model_string::{
     REASONING_LEVELS, canonical_model_string, known_level, normalize_legacy_model_fields,
 };
 pub use paths::{Candidate, Scope, project_paths_farthest_first, resolve_paths};
-pub use skills::collect_disabled_skills;
+pub use skills::{collect_disabled_mcp_builtins, collect_disabled_skills};
 pub use writer::{
     Edit, WriteError, WriteOp, WriteOptions, WriteOutcome, WriteTarget, update_config,
 };
