@@ -301,8 +301,17 @@ fn session_send_refuses_bad_input_and_relay_loops() {
             out.text
         );
     }
-    let out = tools::send(&store, &caller(3), 3, &json!({"to": "peer", "message": "x"}));
-    assert!(out.is_error && out.text.contains("relay limit"), "{}", out.text);
+    let out = tools::send(
+        &store,
+        &caller(3),
+        3,
+        &json!({"to": "peer", "message": "x"}),
+    );
+    assert!(
+        out.is_error && out.text.contains("relay limit"),
+        "{}",
+        out.text
+    );
     assert!(store.pending("peer0001").is_empty());
 }
 
