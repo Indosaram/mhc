@@ -186,7 +186,7 @@ async fn read_stderr(mut stream: impl AsyncRead + Unpin) -> String {
 
 enum Line {
     Eof,
-    Line(Vec<u8>),
+    Bytes(Vec<u8>),
     TooLarge,
 }
 
@@ -196,13 +196,13 @@ async fn read_line(reader: &mut (impl AsyncBufRead + Unpin)) -> std::io::Result<
     loop {
         let available = reader.fill_buf().await?;
         if available.is_empty() {
-            return Ok(if line.is_empty() { Line::Eof } else { Line::Line(line) });
+            return Ok(if line.is_empty() { Line::Eof } else { Line::Bytes(line) });
         }
         match available.iter().position(|&b| b == b'\n') {
             Some(at) => {
                 line.extend_from_slice(&available[..at]);
                 reader.consume(at + 1);
-                return Ok(if line.len() > MAX_LINE_BYTES { Line::TooLarge } else { Line::Line(line) });
+                return Ok(if line.len() > MAX_LINE_BYTES { Line::TooLarge } else { Line::Bytes(line) });
             }
             None => {
                 let n = available.len();
@@ -269,7 +269,7 @@ pub async fn collect(
                     "The program printed a line longer than 1 MiB.",
                 ));
             }
-            Ok(Line::Line(bytes)) => bytes,
+            Ok(Line::Bytes(bytes)) => bytes,
             Err(error) => {
                 break Stop::Fail(ToolError::new(
                     SG_FAILED,

@@ -290,8 +290,7 @@ async fn run_failing_tool(body: &str, timeout: Duration) -> (FormatReport, Vec<u
     project.file("go.mod", "module m\n");
     let file = project.file("m.go", "package m\n");
     let original = std::fs::read(&file).expect("read");
-    let mut config = Settings::default();
-    config.timeout = timeout;
+    let config = Settings { timeout, ..Settings::default() };
     let report = engine(project.host())
         .process(&project.request("edit", json!({"path": "m.go"}), config))
         .await;

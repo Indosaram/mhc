@@ -78,7 +78,7 @@ impl ClientIdentity {
         let string = |key: &str| object.get(key).and_then(Value::as_str);
         let id = |key: &str| {
             string(key)
-                .filter(|text| valid_id(text) && clean(*text))
+                .filter(|text| valid_id(text) && clean(text))
                 .map(str::to_owned)
         };
         let name = |key: &str| {

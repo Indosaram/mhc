@@ -367,7 +367,7 @@ fn start_call_server(engine: &PoolEngine) {
             if runtime().is_none() {
                 return;
             }
-            if tick % 50 == 0 {
+            if tick.is_multiple_of(50) {
                 granting = bridge::has_granting_pools(&store);
             }
             tick = tick.wrapping_add(1);

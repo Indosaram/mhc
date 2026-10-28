@@ -72,7 +72,7 @@ pub struct ToolError {
     pub message: String,
     pub phase: Phase,
     pub language: Option<String>,
-    pub details: Value,
+    pub details: Box<Value>,
 }
 
 impl ToolError {
@@ -82,7 +82,7 @@ impl ToolError {
             message: message.into(),
             phase,
             language: None,
-            details: json!({}),
+            details: Box::new(json!({})),
         }
     }
 
@@ -91,7 +91,7 @@ impl ToolError {
     }
 
     pub fn with_details(mut self, details: Value) -> Self {
-        self.details = details;
+        self.details = Box::new(details);
         self
     }
 
@@ -118,7 +118,7 @@ impl ToolError {
         if let Some(language) = &self.language {
             error.insert("language".into(), json!(language));
         }
-        error.insert("details".into(), self.details.clone());
+        error.insert("details".into(), Value::clone(&self.details));
         let mut out = Map::new();
         out.insert("schemaVersion".into(), json!(1));
         out.insert("ok".into(), json!(false));
