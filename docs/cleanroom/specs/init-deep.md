@@ -46,6 +46,9 @@ Settings (§6): `max_depth` (3), `max_dirs` (12), `min_files` (20).
   `crates/` or `web/`) are not candidates; their children are.
 - A candidate whose subtree code files equal those of its only candidate child is dropped in
   favour of the child.
+- A candidate without a manifest whose parent is a candidate with a manifest and the same
+  `subtree_code_files` (a package's only code directory, such as its `src/`) is dropped in favour
+  of the parent.
 - Score = `subtree_code_files` + 40 × manifests + 10 × `has_tests`; the best `max_dirs - 1`
   candidates are kept (ties: shallower first, then path order).
 - Targets are processed deepest first, so a parent can summarise its children.

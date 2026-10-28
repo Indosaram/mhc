@@ -1003,7 +1003,7 @@ def context_files_smoke(mhc: str, home: pathlib.Path, work: pathlib.Path, agent:
                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
         doc = json.loads(plan.stdout or "{}") if plan.returncode == 0 else {}
         paths = [t.get("path") for t in doc.get("targets", [])]
-        if "." not in paths or "crates/core" not in paths or paths[-1] != "." or ContextModel.requests:
+        if paths != ["crates/core", "."] or ContextModel.requests:
             return f"`mhc init-deep --plan` is wrong (exit {plan.returncode})\nstdout: {plan.stdout}\nstderr: {plan.stderr}"
 
         rpc = subprocess.Popen([mhc, "--mode", "rpc", "--offline", "--no-session", "--model", "offline/offline"],

@@ -126,9 +126,22 @@ pub fn choose(analysis: &Analysis, settings: &Settings) -> Vec<String> {
         .collect();
     // Single-child collapse: drop a candidate whose code all sits in exactly one candidate child.
     let paths: Vec<String> = candidates.iter().map(|f| f.path.clone()).collect();
+    let manifest_parent_holds_all = |f: &DirFacts| {
+        let parent = f.path.rsplit_once('/').map(|(parent, _)| parent);
+        parent.is_some_and(|parent| {
+            paths.iter().any(|p| p == parent)
+                && analysis.dirs.get(parent).is_some_and(|p| {
+                    !p.manifests.is_empty() && p.subtree_code_files == f.subtree_code_files
+                })
+        })
+    };
     candidates.retain(|f| {
         if !f.manifests.is_empty() {
             return true;
+        }
+        // A package's only code directory (e.g. `src/` holding all of it) adds nothing.
+        if manifest_parent_holds_all(f) {
+            return false;
         }
         let children: Vec<&String> = paths
             .iter()
