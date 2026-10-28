@@ -96,6 +96,12 @@ maho-skills = { path = "../maho-skills" }
 maho-mcp-builtins = { path = "../maho-mcp-builtins" }
 # MIT session gateway (`session_list`/`session_send`, inbox delivery into long-lived sessions, `mhc gateway list|send`); mounted as `<builtin:gateway>` in the MIT profile only.
 maho-gateway = { path = "../maho-gateway" }
+# MIT agent home (`mhc home`), first-run setup (`mhc setup`, first-run gate) and project context
+# files (`mhc init-deep`, `<builtin:context-files>`); used by the MIT profile only.
+maho-agent-home = { path = "../maho-agent-home" }
+maho-onboarding = { path = "../maho-onboarding" }
+maho-context-files = { path = "../maho-context-files" }
+rpassword = "=7.5.4"
 maho-omo-task = { path = "../omo/components/maho-omo-task", optional = true }
 maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }
 maho-ext-hooks = { path = "../builtins/maho-ext-hooks", default-features = false }

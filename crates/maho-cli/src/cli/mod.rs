@@ -30,6 +30,12 @@ pub mod builtin_mcp;
 pub mod skill_library;
 #[cfg(not(feature = "omo"))]
 pub mod session_gateway;
+#[cfg(not(feature = "omo"))]
+pub mod user_home;
+#[cfg(not(feature = "omo"))]
+pub mod first_run;
+#[cfg(not(feature = "omo"))]
+pub mod project_context;
 pub mod global_default_shims;
 pub mod gpt_account_host;
 pub mod grok_neo_gate;

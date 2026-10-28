@@ -485,6 +485,25 @@ Owner: Phase 3 gateway (`crates/maho-gateway`, spec `gateway.md` §8)
 - `gateway.max_hops` : integer default=3 (read by `maho-gateway`)
 - other keys are accepted and ignored
 
+## `setup`
+
+Owner: Phase 3 first-run setup (`crates/maho-onboarding`, spec `onboarding.md` §5)
+
+- `setup` : map<string,any> (top level only, like `gateway`)
+- `setup.enabled` : boolean default=true (read by `maho-onboarding`)
+- other keys are accepted and ignored
+
+## `init_deep`
+
+Owner: Phase 3 project context files (`crates/maho-context-files`, spec `init-deep.md` §6)
+
+- `init_deep` : map<string,any> (top level only, like `gateway`)
+- `init_deep.advise` : boolean default=true
+- `init_deep.max_depth` : integer default=3, minimum 0
+- `init_deep.max_dirs` : integer default=12, minimum 1
+- `init_deep.min_files` : integer default=20, minimum 1
+- other keys are accepted and ignored
+
 ## `side_panel`
 
 Owner: Phase 3 (desktop/TUI side panel)
