@@ -295,7 +295,7 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
     and its children's summaries. Existing files are kept unless `--update`;
   - `/init-deep [update]` sends the same plan to the current session's agent, which writes the
     files with its own tools;
-  - in TUI/RPC/app-server sessions inside a git repository without `AGENTS.md`/`CLAUDE.md` at the
+  - in TUI/RPC sessions inside a git repository without `AGENTS.md`/`CLAUDE.md` at the
     root and with at least `min_files` source files, a one-time notification suggests
     `/init-deep` (recorded in `~/.omo/state/context-advice.json`). `MAHO_CONTEXT_ADVICE=0` or
     `init_deep.advise: false` turns it off; `init_deep.max_depth|max_dirs|min_files` tune the choice.
