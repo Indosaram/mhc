@@ -260,6 +260,45 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
   - `MAHO_GATEWAY=0` or `gateway.enabled: false` turns it off.
   - Not included: holding a delivery while the user has an unsent draft, turn-epoch checks for
     steers, a control socket, external chat bridges.
+- Agent home (`maho-agent-home`, clean room from `docs/cleanroom/specs/agent-home.md` over the
+  senpi agent dir): one layout for `~/.omo` (`omo.jsonc`, `state/`) and the agent dir (`auth.json`,
+  `models.json`, `settings.json`, `sessions/`, `skills/`, `extensions/`, `prompts/`, `bin/`).
+  `mhc home [--json]` reports it (exit 1 on a problem: wrong kind, or a group/other-readable
+  `auth.json`), `mhc home init` creates the missing directories (0700, never files), `mhc home
+  repair` also makes `auth.json` private. The first-run setup state lives in
+  `~/.omo/state/setup.json`; existing installs with a legacy `onboarding-completed` marker count as
+  set up.
+- First-run setup (`maho-onboarding`; versioned steps and gates ported from MIT oh-my-pi's setup
+  wizard @ f59bbac, flows from `docs/cleanroom/specs/onboarding.md`):
+  - `mhc setup` asks on the terminal for a provider (catalog from `models.json` + the builtin
+    providers, `✓` = credential present), an API key when none is stored (no echo) and a default
+    model; `mhc setup --provider <id> [--model <provider/id>] [--api-key-env VAR | --api-key-stdin]
+    --yes [--json]` does the same without prompts; `mhc setup --check` prints the stored and
+    current setup versions;
+  - applying a choice stores the key in `auth.json` (`{"type":"api_key"}`, mode 0600), writes
+    `defaultProvider`/`defaultModel` to `settings.json` (interactive sessions) and, through the
+    comment-preserving `maho-config` writer, `model_profiles.setup.models` + `model_profile:
+    "setup"` to `~/.omo/omo.jsonc` (print/JSON/RPC sessions), then records the setup state;
+  - first-run gate: an interactive start (no `-p`, no messages, stdin and stdout terminals, not
+    resuming) with a stale setup version and no usable model runs the prompts before the session;
+    with a usable model it only records the state. `MAHO_SKIP_SETUP=1` or `setup.enabled: false`
+    turns the gate off. Not included: OAuth browser logins and the theme/glyph/composer scenes.
+- Project context files (`maho-context-files`, clean room from `docs/cleanroom/specs/init-deep.md`
+  after MIT oh-my-pi's `/init` prompt and senpi's nested `AGENTS.md` loading), mounted as
+  `<builtin:context-files>`:
+  - `mhc init-deep [--plan [--json]] [--update] [--dry-run] [--model M] [--root DIR]
+    [--max-depth N] [--max-dirs N] [--min-files N]`: analyses the repository (git top-level;
+    ignore files honoured; `node_modules`, `target`, ... skipped), picks the root plus the
+    significant directories (a build manifest, or at least `min_files` source files; directories
+    without files of their own are skipped), and writes each `AGENTS.md` deepest first with a child
+    `mhc -p --no-session --tools read,grep,find,ls` run whose prompt carries the directory's facts
+    and its children's summaries. Existing files are kept unless `--update`;
+  - `/init-deep [update]` sends the same plan to the current session's agent, which writes the
+    files with its own tools;
+  - in TUI/RPC/app-server sessions inside a git repository without `AGENTS.md`/`CLAUDE.md` at the
+    root and with at least `min_files` source files, a one-time notification suggests
+    `/init-deep` (recorded in `~/.omo/state/context-advice.json`). `MAHO_CONTEXT_ADVICE=0` or
+    `init_deep.advise: false` turns it off; `init_deep.max_depth|max_dirs|min_files` tune the choice.
 
 ## What is compiled out (needs the `omo` feature)
 
@@ -268,7 +307,7 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
 | omo mount (`<builtin:omo>`): its task/subagent tools, `team_*`, `workflow`/DAG, `workpool`, `/task-kill`, `/dag` | not registered (MIT `<builtin:task>` provides `task`, `task_output`, `task_list`, `task_resume`, `task_cancel`, `/tasks`, and from `maho-team` `team_create`, `team_members`, `team_message`, `team_wait`, `team_stop`, `/team`) |
 | omo memory tools and commands (`/remember`, `/dream`, `/reflect`, `/search`, `/people`, `/palace`, `/init`, `/doctor`, `/facts`, `/memfs`, ...), the omo recall sidecar, facts child, git-backed Markdown memory | not registered (MIT `<builtin:memory>` provides `retain`, `recall`, `memory_get`, `memory_forget`, first-turn auto-recall and `/memory`) |
 | ast-grep MCP; the omo builtin MCPs; `x_search`; omo browser bridge | not registered (MIT `<builtin:browser>` provides the `browser` and `computer` tools; MIT `<builtin:mcp-builtins>` declares `context7` and `grep_app`) |
-| omo gateway, onboarding, init-deep advisor, git-master, omo telemetry | not registered (MIT `<builtin:gateway>` provides `session_list`, `session_send` and `mhc gateway list|send`; MIT `<builtin:telemetry>` provides the usage ledger, `mhc usage` and opt-in OTLP export; MIT `<builtin:git>` provides read-only git inspection tools) |
+| omo gateway, onboarding, init-deep advisor, git-master, omo telemetry | not registered (MIT `<builtin:gateway>` provides `session_list`, `session_send` and `mhc gateway list|send`; MIT `maho-onboarding` provides `mhc setup` and the first-run gate; MIT `<builtin:context-files>` provides `/init-deep`, `mhc init-deep` and the session-start suggestion; MIT `<builtin:telemetry>` provides the usage ledger, `mhc usage` and opt-in OTLP export; MIT `<builtin:git>` provides read-only git inspection tools) |
 | bundled omo skills (`OMO_SENPI_SKILLS_ROOT`) and the omo skill tools/commands | not registered (MIT `<builtin:skills>` provides the bundled root via `MAHO_SKILLS_ROOT` or `skills/` beside the executable, app-server `skills/list` included, `disabled_skills`, the `skill` tool and `/skill`) |
 | `builtin:task-member` (`--extension builtin:task-member`) | unknown native extension error |
 | Claude Code plugin hooks (`maho-ext-hooks` feature `claude-plugins`) | not discovered; `~/.claude/settings.json` and project `.claude/settings*.json` hooks still load |
@@ -309,7 +348,14 @@ mass-ulw, persona prompts) are removed, not ported.
    server from `<agent dir>/mcp.json` is started and its tool `mcp_smokefake_echo` answers a model
    call, that the builtin remote MCP servers are absent offline, that an RPC session registers with
    the gateway, receives `mhc gateway send` and a `session_send` relay from a `-p` run (both with the
-   gateway header) and is unlisted after it exits while `MAHO_GATEWAY=0` hides the tools, that model calls are written to the usage
+   gateway header) and is unlisted after it exits while `MAHO_GATEWAY=0` hides the tools, that
+   `mhc home init`/`--json`/`repair` build and report the agent home and fix a readable
+   `auth.json`, that `mhc setup --provider ... --yes` writes the key, the default model and the
+   `setup` model profile (resolved by `mhc doctor`) while refusing an unknown provider or a missing
+   `--yes`, that (with `tmux`) an interactive start without a usable model runs the setup prompts
+   with the key unechoed, that `mhc init-deep` plans and writes the root and package `AGENTS.md`
+   files deepest first through read-only child runs (a rerun keeps them) and an RPC session in the
+   fixture repository suggests `/init-deep` once, that model calls are written to the usage
    ledger and exported to a loopback OTLP collector (traces, metrics, logs, no content) while
    `DO_NOT_TRACK=1` stops the export and `MAHO_TELEMETRY=0` stops both, that `mhc usage`
    (`--json`, `--status`) reports the ledger, that `mhc doctor` reports the config sources and resolves a pinned
