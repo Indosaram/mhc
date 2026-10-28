@@ -142,8 +142,12 @@ impl TaskManager {
 
     /// The record of `id`, reconciled against live processes.
     pub fn get(&self, id: &str) -> Option<TaskRecord> {
+        // A task saves its final record before leaving `live`: checking before the load keeps a
+        // concurrently finishing task from being overwritten as interrupted, and checking after
+        // keeps the original guard for one that starts in between.
+        let live_before = self.is_live(id);
         let mut record = self.options.state.load(id)?;
-        if reconcile(&mut record, self.is_live(id)) {
+        if reconcile(&mut record, live_before || self.is_live(id)) {
             let _ = self.options.state.save(&record);
         }
         Some(record)
@@ -151,12 +155,13 @@ impl TaskManager {
 
     /// Every task of this state directory, oldest first.
     pub fn list(&self) -> Vec<TaskRecord> {
+        let live: std::collections::HashSet<String> = lock(&self.live).keys().cloned().collect();
         self.options
             .state
             .load_all()
             .into_iter()
             .map(|mut record| {
-                let owned = self.is_live(&record.id);
+                let owned = live.contains(&record.id) || self.is_live(&record.id);
                 if reconcile(&mut record, owned) {
                     let _ = self.options.state.save(&record);
                 }
