@@ -141,6 +141,12 @@ pub fn mit_config_factories() -> Vec<NativeExtensionFactory> {
         factory("context-files", super::project_context::extension()),
         factory("approval-gates", maho_approval_gates::ApprovalGates),
         factory(
+            "feedback",
+            maho_feedback::FeedbackExtension::with_product_version(
+                option_env!("MHC_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+            ),
+        ),
+        factory(
             "x-search",
             maho_x_search::XSearchExtension::new(maho_core::config::get_agent_dir()),
         ),
@@ -921,6 +927,7 @@ mod mit_tests {
                 "<builtin:gateway>",
                 "<builtin:context-files>",
                 "<builtin:approval-gates>",
+                "<builtin:feedback>",
                 "<builtin:x-search>"
             ]
         );
