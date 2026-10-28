@@ -4,6 +4,9 @@ use crate::analyze::{Analysis, CONTEXT_FILES};
 use crate::plan::{Settings, choose};
 use std::path::{Path, PathBuf};
 
+/// Entries the advisor walks at most (session start must stay fast in very large trees).
+pub const ADVICE_WALK_LIMIT: usize = 50_000;
+
 /// `<home>/.omo/state/context-advice.json`.
 pub fn state_file(home: &Path) -> PathBuf {
     home.join(".omo").join("state").join("context-advice.json")
@@ -64,14 +67,14 @@ pub fn advice(analysis: &Analysis, settings: &Settings) -> Option<String> {
 
 /// The advice for `root` once ever: checks and records the state file.
 pub fn advise_once(home: &Path, root: &Path, settings: &Settings) -> Option<String> {
-    if !settings.advise {
+    if !settings.advise || !root.join(".git").exists() {
         return None;
     }
     let state = state_file(home);
     if was_advised(&state, root) {
         return None;
     }
-    let analysis = crate::analyze::analyze(root);
+    let analysis = crate::analyze::analyze_bounded(root, ADVICE_WALK_LIMIT);
     let text = advice(&analysis, settings)?;
     if let Err(error) = record(&state, root) {
         maho_ext_api::diagnostic(&format!("context files: cannot record advice: {error}"));

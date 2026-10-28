@@ -86,9 +86,10 @@ deepest first.
 
 ## 6. Advisor and keys
 
-At session start in long-lived modes (TUI, RPC, app server), once per project root ever (recorded in
+At session start in long-lived modes (TUI, RPC, app server), inside a git repository only, once per
+project root ever (recorded in
 `<home>/.omo/state/context-advice.json` as a list of roots), when the root has no context file and
-its analysis yields at least one target with `subtree_code_files` ≥ `min_files`, the user gets an
+its analysis (bounded to 50 000 walked entries) finds at least `min_files` source files, the user gets an
 info notification suggesting `/init-deep` (with the number of directories it would cover). Off with
 `init_deep.advise: false` or `MAHO_CONTEXT_ADVICE=0`.
 

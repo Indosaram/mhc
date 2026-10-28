@@ -178,6 +178,11 @@ pub fn project_root(cwd: &Path) -> PathBuf {
 
 /// Walks `root` honouring ignore files and the skip list.
 pub fn analyze(root: &Path) -> Analysis {
+    analyze_bounded(root, usize::MAX)
+}
+
+/// [`analyze`], stopping after `limit` walked entries.
+pub fn analyze_bounded(root: &Path, limit: usize) -> Analysis {
     let mut dirs: BTreeMap<String, DirFacts> = BTreeMap::new();
     dirs.insert(
         ".".into(),
@@ -199,7 +204,7 @@ pub fn analyze(root: &Path) -> Analysis {
                 && SKIPPED_DIRS.contains(&entry.file_name().to_string_lossy().as_ref()))
         })
         .build();
-    for entry in walker.flatten() {
+    for entry in walker.flatten().take(limit) {
         let Some(kind) = entry.file_type() else {
             continue;
         };
