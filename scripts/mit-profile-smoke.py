@@ -35,6 +35,12 @@ and then answers in text, and checks that:
   the run is exported to a loopback collector as OTLP/HTTP protobuf (traces, metrics, logs, no
   prompt text); `DO_NOT_TRACK=1` stops the export but keeps the ledger; `MAHO_TELEMETRY=0` stops
   both;
+- skills (`maho-skills`) and MCP (`maho-ext-mcp` + `maho-mcp-builtins`): a user skill and a
+  bundled skill (`MAHO_SKILLS_ROOT`) are listed in the system prompt while a skill named in
+  `disabled_skills` is not; the `skill` tool is offered and a model call loads the bundled skill's
+  instructions; a stdio MCP server configured in `<agent dir>/mcp.json` is started, its tool is
+  offered as `mcp_smokefake_echo` and a model call to it returns the server's answer; the builtin
+  remote MCP servers (`context7`, `grep_app`) are not declared in offline mode;
 - `mhc doctor` reports the configuration sources and resolves a pinned model profile;
 - the omo-only entries report that they are unavailable (`mhc ulw-loop`, `--memory-supervisor`).
 
@@ -77,6 +83,39 @@ BROWSER_MARKER = "mit-profile-browser-ok"
 BROWSER_HEADING = "smoke-browser-heading"
 TELEMETRY_MARKER = "mit-profile-telemetry-ok"
 TELEMETRY_PROMPT = "telemetry smoke prompt text that must never be exported"
+SKILL_MARKER = "mit-profile-skill-ok"
+SKILL_BODY = "bundled smoke skill instructions: say the magic word"
+MCP_ECHO = "mcp-smoke-ping"
+FAKE_MCP_SERVER = r"""
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    if "id" not in msg:
+        continue
+    method, mid = msg.get("method"), msg["id"]
+    if method == "initialize":
+        result = {"protocolVersion": msg.get("params", {}).get("protocolVersion", "2025-06-18"),
+                  "capabilities": {"tools": {}}, "serverInfo": {"name": "smokefake", "version": "1.0.0"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "echo", "description": "Echo text back with a prefix",
+                             "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}},
+                                             "required": ["text"]}}]}
+    elif method == "tools/call":
+        text = msg.get("params", {}).get("arguments", {}).get("text", "")
+        result = {"content": [{"type": "text", "text": "mcp-smoke-" + text}]}
+    elif method == "ping":
+        result = {}
+    else:
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": mid,
+                                     "error": {"code": -32601, "message": "method not found"}}) + "\n")
+        sys.stdout.flush()
+        continue
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": mid, "result": result}) + "\n")
+    sys.stdout.flush()
+"""
 OTEL_VARIABLES = ("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
                   "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
                   "OTEL_SDK_DISABLED", "DO_NOT_TRACK", "MAHO_TELEMETRY", "MAHO_USAGE_STATS",
@@ -502,6 +541,107 @@ def team_smoke(mhc: str, home: pathlib.Path, work: pathlib.Path, agent: pathlib.
     return None
 
 
+class SkillMcpModel(http.server.BaseHTTPRequestHandler):
+    """Calls `skill` (bundled-skill), then `mcp_smokefake_echo`, then answers SKILL_MARKER."""
+    requests: list[dict] = []
+
+    def log_message(self, *_args) -> None:
+        pass
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("content-length", "0"))
+        payload = json.loads(self.rfile.read(length) or b"{}")
+        SkillMcpModel.requests.append(payload)
+        results = sum(1 for message in payload.get("messages") or [] if message.get("role") == "tool")
+        if results >= 2:
+            body = sse([chunk({"role": "assistant", "content": SKILL_MARKER}), chunk({}, "stop")])
+        else:
+            name, arguments = (("skill", {"name": "bundled-skill"}) if results == 0
+                               else ("mcp_smokefake_echo", {"text": "ping"}))
+            body = sse([
+                chunk({"role": "assistant", "tool_calls": [{
+                    "index": 0, "id": f"call_{results}", "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(arguments)},
+                }]}),
+                chunk({}, "tool_calls"),
+            ])
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def system_text(payload: dict) -> str:
+    parts = []
+    for message in payload.get("messages") or []:
+        if message.get("role") not in ("system", "developer"):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            parts.extend(str(part.get("text", "")) for part in content if isinstance(part, dict))
+    return "\n".join(parts)
+
+
+def skills_mcp_smoke(mhc: str, home: pathlib.Path, work: pathlib.Path, agent: pathlib.Path, env: dict) -> str | None:
+    def skill(root: pathlib.Path, name: str, body: str) -> None:
+        (root / name).mkdir(parents=True, exist_ok=True)
+        (root / name / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: Smoke skill {name} for the MIT profile.\n---\n\n{body}\n")
+
+    bundled = home / "bundled-skills"
+    skill(agent / "skills", "smoke-skill", "user smoke skill")
+    skill(agent / "skills", "hidden-skill", "this skill is disabled")
+    skill(bundled, "bundled-skill", SKILL_BODY)
+    (home / ".omo").mkdir(exist_ok=True)
+    (home / ".omo" / "omo.jsonc").write_text('{ "disabled_skills": ["hidden-skill"] }\n')
+    server_script = home / "fake_mcp.py"
+    server_script.write_text(FAKE_MCP_SERVER)
+    (agent / "mcp.json").write_text(json.dumps({"mcpServers": {"smokefake": {
+        "command": sys.executable, "args": [str(server_script)]}}}))
+    model = http.server.ThreadingHTTPServer(("127.0.0.1", 0), SkillMcpModel)
+    threading.Thread(target=model.serve_forever, daemon=True).start()
+    (agent / "models.json").write_text(models_json(model.server_port))
+    try:
+        run = subprocess.run(
+            [mhc, "-p", "--offline", "--no-session", "--model", "offline/offline", "use the smoke skill and the mcp tool"],
+            cwd=work, env={**env, "MAHO_SKILLS_ROOT": str(bundled)}, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=180,
+        )
+    finally:
+        model.shutdown()
+        (agent / "mcp.json").unlink(missing_ok=True)
+        (home / ".omo" / "omo.jsonc").unlink(missing_ok=True)
+    if run.returncode != 0 or SKILL_MARKER not in run.stdout:
+        return f"skills/MCP run failed (exit {run.returncode})\nstdout: {run.stdout}\nstderr: {run.stderr}"
+    first = SkillMcpModel.requests[0]
+    offered = tool_names(first)
+    if "skill" not in offered:
+        return f"the skill tool is not offered (offered: {sorted(offered)})"
+    if "mcp_smokefake_echo" not in offered:
+        return f"the configured MCP server's tool is not offered (offered: {sorted(offered)})\nstderr: {run.stderr}"
+    builtin = sorted(name for name in offered if name.startswith(("mcp_context7", "mcp_grep_app")))
+    if builtin:
+        return f"builtin remote MCP tools offered in offline mode: {builtin}"
+    prompt = system_text(first)
+    for name in ("smoke-skill", "bundled-skill"):
+        if f"<name>{name}</name>" not in prompt:
+            return f"skill {name} missing from the system prompt\nprompt: {prompt[-3000:]}"
+    if "<name>hidden-skill</name>" in prompt:
+        return "a disabled skill is still listed in the system prompt"
+    results = "\n".join(tool_text(p) for p in SkillMcpModel.requests)
+    if SKILL_BODY not in results or '<skill name="bundled-skill"' not in results:
+        return f"the skill tool did not return the bundled skill\ntool results: {results[:3000]}"
+    if MCP_ECHO not in results:
+        return f"the MCP tool result did not reach the model\ntool results: {results[:3000]}\nstderr: {run.stderr}"
+    print("ok   skills + MCP: user/bundled skills listed, disabled one hidden, skill tool loaded the bundled skill, "
+          "stdio MCP tool mcp_smokefake_echo answered, no builtin remote MCPs offline")
+    return None
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         sys.stderr.write(__doc__ or "")
@@ -800,6 +940,10 @@ def main() -> int:
             print("ok   browser tool: opened a page, its snapshot with refs and a computer screenshot reached the model")
         else:
             print("skip browser run (set MHC_SMOKE_BROWSER to a Chromium executable)")
+
+        failure = skills_mcp_smoke(mhc, home, work, agent, env)
+        if failure:
+            return fail(failure)
 
         (home / ".omo").mkdir(exist_ok=True)
         (home / ".omo" / "omo.jsonc").write_text('{ "model_profile": "offline/offline" }\n')

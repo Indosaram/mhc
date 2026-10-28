@@ -89,6 +89,9 @@ maho-isolation = { path = "../maho-isolation" }
 maho-git = { path = "../maho-git" }
 # MIT team runs (`team_*` tools, `/team`) and tmux/cmux panes for delegated tasks, attached to `<builtin:task>`; MIT profile only.
 maho-team = { path = "../maho-team" }
+# MIT skill support (bundled root, disabled_skills, `skill` tool, `/skill`) and builtin MCP servers (context7, grep_app) on maho-ext-mcp; mounted as `<builtin:skills>` / `<builtin:mcp-builtins>` in the MIT profile only.
+maho-skills = { path = "../maho-skills" }
+maho-mcp-builtins = { path = "../maho-mcp-builtins" }
 maho-omo-task = { path = "../omo/components/maho-omo-task", optional = true }
 maho-server = { path = "../maho-server" }
 maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }
