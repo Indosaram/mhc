@@ -103,6 +103,8 @@ fn member(dir: &Path, name: &str, task: &str) -> MemberSpec {
             group: None,
             pane: None,
             quiet: false,
+            owner_session: None,
+            root_session: None,
         },
     }
 }
