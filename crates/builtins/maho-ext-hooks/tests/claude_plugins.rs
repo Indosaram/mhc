@@ -143,7 +143,7 @@ fn t03_user_then_project_settings_hooks() -> TestResult {
 fn t04_malformed_project_settings_reports_and_keeps_user_hooks() -> TestResult {
     let fixture = Fixture::new()?;
     fixture.write_user_settings(&pre_tool_hooks("user"))?;
-    let broken = fixture.cwd.join(".claude/settings.json");
+    let broken = fixture.cwd.join(".claude").join("settings.json");
     std::fs::create_dir_all(fixture.cwd.join(".claude"))?;
     std::fs::write(&broken, "{ not json")?;
     let parsed = fixture.load();
