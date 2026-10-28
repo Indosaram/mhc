@@ -47,7 +47,7 @@ fn authorize_header_forces_required_when_absent_or_false() {
 }
 
 /// 2. Each listed header, padded with a tab, trailing spaces or U+FEFF, forces `required`; the
-/// diagnostic records rule `header` and the trimmed header.
+///    diagnostic records rule `header` and the trimmed header.
 #[test]
 fn listed_headers_match_after_js_trim() {
     for header in ["AUTHORIZE", "Authorise", "approval", "승인", "권한"] {

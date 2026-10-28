@@ -22,6 +22,9 @@ pub enum Style {
 /// Applies a theme color to already sanitized text.
 pub type Painter<'a> = &'a dyn Fn(Style, &str) -> String;
 
+/// Renders one panel section.
+type SectionFn = fn(&PanelView, Painter<'_>) -> Vec<String>;
+
 /// A painter that leaves text unchanged.
 pub fn plain(_: Style, text: &str) -> String {
     text.to_owned()
@@ -364,7 +367,7 @@ fn memory_section(view: &PanelView, p: Painter<'_>) -> Vec<String> {
 /// then the location row.
 pub fn compose(view: &PanelView, width: usize, p: Painter<'_>) -> Vec<String> {
     let s = view.sections;
-    let blocks: [(bool, fn(&PanelView, Painter<'_>) -> Vec<String>); 8] = [
+    let blocks: [(bool, SectionFn); 8] = [
         (s.session, session_section),
         (s.goal, goal_section),
         (s.context, context_section),

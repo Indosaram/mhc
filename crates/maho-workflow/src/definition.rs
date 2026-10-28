@@ -169,7 +169,7 @@ fn find_cycle(nodes: &[WorkflowNode]) -> Option<Vec<String>> {
                     return Some(path);
                 }
                 0 => {
-                    if let Some(path) = visit(*next, graph, mark, stack) {
+                    if let Some(path) = visit(next, graph, mark, stack) {
                         return Some(path);
                     }
                 }

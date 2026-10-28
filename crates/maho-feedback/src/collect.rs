@@ -35,7 +35,7 @@ pub const BODY_KEEP_CHARS: usize = 1200;
 pub fn locale(env: &dyn Fn(&str) -> Option<String>) -> String {
     ["LC_ALL", "LC_MESSAGES", "LANG"]
         .into_iter()
-        .filter_map(|key| env(key))
+        .filter_map(env)
         .find_map(|value| {
             let base = value.split('.').next().unwrap_or_default().trim();
             (!base.is_empty() && base != "C" && base != "POSIX").then(|| base.replace('_', "-"))

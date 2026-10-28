@@ -206,7 +206,8 @@ impl WorkflowAddon {
             }
         };
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            let _ = runtime.spawn_blocking(sweep);
+            // Fire and forget: dropping the handle detaches the sweep.
+            drop(runtime.spawn_blocking(sweep));
         } else {
             let _ = std::thread::Builder::new().name("workflow-retention".into()).spawn(sweep);
         }

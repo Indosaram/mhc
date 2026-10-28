@@ -37,6 +37,9 @@ pub type MemoryStatus = Arc<dyn Fn(&Path) -> Option<MemoryInfo> + Send + Sync>;
 /// layer value (validated separately so an invalid value is reported, not silently dropped).
 pub type ConfigSource = Arc<dyn Fn(&Path) -> LoadedConfig + Send + Sync>;
 
+/// Environment variable lookup.
+pub type EnvLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
 /// Configuration the panel reads at session start.
 #[derive(Clone, Debug, Default)]
 pub struct LoadedConfig {
@@ -53,7 +56,7 @@ pub struct SidePanelExtension {
     /// Plan usage source; `None` hides the usage section.
     pub usage: Option<UsageReader>,
     /// Environment lookup (hyperlink support, `$HOME`).
-    pub env: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    pub env: EnvLookup,
 }
 
 impl std::fmt::Debug for SidePanelExtension {

@@ -151,26 +151,20 @@ fn check_heads(pattern: &str, language: &str, findings: &mut Vec<Finding>) {
         first.is_some_and(|word| prefixes.contains(word)) && !has_body
     };
     match language {
-        "rust" => {
-            if bodiless(&["fn"]) && !text.ends_with(';') {
-                findings.push(Finding::hint(
-                    "A function head without a body cannot parse alone; include the `{ ... }` body.",
-                ));
-            }
+        "rust" if bodiless(&["fn"]) && !text.ends_with(';') => {
+            findings.push(Finding::hint(
+                "A function head without a body cannot parse alone; include the `{ ... }` body.",
+            ));
         }
-        "go" => {
-            if bodiless(&["func"]) {
-                findings.push(Finding::hint(
-                    "A function head without a body cannot parse alone; include the `{ ... }` body.",
-                ));
-            }
+        "go" if bodiless(&["func"]) => {
+            findings.push(Finding::hint(
+                "A function head without a body cannot parse alone; include the `{ ... }` body.",
+            ));
         }
-        "javascript" | "typescript" | "tsx" => {
-            if bodiless(&["function", "function*", "class"]) {
-                findings.push(Finding::hint(
-                    "A function or class head without a body cannot parse alone; include the `{ ... }` body.",
-                ));
-            }
+        "javascript" | "typescript" | "tsx" if bodiless(&["function", "function*", "class"]) => {
+            findings.push(Finding::hint(
+                "A function or class head without a body cannot parse alone; include the `{ ... }` body.",
+            ));
         }
         "python" => {
             let first = text.split_whitespace().next().unwrap_or_default();
