@@ -92,6 +92,8 @@ maho-team = { path = "../maho-team" }
 # MIT skill support (bundled root, disabled_skills, `skill` tool, `/skill`) and builtin MCP servers (context7, grep_app) on maho-ext-mcp; mounted as `<builtin:skills>` / `<builtin:mcp-builtins>` in the MIT profile only.
 maho-skills = { path = "../maho-skills" }
 maho-mcp-builtins = { path = "../maho-mcp-builtins" }
+# MIT session gateway (`session_list`/`session_send`, inbox delivery into long-lived sessions, `mhc gateway list|send`); mounted as `<builtin:gateway>` in the MIT profile only.
+maho-gateway = { path = "../maho-gateway" }
 maho-omo-task = { path = "../omo/components/maho-omo-task", optional = true }
 maho-server = { path = "../maho-server" }
 maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }

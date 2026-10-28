@@ -106,7 +106,8 @@ fn factory<E: Extension + 'static>(name: &str, extension: E) -> NativeExtensionF
 /// (`maho-telemetry`: local usage ledger, opt-in OTLP export) and the read-only git tools
 /// (`maho-git`); delegated tasks can run isolated (`maho-isolation`) and as teams with tmux/cmux
 /// panes (`maho-team`); skill support (`maho-skills`: bundled root, `disabled_skills`, the `skill`
-/// tool, `/skill`) and the builtin MCP servers (`maho-mcp-builtins`). The `omo` build mounts its
+/// tool, `/skill`), the builtin MCP servers (`maho-mcp-builtins`) and the session gateway
+/// (`maho-gateway`: `session_list`/`session_send`, inbox delivery). The `omo` build mounts its
 /// own equivalents through the omo glue (it has no browser/computer tools).
 #[cfg(not(feature = "omo"))]
 pub fn mit_config_factories() -> Vec<NativeExtensionFactory> {
@@ -130,6 +131,7 @@ pub fn mit_config_factories() -> Vec<NativeExtensionFactory> {
         factory("git", super::git_tools::extension()),
         factory("skills", super::skill_library::extension()),
         factory("mcp-builtins", super::builtin_mcp::extension()),
+        factory("gateway", super::session_gateway::extension()),
     ]
 }
 
@@ -1258,7 +1260,8 @@ mod mit_tests {
                 "<builtin:telemetry>",
                 "<builtin:git>",
                 "<builtin:skills>",
-                "<builtin:mcp-builtins>"
+                "<builtin:mcp-builtins>",
+                "<builtin:gateway>"
             ]
         );
     }

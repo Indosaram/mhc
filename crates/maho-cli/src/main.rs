@@ -150,6 +150,14 @@ fn run() -> Result<(), String> {
         return result;
     }
     #[cfg(not(feature = "omo"))]
+    if argv.first().map(String::as_str) == Some("gateway") {
+        let code = maho_cli::cli::session_gateway::run_gateway_command(&argv[1..]);
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+    #[cfg(not(feature = "omo"))]
     if argv.first().map(String::as_str) == Some("usage") {
         return maho_cli::cli::usage_stats::run_usage_command(&argv[1..]).map(|code| {
             if code != 0 {
