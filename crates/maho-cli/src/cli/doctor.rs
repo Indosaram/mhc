@@ -1,339 +1,242 @@
-//! Read-only native diagnostics for configuration, trust, task categories, and package integrity.
+//! `mhc doctor` in the MIT profile (`--no-default-features`): a read-only report of the harness
+//! configuration (sources, load diagnostics, config profile) and of the session-start model
+//! profile resolution, built on the clean-room `maho-config` and `maho-model-select` crates.
+//! The `omo` build keeps its own `doctor` module.
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    path::Path,
+use maho_model_select::{
+    Exclusions, ProfileResolution, effective_profile, merge_profiles, resolve_default,
+    resolve_profile,
 };
+use std::path::Path;
 
-const DEFAULT_CATEGORIES: &[&str] = &[
-    "architect",
-    "artistry",
-    "deep-high",
-    "deep-low",
-    "quick",
-    "ultrabrain",
-    "unspecified-high",
-    "unspecified-low",
-    "visual-engineering",
-    "writing",
-];
+const USAGE: &str = "Usage: mhc doctor
 
-fn severity(line: &str) -> bool {
-    line.starts_with("FAIL ")
-}
+Reports the configuration files that were found and loaded, configuration problems, the active
+configuration profile and the model the session-start model profile resolves to.";
 
-#[doc(hidden)]
-pub fn package_lines(directory: &Path) -> Vec<String> {
-    use sha2::{Digest, Sha256};
-    let manifest_path = directory.join("manifest.json");
-    if !manifest_path.exists() {
-        return vec!["WARN native package: manifest unavailable".into()];
-    }
-    let manifest: serde_json::Value = match std::fs::read(&manifest_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-    {
-        Some(manifest) => manifest,
-        None => return vec!["FAIL native package: invalid manifest".into()],
-    };
-    let Some(executables) = manifest
-        .get("executables")
-        .and_then(serde_json::Value::as_array)
-    else {
-        return vec!["FAIL native package: executable manifest unavailable".into()];
-    };
-    let mut lines = Vec::new();
-    for executable in executables {
-        let Some(path) = executable.get("path").and_then(serde_json::Value::as_str) else {
-            lines.push("FAIL native package: executable path missing".into());
-            continue;
-        };
-        let relative = Path::new(path);
-        if relative.is_absolute()
-            || relative
-                .components()
-                .any(|component| matches!(component, std::path::Component::ParentDir))
-        {
-            lines.push("FAIL native package: executable path escapes package".into());
-            continue;
-        }
-        let expected = executable.get("sha256").and_then(serde_json::Value::as_str);
-        let valid = std::fs::read(directory.join(relative))
-            .ok()
-            .is_some_and(|bytes| {
-                let actual = format!("{:x}", Sha256::digest(bytes));
-                expected == Some(actual.as_str())
-            });
-        lines.push(format!(
-            "{} native executable: {path}",
-            if valid { "PASS" } else { "FAIL" }
-        ));
-    }
-    lines
-}
-
-fn env_map() -> BTreeMap<String, String> {
-    std::env::vars().collect()
-}
-
-fn loaded_config(
-    cwd: &Path,
-    env: &BTreeMap<String, String>,
-) -> maho_omo_config_resolution::SenpiOmoConfigResult {
-    maho_omo_config_resolution::load_senpi_omo_config(omo_config_core::LoadOmoConfigOptions {
-        cwd: Some(cwd.to_string_lossy().into_owned()),
-        env: Some(env.clone()),
-        ..Default::default()
-    })
-}
-
-fn config_lines(
-    loaded: &maho_omo_config_resolution::SenpiOmoConfigResult,
-    env: &BTreeMap<String, String>,
-) -> Vec<String> {
-    let home = env.get("HOME").map(String::as_str);
-    omo_config_core::omo_config_diagnostic_lines(&loaded.loaded.diagnostics, home)
-        .into_iter()
-        .map(|line| format!("WARN {line}"))
-        .collect()
-}
-
-fn trust_lines(cwd: &Path, env: &BTreeMap<String, String>, agent_dir: &str) -> Vec<String> {
-    let cwd = cwd.to_string_lossy();
-    let home = env.get("HOME").map(String::as_str);
-    let resources = maho_core::trust_manager::has_trust_requiring_project_resources(&cwd, home);
-    if !resources {
-        return vec!["PASS project resources: no project-local resources require trust".to_owned()];
-    }
-    let trust_path = Path::new(agent_dir).join("trust.json");
-    let trust = match maho_core::trust_manager::read_trust_file(&trust_path.to_string_lossy()) {
-        Ok(data) => maho_core::trust_manager::find_nearest_trust_entry(&data, &cwd)
-            .map(|entry| entry.decision),
-        Err(_) => {
-            return vec![
-                "WARN project resources: trust store is invalid or unavailable".to_owned(),
-            ];
-        }
-    };
-    match trust {
-        Some(true) => vec!["PASS project resources: trusted".to_owned()],
-        Some(false) => vec!["FAIL project resources: project is not trusted".to_owned()],
-        None => vec!["WARN project resources: trust decision is not recorded".to_owned()],
-    }
-}
-
-fn category_lines(config: &serde_json::Value, agent_dir: &str) -> Vec<String> {
-    struct Registry(Vec<serde_json::Value>);
-    impl senpi_task::host::SenpiModelRegistry for Registry {
-        fn get_available(&self) -> Result<serde_json::Value, senpi_task::host::HostError> {
-            Ok(serde_json::Value::Array(self.0.clone()))
-        }
-        fn find(&self, provider: &str, id: &str) -> Option<serde_json::Value> {
-            self.0
-                .iter()
-                .find(|model| model["provider"] == provider && model["id"] == id)
-                .cloned()
-        }
-    }
-    fn unlisted_provider_model(
-        chain: &[senpi_task::DelegateFallbackEntry],
-        available: &[String],
-    ) -> Option<String> {
-        let available_models = available.iter().cloned().collect::<indexmap::IndexSet<_>>();
-        let deps = delegate_core::DelegateModelResolutionDeps {
-            connected_providers: None,
-            has_provider_models_cache: true,
-            has_connected_providers_cache: true,
-            log: None,
-        };
-        chain.iter().find_map(|rung| {
-            let result = delegate_core::resolve_model_for_delegate_task(
-                &delegate_core::DelegateModelResolutionInput {
-                    fallback_chain: Some(vec![delegate_core::DelegateFallbackEntry {
-                        providers: rung.providers.clone(),
-                        model: rung.model.clone(),
-                        variant: rung.variant.clone(),
-                    }]),
-                    available_models: available_models.clone(),
-                    ..Default::default()
-                },
-                &deps,
-            );
-            match result {
-                Some(delegate_core::DelegateModelResolutionResult::Resolved(model)) => {
-                    Some(model.model)
-                }
-                _ => None,
-            }
-        })
-    }
-    let auth_path = Path::new(agent_dir).join("auth.json");
-    let credentials = if auth_path.exists() {
-        match maho_core::auth_storage::ReadOnlyAuthStorage::new(&auth_path.to_string_lossy()) {
-            Ok(storage) => storage.data().clone(),
-            Err(_) => return vec!["FAIL credentials: invalid auth storage".to_owned()],
-        }
-    } else {
-        Default::default()
-    };
-    let mut runtime = match maho_core::model_runtime::ModelRuntime::create_sync(
-        maho_core::model_runtime::CreateModelRuntimeOptions {
-            models_path: Some(Path::new(agent_dir).join("models.json")),
-            credentials: Some(std::sync::Arc::new(
-                maho_core::auth_storage::AuthStorage::in_memory(credentials),
-            )),
-            ..Default::default()
-        },
-    ) {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            return vec![format!(
-                "FAIL task categories: could not construct model runtime: {error}"
-            )];
-        }
-    };
-    let mut registration_failures = Vec::new();
-    for provider in ["claude-sdk-oauth", "cursor-cli-oauth"] {
-        if let Err(error) = runtime.register_provider(
-            provider,
-            maho_core::provider_composer::ProviderConfigInput::default(),
-        ) {
-            registration_failures.push(format!(
-                "WARN task categories: could not register provider {provider}: {error}"
-            ));
-        }
-    }
-    let available = runtime
-        .get_models(None)
-        .into_iter()
-        .filter(|model| runtime.get_provider_auth_status(&model.provider).configured)
-        .map(|model| serde_json::json!(model))
-        .collect::<Vec<_>>();
-    let available_model_names = available
-        .iter()
-        .filter_map(|model| {
-            Some(format!(
-                "{}/{}",
-                model.get("provider")?.as_str()?,
-                model.get("id")?.as_str()?
-            ))
-        })
-        .collect::<Vec<_>>();
-    let registry = Registry(available);
-    let mut usable = Vec::new();
-    let mut unavailable = Vec::new();
-    let mut names = DEFAULT_CATEGORIES
-        .iter()
-        .map(|name| (*name).to_owned())
-        .collect::<std::collections::BTreeSet<_>>();
-    if let Some(custom) = config
-        .get("categories")
-        .and_then(serde_json::Value::as_object)
-    {
-        names.extend(custom.keys().cloned());
-    }
-    for name in &names {
-        match senpi_task::category::resolve_category(name, config, &registry, &Default::default()) {
-            Ok(senpi_task::category::CategoryResolutionResult::Resolved { .. }) => {
-                usable.push(name.clone())
-            }
-            Ok(senpi_task::category::CategoryResolutionResult::Disabled { .. }) => {}
-            Ok(senpi_task::category::CategoryResolutionResult::ModelUnavailable(details)) => {
-                let providers = details.missing_providers.unwrap_or_default();
-                let unlisted = details
-                    .attempted_chain
-                    .as_deref()
-                    .and_then(|chain| unlisted_provider_model(chain, &available_model_names));
-                let notice = if let Some(model) = unlisted {
-                    let gateway = model
-                        .split_once('/')
-                        .map_or(model.as_str(), |(provider, _)| provider);
-                    format!(
-                        "Category \"{name}\" is unavailable: only {gateway}, which its chain does not list, serves its models, and omo never bills a builtin category to an unlisted provider. Connect one of its providers ({}) with /login <provider>, or opt in with categories.{name}.model = \"{model}\" in omo.json.",
-                        providers.join(", ")
-                    )
-                } else if providers.is_empty() {
-                    format!(
-                        "Category \"{name}\" has no usable model: your connected providers serve none of its fallback-chain models. Pin categories.{name}.model in omo.json."
-                    )
-                } else {
-                    format!(
-                        "Category \"{name}\" has no usable model: none of its fallback-chain providers are connected ({}). Connect one with /login <provider>, or pin categories.{name}.model in omo.json.",
-                        providers.join(", ")
-                    )
-                };
-                unavailable.push(notice);
-            }
-            Ok(senpi_task::category::CategoryResolutionResult::NotFound { .. }) => {}
-            Err(_) => return Vec::new(),
-        }
-    }
-    if unavailable.is_empty() && registration_failures.is_empty() {
-        vec![format!(
-            "PASS task categories: all {} usable with your connected providers",
-            usable.len()
-        )]
-    } else {
-        let suffix = if usable.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", usable.join(", "))
-        };
-        let mut lines = vec![format!(
-            "WARN task categories: {} of {} usable with your connected providers{}",
-            usable.len(),
-            usable.len() + unavailable.len(),
-            suffix
-        )];
-        lines.extend(registration_failures);
-        lines.extend(
-            unavailable
-                .into_iter()
-                .map(|notice| format!("WARN {notice}")),
-        );
-        lines
-    }
-}
-
-pub fn doctor_lines(cwd: &Path, env: &BTreeMap<String, String>, agent_dir: &str) -> Vec<String> {
-    let loaded = loaded_config(cwd, env);
-    let mut lines = config_lines(&loaded, env);
-    lines.extend(trust_lines(cwd, env, agent_dir));
-    lines.extend(category_lines(&loaded.config, agent_dir));
-    lines
+/// One report: its lines and the exit code (1 when a check failed).
+#[derive(Debug, PartialEq, Eq)]
+pub struct DoctorReport {
+    pub lines: Vec<String>,
+    pub failed: bool,
 }
 
 pub fn run_doctor(args: &[String]) -> Result<i32, String> {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("Usage: mhc doctor");
+        println!("{USAGE}");
         return Ok(0);
     }
-    if !args.is_empty() {
-        return Err(format!("Unknown doctor option: {}", args[0]));
+    if let Some(unknown) = args.first() {
+        maho_core::output_guard::maho_write_stderr(&format!(
+            "mhc doctor: unknown argument \"{unknown}\"\n{USAGE}\n"
+        ));
+        return Ok(2);
     }
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    let env = env_map();
-    let agent_dir_env: HashMap<_, _> = env
-        .iter()
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
-    let agent_dir = maho_core::config::get_agent_dir_with(
-        &cwd.to_string_lossy(),
-        env.get("HOME").map(String::as_str).unwrap_or("."),
-        &agent_dir_env,
-    );
-    let lines = doctor_lines(&cwd, &env, &agent_dir);
-    let mut lines = lines;
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    lines.extend(package_lines(
-        executable
-            .parent()
-            .ok_or("Executable directory unavailable")?,
+    let env = maho_config::process_env();
+    let available = available_models()?;
+    let report = build_report(&cwd, &env, available.as_deref());
+    println!("{}", report.lines.join("\n"));
+    Ok(i32::from(report.failed))
+}
+
+/// `provider/id` of every model with usable credentials, from `<agent dir>/models.json` and
+/// `auth.json`, offline. `None` when the model runtime cannot be created.
+pub fn available_models() -> Result<Option<Vec<String>>, String> {
+    let agent = std::path::PathBuf::from(maho_core::config::get_agent_dir());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+    Ok(runtime.block_on(async {
+        let models = maho_core::model_runtime::ModelRuntime::create(
+            maho_core::model_runtime::CreateModelRuntimeOptions {
+                models_path: Some(agent.join("models.json")),
+                auth_path: Some(agent.join("auth.json")),
+                agent_dir: Some(agent.clone()),
+                allow_model_network: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .ok()?;
+        let available = models.get_available(None).await.ok()?;
+        Some(
+            available
+                .iter()
+                .map(|model| format!("{}/{}", model.provider, model.id))
+                .collect(),
+        )
+    }))
+}
+
+/// Builds the report for `cwd`. `available` is `None` when the model list could not be read.
+pub fn build_report(
+    cwd: &Path,
+    env: &maho_config::Env,
+    available: Option<&[String]>,
+) -> DoctorReport {
+    let loaded = maho_config::load_native(cwd, env);
+    let mut lines = vec!["Configuration".to_owned()];
+    if loaded.sources.is_empty() {
+        lines.push("  no configuration file locations".to_owned());
+    }
+    for source in &loaded.sources {
+        let state = if source.loaded {
+            "loaded"
+        } else if source.exists {
+            "not loaded"
+        } else {
+            "not found"
+        };
+        lines.push(format!(
+            "  {:<8}{}  ({state})",
+            source.scope.as_str(),
+            maho_config::display_path(&source.path, &loaded.home)
+        ));
+    }
+    lines.push(format!(
+        "  profile {}",
+        loaded.profile.as_deref().unwrap_or("(none)")
     ));
-    println!("{}", lines.join("\n"));
-    Ok(if lines.iter().any(|line| severity(line)) {
-        1
-    } else {
-        0
-    })
+    let problems = maho_config::doctor_lines(&loaded.diagnostics, &loaded.home);
+    if problems.is_empty() {
+        lines.push("PASS configuration has no problems".to_owned());
+    }
+    lines.extend(problems.into_iter().map(|line| format!("WARN {line}")));
+
+    lines.push(String::new());
+    lines.push("Model profile".to_owned());
+    let view = &loaded.view;
+    let configured = view
+        .get("model_profile")
+        .and_then(serde_json::Value::as_str);
+    let model_profiles = view.get("model_profiles");
+    let profiles = merge_profiles(model_profiles);
+    let active = effective_profile(configured, model_profiles);
+    lines.push(format!(
+        "  active  {}",
+        active.as_deref().unwrap_or("(default lanes)")
+    ));
+    let mut failed = false;
+    match available {
+        None => lines.push("WARN cannot read the available models".to_owned()),
+        Some(available) => {
+            lines.push(format!("  models  {} available", available.len()));
+            let exclusions = Exclusions::default();
+            let result = match &active {
+                Some(name) => resolve_profile(&profiles, name, available, &exclusions),
+                None => resolve_default(&profiles, available, &exclusions),
+            };
+            match result {
+                ProfileResolution::Resolved {
+                    profile,
+                    provider,
+                    model_id,
+                    reasoning,
+                    skipped,
+                    ..
+                } => {
+                    let reasoning = reasoning.map(|r| format!(" ({r})")).unwrap_or_default();
+                    lines.push(format!(
+                        "PASS {profile} resolves to {provider}/{model_id}{reasoning}"
+                    ));
+                    if !skipped.is_empty() {
+                        lines.push(format!("  skipped {}", skipped.join(", ")));
+                    }
+                }
+                ProfileResolution::Unavailable { profile, chain } => lines.push(format!(
+                    "WARN {profile}: no model is available (tried {})",
+                    chain.join(", ")
+                )),
+                ProfileResolution::Empty { profile } => {
+                    lines.push(format!("WARN {profile}: the profile lists no models"));
+                }
+                ProfileResolution::Unknown { message, .. } => {
+                    failed = true;
+                    lines.push(format!("FAIL {message}"));
+                }
+            }
+        }
+    }
+    DoctorReport { lines, failed }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env_for(home: &Path) -> maho_config::Env {
+        let home = home.to_string_lossy().into_owned();
+        [
+            ("HOME".to_owned(), home.clone()),
+            ("USERPROFILE".to_owned(), home),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    #[test]
+    fn reports_sources_problems_and_unknown_profile() {
+        let home = tempfile::tempdir().expect("home");
+        let project = home.path().join("work");
+        std::fs::create_dir_all(project.join(".omo")).expect("project dir");
+        std::fs::create_dir_all(home.path().join(".omo")).expect("user dir");
+        std::fs::write(
+            home.path().join(".omo/omo.jsonc"),
+            r#"{ "model_profile": "no-such-profile" }"#,
+        )
+        .expect("user config");
+        std::fs::write(project.join(".omo/omo.jsonc"), "{ not json").expect("project config");
+        let report = build_report(&project, &env_for(home.path()), Some(&[]));
+        let text = report.lines.join("\n");
+        assert!(text.contains("~/.omo/omo.jsonc  (loaded)"), "{text}");
+        assert!(text.contains("(not loaded)"), "{text}");
+        assert!(text.contains("WARN config:"), "{text}");
+        assert!(
+            text.contains("FAIL unknown model profile \"no-such-profile\""),
+            "{text}"
+        );
+        assert!(report.failed);
+    }
+
+    #[test]
+    fn default_lanes_resolve_against_available_models() {
+        let home = tempfile::tempdir().expect("home");
+        let profiles = merge_profiles(None);
+        let rung = profiles
+            .iter()
+            .find(|profile| profile.id == maho_model_select::DEFAULT_PROFILE_ORDER[0])
+            .and_then(|profile| profile.rungs.iter().find(|rung| !rung.providers.is_empty()))
+            .expect("a built-in rung with a provider");
+        let available = vec![format!(
+            "{}/{}",
+            rung.providers[0],
+            maho_model_select::model_id_for_provider(&rung.providers[0], &rung.model)
+        )];
+        let report = build_report(home.path(), &env_for(home.path()), Some(&available));
+        let text = report.lines.join("\n");
+        assert!(
+            text.contains("PASS configuration has no problems"),
+            "{text}"
+        );
+        assert!(text.contains("active  (default lanes)"), "{text}");
+        assert!(
+            text.contains(&format!("resolves to {}", available[0])),
+            "{text}"
+        );
+        assert!(!report.failed, "{text}");
+    }
+
+    #[test]
+    fn missing_model_list_is_a_warning() {
+        let home = tempfile::tempdir().expect("home");
+        let report = build_report(home.path(), &env_for(home.path()), None);
+        assert!(
+            report
+                .lines
+                .contains(&"WARN cannot read the available models".to_owned())
+        );
+        assert!(!report.failed);
+    }
 }

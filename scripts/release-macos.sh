@@ -24,7 +24,7 @@ trap 'rm -rf "$work"' EXIT
 
 export MHC_BUILD_VERSION="$version"
 cargo build --release --locked \
-  -p maho-cli -p maho-ast-grep-mcp -p maho-lsp-daemon -p maho-git-bash-mcp -p maho-senpi-desktop-engine --bins
+  -p maho-cli -p maho-senpi-desktop-engine --bins
 rel="$target_dir/release"
 test "$("$rel/mhc" --version | tr -d '\r')" = "$MHC_BUILD_VERSION"
 test -f "$rel/mhc-launcher"

@@ -72,11 +72,6 @@ pub fn load_hook_config_files(options:&HookConfigLoaderOptions)->ParsedHookConfi
 }
 
 /// Claude Code's config directory: `CLAUDE_CONFIG_DIR` when set, else `~/.claude`.
-#[cfg(feature="claude-plugins")]
-fn claude_config_dir()->std::path::PathBuf {claude_code_compat_core::shared::get_claude_config_dir()}
-
-/// Claude Code's config directory: `CLAUDE_CONFIG_DIR` when set, else `~/.claude`.
-#[cfg(not(feature="claude-plugins"))]
 fn claude_config_dir()->std::path::PathBuf {
     std::env::var_os("CLAUDE_CONFIG_DIR").filter(|dir|!dir.is_empty()).map(std::path::PathBuf::from)
         .unwrap_or_else(||std::path::PathBuf::from(maho_core::config::home_dir()).join(".claude"))
@@ -100,42 +95,6 @@ fn append_claude_plugin_hooks(options:&HookConfigLoaderOptions,claude_dir:&std::
         let loaded=parse_hook_config(&config,&metadata);
         parsed.executable_handlers.extend(loaded.executable_handlers);
         parsed.diagnostics.extend(loaded.diagnostics);
-    }
-    append_claude_installed_plugin_hooks(options,claude_dir,parsed);
-}
-
-/// Installed Claude Code plugins' hooks. Plugin discovery lives in the SUL `claude-code-compat-core`
-/// crate, so it is linked only with the `claude-plugins` feature (on by default); without it only the
-/// settings-file hooks above load.
-#[cfg(not(feature="claude-plugins"))]
-fn append_claude_installed_plugin_hooks(_options:&HookConfigLoaderOptions,_claude_dir:&std::path::Path,_parsed:&mut ParsedHookConfig) {}
-
-#[cfg(feature="claude-plugins")]
-fn append_claude_installed_plugin_hooks(options:&HookConfigLoaderOptions,claude_dir:&std::path::Path,parsed:&mut ParsedHookConfig) {
-    use claude_code_compat_core::{PluginLoaderOptions,discover_installed_plugins,load_plugin_hooks_configs};
-    let discovery=discover_installed_plugins(&PluginLoaderOptions {
-        cwd:Some(std::path::PathBuf::from(&options.cwd)),claude_config_dir:Some(claude_dir.to_owned()),
-        plugins_home_override:Some(claude_dir.join("plugins")),..Default::default()
-    });
-    let plugins=match discovery {
-        Ok(result)=>{
-            for error in result.errors {maho_ext_api::diagnostic(&format!("Claude hook plugin {}: {}",error.plugin_key,error.error));}
-            result.plugins
-        },
-        Err(error)=>{maho_ext_api::diagnostic(&format!("Claude hook discovery failed: {error}"));return;}
-    };
-    for plugin in plugins {
-        let Some(path)=plugin.hooks_path.as_ref() else {continue;};
-        if options.pre_session_hook_source_paths.iter().chain(&options.runtime_hook_source_paths).any(|existing|std::path::Path::new(existing)==path) {continue;}
-        let mut metadata=source(HookSourceScope::Plugin,path.to_string_lossy().into_owned(),HookDiscoveryTiming::PreSession);
-        metadata.display_order=parsed.executable_handlers.iter().map(|handler|handler.source.display_order).max().map_or(0,|order|order+1);
-        metadata.plugin_root=Some(plugin.install_path.to_string_lossy().into_owned());
-        metadata.manifest_path=Some(plugin.install_path.join(".claude-plugin/plugin.json").to_string_lossy().into_owned());
-        for config in load_plugin_hooks_configs(std::slice::from_ref(&plugin)) {
-            let loaded=parse_hook_config(&config,&metadata);
-            parsed.executable_handlers.extend(loaded.executable_handlers);
-            parsed.diagnostics.extend(loaded.diagnostics);
-        }
     }
 }
 

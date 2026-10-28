@@ -157,11 +157,7 @@ pub fn shadow_vendored_builtin_extensions(resources: &mut Vec<ResolvedResource>,
 pub const BUILTIN_EXTENSION_SPECIFIER_PREFIX: &str = "builtin:";
 
 fn builtin_cli_factory(specifier: &str, id: &str) -> Result<NativeAsyncExtensionFactory, UserExtensionError> {
-    // `task-member` is the omo task port's child-side extension, linked only with `omo`.
-    #[cfg(feature = "omo")]
-    let extension = (id == "task-member")
-        .then(|| Arc::new(maho_omo_task::member_extension::TaskMemberExtension) as Arc<dyn Extension>);
-    #[cfg(not(feature = "omo"))]
+    // No extension is natively linked through `builtin:<id>` (the omo `task-member` was removed).
     let extension: Option<Arc<dyn Extension>> = None;
     let Some(extension) = extension else {
         return Err(UserExtensionError { path: specifier.to_owned(), kind: UserExtensionErrorKind::UnknownNativeExtension, message: format!("No natively linked extension named '{id}'") });

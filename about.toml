@@ -15,5 +15,4 @@ accepted = [
     "OpenSSL",
     "CDLA-Permissive-2.0",
     "0BSD",
-    "LicenseRef-SUL-1.0",
 ]
