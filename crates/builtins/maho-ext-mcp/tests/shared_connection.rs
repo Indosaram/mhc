@@ -24,3 +24,16 @@ async fn renewing_one_lease_never_replaces_the_other_owners_process() {
     assert!(!first.catalog().await.unwrap().tools.is_empty());first.dispose();assert!(first.request("ping",serde_json::json!({}),Duration::from_secs(5)).await.is_err());
     second.request("ping",serde_json::json!({}),Duration::from_secs(5)).await.unwrap();assert_eq!(shared.lease_count(),1);second.dispose();assert_eq!(shared.lease_count(),0);shared.dispose().await.unwrap();
 }
+
+#[tokio::test]
+async fn released_lease_cannot_degrade_other_owner_and_invalidation_bumps_generation() {
+    use maho_ext_mcp::{connection::ServerConnectionState,errors::{McpError,McpErrorKind}};
+    let root=tempfile::tempdir().unwrap();
+    let physical=ServerConnection::new("shared",McpServerConfig {enabled:Some(true),..Default::default()},None,Arc::new(Mutex::new(McpLogger::new("shared",root.path(),None).unwrap())));
+    let shared=SharedMcpConnection::new(physical.clone(),root.path().into(),"hash".into(),Duration::from_secs(5));
+    let first=shared.attach(1,"key".into()).unwrap();let second=shared.attach(2,"key".into()).unwrap();
+    first.dispose();first.mark_failure(ServerConnectionState::Degraded,Some(McpError::new(McpErrorKind::Connect,"late failure")));
+    assert_eq!(second.state(),ServerConnectionState::Idle);assert!(second.last_error().is_none());
+    let generation=second.generation();second.invalidate().await.unwrap();assert!(second.generation()>generation);
+    assert!(first.invalidate().await.is_err());shared.dispose().await.unwrap();
+}

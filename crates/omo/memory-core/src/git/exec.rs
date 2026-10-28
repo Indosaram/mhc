@@ -25,12 +25,48 @@ pub struct GitExecResult {
     pub stderr: String,
 }
 
+/// Raw result of a finished Git process whose stdout must survive byte-for-byte.
+///
+/// `git cat-file --batch` frames each record with a byte length, so decoding its stdout before
+/// parsing would both shift every later record and destroy a non-UTF-8 blob body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitExecBytesResult {
+    pub code: i32,
+    pub stdout: Vec<u8>,
+    pub stderr: String,
+}
+
+impl GitExecBytesResult {
+    /// The lossy text view of `stdout`, matching what [`GitExecResult`] would have carried.
+    pub fn stdout_text(&self) -> String {
+        String::from_utf8_lossy(&self.stdout).into_owned()
+    }
+}
+
 /// Abstraction over Git process execution for testing and platform shimming.
 ///
 /// Implementations run `git` with `argv` in `options.cwd` and report the exit code and captured
 /// output; a non-zero exit is a normal result, `Err` is reserved for spawn/IO failures.
 pub trait GitExec: Send + Sync {
     fn run(&self, argv: &[String], options: &GitExecOptions) -> std::io::Result<GitExecResult>;
+
+    /// Run `git` and keep `stdout` as raw bytes.
+    ///
+    /// The default implementation falls back to the lossy text view, which is correct for every
+    /// text read; only a caller that parses byte-framed output needs an implementation that keeps
+    /// the bytes intact.
+    fn run_bytes(
+        &self,
+        argv: &[String],
+        options: &GitExecOptions,
+    ) -> std::io::Result<GitExecBytesResult> {
+        let result = self.run(argv, options)?;
+        Ok(GitExecBytesResult {
+            code: result.code,
+            stdout: result.stdout.into_bytes(),
+            stderr: result.stderr,
+        })
+    }
 }
 
 impl dyn GitExec + '_ {
@@ -38,6 +74,23 @@ impl dyn GitExec + '_ {
     pub fn run_in(&self, cwd: &std::path::Path, args: &[&str]) -> std::io::Result<GitExecResult> {
         let argv: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
         self.run(
+            &argv,
+            &GitExecOptions {
+                cwd: cwd.to_path_buf(),
+                timeout_ms: 30_000,
+                ..GitExecOptions::default()
+            },
+        )
+    }
+
+    /// Run `git` with string-slice arguments in `cwd`, keeping stdout as raw bytes.
+    pub fn run_bytes_in(
+        &self,
+        cwd: &std::path::Path,
+        args: &[&str],
+    ) -> std::io::Result<GitExecBytesResult> {
+        let argv: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+        self.run_bytes(
             &argv,
             &GitExecOptions {
                 cwd: cwd.to_path_buf(),
@@ -101,6 +154,31 @@ impl GitExec for RuntimeGitExec {
         }
         Err(err)
     }
+
+    /// The `run_command` seam carries decoded text, so the byte-faithful path spawns the real `git`
+    /// with the same Windows install-root fallback; only a caller parsing byte-framed output (the
+    /// completion secret scan's `cat-file --batch`) needs it.
+    fn run_bytes(
+        &self,
+        argv: &[String],
+        options: &GitExecOptions,
+    ) -> std::io::Result<GitExecBytesResult> {
+        let err = match run_git_command_bytes("git", argv, options) {
+            Ok(result) => return Ok(result),
+            Err(err) => err,
+        };
+        if self.platform != GitPlatform::Windows || err.kind() != std::io::ErrorKind::NotFound {
+            return Err(err);
+        }
+        for candidate in windows_git_candidates(options) {
+            match run_git_command_bytes(&candidate, argv, options) {
+                Ok(result) => return Ok(result),
+                Err(fallback) if fallback.kind() == std::io::ErrorKind::NotFound => {}
+                Err(fallback) => return Err(fallback),
+            }
+        }
+        Err(err)
+    }
 }
 
 /// Builds a Git executor over `runtime`, defaulting to the current platform and a real spawner.
@@ -130,16 +208,43 @@ fn run_git_command(
     argv: &[String],
     options: &GitExecOptions,
 ) -> std::io::Result<GitExecResult> {
+    let (code, stdout, stderr) = run_git_command_raw(executable, argv, options)?;
+    Ok(GitExecResult {
+        code,
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
+fn run_git_command_bytes(
+    executable: &str,
+    argv: &[String],
+    options: &GitExecOptions,
+) -> std::io::Result<GitExecBytesResult> {
+    let (code, stdout, stderr) = run_git_command_raw(executable, argv, options)?;
+    Ok(GitExecBytesResult {
+        code,
+        stdout,
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
+fn run_git_command_raw(
+    executable: &str,
+    argv: &[String],
+    options: &GitExecOptions,
+) -> std::io::Result<(i32, Vec<u8>, Vec<u8>)> {
     // A missing cwd behaves like git itself (exit 128), never like a missing binary.
     if !options.cwd.exists() {
-        return Ok(GitExecResult {
-            code: 128,
-            stdout: String::new(),
-            stderr: format!(
+        return Ok((
+            128,
+            Vec::new(),
+            format!(
                 "fatal: cannot change to '{}': No such file or directory",
                 options.cwd.display()
-            ),
-        });
+            )
+            .into_bytes(),
+        ));
     }
     spawn_and_capture(executable, argv, options)
 }
@@ -222,7 +327,7 @@ fn spawn_and_capture(
     executable: &str,
     argv: &[String],
     options: &GitExecOptions,
-) -> std::io::Result<GitExecResult> {
+) -> std::io::Result<(i32, Vec<u8>, Vec<u8>)> {
     let explicit_path = options
         .env
         .iter()
@@ -267,6 +372,34 @@ fn spawn_and_capture(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
+    let activity = super::git_activity_lock::hold_git_activity_shared(&options.cwd)?;
+    #[cfg(unix)]
+    if let Some(ref hold) = activity {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let fd = hold.0.as_raw_fd();
+        // SAFETY: only async-signal-safe descriptor operations run between fork and exec.
+        #[allow(unsafe_code)]
+        unsafe {
+            cmd.pre_exec(move || {
+                if fd != 3 && libc::dup2(fd, 3) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::fcntl(3, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    // The shared activity hold must outlive spawn; only Unix also hands it to the child.
+    #[cfg(not(unix))]
+    let _ = &activity;
     let mut child = cmd.spawn()?;
 
     let mut stdout_handle = child.stdout.take();
@@ -275,28 +408,53 @@ fn spawn_and_capture(
     let (out_tx, out_rx) = mpsc::channel();
     let (err_tx, err_rx) = mpsc::channel();
 
+    let stdout_buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stderr_buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let out_buffer = Arc::clone(&stdout_buffer);
+    let err_buffer = Arc::clone(&stderr_buffer);
     let out_thread = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
         if let Some(mut stream) = stdout_handle.take() {
-            let _ = stream.read_to_end(&mut bytes);
+            let mut chunk = [0; 8192];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(size) => out_buffer
+                        .lock()
+                        .expect("stdout buffer")
+                        .extend_from_slice(&chunk[..size]),
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
         }
-        let _ = out_tx.send(bytes);
+        let _ = out_tx.send(());
     });
 
     let err_thread = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
         if let Some(mut stream) = stderr_handle.take() {
-            let _ = stream.read_to_end(&mut bytes);
+            let mut chunk = [0; 8192];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(size) => err_buffer
+                        .lock()
+                        .expect("stderr buffer")
+                        .extend_from_slice(&chunk[..size]),
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
         }
-        let _ = err_tx.send(bytes);
+        let _ = err_tx.send(());
     });
 
     // Write stdin from its own thread after the readers are running so a child that fills its
     // stdout pipe before draining stdin (e.g. `cat-file --batch`) cannot deadlock us.
+    let (stdin_tx, stdin_rx) = mpsc::channel();
     let stdin_thread = match (options.stdin.clone(), child.stdin.take()) {
         (Some(stdin_bytes), Some(mut stdin)) => Some(std::thread::spawn(move || {
-            let _ = stdin.write_all(&stdin_bytes);
-            let _ = stdin.flush();
+            let result = stdin.write_all(&stdin_bytes).and_then(|()| stdin.flush());
+            let _ = stdin_tx.send(result);
         })),
         _ => None,
     };
@@ -312,11 +470,23 @@ fn spawn_and_capture(
                 Some(status) => break status,
                 None => {
                     if Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        if let Some(handle) = stdin_thread {
-                            let _ = handle.join();
+                        #[cfg(unix)]
+                        {
+                            // SAFETY: child.id() is the live child owned by this function.
+                            #[allow(unsafe_code)]
+                            unsafe {
+                                libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+                            }
+                            let grace = Instant::now() + Duration::from_secs(10);
+                            while child.try_wait()?.is_none() && Instant::now() < grace {
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
                         }
+                        if child.try_wait()?.is_none() {
+                            child.kill()?;
+                        }
+                        child.wait()?;
+                        drop(stdin_thread);
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::TimedOut,
                             format!("git {} timed out after {timeout_ms}ms", argv.join(" ")),
@@ -329,22 +499,29 @@ fn spawn_and_capture(
         }
     };
 
-    if let Some(handle) = stdin_thread {
-        let _ = handle.join();
+    // EOF events have a common bound: descendants may inherit the pipes indefinitely.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let stdin_error = if stdin_thread.is_some() {
+        match stdin_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(Err(error)) if error.kind() != std::io::ErrorKind::BrokenPipe => {
+                Some(error.to_string())
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let _ = out_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+    let _ = err_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+    let stdout_bytes = stdout_buffer.lock().expect("stdout buffer").clone();
+    let stderr_bytes = stderr_buffer.lock().expect("stderr buffer").clone();
+    drop(out_thread);
+    drop(err_thread);
+
+    let mut stderr_bytes = stderr_bytes;
+    if let Some(error) = stdin_error {
+        stderr_bytes.extend_from_slice(format!("\nstdin: {error}").as_bytes());
     }
-    let _ = out_thread.join();
-    let _ = err_thread.join();
 
-    let stdout_bytes = out_rx.recv().unwrap_or_default();
-    let stderr_bytes = err_rx.recv().unwrap_or_default();
-
-    let code = status.code().unwrap_or(1);
-    let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
-    let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
-
-    Ok(GitExecResult {
-        code,
-        stdout,
-        stderr,
-    })
+    Ok((status.code().unwrap_or(1), stdout_bytes, stderr_bytes))
 }

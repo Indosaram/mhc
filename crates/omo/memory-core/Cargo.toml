@@ -12,15 +12,17 @@ path = "src/lib.rs"
 
 [dependencies]
 
+tempfile.workspace = true
 loro = "=1.16.2"
 saphyr-parser = "=0.2.2"
 url.workspace = true
+regex.workspace = true
 aws-lc-rs = "=1.18.1"
 base64.workspace = true
 flate2.workspace = true
 pkcs8 = "=0.10.2"
 ryu-js = "=1.0.3"
-tokio = { workspace = true, features = ["rt", "time"] }
+tokio = { workspace = true, features = ["rt", "time", "sync"] }
 zeroize = "=1.8.2"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
@@ -32,10 +34,12 @@ icu_collator = "=2.3.1"
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 [dev-dependencies]
 filetime.workspace = true
 pretty_assertions.workspace = true
-tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "test-util"] }
 
 # Imported from COMP 93b78ac: this crate does not opt into `[lints] workspace = true`.

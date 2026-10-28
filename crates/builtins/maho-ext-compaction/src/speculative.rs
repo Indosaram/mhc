@@ -119,6 +119,8 @@ pub enum SummaryGenerationError {
     Stream(crate::speculative_summary::SummaryStreamError),
     Overflow(crate::overflow_retry::SummarizationOverflowExhaustedError),
     TotalBudget,
+    /// A successful summary whose retained suffix can never be replayed (rejected-recovery.ts).
+    UnsafeRetainedSuffix(Box<crate::deterministic_fallback::UnsafeRetainedSuffixError>),
 }
 
 impl std::fmt::Display for SummaryGenerationError {
@@ -134,6 +136,7 @@ impl std::fmt::Display for SummaryGenerationError {
             Self::Stream(error) => write!(formatter, "{error:?}"),
             Self::Overflow(error) => write!(formatter, "{error:?}"),
             Self::TotalBudget => formatter.write_str("summarization total budget exhausted"),
+            Self::UnsafeRetainedSuffix(error) => write!(formatter, "{error}"),
         }
     }
 }
@@ -170,6 +173,38 @@ pub fn summary_request_failure(
     }
 }
 
+/// senpi `authenticated`: a resolved key, a credential request header, or ambient request-time auth.
+fn is_authenticated(
+    api_key: Option<&str>,
+    ambient: bool,
+    headers: Option<&maho_ai::types::ProviderHeaders>,
+) -> bool {
+    ambient
+        || api_key.is_some_and(|key| !key.is_empty())
+        || headers.is_some_and(|headers| {
+            headers.iter().any(|(key, value)| {
+                value.as_ref().is_some_and(|value| !value.is_empty())
+                    && matches!(
+                        key.to_ascii_lowercase().as_str(),
+                        "authorization" | "x-api-key" | "api-key"
+                    )
+            })
+        })
+}
+
+/// The summary-failure class senpi's `classifyRequiredCompactionFallbackFailure` keys on.
+pub fn summary_failure(error: &SummaryGenerationError) -> crate::deterministic_fallback::SummaryFailure {
+    use crate::{deterministic_fallback::SummaryFailure, speculative_summary::SummaryStreamError};
+    match error {
+        SummaryGenerationError::Request(response) => summary_request_failure(response),
+        SummaryGenerationError::Stream(SummaryStreamError::IdleTimeout | SummaryStreamError::DurationBudget) | SummaryGenerationError::TotalBudget => SummaryFailure::Timeout,
+        SummaryGenerationError::Overflow(_) => SummaryFailure::OverflowExhausted,
+        SummaryGenerationError::EmptySummary(_) => SummaryFailure::EmptySummary,
+        SummaryGenerationError::UnsafeRetainedSuffix(_) => SummaryFailure::UnsafeRetainedSuffix,
+        _ => SummaryFailure::Other,
+    }
+}
+
 pub async fn run_extension_compaction(
     snapshot: &SpeculativeCompactionSnapshot,
     api_key: Option<String>,
@@ -179,23 +214,127 @@ pub async fn run_extension_compaction(
     stream_runner: Option<&crate::speculative_summary::SummaryStreamRunner>,
     on_progress: &(dyn Fn(&str) + Sync),
 ) -> Result<Option<CompactionResult>, SummaryGenerationError> {
+    run_extension_compaction_with_body(
+        snapshot, api_key, ambient, headers, None, signal, stream_runner, on_progress,
+    )
+    .await
+}
+
+/// senpi `runExtensionCompaction(context, snapshot, ...)`: picks the summarizer model
+/// (`compaction.model` override, falling back to the session model without credentials), resolves
+/// its auth including `baseUrl` and `extraBody`, applies the provider-request header and payload
+/// transforms, and streams through the model registry so extension-registered providers resolve.
+/// The message transform of `prepareProviderRequest` is not applied: the summary messages are
+/// assembled as JSON inside the request builder.
+pub async fn run_extension_compaction_for_context(
+    context: &ExtensionContext,
+    snapshot: &SpeculativeCompactionSnapshot,
+    signal: Option<&maho_ai::utils::abort::AbortSignal>,
+    on_progress: &(dyn Fn(&str) + Sync),
+) -> Result<Option<CompactionResult>, SummaryGenerationError> {
+    let aborted = || signal.is_some_and(maho_ai::utils::abort::AbortSignal::aborted);
+    let auth_failure = |error: ExtensionFailure| {
+        SummaryGenerationError::Auth(format!("summarization credentials unavailable: {}", error.message))
+    };
+    let mut selected = context
+        .get_compaction_model()
+        .map_err(auth_failure)?
+        .unwrap_or_else(|| snapshot.model.clone());
+    let mut auth = context.model_registry.get_api_key_and_headers(&selected).await;
+    if aborted() {
+        return Ok(None);
+    }
+    // A configured summary model whose credentials cannot be confirmed must not disable compaction.
+    let authenticated = |auth: &Result<maho_ext_api::ResolvedRequestAuth, ExtensionFailure>| {
+        auth.as_ref().is_ok_and(|auth| {
+            is_authenticated(auth.auth.api_key.as_deref(), auth.ambient, auth.auth.headers.as_ref())
+        })
+    };
+    if !same_model(&selected, &snapshot.model) && !authenticated(&auth) {
+        selected = snapshot.model.clone();
+        auth = context.model_registry.get_api_key_and_headers(&selected).await;
+        if aborted() {
+            return Ok(None);
+        }
+    }
+    let auth = auth.map_err(auth_failure)?;
+    let mut request_snapshot = snapshot.clone();
+    if !same_model(&selected, &snapshot.model) {
+        request_snapshot.context_window = selected.context_window;
+        request_snapshot.model = selected;
+    }
+    if let Some(base_url) = auth.auth.base_url.clone().filter(|url| !url.is_empty()) {
+        request_snapshot.model.base_url = base_url;
+    }
+    let prepared = context
+        .prepare_provider_request(Vec::new())
+        .await
+        .map_err(auth_failure)?;
+    let headers = match auth.auth.headers.clone() {
+        Some(headers) => Some((prepared.transform_headers)(headers).await.map_err(auth_failure)?),
+        None => None,
+    };
+    let registry = std::sync::Arc::clone(&context.model_registry);
+    let transform_payload = std::sync::Arc::clone(&prepared.transform_payload);
+    let runner: crate::speculative_summary::SummaryStreamRunner =
+        std::sync::Arc::new(move |model, request_context, mut options| {
+            let sanitize = options.request.on_payload.take();
+            let transform = std::sync::Arc::clone(&transform_payload);
+            options.request.async_on_payload = Some(std::sync::Arc::new(move |payload, model, metadata| {
+                let sanitize = sanitize.clone();
+                let transform = std::sync::Arc::clone(&transform);
+                Box::pin(async move {
+                    let sanitized = sanitize
+                        .and_then(|hook| hook(&payload, &model, metadata.as_ref()))
+                        .unwrap_or(payload);
+                    transform(sanitized)
+                        .await
+                        .map(Some)
+                        .map_err(|error| error.message)
+                })
+            }));
+            match registry.stream(model, request_context, Some(options)) {
+                Ok(stream) => stream,
+                Err(error) => maho_ai::utils::lazy::error_stream(model, &error.message),
+            }
+        });
+    run_extension_compaction_with_body(
+        &request_snapshot,
+        auth.auth.api_key,
+        auth.ambient,
+        headers,
+        auth.extra_body,
+        signal,
+        Some(&runner),
+        on_progress,
+    )
+    .await
+}
+
+fn same_model(left: &maho_ai::types::Model, right: &maho_ai::types::Model) -> bool {
+    left.provider == right.provider
+        && left.id == right.id
+        && left.api == right.api
+        && left.base_url == right.base_url
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_extension_compaction_with_body(
+    snapshot: &SpeculativeCompactionSnapshot,
+    api_key: Option<String>,
+    ambient: bool,
+    headers: Option<maho_ai::types::ProviderHeaders>,
+    extra_body: Option<serde_json::Map<String, Value>>,
+    signal: Option<&maho_ai::utils::abort::AbortSignal>,
+    stream_runner: Option<&crate::speculative_summary::SummaryStreamRunner>,
+    on_progress: &(dyn Fn(&str) + Sync),
+) -> Result<Option<CompactionResult>, SummaryGenerationError> {
     use crate::{overflow_retry as overflow, speculative_summary as summary};
     use maho_ai::types::StopReason;
     if signal.is_some_and(maho_ai::utils::abort::AbortSignal::aborted) {
         return Ok(None);
     }
-    if !ambient
-        && api_key.as_ref().is_none_or(|key| key.is_empty())
-        && headers.as_ref().is_none_or(|headers| {
-            !headers.iter().any(|(key, value)| {
-                value.as_ref().is_some_and(|value| !value.is_empty())
-                    && matches!(
-                        key.to_ascii_lowercase().as_str(),
-                        "authorization" | "x-api-key" | "api-key"
-                    )
-            })
-        })
-    {
+    if !is_authenticated(api_key.as_deref(), ambient, headers.as_ref()) {
         return Err(SummaryGenerationError::Auth(format!(
             "summarization credentials unavailable: no credentials resolved for provider \"{}\"",
             snapshot.model.provider
@@ -258,7 +397,7 @@ pub async fn run_extension_compaction(
                         prompt: &prompt,
                         api_key: api_key.clone(),
                         headers: headers.clone(),
-                        extra_body: None,
+                        extra_body: extra_body.clone(),
                         signal,
                         max_duration: std::time::Duration::from_secs_f64(
                             attempt_ms.min(remaining) / 1000.,

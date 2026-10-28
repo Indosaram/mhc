@@ -75,6 +75,29 @@ pub struct AgreementsNoticeInput {
     pub on_failed: Option<PromptNoticeInputFailed>,
 }
 impl MemoryPromptHandler {
+    pub fn prebuild(&self, context: &crate::context::MemoryIdentityContext) -> Result<(), String> {
+        let repo = GitMemoryRepo::open(&context.identity_paths.repo, &context.identity)
+            .map_err(|error| error.to_string())?;
+        self.cache
+            .compile(
+                &repo,
+                MEMORY_PROMPT_TEMPLATE,
+                &CompileMemoryBlockOptions {
+                    agent_id: context.identity.clone(),
+                    projection: None,
+                },
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+    pub fn persistent() -> Self {
+        Self {
+            cache: MemoryBlockCache::persistent(
+                env!("CARGO_PKG_VERSION").to_string() + ":omo-v5.1.47",
+            ),
+            ..Default::default()
+        }
+    }
     pub fn set_agreements_notice(&self, input: Option<AgreementsNoticeInput>) {
         *self
             .agreements
@@ -156,6 +179,41 @@ pub fn register_memory_prompt_handler_with_cache(
             }
         }));
     }
+    let prebuild = handler.clone();
+    let prebuild_options = options.clone();
+    api.on(
+        EventKind::SessionStart,
+        std::sync::Arc::new(move |_, context| {
+            let prebuild = prebuild.clone();
+            let options = prebuild_options.clone();
+            let identity = context
+                .session_manager
+                .get_branch()
+                .is_empty()
+                .then(|| (options.resolve_context)(context.session_manager.session_id()))
+                .flatten();
+            Box::pin(async move {
+                if let Some(identity) = identity {
+                    tokio::task::spawn_blocking(move || prebuild.prebuild(&identity))
+                        .await
+                        .map_err(|error| ExtensionFailure::new(error.to_string()))?
+                        .map_err(ExtensionFailure::new)?;
+                }
+                Ok(EventResult::None)
+            })
+        }),
+    );
+    let settle = handler.clone();
+    api.on(
+        EventKind::SessionShutdown,
+        std::sync::Arc::new(move |_, _| {
+            let settle = settle.clone();
+            Box::pin(async move {
+                settle.cache.settled();
+                Ok(EventResult::None)
+            })
+        }),
+    );
     api.on(
         EventKind::BeforeAgentStart,
         std::sync::Arc::new(move |event, context| {
@@ -250,6 +308,7 @@ pub fn register_memory_prompt_handler_with_cache(
                         None => EventResult::None,
                         Some(result) => {
                             EventResult::BeforeAgentStart(BeforeAgentStartEventResult {
+                                system_prompt_parts: None,
                                 system_prompt: Some(result.system_prompt),
                                 message: Some(CustomMessage {
                                     custom_type: result.message.custom_type.into(),
@@ -312,6 +371,7 @@ impl MemoryPromptHandler {
             .map_err(|error| MemoryPromptError::Compile(CompileError::Git(error.to_string())))?;
         let options = CompileMemoryBlockOptions {
             agent_id: input.identity.to_owned(),
+            projection: None,
         };
         let block = if turn.revision.as_deref() == head.as_deref() {
             self.cache

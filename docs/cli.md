@@ -31,12 +31,14 @@ message; every other positional argument is a message.
 | `mhc schedule <command>` | Schedule and manage background task executions. |
 | `mhc models discover` | Discover and test available model provider endpoints. |
 | `mhc senpi-install` | Install or uninstall the Senpi companion plugin for editor integration. |
-| `mhc app-server [--listen <url>]` | Serve sessions over the Codex app-server protocol (`stdio://`, `ws://host:port`). `mhc app-server daemon <start\|stop\|status\|restart>` manages a background daemon. |
 | `mhc host <ensure\|status\|stop\|handoff>` | Get, inspect or end the shared RPC host daemon; one JSON line per call. |
 | `mhc mini [-c]` | Experimental minimal TUI client. |
 
 `install`, `remove`, `update`, `list`, `config`, `auth`, `import-omo` and `doctor` accept `--help`;
-`host` and `app-server` print their usage on an unknown argument.
+`host` prints its usage on an unknown argument.
+
+`app-server` has been removed. Use `mhc --mode rpc` for process integration over stdin/stdout.
+This is not a drop-in replacement for the Codex app-server protocol; clients must use the mhc RPC protocol.
 
 Project trust: `--approve` / `-a` trusts project-local files (`.omo/`, project extensions, hooks)
 for one run, `--no-approve` / `-na` ignores them. `/trust` in the TUI saves the decision.

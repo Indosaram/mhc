@@ -279,7 +279,7 @@ fn seed_corpus(paths: &MemoryIdentityPaths) {
 
 /// The child's environment: cleared, then set explicitly, so no inherited memory sentinel (which would
 /// disable memory) and no developer memory root can leak into the fixture.
-fn child_env(home: &Path, agent: &Path, memory_root: &Path) -> Vec<(String, String)> {
+fn child_env(home: &Path, agent: &Path, memory_root: &Path, skills: &Path) -> Vec<(String, String)> {
     let mut env: BTreeMap<String, String> = BTreeMap::new();
     env.insert("HOME".to_owned(), home.to_string_lossy().into_owned());
     if cfg!(windows) {
@@ -290,6 +290,7 @@ fn child_env(home: &Path, agent: &Path, memory_root: &Path) -> Vec<(String, Stri
     }
     env.insert("MAHO_CODING_AGENT_DIR".to_owned(), agent.to_string_lossy().into_owned());
     env.insert("MAHO_MEMORY_HOME".to_owned(), memory_root.to_string_lossy().into_owned());
+    env.insert("OMO_SENPI_SKILLS_ROOT".to_owned(), skills.to_string_lossy().into_owned());
     env.insert("PATH".to_owned(), std::env::var("PATH").unwrap_or_default());
     env.into_iter().collect()
 }
@@ -396,7 +397,8 @@ async fn real_mount_recall_delivers_a_nudge_and_releases_its_wake_lease() {
     let agent = home.join("agent");
     let memory_root = home.join("memory");
     let sessions = home.join("sessions");
-    for path in [&project, &agent, &memory_root, &sessions] {
+    let skills = home.join("skills");
+    for path in [&project, &agent, &memory_root, &sessions, &skills] {
         std::fs::create_dir_all(path).expect("fixture directory");
     }
     // Headless startup claims onboarding and sends a bootstrap turn like upstream onboarding/component.ts:41-55;
@@ -408,7 +410,7 @@ async fn real_mount_recall_delivers_a_nudge_and_releases_its_wake_lease() {
         .expect("gitconfig");
     let config_path = write_user_config(home);
 
-    let env = child_env(home, &agent, &memory_root);
+    let env = child_env(home, &agent, &memory_root, &skills);
     let env_map: BTreeMap<String, String> = env.iter().cloned().collect();
     let identity = resolve_memory_identity(Some(IDENTITY), &project, &env_map).expect("memory identity");
     let paths = build_identity_paths(&memory_root, &identity.id);

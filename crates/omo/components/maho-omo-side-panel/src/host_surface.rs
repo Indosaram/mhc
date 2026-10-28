@@ -14,6 +14,7 @@ pub struct PanelHostSurfaceDeps {
     pub clickable: bool,
     pub on_action: Option<ActionHook>,
     pub defer: Defer,
+    pub on_regular_mode_fallback: Option<RegularModeFallback>,
 }
 struct InstalledColumn {
     tui: Arc<dyn PanelHostTui>,
@@ -25,6 +26,7 @@ struct SurfaceState {
     kind: PanelSurfaceKind,
     installed: Option<InstalledColumn>,
     widget_mounted: bool,
+    fallback_notified: bool,
     renderer: Option<Arc<dyn PanelHostTui>>,
     generation: u64,
     url_hook: Option<(Arc<dyn PanelHostTui>, UrlHook)>,
@@ -126,7 +128,8 @@ impl PanelHostSurface {
         if generation != state.generation || state.installed.is_some() {
             return;
         }
-        if self.deps.clickable && state.url_hook.is_none()
+        if self.deps.clickable
+            && state.url_hook.is_none()
             && let (Some(action), Some(current)) = (&self.deps.on_action, tui.open_url())
         {
             let previous = match tui.parked_url_hook() {
@@ -167,10 +170,15 @@ impl PanelHostSurface {
             drop(state);
             tui.request_render(true);
         } else {
+            let notify = !state.fallback_notified;
+            state.fallback_notified = true;
             state.widget_mounted = true;
             state.widget_host = Some(tui);
             state.kind = PanelSurfaceKind::Widget;
             drop(state);
+            if notify && let Some(callback) = &self.deps.on_regular_mode_fallback {
+                callback();
+            }
             let body = self.body.clone();
             self.deps.context.ui.set_widget(
                 SIDE_PANEL_WIDGET_KEY,

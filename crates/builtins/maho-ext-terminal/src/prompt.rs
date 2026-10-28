@@ -15,8 +15,8 @@ manual `&` backgrounding — use the built-in session tools:
   since the last read, the status line, or a rendered full-screen snapshot of TUIs via
   `view: "screen"`. Completion arrives as a notification carrying the exit code and output
   tail — peeking is for steering, never for waiting.
-- `{monitor}` subscribes you to a change. Pass `command` XOR `path` — one branch per call,
-  never both:
+- `{monitor}` subscribes you to a change. Pass exactly one source (`command`, `path` or
+  `target`; one branch per call, never two):
   - `{monitor}({{ description, command, filter?, timeout_ms?, persistent? }})` watches a command:
     newline-terminated PTY output lines (stderr included) matching `filter` arrive as injected
     events while you keep working; command exit always delivers a summary. One-shot gate: wait

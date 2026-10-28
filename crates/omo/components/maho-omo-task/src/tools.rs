@@ -181,6 +181,7 @@ pub fn register_task_tools_with_sync(
                     .context
                     .ok_or_else(|| ToolError::Message("task requires a session context".into()))?;
                 let ctx = TaskToolContext {
+                    model: context.model().map(|model| senpi_task::tools::task::foreground_wait::ParentModel { provider: model.provider.clone(), id: model.id.clone() }),
                     cwd: context.cwd().to_string_lossy().into_owned(),
                     session_id: context.session_manager().session_id().into(),
                     get_prompt_cache_safe_wait_seconds: {

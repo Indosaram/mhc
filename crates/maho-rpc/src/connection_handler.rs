@@ -317,7 +317,7 @@ pub fn rpc_session_event_record(
         }
         _ => {}
     }
-    Ok(record)
+    Ok(crate::session_record_stream::session_record(record))
 }
 fn current_abort_source(
     session: &AgentSession,
@@ -457,14 +457,7 @@ async fn handle_input_line_with_login_state(
         }
     };
     // Boxed: this command future is very large and would otherwise sit on the caller's stack.
-    Box::pin(handle_session_command_with_sink(
-        session,
-        &command,
-        sink,
-        active_logins,
-        ui,
-        last_abort_source,
-    ))
+    dispatch_session_command(session, &command, sink, active_logins, ui, last_abort_source)
     .await
     .map(|response| crate::jsonl::serialize_json_line(&response))
     .transpose()
@@ -565,10 +558,13 @@ pub fn build_rpc_session_state_with_dialogs(
         "isCompacting":session.is_compacting(),
         "retryAttempt":session.retry_attempt(),
         "isBashRunning":session.is_bash_running(),
-        // The session has no pause/hold state in this port: senpi's `?? false` / `?? 0` / `?? []` fallbacks.
-        "paused":false,
-        "pausedNoticeCount":0,
-        "holds":[],
+        "paused":session.paused(),
+        "runPaused":session.holds().iter().any(|hold|hold.kind==maho_core::engine_turn_hold::HoldKind::RunFence),
+        "pause":{"pauseSeq":session.pause_seq(),"records":session.holds().iter().map(|hold|{let mut record=serde_json::json!({"kind":hold.kind.as_str(),"key":hold.key});if let Some(data)=&hold.data{for key in ["runRef","parentSessionId"]{if let Some(value)=data.get(key){record[key]=value.clone();}}}record}).collect::<Vec<_>>()},
+        "pauseSeq":session.pause_seq(),
+        "pausedHeldInputCount":session.paused_held_input_count(),
+        "pausedNoticeCount":session.paused_notice_count(),
+        "holds":session.holds().iter().map(|hold|serde_json::json!({"kind":hold.kind.as_str(),"key":hold.key,"since":hold.since,"data":hold.data,"sourceCounts":hold.source_counts})).collect::<Vec<_>>(),
         "pendingDialogs":pending_dialogs,
         "steeringMode":match session.steering_mode(){maho_agent::types::QueueMode::All=>"all",maho_agent::types::QueueMode::OneAtATime=>"one-at-a-time"},
         "followUpMode":match session.follow_up_mode(){maho_agent::types::QueueMode::All=>"all",maho_agent::types::QueueMode::OneAtATime=>"one-at-a-time"},
@@ -627,8 +623,27 @@ pub async fn handle_session_command(
     session: &AgentSession,
     command: &RpcCommand,
 ) -> Option<RpcResponse> {
+    dispatch_session_command(session, command, None, None, None, None).await
+}
+/// Prompts run in their own boxed future so the large generic command future is not polled beneath the agent run.
+async fn dispatch_session_command(
+    session: &AgentSession,
+    command: &RpcCommand,
+    sink: Option<RpcRecordSink>,
+    active_logins: Option<ActiveLogins>,
+    ui: Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,
+    last_abort_source: Option<&LastAbortSource>,
+) -> Option<RpcResponse> {
+    if matches!(command.body, RpcCommandBody::Prompt { .. }) {
+        return Box::pin(run_prompt_command(session, command, sink)).await;
+    }
     Box::pin(handle_session_command_with_sink(
-        session, command, None, None, None, None,
+        session,
+        command,
+        sink,
+        active_logins,
+        ui,
+        last_abort_source,
     ))
     .await
 }
@@ -710,16 +725,15 @@ fn reload_veto_json(decision: &maho_ext_api::ReloadVetoDecision) -> serde_json::
     }
     value
 }
-async fn handle_session_command_with_sink(
+/// The prompt command runs outside `handle_session_command_with_sink`: that function's poll frame is hundreds of KiB
+/// in an unoptimized build, and keeping it on the stack beneath the whole agent run overflows a 2 MiB test thread.
+async fn run_prompt_command(
     session: &AgentSession,
     command: &RpcCommand,
     sink: Option<RpcRecordSink>,
-    active_logins: Option<ActiveLogins>,
-    ui: Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,
-    last_abort_source: Option<&LastAbortSource>,
 ) -> Option<RpcResponse> {
-    let (kind,result)=match &command.body{
-        RpcCommandBody::Prompt{message,images,streaming_behavior,thinking_level,session_title_prompt,expand_prompt_templates}=>{
+    let RpcCommandBody::Prompt{message,images,streaming_behavior,thinking_level,session_title_prompt,expand_prompt_templates}=&command.body else{unreachable!("only prompt commands are routed here")};
+    {
             let options=(||{
                 if thinking_level.is_some()&&session.is_streaming()&&streaming_behavior.is_some(){return Err("Cannot set thinkingLevel on a queued prompt; set it after the current turn completes.".to_owned());}
                 let images=images.as_ref().map(|images|images.iter().cloned().map(serde_json::from_value).collect::<Result<Vec<maho_ai::types::ImageContent>,_>>()).transpose().map_err(|error|error.to_string())?;
@@ -744,8 +758,44 @@ async fn handle_session_command_with_sink(
                 Box::pin(session.prompt(message,options)).await.map(|disposition|Some(serde_json::json!({"disposition":match disposition{maho_core::agent_session::PromptDisposition::Started=>"started",maho_core::agent_session::PromptDisposition::Queued=>"queued",maho_core::agent_session::PromptDisposition::Handled=>"handled"}})))
             }};
             if admitted.load(std::sync::atomic::Ordering::SeqCst){return None;}
-            ("prompt",result)
+            Some(command_response(session,command,"prompt",result))
+    }
+}
+fn command_response(session: &AgentSession, command: &RpcCommand, kind: &str, result: Result<Option<serde_json::Value>,String>) -> RpcResponse {
+    RpcResponse {
+        id: command.id.clone(),
+        record_type: ResponseRecordType::Response,
+        command: kind.into(),
+        session_id: command.session_id.clone(),
+        result: match result {
+            Ok(data) => RpcResponseResult::Success { data },
+            Err(error) => RpcResponseResult::Error {
+                error,
+                error_code: None,
+                error_data: default_error_data(session, kind),
+            },
         },
+    }
+}
+async fn handle_session_command_with_sink(
+    session: &AgentSession,
+    command: &RpcCommand,
+    sink: Option<RpcRecordSink>,
+    active_logins: Option<ActiveLogins>,
+    ui: Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,
+    last_abort_source: Option<&LastAbortSource>,
+) -> Option<RpcResponse> {
+    let (kind,result)=match &command.body{
+        RpcCommandBody::HoldInput{..}|RpcCommandBody::WithdrawHeldInput{..}|RpcCommandBody::PauseForRun{..}|RpcCommandBody::ResumeForRun{..}=>{
+            let value=serde_json::to_value(command).unwrap_or(serde_json::Value::Null);
+            let kind=match &command.body{RpcCommandBody::HoldInput{..}=>"hold_input",RpcCommandBody::WithdrawHeldInput{..}=>"withdraw_held_input",RpcCommandBody::PauseForRun{..}=>"pause_for_run",_=>"resume_for_run"};
+            let result=match kind{"hold_input"=>crate::held_input_commands::run_hold_input(session,&value,false,false),"pause_for_run"=>crate::run_hold_commands::run_pause_for_run(session,&value,false).await,"resume_for_run"=>crate::run_hold_commands::run_resume_for_run(session,&value,false).await,_=>Err("withdraw_held_input_requires_interactive_client".into())};
+            (kind,result.map(Some))
+        },
+        RpcCommandBody::HostResponse{..}=>("host_response",Err("unknown_host_request".into())),
+        RpcCommandBody::ArmToolBarrier { spec } => ("arm_tool_barrier",serde_json::from_value(spec.clone()).map_err(|e|e.to_string()).and_then(|spec|session.arm_tool_barrier(spec)).map(|()|None)),
+        RpcCommandBody::ReleaseToolBarrier { barrier_id } => ("release_tool_barrier",Ok(Some(serde_json::json!({"released":session.release_tool_barrier(barrier_id)})))),
+        RpcCommandBody::Prompt{..}=>unreachable!("prompt commands are routed to run_prompt_command"),
         RpcCommandBody::SwitchSession{session_path,cwd_override}=>match session.switch_session_with_cwd_coded(session_path,cwd_override.as_deref()).await{
             Ok(switched)=>("switch_session",Ok(Some(serde_json::json!({"cancelled":!switched})))),
             Err(error)=>return Some(session_switch_failure(command,"switch_session",error)),
@@ -1304,6 +1354,14 @@ impl RpcExtensionUi {
             renderer.dispose();
         }
     }
+    pub fn select_grant(
+        &self,
+        title: &str,
+        choices: &[String],
+        opts: &maho_ext_api::ExtensionUiDialogOptions,
+    ) -> maho_ext_api::UiFuture<'static, Option<String>> {
+        self.ask(opts,None,serde_json::json!({"method":"select","title":title,"options":choices,"grantSelect":true}),|response|if response["cancelled"]==true{None}else{response["value"].as_str().map(str::to_owned)})
+    }
     fn ask<T: 'static + Send>(
         &self,
         opts: &maho_ext_api::ExtensionUiDialogOptions,
@@ -1320,12 +1378,22 @@ impl RpcExtensionUi {
         }
         let id = uuid::Uuid::new_v4().to_string();
         let (sender, receiver) = tokio::sync::oneshot::channel();
+        request["type"] = "extension_ui_request".into();
+        request["id"] = id.clone().into();
         self.pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .set(id.clone(), sender);
-        request["type"] = "extension_ui_request".into();
-        request["id"] = id.clone().into();
+            .set_with_frame(id.clone(), sender, request.clone());
+        if request["grantSelect"] == true {
+            let connection = crate::multi_session_host::CURRENT_CONNECTION
+                .try_with(Clone::clone)
+                .ok()
+                .flatten();
+            self.pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .bind_grant(&id, connection);
+        }
         (self.out)(request);
         let timeout = opts.timeout_ms;
         let signal = opts.signal.clone();
@@ -1407,6 +1475,8 @@ impl maho_ext_api::ExtensionUi for RpcExtensionUi {
                             .map(|question| question.id.clone())
                             .collect(),
                         auto_resolved_after_ms: Some(request.timeout_ms),
+                        cancel_origin: None,
+                        resolved_by: None,
                     })
                 }
             }
@@ -1590,6 +1660,9 @@ pub struct RpcConnectionHandler {
     local_replacements: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// senpi `options.connectionRoles`: this connection's declared roles (a classic handler serves one connection).
     connection_roles: crate::session_binding::SharedConnectionRoles,
+    grant_presentation:
+        std::sync::Mutex<Option<maho_core::mcp_grant_presentations::McpGrantAttachment>>,
+    relocation: crate::session_relocation_legacy::RpcSessionRelocation,
     /// senpi `options.toolRuntime`: a single-session `--mode rpc` process advertises its `--tool-runtime` as
     /// `tool_runtime:<value>`.
     tool_runtime: Option<crate::host_capabilities::ToolRuntimeKind>,
@@ -1804,7 +1877,22 @@ impl RpcConnectionHandler {
                 }
             }
         });
+        let grant_ui = ui.clone();
+        let grant_presentation = ui
+            .capabilities
+            .iter()
+            .any(|capability| capability == "grant_select")
+            .then(|| {
+                maho_core::mcp_grant_presentations::attach_mcp_grant_presentation(
+                    &session.session_id(),
+                    std::sync::Arc::new(move |title, choices, _signal| {
+                        let answer = grant_ui.select_grant(&title, &choices, &Default::default());
+                        Box::pin(async move { Ok(answer.await) })
+                    }),
+                )
+            });
         Self {
+            grant_presentation: std::sync::Mutex::new(grant_presentation),
             session,
             ui,
             pending,
@@ -1818,6 +1906,7 @@ impl RpcConnectionHandler {
             provider_account_unsubscribe: std::sync::Mutex::new(Some(provider_account_unsubscribe)),
             local_replacements,
             last_abort_source: Default::default(),
+            relocation: Default::default(),
             connection_roles: Default::default(),
             tool_runtime: None,
         }
@@ -1830,11 +1919,25 @@ impl RpcConnectionHandler {
         self.tool_runtime = tool_runtime;
         self
     }
+    pub fn with_connection_roles(
+        mut self,
+        roles: crate::session_binding::SharedConnectionRoles,
+    ) -> Self {
+        self.connection_roles = roles;
+        self
+    }
     pub fn ui(&self) -> &std::sync::Arc<RpcExtensionUi> {
         &self.ui
     }
     /// Feed one inbound JSONL line: a UI response settles a pending dialog; anything else is a command.
     pub async fn handle_input_line(&self, line: &str) -> Result<Option<String>, serde_json::Error> {
+        self.handle_input_line_for_connection(line, None).await
+    }
+    pub async fn handle_input_line_for_connection(
+        &self,
+        line: &str,
+        connection: Option<&str>,
+    ) -> Result<Option<String>, serde_json::Error> {
         let parsed = serde_json::from_str::<serde_json::Value>(line).ok();
         if let Some(value) = &parsed
             && matches!(
@@ -1842,6 +1945,29 @@ impl RpcConnectionHandler {
                 Some("extension_ui_response" | "extension_ui_progress")
             )
         {
+            let mut answer = value.clone();
+            if let Some(id) = crate::extension_ui_response::answered_ui_request_id(value) {
+                answer["id"] = id.into();
+            }
+            let value = &answer;
+            let capable = connection.is_some()
+                || self
+                    .ui
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == "grant_select");
+            if !self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .grant_authorized(
+                    value["id"].as_str().unwrap_or_default(),
+                    connection,
+                    capable,
+                )
+            {
+                return Ok(None);
+            }
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_millis() as u64);
@@ -1850,24 +1976,55 @@ impl RpcConnectionHandler {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .respond(value, now);
-            match kind {
-                crate::connection_question_bridge::QuestionReply::Accepted
-                | crate::connection_question_bridge::QuestionReply::AlreadyResolved => {
-                    if let Some(record) = resolved {
-                        self.out_record(record);
-                    }
+            let error = match kind {
+                crate::connection_question_bridge::QuestionReply::Incomplete => {
+                    Some("question_incomplete")
                 }
-                crate::connection_question_bridge::QuestionReply::Incomplete => {}
+                crate::connection_question_bridge::QuestionReply::AlreadyResolved => {
+                    Some("question_already_resolved")
+                }
                 crate::connection_question_bridge::QuestionReply::Unknown => {
-                    self.pending
+                    let matched = self
+                        .pending
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .resolve(value.clone());
+                    if !matched && connection.is_some() {
+                        Some("unknown_extension_ui_request")
+                    } else {
+                        None
+                    }
                 }
+                crate::connection_question_bridge::QuestionReply::Accepted => None,
+            };
+            if let Some(record) = resolved {
+                self.out_record(record);
+            }
+            if error.is_some()
+                || kind == crate::connection_question_bridge::QuestionReply::Accepted
+                || connection.is_some()
+            {
+                let mut reply = serde_json::json!({"id":parsed.as_ref().map(|frame|frame["id"].clone()),"type":"response","command":"extension_ui_response","success":error.is_none()});
+                if let Some(error) = error {
+                    reply["error"] = error.into();
+                }
+                return crate::jsonl::serialize_json_line(&reply).map(Some);
             }
             return Ok(None);
         }
         let kind = parsed.as_ref().and_then(|value| value["type"].as_str());
+        if kind == Some("host_response")
+            && let Some(frame) = &parsed
+        {
+            let outcome = self.relocation.respond(frame, connection.unwrap_or("sole"));
+            return crate::jsonl::serialize_json_line(
+                &crate::session_relocation_channel::answer_host_response(
+                    frame,
+                    Some(&mut |_| outcome),
+                ),
+            )
+            .map(Some);
+        }
         // senpi `set_client_info`: a connection's declared role is fixed once declared.
         if kind == Some("set_client_info")
             && let Some(value) = &parsed
@@ -1881,7 +2038,10 @@ impl RpcConnectionHandler {
                 .connection_roles
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .declare(crate::connection_roles::SOLE_CONNECTION, &capabilities)
+                .declare(
+                    crate::connection_roles::role_connection(connection),
+                    &capabilities,
+                )
             {
                 let response = RpcResponse {
                     id: value["id"].as_str().map(str::to_owned),
@@ -1897,6 +2057,39 @@ impl RpcConnectionHandler {
                 return crate::jsonl::serialize_json_line(&response).map(Some);
             }
         }
+        if kind == Some("set_client_info")
+            && connection.is_none()
+            && let Some(capabilities) = parsed
+                .as_ref()
+                .and_then(|value| value["capabilities"].as_array())
+        {
+            let mut presentation = self
+                .grant_presentation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if capabilities
+                .iter()
+                .any(|capability| capability == "grant_select")
+            {
+                if presentation.is_none() {
+                    let ui = self.ui.clone();
+                    *presentation = Some(
+                        maho_core::mcp_grant_presentations::attach_mcp_grant_presentation(
+                            &self.session.session_id(),
+                            std::sync::Arc::new(move |title, choices, _signal| {
+                                let answer = ui.select_grant(&title, &choices, &Default::default());
+                                Box::pin(async move { Ok(answer.await) })
+                            }),
+                        ),
+                    );
+                }
+            } else if presentation.take().is_some() {
+                self.pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .cancel_grants_for_classic();
+            }
+        }
         // senpi `set_client_info`: live components re-render at the client's width.
         if kind == Some("set_client_info")
             && let Some(width) = parsed
@@ -1906,6 +2099,97 @@ impl RpcConnectionHandler {
         {
             self.ui.set_client_width(width as usize);
             self.ui.rerender_live_components();
+        }
+        // These commands are role-sensitive and deliberately handled before the general command enum.
+        if let Some(value) = &parsed {
+            let interactive = self
+                .connection_roles
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .has(
+                    connection,
+                    crate::custom_capability::INTERACTIVE_USER_CAPABILITY,
+                );
+            let command_kind = kind.unwrap_or_default();
+            let task_parent = self
+                .connection_roles
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .has(connection, crate::custom_capability::TASK_PARENT_CAPABILITY);
+            let result = if let Some(error) =
+                crate::pause_command_validation::validate_pause_command(value)
+            {
+                Some(Err(error.to_owned()))
+            } else {
+                match command_kind {
+                    "resume_session" => Some(self.session.begin_resume(value).await),
+                    "hold_input" => Some(crate::held_input_commands::run_hold_input(
+                        &self.session,
+                        value,
+                        interactive,
+                        task_parent,
+                    )),
+                    "withdraw_held_input" => Some(if interactive {
+                        self.session
+                            .withdraw_held_input(value["inputId"].as_str().unwrap_or_default())
+                            .map(|withdrawn| serde_json::json!({"withdrawn":withdrawn}))
+                    } else {
+                        Err("withdraw_held_input_requires_interactive_client".into())
+                    }),
+                    "pause_for_run" => Some(
+                        crate::run_hold_commands::run_pause_for_run(
+                            &self.session,
+                            value,
+                            task_parent,
+                        )
+                        .await,
+                    ),
+                    "resume_for_run" => Some(
+                        crate::run_hold_commands::run_resume_for_run(
+                            &self.session,
+                            value,
+                            task_parent,
+                        )
+                        .await,
+                    ),
+                    "prompt" | "steer" | "follow_up"
+                        if value["message"].is_string()
+                            && crate::automatic_input_gate::hold_automatic_input(
+                                &self.session,
+                                value["message"].as_str().unwrap_or_default(),
+                                interactive,
+                            ) =>
+                    {
+                        Some(Ok(
+                            serde_json::json!({"disposition":"handled","heldAsNotice":true}),
+                        ))
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(result) = result {
+                let response = RpcResponse {
+                    id: value["id"].as_str().map(str::to_owned),
+                    record_type: ResponseRecordType::Response,
+                    command: command_kind.into(),
+                    session_id: value["sessionId"].as_str().map(str::to_owned),
+                    result: match result {
+                        Ok(data) => RpcResponseResult::Success { data: Some(data) },
+                        Err(error) => RpcResponseResult::Error {
+                            error,
+                            error_code: None,
+                            error_data: None,
+                        },
+                    },
+                };
+                return crate::jsonl::serialize_json_line(&response).map(Some);
+            }
+            if matches!(command_kind, "abort" | "interrupt") && value["intent"] == "stop" {
+                if !interactive {
+                    return crate::jsonl::serialize_json_line(&serde_json::json!({"id":value["id"],"type":"response","command":command_kind,"success":false,"error":"stop_requires_interactive_client: declare interactive_user with set_client_info first"})).map(Some);
+                }
+                self.session.stop_for_run();
+            }
         }
         let replaces = matches!(
             kind,
@@ -1981,7 +2265,84 @@ impl RpcConnectionHandler {
     }
     /// Tear down this connection's subscriptions and renderers while leaving the session alive
     /// (senpi `dispose` with `disposeRuntime: false`).
+    pub fn cancel_grant(&self, id: &str) {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .resolve(serde_json::json!({"id":id,"cancelled":true}));
+    }
+    pub fn bind_grant_connection(&self, id: &str, connection: &str) {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bind_grant(id, Some(connection.into()));
+    }
+    pub fn register_grant_presentation(&self, session: &str) {
+        let ui = self.ui.clone();
+        *self
+            .grant_presentation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
+            maho_core::mcp_grant_presentations::attach_mcp_grant_presentation(
+                session,
+                std::sync::Arc::new(move |title, choices, _signal| {
+                    let answer = ui.select_grant(&title, &choices, &Default::default());
+                    Box::pin(async move { Ok(answer.await) })
+                }),
+            ),
+        );
+    }
+    pub fn relocation(&self) -> &crate::session_relocation_legacy::RpcSessionRelocation {
+        &self.relocation
+    }
+    pub async fn relocation_targets(&self) -> serde_json::Value {
+        let offered = self
+            .ui
+            .capabilities
+            .iter()
+            .any(|cap| cap == "session_relocation");
+        self.relocation
+            .targets(offered.then_some("sole"), |record| self.out_record(record))
+            .await
+    }
+    pub async fn request_relocation(&self, target: &str, reason: &str) -> serde_json::Value {
+        let offered = self
+            .ui
+            .capabilities
+            .iter()
+            .any(|cap| cap == "session_relocation");
+        self.relocation
+            .request(
+                target,
+                reason,
+                offered.then_some("sole"),
+                self.session.session_file().is_some(),
+                |record| self.out_record(record),
+            )
+            .await
+    }
+    pub fn connection_detached(&self, connection: &str) {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cancel_grants_for(connection);
+        if let Some(record) = self.relocation.connection_detached(connection) {
+            self.session.with_session_manager_mut(|manager| {
+                manager.append_custom_message(
+                    "session_relocation",
+                    record["content"].clone(),
+                    false,
+                    Some(record["details"].clone()),
+                )
+            });
+        }
+    }
     pub async fn release(&self) {
+        self.grant_presentation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        self.relocation.dispose();
         self.ui.dispose_all_renderers();
         self.cancel_pending_extension_ui_requests();
         let unsubscribe = self

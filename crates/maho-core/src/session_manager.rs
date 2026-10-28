@@ -28,6 +28,7 @@ pub struct NewSessionOptions {
     pub id: Option<String>,
     pub parent_session: Option<String>,
     pub forked_from_leaf_id: Option<String>,
+    pub spawned_by: Option<crate::session_lifecycle_types::SpawnedBy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -37,6 +38,7 @@ pub struct UsageTotals {
     pub cache_read: i64,
     pub cache_write: i64,
     pub cost: f64,
+    pub cost_unknown: bool,
     pub latest_cache_hit_rate: Option<f64>,
 }
 
@@ -538,16 +540,47 @@ pub fn build_session_context(entries: &[Value], leaf_id: Option<&str>) -> Sessio
     // PERF-DIVERGENCE(senpi session-manager.ts): upstream builds the path once; the previous port built and deep-cloned it twice, this builds it once as references shared by the settings scan and the context-entry selection. Output is identical.
     let path = session_path_refs(entries, leaf_id);
     let settings = get_session_context_settings(&path);
-    let (entry_ids, messages) = context_entry_refs(path)
+    // senpi projectSession: only entries retained by an `omit-unsafe-v1` checkpoint are repaired;
+    // later messages keep their normal semantics and the source transcript is never edited.
+    let retained_ids: Option<std::collections::HashSet<&str>> = path
+        .iter()
+        .rposition(|entry| {
+            entry_type(entry) == "compaction"
+                && entry
+                    .get("details")
+                    .and_then(|details| details.get("retainedMessagePolicy"))
+                    .and_then(Value::as_str)
+                    == Some("omit-unsafe-v1")
+        })
+        .map(|recovery_index| path[..recovery_index].iter().filter_map(|entry| entry.get("id").and_then(Value::as_str)).collect());
+    let projected: Vec<(&Value, Vec<Value>)> = context_entry_refs(path)
         .into_iter()
-        .flat_map(|entry| {
-            let entry_id = entry
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            session_entry_to_context_messages(entry)
+        .map(|entry| (entry, session_entry_to_context_messages(entry)))
+        .collect();
+    let mut retained_messages: Vec<Value> = Vec::new();
+    if let Some(retained_ids) = &retained_ids {
+        for (entry, messages) in &projected {
+            if entry.get("id").and_then(Value::as_str).is_some_and(|id| retained_ids.contains(id)) {
+                retained_messages.extend(messages.iter().cloned());
+            }
+        }
+        retained_messages = crate::retained_message_projection::project_retained_messages(&retained_messages);
+    }
+    let mut repaired = retained_messages.into_iter();
+    let (entry_ids, messages) = projected
+        .into_iter()
+        .flat_map(|(entry, messages)| {
+            let entry_id = entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let is_retained = retained_ids
+                .as_ref()
+                .is_some_and(|ids| ids.contains(entry_id.as_str()));
+            messages
                 .into_iter()
-                .map(move |message| (entry_id.to_owned(), message))
+                .map(|message| {
+                    let message = if is_retained { repaired.next().unwrap_or(message) } else { message };
+                    (entry_id.clone(), message)
+                })
+                .collect::<Vec<_>>()
         })
         .unzip();
     SessionContext {
@@ -858,6 +891,7 @@ pub struct SessionManager {
     /// The mirror's last `full_entry_count - verbatim_from_count` entries are the history's own tail, in order.
     verbatim_from_count: usize,
     history_reductions: crate::session_history_reduce::HistoryReductions,
+    last_write_error: Option<String>,
 }
 
 impl SessionManager {
@@ -886,6 +920,7 @@ impl SessionManager {
             },
         );
         let manager = Self {
+            last_write_error: None,
             session_id: String::new(),
             session_file: None,
             session_dir: normalize_path(session_dir, &PathInputOptions::default()),
@@ -1494,6 +1529,12 @@ impl SessionManager {
         {
             header.insert("forkedFromLeafId".to_owned(), Value::from(forked_from_leaf_id));
         }
+        if let Some(spawned_by) = options
+            .as_ref()
+            .and_then(|options| options.spawned_by.as_ref())
+            && let Ok(val) = serde_json::to_value(spawned_by) {
+                header.insert("spawnedBy".to_owned(), val);
+            }
         self.file_entries = vec![Value::Object(header)];
         self.history_generation += 1;
         self.verbatim_from_count = 0;
@@ -1601,6 +1642,13 @@ impl SessionManager {
             .and_then(|cost| cost.get("total"))
             .and_then(Value::as_f64)
             .unwrap_or(0.0);
+        if usage
+            .get("costUnknown")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            self.usage_totals.cost_unknown = true;
+        }
         let cache_read = usage.get("cacheRead").and_then(Value::as_i64).unwrap_or(0);
         let latest_prompt_tokens = usage.get("input").and_then(Value::as_i64).unwrap_or(0)
             + cache_read
@@ -1632,6 +1680,7 @@ impl SessionManager {
             content.push('\n');
         }
         if let Err(error) = std::fs::write(&session_file, content) {
+            self.last_write_error = Some(error.to_string());
             crate::hidden_stdout_log::append_debug_note(&format!(
                 "cannot rewrite session {session_file}: {error}"
             ));
@@ -1655,7 +1704,16 @@ impl SessionManager {
             let persisted_entry = self.resident_store.materialize_cow(&self.file_entries[order]);
             return append_line(&session_file, &persisted_entry);
         }
-        let has_assistant = self.file_entries.iter().any(|candidate| {
+        let durable_lifecycle = {
+            let entry = &self.file_entries[order];
+            entry_type(entry) == "custom"
+                && entry
+                    .get("customType")
+                    .and_then(Value::as_str)
+                    .map(|ct| matches!(ct, "session-lifecycle" | "work-custody" | "child-lifecycle"))
+                    .unwrap_or(false)
+        };
+        let has_assistant = durable_lifecycle || self.file_entries.iter().any(|candidate| {
             entry_type(candidate) == "message"
                 && candidate
                     .get("message")
@@ -1665,6 +1723,7 @@ impl SessionManager {
         });
         if has_assistant {
             self.rewrite_file();
+            if let Some(error) = self.last_write_error.take() { return Err(std::io::Error::other(error)); }
             self.flushed = true;
         }
         Ok(())
@@ -1716,13 +1775,19 @@ impl SessionManager {
         // senpi's appendFileSync throws to the appending caller; the append_* surface here returns
         // the entry rather than a Result, so a failed write is reported instead of dropped.
         self.file_entries.push(entry);
+        self.last_write_error = None;
         if let Err(error) = self.persist_entry(self.file_entries.len() - 1) {
+            self.last_write_error = Some(error.to_string());
             crate::output_guard::maho_write_stderr(&format!(
                 "Failed to persist session entry to {}: {error}\n",
                 self.session_file.as_deref().unwrap_or_default()
             ));
         }
     }
+
+    pub fn last_persistence_error(&self) -> Option<&str> { self.last_write_error.as_deref() }
+
+    pub fn take_write_error(&mut self) -> Option<String> { self.last_write_error.take() }
 
     pub fn append_entry_raw(&mut self, entry: Value) {
         self.append_entry(entry);
@@ -1779,10 +1844,44 @@ impl SessionManager {
         thinking_level: &str,
         thinking_selection: Option<Value>,
     ) -> Value {
+        self.append_thinking_level_change_with_model(thinking_level, thinking_selection, None)
+    }
+
+    pub fn append_thinking_level_change_with_model(
+        &mut self,
+        thinking_level: &str,
+        thinking_selection: Option<Value>,
+        model: Option<(&str, &str)>,
+    ) -> Value {
+        self.append_thinking_level_change_context(thinking_level, thinking_selection, None, model)
+    }
+
+    pub fn append_thinking_level_change_with_context(
+        &mut self,
+        thinking_level: &str,
+        thinking_selection: Option<Value>,
+        source: Option<&str>,
+        model: Option<&maho_ai::types::Model>,
+    ) -> Value {
+        self.append_thinking_level_change_context(thinking_level, thinking_selection, source, model.map(|model| (model.provider.as_str(), model.id.as_str())))
+    }
+
+    fn append_thinking_level_change_context(
+        &mut self,
+        thinking_level: &str,
+        thinking_selection: Option<Value>,
+        source: Option<&str>,
+        model: Option<(&str, &str)>,
+    ) -> Value {
         let mut entry = self.base_entry("thinking_level_change");
+        if let Some(source) = source { entry.insert("source".into(), Value::from(source)); }
         entry.insert("thinkingLevel".to_owned(), Value::from(thinking_level));
         if let Some(selection) = thinking_selection {
             entry.insert("thinkingSelection".to_owned(), selection);
+        }
+        if let Some((provider, model_id)) = model {
+            entry.insert("provider".to_owned(), Value::from(provider));
+            entry.insert("modelId".to_owned(), Value::from(model_id));
         }
         let entry = Value::Object(entry);
         self.append_entry(entry.clone());
@@ -3624,6 +3723,32 @@ mod tests {
                 .iter()
                 .all(|message| message.get("id").is_none())
         );
+    }
+
+    #[test]
+    fn omit_unsafe_checkpoint_repairs_only_its_retained_messages() {
+        let unsafe_result = json!({ "role": "toolResult", "toolCallId": "t", "toolName": "read", "content": [{ "type": "image", "mimeType": "image/png" }], "isError": false, "timestamp": 2 });
+        let call = json!({ "role": "assistant", "content": [{ "type": "toolCall", "id": "t", "name": "read", "arguments": {} }], "timestamp": 1 });
+        let build = |policy: Option<&str>| {
+            let details = policy.map_or(Value::Null, |policy| json!({ "retainedMessagePolicy": policy }));
+            let entries = vec![
+                json!({ "type": "message", "id": "a", "parentId": null, "timestamp": "t1", "message": { "role": "user", "content": "task", "timestamp": 0 } }),
+                json!({ "type": "message", "id": "b", "parentId": "a", "timestamp": "t2", "message": call }),
+                json!({ "type": "message", "id": "c", "parentId": "b", "timestamp": "t3", "message": unsafe_result }),
+                json!({ "type": "compaction", "id": "d", "parentId": "c", "timestamp": "t4", "summary": "s", "firstKeptEntryId": "a", "tokensBefore": 1, "details": details }),
+                json!({ "type": "message", "id": "e", "parentId": "d", "timestamp": "t5", "message": { "role": "toolResult", "toolCallId": "later", "toolName": "read", "content": [{ "type": "image", "mimeType": "image/png" }], "isError": false, "timestamp": 9 } }),
+            ];
+            build_session_context(&entries, None)
+        };
+        let plain = build(None);
+        assert_eq!(plain.messages[3], unsafe_result);
+        let repaired = build(Some("omit-unsafe-v1"));
+        assert_eq!(repaired.entry_ids, plain.entry_ids);
+        // The retained assistant is unsafe (bare envelope), so it and its result are omitted together.
+        assert_eq!(repaired.messages[2]["role"], "user");
+        assert_eq!(repaired.messages[3]["role"], "user");
+        // Messages after the checkpoint keep their normal semantics.
+        assert_eq!(repaired.messages[4], plain.messages[4]);
     }
 
     #[test]

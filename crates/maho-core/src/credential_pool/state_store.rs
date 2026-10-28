@@ -11,7 +11,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::config::get_agent_dir;
-use crate::lockfile_policy::{FILE_STORAGE_LOCK_RETRY_BUDGET_MS, CredentialStoreBusyError, acquire_lock_async};
+use crate::lockfile_policy::{FILE_STORAGE_LOCK_RETRY_BUDGET_MS, CredentialStoreBusyError};
+use super::state_file::acquire_state_file_lock;
 
 pub const CREDENTIAL_POOL_STATE_FILENAME: &str = "credential-pool-state.json";
 pub const DEFAULT_HALF_OPEN_LEASE_TTL_MS: u64 = 30_000;
@@ -198,7 +199,7 @@ impl CredentialSlotRepository {
         mutate: impl FnOnce(CredentialPoolStateDocument) -> (T, Option<CredentialPoolStateDocument>),
     ) -> Result<T, String> {
         self.ensure_file()?;
-        let _guard = acquire_lock_async(&self.path, FILE_STORAGE_LOCK_RETRY_BUDGET_MS)
+        let guard = acquire_state_file_lock(&self.path, FILE_STORAGE_LOCK_RETRY_BUDGET_MS)
             .await
             .map_err(|error: CredentialStoreBusyError| error.message())?;
         let content = std::fs::read_to_string(&self.path).unwrap_or_default();
@@ -207,6 +208,7 @@ impl CredentialSlotRepository {
         if let Some(next) = next
             && serialize_document(&next) != content
         {
+            guard.assert_held()?;
             write_document(&self.path, &next)?;
         }
         Ok(result)
@@ -255,6 +257,19 @@ impl CredentialSlotRepository {
             (slots, None)
         })
         .await
+    }
+
+    pub async fn clear_provider(&self, provider_id: &str) -> Result<bool, String> {
+        let content = match std::fs::read_to_string(&self.path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.to_string()),
+        };
+        if !parse_document(&content).providers.contains_key(provider_id) { return Ok(false); }
+        self.with_document(|mut document| {
+            let removed = document.providers.remove(provider_id).is_some();
+            (removed, removed.then_some(document))
+        }).await
     }
 
     /// Atomic read-modify-write for one slot's health; a None result removes the slot state entirely.
@@ -384,6 +399,19 @@ mod tests {
         assert!(is_hex_256(&key));
         assert!(Path::new(&path).exists());
         assert_eq!(repository.installation_key().await.expect("key"), key);
+    }
+
+    #[tokio::test]
+    async fn clear_provider_removes_every_lane_and_is_idempotent() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("pool.json").to_string_lossy().into_owned();
+        let mut document = CredentialPoolStateDocument::fresh();
+        document.providers.insert("provider".into(), CredentialPoolProvider::default());
+        write_document(&path, &document).expect("write");
+        let repository = CredentialSlotRepository::new(&path);
+        assert!(repository.clear_provider("provider").await.expect("clear"));
+        assert!(!repository.clear_provider("provider").await.expect("clear again"));
+        assert!(parse_document(&std::fs::read_to_string(path).expect("read")).providers.is_empty());
     }
 
     #[test]

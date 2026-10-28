@@ -36,6 +36,8 @@ pub struct FactsQueueEntry {
     #[serde(rename = "enqueuedAt")]
     pub enqueued_at: String,
     pub entries: Vec<TranscriptEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead: Option<TranscriptEntry>,
 }
 
 impl AsRef<FactsQueueEntry> for FactsQueueEntry {
@@ -74,6 +76,7 @@ pub struct FactsConsumedWatermark {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactsQueueLayout {
     pub queue_dir: PathBuf,
+    pub parked_dir: PathBuf,
     pub cursor_dir: PathBuf,
     pub consumed_path: PathBuf,
     pub failures_path: PathBuf,
@@ -86,6 +89,7 @@ impl FactsQueueLayout {
         let consumed_path = queue_dir.join("consumed.json");
         let failures_path = queue_dir.join("failures.json");
         Self {
+            parked_dir: queue_dir.join("parked"),
             queue_dir,
             cursor_dir,
             consumed_path,
@@ -293,6 +297,15 @@ pub fn parse_queue_entry(raw: &str) -> Option<FactsQueueEntry> {
             end_snapshot_line,
         },
         enqueued_at,
+        lead: match val.get("lead") {
+            Some(value) => {
+                if !is_transcript_entry_json(value) {
+                    return None;
+                }
+                Some(serde_json::from_value(value.clone()).ok()?)
+            }
+            None => None,
+        },
         entries,
     })
 }
@@ -311,7 +324,9 @@ impl<'de> serde::de::Visitor<'de> for EntriesValidatorVisitor {
     fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
         while let Some(item) = seq.next_element::<serde_json::Value>()? {
             if !is_transcript_entry_json(&item) {
-                return Err(serde::de::Error::custom("invalid transcript entry structure"));
+                return Err(serde::de::Error::custom(
+                    "invalid transcript entry structure",
+                ));
             }
             if <TranscriptEntry as Deserialize>::deserialize(&item).is_err() {
                 return Err(serde::de::Error::custom(
@@ -341,13 +356,17 @@ impl<'de> serde::de::Visitor<'de> for QueueHeaderVisitor {
         formatter.write_str("a facts queue entry JSON object")
     }
 
-    fn visit_map<M: serde::de::MapAccess<'de>>(self, mut access: M) -> Result<Self::Value, M::Error> {
+    fn visit_map<M: serde::de::MapAccess<'de>>(
+        self,
+        mut access: M,
+    ) -> Result<Self::Value, M::Error> {
         let mut version: Option<u32> = None;
         let mut identity: Option<String> = None;
         let mut session_id: Option<String> = None;
         let mut conversation_id: Option<String> = None;
         let mut range: Option<FactsQueueRange> = None;
         let mut enqueued_at: Option<String> = None;
+        let mut lead = None;
         let mut seen_entries = false;
 
         while let Some(key) = access.next_key::<String>()? {
@@ -423,6 +442,16 @@ impl<'de> serde::de::Visitor<'de> for QueueHeaderVisitor {
                         .ok_or_else(|| serde::de::Error::custom("invalid enqueuedAt"))?;
                     enqueued_at = Some(s.to_string());
                 }
+                "lead" => {
+                    let value: serde_json::Value = access.next_value()?;
+                    if !is_transcript_entry_json(&value) {
+                        return Err(serde::de::Error::custom("invalid lead"));
+                    }
+                    lead = Some(
+                        <TranscriptEntry as Deserialize>::deserialize(&value)
+                            .map_err(serde::de::Error::custom)?,
+                    );
+                }
                 "entries" => {
                     access.next_value::<ValidatedEntries>()?;
                     seen_entries = true;
@@ -463,6 +492,7 @@ impl<'de> serde::de::Visitor<'de> for QueueHeaderVisitor {
             range,
             enqueued_at,
             entries: Vec::new(),
+            lead,
         })
     }
 }
@@ -532,3 +562,14 @@ fn is_transcript_entry_json(val: &serde_json::Value) -> bool {
 #[cfg(test)]
 #[path = "schema_tests.rs"]
 mod tests;
+
+pub fn queue_conversation_hash(conversation_id: &str) -> String {
+    hash_prefix(conversation_id, 12)
+}
+pub fn queue_entry_suffix(conversation_id: &str, end_message_id: &str) -> String {
+    format!(
+        "-{}-{}.json",
+        queue_conversation_hash(conversation_id),
+        hash_prefix(end_message_id, 8)
+    )
+}

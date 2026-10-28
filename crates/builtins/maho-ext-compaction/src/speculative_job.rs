@@ -21,6 +21,10 @@ pub struct SpeculativeJob<S, R, E> {
 pub struct LiveSummaryFailure {
     pub message: String,
     pub classification: crate::transient_failure::SummarizationFailure,
+    /// How `classify_required_compaction_fallback_failure` sees this failure.
+    pub fallback: crate::deterministic_fallback::SummaryFailure,
+    /// Set for an unsafe retained suffix, so a reused failure can still latch the rejection.
+    pub unsafe_diagnostics: Option<crate::deterministic_fallback::DeterministicFallbackDiagnostic>,
 }
 
 impl From<crate::speculative::SummaryGenerationError> for LiveSummaryFailure {
@@ -50,6 +54,7 @@ impl From<crate::speculative::SummaryGenerationError> for LiveSummaryFailure {
             }
             SummaryGenerationError::Auth(_)
             | SummaryGenerationError::EmptySummary(_)
+            | SummaryGenerationError::UnsafeRetainedSuffix(_)
             | SummaryGenerationError::Stream(SummaryStreamError::Provider(_)) => {
                 SummarizationFailure::Other
             }
@@ -57,6 +62,11 @@ impl From<crate::speculative::SummaryGenerationError> for LiveSummaryFailure {
         Self {
             message: error.to_string(),
             classification,
+            fallback: crate::speculative::summary_failure(&error),
+            unsafe_diagnostics: match &error {
+                SummaryGenerationError::UnsafeRetainedSuffix(unsafe_error) => Some(unsafe_error.diagnostics.clone()),
+                _ => None,
+            },
         }
     }
 }
@@ -73,6 +83,10 @@ pub fn start_live_speculative_job(
     generation: u64,
     instructions: String,
 ) -> Result<Option<LiveSpeculativeJob>, maho_ext_api::ExtensionFailure> {
+    // senpi startSpeculativeCompaction: a latched unsafe-retained rejection never retries automatically.
+    if crate::extension_wiring::automatic_compaction_blocked(context)? {
+        return Ok(None);
+    }
     let Some(snapshot) = crate::speculative::create_speculative_compaction_snapshot(
         context,
         generation,
@@ -85,34 +99,20 @@ pub fn start_live_speculative_job(
     let controller = AbortController::new();
     let signal = controller.signal();
     let task_snapshot = snapshot.clone();
-    let registry = Arc::clone(&context.model_registry);
+    let context = context.clone();
     let armed = context
         .get_context_usage()?
         .and_then(|usage| usage.tokens)
         .unwrap_or(0);
     let settled = async move {
-        let auth = tokio::select! {
-            biased;
-            () = signal.cancelled() => return JobSettlement { result: None, error: None },
-            auth = registry.get_api_key_and_headers(&task_snapshot.model) => auth,
-        };
-        let result = match auth {
-            Ok(auth) => crate::speculative::run_extension_compaction(
-                &task_snapshot,
-                auth.auth.api_key,
-                auth.ambient,
-                auth.auth.headers,
-                Some(&signal),
-                None,
-                &|_| {},
-            )
-            .await
-            .map_err(LiveSummaryFailure::from),
-            Err(error) => Err(LiveSummaryFailure {
-                message: error.to_string(),
-                classification: crate::transient_failure::SummarizationFailure::Other,
-            }),
-        };
+        let result = crate::extension_wiring::generate_compaction(
+            &context,
+            &task_snapshot,
+            Some(&signal),
+            &|_| {},
+        )
+        .await
+        .map_err(LiveSummaryFailure::from);
         match result {
             Ok(result) => JobSettlement {
                 result,

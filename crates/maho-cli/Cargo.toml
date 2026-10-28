@@ -30,6 +30,8 @@ omo = [
 ]
 
 [dependencies]
+chrono = { workspace = true, features = ["clock"] }
+uuid = { workspace = true, features = ["v4"] }
 maho-chord = { path = "../maho-chord" }
 maho-ai = { path = "../maho-ai" }
 maho-agent = { path = "../maho-agent" }
@@ -95,9 +97,9 @@ maho-mcp-builtins = { path = "../maho-mcp-builtins" }
 # MIT session gateway (`session_list`/`session_send`, inbox delivery into long-lived sessions, `mhc gateway list|send`); mounted as `<builtin:gateway>` in the MIT profile only.
 maho-gateway = { path = "../maho-gateway" }
 maho-omo-task = { path = "../omo/components/maho-omo-task", optional = true }
-maho-server = { path = "../maho-server" }
 maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }
 maho-ext-hooks = { path = "../builtins/maho-ext-hooks", default-features = false }
+maho-ext-relocate-session = { path = "../builtins/maho-ext-relocate-session" }
 maho-ext-prompt-preset = { path = "../builtins/maho-ext-prompt-preset" }
 maho-ext-anthropic-bash = { path = "../builtins/maho-ext-anthropic-bash" }
 maho-ext-bash-timeout = { path = "../builtins/maho-ext-bash-timeout" }

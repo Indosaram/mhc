@@ -1,3 +1,4 @@
+pub type SendCallback = std::sync::Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 use crate::session_attribution::{SessionActivityRegistry, ToolAttributionSpans};
 pub fn session_event_record(
     event: &maho_ext_api::AgentSessionEvent,
@@ -29,6 +30,9 @@ pub fn session_event_record(
         };
     }
     Ok(match event {
+        E::SessionPaused { pause_seq, kind, at, notice_count, persisted } => json!({"type":"session_paused","pauseSeq":pause_seq,"kind":kind,"at":at,"noticeCount":notice_count,"persisted":persisted}),
+        E::SessionResumed { pause_seq, cause, at } => json!({"type":"session_resumed","pauseSeq":pause_seq,"cause":cause,"at":at}),
+        E::SessionNotice { notice_ids, notice_count, disposition } => json!({"type":"session_notice","noticeIds":notice_ids,"noticeCount":notice_count,"disposition":disposition}),
         E::Agent(event) => serde_json::to_value(event)?,
         // senpi agent-session.ts: subscribers get `{ ...agent_end, willRetry }`; abort provenance is RPC enrichment.
         E::AgentEnd {
@@ -417,6 +421,10 @@ pub struct RpcSessionBinding {
     handler: crate::connection_handler::RpcConnectionHandler,
     sink: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
     subscription: std::sync::Mutex<Option<maho_core::agent_session::AgentSessionSubscription>>,
+    hold_subscription: std::sync::Mutex<Option<maho_core::event_bus::EventSubscription>>,
+    security_subscription: std::sync::Mutex<Option<maho_core::event_bus::EventSubscription>>,
+    relocation_subscription:
+        std::sync::Mutex<Option<maho_core::agent_session::AgentSessionSubscription>>,
     connection_roles: Option<SharedConnectionRoles>,
 }
 /// The connection roles one host (or one worker isolate) keeps, shared with every binding it creates (senpi#3811).
@@ -432,6 +440,19 @@ pub async fn create_rpc_session_binding(
     capabilities: Vec<String>,
     connection_roles: Option<SharedConnectionRoles>,
 ) -> RpcSessionBinding {
+    let hold_sink = sink.clone();
+    let hold_subscription = session.on_extension_event(
+        maho_core::agent_session::SESSION_HOLD_CHANNEL,
+        std::sync::Arc::new(move |record| hold_sink(record.clone())),
+    );
+    let security_sink = sink.clone();
+    let security_subscription = session.on_extension_event(
+        "session:security-notices",
+        std::sync::Arc::new(move |snapshot| {
+            security_sink(serde_json::json!({"type":"security_notices","snapshot":snapshot}))
+        }),
+    );
+    sink(serde_json::json!({"type":"security_notices","snapshot":session.security_notices()}));
     let event_sink = sink.clone();
     let last_abort_source: crate::connection_handler::LastAbortSource = Default::default();
     let (event_session, event_abort_source) = (session.weak_accessor(), last_abort_source.clone());
@@ -470,15 +491,30 @@ pub async fn create_rpc_session_binding(
         )
         .await;
     handler.last_abort_source = last_abort_source;
+    if let Some(roles) = &connection_roles {
+        handler = handler.with_connection_roles(roles.clone());
+    }
     RpcSessionBinding {
         session_id,
         handler,
         sink,
         subscription: std::sync::Mutex::new(Some(subscription)),
+        hold_subscription: std::sync::Mutex::new(Some(hold_subscription)),
+        security_subscription: std::sync::Mutex::new(Some(security_subscription)),
+        relocation_subscription: Default::default(),
         connection_roles,
     }
 }
 impl RpcSessionBinding {
+    pub fn keep_relocation_subscription(
+        &self,
+        subscription: maho_core::agent_session::AgentSessionSubscription,
+    ) {
+        *self
+            .relocation_subscription
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(subscription);
+    }
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
@@ -492,9 +528,19 @@ impl RpcSessionBinding {
     /// Feed one inbound command; a response the handler produced is routed tagged to this session.
     pub async fn handle(&self, command: &serde_json::Value) -> Result<(), String> {
         let line = serde_json::to_string(command).map_err(|error| error.to_string())?;
+        let connection = crate::multi_session_host::CURRENT_CONNECTION
+            .try_with(Clone::clone)
+            .ok()
+            .flatten();
+        if command["type"] == "extension_ui_response"
+            && let Some(connection) = &connection
+            && let Some(id) = crate::extension_ui_response::answered_ui_request_id(command)
+        {
+            self.handler.bind_grant_connection(id, connection);
+        }
         if let Some(response) = self
             .handler
-            .handle_input_line(&line)
+            .handle_input_line_for_connection(&line, connection.as_deref())
             .await
             .map_err(|error| error.to_string())?
         {
@@ -506,10 +552,72 @@ impl RpcSessionBinding {
         }
         Ok(())
     }
+    pub fn install_relocation(
+        &self,
+        session: &maho_core::agent_session::AgentSession,
+        fanout: std::sync::Arc<std::sync::Mutex<crate::session_event_fanout::SessionEventFanout>>,
+    ) {
+        self.handler
+            .register_grant_presentation(&session.session_id());
+        let tag = self.session_id.clone();
+        let offer_fanout = fanout.clone();
+        let offerer: std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync> =
+            std::sync::Arc::new(move || {
+                let fanout = offer_fanout
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                fanout
+                    .attached_connections(&tag)
+                    .into_iter()
+                    .find(|id| fanout.connection_has(id, "session_relocation"))
+            });
+        let send_fanout = fanout;
+        let tag = self.session_id.clone();
+        let send: SendCallback =
+            std::sync::Arc::new(move |id, mut record| {
+                record["sessionId"] = tag.clone().into();
+                if let Err(error) = send_fanout
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .enqueue_control(id, &record)
+                {
+                    eprintln!("relocation delivery failed: {error}");
+                }
+            });
+        session.set_relocation_host(Some(std::sync::Arc::new(
+            crate::session_relocation_adapter::SessionRelocationAdapter {
+                relocation: self.handler.relocation().clone(),
+                session: session.weak_accessor(),
+                offerer,
+                send,
+            },
+        )));
+    }
+    pub fn cancel_grant(&self, id: &str) {
+        self.handler.cancel_grant(id);
+    }
+    pub fn connection_detached(&self, connection: &str) {
+        self.handler.connection_detached(connection);
+    }
+    pub fn relocation(&self) -> &crate::session_relocation_legacy::RpcSessionRelocation {
+        self.handler.relocation()
+    }
     pub fn cancel_pending_extension_ui_requests(&self) {
         self.handler.cancel_pending_extension_ui_requests();
     }
     pub async fn dispose(&self) {
+        self.hold_subscription
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        self.security_subscription
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        self.relocation_subscription
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         self.subscription
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

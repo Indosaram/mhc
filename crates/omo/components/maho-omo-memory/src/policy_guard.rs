@@ -6,7 +6,12 @@ pub enum FilesystemOperation { Read, Enumerate, Write }
 impl FilesystemOperation { fn name(self)->&'static str {match self {Self::Read=>"read",Self::Enumerate=>"enumerate",Self::Write=>"write"}} }
 #[derive(Debug, PartialEq, Eq)]
 pub enum FilesystemPolicyDecision { Allow, Deny {reason:String} }
-pub struct FilesystemPolicy { pub denied_roots:Vec<PathBuf>,own_roots:Vec<PathBuf>,agents_roots:Vec<PathBuf> }
+pub struct FilesystemPolicy {
+    pub denied_roots: Vec<PathBuf>,
+    own_roots: Vec<PathBuf>,
+    agents_roots: Vec<PathBuf>,
+    context: Option<MemoryIdentityContext>,
+}
 pub trait FilesystemPolicyRegistration {fn register_filesystem_policy(&mut self,policy:FilesystemPolicy);}
 impl FilesystemPolicyRegistration for maho_ext_api::ExtensionApi {
     fn register_filesystem_policy(&mut self,policy:FilesystemPolicy) {
@@ -33,11 +38,16 @@ pub fn register_memory_filesystem_policy(api:Option<&mut dyn FilesystemPolicyReg
 pub fn build_memory_filesystem_policy(context:&MemoryIdentityContext)->std::io::Result<FilesystemPolicy>{
     let own=resolve_path(&context.identity_paths.root)?;let agents=own.parent().unwrap_or(Path::new("/")).to_path_buf();
     let mut foreign=Vec::new();match std::fs::read_dir(&agents){Ok(entries)=>{for entry in entries{let entry=entry?;if entry.file_name()!=std::ffi::OsStr::new(&context.identity){foreign.push(entry.path());}}},Err(error) if missing(&error)=>{},Err(error)=>return Err(error)}
-    Ok(FilesystemPolicy{denied_roots:stable_roots(&foreign),own_roots:stable_roots(&[own]),agents_roots:stable_roots(&[agents])})
+    Ok(FilesystemPolicy{denied_roots:stable_roots(&foreign),own_roots:stable_roots(&[own]),agents_roots:stable_roots(&[agents]),context:Some(context.clone())})
 }
 impl FilesystemPolicy {
     pub fn check(&self,operation:FilesystemOperation,path:&Path)->std::io::Result<FilesystemPolicyDecision>{
         let target=resolve_path(path)?;
+        if matches!(operation, FilesystemOperation::Read)
+            && let Some(ctx) = &self.context
+                && crate::project_memory_grants::is_granted_project_memory_read(ctx, &target) {
+                    return Ok(FilesystemPolicyDecision::Allow);
+                }
         if self.own_roots.iter().any(|root|within(root,&target)) {
             return Ok(FilesystemPolicyDecision::Allow);
         }

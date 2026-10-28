@@ -1,5 +1,8 @@
 //! Port of senpi extensions/runner.ts dispatch, using native static registration.
+pub type LifecycleAttentionCallback = Arc<std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
 use maho_ext_api::*;
+pub type PromptStartObserver<'a> =
+    dyn Fn(&str, &str, &str, Option<&[DynamicSystemPromptPart]>) + Send + Sync + 'a;
 #[path = "shutdown_quit_budget.rs"]
 pub mod shutdown_quit_budget;
 use std::{
@@ -7,6 +10,119 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+struct GatedActions {
+    inner: Arc<dyn ExtensionActions>,
+    gate: Arc<crate::session_start_turn_gate::SessionStartTurnGate>,
+}
+impl ExtensionActions for GatedActions {
+    fn send_message(
+        &self,
+        message: CustomMessage,
+        options: SendMessageOptions,
+    ) -> Result<(), ExtensionFailure> {
+        if options.trigger_turn {
+            let inner = Arc::clone(&self.inner);
+            self.gate
+                .admit(Box::new(move || inner.send_message(message, options)))
+        } else {
+            self.inner.send_message(message, options)
+        }
+    }
+    fn send_user_message(
+        &self,
+        content: UserMessageContent,
+        options: SendUserMessageOptions,
+    ) -> Result<(), ExtensionFailure> {
+        self.inner.send_user_message(content, options)
+    }
+    fn send_user_message_with_origin(
+        &self,
+        content: UserMessageContent,
+        options: SendUserMessageOptions,
+        origin: InputOrigin,
+    ) -> Result<(), ExtensionFailure> {
+        self.inner
+            .send_user_message_with_origin(content, options, origin)
+    }
+    fn append_entry(
+        &self,
+        custom_type: &str,
+        data: Option<JsonValue>,
+    ) -> Result<(), ExtensionFailure> {
+        self.inner.append_entry(custom_type, data)
+    }
+    fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> {
+        self.inner.get_all_tools()
+    }
+    fn lifecycle(&self) -> Result<Arc<dyn LifecycleApi>, ExtensionFailure> {
+        self.inner.lifecycle()
+    }
+    fn send_itemized_message(
+        &self,
+        message: CustomMessage,
+        options: SendMessageOptions,
+        items: Vec<SendMessageItem>,
+    ) -> ExtensionFuture<'_, Option<Vec<SendMessageReceipt>>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let inner = Arc::clone(&self.inner);
+        let trigger_turn = options.trigger_turn;
+        let start: crate::session_start_turn_gate::TurnStart = Box::new(move || {
+            tokio::spawn(async move {
+                let result = inner.send_itemized_message(message, options, items).await;
+                let _receiver_dropped = tx.send(result);
+            });
+            Ok(())
+        });
+        let admitted = if trigger_turn {
+            self.gate.admit(start)
+        } else {
+            start()
+        };
+        Box::pin(async move {
+            admitted?;
+            rx.await
+                .map_err(|_| ExtensionFailure::new("Itemized admission was cancelled"))?
+        })
+    }
+    fn arm_tool_barrier(&self, spec: JsonValue) -> Result<(), ExtensionFailure> {
+        self.inner.arm_tool_barrier(spec)
+    }
+    fn release_tool_barrier(&self, id: &str) -> Result<bool, ExtensionFailure> {
+        self.inner.release_tool_barrier(id)
+    }
+    fn relocation_offered(&self) -> Result<bool, ExtensionFailure> {
+        self.inner.relocation_offered()
+    }
+    fn relocation_targets(&self) -> ExtensionFuture<'_, JsonValue> {
+        self.inner.relocation_targets()
+    }
+    fn request_relocation(&self, request: JsonValue) -> ExtensionFuture<'_, JsonValue> {
+        self.inner.request_relocation(request)
+    }
+    fn redact_for_upload(&self, text: &str, literals: &[String]) -> Option<UploadRedaction> {
+        self.inner.redact_for_upload(text, literals)
+    }
+    fn host_version(&self) -> Option<String> {
+        self.inner.host_version()
+    }
+    fn get_subscription_limits(&self) -> Vec<AccountLimits> {
+        self.inner.get_subscription_limits()
+    }
+    fn on_subscription_limits(
+        &self,
+        listener: SubscriptionLimitsListener,
+    ) -> Option<UiUnsubscribe> {
+        self.inner.on_subscription_limits(listener)
+    }
+    fn send_message_with_receipt(
+        &self,
+        message: CustomMessage,
+        options: SendMessageOptions,
+    ) -> Result<MessageDeliveryReceipt, ExtensionFailure> {
+        self.inner.send_message_with_receipt(message, options)
+    }
+}
 
 pub type ErrorListener = Arc<dyn Fn(&ExtensionError) + Send + Sync>;
 pub type HookObserver = Arc<dyn Fn(&ToolHookLifecycleEvent) + Send + Sync>;
@@ -39,6 +155,7 @@ struct CommandActions {
     inner: Arc<dyn ExtensionCommandContextActions>,
     reload: ReloadState,
     runtime: ExtensionRuntime,
+    replaced: Arc<std::sync::atomic::AtomicBool>,
 }
 impl ExtensionCommandContextActions for CommandActions {
     fn wait_for_idle(&self) -> ExtensionFuture<'_, ()> {
@@ -54,7 +171,12 @@ impl ExtensionCommandContextActions for CommandActions {
     ) -> ExtensionFuture<'_, SessionNavigationResult> {
         Box::pin(async move {
             self.runtime.assert_active()?;
-            self.inner.new_session(options).await
+            let result = self.inner.new_session(options).await?;
+            if !result.cancelled {
+                self.replaced
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok(result)
         })
     }
     fn fork<'a>(
@@ -64,7 +186,12 @@ impl ExtensionCommandContextActions for CommandActions {
     ) -> ExtensionFuture<'a, SessionNavigationResult> {
         Box::pin(async move {
             self.runtime.assert_active()?;
-            self.inner.fork(entry_id, options).await
+            let result = self.inner.fork(entry_id, options).await?;
+            if !result.cancelled {
+                self.replaced
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok(result)
         })
     }
     fn navigate_tree<'a>(
@@ -118,7 +245,12 @@ impl ExtensionCommandContextActions for CommandActions {
     ) -> ExtensionFuture<'a, SessionNavigationResult> {
         Box::pin(async move {
             self.runtime.assert_active()?;
-            self.inner.switch_session(path, options).await
+            let result = self.inner.switch_session(path, options).await?;
+            if !result.cancelled {
+                self.replaced
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok(result)
         })
     }
     fn reload(&self) -> ExtensionFuture<'_, ()> {
@@ -129,7 +261,10 @@ impl ExtensionCommandContextActions for CommandActions {
                 self.reload.clone(),
                 Box::pin(async move { actions.reload().await }),
             )
-            .await
+            .await?;
+            self.replaced
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
         })
     }
 }
@@ -233,15 +368,17 @@ fn with_provider_exclude_path(path: String, handler: ExtensionHandler) -> Extens
         // A handler still running across a session replacement touches its now-stale ctx, which
         // panics with an `ExtensionFailure` (senpi throws the same error). Surface it as that
         // handler's error instead of unwinding through the UI runtime and aborting the process.
-        Box::pin(std::future::poll_fn(move |cx| {
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| future.as_mut().poll(cx))) {
+        Box::pin(std::future::poll_fn(
+            move |cx| match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                future.as_mut().poll(cx)
+            })) {
                 Ok(poll) => poll,
                 Err(payload) => match payload.downcast::<ExtensionFailure>() {
                     Ok(failure) => std::task::Poll::Ready(Err(*failure)),
                     Err(payload) => std::panic::resume_unwind(payload),
                 },
-            }
-        }))
+            },
+        ))
     })
 }
 struct ContextSessionManager {
@@ -342,6 +479,10 @@ impl SessionManager for ContextSessionManager {
         self.active();
         self.session.get_session_name()
     }
+    fn is_child_session(&self) -> bool {
+        self.active();
+        self.session.is_child_session()
+    }
     fn fork_provenance(&self) -> Option<ForkProvenance> {
         self.active();
         self.session.fork_provenance()
@@ -419,10 +560,35 @@ impl ExtensionContextActions for ContextSessionManager {
         self.active();
         self.actions.engine_turns_held()
     }
+    fn todo_turn_end_backstop_enabled(&self) -> bool {
+        self.active();
+        self.actions.todo_turn_end_backstop_enabled()
+    }
     fn note_held_wake(&self, source: &str) {
         self.active();
         self.actions.note_held_wake(source);
     }
+    fn get_pause_state(&self) -> JsonValue {
+        self.active();
+        self.actions.get_pause_state()
+    }
+    fn fence_run(&self, run_ref: JsonValue) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        self.actions.fence_run(run_ref)
+    }
+    fn supports_release_run_fence(&self) -> bool {
+        self.active();
+        self.actions.supports_release_run_fence()
+    }
+    fn release_run_fence(&self, run_ref: JsonValue) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        self.actions.release_run_fence(run_ref)
+    }
+    fn has_queued_person_input(&self) -> bool {
+        self.active();
+        self.actions.has_queued_person_input()
+    }
+
     fn offload(
         &self,
         id: &str,
@@ -701,6 +867,8 @@ pub struct ExtensionRunner {
     pub shutdown_warn_ms: u64,
     pub shutdown_timeout_ms: u64,
     hook_observer: Option<HookObserver>,
+    lifecycle_attention: LifecycleAttentionCallback,
+    lifecycle_human_wait: Arc<std::sync::Mutex<Option<JsonValue>>>,
     warning_listener: Option<WarningListener>,
     next_hook_index: u64,
     context_actions: Option<Arc<dyn ExtensionContextActions>>,
@@ -774,6 +942,8 @@ impl ExtensionRunner {
             shutdown_warn_ms: 2000,
             shutdown_timeout_ms: 10000,
             hook_observer: None,
+            lifecycle_attention: Arc::default(),
+            lifecycle_human_wait: Arc::default(),
             warning_listener: None,
             next_hook_index: 0,
             context_actions: None,
@@ -914,7 +1084,10 @@ impl ExtensionRunner {
         Ok(())
     }
     pub fn bind_core(&mut self, actions: Arc<dyn ExtensionActions>, context: ExtensionContext) {
-        self.runtime.bind(actions);
+        self.runtime.bind(Arc::new(GatedActions {
+            inner: actions,
+            gate: Arc::clone(&self.session_start_turns),
+        }));
         self.context = context;
         *self
             .context_session_manager
@@ -957,6 +1130,36 @@ impl ExtensionRunner {
     }
     pub fn bind_ui(&mut self, ui: Arc<dyn ExtensionUi>) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
+        let wait = Arc::clone(&self.lifecycle_human_wait);
+        let attention = Arc::clone(&self.lifecycle_attention);
+        let ui: Arc<dyn ExtensionUi> = Arc::new(crate::ui::LifecycleUi::new(
+            ui,
+            self.runtime.clone(),
+            Arc::new(move |event| {
+                match event {
+                    ExtensionEvent::UiPromptStart { kind, .. } => {
+                        *wait
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
+                            serde_json::json!({"kind": if matches!(kind, UiPromptKind::Confirm) { "approval" } else { "question" }, "requestId": uuid::Uuid::new_v4().to_string(), "revision": 1, "since": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)}),
+                        );
+                    }
+                    ExtensionEvent::UiPromptEnd { .. } => {
+                        wait.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take();
+                    }
+                    _ => return,
+                }
+                let observer = attention
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                if let Some(observer) = observer {
+                    observer();
+                }
+            }),
+        ));
         self.context.ui = Arc::clone(&ui);
         self.live_bindings
             .lock()
@@ -1011,6 +1214,7 @@ impl ExtensionRunner {
                 inner: actions,
                 reload: self.reload.clone(),
                 runtime: self.runtime.clone(),
+                replaced: Arc::default(),
             }),
             runtime: self.runtime.clone(),
         })
@@ -1023,7 +1227,12 @@ impl ExtensionRunner {
         self.runtime.assert_active()?;
         let mut context_runner = self.clone();
         let messages = context_runner
-            .emit_context_owned(messages, &[], exclude_path.as_deref())
+            .emit_context_owned_from(
+                messages,
+                &[],
+                exclude_path.as_deref(),
+                ContextEventSource::Projection,
+            )
             .await
             .map_err(|failure| failure.error)?;
         let payload_runner = self.clone();
@@ -1072,11 +1281,27 @@ impl ExtensionRunner {
                     .then_some(handlers)
             })
             .ok_or_else(|| ExtensionFailure::new("Command owner is unavailable"))?;
+        // A command may retire its own runtime through session navigation. Track that per
+        // invocation so an unrelated invalidation still rejects a pending command's completion.
+        let replaced = Arc::default();
+        let context = ExtensionCommandContext {
+            actions: Arc::new(CommandActions {
+                inner: context.actions.clone(),
+                reload: Arc::default(),
+                runtime: self.runtime.clone(),
+                replaced: Arc::clone(&replaced),
+            }),
+            ..context.clone()
+        };
         match handlers.get(&resolved.command.name) {
-            Some(handler) => handler(args, context).await,
+            Some(handler) => handler(args, &context).await,
             None => (resolved.command.handler)(args, &context.context).await,
         }?;
-        self.runtime.assert_active()
+        if replaced.load(std::sync::atomic::Ordering::SeqCst) {
+            Ok(())
+        } else {
+            self.runtime.assert_active()
+        }
     }
     pub async fn apply_fast_mode(
         &self,
@@ -1353,6 +1578,46 @@ impl ExtensionRunner {
                 || self.runtime.has_live_handlers(&e.identity.path, kind)
         })
     }
+    pub fn set_lifecycle_attention_observer(&self, observer: Arc<dyn Fn() + Send + Sync>) {
+        *self
+            .lifecycle_attention
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(observer);
+    }
+    pub fn get_lifecycle_human_wait(&self) -> Option<JsonValue> {
+        if self.context.mode == ExtensionMode::Rpc {
+            return None;
+        }
+        self.lifecycle_human_wait
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub fn get_third_party_session_start_paths(&self) -> Vec<String> {
+        self.extensions
+            .iter()
+            .filter(|ext| {
+                ext.source_info.source != "builtin"
+                    && ext
+                        .handlers
+                        .get(&EventKind::SessionStart)
+                        .is_some_and(|handlers| !handlers.is_empty())
+            })
+            .map(|ext| ext.identity.path.clone())
+            .collect()
+    }
+
+    pub fn extension_paths(&self) -> Vec<String> {
+        self.extensions
+            .iter()
+            .map(|extension| extension.identity.path.clone())
+            .collect()
+    }
+    pub fn third_party_session_start_paths(&self) -> Vec<String> {
+        self.get_third_party_session_start_paths()
+    }
+
     pub fn preview_unsafe_before_agent_start_paths(&self) -> Vec<String> {
         self.extensions
             .iter()
@@ -1895,8 +2160,15 @@ impl ExtensionRunner {
     ) -> Result<EventResult, ExtensionFailure> {
         let started_at = std::time::Instant::now();
         let signal = AbortSignal::default();
-        if let ExtensionEvent::SessionShutdown(shutdown) = event {
-            shutdown.signal = Some(signal.clone());
+        match event {
+            ExtensionEvent::SessionShutdown(shutdown) => shutdown.signal = Some(signal.clone()),
+            ExtensionEvent::SessionMoveExport {
+                signal: current, ..
+            }
+            | ExtensionEvent::SessionMoveImport {
+                signal: current, ..
+            } => *current = signal.clone(),
+            _ => {}
         }
         let future = handler(event, context);
         tokio::pin!(future);
@@ -1928,9 +2200,51 @@ impl ExtensionRunner {
             }
         }
     }
+    pub async fn emit_session_move(
+        &mut self,
+        mut event: ExtensionEvent,
+    ) -> Result<Vec<ExtensionError>, ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let kind = event.kind();
+        if !matches!(
+            kind,
+            EventKind::SessionMoveExport | EventKind::SessionMoveImport
+        ) {
+            return Err(ExtensionFailure::new("Expected a session move event"));
+        }
+        if let Some(budget) = &self.shutdown_budget {
+            (self.shutdown_warn_ms, self.shutdown_timeout_ms) = budget();
+        }
+        let mut failures = Vec::new();
+        for (path, handler) in self.handlers(kind) {
+            let context = self.create_context_for_extension(Some(&path))?;
+            if let Err(error) = self
+                .run_shutdown(&path, &mut event, &context, &handler, false)
+                .await
+            {
+                failures.push(ExtensionError {
+                    extension_path: path.clone(),
+                    event: kind.as_str().into(),
+                    error: error.message.clone(),
+                    stack: error.stack.clone(),
+                });
+                self.report(&path, kind, error);
+            }
+        }
+        Ok(failures)
+    }
+
     pub async fn emit_before_agent_start(
         &mut self,
         event: BeforeAgentStartEvent,
+    ) -> Result<Option<BeforeAgentStartCombinedResult>, ExtensionFailure> {
+        self.emit_before_agent_start_observed(event, None).await
+    }
+
+    pub async fn emit_before_agent_start_observed(
+        &mut self,
+        event: BeforeAgentStartEvent,
+        observe: Option<&PromptStartObserver<'_>>,
     ) -> Result<Option<BeforeAgentStartCombinedResult>, ExtensionFailure> {
         self.runtime.assert_active()?;
         let mut event = ExtensionEvent::BeforeAgentStart(event);
@@ -1941,8 +2255,14 @@ impl ExtensionRunner {
                 let prompt = current.system_prompt.clone();
                 context.get_system_prompt_fn = Arc::new(move || prompt.clone());
             }
+            let before = match &event {
+                ExtensionEvent::BeforeAgentStart(current) => current.system_prompt.clone(),
+                _ => String::new(),
+            };
+            let mut parts = None;
             match handler(&mut event, &context).await {
                 Ok(EventResult::BeforeAgentStart(next)) => {
+                    parts = next.system_prompt_parts;
                     if let Some(message) = next.message {
                         combined.messages.push(message);
                     }
@@ -1951,10 +2271,17 @@ impl ExtensionRunner {
                             current.system_prompt = prompt.clone();
                         }
                         combined.system_prompt = Some(prompt);
+                        combined.system_prompt_parts = parts.clone();
                     }
                 }
                 Ok(_) => {}
                 Err(error) => self.report(&path, EventKind::BeforeAgentStart, error),
+            }
+            if let ExtensionEvent::BeforeAgentStart(current) = &event
+                && current.preview
+                && let Some(observe) = observe
+            {
+                observe(&path, &before, &current.system_prompt, parts.as_deref());
             }
             self.runtime.assert_active()?;
         }
@@ -2093,6 +2420,16 @@ impl ExtensionRunner {
         entry_ids: &[Option<String>],
         exclude_path: Option<&str>,
     ) -> Result<Vec<AgentMessage>, OwnedContextDispatchError> {
+        self.emit_context_owned_from(messages, entry_ids, exclude_path, ContextEventSource::Agent)
+            .await
+    }
+    pub async fn emit_context_owned_from(
+        &mut self,
+        messages: Vec<AgentMessage>,
+        entry_ids: &[Option<String>],
+        exclude_path: Option<&str>,
+        source: ContextEventSource,
+    ) -> Result<Vec<AgentMessage>, OwnedContextDispatchError> {
         if let Err(error) = self.runtime.assert_active() {
             return Err(OwnedContextDispatchError { messages, error });
         }
@@ -2156,6 +2493,7 @@ impl ExtensionRunner {
         let mut event = ExtensionEvent::Context {
             messages,
             entry_ids,
+            source,
         };
         for (path, handler) in handlers {
             if exclude_path == Some(path.as_str()) {
@@ -2181,6 +2519,7 @@ impl ExtensionRunner {
                     if let ExtensionEvent::Context {
                         messages,
                         entry_ids,
+                        ..
                     } = &mut event
                     {
                         *entry_ids = next
@@ -2260,7 +2599,17 @@ impl ExtensionRunner {
             }
             self.runtime.assert_active()?;
         }
-        if let ExtensionEvent::BeforeProviderRequest { payload, .. } = event {
+        if let ExtensionEvent::BeforeProviderRequest { mut payload, .. } = event {
+            if let Some(object) = payload.as_object_mut() {
+                for key in [
+                    "server_search_fallback",
+                    "__senpi_server_search_fallback",
+                    "server_search_disabled",
+                    "__senpi_server_search_disabled",
+                ] {
+                    object.remove(key);
+                }
+            }
             return Ok(payload);
         }
         Err(ExtensionFailure::new(

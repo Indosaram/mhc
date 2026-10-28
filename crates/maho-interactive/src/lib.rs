@@ -26,6 +26,7 @@ pub mod login_outcome;
 pub mod model_catalog_refresh;
 pub mod model_search;
 pub mod model_search_rank;
+pub mod pause_footer;
 pub mod provider_error_presentation;
 pub mod question_registry;
 pub mod replay_assistant_tools;

@@ -83,7 +83,7 @@ fn case_model(spec: &Value, base_url: &str) -> Model {
                     .collect()
             })
             .unwrap_or_default(),
-        cost: ModelCost {
+        cost: ModelCost { unknown: None,
             effective_rates: None,
             input: model["cost"]["input"].as_f64().unwrap_or_default(),
             output: model["cost"]["output"].as_f64().unwrap_or_default(),

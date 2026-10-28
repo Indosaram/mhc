@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 #[path = "cli/schedule_command.rs"]
 mod schedule_command;
 
@@ -6,6 +7,11 @@ static GLOBAL_ALLOCATOR: maho_tool_child::allocator::MahoAllocator =
     maho_tool_child::allocator::ALLOCATOR;
 
 fn main() {
+    let hook_args: Vec<String> = std::env::args().skip(1).collect();
+    if hook_args.first().is_some_and(|arg| arg == "--memory-hook") {
+        let cwd = match std::env::current_dir() { Ok(cwd) => cwd, Err(error) => { eprintln!("{error}"); std::process::exit(1); } };
+        std::process::exit(maho_omo_memory::worker::spawn_supervisor_support::run_memory_hook(&hook_args[1..], &cwd));
+    }
     // senpi `internal-role.ts`: a process the engine started as a tool child becomes one before anything else runs.
     maho_cli::internal_role::run_internal_role();
     #[cfg(windows)]
@@ -549,44 +555,6 @@ fn run() -> Result<(), String> {
             }
             return Ok(());
         }
-        Some("app-server") => {
-            let grok = maho_cli::cli::grok_neo_gate::is_grok_neo_enabled(
-                &maho_core::config::current_env(),
-            );
-            let parsed = maho_cli::cli::args::parse_args(&argv[1..], grok)?;
-            let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-            let agent_dir = maho_core::config::get_agent_dir();
-            let config = maho_cli::cli::host_runtime::CliRuntimeConfiguration::from_parsed(
-                &parsed,
-                &cwd.to_string_lossy(),
-                &agent_dir,
-                maho_core::project_trust::AppMode::AppServer,
-            );
-            let session_dir = maho_cli::cli::runtime::resolve_session_dir(
-                parsed.session_dir.as_deref(),
-                std::env::var(maho_core::config::env_session_dir_var())
-                    .ok()
-                    .as_deref(),
-                None,
-            );
-            let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|error| error.to_string())?;
-            let code = runtime.block_on(maho_cli::cli::app_server::run_app_server_with_signals(
-                &argv,
-                config,
-                env!("CARGO_PKG_VERSION"),
-                session_dir,
-                &executable,
-                &[],
-            ))?;
-            if code != 0 {
-                std::process::exit(code);
-            }
-            return Ok(());
-        }
         Some("config") => {
             let options = maho_cli::package_manager_cli::parse_config_command(&argv)?
                 .ok_or("Missing config command")?;
@@ -941,7 +909,7 @@ fn run() -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
-    runtime.block_on(maho_cli::cli::runtime::run(parsed, &argv))
+    runtime.block_on(maho_cli::cli::runtime::run(parsed))
 }
 /// senpi main.ts:1032-1034: the startup-cwd settings diagnostics precede the help, list-tips and
 /// list-models answers.

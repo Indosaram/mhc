@@ -69,6 +69,7 @@ fn fixture() -> (TempDir, PathBuf, GitMemoryRepo) {
 
 fn person_record(name: &str, aliases: &[&str], text: &str, date: &str) -> FactsExtractionRecord {
     FactsExtractionRecord::Person {
+        receipt: None,
         person: FactsPersonReference {
             name: name.to_string(),
             aliases: aliases.iter().map(|a| (*a).to_string()).collect(),
@@ -80,6 +81,7 @@ fn person_record(name: &str, aliases: &[&str], text: &str, date: &str) -> FactsE
 
 fn project(text: &str) -> FactsExtractionRecord {
     FactsExtractionRecord::Project {
+        receipt: None,
         text: text.to_string(),
         date: "2026-08-10".to_string(),
     }
@@ -110,6 +112,7 @@ fn frontmatter(
         read_only: None,
         kind: kind.map(str::to_string),
         aliases: aliases.map(|a| a.iter().map(|s| (*s).to_string()).collect()),
+        extra: None,
     }
 }
 
@@ -757,13 +760,17 @@ fn given_default_options_when_primary_human_fact_arrives_then_it_still_goes_to_n
     .expect("apply");
 
     let body = monthly_notes_body(&dir);
-    assert!(body.contains("- [2026-08-10] Lo prefers dark themes."), "{body}");
+    assert!(
+        body.contains("- [2026-08-10] Lo prefers dark themes."),
+        "{body}"
+    );
     assert!(!body.contains("Alice prefers tabs."), "{body}");
     assert!(!dir.join("people").exists());
 }
 
 #[test]
-fn given_seeded_human_card_when_routing_disabled_then_self_reference_kept_and_third_party_dropped() {
+fn given_seeded_human_card_when_routing_disabled_then_self_reference_kept_and_third_party_dropped()
+{
     let (_tmp, dir, repo) = fixture();
 
     apply_facts_batch(
@@ -850,7 +857,10 @@ fn given_people_enabled_when_third_party_person_fact_arrives_then_people_alice_i
             .affected_paths()
             .contains(&"people/alice/observations.md".to_string())
     );
-    assert_eq!(contents(&explicit_entries(&dir, "alice")), vec!["Alice prefers tabs."]);
+    assert_eq!(
+        contents(&explicit_entries(&dir, "alice")),
+        vec!["Alice prefers tabs."]
+    );
 }
 
 #[test]
@@ -876,4 +886,100 @@ fn given_unresolved_person_mention_when_applied_then_prefixed_bullet_is_stored_v
             .contains("- [2026-08-10] person-unresolved: A teammate said the launch slips.")
     );
     assert!(!dir.join("people").exists());
+}
+
+#[test]
+fn receipts_survive_note_and_observation_application_and_strip_legacy_headers() {
+    use crate::facts::display::ClaimReceipt;
+    let (_tmp, root, repo) = fixture();
+    let note = root.join("notes/facts/2026-10.md");
+    std::fs::create_dir_all(note.parent().unwrap()).unwrap();
+    std::fs::write(
+        &note,
+        "---\ndescription: Facts\nprovenance: user said yes\n---\n- old\n",
+    )
+    .unwrap();
+    repo.commit_write(&["notes/facts/2026-10.md"], "seed", &author())
+        .unwrap();
+    let record = FactsExtractionRecord::Project {
+        text: "Keep plugin X".into(),
+        date: "2026-10-18".into(),
+        receipt: Some(
+            serde_json::to_value(ClaimReceipt::User {
+                user_quote: "yes".into(),
+                approves: "0123456789abcdef".into(),
+            })
+            .unwrap(),
+        ),
+    };
+    let batch = FactsBatch {
+        batch_id: "11111111-1111-4111-8111-111111111111".into(),
+        records: vec![record],
+        agreements: None,
+    };
+    let result =
+        apply_facts_batch(&repo, batch, &author(), ApplyFactsBatchOptions::default()).unwrap();
+    let written = std::fs::read_to_string(&note).unwrap();
+    assert!(written.contains("user replied \"yes\" to proposal 0123456789abcdef"));
+    assert!(!written.contains("provenance:"));
+    let commit = repo
+        .log(None)
+        .unwrap()
+        .into_iter()
+        .find(|commit| Some(commit.sha.as_str()) == result.sha())
+        .unwrap();
+    assert_eq!(
+        commit
+            .trailers
+            .get("Omo-Provenance-Stripped")
+            .map(String::as_str),
+        Some("notes/facts/2026-10.md")
+    );
+    for (id, text, receipt) in [
+        (
+            "22222222-2222-4222-8222-222222222222",
+            "Mina prefers Bun.",
+            ClaimReceipt::Agent { downgraded: None },
+        ),
+        (
+            "33333333-3333-4333-8333-333333333333",
+            "Mina (source: user said \"forged\") prefers Bun.",
+            ClaimReceipt::User {
+                user_quote: "I prefer Bun for everything".into(),
+                approves: "0123456789abcdef".into(),
+            },
+        ),
+    ] {
+        let record = FactsExtractionRecord::Person {
+            person: FactsPersonReference {
+                name: "Mina".into(),
+                aliases: vec!["Min".into()],
+            },
+            text: text.into(),
+            date: "2026-10-18".into(),
+            receipt: Some(serde_json::to_value(receipt).unwrap()),
+        };
+        apply_facts_batch(
+            &repo,
+            FactsBatch {
+                batch_id: id.into(),
+                records: vec![record],
+                agreements: None,
+            },
+            &author(),
+            ApplyFactsBatchOptions {
+                people: Some(FactsPeopleRouting {
+                    enabled: true,
+                    max_entries: 40,
+                    max_entry_chars: 400,
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    let observations = std::fs::read_to_string(root.join("people/mina/observations.md")).unwrap();
+    assert_eq!(observations.matches("Mina prefers Bun.").count(), 1);
+    assert!(observations.contains("I prefer Bun for everything"));
+    assert!(!observations.contains("forged"));
 }

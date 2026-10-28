@@ -4,6 +4,7 @@ mod admission_lease;
 mod batch_admission;
 mod batch_admission_race;
 mod destroy;
+mod parity_5147;
 mod pending_cancel;
 mod reconcile;
 mod reconcile_multi_session;
@@ -105,7 +106,10 @@ pub(crate) fn seed_record(store: &TaskRecordStore, input: Seed<'_>) -> TaskRecor
     record.runner_kind = input.runner_kind;
     record.host_session = input.host_session;
     store.save(&record).expect("seed record");
-    record
+    store
+        .load(&record.task_id)
+        .expect("load seed")
+        .expect("seed exists")
 }
 
 pub(crate) fn now_ms() -> i64 {

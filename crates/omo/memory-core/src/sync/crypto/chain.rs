@@ -5,7 +5,7 @@ use super::{
     envelope::{envelope_refusal, parse_entry},
     fold::*,
     parse::{ParsedBody, parse_body},
-    receiver::{ReceiverPass, receiver_pass},
+    receiver::HistoryReceiver,
     rejection::RejectionCounter,
     rules::check_record_rules,
     signatures::*,
@@ -16,6 +16,7 @@ pub const UNTRUSTED_STATE: ChainRejection = "untrusted_state";
 #[derive(Debug, Clone)]
 pub struct ChainState {
     account: String,
+    receiver: std::sync::Arc<std::sync::Mutex<Option<HistoryReceiver>>>,
     head: Option<Head>,
     authority: Option<Authority>,
     history: Vec<FoldedRecord>,
@@ -77,6 +78,7 @@ pub enum AppendOutcome {
 pub fn empty_chain(account: String, anchor: ChainAnchor) -> ChainState {
     ChainState {
         account,
+        receiver: Default::default(),
         head: None,
         authority: None,
         history: Vec::new(),
@@ -98,6 +100,8 @@ pub(super) fn at_verified_head(state: &ChainState, head: Head) -> Option<ChainSt
         return None;
     }
     let mut next = state.clone();
+    let receiver = state.receiver.lock().expect("receiver lock").take();
+    next.receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
     next.head = Some(head);
     Some(next)
 }
@@ -120,21 +124,33 @@ fn seen_keyring(state: &ChainState) -> Vec<SyncEntry> {
         .chain(state.unanchored.iter().cloned().map(SyncEntry::Keyring))
         .collect()
 }
+fn take_receiver(state: &ChainState) -> HistoryReceiver {
+    state
+        .receiver
+        .lock()
+        .expect("receiver lock")
+        .take()
+        .unwrap_or_else(|| HistoryReceiver::positioned_after(&seen_keyring(state)))
+}
 pub(super) fn verify_keyring_entry(
     state: &ChainState,
     entry: &KeyringEntry,
     mode: LinkMode,
 ) -> Result<(ChainState, ChainStep), ChainRejection> {
     let wire = SyncEntry::Keyring(entry.clone());
-    let pass = receiver_pass(&seen_keyring(state), std::slice::from_ref(&wire));
-    verify_keyring_wire(state, &wire, mode, &pass)
+    let mut receiver = take_receiver(state);
+    let result = verify_keyring_wire(state, &wire, mode, &mut receiver);
+    if let Ok((next, _)) = &result {
+        *next.receiver.lock().expect("receiver lock") = Some(receiver);
+    }
+    result
 }
-/// `wire` must be the entry `pass` was built for (the pass knows entries by identity).
+/// Consults the carried service receiver before the client's cryptographic checks.
 fn verify_keyring_wire(
     state: &ChainState,
     wire: &SyncEntry,
     mode: LinkMode,
-    pass: &ReceiverPass,
+    receiver: &mut HistoryReceiver,
 ) -> Result<(ChainState, ChainStep), ChainRejection> {
     let SyncEntry::Keyring(entry) = wire else {
         return Err("bad_envelope");
@@ -148,7 +164,7 @@ fn verify_keyring_wire(
     if !links_hold(state.head.as_ref(), wire, mode) {
         return Err("link_mismatch");
     }
-    if let Some(r) = pass(wire) {
+    if let Some(r) = receiver.keyring(wire) {
         return Err(r);
     }
     let body = parse_body(&entry.body).ok_or("bad_record")?;
@@ -201,6 +217,7 @@ fn verify_keyring_wire(
     };
     let authority = apply_record(&state.history, &record).ok_or("bad_record")?;
     let mut next = state.clone();
+    next.receiver = Default::default();
     next.head = Some(Head {
         seq: entry.seq,
         link: entry.fields.link.clone(),
@@ -236,7 +253,7 @@ fn verify_keyring_wire(
 fn verify_batch_entry(
     state: &ChainState,
     wire: &SyncEntry,
-    pass: &ReceiverPass,
+    receiver: &HistoryReceiver,
 ) -> Result<(ChainState, ChainStep), ChainRejection> {
     let SyncEntry::Batch(entry) = wire else {
         return Err("bad_envelope");
@@ -247,7 +264,7 @@ fn verify_batch_entry(
     if !links_hold(state.head.as_ref(), wire, LinkMode::Main) {
         return Err("link_mismatch");
     }
-    if let Some(r) = pass(wire) {
+    if let Some(r) = receiver.batch(wire) {
         return Err(r);
     }
     if let Some(r) = forced_rotation_refusal(state.forced_rotation_after, None) {
@@ -272,6 +289,7 @@ fn verify_batch_entry(
         return Err("account_mismatch");
     }
     let mut next = state.clone();
+    next.receiver = Default::default();
     next.head = Some(Head {
         seq: entry.seq,
         link: entry.fields.link.clone(),
@@ -303,29 +321,20 @@ pub fn append_entries(
     let mut steps = Vec::new();
     let parsed_rows: Vec<Result<SyncEntry, &'static str>> =
         entries.iter().map(parse_entry).collect();
-    // The pass covers the pull up to the first malformed row, as the receiver never reaches past it.
-    let pulled: Vec<SyncEntry> = parsed_rows
-        .iter()
-        .map_while(|row| row.as_ref().ok().cloned())
-        .collect();
-    let pass = receiver_pass(&seen_keyring(state), &pulled);
-    for (index, parsed) in parsed_rows.iter().enumerate() {
+    let mut receiver = take_receiver(state);
+    for parsed in &parsed_rows {
         let seq = parsed.as_ref().map_or_else(
             |_| current.head.as_ref().map_or(1, |h| h.seq.saturating_add(1)),
             SyncEntry::seq,
         );
         let result = match parsed {
             Err(reason) => Err(*reason),
-            Ok(entry) => {
-                // `pulled` holds the entries `pass` knows; a row past a malformed one is not in it.
-                let entry = pulled.get(index).unwrap_or(entry);
-                match entry {
-                    SyncEntry::Keyring(_) => {
-                        verify_keyring_wire(&current, entry, LinkMode::Main, &pass)
-                    }
-                    SyncEntry::Batch(_) => verify_batch_entry(&current, entry, &pass),
+            Ok(entry) => match entry {
+                SyncEntry::Keyring(_) => {
+                    verify_keyring_wire(&current, entry, LinkMode::Main, &mut receiver)
                 }
-            }
+                SyncEntry::Batch(_) => verify_batch_entry(&current, entry, &receiver),
+            },
         };
         match result {
             Ok((next, step)) => {
@@ -361,6 +370,7 @@ pub fn append_entries(
             reason: "unanchored",
         };
     }
+    *current.receiver.lock().expect("receiver lock") = Some(receiver);
     AppendOutcome::Accepted {
         state: current,
         steps,

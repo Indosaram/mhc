@@ -29,6 +29,19 @@ const PENDING_TTL_MS: i64 = 24 * 60 * 60_000;
 pub struct RecallNudge {
     pub path: String,
     pub hint: String,
+    /// Readable location of a project-scoped note; the ledger key remains `path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+impl RecallNudge {
+    pub fn new(path: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            hint: hint.into(),
+            source: None,
+        }
+    }
 }
 
 /// The self-describing per-session pending payload.
@@ -376,9 +389,14 @@ fn parse_nudge(value: &serde_json::Value) -> Option<RecallNudge> {
     if !is_valid_hint(hint) || contains_secret_like_material(hint) {
         return None;
     }
+    let source = match record.get("source") {
+        None => None,
+        Some(value) => Some(value.as_str().filter(|source| !source.is_empty())?.to_string()),
+    };
     Some(RecallNudge {
         path: path.to_string(),
         hint: hint.to_string(),
+        source,
     })
 }
 

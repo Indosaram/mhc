@@ -12,8 +12,9 @@ fn clone_usage(usage: &Usage) -> Usage {
 /// forward).
 fn clone_legacy_message(source: &AssistantMessage, content: Vec<ContentBlock>) -> AssistantMessage {
     AssistantMessage {
-        error_cause: source.error_cause,
-        prompt_cache_diagnostics: source.prompt_cache_diagnostics.clone(),
+        error_cause: None,
+        prompt_cache_breakpoint: None,
+        prompt_cache_diagnostics: None,
         thinking_level: None,
         provider_diagnostic: None,
         content,
@@ -25,6 +26,8 @@ fn clone_legacy_message(source: &AssistantMessage, content: Vec<ContentBlock>) -
         provider_thinking_level: None,
         diagnostics: None,
         usage: Usage {
+            context_usage: source.usage.context_usage,
+            cost_unknown: source.usage.cost_unknown,
             input: source.usage.input,
             output: source.usage.output,
             cache_read: source.usage.cache_read,
@@ -55,6 +58,7 @@ pub fn clone_message_with_content(
 ) -> AssistantMessage {
     AssistantMessage {
         error_cause: source.error_cause,
+        prompt_cache_breakpoint: source.prompt_cache_breakpoint,
         prompt_cache_diagnostics: source.prompt_cache_diagnostics.clone(),
         thinking_level: source.thinking_level,
         provider_diagnostic: source.provider_diagnostic.clone(),
@@ -75,8 +79,8 @@ pub fn clone_message_with_content(
         raw_stop_reason: source.raw_stop_reason.clone(),
         end_turn: source.end_turn,
         timestamp: source.timestamp,
-        failure_source: None,
-        timing: None,
+        failure_source: source.failure_source,
+        timing: source.timing.clone(),
     }
 }
 
@@ -125,6 +129,8 @@ mod tests {
 
     fn usage(reasoning: Option<u64>) -> Usage {
         Usage {
+            context_usage: None,
+            cost_unknown: None,
             input: 1,
             output: 2,
             cache_read: 3,
@@ -164,6 +170,7 @@ mod tests {
             abort_source: None,
             raw_stop_reason: Some("stop".into()),
             end_turn: Some(true),
+            prompt_cache_breakpoint: Some(true),
             timestamp: 42,
             failure_source: None,
             timing: None,
@@ -172,20 +179,31 @@ mod tests {
 
     #[test]
     fn legacy_clone_drops_cache_write_1h_and_reasoning_and_extra_metadata() {
-        let source = message();
+        let mut source = message();
+        source.usage.cost_unknown = Some(true);
         let cloned = clone_assistant_message_metadata(&source, vec![], &[], false);
         assert_eq!(cloned.usage.cache_write_1h, None);
         assert_eq!(cloned.usage.reasoning, None);
+        assert_eq!(cloned.usage.cost_unknown, Some(true));
         assert_eq!(cloned.response_model, None);
         assert_eq!(cloned.provider_thinking_level, None);
         assert_eq!(cloned.diagnostics, None);
+        assert_eq!(cloned.prompt_cache_breakpoint, None);
         assert_eq!(cloned.response_id, source.response_id);
         assert_eq!(cloned.stop_reason, source.stop_reason);
     }
 
     #[test]
     fn preserve_all_clone_carries_full_usage_and_appends_diagnostics() {
-        let source = message();
+        let mut source = message();
+        source.failure_source = Some(crate::types::AssistantFailureSource::Local);
+        source.timing = Some(crate::types::AssistantMessageTiming {
+            requested_at: 1,
+            first_token_at: Some(2),
+            last_token_at: Some(3),
+            ended_at: 4,
+            generation_ms: Some(1),
+        });
         let diagnostic =
             create_assistant_message_diagnostic("retry", &Thrown::error("E", "boom"), None);
         let cloned = clone_assistant_message_metadata(
@@ -197,6 +215,8 @@ mod tests {
         assert_eq!(cloned.usage.cache_write_1h, Some(5));
         assert_eq!(cloned.usage.reasoning, Some(9));
         assert_eq!(cloned.response_model, source.response_model);
+        assert_eq!(cloned.failure_source, source.failure_source);
+        assert_eq!(cloned.timing, source.timing);
         assert_eq!(cloned.diagnostics.as_ref().map(Vec::len), Some(1));
         let _: Option<DiagnosticErrorInfo> = cloned.diagnostics.unwrap()[0].error.clone();
     }

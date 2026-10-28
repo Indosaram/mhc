@@ -221,7 +221,7 @@ async fn delegates_every_read_and_query_without_recording_synthetic_writes() {
     let delegate = memory();
     let storage = InstrumentedStorage::new(delegate.clone());
     let events = list("test.events", "").expect("address");
-    let usage = Usage {
+    let usage = Usage { context_usage: None,
         input: 1,
         output: 2,
         total_tokens: 3,

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::host::HostError;
 use crate::lifecycle::DestroyCause;
 use crate::manager::ManagedChildHandle;
-use crate::state::{DeliverAs, TaskRunStats, TaskStatus};
+use crate::state::{DeliverAs, TaskRecord, TaskRunStats, TaskStatus};
 use crate::store::{StoreError, TaskRecordStore};
 
 /// Destruction is delegated exclusively to lifecycle's single-writer port.
@@ -20,10 +20,14 @@ pub type LiveHandleFn = dyn Fn(&str) -> Option<Arc<dyn ManagedChildHandle>> + Se
 /// Called with a task id when its stop is requested or settled.
 pub type StopHookFn = dyn Fn(&str) + Send + Sync;
 
+pub type HeldSendFn =
+    dyn Fn(&TaskRecord, &str) -> Option<Result<SendOutcome, SteeringError>> + Send + Sync;
+
 #[derive(Clone)]
 pub struct SteeringPort {
     pub store: TaskRecordStore,
     pub live_handle: Arc<LiveHandleFn>,
+    pub send_while_run_held: Option<Arc<HeldSendFn>>,
     /// Removes a queued (never-launched) child from the concurrency queue.
     pub dequeue_pending: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     /// Re-acquires a residency slot for a revived terminal child.
@@ -79,6 +83,11 @@ pub enum SendOutcome {
     Revived {
         task_id: String,
         run_epoch: i64,
+    },
+    Held {
+        task_id: String,
+        pause_seq: u64,
+        entry_id: String,
     },
     Queued {
         task_id: String,

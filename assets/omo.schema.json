@@ -167,10 +167,6 @@
       "required": [],
       "additionalProperties": false
     },
-    "gateway": {
-      "type": "object",
-      "additionalProperties": {}
-    },
     "$schema": {
       "type": "string"
     },
@@ -1520,6 +1516,9 @@
                 }
               ]
             }
+          },
+          "caution": {
+            "type": "string"
           }
         },
         "additionalProperties": false
@@ -1612,6 +1611,12 @@
                 "off"
               ],
               "default": "auto"
+            },
+            "max_concurrent_runs": {
+              "default": 1,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
             }
           },
           "required": [],
@@ -1625,7 +1630,8 @@
             "merge": "auto",
             "category": "quick",
             "timeout_minutes": 15,
-            "sandbox": "auto"
+            "sandbox": "auto",
+            "max_concurrent_runs": 1
           }
         },
         "nudge": {
@@ -2195,6 +2201,32 @@
             "additionalProperties": false
           },
           "default": {}
+        },
+        "auto_identity": {
+          "default": "path",
+          "type": "string",
+          "enum": [
+            "path",
+            "git"
+          ]
+        },
+        "project_scope": {
+          "default": {
+            "nudge": true,
+            "recall": true
+          },
+          "type": "object",
+          "properties": {
+            "nudge": {
+              "default": true,
+              "type": "boolean"
+            },
+            "recall": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "required": [],
@@ -2206,6 +2238,11 @@
         "enabled": {
           "type": "boolean",
           "default": false
+        },
+        "rawTurnSampleRate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
         }
       },
       "required": [],
@@ -2428,10 +2465,6 @@
           },
           "additionalProperties": false
         },
-        "gateway": {
-          "type": "object",
-          "additionalProperties": {}
-        },
         "categories": {
           "type": "object",
           "additionalProperties": {
@@ -3710,6 +3743,9 @@
                     }
                   ]
                 }
+              },
+              "caution": {
+                "type": "string"
               }
             },
             "additionalProperties": false
@@ -3781,6 +3817,11 @@
                     "required",
                     "off"
                   ]
+                },
+                "max_concurrent_runs": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
                 }
               },
               "additionalProperties": false
@@ -4249,6 +4290,25 @@
                 },
                 "additionalProperties": false
               }
+            },
+            "auto_identity": {
+              "type": "string",
+              "enum": [
+                "path",
+                "git"
+              ]
+            },
+            "project_scope": {
+              "type": "object",
+              "properties": {
+                "nudge": {
+                  "type": "boolean"
+                },
+                "recall": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -4258,6 +4318,11 @@
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "rawTurnSampleRate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
             }
           },
           "additionalProperties": false
@@ -4334,6 +4399,51 @@
           "additionalProperties": false
         },
         "disabled_skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "workspaces": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "git_owners": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    }
+                  },
+                  "paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    }
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "exclude_models": {
           "type": "array",
           "items": {
             "type": "string"
@@ -4478,10 +4588,6 @@
           },
           "additionalProperties": false
         },
-        "gateway": {
-          "type": "object",
-          "additionalProperties": {}
-        },
         "categories": {
           "type": "object",
           "additionalProperties": {
@@ -5760,6 +5866,9 @@
                     }
                   ]
                 }
+              },
+              "caution": {
+                "type": "string"
               }
             },
             "additionalProperties": false
@@ -5831,6 +5940,11 @@
                     "required",
                     "off"
                   ]
+                },
+                "max_concurrent_runs": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
                 }
               },
               "additionalProperties": false
@@ -6299,6 +6413,25 @@
                 },
                 "additionalProperties": false
               }
+            },
+            "auto_identity": {
+              "type": "string",
+              "enum": [
+                "path",
+                "git"
+              ]
+            },
+            "project_scope": {
+              "type": "object",
+              "properties": {
+                "nudge": {
+                  "type": "boolean"
+                },
+                "recall": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -6308,6 +6441,11 @@
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "rawTurnSampleRate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
             }
           },
           "additionalProperties": false
@@ -6384,6 +6522,51 @@
           "additionalProperties": false
         },
         "disabled_skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "workspaces": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "git_owners": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    }
+                  },
+                  "paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    }
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "exclude_models": {
           "type": "array",
           "items": {
             "type": "string"
@@ -6528,10 +6711,6 @@
           },
           "additionalProperties": false
         },
-        "gateway": {
-          "type": "object",
-          "additionalProperties": {}
-        },
         "categories": {
           "type": "object",
           "additionalProperties": {
@@ -7810,6 +7989,9 @@
                     }
                   ]
                 }
+              },
+              "caution": {
+                "type": "string"
               }
             },
             "additionalProperties": false
@@ -7881,6 +8063,11 @@
                     "required",
                     "off"
                   ]
+                },
+                "max_concurrent_runs": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
                 }
               },
               "additionalProperties": false
@@ -8349,6 +8536,25 @@
                 },
                 "additionalProperties": false
               }
+            },
+            "auto_identity": {
+              "type": "string",
+              "enum": [
+                "path",
+                "git"
+              ]
+            },
+            "project_scope": {
+              "type": "object",
+              "properties": {
+                "nudge": {
+                  "type": "boolean"
+                },
+                "recall": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -8358,6 +8564,11 @@
           "properties": {
             "enabled": {
               "type": "boolean"
+            },
+            "rawTurnSampleRate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
             }
           },
           "additionalProperties": false
@@ -8434,6 +8645,51 @@
           "additionalProperties": false
         },
         "disabled_skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "workspaces": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "git_owners": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    }
+                  },
+                  "paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    }
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "exclude_models": {
           "type": "array",
           "items": {
             "type": "string"
@@ -9858,6 +10114,9 @@
                       }
                     ]
                   }
+                },
+                "caution": {
+                  "type": "string"
                 }
               },
               "additionalProperties": false
@@ -9929,6 +10188,11 @@
                       "required",
                       "off"
                     ]
+                  },
+                  "max_concurrent_runs": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
                   }
                 },
                 "additionalProperties": false
@@ -10397,6 +10661,25 @@
                   },
                   "additionalProperties": false
                 }
+              },
+              "auto_identity": {
+                "type": "string",
+                "enum": [
+                  "path",
+                  "git"
+                ]
+              },
+              "project_scope": {
+                "type": "object",
+                "properties": {
+                  "nudge": {
+                    "type": "boolean"
+                  },
+                  "recall": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
               }
             },
             "additionalProperties": false
@@ -10406,6 +10689,11 @@
             "properties": {
               "enabled": {
                 "type": "boolean"
+              },
+              "rawTurnSampleRate": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
               }
             },
             "additionalProperties": false
@@ -10627,10 +10915,6 @@
                 },
                 "additionalProperties": false
               },
-              "gateway": {
-                "type": "object",
-                "additionalProperties": {}
-              },
               "categories": {
                 "type": "object",
                 "additionalProperties": {
@@ -11909,6 +12193,9 @@
                           }
                         ]
                       }
+                    },
+                    "caution": {
+                      "type": "string"
                     }
                   },
                   "additionalProperties": false
@@ -11980,6 +12267,11 @@
                           "required",
                           "off"
                         ]
+                      },
+                      "max_concurrent_runs": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
                       }
                     },
                     "additionalProperties": false
@@ -12448,6 +12740,25 @@
                       },
                       "additionalProperties": false
                     }
+                  },
+                  "auto_identity": {
+                    "type": "string",
+                    "enum": [
+                      "path",
+                      "git"
+                    ]
+                  },
+                  "project_scope": {
+                    "type": "object",
+                    "properties": {
+                      "nudge": {
+                        "type": "boolean"
+                      },
+                      "recall": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
                   }
                 },
                 "additionalProperties": false
@@ -12457,6 +12768,11 @@
                 "properties": {
                   "enabled": {
                     "type": "boolean"
+                  },
+                  "rawTurnSampleRate": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
                   }
                 },
                 "additionalProperties": false
@@ -12533,6 +12849,51 @@
                 "additionalProperties": false
               },
               "disabled_skills": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "provenance": {
+                "type": "object",
+                "properties": {
+                  "workspaces": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "\\S"
+                        },
+                        "git_owners": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S"
+                          }
+                        },
+                        "paths": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S"
+                          }
+                        }
+                      },
+                      "required": [
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "exclude_models": {
                 "type": "array",
                 "items": {
                   "type": "string"
@@ -12677,10 +13038,6 @@
                 },
                 "additionalProperties": false
               },
-              "gateway": {
-                "type": "object",
-                "additionalProperties": {}
-              },
               "categories": {
                 "type": "object",
                 "additionalProperties": {
@@ -13959,6 +14316,9 @@
                           }
                         ]
                       }
+                    },
+                    "caution": {
+                      "type": "string"
                     }
                   },
                   "additionalProperties": false
@@ -14030,6 +14390,11 @@
                           "required",
                           "off"
                         ]
+                      },
+                      "max_concurrent_runs": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
                       }
                     },
                     "additionalProperties": false
@@ -14498,6 +14863,25 @@
                       },
                       "additionalProperties": false
                     }
+                  },
+                  "auto_identity": {
+                    "type": "string",
+                    "enum": [
+                      "path",
+                      "git"
+                    ]
+                  },
+                  "project_scope": {
+                    "type": "object",
+                    "properties": {
+                      "nudge": {
+                        "type": "boolean"
+                      },
+                      "recall": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
                   }
                 },
                 "additionalProperties": false
@@ -14507,6 +14891,11 @@
                 "properties": {
                   "enabled": {
                     "type": "boolean"
+                  },
+                  "rawTurnSampleRate": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
                   }
                 },
                 "additionalProperties": false
@@ -14583,6 +14972,51 @@
                 "additionalProperties": false
               },
               "disabled_skills": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "provenance": {
+                "type": "object",
+                "properties": {
+                  "workspaces": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "\\S"
+                        },
+                        "git_owners": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S"
+                          }
+                        },
+                        "paths": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S"
+                          }
+                        }
+                      },
+                      "required": [
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "exclude_models": {
                 "type": "array",
                 "items": {
                   "type": "string"
@@ -14727,10 +15161,6 @@
                 },
                 "additionalProperties": false
               },
-              "gateway": {
-                "type": "object",
-                "additionalProperties": {}
-              },
               "categories": {
                 "type": "object",
                 "additionalProperties": {
@@ -16009,6 +16439,9 @@
                           }
                         ]
                       }
+                    },
+                    "caution": {
+                      "type": "string"
                     }
                   },
                   "additionalProperties": false
@@ -16080,6 +16513,11 @@
                           "required",
                           "off"
                         ]
+                      },
+                      "max_concurrent_runs": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
                       }
                     },
                     "additionalProperties": false
@@ -16548,6 +16986,25 @@
                       },
                       "additionalProperties": false
                     }
+                  },
+                  "auto_identity": {
+                    "type": "string",
+                    "enum": [
+                      "path",
+                      "git"
+                    ]
+                  },
+                  "project_scope": {
+                    "type": "object",
+                    "properties": {
+                      "nudge": {
+                        "type": "boolean"
+                      },
+                      "recall": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
                   }
                 },
                 "additionalProperties": false
@@ -16557,6 +17014,11 @@
                 "properties": {
                   "enabled": {
                     "type": "boolean"
+                  },
+                  "rawTurnSampleRate": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
                   }
                 },
                 "additionalProperties": false
@@ -16637,9 +17099,99 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "provenance": {
+                "type": "object",
+                "properties": {
+                  "workspaces": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "\\S"
+                        },
+                        "git_owners": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S"
+                          }
+                        },
+                        "paths": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S"
+                          }
+                        }
+                      },
+                      "required": [
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "exclude_models": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "additionalProperties": false
+          },
+          "provenance": {
+            "type": "object",
+            "properties": {
+              "workspaces": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    },
+                    "git_owners": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "\\S"
+                      }
+                    },
+                    "paths": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "\\S"
+                      }
+                    }
+                  },
+                  "required": [
+                    "name"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "exclude_models": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": false
@@ -16655,6 +17207,51 @@
     "legacy_migrations": {
       "type": "object",
       "additionalProperties": {}
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "workspaces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "git_owners": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "exclude_models": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     }
   },
   "required": [],

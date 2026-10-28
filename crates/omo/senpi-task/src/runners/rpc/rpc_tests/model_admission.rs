@@ -57,7 +57,10 @@ fn given_a_catalog_probe_when_spawned_then_it_is_hidden_and_owns_its_posix_proce
 fn given_a_timed_out_catalog_probe_when_tree_cleanup_is_pending_then_the_timeout_result_waits_for_cleanup()
  {
     let started = std::time::Instant::now();
-    let result = crate::runners::rpc::model_admission::probe_model_catalog(&shell_descriptor("trap '' TERM; sleep 30"), Some(0));
+    let result = crate::runners::rpc::model_admission::probe_model_catalog(
+        &shell_descriptor("trap '' TERM; sleep 30"),
+        Some(0),
+    );
     assert!(result.timed_out);
     assert_eq!(result.code, None);
     assert!(
@@ -214,6 +217,7 @@ fn counting_admission(
             }
         })),
         now: Some(Arc::new(move || clock.load(Ordering::SeqCst))),
+        ..RpcModelAdmissionOptions::default()
     })
 }
 
@@ -246,4 +250,144 @@ fn given_a_cached_successful_catalog_inside_its_ttl_when_a_later_admission_runs_
     clock.fetch_add(MODEL_CATALOG_CACHE_TTL_MS / 2, Ordering::SeqCst);
     admit(&cache_spec("prov/alpha")).expect("second");
     assert_eq!(probes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn inconclusive_probes_retry_admit_and_never_cache() {
+    let probes = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&probes);
+    let clock = Arc::new(AtomicI64::new(1_000));
+    let time = Arc::clone(&clock);
+    let read_time = Arc::clone(&clock);
+    let verdicts = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&verdicts);
+    let admit = create_rpc_model_admission(RpcModelAdmissionOptions {
+        build_spawn: Some(Arc::new(|_| cache_descriptor())),
+        probe: Some(Arc::new(move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+            time.fetch_add(20_000, Ordering::SeqCst);
+            ModelCatalogProbeResult {
+                timed_out: true,
+                ..Default::default()
+            }
+        })),
+        now: Some(Arc::new(move || read_time.load(Ordering::SeqCst))),
+        on_inconclusive: Some(Arc::new(move |v| {
+            recorded.lock().expect("verdicts").push(v)
+        })),
+        ..Default::default()
+    });
+    admit(&cache_spec("prov/alpha")).expect("admit");
+    admit(&cache_spec("prov/alpha")).expect("admit again");
+    assert_eq!(probes.load(Ordering::SeqCst), 4);
+    let verdicts = verdicts.lock().expect("verdicts");
+    assert_eq!(verdicts.len(), 2);
+    assert_eq!(verdicts[0].verdict, "inconclusive");
+    assert_eq!(verdicts[0].elapsed_ms, 40_000);
+}
+
+#[test]
+fn stale_catalog_only_admits_within_half_hour_and_never_proves_absence() {
+    for (advance, requested, expected) in [
+        (
+            MODEL_CATALOG_CACHE_TTL_MS + 600_000,
+            "prov/alpha",
+            "stale_catalog",
+        ),
+        (MODEL_CATALOG_CACHE_TTL_MS + 1, "prov/beta", "inconclusive"),
+        (
+            super::super::model_admission::MODEL_CATALOG_MAX_STALE_MS + 1,
+            "prov/alpha",
+            "inconclusive",
+        ),
+    ] {
+        let probes = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&probes);
+        let clock = Arc::new(AtomicI64::new(1_000));
+        let time = Arc::clone(&clock);
+        let verdicts = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&verdicts);
+        let admit = create_rpc_model_admission(RpcModelAdmissionOptions {
+            build_spawn: Some(Arc::new(|_| cache_descriptor())),
+            probe: Some(Arc::new(move |_| {
+                if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ModelCatalogProbeResult {
+                        code: Some(0),
+                        stdout: "prov alpha".into(),
+                        ..Default::default()
+                    }
+                } else {
+                    ModelCatalogProbeResult {
+                        timed_out: true,
+                        ..Default::default()
+                    }
+                }
+            })),
+            now: Some(Arc::new(move || time.load(Ordering::SeqCst))),
+            on_inconclusive: Some(Arc::new(move |v| {
+                recorded.lock().expect("verdicts").push(v)
+            })),
+            ..Default::default()
+        });
+        admit(&cache_spec("prov/alpha")).expect("initial");
+        clock.fetch_add(advance, Ordering::SeqCst);
+        admit(&cache_spec(requested)).expect("unjudged");
+        assert_eq!(verdicts.lock().expect("verdicts")[0].verdict, expected);
+        assert_eq!(probes.load(Ordering::SeqCst), 3);
+    }
+}
+
+#[test]
+fn confirmation_timeout_admits_but_confirmed_absence_and_nonzero_exit_reject() {
+    for mode in 0..3 {
+        let count = Arc::new(AtomicUsize::new(0));
+        let probes = Arc::clone(&count);
+        let admit = create_rpc_model_admission(RpcModelAdmissionOptions {
+            build_spawn: Some(Arc::new(|_| cache_descriptor())),
+            probe: Some(Arc::new(move |_| {
+                let attempt = probes.fetch_add(1, Ordering::SeqCst);
+                if mode == 0 && attempt > 0 {
+                    ModelCatalogProbeResult {
+                        timed_out: true,
+                        ..Default::default()
+                    }
+                } else {
+                    ModelCatalogProbeResult {
+                        code: Some(if mode == 2 { 1 } else { 0 }),
+                        stdout: "prov alpha".into(),
+                        ..Default::default()
+                    }
+                }
+            })),
+            ..Default::default()
+        });
+        assert_eq!(admit(&cache_spec("prov/beta")).is_ok(), mode == 0);
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            if mode == 0 {
+                3
+            } else if mode == 1 {
+                2
+            } else {
+                1
+            }
+        );
+    }
+}
+
+#[test]
+fn decorated_models_admit_and_exclusions_precede_probes() {
+    let admit = create_rpc_model_admission(RpcModelAdmissionOptions {
+        build_spawn: Some(Arc::new(|_| cache_descriptor())),
+        probe: Some(Arc::new(|_| ModelCatalogProbeResult {
+            code: Some(0),
+            stdout: "prov alpha".into(),
+            ..Default::default()
+        })),
+        exclude_models: vec!["BETA*".into(), "vendor/hidden".into()],
+        ..Default::default()
+    });
+    admit(&cache_spec("prov/alpha:high:priority")).expect("decorated");
+    assert!(admit(&cache_spec("prov/beta:high")).is_err());
+    assert!(admit(&cache_spec("gateway/vendor/hidden")).is_err());
 }

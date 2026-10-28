@@ -290,17 +290,54 @@ impl MemoryRuntime {
             reflect: Some({
                 let this = this.clone();
                 Arc::new(move |session, event| {
-                    let identity = this.identity(session).ok_or("no bound memory session")?;
-                    let worker = this.worker(&identity)?;
-                    let result = worker
-                        .store
-                        .evaluate(session, event)
-                        .map_err(|error| error.to_string())?
-                        .ok_or("reflection reservation rejected")?;
-                    if result.status == "active" {
-                        this.launch(worker, result.run.clone(), true)?;
-                    }
-                    Ok((result.status, result.run.run_id))
+                    let this = this.clone();
+                    Box::pin(async move {
+                        let identity = this.identity(&session).ok_or("no bound memory session")?;
+                        let worker = this.worker(&identity)?;
+                        let result = worker
+                            .store
+                            .evaluate(&session, event)
+                            .map_err(|error| error.to_string())?
+                            .ok_or("reflection reservation rejected")?;
+                        if result.status == "active" {
+                            this.launch(worker.clone(), result.run.clone(), true)?;
+                        }
+                        let mut recovered_run_id = None;
+                        let mut stuck = None;
+                        if result.status == "pending" {
+                            let runtime = this.clone();
+                            let recovery_worker = worker.clone();
+                            let reflection = identity.identity_paths.reflection.clone();
+                            let run_id = result.run.run_id.clone();
+                            let receipt = tokio::task::spawn_blocking(move || {
+                                maho_omo_memory::wiring_static::recover_pending_reflection(
+                                    &reflection,
+                                    run_id,
+                                    &|| {
+                                        tokio::runtime::Builder::new_current_thread()
+                                            .enable_all()
+                                            .build()
+                                            .map_err(|error| error.to_string())?
+                                            .block_on(runtime.reconcile_worker(&recovery_worker))
+                                    },
+                                )
+                            })
+                            .await
+                            .map_err(|error| error.to_string())?;
+                            recovered_run_id = receipt.recovered_run_id;
+                            stuck = receipt.stuck;
+                        }
+                        Ok(maho_omo_memory::commands::types::ReflectionRequestReceipt {
+                            disposition: if result.status == "active" {
+                                maho_omo_memory::commands::types::ReflectionDisposition::Reserved
+                            } else {
+                                maho_omo_memory::commands::types::ReflectionDisposition::Pending
+                            },
+                            run_id: result.run.run_id,
+                            recovered_run_id,
+                            stuck,
+                        })
+                    })
                 })
             }),
             dream: Some(dream_sink),
@@ -400,7 +437,7 @@ impl MemoryRuntime {
             write_sessions: Mutex::new(BTreeMap::new()),
             nudge: Arc::new(Mutex::new(Default::default())),
             health_notices: Mutex::new(BTreeSet::new()),
-            prompt: Arc::new(Default::default()),
+            prompt: Arc::new(maho_omo_memory::prompt::MemoryPromptHandler::persistent()),
             static_options: Mutex::new(None),
         }))
     }
@@ -542,7 +579,15 @@ impl MemoryRuntime {
         let worker = Arc::new(IdentityWorker {
             identity: identity.clone(),
             store,
-            runner: tokio::sync::Mutex::new(Default::default()),
+            runner: tokio::sync::Mutex::new({
+                let mut runner = worker::runner::SenpiSubprocessRunner::default();
+                runner.admission_memory_root = identity
+                    .durable_root
+                    .ancestors()
+                    .nth(2)
+                    .map(std::path::Path::to_path_buf);
+                runner
+            }),
             cache: tokio::sync::Mutex::new(Default::default()),
             sandbox: Mutex::new(Default::default()),
         });
@@ -563,13 +608,23 @@ impl MemoryRuntime {
             maho_omo_memory::model_registry_resolver::resolve_native_memory_model_registry(context);
         let sandbox_host = self.clone();
         let sandbox_identity = identity.identity.clone();
+        let facts_identity = identity.identity.clone();
+        let facts_session =
+            context
+                .model
+                .as_ref()
+                .map(|model| worker::resolve_model::ReflectionSessionModel {
+                    provider: model.provider.clone(),
+                    id: model.id.clone(),
+                    thinking: None,
+                });
         let attempt = NativeFactsAttemptOptions {
             resolve_model: Arc::new(move || {
-                worker::resolve_model::resolve_reflection_model(
-                    "quick",
+                maho_omo_memory::facts_model::resolve_facts_model(
                     &(this.host.load_config)()?,
                     Some(&registry),
-                    None,
+                    facts_session.as_ref(),
+                    &facts_identity,
                 )
                 .map_err(|error| error.to_string())
             }),
@@ -623,9 +678,11 @@ impl MemoryRuntime {
                 .map_err(|error| error.to_string())
             })),
             warn: self.host.warn.clone(),
-            spawner: Some(crate::cli::facts_child::CliFactsChildSpawner::from_agent_dir(
-                self.host.agent_dir.to_string_lossy().into_owned(),
-            )),
+            spawner: Some(
+                crate::cli::facts_child::CliFactsChildSpawner::from_agent_dir(
+                    self.host.agent_dir.to_string_lossy().into_owned(),
+                ),
+            ),
         };
         let this = self.clone();
         Ok(MemoryRuntimeWiring::native_facts_options(
@@ -816,7 +873,7 @@ impl MemoryRuntime {
         });
         let this = self.clone();
         let refresh = Arc::new(
-            move |identity: &MemoryIdentityContext, context: &ExtensionContext| {
+            move |identity: &MemoryIdentityContext, context: &ExtensionContext, _sync: Option<&maho_omo_memory::sync_status_cached::SyncStatusReader>| {
                 this.refresh_status(identity, context, StatusRefresh::Footer)
             },
         );
@@ -891,6 +948,7 @@ impl MemoryRuntime {
                 resolve_session: writes,
                 on_memory_write: on_write,
                 refresh_status: refresh,
+                sync_status: None,
             },
             skills_usage: maho_omo_memory::skills_usage_wiring::SkillsUsageOptions {
                 resolve_context: skills,
@@ -954,6 +1012,12 @@ impl MemoryRuntime {
                 now_ms: memory_core::support::time::now_millis(),
                 show_footer: context.has_ui,
                 check_advisory: mode == StatusRefresh::Initial,
+                sync_status: self
+                    .wiring
+                    .try_lock()
+                    .ok()
+                    .and_then(|wiring| wiring.seams.sync_status.clone())
+                    .as_ref(),
                 session_id: Some(context.session_manager.session_id()),
             },
         )
@@ -1181,6 +1245,7 @@ impl MemoryRuntime {
                         route: route.as_ref(),
                         sandbox: Some(&sandbox),
                         deadline_ms: None,
+                        memory_root: None,
                         child: worker::spawn_supervisor::ReflectionChildOptions {
                             termination_grace_ms: 5_000.0,
                             max_output_bytes: 64 * 1024,

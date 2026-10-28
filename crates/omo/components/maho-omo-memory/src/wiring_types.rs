@@ -1,3 +1,4 @@
+pub type ReconcileRunsCallback = Option<std::sync::Arc<dyn Fn(&MemoryIdentityContext) -> Result<(), String> + Send + Sync>>;
 use crate::{context::MemoryIdentityContext, wiring_runtime::MemoryRuntimeWiring};
 pub struct MemoryAfterBindInput<'a> {
     pub session_id: &'a str,
@@ -38,7 +39,9 @@ pub struct MemoryWiringSeams {
     /// The shared recall corpus cache; tests substitute one whose pending term-store save they control.
     pub create_corpus_cache: Option<
         std::sync::Arc<
-            dyn Fn(Option<crate::recall_wiring::RecallWarn>) -> memory_core::recall::RecallCorpusCache
+            dyn Fn(
+                    Option<crate::recall_wiring::RecallWarn>,
+                ) -> memory_core::recall::RecallCorpusCache
                 + Send
                 + Sync,
         >,
@@ -47,6 +50,12 @@ pub struct MemoryWiringSeams {
     pub device_name: Option<crate::projection_pin::DeviceNameResolver>,
     /// Settles the recall term-store save at session shutdown (the recall wiring's `settled`).
     pub recall_store_settle: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    /// A memory repository's sync status for the footer and its notice; production passes the sync runner's.
+    pub sync_status: Option<crate::sync_status_cached::SyncStatusReader>,
+    /// Settles reflection runs for an identity (the runtime's `reconcile`); the stale-holder recovery
+    /// drives it when a later turn finds a provably dead lock holder.
+    pub reconcile_runs:
+        ReconcileRunsCallback,
 }
 
 impl MemoryWiringSeams {

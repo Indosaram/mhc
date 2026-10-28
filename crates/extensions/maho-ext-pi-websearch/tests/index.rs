@@ -126,7 +126,10 @@ async fn session_publishes_loaded_config_before_ui_callbacks() {
         agent_dir: temp.path().join("agent"),
         session_manager: Arc::new(Session),
         model_registry: Arc::new(Registry),
-        model: None,
+        model: Some(serde_json::from_value(serde_json::json!({
+            "id":"test", "name":"Test", "api":"openai-responses", "provider":"openai", "baseUrl":"https://api.openai.com/v1",
+            "reasoning":false, "input":["text"], "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}, "contextWindow":1000, "maxTokens":100
+        })).expect("model")),
         thinking_level: None,
         service_tier: None,
         effective_service_tier: None,

@@ -2391,6 +2391,7 @@ fn finalize_paths(mut paths: ResolvedPaths) -> ResolvedPaths {
         let mut seen = std::collections::HashSet::new();
         target.retain(|resource| seen.insert(crate::paths::canonicalize_path(&resource.path)));
     }
+    paths.skill_roots = paths.skills.iter().filter(|r| r.enabled).filter_map(|r| r.metadata.skill_provenance.clone()).collect();
     paths
 }
 
@@ -2404,6 +2405,7 @@ impl DefaultPackageManager<'_> {
     ) {
         let manifest = crate::pi_manifest::read_pi_manifest(&join_path(root, "package.json"));
         metadata.base_dir = Some(root.to_owned());
+        metadata.skill_provenance = Some(crate::skill_access::select_skill_root(root, metadata.scope, &self.cwd, false));
         if manifest
             .as_ref()
             .is_some_and(|manifest| manifest.system == Some(true))
@@ -2538,7 +2540,7 @@ impl DefaultPackageManager<'_> {
                 // senpi `resolveLocalExtensionSource`: a file is one extension; a directory without a
                 // manifest, filter or resource directory is itself the extension entry.
                 ParsedSource::Local(_) => {
-                    let metadata = PathMetadata {
+                    let metadata = PathMetadata { skill_provenance: None,
                         source: source.to_owned(),
                         scope: *scope,
                         origin: SourceOrigin::Package,
@@ -2651,7 +2653,7 @@ impl DefaultPackageManager<'_> {
             self.collect_package_resources(
                 &installed,
                 pkg.is_object().then_some(pkg),
-                PathMetadata {
+                PathMetadata { skill_provenance: None,
                     source: source.to_owned(),
                     scope: *scope,
                     origin: SourceOrigin::Package,
@@ -2720,7 +2722,7 @@ impl DefaultPackageManager<'_> {
             for kind in RESOURCE_TYPES {
                 let entries = strings(settings.get(kind.as_str()));
                 let split = split_patterns(&entries);
-                let metadata = PathMetadata {
+                let metadata = PathMetadata { skill_provenance: None,
                     source: "local".into(),
                     scope,
                     origin: SourceOrigin::TopLevel,
@@ -2729,7 +2731,9 @@ impl DefaultPackageManager<'_> {
                 for entry in split.plain {
                     for path in resource_files(&self.resolve_path(&entry, &base), kind) {
                         let enabled = enabled_by_patterns(&path, &split.patterns, &base);
-                        add_resource(target_resources(&mut paths, kind), path, enabled, &metadata);
+                        let mut selected = metadata.clone();
+                        if kind == ResourceType::Skills { selected.skill_provenance = Some(crate::skill_access::select_skill_root(&self.resolve_path(&entry, &base), scope, &self.cwd, true)); }
+                        add_resource(target_resources(&mut paths, kind), path, enabled, &selected);
                     }
                 }
             }
@@ -2755,7 +2759,7 @@ impl DefaultPackageManager<'_> {
             };
             let enabled = project_enabled
                 .unwrap_or_else(|| enabled_by_patterns(&path, &global_overrides, &self.agent_dir));
-            let metadata = PathMetadata {
+            let metadata = PathMetadata { skill_provenance: None,
                 source: "builtin".into(),
                 scope: if project_enabled.is_some() {
                     SourceScope::Project
@@ -2805,7 +2809,7 @@ impl DefaultPackageManager<'_> {
             } else {
                 self.settings_manager.get_global()
             };
-            let metadata = PathMetadata {
+            let metadata = PathMetadata { skill_provenance: None,
                 source: "auto".into(),
                 scope,
                 origin: SourceOrigin::TopLevel,
@@ -2825,7 +2829,9 @@ impl DefaultPackageManager<'_> {
                     agents.unwrap_or(SkillDiscoveryMode::Pi),
                 ) {
                     let enabled = enabled_by_patterns(&path, &overrides, &base);
-                    add_resource(target_resources(paths, kind), path, enabled, &metadata);
+                    let mut selected = metadata.clone();
+                    if kind == ResourceType::Skills { selected.skill_provenance = Some(crate::skill_access::select_skill_root(&join_path(&base, kind.as_str()), scope, &self.cwd, false)); }
+                    add_resource(target_resources(paths, kind), path, enabled, &selected);
                 }
             }
         }
@@ -2836,6 +2842,7 @@ impl DefaultPackageManager<'_> {
 /// `PathMetadata`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PathMetadata {
+    pub skill_provenance: Option<crate::skill_access::SkillProvenance>,
     pub source: String,
     pub scope: SourceScope,
     pub origin: crate::source_info::SourceOrigin,
@@ -2853,6 +2860,7 @@ pub struct ResolvedResource {
 /// `ResolvedPaths`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ResolvedPaths {
+    pub skill_roots: Vec<crate::skill_access::SkillProvenance>,
     pub extensions: Vec<ResolvedResource>,
     pub skills: Vec<ResolvedResource>,
     pub prompts: Vec<ResolvedResource>,
@@ -3313,7 +3321,7 @@ mod tests {
     use crate::source_info::SourceOrigin;
 
     fn metadata(source: &str, scope: SourceScope, origin: SourceOrigin) -> PathMetadata {
-        PathMetadata {
+        PathMetadata { skill_provenance: None,
             source: source.to_string(),
             scope,
             origin,

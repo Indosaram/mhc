@@ -88,6 +88,53 @@ pub fn is_auto_agent_value(config_agent_value: Option<&str>) -> bool {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AutoIdentityMode {
+    #[default]
+    Path,
+    Git,
+}
+
+pub fn resolve_auto_identity(
+    cwd: &Path,
+    env: &BTreeMap<String, String>,
+    mode: AutoIdentityMode,
+) -> Result<MemoryIdentity, IdentityError> {
+    resolve_auto_identity_with_probe(cwd, env, mode, &super::git_layout::DefaultGitLayoutProbe)
+}
+
+pub fn resolve_auto_identity_with_probe(
+    cwd: &Path,
+    env: &BTreeMap<String, String>,
+    mode: AutoIdentityMode,
+    probe: &dyn super::git_layout::GitLayoutProbe,
+) -> Result<MemoryIdentity, IdentityError> {
+    if cwd.to_string_lossy().trim().is_empty() {
+        return Err(IdentityError {
+            message: "resolveAutoIdentity: cwd must be a non-empty path string".into(),
+        });
+    }
+    let source = if mode == AutoIdentityMode::Git {
+        super::git_layout::resolve_linked_worktree_source(cwd, probe)
+    } else {
+        None
+    };
+    let root = source
+        .as_ref()
+        .map(|s| s.hash_source.clone())
+        .unwrap_or_else(|| resolve_from(Path::new("."), cwd));
+    let slug = source
+        .map(|s| s.slug_source)
+        .unwrap_or_else(|| base_name(&root));
+    let safe_slug = sanitize_to_slug(&slug);
+    let id = format!("{safe_slug}-{}", short_hash(&root.to_string_lossy()));
+    Ok(MemoryIdentity {
+        paths: build_identity_paths(&resolve_memory_root(env, cwd), &id),
+        id,
+        safe_slug,
+    })
+}
+
 /// Resolve the identity for a harness agent value and project directory.
 pub fn resolve_memory_identity(
     config_agent_value: Option<&str>,

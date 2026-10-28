@@ -12,10 +12,6 @@ Commands:
                                  List installed extensions from settings
   mhc config [--no-approve]
                                  Open TUI to enable/disable package resources (Tab switches scope)
-  mhc app-server [--listen <url>]
-                                 Serve agent sessions over the Codex app-server protocol
-  mhc app-server daemon <start|stop|status|restart> [--listen <url>]
-                                 Manage the app-server daemon
   mhc host <ensure|status|stop|handoff> [--launch-spec <file>]
                                  Get, inspect or end the shared RPC daemon (one JSON line per call)
   mhc auth <command>            Print credentials or check provider readiness
@@ -67,6 +63,8 @@ Options:
   --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading
   --export <file>                Export session file to HTML and exit
   --list-models [search]         List available models (with optional fuzzy search)
+  --print-prompt-sizes           Print first-turn sizes as JSON with zero model calls; MCP attach is skipped
+                                 (servers listed); third-party session_start hooks still run (named)
   --list-tips                    List all tips as JSON
   --verbose                      Force verbose startup (overrides quietStartup setting)
   --tui-mode <mode>              TUI mode: regular (default) or fullscreen
@@ -145,9 +143,8 @@ Examples:
   mhc --export ~/.omo/agent/sessions/--path--/session.jsonl
   mhc --export session.jsonl output.html
 
-  # Start Codex app-server protocol scaffolding
-  mhc app-server --listen stdio://
-  mhc app-server --listen ws://127.0.0.1:18991
+  # Start process integration over stdin/stdout
+  mhc --mode rpc
 
 Environment Variables:
   ANTHROPIC_AUTH_TOKEN             - Anthropic bearer auth token

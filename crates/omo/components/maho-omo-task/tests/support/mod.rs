@@ -1,3 +1,6 @@
+// Shared by independent test and example targets; each uses a subset of these fixtures.
+#![allow(dead_code)]
+
 use maho_ext_api::*;
 use std::{path::Path,sync::{Arc,Mutex}};
 struct Session;
@@ -7,6 +10,22 @@ struct Registry;
 impl ModelRegistry for Registry {
     fn get_all(&self)->Vec<Model> { vec![] } fn get_available(&self)->Vec<Model> { vec![] } fn find(&self,_:&str,_:&str)->Option<Model> { None } fn has_configured_auth(&self,_:&Model)->bool { false }
     fn get_api_key_for_provider<'a>(&'a self,_:&'a str)->ExtensionFuture<'a,Option<String>> { Box::pin(async { Ok(None) }) }
+}
+pub struct FakeModelRegistry;
+impl senpi_task::host::SenpiModelRegistry for FakeModelRegistry {
+    fn get_available(&self) -> Result<serde_json::Value, senpi_task::host::HostError> {
+        Ok(serde_json::json!([
+            {"provider": "faux", "id": "native"},
+            {"provider": "faux", "id": "faux-1"},
+            {"provider": "openai", "id": "tuned"}
+        ]))
+    }
+    fn find(&self, provider: &str, id: &str) -> Option<serde_json::Value> {
+        Some(serde_json::json!({"provider": provider, "id": id}))
+    }
+}
+pub fn fake_resolve_registry() -> maho_omo_task::planner::ResolveModelRegistry {
+    Arc::new(|| Some(Arc::new(FakeModelRegistry)))
 }
 #[derive(Default)]
 pub struct Ui {

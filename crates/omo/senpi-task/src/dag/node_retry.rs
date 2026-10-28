@@ -32,17 +32,48 @@ pub struct DagRetryOptions {
     pub prompt: Option<String>,
 }
 
-pub fn reenter_dag_run(options: DagSchedulerOptions) -> Result<DagRunReentry, DagStoreError> {
-    let current = read_record(&options.store, &options.initial_record.run_id)?
+pub fn reenter_dag_run(options: DagSchedulerOptions) -> Result<DagRunReentry, DagNodeControlError> {
+    let run_id = options.initial_record.run_id.clone();
+    let current = read_record(&options.store, &run_id)
+        .map_err(|error| {
+            control_error(
+                DagNodeControlErrorCode::InvalidArguments,
+                error.to_string(),
+                &run_id,
+                vec![],
+            )
+        })?
         .unwrap_or_else(|| options.initial_record.clone());
+    if current.pause.as_ref().is_some_and(|p| p.reason == "user_stop") {
+        return Err(control_error(
+            DagNodeControlErrorCode::RunPausedByUser,
+            "only the user's Resume may restart this run".to_string(),
+            &run_id,
+            vec![],
+        ));
+    }
     let mut record = current.clone();
     if matches!(
         current.status,
         DagRunStatus::Completed | DagRunStatus::Failed | DagRunStatus::Cancelled
     ) {
-        let journal = control_journal(&options, current.clone(), Default::default())?;
+        let journal = control_journal(&options, current.clone(), Default::default()).map_err(|error| {
+            control_error(
+                DagNodeControlErrorCode::InvalidArguments,
+                error.to_string(),
+                &run_id,
+                vec![],
+            )
+        })?;
         journal.append(DagRunEventPayload::RunResumed {
             generation: current.generation + 1,
+        }).map_err(|error| {
+            control_error(
+                DagNodeControlErrorCode::InvalidArguments,
+                error.to_string(),
+                &run_id,
+                vec![],
+            )
         })?;
         record = journal.snapshot();
     }
@@ -51,6 +82,13 @@ pub fn reenter_dag_run(options: DagSchedulerOptions) -> Result<DagRunReentry, Da
         pre_attached_tasks: None,
         schedule_retry: None,
         ..options
+    }).map_err(|error| {
+        control_error(
+            DagNodeControlErrorCode::InvalidArguments,
+            error.to_string(),
+            &run_id,
+            vec![],
+        )
     })?;
     let scheduler_for_run = Arc::clone(&scheduler);
     let _ = std::thread::Builder::new()
@@ -112,6 +150,49 @@ pub fn retry_dag_nodes(
             current = amend_retry_prompt(&options, &original, target, prompt.clone())?;
         }
     }
+    if current.status == DagRunStatus::Paused
+        && current.pause.as_ref().is_some_and(|p| p.reason == "user_stop")
+    {
+        let journal = control_journal(&options, current, Default::default()).map_err(|error| {
+            control_error(
+                DagNodeControlErrorCode::InvalidArguments,
+                error.to_string(),
+                &run_id,
+                vec![],
+            )
+        })?;
+        journal
+            .append(DagRunEventPayload::NodeRetryStaged {
+                node_ids: targets.clone(),
+            })
+            .map_err(|error| {
+                control_error(
+                    DagNodeControlErrorCode::InvalidArguments,
+                    error.to_string(),
+                    &run_id,
+                    vec![],
+                )
+            })?;
+        let staged = journal.snapshot();
+        let scheduler = create_dag_scheduler(DagSchedulerOptions {
+            initial_record: staged.clone(),
+            pre_attached_tasks: None,
+            schedule_retry: None,
+            ..options
+        })
+        .map_err(|error| {
+            control_error(
+                DagNodeControlErrorCode::InvalidArguments,
+                error.to_string(),
+                &run_id,
+                vec![],
+            )
+        })?;
+        return Ok(DagRunReentry {
+            record: staged,
+            scheduler,
+        });
+    }
     let journal = control_journal(&options, current, Default::default()).map_err(|error| {
         control_error(
             DagNodeControlErrorCode::InvalidArguments,
@@ -132,14 +213,6 @@ pub fn retry_dag_nodes(
     reenter_dag_run(DagSchedulerOptions {
         initial_record: snapshot,
         ..options
-    })
-    .map_err(|error| {
-        control_error(
-            DagNodeControlErrorCode::InvalidArguments,
-            error.to_string(),
-            &run_id,
-            vec![],
-        )
     })
 }
 
@@ -273,7 +346,7 @@ fn default_targets(record: &DagRunRecordV1) -> Vec<DagNodeId> {
     targets
 }
 
-fn skipped_dependents(record: &DagRunRecordV1, seeds: &[DagNodeId]) -> Vec<DagNode> {
+pub fn skipped_dependents(record: &DagRunRecordV1, seeds: &[DagNodeId]) -> Vec<DagNode> {
     let mut selected: BTreeSet<_> = seeds.iter().cloned().collect();
     let mut restored = Vec::new();
     loop {

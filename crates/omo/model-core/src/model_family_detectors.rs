@@ -144,9 +144,29 @@ pub fn is_kimi_k2_code_model(model: &str) -> bool {
     is_kimi_k27_model(model) || is_kimi_k28_model(model)
 }
 
+/// Kimi K3.1: `k3.1-pro` / `k3.1-pro-highspeed` on Kimi Code, `kimi-k3.1-pro` /
+/// `kimi-k3.1-pro-highspeed` on the Kimi API and gateways, `kimi-k3-1-pro` on Venice, and the
+/// dotless `k3p1`.
+/// <https://www.kimi.com/code/docs/en/kimi-code/models.html> and
+/// <https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart> (checked 2026-10-24).
+/// K3.1 stays inside the K3 family ([`is_kimi_k3_model`] is true for it); prompt routing checks
+/// K3.1 first.
+#[must_use]
+pub fn is_kimi_k31_model(model: &str) -> bool {
+    static KIMI_K31: LazyLock<Regex> =
+        LazyLock::new(|| regex(r"(?:^|[/._-])(?:kimi-)?k3(?:[._-]|p)1(?:$|[/._:-])"));
+    static WHITESPACE_RUN: LazyLock<Regex> = LazyLock::new(|| regex(r"\s+"));
+    let lowered = extract_model_name(model).to_lowercase();
+    let model_name = WHITESPACE_RUN.replace_all(&lowered, "-");
+    KIMI_K31.is_match(&model_name)
+}
+
 #[must_use]
 pub fn is_kimi_k3_model(model: &str) -> bool {
     static K3_SUFFIX: LazyLock<Regex> = LazyLock::new(|| regex(r"k3[-.]?p?[0-9]*$"));
+    if is_kimi_k31_model(model) {
+        return true;
+    }
     let model_name = extract_model_name(model).to_lowercase();
     model_name.contains("kimi-k3") || K3_SUFFIX.is_match(&model_name)
 }

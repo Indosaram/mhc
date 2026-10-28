@@ -69,10 +69,20 @@ pub struct TaskToolDeps {
 }
 
 impl TaskToolDeps {
-    pub fn start_task(&self, manager: &crate::manager::TaskManager, spec: &ManagerStartSpec, tools: Option<&[String]>) -> crate::manager::types::StartResult {
+    pub fn start_task(
+        &self,
+        manager: &crate::manager::TaskManager,
+        spec: &ManagerStartSpec,
+        tools: Option<&[String]>,
+    ) -> crate::manager::types::StartResult {
         match (&self.start, tools.filter(|names| !names.is_empty())) {
             (Some(start), Some(names)) => start(spec, names),
-            (None, Some(_)) => crate::manager::types::StartResult::PlanUnresolved(crate::manager::types::PlanResolutionError::new(crate::manager::types::PlanResolutionCode::InvalidTarget, "Kernel tools require a live parent capability resolver.")),
+            (None, Some(_)) => crate::manager::types::StartResult::PlanUnresolved(
+                crate::manager::types::PlanResolutionError::new(
+                    crate::manager::types::PlanResolutionCode::InvalidTarget,
+                    "Kernel tools require a live parent capability resolver.",
+                ),
+            ),
             _ => manager.start(spec),
         }
     }
@@ -127,6 +137,7 @@ pub fn build_start_spec(
     parent_session_id: &str,
     deps: &TaskToolDeps,
     cwd: &str,
+    parent_model: Option<&crate::tools::task::foreground_wait::ParentModel>,
 ) -> ResolvedManagerStartSpec {
     let ancestry = deps
         .resolve_ancestry
@@ -190,6 +201,7 @@ pub fn build_start_spec(
         depth: TryFrom::try_from(depth).unwrap_or_default(),
         category,
         subagent_type,
+        parent_model: parent_model.map(|model| format!("{}/{}", model.provider, model.id)),
         model: params.model.clone(),
         name: params.name.clone(),
         description: params.description.clone(),

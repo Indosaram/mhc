@@ -12,7 +12,7 @@ async fn saves_image_reports_path_and_records_revised_prompts() {
     let stub = Arc::new(support::StubImages {
         images: 1,
         revised_prompts: std::sync::Mutex::new(vec!["A richly detailed red fox".into()]),
-        usage: Some(Usage { input: 12, output: 34, cache_read: 0, cache_write: 0, total_tokens: 46, cost: UsageCost { input: 0.1, output: 0.2, cache_read: 0.0, cache_write: 0.0, total: 0.3 }, ..Default::default() }),
+        usage: Some(Usage { context_usage: None, input: 12, output: 34, cache_read: 0, cache_write: 0, total_tokens: 46, cost: UsageCost { input: 0.1, output: 0.2, cache_read: 0.0, cache_write: 0.0, total: 0.3 }, ..Default::default() }),
         ..Default::default()
     });
     let result = support::run(root.path(), true, stub, "call-1", json!({"prompt":"a red fox","output_path":"art/fox.png"})).await;

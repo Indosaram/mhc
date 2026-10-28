@@ -138,6 +138,7 @@ fn test_render_person_targets_with_reinforcement() {
 
     let records = vec![
         FactsExtractionRecord::Person {
+            receipt: None,
             person: FactsPersonReference {
                 name: "Mina Lee".to_string(),
                 aliases: vec![],
@@ -146,6 +147,7 @@ fn test_render_person_targets_with_reinforcement() {
             date: "2026-08-10".to_string(),
         },
         FactsExtractionRecord::Person {
+            receipt: None,
             person: FactsPersonReference {
                 name: "Mina Lee".to_string(),
                 aliases: vec![],

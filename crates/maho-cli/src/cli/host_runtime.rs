@@ -1,6 +1,6 @@
 //! Port of senpi `packages/coding-agent/src/main.ts` `createCliRuntimeFactory` and its
 //! `CliRuntimeConfiguration` argument: the CLI-owned session-runtime factory every mode mounts
-//! (print, rpc, interactive, app-server and the shared session host).
+//! (print, rpc, interactive and the shared session host).
 //!
 //! Adaptation (plan D-M5): `createAgentSessionRuntime` (senpi `core/agent-session-runtime.ts`)
 //! builds its services and its session from one settings manager inside maho-core. maho-core exposes
@@ -189,7 +189,6 @@ impl CliRuntimeConfiguration {
             Some("print") => AppMode::Print,
             Some("json") => AppMode::Json,
             Some("rpc") => AppMode::Rpc,
-            Some("app-server") => AppMode::AppServer,
             other => return Err(format!("Invalid worker configuration appMode: {other:?}")),
         };
         Ok(Self {
@@ -315,17 +314,14 @@ impl CliRuntimeConfiguration {
             },
             initial_thinking_level: self.thinking.clone(),
             auto_title: self.auto_title_sessions,
+            prompt_size_inventory: None,
         }
     }
 }
 
 /// senpi `toProjectTrustMode`.
 pub fn to_project_trust_mode(mode: AppMode) -> AppMode {
-    if mode == AppMode::AppServer {
-        AppMode::Print
-    } else {
-        mode
-    }
+    mode
 }
 
 /// senpi `createCliRuntimeFactory`'s project-trust decision for one runtime cwd: a cached decision
@@ -723,7 +719,6 @@ pub async fn mount_agent_session_runtime(
             mode: Some(match config.app_mode {
                 AppMode::Interactive => maho_ext_api::ExtensionMode::Tui,
                 AppMode::Rpc => maho_ext_api::ExtensionMode::Rpc,
-                AppMode::AppServer => maho_ext_api::ExtensionMode::AppServer,
                 AppMode::Json => maho_ext_api::ExtensionMode::Json,
                 AppMode::Print => maho_ext_api::ExtensionMode::Print,
             }),
@@ -747,7 +742,7 @@ pub async fn mount_agent_session_runtime(
     })
 }
 
-/// The session factory shape the host and app-server mount: one call per session, keyed by cwd and
+/// The session factory shape the host mounts: one call per session, keyed by cwd and
 /// session manager, returning a fully mounted session.
 pub type CliSessionFactory = Arc<
     dyn Fn(
@@ -1144,17 +1139,6 @@ pub struct CliInitialModel {
     pub thinking_selection: Option<maho_ai::types::ThinkingSelection>,
 }
 
-fn provenance_str(provenance: maho_core::model_resolver::InitialModelProvenance) -> &'static str {
-    use maho_core::model_resolver::InitialModelProvenance as P;
-    match provenance {
-        P::Cli => "cli",
-        P::Scoped => "scoped",
-        P::Settings => "settings",
-        P::ProviderDefault => "provider-default",
-        P::FirstAvailable => "first-available",
-    }
-}
-
 pub async fn resolve_cli_initial_model(
     creation_model: Option<(String, String)>,
     thinking: Option<maho_ai::types::ThinkingLevel>,
@@ -1203,7 +1187,7 @@ pub async fn resolve_cli_initial_model(
     Ok(CliInitialModel {
         model: resolved.parsed.model,
         thinking_level: resolved.parsed.thinking_level,
-        provenance: Some(provenance_str(resolved.provenance)),
+        provenance: Some(maho_core::model_resolver::initial_model_provenance_str(resolved.provenance)),
         thinking_selection: resolved.parsed.thinking_selection,
     })
 }

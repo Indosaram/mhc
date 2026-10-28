@@ -4,7 +4,7 @@ use crate::{
     host_reservations::read_process_start_time,
 };
 use serde_json::Value;
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RegisteredHost {
     pub pid: u32,
     pub process_start_time: Option<String>,

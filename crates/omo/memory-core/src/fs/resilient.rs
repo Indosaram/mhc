@@ -24,6 +24,46 @@ pub fn metadata(path: &Path) -> std::io::Result<Metadata> {
     retry_on_eintr(|| std::fs::metadata(path))
 }
 
+/// Metadata without following symlinks.
+pub fn symlink_metadata(path: &Path) -> std::io::Result<Metadata> {
+    retry_on_eintr(|| std::fs::symlink_metadata(path))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileSystemStatistics {
+    pub filesystem_type: i64,
+}
+
+/// Filesystem type, used to reject remote filesystems for local coordination.
+#[cfg(unix)]
+pub fn statfs(path: &Path) -> std::io::Result<FileSystemStatistics> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    retry_on_eintr(|| {
+        let mut info = std::mem::MaybeUninit::<libc::statfs>::uninit();
+        // SAFETY: the C string is terminated and info points to writable statfs storage;
+        // initialization is read only after statfs reports success.
+        #[allow(unsafe_code)]
+        unsafe {
+            if libc::statfs(path.as_ptr(), info.as_mut_ptr()) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // `statfs.f_type` is i64 on Linux but u32 on macOS; the conversion is a no-op only on Linux.
+            #[allow(clippy::useless_conversion)]
+            let filesystem_type = i64::from(info.assume_init().f_type);
+            Ok(FileSystemStatistics { filesystem_type })
+        }
+    })
+}
+#[cfg(not(unix))]
+pub fn statfs(_path: &Path) -> std::io::Result<FileSystemStatistics> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "filesystem type probing unavailable",
+    ))
+}
+
 /// True when the path exists; transient EINTR is retried rather than misread as missing.
 pub fn exists(path: &Path) -> bool {
     metadata(path).is_ok()

@@ -136,7 +136,7 @@ fn to_provider_model_config(
         } else {
             vec![InputModality::Text]
         },
-        cost: ModelCost {
+        cost: ModelCost { unknown: None,
             effective_rates: None,
             input: 0.0,
             output: 0.0,

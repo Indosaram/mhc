@@ -59,11 +59,16 @@ pub struct ManagedChildEvent {
     pub input: Option<Value>,
     pub result: Option<Value>,
     pub is_error: Option<bool>,
+    pub source: Option<String>,
+    pub model: Option<Value>,
+    pub thinking_level: Option<String>,
+    pub effect_id: Option<String>,
     pub to: Option<String>,
     /// `retry_fallback_*` telemetry strings (`from`, `chainKey`, `reason`, `lastError`).
     pub from: Option<String>,
     pub chain_key: Option<String>,
     pub reason: Option<String>,
+    pub limit: Option<String>,
     pub last_error: Option<String>,
 }
 

@@ -1106,6 +1106,34 @@ fn is_tool_loop_continuation(messages: &[Value]) -> bool {
     tail_is_user_with_tool_result && preceding_is_assistant_with_tool_use
 }
 
+fn mark_system_message_cache_checkpoint(message: &mut Value, cache_control: &Value) {
+    if let Some(block) = message
+        .get_mut("content")
+        .and_then(Value::as_array_mut)
+        .and_then(|blocks| blocks.last_mut())
+        && matches!(
+            block.get("type").and_then(Value::as_str),
+            Some("text" | "tool_addition" | "tool_removal")
+        )
+    {
+        block["cache_control"] = cache_control.clone();
+    }
+}
+
+fn mark_assistant_message_cache_checkpoint(blocks: &mut [Value], cache_control: &Value) -> bool {
+    for block in blocks.iter_mut().rev() {
+        match block.get("type").and_then(Value::as_str) {
+            Some("text" | "tool_use") => {
+                block["cache_control"] = cache_control.clone();
+                return true;
+            }
+            Some("thinking" | "redacted_thinking") => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
 fn mark_user_message_cache_checkpoint(message: &mut Value, cache_control: &Value) -> bool {
     let Some(object) = message.as_object_mut() else {
         return false;
@@ -1215,8 +1243,7 @@ fn convert_tool_result(
     )
 }
 
-// The TS signature takes the same eight parameters positionally; boxing them into a struct would
-// diverge from the source for no behavioral gain (same annotation as api/openai-images.ts's port).
+// The upstream signature takes its adapter parameters positionally; retain the same shape.
 #[allow(clippy::too_many_arguments)]
 fn convert_messages(
     transformed_messages: &[Message],
@@ -1228,7 +1255,9 @@ fn convert_messages(
     normalize_tool_name: &dyn Fn(&str) -> String,
     managed_provider: Option<&str>,
     native_tool_changes: bool,
+    stable_prefix_checkpoint_limit: usize,
 ) -> (Vec<Value>, BTreeMap<usize, String>) {
+    let mut stable_prefix_checkpoints = 0;
     let mut params: Vec<Value> = Vec::new();
     let mut pending_system_messages = Vec::new();
     let mut assistant_levels: BTreeMap<usize, String> = BTreeMap::new();
@@ -1412,6 +1441,13 @@ fn convert_messages(
                     continue;
                 }
                 let message_index = params.len();
+                if let Some(cache_control) = cache_control
+                    && assistant.prompt_cache_breakpoint == Some(true)
+                    && stable_prefix_checkpoints < stable_prefix_checkpoint_limit
+                    && mark_assistant_message_cache_checkpoint(&mut blocks, cache_control)
+                {
+                    stable_prefix_checkpoints += 1;
+                }
                 params.push(json!({ "role": "assistant", "content": blocks }));
                 if let Some(managed_provider) = managed_provider
                     && assistant.api == "anthropic-messages"
@@ -1488,8 +1524,13 @@ fn convert_messages(
     if let Some(cache_control) = cache_control
         && !params.is_empty()
     {
-        let retain_preceding_checkpoint = is_tool_loop_continuation(&params);
         let last_index = params.len() - 1;
+        if params[last_index].get("role").and_then(Value::as_str) == Some("system") {
+            mark_system_message_cache_checkpoint(&mut params[last_index], cache_control);
+            return (params, assistant_levels);
+        }
+        let retain_preceding_checkpoint =
+            stable_prefix_checkpoints == 0 && is_tool_loop_continuation(&params);
         if mark_user_message_cache_checkpoint(&mut params[last_index], cache_control)
             && retain_preceding_checkpoint
         {
@@ -1839,6 +1880,19 @@ fn build_params(
             ..TransformMessagesOptions::default()
         },
     );
+    let stable_prefix_markers = transformed_messages.iter().filter(|message| {
+        matches!(message, Message::Assistant(assistant) if assistant.prompt_cache_breakpoint == Some(true))
+    }).count();
+    let system_holds_checkpoint = is_oauth_token
+        || context
+            .system_prompt
+            .as_ref()
+            .is_some_and(|text| !text.is_empty());
+    let stable_prefix_checkpoint_limit = if stable_prefix_markers >= 2 && system_holds_checkpoint {
+        2
+    } else {
+        stable_prefix_markers.min(1)
+    };
     let normalize_tool_name = |name: &str| {
         if is_oauth_token {
             to_claude_code_name(name)
@@ -1905,6 +1959,7 @@ fn build_params(
             .filter(|supported| *supported)
             .map(|_| model.provider.as_str()),
         native_tool_changes,
+        stable_prefix_checkpoint_limit,
     );
     let mut messages = if model
         .compat
@@ -1926,6 +1981,14 @@ fn build_params(
     {
         let mut index = messages.len() as i64 - 1;
         while index >= 0 {
+            if messages[index as usize].get("role").and_then(Value::as_str) == Some("system")
+                && messages[index as usize]
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|blocks| !blocks.is_empty())
+            {
+                break;
+            }
             if messages[index as usize].get("role").and_then(Value::as_str) == Some("user") {
                 mark_user_message_cache_checkpoint(&mut messages[index as usize], cache_control);
                 break;
@@ -1946,23 +2009,24 @@ fn build_params(
         params.insert("betas".into(), json!(beta_features));
     }
 
+    let initial_system_text = context.system_prompt.as_deref().unwrap_or_default();
     if is_oauth_token {
         let mut system: Vec<Value> = Vec::new();
         let mut identity = Map::new();
         identity.insert("type".into(), Value::from("text"));
         identity.insert("text".into(), Value::from(""));
-        if context.system_prompt.is_none()
+        if initial_system_text.is_empty()
             && let Some(cache_control) = cache_control.as_ref()
         {
             identity.insert("cache_control".into(), cache_control.clone());
         }
         system.push(Value::Object(identity));
-        if let Some(system_prompt) = &context.system_prompt {
+        if !initial_system_text.is_empty() {
             let mut block = Map::new();
             block.insert("type".into(), Value::from("text"));
             block.insert(
                 "text".into(),
-                Value::from(sanitize_surrogates(system_prompt)),
+                Value::from(sanitize_surrogates(initial_system_text)),
             );
             if let Some(cache_control) = cache_control.as_ref() {
                 block.insert("cache_control".into(), cache_control.clone());
@@ -1970,12 +2034,12 @@ fn build_params(
             system.push(Value::Object(block));
         }
         params.insert("system".into(), Value::Array(system));
-    } else if let Some(system_prompt) = &context.system_prompt {
+    } else if !initial_system_text.is_empty() {
         let mut block = Map::new();
         block.insert("type".into(), Value::from("text"));
         block.insert(
             "text".into(),
-            Value::from(sanitize_surrogates(system_prompt)),
+            Value::from(sanitize_surrogates(initial_system_text)),
         );
         if let Some(cache_control) = cache_control.as_ref() {
             block.insert("cache_control".into(), cache_control.clone());
@@ -1996,7 +2060,7 @@ fn build_params(
             is_oauth_token,
             compat.supports_eager_tool_input_streaming,
             compat.supports_strict_tools,
-            if compat.supports_cache_control_on_tools {
+            if compat.supports_cache_control_on_tools && stable_prefix_checkpoint_limit < 2 {
                 cache_control.as_ref()
             } else {
                 None
@@ -2753,6 +2817,7 @@ fn create_output(model: &Model, options: &StreamOptions) -> AssistantMessage {
         timing: None,
         thinking_level: None,
         provider_diagnostic: None,
+        prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
         content: Vec::new(),
         api: model.api.clone(),
@@ -4107,5 +4172,167 @@ mod forced_choice_tests {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod cache_checkpoint_tests {
+    use super::*;
+
+    fn model() -> Model {
+        crate::models_generated::get_builtin_provider_models("anthropic")
+            .expect("models")
+            .into_iter()
+            .find(|model| model.id == "claude-sonnet-4-5")
+            .expect("sonnet")
+            .clone()
+    }
+
+    // senpi test/anthropic-cache-checkpoint-stability.test.ts, senpi#3242.
+    #[test]
+    fn stable_prefix_boundaries_share_the_four_checkpoint_budget() {
+        for (marked, system, expected_ids, tools_marked, expected_count) in [
+            (
+                vec!["toolu_b"],
+                Some("You are concise."),
+                vec!["toolu_b"],
+                true,
+                4,
+            ),
+            (
+                vec!["toolu_a", "toolu_c"],
+                Some("You are concise."),
+                vec!["toolu_a", "toolu_c"],
+                false,
+                4,
+            ),
+            (vec!["toolu_a", "toolu_c"], None, vec!["toolu_a"], true, 3),
+            (vec![], Some("You are concise."), vec![], true, 4),
+        ] {
+            let model = model();
+            let mut context = Context {
+                system_prompt: system.map(str::to_owned),
+                ..Context::default()
+            };
+            context
+                .messages
+                .push(Message::User(crate::types::UserMessage {
+                    content: UserContent::Text("Inspect the repository".into()),
+                    timestamp: 1,
+                }));
+            for id in ["toolu_a", "toolu_b", "toolu_c", "toolu_d"] {
+                let mut assistant = create_output(&model, &StreamOptions::default());
+                assistant.prompt_cache_breakpoint = marked.contains(&id).then_some(true);
+                assistant.content = vec![ContentBlock::ToolCall(crate::types::ToolCall {
+                    id: id.into(),
+                    name: "read".into(),
+                    arguments: Map::new(),
+                    incomplete: None,
+                    error_message: None,
+                    thought_signature: None,
+                    namespace: None,
+                })];
+                assistant.stop_reason = StopReason::ToolUse;
+                context
+                    .messages
+                    .push(Message::Assistant(Box::new(assistant)));
+                context
+                    .messages
+                    .push(Message::ToolResult(ToolResultMessage {
+                        tool_call_id: id.into(),
+                        tool_name: "read".into(),
+                        content: vec![ContentBlock::text("file")],
+                        details: None,
+                        usage: None,
+                        nested_calls: None,
+                        added_tool_names: None,
+                        is_error: false,
+                        timestamp: 1,
+                    }));
+            }
+            context.tools = Some(vec![Tool {
+                name: "read".into(),
+                description: "Read a file".into(),
+                parameters: json!({"type":"object","properties":{}}),
+                output_schema: None,
+                freeform: None,
+                constrained_sampling: None,
+            }]);
+            let params = build_anthropic_warm_prompt_cache_params(&model, &context, None);
+            let blocks: Vec<&Value> = params["messages"]
+                .as_array()
+                .expect("messages")
+                .iter()
+                .filter_map(|message| message["content"].as_array())
+                .flatten()
+                .collect();
+            let marked_ids: Vec<&str> = blocks
+                .iter()
+                .filter(|block| block["type"] == "tool_use" && block.get("cache_control").is_some())
+                .filter_map(|block| block["id"].as_str())
+                .collect();
+            assert_eq!(marked_ids, expected_ids);
+            let result_ids: Vec<&str> = blocks
+                .iter()
+                .filter(|block| {
+                    block["type"] == "tool_result" && block.get("cache_control").is_some()
+                })
+                .filter_map(|block| block["tool_use_id"].as_str())
+                .collect();
+            assert_eq!(
+                result_ids,
+                if marked.is_empty() {
+                    vec!["toolu_c", "toolu_d"]
+                } else {
+                    vec!["toolu_d"]
+                }
+            );
+            let tools = params["tools"].as_array().expect("tools");
+            assert_eq!(
+                tools.iter().any(|tool| tool.get("cache_control").is_some()),
+                tools_marked
+            );
+            let count = blocks
+                .iter()
+                .filter(|block| block.get("cache_control").is_some())
+                .count()
+                + tools
+                    .iter()
+                    .filter(|tool| tool.get("cache_control").is_some())
+                    .count()
+                + params
+                    .get("system")
+                    .and_then(Value::as_array)
+                    .map_or(0, |blocks| {
+                        blocks
+                            .iter()
+                            .filter(|block| block.get("cache_control").is_some())
+                            .count()
+                    });
+            assert_eq!(count, expected_count);
+        }
+    }
+
+    #[test]
+    fn assistant_checkpoint_scans_native_blocks_but_never_crosses_thinking() {
+        let cache = json!({"type":"ephemeral"});
+        for barrier in ["thinking", "redacted_thinking"] {
+            let mut blocks = vec![
+                json!({"type":"text","text":"prefix"}),
+                json!({"type":barrier}),
+            ];
+            assert!(!mark_assistant_message_cache_checkpoint(
+                &mut blocks,
+                &cache
+            ));
+            assert!(blocks[0].get("cache_control").is_none());
+        }
+        let mut blocks = vec![
+            json!({"type":"text","text":"prefix"}),
+            json!({"type":"server_tool_use"}),
+        ];
+        assert!(mark_assistant_message_cache_checkpoint(&mut blocks, &cache));
+        assert_eq!(blocks[0]["cache_control"], cache);
+        assert!(blocks[1].get("cache_control").is_none());
     }
 }

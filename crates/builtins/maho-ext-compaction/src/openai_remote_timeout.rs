@@ -68,6 +68,8 @@ pub async fn run_with_remote_deadline_report<T, E, F: Future<Output = Result<T, 
     }
 }
 
+const TOTAL_BUDGET: Duration = Duration::from_millis(maho_core::compaction::stream_watchdog::SUMMARIZATION_TOTAL_BUDGET_MS as u64);
+
 pub struct RemoteCompactionDeadline {
     deadline: tokio::time::Instant,
     attempt_budget: Duration,
@@ -78,8 +80,15 @@ impl Clone for RemoteCompactionDeadline {
 }
 
 impl RemoteCompactionDeadline {
+    /// senpi `createRemoteCompactionDeadline`: every attempt shares one deadline of
+    /// `max(SUMMARIZATION_TOTAL_BUDGET_MS, attemptBudget)`.
     pub fn new(attempt_budget: Duration) -> Self {
-        Self { deadline: tokio::time::Instant::now() + attempt_budget, attempt_budget }
+        Self { deadline: tokio::time::Instant::now() + attempt_budget.max(TOTAL_BUDGET), attempt_budget }
+    }
+
+    /// Same shared deadline, with a different per-attempt budget.
+    pub fn with_attempt_budget(&self, attempt_budget: Duration) -> Self {
+        Self { deadline: self.deadline, attempt_budget }
     }
 
     pub fn remaining(&self) -> Duration { self.deadline.saturating_duration_since(tokio::time::Instant::now()) }
@@ -92,13 +101,17 @@ mod tests {
     use super::*;
 
     #[tokio::test(start_paused = true)]
-    async fn deadline_budget_is_bounded_by_the_configured_duration() {
-        // Given a deadline with a fixed virtual-time budget.
+    async fn deadline_is_shared_across_attempts_and_floored_at_the_total_budget() {
+        // Given a small per-attempt budget.
         let deadline = RemoteCompactionDeadline::new(Duration::from_millis(20));
-        assert!(deadline.next_attempt() <= Duration::from_millis(20));
-        // When the budget expires.
+        assert_eq!(deadline.next_attempt(), Duration::from_millis(20));
+        // When the attempt budget has elapsed, the shared 900s deadline still has room.
         tokio::time::advance(Duration::from_millis(25)).await;
-        // Then no attempt can exceed the remaining budget.
+        assert_eq!(deadline.next_attempt(), Duration::from_millis(20));
+        // A larger attempt budget stretches the deadline past the total budget.
+        assert_eq!(RemoteCompactionDeadline::new(Duration::from_secs(1000)).remaining(), Duration::from_secs(1000));
+        // Then once the total budget is spent no attempt can run.
+        tokio::time::advance(Duration::from_secs(900)).await;
         assert_eq!(deadline.next_attempt(), Duration::ZERO);
     }
 

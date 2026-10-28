@@ -74,9 +74,20 @@ impl GitSyncRepo {
     ) -> EngineResult<String> {
         let result = self.exec.run(
             argv,
-            &self.options(env, stdin.map(|s| s.as_bytes().to_vec())),
+            &self.options(env.clone(), stdin.map(|s| s.as_bytes().to_vec())),
         )?;
         if result.code != 0 {
+            if result
+                .stderr
+                .to_ascii_lowercase()
+                .contains("unable to create")
+                && result.stderr.contains(".lock")
+            {
+                if recover_stranded_locks(&self.root, &self.git_dir)? {
+                    return self.run(argv, env, stdin);
+                }
+                return Err(stranded_lock(&self.git_dir, &result.stderr));
+            }
             let command = argv.first().map_or("", String::as_str);
             return Err(SyncCommitError(format!(
                 "git {command} failed ({}): {}",
@@ -186,12 +197,18 @@ impl SyncRepo for GitSyncRepo {
                 &self.options(BTreeMap::new(), None),
             )?;
             if moved.code != 0 {
+                if moved
+                    .stderr
+                    .to_ascii_lowercase()
+                    .contains("unable to create")
+                    && moved.stderr.contains(".lock")
+                {
+                    if recover_stranded_locks(&self.root, &self.git_dir)? {
+                        continue;
+                    }
+                    return Err(stranded_lock(&self.git_dir, &moved.stderr));
+                }
                 continue;
-            }
-            if !paths.is_empty() {
-                let mut reset = args(&["reset", "-q", "HEAD", "--"]);
-                reset.extend(paths.iter().cloned());
-                self.run(&reset, BTreeMap::new(), None)?;
             }
             return Ok(commit);
         }
@@ -201,12 +218,26 @@ impl SyncRepo for GitSyncRepo {
         .into())
     }
 
+    fn sync_index(&self, paths: &[String]) -> EngineResult<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut reset = args(&["reset", "-q", "HEAD", "--"]);
+        reset.extend(paths.iter().cloned());
+        self.run(&reset, BTreeMap::new(), None)?;
+        Ok(())
+    }
+
     fn has_sync_commit(&self, range: &str) -> EngineResult<bool> {
         if self.head_id()?.is_none() {
             return Ok(false);
         }
         let trailers = self.run(
             &args(&[
+                "-c",
+                "log.showSignature=false",
+                "-c",
+                "log.decorate=false",
                 "log",
                 &format!("-{TRAILER_SCAN}"),
                 "--format=%(trailers:key=Sync-Seq,valueonly)",
@@ -222,3 +253,135 @@ impl SyncRepo for GitSyncRepo {
 #[cfg(test)]
 #[path = "git_sync_repo_tests.rs"]
 mod tests;
+
+fn stranded_lock(git_dir: &Path, stderr: &str) -> super::super::error::EngineError {
+    let paths = stderr
+        .split('\'')
+        .filter(|part| part.ends_with(".lock"))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    super::super::error::EngineError::StrandedLock(if paths.is_empty() {
+        vec![git_dir.join("index.lock").to_string_lossy().into_owned()]
+    } else {
+        paths
+    })
+}
+
+fn recover_stranded_locks(root: &Path, git_dir: &Path) -> EngineResult<bool> {
+    use crate::locks::{is_lock_owner_proven_dead, memory_writer_lock_path, parse_lock_record};
+    let Some(identity) = root.parent().filter(|p| {
+        root.file_name().is_some_and(|n| n == "repo")
+            && p.parent()
+                .and_then(Path::file_name)
+                .is_some_and(|n| n == "agents")
+    }) else {
+        return Ok(false);
+    };
+    let lock = memory_writer_lock_path(&identity.join("runtime/locks"));
+    let Some(current) = std::fs::read_to_string(&lock)
+        .ok()
+        .and_then(|raw| parse_lock_record(&raw))
+    else {
+        return Ok(false);
+    };
+    if current.pid != std::process::id() {
+        return Ok(false);
+    }
+    let Some(previous) = crate::locks::acquire::proven_dead_takeover_for(&lock, &current.nonce)
+    else {
+        return Ok(false);
+    };
+    if !is_lock_owner_proven_dead(&previous) {
+        return Ok(false);
+    }
+    let mut candidates = Vec::new();
+    fn collect(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let meta = entry.file_type()?;
+            if recursive && meta.is_dir() {
+                collect(&entry.path(), true, out)?;
+            } else if meta.is_file() && entry.file_name().to_string_lossy().ends_with(".lock") {
+                out.push(entry.path());
+            }
+        }
+        Ok(())
+    }
+    for name in ["index.lock", "HEAD.lock", "packed-refs.lock", "config.lock"] {
+        let path = git_dir.join(name);
+        if path.is_file() {
+            candidates.push(path);
+        }
+    }
+    if git_dir.join("refs").is_dir() {
+        collect(&git_dir.join("refs"), true, &mut candidates)?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let before: Vec<_> = candidates
+            .iter()
+            .map(|p| std::fs::symlink_metadata(p).map(|m| (m.ino(), m.mtime(), m.mtime_nsec())))
+            .collect::<Result<_, _>>()?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let Ok(processes) = std::fs::read_dir("/proc") else {
+            return Ok(false);
+        };
+        for process in processes {
+            let Ok(process) = process else {
+                return Ok(false);
+            };
+            let Some(pid) = process
+                .file_name()
+                .to_str()
+                .and_then(|n| n.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if pid == std::process::id() {
+                continue;
+            }
+            let proc = process.path();
+            let Ok(meta) = std::fs::metadata(&proc) else {
+                continue;
+            };
+            if meta.uid() != std::fs::metadata("/proc/self")?.uid() {
+                continue;
+            }
+            let cwd = match std::fs::read_link(proc.join("cwd")) {
+                Ok(path) => path,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return Ok(false),
+            };
+            if cwd.starts_with(root) {
+                return Ok(false);
+            }
+            let Ok(fds) = std::fs::read_dir(proc.join("fd")) else {
+                return Ok(false);
+            };
+            for fd in fds {
+                let Ok(fd) = fd else {
+                    return Ok(false);
+                };
+                if std::fs::read_link(fd.path())
+                    .ok()
+                    .is_some_and(|p| candidates.contains(&p))
+                {
+                    return Ok(false);
+                }
+            }
+        }
+        for (path, snapshot) in candidates.iter().zip(before) {
+            let m = std::fs::symlink_metadata(path)?;
+            if (m.ino(), m.mtime(), m.mtime_nsec()) != snapshot {
+                return Ok(false);
+            }
+        }
+        for path in &candidates {
+            std::fs::remove_file(path)?;
+        }
+        Ok(!candidates.is_empty())
+    }
+    #[cfg(not(target_os = "linux"))]
+    Ok(false)
+}

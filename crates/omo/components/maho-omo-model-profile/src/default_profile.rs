@@ -48,7 +48,7 @@ mod tests {
             (vec!["anthropic/claude-opus-5-5"], "daily-normal", 1),
             (vec!["anthropic/claude-fable-5-1"], "daily-heavy", 2),
             (vec!["chatgpt-subscription/gpt-6.1-sol"], "geeky-normal", 3),
-            (vec!["chatgpt-subscription/gpt-6-astra"], "geeky-heavy", 4),
+            (vec!["chatgpt-subscription/gpt-6-astra"], "geeky-normal", 3),
             (vec![], "daily-normal", 4),
         ] {
             let available: Vec<String> = models.into_iter().map(str::to_owned).collect();
@@ -58,7 +58,7 @@ mod tests {
                 |active, mut probes| async move {
                     probes.excluded_selectors.insert(active.to_owned());
                     let resolution = resolve_model_profile(&ResolveModelProfileInput {
-                        profiles: None, active, available_models: available,
+                        profiles: None, active, available_models: available, custom_providers: None,
                     });
                     (resolution, probes)
                 },
@@ -73,5 +73,32 @@ mod tests {
             assert_eq!(id, expected);
             assert_eq!(probes.excluded_selectors.len(), attempted);
         }
+
+        // When geeky-normal fails to resolve, the walk falls through to geeky-heavy.
+        let available = vec!["chatgpt-subscription/gpt-6-astra".to_owned()];
+        let profiles = serde_json::json!({
+            "geeky-normal": { "models": ["openai/nonexistent"] }
+        });
+        let (result, probes) = resolve_default_model_profile(
+            new_probe_state(),
+            |active, mut probes| {
+                let profiles = &profiles;
+                let available = &available;
+                async move {
+                    probes.excluded_selectors.insert(active.to_owned());
+                    let resolution = resolve_model_profile(&ResolveModelProfileInput {
+                        profiles: Some(profiles), active, available_models: available, custom_providers: None,
+                    });
+                    (resolution, probes)
+                }
+            },
+            |resolution| resolution,
+        ).await;
+        let id = match &result {
+            ModelProfileResolution::Resolved { profile, .. } => profile.id.as_str(),
+            _ => panic!("expected resolved"),
+        };
+        assert_eq!(id, "geeky-heavy");
+        assert_eq!(probes.excluded_selectors.len(), 4);
     }
 }

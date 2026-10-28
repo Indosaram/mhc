@@ -100,6 +100,7 @@ pub trait HttpClient {
 
 pub type TokenSource = Rc<dyn Fn() -> PortFuture<'static, String>>;
 
+#[derive(Clone)]
 pub struct HttpTransportOptions {
     pub base_url: String,
     /// The device's bearer token, read per request so a refresh takes effect.
@@ -188,7 +189,9 @@ impl HttpTransport {
         body: Option<Vec<u8>>,
         json: bool,
     ) -> EngineResult<HttpResponse> {
-        let token = (self.options.token)().await?;
+        let token = (self.options.token)()
+            .await
+            .map_err(|_| EngineError::Auth)?;
         let mut headers = vec![("authorization".to_string(), format!("Bearer {token}"))];
         if body.is_some() && json {
             headers.push(("content-type".to_string(), "application/json".to_string()));
@@ -202,7 +205,8 @@ impl HttpTransport {
                 headers,
                 body,
             })
-            .await?;
+            .await
+            .map_err(|_| EngineError::Network)?;
         if (200..300).contains(&response.status) {
             return Ok(response);
         }

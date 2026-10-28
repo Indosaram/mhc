@@ -60,6 +60,7 @@ pub struct Args {
     pub no_themes: bool,
     pub no_context_files: bool,
     pub list_models: Option<String>,
+    pub print_prompt_sizes: bool,
     pub list_tips: bool,
     pub offline: bool,
     pub tui_mode: Option<String>,
@@ -148,6 +149,7 @@ pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, Strin
             "--grok-neo" if grok_neo_enabled => result.grok_neo = true,
             "--multi-session" => result.multi_session = true,
             "--auto-title-sessions" => result.auto_title_sessions = true,
+            "--print-prompt-sizes" => result.print_prompt_sizes = true,
             "--list-tips" => result.list_tips = true,
             "--print" | "-p" => {
                 result.print = true;

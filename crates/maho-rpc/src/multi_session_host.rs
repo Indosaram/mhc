@@ -1100,7 +1100,10 @@ impl HostCore {
                     force: *force,
                     interrupt: *interrupt,
                 };
-                let port = HostReleasePort { core: self };
+                let port = HostReleasePort {
+                    core: self,
+                    connection,
+                };
                 let response = crate::session_release::release_session(&port, &release).await;
                 self.respond_value(connection, &session_id, response);
             }
@@ -1449,6 +1452,14 @@ impl HostCore {
                     writer.forget_session(&tag);
                 });
             }),
+            // senpi `SessionEventWriter`'s grant methods: this host's fanout is the connection view, and the settled
+            // dialogs and notice snapshots belong to the security presentations the writer holds.
+            security: Some(std::sync::Arc::new(HostSecurityWriter {
+                fanout: std::sync::Arc::clone(&self.fanout),
+            })
+                as std::sync::Arc<
+                    dyn crate::session_worker_client::WorkerSecurityWriter,
+                >),
         }
     }
     /// `open_session` on the worker runtime (senpi `WorkerSessionRegistry.openSession` + the router's
@@ -1515,6 +1526,7 @@ impl HostCore {
                 creation_model: provider.clone().zip(model_id.clone()),
                 initial_thinking_level: thinking_level.clone(),
                 auto_title: *auto_title,
+                prompt_size_inventory: None,
             },
             session_path: session_path.clone(),
             durable_session_id: durable_session_id.clone(),
@@ -2369,9 +2381,50 @@ impl HostCore {
             .detach(owner, session_id);
     }
 }
+/// The writer's side of the worker grant bridge (senpi `SessionEventWriter`'s `settleGrantDialog` /
+/// `acceptWorkerSecuritySnapshot` over `SessionEventFanout`): a worker's grant dialog is routed by the connections
+/// this host has attached to the session, never by the worker.
+struct HostSecurityWriter {
+    fanout: std::sync::Arc<std::sync::Mutex<crate::session_event_fanout::SessionEventFanout>>,
+}
+
+impl crate::session_worker_client::WorkerSecurityWriter for HostSecurityWriter {
+    fn attached(&self, session_id: &str) -> Vec<String> {
+        self.fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .targets
+            .attached_connections(session_id)
+    }
+    fn has_capability(&self, connection: &str, capability: &str) -> bool {
+        self.fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .targets
+            .connection_has(connection, capability)
+    }
+    fn is_empty(&self) -> bool {
+        self.fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .targets
+            .is_empty()
+    }
+    fn settle_grant_dialog(&self, _session_id: &str, _id: &str) {
+        // The dialog this settles lives in the security presentations (senpi `security-presentations.ts`), which
+        // this host does not hold yet; the worker's own settle is what ends it until that port lands.
+    }
+    fn accept_worker_security_snapshot(&self, _session_id: &str, _snapshot: &serde_json::Value) {
+        // Same seam: the snapshot becomes presentation state (and a replayed `notify` per notice) once the security
+        // presentations are ported; validating it here is what keeps an unreadable one out of this host.
+    }
+}
+
 /// The router's side of `release_session` (senpi `releaseSession(port, command)` wiring in `handle`).
 struct HostReleasePort<'a> {
     core: &'a HostCore,
+    /// The connection that asked, so its own attachment never counts as another client.
+    connection: Option<&'a str>,
 }
 #[async_trait::async_trait]
 impl crate::session_release_interrupt::ReleaseSettlePort for HostReleasePort<'_> {
@@ -2456,11 +2509,42 @@ impl crate::session_release::SessionReleasePort for HostReleasePort<'_> {
         // The release is itself one of the session's in-flight requests.
         self.core.active_request_count(session_id).saturating_sub(1)
     }
+    fn other_attachments(&self, session_id: &str) -> u64 {
+        // The requesting connection's own attachment is not another client: it is drained with the rest.
+        let fanout = self
+            .core
+            .fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        u64::try_from(
+            fanout
+                .targets
+                .attached_connections(session_id)
+                .iter()
+                .filter(|id| Some(id.as_str()) != self.connection)
+                .count(),
+        )
+        .unwrap_or(u64::MAX)
+    }
+    fn prepare_outgoing_state(
+        &self,
+        session_path: &str,
+        move_id: &str,
+    ) -> Result<
+        crate::session_release::StagedState,
+        crate::session_release_interrupt::ReleaseWriteError,
+    > {
+        crate::session_release::prepare_outgoing_state(session_path, move_id)
+            .map_err(crate::session_release_interrupt::ReleaseWriteError::Other)
+    }
+    fn discard_outgoing_state(&self, dir: &str) {
+        crate::session_release::discard_outgoing_state(dir);
+    }
     async fn tear_down(&self, session_id: &str, session_path: &str) -> bool {
         self.core.tear_down_released(session_id, session_path).await
     }
 }
-tokio::task_local! {static CURRENT_CONNECTION:Option<String>;}
+tokio::task_local! {pub(crate) static CURRENT_CONNECTION:Option<String>;}
 /// Routes one session record (senpi `SessionEventWriter.enqueue`): responses, bash updates and
 /// blocking UI requests go to their requester only; content goes to the connections attached to
 /// the session and is remembered for late joiners; lifecycle records follow their visibility

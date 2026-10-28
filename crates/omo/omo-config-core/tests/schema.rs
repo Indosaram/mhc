@@ -666,6 +666,7 @@ fn full_memory_defaults() -> Value {
     json!({
         "enabled": true,
         "agent": "auto",
+        "auto_identity": "path",
         "projection": { "max_entries_per_directory": 40, "max_bytes": 24576 },
         "reflection": {
             "enabled": true,
@@ -673,6 +674,7 @@ fn full_memory_defaults() -> Value {
             "merge": "auto",
             "category": "quick",
             "timeout_minutes": 15,
+            "max_concurrent_runs": 1,
             "sandbox": "auto",
         },
         "nudge": { "enabled": true, "every_user_turns": 10 },
@@ -701,6 +703,7 @@ fn full_memory_defaults() -> Value {
             "tool_budget": 8,
             "query_expansion": false,
         },
+        "project_scope": { "nudge": true, "recall": true },
         "compile_warn_tokens": 30000,
         "agents": {},
     })
@@ -717,6 +720,7 @@ fn memory_settings_preserve_a_fully_specified_block() {
     let input = json!({
         "enabled": false,
         "agent": "backend-lead",
+        "auto_identity": "git",
         "projection": { "max_entries_per_directory": 12, "max_bytes": 8192 },
         "reflection": {
             "enabled": false,
@@ -724,6 +728,7 @@ fn memory_settings_preserve_a_fully_specified_block() {
             "merge": "integration",
             "category": "deep",
             "timeout_minutes": 30,
+            "max_concurrent_runs": 2,
             "sandbox": "required",
         },
         "nudge": { "enabled": false, "every_user_turns": 5 },
@@ -752,6 +757,7 @@ fn memory_settings_preserve_a_fully_specified_block() {
             "tool_budget": 8,
             "query_expansion": false,
         },
+        "project_scope": { "nudge": false, "recall": false },
         "compile_warn_tokens": 50000,
         "agents": {
             "backend-lead": { "enabled": true, "reflection": { "trigger": { "step_count": 10 }, "category": "quick" } }
@@ -1319,30 +1325,31 @@ fn computer_harness_support_is_native_only() {
 }
 
 #[test]
-fn gateway_key_is_accepted_by_the_root_layer_and_native_harness_schemas() {
-    let section = json!({
-        "scopes": [{ "id": "qa", "surfaces": [{ "platform": "slack", "account_id": "T000TEST", "options": { "token_kind": "app" } }] }],
-        "stt": { "provider": "p" },
-    });
+fn retired_gateway_key_is_rejected_by_the_root_layer_and_native_harness_schemas() {
+    let section = json!({ "scopes": [{ "id": "qa" }] });
     let document = json!({ "gateway": section, "[native]": { "gateway": section } });
-    let root = parsed(&omo_config_core::omo_config_schema(), document.clone());
-    let layer = parsed(&omo_config_core::omo_config_layer_schema(), document.clone());
-    assert_eq!(root["gateway"], section);
-    assert_eq!(layer["gateway"], section);
-    assert_eq!(root["[native]"]["gateway"], section);
+    for schema in [
+        omo_config_core::omo_config_schema(),
+        omo_config_core::omo_config_layer_schema(),
+    ] {
+        let reported = issues(&schema, document.clone());
+        let root = reported
+            .iter()
+            .find(|issue| issue.path_string().is_empty())
+            .expect("root issue");
+        assert_eq!(root.code, omo_config_core::IssueCode::UnrecognizedKeys);
+        assert_eq!(root.keys, vec!["gateway".to_string()]);
+        let harness = reported
+            .iter()
+            .find(|issue| issue.path_string() == "[native]")
+            .expect("harness issue");
+        assert_eq!(harness.code, omo_config_core::IssueCode::UnrecognizedKeys);
+        assert_eq!(harness.keys, vec!["gateway".to_string()]);
+    }
 }
 
 #[test]
-fn gateway_non_object_is_rejected_at_its_path() {
-    let reported = issues(
-        &omo_config_core::omo_config_layer_schema(),
-        json!({ "gateway": ["not", "an", "object"] }),
-    );
-    assert_eq!(issue_paths(&reported), vec!["gateway".to_string()]);
-}
-
-#[test]
-fn gateway_user_config_loads_without_diagnostics() {
+fn retired_gateway_section_is_stripped_before_validation_and_loads_silently() {
     let home = tempfile::tempdir().expect("tempdir");
     let section = json!({ "scopes": [{ "id": "qa" }], "stt": { "provider": "p" } });
     let result = load_user_config(
@@ -1354,7 +1361,7 @@ fn gateway_user_config_loads_without_diagnostics() {
         None,
     );
     assert_eq!(result.diagnostics, Vec::new());
-    assert_eq!(result.config["gateway"], section);
+    assert!(result.config.get("gateway").is_none());
     assert_eq!(result.config["disabled_skills"], json!(["kept"]));
 }
 
@@ -1394,14 +1401,14 @@ fn config_schema_rejects_a_format_on_mutation_mode_outside_the_enum() {
 }
 
 #[test]
-fn git_master_empty_section_defaults_attribution_off() {
+fn git_master_empty_section_defaults_attribution_on() {
     let value = parsed(
         &omo_config_core::omo_config_schema(),
         json!({ "git_master": {} }),
     );
     assert_eq!(
         value["git_master"],
-        json!({ "commit_footer": false, "include_co_authored_by": false, "git_env_prefix": "GIT_MASTER=1" })
+        json!({ "commit_footer": false, "include_co_authored_by": true, "git_env_prefix": "GIT_MASTER=1" })
     );
 }
 
@@ -1461,14 +1468,14 @@ fn git_master_resolver_always_returns_both_keys() {
     let resolved = omo_config_core::resolve_omo_git_master_settings(&json!({}));
     assert_eq!(
         resolved,
-        json!({ "commit_footer": false, "include_co_authored_by": false, "git_env_prefix": "GIT_MASTER=1" })
+        json!({ "commit_footer": false, "include_co_authored_by": true, "git_env_prefix": "GIT_MASTER=1" })
     );
     let explicit = omo_config_core::resolve_omo_git_master_settings(
         &json!({ "git_master": { "commit_footer": true } }),
     );
     assert_eq!(
         explicit,
-        json!({ "commit_footer": true, "include_co_authored_by": false, "git_env_prefix": "GIT_MASTER=1" })
+        json!({ "commit_footer": true, "include_co_authored_by": true, "git_env_prefix": "GIT_MASTER=1" })
     );
     let custom = omo_config_core::resolve_omo_git_master_settings(
         &json!({ "git_master": { "commit_footer": "Shipped with omo", "include_co_authored_by": true } }),
@@ -2206,5 +2213,246 @@ fn task_isolation_layer_accepts_overrides_and_rejects_an_invalid_backend() {
     );
     assert!(
         safe_parse(&node, &json!({ "isolation": { "backend": "projfs" } })).is_err()
+    );
+}
+
+fn provenance_settings() -> Value {
+    json!({
+        "workspaces": [{ "name": "Example workspace", "git_owners": ["example-owner"], "paths": ["~/projects"] }]
+    })
+}
+
+#[test]
+fn provenance_table_survives_every_config_container() {
+    let provenance = provenance_settings();
+    for schema in [
+        omo_config_core::omo_config_schema(),
+        omo_config_core::omo_config_layer_schema(),
+        omo_config_core::omo_config_profile_schema(),
+        omo_config_core::omo_typed_harness_config_schema(),
+    ] {
+        let value = parsed(&schema, json!({ "provenance": provenance.clone() }));
+        assert_eq!(value["provenance"], provenance);
+    }
+    let value = parsed(&omo_config_core::omo_config_schema(), json!({}));
+    assert!(value.get("provenance").is_none());
+}
+
+#[test]
+fn provenance_rejects_malformed_workspace_rules() {
+    for row in [
+        json!({ "name": "" }),
+        json!({ "name": " " }),
+        json!({ "name": 1 }),
+        json!({ "name": "example", "git_owners": "owner" }),
+        json!({ "name": "example", "paths": [1] }),
+        json!({ "name": "example", "extra": true }),
+    ] {
+        assert!(
+            safe_parse(
+                &omo_config_core::omo_config_schema(),
+                &json!({ "provenance": { "workspaces": [row] } })
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn provenance_trims_every_label_before_validation() {
+    let value = parsed(
+        &omo_config_core::omo_provenance_settings_schema(),
+        json!({ "workspaces": [{ "name": "  Example workspace  ", "paths": [" ~/projects "] }] }),
+    );
+    assert_eq!(
+        value,
+        json!({ "workspaces": [{ "name": "Example workspace", "paths": ["~/projects"] }] })
+    );
+}
+
+#[test]
+fn provenance_resolves_with_normal_user_project_harness_and_profile_precedence() {
+    let provenance = provenance_settings();
+    let root = tempfile::tempdir().expect("tempdir");
+    let root_path = omo_config_core::to_posix_path(&root.path().to_string_lossy());
+    let cwd = format!("{root_path}/project");
+    std::fs::create_dir_all(format!("{root_path}/.omo")).expect("omo dir");
+    std::fs::create_dir_all(format!("{cwd}/.omo")).expect("project omo dir");
+    std::fs::write(
+        format!("{root_path}/.omo/omo.json"),
+        json!({
+            "provenance": provenance.clone(),
+            "[native]": { "provenance": { "workspaces": [{ "name": "Harness" }] } },
+        })
+        .to_string(),
+    )
+    .expect("user config");
+    std::fs::write(
+        format!("{cwd}/.omo/omo.json"),
+        json!({
+            "provenance": { "workspaces": [{ "name": "Project" }] },
+            "profiles": {
+                "review": {
+                    "provenance": { "workspaces": [{ "name": "Profile" }] },
+                    "[native]": { "provenance": provenance.clone() },
+                },
+            },
+        })
+        .to_string(),
+    )
+    .expect("project config");
+
+    let result = omo_config_core::load_omo_config(&omo_config_core::LoadOmoConfigOptions {
+        cwd: Some(cwd),
+        env: Some(std::collections::BTreeMap::from([
+            ("HOME".to_string(), root_path.clone()),
+            ("USERPROFILE".to_string(), root_path),
+            ("OMO_PROFILE".to_string(), "review".to_string()),
+        ])),
+        harness: Some("native".to_string()),
+        platform: Some("linux".to_string()),
+        ..Default::default()
+    });
+
+    assert_eq!(result.diagnostics, Vec::new());
+    assert_eq!(result.config["provenance"], provenance);
+}
+
+#[test]
+fn telemetry_raw_turn_sample_rate_is_bounded_in_both_schemas() {
+    for schema in [
+        omo_config_core::omo_telemetry_settings_schema(),
+        omo_config_core::omo_telemetry_settings_layer_schema(),
+    ] {
+        for (value, accepted) in [
+            (json!(0), true),
+            (json!(0.05), true),
+            (json!(1), true),
+            (json!(-0.1), false),
+            (json!(1.5), false),
+            (json!("0.5"), false),
+        ] {
+            assert_eq!(
+                safe_parse(&schema, &json!({ "rawTurnSampleRate": value })).is_ok(),
+                accepted,
+                "{value} accepted={accepted}"
+            );
+        }
+    }
+}
+
+#[test]
+fn telemetry_raw_turn_sample_rate_has_no_schema_default_and_native_support() {
+    let value = parsed(&omo_config_core::omo_telemetry_settings_schema(), json!({}));
+    assert!(value.get("rawTurnSampleRate").is_none());
+    let supported = omo_config_core::TELEMETRY_HARNESS_SUPPORT
+        .iter()
+        .find(|(path, _)| *path == "telemetry.rawTurnSampleRate")
+        .map(|(_, harnesses)| *harnesses);
+    assert_eq!(supported, Some(["native"].as_slice()));
+}
+
+#[test]
+fn memory_auto_identity_defaults_to_path_and_accepts_only_the_enum() {
+    let value = parsed(&omo_config_core::omo_memory_settings_schema(), json!({}));
+    assert_eq!(value["auto_identity"], json!("path"));
+    let layer = parsed(
+        &omo_config_core::omo_memory_settings_layer_schema(),
+        json!({ "auto_identity": "git" }),
+    );
+    assert_eq!(layer, json!({ "auto_identity": "git" }));
+    for schema in [
+        omo_config_core::omo_memory_settings_schema(),
+        omo_config_core::omo_memory_settings_layer_schema(),
+    ] {
+        let reported = issues(&schema, json!({ "auto_identity": "repo" }));
+        assert_eq!(issue_paths(&reported), vec!["auto_identity".to_string()]);
+    }
+}
+
+#[test]
+fn memory_reflection_concurrency_defaults_to_one_and_stays_configurable() {
+    let value = parsed(&omo_config_core::omo_memory_settings_schema(), json!({}));
+    assert_eq!(value["reflection"]["max_concurrent_runs"], json!(1));
+    let layer = parsed(
+        &omo_config_core::omo_memory_settings_layer_schema(),
+        json!({ "reflection": { "max_concurrent_runs": 2 } }),
+    );
+    assert_eq!(layer, json!({ "reflection": { "max_concurrent_runs": 2 } }));
+    let applied = parsed(&omo_config_core::omo_memory_settings_schema(), layer);
+    assert_eq!(applied["reflection"]["max_concurrent_runs"], json!(2));
+    assert!(
+        safe_parse(
+            &omo_config_core::omo_memory_settings_schema(),
+            &json!({ "agents": { "writer": { "reflection": { "max_concurrent_runs": 2 } } } })
+        )
+        .is_err(),
+        "a per-agent override may not raise its own concurrency"
+    );
+}
+
+#[test]
+fn memory_reflection_concurrency_rejects_values_a_supervisor_cannot_use() {
+    for value in [json!(0), json!(-1), json!(1.5), json!("2")] {
+        let input = json!({ "reflection": { "max_concurrent_runs": value } });
+        assert!(
+            safe_parse(&omo_config_core::omo_memory_settings_schema(), &input).is_err(),
+            "{value}"
+        );
+        assert!(
+            safe_parse(
+                &omo_config_core::omo_memory_settings_layer_schema(),
+                &input
+            )
+            .is_err(),
+            "{value}"
+        );
+    }
+}
+
+#[test]
+fn memory_project_scope_defaults_on_and_round_trips_explicit_switches() {
+    let value = parsed(&omo_config_core::omo_memory_settings_schema(), json!({}));
+    assert_eq!(value["project_scope"], json!({ "nudge": true, "recall": true }));
+    let switched = parsed(
+        &omo_config_core::omo_memory_settings_schema(),
+        json!({ "project_scope": { "nudge": false, "recall": false } }),
+    );
+    assert_eq!(
+        switched["project_scope"],
+        json!({ "nudge": false, "recall": false })
+    );
+    let partial = parsed(
+        &omo_config_core::omo_memory_settings_schema(),
+        json!({ "project_scope": { "recall": false } }),
+    );
+    assert_eq!(
+        partial["project_scope"],
+        json!({ "nudge": true, "recall": false })
+    );
+    let layer = json!({ "project_scope": { "recall": false } });
+    assert_eq!(
+        parsed(&omo_config_core::omo_memory_settings_layer_schema(), layer.clone()),
+        layer
+    );
+}
+
+#[test]
+fn model_profile_keeps_an_optional_caution_string_through_strict_parsing() {
+    let config = json!({
+        "model_profiles": {
+            "capable": { "display_name": "Capable", "caution": "Needs a paid plan", "models": ["openai/gpt-6-astra"] }
+        }
+    });
+    let value = parsed(&omo_config_core::omo_config_schema(), config);
+    assert_eq!(
+        value["model_profiles"]["capable"]["caution"],
+        json!("Needs a paid plan")
+    );
+    let layer = json!({ "model_profiles": { "capable": { "caution": "Needs a paid plan" } } });
+    let value = parsed(&omo_config_core::omo_config_layer_schema(), layer);
+    assert_eq!(
+        value["model_profiles"]["capable"],
+        json!({ "caution": "Needs a paid plan" })
     );
 }

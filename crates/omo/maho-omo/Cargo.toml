@@ -9,9 +9,19 @@ license = "LicenseRef-SUL-1.0"
 name = "all"
 path = "tests/all/main.rs"
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
 [dependencies]
+libc.workspace = true
+serde = { workspace = true, features = ["derive"] }
+sha2.workspace = true
+regex.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"] }
+maho-ext-mcp = { path = "../../builtins/maho-ext-mcp" }
 claude-code-compat-core = { path = "../claude-code-compat-core" }
 maho-omo-task = { path = "../components/maho-omo-task" }
 senpi-task = { package = "maho-senpi-task", path = "../senpi-task" }
@@ -27,6 +37,7 @@ maho-omo-git-master = { path = "../components/maho-omo-git-master" }
 maho-omo-feedback = { path = "../components/maho-omo-feedback" }
 maho-omo-builtin-mcps = { path = "../components/maho-omo-builtin-mcps" }
 maho-omo-browser-bridge = { path = "../components/maho-omo-browser-bridge" }
+maho-omo-desktop-toolkit = { path = "../components/maho-omo-desktop-toolkit" }
 maho-omo-x-search = { path = "../components/maho-omo-x-search" }
 maho-omo-gateway = { path = "../components/maho-omo-gateway" }
 maho-omo-config-watch = { path = "../components/maho-omo-config-watch" }
@@ -36,6 +47,7 @@ maho-omo-side-panel = { path = "../components/maho-omo-side-panel" }
 maho-omo-lsp = { path = "../components/maho-omo-lsp" }
 maho-omo-skill-pointers = { path = "../components/maho-omo-skill-pointers" }
 maho-omo-question-gates = { path = "../components/maho-omo-question-gates" }
+maho-omo-claim-receipt = { path = "../components/maho-omo-claim-receipt" }
 maho-omo-memory = { path = "../components/maho-omo-memory" }
 maho-memory-core = { path = "../memory-core" }
 maho-omo-onboarding = { path = "../components/maho-omo-onboarding" }
@@ -46,7 +58,10 @@ maho-omo-ultrawork = { path = "../components/maho-omo-ultrawork" }
 maho-omo-ulw-loop = { path = "../components/maho-omo-ulw-loop" }
 indexmap = "=2.14.0"
 serde_json = "=1.0.149"
-tokio = { version = "=1.52.3", features = ["rt", "sync", "time", "macros"] }
+tokio = { version = "=1.52.3", features = ["rt", "sync", "time", "macros", "fs", "io-util", "net", "signal", "process"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tokio = { version = "=1.52.3", features = ["macros", "rt", "rt-multi-thread", "time"] }

@@ -12,7 +12,7 @@ fn task_team_and_continuation_share_one_delivery_and_acknowledge_after_flush() {
     let acknowledged = Arc::clone(&acknowledgements);
     queue.enqueue(crate::support::injection("ulw", IdleInjectionSource::UlwContinuation, "continue"));
     LeadInjectionCoordinator::enqueue(&bridge, LeadInjection {
-        key: "team-message:1".into(), source: "team-message", content: "team ready".into(),
+        key: "team-message:1".into(), source: "team-message", content: "team ready".into(), run_ref: None,
         on_flushed: Some(Box::new(move || { acknowledged.fetch_add(1, Ordering::SeqCst); })),
         on_delivery_failed: None,
     }, "senpi-task:team-message", false);
@@ -56,7 +56,7 @@ async fn deferred_wake_rejection_settles_completion_liveness_and_team_failure() 
     }, liveness.clone()).expect("liveness");
     let (team_settled, team_result) = oneshot::channel();
     LeadInjectionCoordinator::enqueue(&bridge, LeadInjection {
-        key: "team-message:1".into(), source: "team-message", content: "mail".into(),
+        key: "team-message:1".into(), source: "team-message", content: "mail".into(), run_ref: None,
         on_flushed: Some(Box::new(|| panic!("rejection is not success"))),
         on_delivery_failed: Some(Box::new(move |_| { team_settled.send(()).expect("team receiver"); })),
     }, "senpi-task:team-message", false);

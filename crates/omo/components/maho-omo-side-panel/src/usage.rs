@@ -1,250 +1,97 @@
+#[cfg(test)]
+pub type ListenerCallback = Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
 use crate::{
-    constants::*,
+    constants::{CLAUDE_PROVIDERS, CODEX_PROVIDERS, MIN_ACCESS_TOKEN_LENGTH},
     native::now,
     native_readers::read_json,
-    runtime::UsagePoller,
-    types::{PanelColor, PanelRow},
+    runtime::UsageSource,
+    types::{PanelColor, PanelRow, Stop},
 };
-use base64::Engine;
+use maho_ext_api::{AccountLimits, LimitWindow};
 use serde_json::{Value, json};
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
     },
 };
-static NEXT_CLAIM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+pub type LimitsGetter = Arc<dyn Fn() -> Vec<AccountLimits> + Send + Sync>;
+pub type LimitsSubscriber = Arc<dyn Fn(Arc<dyn Fn() + Send + Sync>) -> Option<Stop> + Send + Sync>;
+
+/// Reads host-owned subscription reports; this component never fetches provider endpoints.
 pub struct NativeUsage {
     home: PathBuf,
-    cache: PathBuf,
-    ms: u64,
+    get: LimitsGetter,
+    subscribe: LimitsSubscriber,
     changed: Arc<dyn Fn() + Send + Sync>,
     snapshot: Mutex<Value>,
-    running: AtomicBool,
+    unsubscribe: Mutex<Option<Stop>>,
     stopped: AtomicBool,
-    timer: Mutex<Option<tokio::task::JoinHandle<()>>>,
     weak: Weak<Self>,
 }
 impl NativeUsage {
     pub fn create(
         home: PathBuf,
-        ms: u64,
+        get: LimitsGetter,
+        subscribe: LimitsSubscriber,
         changed: Arc<dyn Fn() + Send + Sync>,
-    ) -> Arc<dyn UsagePoller> {
-        let base = std::env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_default()
-                    .join(".cache")
-            });
+    ) -> Arc<dyn UsageSource> {
         Arc::new_cyclic(|weak| Self {
             home,
-            cache: base.join("omo-senpi/side-panel-usage.json"),
-            ms,
+            get,
+            subscribe,
             changed,
             snapshot: Mutex::new(json!({})),
-            running: AtomicBool::new(false),
+            unsubscribe: Mutex::default(),
             stopped: AtomicBool::new(true),
-            timer: Mutex::default(),
             weak: weak.clone(),
         })
     }
-    fn publish(&self, value: Value) {
+    fn rebuild(&self) {
         if self.stopped.load(Ordering::Acquire) {
             return;
         }
-        let mut snapshot = self
-            .snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *snapshot != value {
-            *snapshot = value;
-            drop(snapshot);
-            (self.changed)();
-        }
-    }
-    async fn poll(&self) {
-        let mut cache = read_cache(&self.cache);
-        self.publish(cache.clone());
         let auth = read_json(&self.home.join("auth.json")).unwrap_or(Value::Null);
         let pool = read_json(&self.home.join("credential-pool-state.json")).unwrap_or(Value::Null);
-        for (key, providers, url, ttl) in [
-            (
-                "claude",
-                CLAUDE_PROVIDERS,
-                CLAUDE_USAGE_URL,
-                USAGE_TTL_MS.claude,
-            ),
-            (
-                "codex",
-                CODEX_PROVIDERS,
-                CODEX_USAGE_URL,
-                USAGE_TTL_MS.codex,
-            ),
-        ] {
-            if self.stopped.load(Ordering::Acquire) {
-                return;
-            }
-            let credential = credential(&auth, &pool, providers, now());
-            if credential.is_none() {
-                continue;
-            }
-            let account = credential
-                .as_ref()
-                .and_then(|credential| credential.account.as_deref());
-            let at = now();
-            let entry = &cache[key];
-            if entry.get("account").and_then(Value::as_str) == account {
-                if entry
-                    .get("retryAt")
-                    .and_then(Value::as_u64)
-                    .is_some_and(|time| time > at)
-                {
-                    continue;
-                }
-                if entry
-                    .get("updatedAt")
-                    .and_then(Value::as_u64)
-                    .is_some_and(|time| at.saturating_sub(time) < ttl.max(self.ms))
-                {
-                    continue;
-                }
-            }
-            let claim = &cache["fetching"][key];
-            if claim.get("account").and_then(Value::as_str) == account
-                && claim
-                    .get("claimedAt")
-                    .and_then(Value::as_u64)
-                    .is_some_and(|time| at.saturating_sub(time) < USAGE_CLAIM_MS)
-            {
-                continue;
-            }
-            let token = format!(
-                "{}-{at}-{}-{key}",
-                std::process::id(),
-                NEXT_CLAIM.fetch_add(1, Ordering::Relaxed)
-            );
-            if !cache["fetching"].is_object() {
-                cache["fetching"] = json!({});
-            }
-            cache["fetching"][key] = json!({"claimedAt":at,"token":token,"account":account});
-            if let Err(error) = write_cache(&self.cache, &cache) {
-                eprintln!("side panel: usage cache: {error}");
-                continue;
-            }
-            cache = read_cache(&self.cache);
-            if cache["fetching"][key]["token"].as_str() != Some(&token) {
-                continue;
-            }
-            let mut next = if let Some(credential) = &credential {
-                match fetch(url, key, &credential.access).await {
-                    Ok(value) => value,
-                    Err((message, retry)) => {
-                        let delay = retry
-                            .unwrap_or(if message == "rate limited" {
-                                self.ms
-                            } else {
-                                self.ms * 2
-                            })
-                            .min(USAGE_MAX_BACKOFF_MS);
-                        json!({"error":message,"retryAt":now()+delay})
-                    }
-                }
-            } else {
-                json!({"error":"auth stale - run /login","retryAt":now()+self.ms*5})
-            };
-            if self.stopped.load(Ordering::Acquire) {
-                let mut latest = read_cache(&self.cache);
-                if latest["fetching"][key]["token"].as_str() == Some(&token) {
-                    if let Some(fetching) = latest["fetching"].as_object_mut() {
-                        fetching.remove(key);
-                    }
-                    if let Err(error) = write_cache(&self.cache, &latest) {
-                        eprintln!("side panel: usage cache: {error}");
-                    }
-                }
-                return;
-            }
-            if let Some(credential) = &credential {
-                next["account"] = json!(credential.account);
-                next["pinnedAccount"] = json!(credential.pinned);
-                next["accountState"] = json!(credential.state);
-            }
-            cache = read_cache(&self.cache);
-            if cache["fetching"][key]["token"].as_str() != Some(&token) {
-                continue;
-            }
-            if next.get("error").is_some()
-                && cache[key].get("account").and_then(Value::as_str) == account
-            {
-                let mut previous = cache[key].as_object().cloned().unwrap_or_default();
-                if let Some(next) = next.as_object() {
-                    previous.extend(next.clone());
-                }
-                next = Value::Object(previous);
-            }
-            cache[key] = next;
-            if let Some(fetching) = cache["fetching"].as_object_mut() {
-                fetching.remove(key);
-            }
-            if let Err(error) = write_cache(&self.cache, &cache) {
-                eprintln!("side panel: usage cache: {error}");
-            }
-            self.publish(cache.clone());
-        }
+        let value = snapshot_of(&(self.get)(), &auth, &pool, now());
+        *self
+            .snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = value;
+        (self.changed)();
     }
 }
-impl UsagePoller for NativeUsage {
+impl UsageSource for NativeUsage {
     fn start(&self) {
         if !self.stopped.swap(false, Ordering::AcqRel) {
             return;
         }
-        self.poll_once();
         let weak = self.weak.clone();
-        let ms = self.ms;
-        let task = tokio::spawn(async move {
-            let mut timer = tokio::time::interval(std::time::Duration::from_millis(ms));
-            timer.tick().await;
-            loop {
-                timer.tick().await;
-                let Some(this) = weak.upgrade() else {
-                    break;
-                };
-                if this.stopped.load(Ordering::Acquire) {
-                    break;
-                }
-                this.poll_once();
-            }
-        });
         *self
-            .timer
+            .unsubscribe
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(task);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            (self.subscribe)(Arc::new(move || {
+                if let Some(source) = weak.upgrade() {
+                    source.rebuild();
+                }
+            }));
+        self.rebuild();
+    }
+    fn refresh(&self) {
+        self.rebuild();
     }
     fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
-        if let Some(task) = self
-            .timer
+        if let Some(unsubscribe) = self
+            .unsubscribe
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
-            task.abort();
-        }
-    }
-    fn poll_once(&self) {
-        if self.stopped.load(Ordering::Acquire) || self.running.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        if let Some(this) = self.weak.upgrade() {
-            tokio::spawn(async move {
-                this.poll().await;
-                this.running.store(false, Ordering::Release);
-            });
+            unsubscribe();
         }
     }
     fn rows(&self, at: u64, width: usize) -> Vec<PanelRow> {
@@ -308,16 +155,7 @@ impl UsagePoller for NativeUsage {
                 }
             }
             if let Some(error) = entry.get("error").and_then(Value::as_str) {
-                let retry = entry
-                    .get("retryAt")
-                    .and_then(Value::as_u64)
-                    .map_or_else(String::new, |retry| {
-                        format!(" · retry {}m", retry.saturating_sub(at) / 60000)
-                    });
-                rows.push(PanelRow::colored(
-                    format!("{error}{retry}"),
-                    PanelColor::Warning,
-                ));
+                rows.push(PanelRow::colored(error.to_owned(), PanelColor::Warning));
             }
             if let Some(state) = entry
                 .get("accountState")
@@ -343,10 +181,83 @@ impl UsagePoller for NativeUsage {
     }
 }
 struct Credential {
-    access: String,
     account: Option<String>,
     pinned: Option<String>,
     state: &'static str,
+}
+
+fn snapshot_of(records: &[AccountLimits], auth: &Value, pool: &Value, at: u64) -> Value {
+    let mut snapshot = json!({});
+    for (key, providers) in [("claude", CLAUDE_PROVIDERS), ("codex", CODEX_PROVIDERS)] {
+        let selected = credential(auth, pool, providers, at);
+        if let Some(record) = serving_record(records, providers, selected.as_ref()) {
+            snapshot[key] = entry_of(record, selected.as_ref());
+        }
+    }
+    snapshot
+}
+fn serving_record<'a>(
+    records: &'a [AccountLimits],
+    providers: &[&str],
+    credential: Option<&Credential>,
+) -> Option<&'a AccountLimits> {
+    let own: Vec<_> = records
+        .iter()
+        .filter(|record| providers.contains(&record.provider.as_str()))
+        .collect();
+    if let Some(credential) = credential {
+        own.iter()
+            .copied()
+            .find(|record| record.account == credential.account.as_deref().unwrap_or("default"))
+            .or_else(|| own.iter().copied().find(|record| record.account == "env"))
+    } else {
+        own.into_iter().reduce(|latest, record| {
+            if record.reported_at > latest.reported_at {
+                record
+            } else {
+                latest
+            }
+        })
+    }
+}
+fn timestamp(value: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|date| date.timestamp_millis())
+}
+fn entry_of(record: &AccountLimits, credential: Option<&Credential>) -> Value {
+    let mut entry = json!({"account":record.account,"windows":record.windows.iter().map(window_of).collect::<Vec<_>>()});
+    if let Some(at) = timestamp(&record.reported_at) {
+        entry["updatedAt"] = json!(at);
+    }
+    if let Some(plan) = &record.plan {
+        entry["plan"] = json!(plan);
+    }
+    if let Some(error) = &record.error {
+        entry["error"] = json!(error);
+    }
+    if let Some(credential) = credential
+        .filter(|selected| selected.account.as_deref().unwrap_or("default") == record.account)
+    {
+        entry["accountState"] = json!(credential.state);
+        if let Some(pinned) = &credential.pinned {
+            entry["pinnedAccount"] = json!(pinned);
+        }
+    }
+    entry
+}
+fn window_of(window: &LimitWindow) -> Value {
+    let mut value = json!({"label":window.label,"percent":window.used_percent});
+    if let Some(at) = window.resets_at.as_deref().and_then(timestamp) {
+        value["resetsAt"] = json!(at);
+    }
+    if let Some(minutes) = window.window_minutes {
+        value["windowMs"] = json!(minutes * 60_000);
+    }
+    if window.id.starts_with("claude:7d_") {
+        value["scoped"] = json!(true);
+    }
+    value
 }
 fn usage_bar(ratio: f64, width: usize, marker: Option<f64>) -> String {
     let exact = ratio.clamp(0.0, 1.0) * width as f64;
@@ -433,7 +344,6 @@ fn credential(auth: &Value, pool: &Value, providers: &[&str], at: u64) -> Option
                     .filter(|name| Some(*name) != account.as_deref())
                     .map(str::to_owned);
                 return Some(Credential {
-                    access: serving["access"].as_str()?.into(),
                     account,
                     pinned,
                     state: health(serving),
@@ -442,7 +352,6 @@ fn credential(auth: &Value, pool: &Value, providers: &[&str], at: u64) -> Option
         }
         if usable(node) {
             return Some(Credential {
-                access: node["access"].as_str()?.into(),
                 account: None,
                 pinned: None,
                 state: health(node),
@@ -451,204 +360,6 @@ fn credential(auth: &Value, pool: &Value, providers: &[&str], at: u64) -> Option
     }
     None
 }
-async fn fetch(url: &str, key: &str, token: &str) -> Result<Value, (String, Option<u64>)> {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_millis(USAGE_TIMEOUT_MS))
-        .build()
-        .map_err(|error| (error.to_string(), None))?;
-    let mut request = client
-        .get(url)
-        .bearer_auth(token)
-        .header("Accept", "application/json");
-    if key == "codex"
-        && let Some(claims) = token
-            .split('.')
-            .nth(1)
-            .and_then(|part| {
-                base64::engine::general_purpose::URL_SAFE_NO_PAD
-                    .decode(part)
-                    .ok()
-            })
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        && let Some(id) = claims
-                .pointer("/https:~1~1api.openai.com~1auth/chatgpt_account_id")
-                .or_else(|| claims.pointer("/https:~1~1api.openai.com~1auth/account_id"))
-                .and_then(Value::as_str)
-    {
-        request = request.header("ChatGPT-Account-Id", id);
-    }
-    let response = request.send().await.map_err(|error| {
-        (
-            if error.is_timeout() {
-                "timed out".into()
-            } else {
-                error.to_string()
-            },
-            None,
-        )
-    })?;
-    if !response.status().is_success() {
-        let retry = response
-            .headers()
-            .get("retry-after")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| {
-                value
-                    .parse::<u64>()
-                    .ok()
-                    .map(|seconds| seconds * 1000)
-                    .or_else(|| {
-                        chrono::DateTime::parse_from_rfc2822(value)
-                            .ok()
-                            .and_then(|time| u64::try_from(time.timestamp_millis()).ok())
-                            .map(|time| time.saturating_sub(now()))
-                    })
-            })
-            .filter(|delay| *delay > 0);
-        return Err((
-            match response.status().as_u16() {
-                401 | 403 => "auth stale - run /login".into(),
-                429 => "rate limited".into(),
-                status => format!("HTTP {status}"),
-            },
-            retry,
-        ));
-    }
-    let payload: Value = response
-        .json()
-        .await
-        .map_err(|error| (error.to_string(), None))?;
-    let mut windows = Vec::new();
-    if key == "claude" {
-        if let Some(limits) = payload.get("limits").and_then(Value::as_array) {
-            for limit in limits {
-                if let Some(percent) = limit.get("percent").and_then(Value::as_f64) {
-                    let kind = limit.get("kind").and_then(Value::as_str).unwrap_or("");
-                    let label = match kind {
-                        "session" => "5h",
-                        "weekly_all" => "7d",
-                        _ => limit
-                            .pointer("/scope/model/display_name")
-                            .and_then(Value::as_str)
-                            .unwrap_or("7d*"),
-                    };
-                    windows.push(json!({"label":label,"percent":percent,"windowMs":if kind=="session"{FIVE_HOUR_MS}else{WEEK_MS},"scoped":kind=="weekly_scoped","resetsAt":limit.get("resets_at").and_then(Value::as_str).and_then(|value|chrono::DateTime::parse_from_rfc3339(value).ok()).map(|time|time.timestamp_millis())}));
-                }
-            }
-        }
-        if windows.is_empty() {
-            for (field, label, ms) in [
-                ("five_hour", "5h", FIVE_HOUR_MS),
-                ("seven_day", "7d", WEEK_MS),
-            ] {
-                if let Some(percent) = payload[field]["utilization"].as_f64() {
-                    windows.push(json!({"label":label,"percent":percent,"windowMs":ms,"resetsAt":payload[field]["resets_at"].as_str().and_then(|value|chrono::DateTime::parse_from_rfc3339(value).ok()).map(|time|time.timestamp_millis())}));
-                }
-            }
-        }
-    } else {
-        for field in ["primary_window", "secondary_window"] {
-            let window = &payload["rate_limit"][field];
-            if let Some(percent) = window["used_percent"].as_f64() {
-                let seconds = window["limit_window_seconds"].as_u64();
-                let label: String = match seconds {
-                    Some(18000) => "5h".into(),
-                    Some(604800) => "7d".into(),
-                    Some(seconds) => format!("{}h", seconds / 3600),
-                    None => "window".into(),
-                };
-                windows.push(json!({"label":label,"percent":percent,"windowMs":seconds.map(|seconds|seconds*1000),"resetsAt":window["reset_at"].as_u64().map(|seconds|seconds*1000)}));
-            }
-        }
-    }
-    Ok(json!({"windows":windows,"updatedAt":now(),"plan":payload.get("plan_type")}))
-}
-fn read_cache(path: &Path) -> Value {
-    let raw = read_json(path).unwrap_or(Value::Null);
-    let mut cache = json!({"fetching":{}});
-    for key in ["claude", "codex"] {
-        if let Some(entry) = raw.get(key).and_then(Value::as_object) {
-            let mut clean = serde_json::Map::new();
-            for field in ["plan", "account", "pinnedAccount", "accountState", "error"] {
-                if let Some(text) = entry
-                    .get(field)
-                    .and_then(Value::as_str)
-                    .filter(|text| !text.is_empty())
-                {
-                    clean.insert(field.into(), json!(text));
-                }
-            }
-            let mut windows = Vec::new();
-            if let Some(raw_windows) = entry.get("windows").and_then(Value::as_array) {
-                for window in raw_windows {
-                    if let (Some(label), Some(percent)) = (
-                        window.get("label").and_then(Value::as_str),
-                        window.get("percent").and_then(Value::as_f64),
-                    ) {
-                        let mut clean_window = json!({"label":label,"percent":percent});
-                        for field in ["resetsAt", "windowMs"] {
-                            if let Some(value) = window.get(field).and_then(Value::as_u64) {
-                                clean_window[field] = json!(value);
-                            }
-                        }
-                        if window.get("scoped").and_then(Value::as_bool) == Some(true) {
-                            clean_window["scoped"] = json!(true);
-                        }
-                        windows.push(clean_window);
-                    }
-                }
-            }
-            let invalid = entry
-                .get("windows")
-                .and_then(Value::as_array)
-                .is_some_and(|windows| !windows.is_empty())
-                && windows.is_empty();
-            if !windows.is_empty() {
-                clean.insert("windows".into(), json!(windows));
-            }
-            for field in ["updatedAt", "retryAt"] {
-                if !(invalid && field == "updatedAt")
-                    && let Some(time) = entry.get(field).and_then(Value::as_u64)
-                {
-                    clean.insert(field.into(), json!(time));
-                }
-            }
-            cache[key] = Value::Object(clean);
-        }
-        let claim = &raw["fetching"][key];
-        if let Some(at) = claim.as_u64() {
-            cache["fetching"][key] = json!({"claimedAt":at,"token":"legacy"});
-        } else if let (Some(at), Some(token)) = (
-            claim.get("claimedAt").and_then(Value::as_u64),
-            claim.get("token").and_then(Value::as_str),
-        ) {
-            cache["fetching"][key] = json!({"claimedAt":at,"token":token,"account":claim.get("account").and_then(Value::as_str)});
-        }
-    }
-    cache
-}
-fn write_cache(path: &Path, value: &Value) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let temporary = path.with_extension(format!(
-        "{}-{}.tmp",
-        std::process::id(),
-        NEXT_CLAIM.fetch_add(1, Ordering::Relaxed)
-    ));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let file = options.open(&temporary)?;
-    serde_json::to_writer(file, value)?;
-    std::fs::rename(temporary, path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -659,7 +370,6 @@ mod tests {
         let auth = json!({"anthropic-subscription":{"pinned":"primary","accounts":[{"name":"primary","access":pinned},{"name":"backup","access":healthy}]}});
         let pool = json!({"providers":{"claude-sdk-oauth":{"lanes":{"stored":{"slots":{"primary":{"cooldownUntil":2000}}}}}}});
         let selected = credential(&auth, &pool, CLAUDE_PROVIDERS, 1000).expect("healthy backup");
-        assert_eq!(selected.access, healthy);
         assert_eq!(selected.account.as_deref(), Some("backup"));
         assert_eq!(selected.pinned.as_deref(), Some("primary"));
         assert_eq!(selected.state, "ok");
@@ -678,5 +388,133 @@ mod tests {
         assert_eq!(usage_bar(0.001, 10, None), "▏░░░░░░░░░");
         assert_eq!(usage_bar(0.5, 4, Some(0.75)), "██░┊");
         assert_eq!(usage_bar(1.0, 0, Some(0.5)), "");
+    }
+    fn record(account: &str, percent: f64) -> AccountLimits {
+        AccountLimits {
+            provider: "anthropic-subscription".into(),
+            account: account.into(),
+            reported_at: "2026-10-19T03:59:00.000Z".into(),
+            plan: None,
+            error: None,
+            windows: vec![
+                LimitWindow {
+                    id: "claude:5h".into(),
+                    label: "5h".into(),
+                    window_minutes: Some(300),
+                    used_percent: percent,
+                    resets_at: Some("2026-10-19T09:00:00.000Z".into()),
+                },
+                LimitWindow {
+                    id: "claude:7d_opus".into(),
+                    label: "7d opus".into(),
+                    window_minutes: Some(10080),
+                    used_percent: 3.0,
+                    resets_at: None,
+                },
+            ],
+        }
+    }
+    fn auth(pinned: &str) -> Value {
+        json!({"anthropic-subscription":{"pinned":pinned,"accounts":[{"name":"work","access":"t".repeat(50)},{"name":"home","access":"t".repeat(50)}]}})
+    }
+    #[test]
+    fn engine_selects_serving_account_and_normalizes_windows() {
+        let snapshot = snapshot_of(
+            &[record("work", 41.0), record("home", 90.0)],
+            &auth("work"),
+            &Value::Null,
+            0,
+        );
+        assert_eq!(
+            snapshot,
+            json!({"claude":{"account":"work","accountState":"ok","updatedAt":1792382340000_i64,"windows":[{"label":"5h","percent":41.0,"resetsAt":1792400400000_i64,"windowMs":18000000},{"label":"7d opus","percent":3.0,"windowMs":604800000,"scoped":true}]}})
+        );
+    }
+    #[test]
+    fn ambient_uses_latest_but_named_login_only_falls_back_to_env() {
+        let mut env = record("env", 55.0);
+        env.reported_at = "2026-10-19T03:00:00.000Z".into();
+        let records = [env, record("ambient", 20.0)];
+        let ambient = snapshot_of(&records, &json!({}), &Value::Null, 0);
+        assert_eq!(ambient["claude"]["account"], "ambient");
+        assert!(ambient["claude"].get("accountState").is_none());
+        let fallback = snapshot_of(&records, &auth("work"), &Value::Null, 0);
+        assert_eq!(fallback["claude"]["account"], "env");
+        assert!(fallback["claude"].get("accountState").is_none());
+        let own = snapshot_of(
+            &[record("env", 55.0), record("work", 41.0)],
+            &auth("work"),
+            &Value::Null,
+            0,
+        );
+        assert_eq!(own["claude"]["windows"][0]["percent"], 41.0);
+    }
+    #[test]
+    fn rotation_never_keeps_previous_accounts_numbers() {
+        let records = [record("work", 41.0), record("home", 7.0)];
+        assert_eq!(
+            snapshot_of(&records, &auth("work"), &Value::Null, 0)["claude"]["account"],
+            "work"
+        );
+        assert_eq!(
+            snapshot_of(&records, &auth("home"), &Value::Null, 0)["claude"]["account"],
+            "home"
+        );
+        assert!(
+            snapshot_of(&records[..1], &auth("home"), &Value::Null, 0)
+                .get("claude")
+                .is_none()
+        );
+    }
+    #[test]
+    fn engine_reports_repaint_and_stop_unsubscribes() {
+        use std::sync::atomic::AtomicUsize;
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let listener: ListenerCallback = Arc::default();
+        let repaints = Arc::new(AtomicUsize::new(0));
+        let source = NativeUsage::create(
+            PathBuf::from("/nonexistent-side-panel-test"),
+            {
+                let records = records.clone();
+                Arc::new(move || records.lock().expect("records").clone())
+            },
+            {
+                let listener = listener.clone();
+                Arc::new(move |callback| {
+                    *listener.lock().expect("listener") = Some(callback);
+                    let listener = listener.clone();
+                    Some(Box::new(move || {
+                        listener.lock().expect("listener").take();
+                    }))
+                })
+            },
+            {
+                let repaints = repaints.clone();
+                Arc::new(move || {
+                    repaints.fetch_add(1, Ordering::SeqCst);
+                })
+            },
+        );
+        source.start();
+        assert_eq!(repaints.load(Ordering::SeqCst), 1);
+        let mut report = record("work", 12.0);
+        report.error = Some("rate limited".into());
+        *records.lock().expect("records") = vec![report];
+        let notify = listener
+            .lock()
+            .expect("listener")
+            .clone()
+            .expect("subscribed");
+        notify();
+        assert_eq!(repaints.load(Ordering::SeqCst), 2);
+        let rows = source.rows(0, 40);
+        assert!(rows.iter().any(|row| row.text == "rate limited"));
+        assert!(rows.iter().all(|row| !row.text.contains("retry")));
+        source.refresh();
+        assert_eq!(repaints.load(Ordering::SeqCst), 3);
+        source.stop();
+        assert!(listener.lock().expect("listener").is_none());
+        notify();
+        assert_eq!(repaints.load(Ordering::SeqCst), 3);
     }
 }

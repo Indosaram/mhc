@@ -198,6 +198,7 @@ fn clone_tool_call(tool_call: &ToolCall) -> ToolCall {
 fn clone_start_message(message: &AssistantMessage) -> AssistantMessage {
     AssistantMessage {
         error_cause: message.error_cause,
+        prompt_cache_breakpoint: message.prompt_cache_breakpoint,
         prompt_cache_diagnostics: message.prompt_cache_diagnostics.clone(),
         thinking_level: message.thinking_level,
         provider_diagnostic: message.provider_diagnostic.clone(),
@@ -891,6 +892,7 @@ mod tests {
     fn seed() -> AssistantMessage {
         AssistantMessage {
             error_cause: None,
+            prompt_cache_breakpoint: None,
             prompt_cache_diagnostics: None,
             thinking_level: None,
             provider_diagnostic: None,

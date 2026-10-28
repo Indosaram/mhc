@@ -12,6 +12,10 @@ use crate::support::paths::to_git_path;
 use crate::support::time::now_iso;
 
 use super::agreements_write_guard::refuse_agreements_violation;
+use super::claim_frontmatter::{
+    ClaimReceipt, claim_receipt_trailers, provenance_stripped_trailers, restamp_content,
+    stamp_receipt, stripped_legacy_user_header,
+};
 use super::memfs::{
     MemoryFrontmatter, ValidateMemoryPathOptions, parse_memory_file, render_memory_file,
     validate_memory_path,
@@ -50,6 +54,7 @@ impl MemoryToolCommand {
 pub struct MemoryToolParams {
     pub command: Option<String>,
     pub reason: String,
+    pub input: Option<String>,
     pub file_path: Option<String>,
     pub file_text: Option<String>,
     pub description: Option<String>,
@@ -74,6 +79,8 @@ pub struct MemoryToolParams {
 pub struct MemoryToolProvenanceInput {
     pub session_id: String,
     pub user_turns: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<ClaimReceipt>,
 }
 
 /// Commit metadata returned by memory tool operations.
@@ -202,8 +209,36 @@ fn run_memory_tool_inner(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| err("'command' must be a non-empty string"))?;
 
+    if command_str == "apply_patch" {
+        let input = require_str("apply_patch", "input", params.input.as_deref())?;
+        let result = super::memory_apply_patch::run_memory_apply_patch(
+            repo,
+            &super::memory_apply_patch::MemoryApplyPatchParams {
+                reason: params.reason.clone(),
+                input: input.into(),
+                author: author.clone(),
+                provenance: params.provenance.clone(),
+            },
+            None,
+        )?;
+        let sha = result.commit.as_ref().map(|commit| commit.sha.clone());
+        return Ok(MemoryToolResult {
+            result: result.message,
+            commit: result.commit,
+            provenance: MemoryToolProvenance {
+                agent_id: author.agent_id.clone(),
+                author_name: author.author_name.clone(),
+                timestamp: now_iso(),
+                commit_sha: sha,
+                lock_domain: "memory-write".into(),
+            },
+        });
+    }
+
     let root = &repo.dir;
     let mut affected_relative_paths: Vec<String> = Vec::new();
+    let mut stripped_paths = Vec::new();
+    let claim = params.provenance.as_ref().and_then(|p| p.claim.as_ref());
 
     let mut execute_command = || -> Result<(), MemoryToolError> {
         match command_str {
@@ -227,8 +262,10 @@ fn run_memory_tool_inner(
                     read_only: None,
                     kind: None,
                     aliases: None,
+                    extra: Default::default(),
                 };
                 let body = params.file_text.as_deref().unwrap_or("");
+                let frontmatter = stamp_receipt(None, &frontmatter, body, claim);
                 let rendered = render_memory_file(&frontmatter, body).map_err(|e| err(e.0))?;
 
                 fs::write(&target, rendered).map_err(|e| err(e.to_string()))?;
@@ -259,8 +296,13 @@ fn run_memory_tool_inner(
                 }
 
                 let updated_body = parsed.body.replacen(old_str, new_str, 1);
+                let frontmatter =
+                    stamp_receipt(Some(&parsed), &parsed.frontmatter, &updated_body, claim);
                 let rendered =
-                    render_memory_file(&parsed.frontmatter, &updated_body).map_err(|e| err(e.0))?;
+                    render_memory_file(&frontmatter, &updated_body).map_err(|e| err(e.0))?;
+                if stripped_legacy_user_header(Some(&content), &rendered) {
+                    stripped_paths.push(rel.clone());
+                }
 
                 fs::write(&target, rendered).map_err(|e| err(e.to_string()))?;
                 Ok(())
@@ -294,8 +336,13 @@ fn run_memory_tool_inner(
                 }
 
                 let updated_body = lines.join("\n");
+                let frontmatter =
+                    stamp_receipt(Some(&parsed), &parsed.frontmatter, &updated_body, claim);
                 let rendered =
-                    render_memory_file(&parsed.frontmatter, &updated_body).map_err(|e| err(e.0))?;
+                    render_memory_file(&frontmatter, &updated_body).map_err(|e| err(e.0))?;
+                if stripped_legacy_user_header(Some(&content), &rendered) {
+                    stripped_paths.push(rel.clone());
+                }
 
                 fs::write(&target, rendered).map_err(|e| err(e.to_string()))?;
                 Ok(())
@@ -364,6 +411,34 @@ fn run_memory_tool_inner(
                     fs::create_dir_all(parent).map_err(|e| err(e.to_string()))?;
                 }
 
+                if src.is_dir() {
+                    let mut files = Vec::new();
+                    collect_files(&src, root, &mut files)?;
+                    for rel in files {
+                        let path = root.join(&rel);
+                        if path.extension().is_some_and(|ext| ext == "md") {
+                            let content = read_existing_file(&path, &rel)?;
+                            let written = restamp_content(Some(&content), &content, None)
+                                .map_err(|e| err(e.0))?;
+                            if stripped_legacy_user_header(Some(&content), &written) {
+                                stripped_paths.push(rel);
+                            }
+                            if written != content {
+                                fs::write(path, written).map_err(|e| err(e.to_string()))?;
+                            }
+                        }
+                    }
+                } else {
+                    let content = read_existing_file(&src, &src_rel)?;
+                    let written =
+                        restamp_content(Some(&content), &content, None).map_err(|e| err(e.0))?;
+                    if stripped_legacy_user_header(Some(&content), &written) {
+                        stripped_paths.push(src_rel.clone());
+                    }
+                    if written != content {
+                        fs::write(&src, written).map_err(|e| err(e.to_string()))?;
+                    }
+                }
                 fs::rename(&src, &dst).map_err(|e| err(e.to_string()))?;
                 Ok(())
             }
@@ -387,9 +462,15 @@ fn run_memory_tool_inner(
                 let mut parsed = parse_memory_file(&content).map_err(|e| err(e.0))?;
                 assert_not_readonly(&parsed.frontmatter, &rel)?;
 
+                let previous = parsed.clone();
                 parsed.frontmatter.description = desc_str.to_string();
+                let frontmatter =
+                    stamp_receipt(Some(&previous), &parsed.frontmatter, &parsed.body, claim);
                 let rendered =
-                    render_memory_file(&parsed.frontmatter, &parsed.body).map_err(|e| err(e.0))?;
+                    render_memory_file(&frontmatter, &parsed.body).map_err(|e| err(e.0))?;
+                if stripped_legacy_user_header(Some(&content), &rendered) {
+                    stripped_paths.push(rel.clone());
+                }
 
                 fs::write(&target, rendered).map_err(|e| err(e.to_string()))?;
                 Ok(())
@@ -409,7 +490,12 @@ fn run_memory_tool_inner(
 
     let commit_res = repo.commit_write(
         &affected_relative_paths,
-        &memory_commit_message(&params.reason, params.provenance.as_ref(), writer),
+        &memory_commit_message(
+            &params.reason,
+            params.provenance.as_ref(),
+            writer,
+            &stripped_paths,
+        ),
         author,
     );
 
@@ -466,15 +552,24 @@ pub(crate) fn memory_commit_message(
     reason: &str,
     provenance: Option<&MemoryToolProvenanceInput>,
     writer: MemoryWriter,
+    stripped_paths: &[String],
 ) -> String {
-    match provenance {
-        None => reason.to_string(),
-        Some(provenance) => format!(
-            "{reason}\n\nOmo-Writer: {}\nOmo-Session: {}\nOmo-Turn: {}",
-            writer.as_str(),
-            provenance.session_id,
-            provenance.user_turns
-        ),
+    let mut trailers = Vec::new();
+    if let Some(provenance) = provenance {
+        trailers.extend([
+            format!("Omo-Writer: {}", writer.as_str()),
+            format!("Omo-Session: {}", provenance.session_id),
+            format!("Omo-Turn: {}", provenance.user_turns),
+        ]);
+        if let Some(claim) = &provenance.claim {
+            trailers.extend(claim_receipt_trailers(claim));
+        }
+    }
+    trailers.extend(provenance_stripped_trailers(stripped_paths));
+    if trailers.is_empty() {
+        reason.to_string()
+    } else {
+        format!("{reason}\n\n{}", trailers.join("\n"))
     }
 }
 

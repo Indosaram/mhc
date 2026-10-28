@@ -53,6 +53,10 @@ jobs:
           node assets/omo-latest/stage-omowright-runtime.mjs --source "$RUNNER_TEMP/omowright" --target "$RUNNER_TEMP/omowright-runtime"
 
       - name: package
+        env:
+          # Dev installs target this machine, built natively on ubuntu-24.04 (glibc 2.39); the 2.28
+          # floor is for published releases, which build with cargo-zigbuild (release.yml).
+          MHC_GLIBC_CEILING: "2.39"
         run: |
           export MHC_BUILD_VERSION="${GITHUB_REF_NAME#build/}"
           name=mhc-linux-x86_64

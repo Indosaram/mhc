@@ -162,6 +162,7 @@ mod tests {
                 creation_model: Some(("anthropic".into(), "m".into())),
                 initial_thinking_level: Some("high".into()),
                 auto_title: Some(false),
+                prompt_size_inventory: None,
             },
             session_path: None,
             durable_session_id: None,

@@ -1,3 +1,6 @@
+type ArcSyncStatus = std::sync::Arc<
+    dyn Fn(&std::path::Path) -> Option<crate::sync_runner::SyncRepoStatus> + Send + Sync,
+>;
 use crate::{context::MemoryIdentityContext, status_active_runs::ActiveReflectionRun};
 use memory_core::git::{GitMemoryRepo, GitMemoryRepoOptions, errors::GitError};
 use std::collections::BTreeMap;
@@ -65,6 +68,7 @@ pub fn register_memory_rpc_bridge(
 }
 #[derive(Default)]
 pub struct MemoryRpcBridge {
+    pub sync_status: Option<ArcSyncStatus>,
     session_id: Option<String>,
     last_snapshot: Option<String>,
     disposed: bool,
@@ -135,9 +139,15 @@ impl MemoryRpcBridge {
         if let Some(fingerprint) = health.get("fingerprint") {
             reflection["lastFailureFingerprint"] = fingerprint.clone();
         }
-        Ok(Some(
-            serde_json::json!({"schemaVersion":1,"identity":context.identity,"repo":repo_state,"reflection":reflection,"journal":{"sessionId":session,"totalSteps":journal.total_steps,"reflectedSteps":journal.reflected_steps}}),
-        ))
+        let mut snapshot = serde_json::json!({"schemaVersion":1,"identity":context.identity,"repo":repo_state,"reflection":reflection,"journal":{"sessionId":session,"totalSteps":journal.total_steps,"reflectedSteps":journal.reflected_steps}});
+        if let Some(status) = self
+            .sync_status
+            .as_ref()
+            .and_then(|read| read(&context.identity_paths.repo))
+        {
+            snapshot["sync"] = crate::sync_status_cached::rpc_status(&status);
+        }
+        Ok(Some(snapshot))
     }
     pub fn sync(
         &mut self,

@@ -29,7 +29,7 @@ fn scope_rules(settings:&Map<String,Value>,scope:&str,home:&str)->Result<Ruleset
 /// CLI preset, CLI rules, in that order) and the preset that is in force (CLI, else project, else global, else default).
 #[derive(Clone,Debug)]
 pub struct ResolvedPermissionConfig { pub rules:Ruleset, pub preset:PermissionPresetName }
-/// How an app-server client should read the session's approval behavior (Codex `AskForApproval` names).
+/// The session's effective approval behavior.
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum ApprovalSummary { Never, OnRequest, Untrusted }
 impl ApprovalSummary {

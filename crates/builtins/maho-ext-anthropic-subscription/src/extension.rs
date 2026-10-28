@@ -142,6 +142,7 @@ impl Extension for AnthropicSubscriptionExtension {
         api.register_provider(
             crate::auth_lane::PROVIDER_ID,
             ProviderConfig {
+                owns_account_selection: true,
                 base_url: Some(crate::api_id::CLAUDE_SDK_OAUTH_API_ID.into()),
                 api: Some(crate::api_id::CLAUDE_SDK_OAUTH_API_ID.into()),
                 models: Some(models()),
