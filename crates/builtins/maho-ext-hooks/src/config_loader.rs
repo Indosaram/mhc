@@ -1,4 +1,5 @@
 use serde_json::{Value,json};
+use crate::claude_plugins::{ClaudeLocations,append_claude_hooks};
 use crate::diagnostics::{DiagnosticDraft,diagnostic};
 use crate::schema::parse_hook_config;
 use crate::types::{HookDiscoveryTiming,HookSourceMetadata,HookSourceScope,ParsedHookConfig,Severity,SupportedHookEvent};
@@ -64,38 +65,17 @@ pub fn load_hook_config_sources(options:&HookConfigLoaderOptions,mut read_text_f
 }
 
 pub fn load_hook_config_files(options:&HookConfigLoaderOptions)->ParsedHookConfig {
+    load_hook_config_files_in(options,&ClaudeLocations::from_process_env())
+}
+
+/// `load_hook_config_files` with explicit Claude Code locations: mhc's own sources first, then
+/// Claude Code settings hooks and installed-plugin hooks (`crate::claude_plugins`).
+pub fn load_hook_config_files_in(options:&HookConfigLoaderOptions,locations:&ClaudeLocations)->ParsedHookConfig {
     let mut parsed=load_hook_config_sources(options,|path|match std::fs::read(path) {
         Ok(bytes)=>Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(error)=>Err(error),
     });
-    append_claude_plugin_hooks(options,&claude_config_dir(),&mut parsed);
+    append_claude_hooks(options,locations,&mut parsed);
     parsed
-}
-
-/// Claude Code's config directory: `CLAUDE_CONFIG_DIR` when set, else `~/.claude`.
-fn claude_config_dir()->std::path::PathBuf {
-    std::env::var_os("CLAUDE_CONFIG_DIR").filter(|dir|!dir.is_empty()).map(std::path::PathBuf::from)
-        .unwrap_or_else(||std::path::PathBuf::from(maho_core::config::home_dir()).join(".claude"))
-}
-
-fn append_claude_plugin_hooks(options:&HookConfigLoaderOptions,claude_dir:&std::path::Path,parsed:&mut ParsedHookConfig) {
-    for (path,scope) in [(claude_dir.join("settings.json"),HookSourceScope::Global),
-        (std::path::Path::new(&options.cwd).join(".claude/settings.json"),HookSourceScope::Project),
-        (std::path::Path::new(&options.cwd).join(".claude/settings.local.json"),HookSourceScope::Project)] {
-        let config=match std::fs::read_to_string(&path) {
-            Ok(text)=>match serde_json::from_str::<Value>(&text) {
-                Ok(config)=>config,
-                Err(error)=>{maho_ext_api::diagnostic(&format!("Claude hooks {}: {error}",path.display()));continue;}
-            },
-            Err(error) if error.kind()==std::io::ErrorKind::NotFound=>continue,
-            Err(error)=>{maho_ext_api::diagnostic(&format!("Claude hooks {}: {error}",path.display()));continue;}
-        };
-        if config.get("hooks").is_none() {continue;}
-        let mut metadata=source(scope,path.to_string_lossy().into_owned(),HookDiscoveryTiming::PreSession);
-        metadata.display_order=parsed.executable_handlers.iter().map(|handler|handler.source.display_order).max().map_or(0,|order|order+1);
-        let loaded=parse_hook_config(&config,&metadata);
-        parsed.executable_handlers.extend(loaded.executable_handlers);
-        parsed.diagnostics.extend(loaded.diagnostics);
-    }
 }
 
 pub async fn load_hook_config_sources_async(options:&HookConfigLoaderOptions)->ParsedHookConfig {
@@ -112,7 +92,7 @@ pub async fn load_hook_config_sources_async(options:&HookConfigLoaderOptions)->P
     let mut parsed=load_hook_config_sources(options,|path|match files.get(path) {
         Some(Ok(text))=>Ok(text.clone()),Some(Err(error))=>Err(std::io::Error::new(error.kind(),error.to_string())),None=>Ok(None),
     });
-    append_claude_plugin_hooks(options,&claude_config_dir(),&mut parsed);
+    append_claude_hooks(options,&ClaudeLocations::from_process_env(),&mut parsed);
     parsed
 }
 
@@ -124,55 +104,6 @@ fn source_error(source:&HookSourceMetadata,message:String)->ParsedHookConfig {
 mod tests {
     use super::*;
 
-    #[test]
-    fn claude_plugin_hooks_reach_dispatch_with_plugin_trust_identity() -> std::io::Result<()> {
-        // Given
-        let root = tempfile::tempdir()?;
-        let claude = root.path().join("claude");
-        let plugin = root.path().join("plugin");
-        std::fs::create_dir_all(claude.join("plugins"))?;
-        std::fs::create_dir_all(plugin.join("hooks"))?;
-        std::fs::write(claude.join("plugins/installed_plugins.json"), json!({"version":1,"plugins":{
-            "native@test":{"installPath":plugin,"scope":"user","version":"1"}
-        }}).to_string())?;
-        std::fs::write(plugin.join("hooks/hooks.json"), json!({"hooks":{"PreToolUse":[{"hooks":[{
-            "type":"command","command":"${CLAUDE_PLUGIN_ROOT}/check"
-        }]}]}}).to_string())?;
-        let options = HookConfigLoaderOptions { cwd: root.path().to_string_lossy().into_owned(), ..Default::default() };
-        let mut parsed = ParsedHookConfig::default();
-        // When
-        append_claude_plugin_hooks(&options, &claude, &mut parsed);
-        // Then
-        assert_eq!(parsed.executable_handlers.len(), 1);
-        let handler = &parsed.executable_handlers[0];
-        assert_eq!(handler.source.scope, HookSourceScope::Plugin);
-        assert_eq!(handler.source.plugin_root.as_deref(), plugin.to_str());
-        assert_eq!(handler.config.command, format!("{}/check", plugin.display()));
-        assert_eq!(handler.source.discovered_at, HookDiscoveryTiming::PreSession);
-        assert!(parsed.diagnostics.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn claude_settings_hooks_keep_global_and_project_trust_scopes() -> std::io::Result<()> {
-        // Given
-        let root = tempfile::tempdir()?;
-        let claude = root.path().join("claude");
-        let cwd = root.path().join("project");
-        std::fs::create_dir_all(&claude)?;
-        std::fs::create_dir_all(cwd.join(".claude"))?;
-        let config = json!({"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"check"}]}]}});
-        std::fs::write(claude.join("settings.json"), config.to_string())?;
-        std::fs::write(cwd.join(".claude/settings.local.json"), config.to_string())?;
-        let options = HookConfigLoaderOptions { cwd:cwd.to_string_lossy().into_owned(), ..Default::default() };
-        let mut parsed = ParsedHookConfig::default();
-        // When
-        append_claude_plugin_hooks(&options, &claude, &mut parsed);
-        // Then
-        assert_eq!(parsed.executable_handlers.iter().map(|handler|handler.source.scope.clone()).collect::<Vec<_>>(),
-            vec![HookSourceScope::Global,HookSourceScope::Project]);
-        Ok(())
-    }
     #[tokio::test]
     async fn sync_and_async_files_decode_invalid_utf8_with_replacement()->std::io::Result<()> {
         let dir=tempfile::tempdir()?;let path=dir.path().join("hooks.json");
