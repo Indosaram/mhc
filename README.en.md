@@ -6,7 +6,7 @@
 
 [![Release](https://img.shields.io/github/v/release/Indosaram/mhc?style=flat-square)](https://github.com/Indosaram/mhc/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/Indosaram/mhc/ci.yml?branch=main&style=flat-square&label=ci)](https://github.com/Indosaram/mhc/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](#license)
+[![License: MIT + SUL-1.0](https://img.shields.io/badge/license-MIT%20%2B%20SUL--1.0-blue?style=flat-square)](#license)
 
 [简体中文](README.md) · **English**
 
@@ -18,9 +18,10 @@
 
 - **Native core binary.** Standalone native executable with no Node, Bun or npm required for core agent operation (the code execution eval tool needs [Bun](https://bun.sh), and package installation via `mhc install` uses `npm`).
 - **Same experience as OmO on senpi.** The TypeScript sources are ported file by file and checked against upstream golden fixtures, so the UI, keys and behavior match.
-- **Your existing setup just works.** mhc reads the same `~/.omo` config, models, auth and agents files.
-- **Everything included.** Subagents, workflows, long-term memory, LSP, ast-grep, MCP, web search and builtin skills ship in the release.
+- **Your existing setup just works.** mhc reads the same `~/.omo` config, models, auth and agents as OmO.
+- **Everything included.** Subagents, `ultrawork` / `ulw-loop` workflows, long-term memory, LSP, ast-grep, MCP, web search and builtin skills ship in the release.
 - **Any model.** Anthropic, OpenAI, Gemini, DeepSeek, Qwen, Kimi, ZAI, MiniMax, OpenRouter, Ollama, Bedrock, Azure and more.
+- **A fraction of the memory.** On the same fixed workflow DAG (3 parallel child agents + join), in a historical measurement, mhc peaked at 83-86 MB of anonymous memory and OmO at 1356-1398 MB, about 16x less, in the same wall time. Method, raw numbers and how to rerun it: [docs/memory-benchmark.md](docs/memory-benchmark.md).
 
 ## Privacy and safety defaults
 
@@ -121,4 +122,9 @@ For security vulnerability reporting and policy, see [SECURITY.md](SECURITY.md).
 
 ## License
 
-mhc is licensed under **MIT** ([LICENSES/MIT.txt](LICENSES/MIT.txt)). It ports [senpi](https://github.com/code-yeongyu/senpi) (MIT). Third-party components keep their own licenses; see [LICENSE](LICENSE).
+Each part keeps the license of the project it ports:
+
+- `crates/maho-*`, `crates/builtins`, `crates/extensions`, `crates/desktop`, `crates/vendor` port [senpi](https://github.com/code-yeongyu/senpi) under **MIT** ([LICENSES/MIT.txt](LICENSES/MIT.txt)).
+- `crates/omo/**` ports [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) under the **Sustainable Use License 1.0** ([LICENSES/SUL-1.0.md](LICENSES/SUL-1.0.md)): use, copy, modify and prepare derivative works for your own internal business purposes or for non-commercial or personal use; distribute only free of charge for non-commercial purposes; notices must be preserved.
+
+mhc is a modified derivative of both projects (a Rust reimplementation of their TypeScript sources), as the Sustainable Use License requires us to state.
