@@ -10,7 +10,7 @@ argument-hint: "<what you want planned>"
 
 **Cost:** about five parallel agents × three rounds, plus one planner run. Do not use it for a small or obvious change — suggest the plain plan skill instead.
 
-Throughout, "the plan skill" means the harness's planning skill (substitute whatever planning skill your build ships).
+Throughout, "the plan skill" means the harness's planning skill (in mhc today: `ulw-plan`; substitute whatever planning skill your build ships).
 
 ## 0. Preconditions — check before anything else
 
@@ -174,7 +174,7 @@ One foreground `task` call:
 ```json
 task({
   "category": "ultrabrain",
-  "load_skills": ["<the plan skill>"],
+  "load_skills": ["<the plan skill, e.g. ulw-plan>"],
   "run_in_background": false,
   "description": "Plan from adversarially reviewed insights",
   "prompt": "<handoff prompt below>"
