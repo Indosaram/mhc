@@ -4,9 +4,8 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use maho_ext_api::{
-    ComponentLogger, DeferredMacrotask, ExtensionContext, FlagValue, IdleInjectionCoordinator, ToolDefinition,
-};
+use idle_injection::IdleInjectionCoordinator;
+use maho_ext_api::{ComponentLogger, DeferredMacrotask, ExtensionContext, FlagValue, ToolDefinition};
 
 use crate::capture::ToolCaptureRegistry;
 use crate::coordinator::{IdleInjectionDelivery, IdleInjectionQueue};
@@ -45,7 +44,7 @@ impl OmoComponentContext {
     /// native components read `logger`, `idle_coordinator` and `defer_macrotask`.
     pub fn bind(&self, ctx: &mut ExtensionContext) {
         ctx.logger = Some(Arc::clone(&self.logger));
-        ctx.idle_coordinator = Some(Arc::clone(&self.idle_coordinator));
+        ctx.idle_coordinator = Some(idle_injection::into_slot(Arc::clone(&self.idle_coordinator)));
         ctx.defer_macrotask = Some(Arc::clone(&self.defer_macrotask));
     }
 }

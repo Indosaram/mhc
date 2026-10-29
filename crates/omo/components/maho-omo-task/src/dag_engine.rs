@@ -3,7 +3,8 @@
 //! graph is shared by the tool, scheduler, RPC, TUI, wake, and lifecycle adapters.
 use crate::dag_runtime::DurableDagListener;
 use crate::engine::TaskEngine;
-use maho_ext_api::{ComponentLogger, IdleInjectionCoordinator};
+use idle_injection::IdleInjectionCoordinator;
+use maho_ext_api::ComponentLogger;
 use senpi_task::dag::{
     manager::{DagManager, DagManagerOptions, DagRunRecordV1, create_dag_manager},
     recovery::{
@@ -1764,7 +1765,7 @@ impl TaskDagEngine {
                     maho_ext_api::ExtensionEvent::SessionStart(start) => Some(start.clone()),
                     _ => None,
                 };
-                let coordinator = context.idle_coordinator.clone();
+                let coordinator = idle_injection::from_slot(&context.idle_coordinator);
                 Box::pin(async move {
                     if let Some(dag) = attach.upgrade() {
                         tokio::task::spawn_blocking(move || {

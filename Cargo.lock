@@ -3704,6 +3704,7 @@ dependencies = [
  "maho-omo",
  "maho-omo-config-core",
  "maho-omo-config-resolution",
+ "maho-omo-idle-injection",
  "maho-omo-lsp",
  "maho-omo-memory",
  "maho-omo-task",
@@ -5186,6 +5187,7 @@ name = "maho-omo"
 version = "0.0.0"
 dependencies = [
  "claude-code-compat-core",
+ "futures",
  "indexmap",
  "libc",
  "maho-ai",
@@ -5205,6 +5207,7 @@ dependencies = [
  "maho-omo-feedback",
  "maho-omo-gateway",
  "maho-omo-git-master",
+ "maho-omo-idle-injection",
  "maho-omo-init-deep-advisor",
  "maho-omo-lsp",
  "maho-omo-memory",
@@ -5229,6 +5232,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+ "url",
  "uuid",
  "windows-sys 0.61.2",
 ]
@@ -5501,6 +5505,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-omo-idle-injection"
+version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+]
+
+[[package]]
 name = "maho-omo-init-deep-advisor"
 version = "0.0.0"
 dependencies = [
@@ -5702,6 +5713,7 @@ dependencies = [
  "maho-ext-host",
  "maho-omo-agent-home",
  "maho-omo-fallback-architect",
+ "maho-omo-idle-injection",
  "maho-test-support",
  "serde_json",
  "tempfile",
@@ -5719,6 +5731,7 @@ dependencies = [
  "maho-ext-api",
  "maho-model-core",
  "maho-omo-git-master",
+ "maho-omo-idle-injection",
  "maho-omo-lsp",
  "maho-senpi-task",
  "maho-team-core",
@@ -5791,6 +5804,7 @@ version = "0.0.0"
 dependencies = [
  "maho-ext-api",
  "maho-ext-host",
+ "maho-omo-idle-injection",
  "maho-omo-start-work-continuation",
  "maho-test-support",
  "serde_json",

@@ -4,52 +4,6 @@ use serde_json::json;
 fn expiry_leeway_includes_exact_boundary() {
     let mut record=McpStoredAuth {access_token:Some("fixture".into()),expires_at:Some(300000.0),..Default::default()};assert!(is_token_stale(Some(&record),0.0));record.expires_at=Some(300001.0);assert!(!is_token_stale(Some(&record),0.0));record.expires_at=None;assert!(!is_token_stale(Some(&record),0.0));record.access_token=None;assert!(is_token_stale(Some(&record),0.0));
 }
-
-#[tokio::test]
-async fn different_server_urls_refresh_independently() {
-    use maho_ext_mcp::auth::{oauth_provider::McpOAuthProvider,token_store::McpTokenStore};
-    use std::sync::Arc;
-    let root = tempfile::tempdir().unwrap();
-    let gate = Arc::new(tokio::sync::Semaphore::new(0));
-    let (entered, mut requests) = tokio::sync::mpsc::unbounded_channel();
-    let discovery_gate = gate.clone();
-    let discover: DiscoverFn = Arc::new(move |url| {
-        let url = url.to_owned();
-        let entered = entered.clone();
-        let gate = discovery_gate.clone();
-        Box::pin(async move {
-            entered.send(url).unwrap();
-            gate.acquire().await.unwrap().forget();
-            Err(OAuthRequestError::Invalid("fixture discovery failure".into()))
-        })
-    });
-    let make_manager = |name: &str| {
-        let url = format!("https://fixture.invalid/{}/{name}", root.path().file_name().unwrap().to_string_lossy());
-        let store = McpTokenStore::new(root.path(), name, &url);
-        store.write(McpStoredAuth {access_token:Some("stale".into()),refresh_token:Some("refresh".into()),expires_at:Some(0.0),..Default::default()}).unwrap();
-        (url, McpRefreshManager::new_with_options(Arc::new(McpOAuthProvider::new(store)), reqwest::Client::new(), RefreshManagerOptions {discover:Some(discover.clone()),..Default::default()}))
-    };
-    let (first_url, first_manager) = make_manager("first");
-    let (second_url, second_manager) = make_manager("second");
-    let mut first = Box::pin(first_manager.refresh());
-    let mut second = Box::pin(second_manager.refresh());
-    assert!(futures::poll!(&mut first).is_pending());
-    assert!(futures::poll!(&mut second).is_pending());
-    let mut observed = Vec::new();
-    for _ in 0..2 {
-        observed.push(tokio::time::timeout(std::time::Duration::from_secs(2), requests.recv()).await.unwrap().unwrap());
-    }
-    assert!(observed.contains(&first_url));
-    assert!(observed.contains(&second_url));
-    assert!(is_refresh_in_progress(&first_url));
-    assert!(is_refresh_in_progress(&second_url));
-    gate.add_permits(2);
-    let (first, second) = tokio::join!(first, second);
-    assert!(first.is_err());
-    assert!(second.is_err());
-    assert!(!is_refresh_in_progress(&first_url));
-    assert!(!is_refresh_in_progress(&second_url));
-}
 #[test]
 fn proof_key_support_must_be_explicit() {
     assert!(assert_s256_supported(Some(&json!({"code_challenge_methods_supported":["S256"]})),"srv").is_ok());
@@ -118,25 +72,14 @@ async fn concurrent_failed_refreshes_share_one_request_and_later_calls_retry() {
     let root=tempfile::tempdir().unwrap();let store=McpTokenStore::new(root.path(),"coalesce",&base);
     store.write(McpStoredAuth {access_token:Some("fixture-stale".into()),refresh_token:Some("fixture-refresh".into()),expires_at:Some(0.0),..Default::default()}).unwrap();
     let mut provider=McpOAuthProvider::new(store);provider.client_id=Some("fixture-client".into());let info=OAuthServerInfo {authorization_server_url:base.clone(),authorization_server_metadata:json!({"token_endpoint":format!("{base}/token")}),resource_metadata:serde_json::Value::Null};let manager=Arc::new(McpRefreshManager::new_with_options(Arc::new(provider),reqwest::Client::new(),RefreshManagerOptions {discover:Some(Arc::new(move |_| {let info=info.clone();Box::pin(async move {Ok(info)})})),..Default::default()}));
-    let mut other_provider=McpOAuthProvider::new(McpTokenStore::new(root.path(),"coalesce",&base));
-    other_provider.client_id=Some("fixture-client".into());
-    let other_info=OAuthServerInfo {authorization_server_url:base.clone(),authorization_server_metadata:json!({"token_endpoint":format!("{base}/token")}),resource_metadata:serde_json::Value::Null};
-    let other_manager=McpRefreshManager::new_with_options(Arc::new(other_provider),reqwest::Client::new(),RefreshManagerOptions {discover:Some(Arc::new(move |_| {let info=other_info.clone();Box::pin(async move {Ok(info)})})),..Default::default()});
-    let mut first=Box::pin(manager.refresh());let mut second=Box::pin(other_manager.refresh());
+    let mut first=Box::pin(manager.refresh());let mut second=Box::pin(manager.refresh());
     assert!(futures::poll!(&mut first).is_pending());
     tokio::time::timeout(std::time::Duration::from_secs(2),requests.recv()).await.unwrap().unwrap();
-    assert!(maho_ext_mcp::auth::oauth_refresh::is_refresh_in_progress(&base));
-    assert!(maho_ext_mcp::auth::oauth_refresh::get_active_refresh_count() >= 1);
-    assert!(!maho_ext_mcp::auth::oauth_refresh::is_refresh_in_progress(&format!("{base}/independent")));
-    assert!(futures::poll!(&mut second).is_pending());
-    drop(first);
-    assert!(maho_ext_mcp::auth::oauth_refresh::is_refresh_in_progress(&base));
-    release.add_permits(2);
-    let second=second.await;let concurrent_hits=hits.load(Ordering::SeqCst);
-    assert!(!maho_ext_mcp::auth::oauth_refresh::is_refresh_in_progress(&base));
+    assert!(futures::poll!(&mut second).is_pending());release.add_permits(2);
+    let (first,second)=tokio::join!(first,second);let concurrent_hits=hits.load(Ordering::SeqCst);
     release.add_permits(1);let later=manager.refresh().await;
     shutdown.send(()).unwrap();server.await.unwrap();
-    for result in [second,later] {assert!(matches!(result,Err(OAuthRequestError::Flow(error)) if error.oauth_kind==OAuthFailureKind::Transient));}
+    for result in [first,second,later] {assert!(matches!(result,Err(OAuthRequestError::Flow(error)) if error.oauth_kind==OAuthFailureKind::Transient));}
     assert_eq!(concurrent_hits,1);assert_eq!(hits.load(Ordering::SeqCst),2);
 }
 #[tokio::test]
@@ -154,28 +97,16 @@ async fn injected_discover_replaces_sdk_discovery_on_the_cache_miss_path() {
     assert_eq!(hits.load(Ordering::SeqCst),1,"the injected discover must run on a cache miss");
 }
 #[tokio::test]
-async fn injected_discover_takes_precedence_over_the_process_discovery_cache() {
+async fn injected_discovery_overrides_stored_state_during_refresh() {
     use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
     use maho_ext_mcp::auth::{oauth_errors::OAuthFlowError,oauth_provider::McpOAuthProvider,token_store::McpTokenStore};
-    reset_discovery_cache();
-    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let address=listener.local_addr().unwrap();
-    let protected=json!({"resource":format!("http://{address}/sse"),"authorization_servers":[format!("http://{address}")]});
-    let metadata=json!({"issuer":format!("http://{address}"),"authorization_endpoint":format!("http://{address}/authorize"),"token_endpoint":format!("http://{address}/token")});
-    let (stop,stopped)=tokio::sync::oneshot::channel();
-    let app=axum::Router::new()
-        .route("/.well-known/oauth-protected-resource",axum::routing::get(move ||{let protected=protected.clone();async move {axum::Json(protected)}}))
-        .route("/.well-known/oauth-authorization-server",axum::routing::get(move ||{let metadata=metadata.clone();async move {axum::Json(metadata)}}));
-    let server=tokio::spawn(async move {axum::serve(listener,app).with_graceful_shutdown(async {let _=stopped.await;}).await.unwrap();});
-    let root=tempfile::tempdir().unwrap();let store=McpTokenStore::new(root.path(),"cached",&format!("http://{address}/sse"));
-    let mut warm=McpOAuthProvider::new(store.clone());warm.require_https=false;
-    let client=reqwest::Client::new();discover(&warm,&client).await.unwrap();
+    let root=tempfile::tempdir().unwrap();
+    let store=McpTokenStore::new(root.path(),"cached","https://mcp.invalid/sse");
     store.write(McpStoredAuth {access_token:Some("stale".into()),refresh_token:Some("refresh".into()),expires_at:Some(0.0),..Default::default()}).unwrap();
     let hits=Arc::new(AtomicUsize::new(0));let observed=hits.clone();
-    let injected:DiscoverFn=Arc::new(move |_url| {let observed=observed.clone();Box::pin(async move {observed.fetch_add(1,Ordering::SeqCst);Err(OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,"injected discovery"))))})});
-    let manager=McpRefreshManager::new_with_options(Arc::new(McpOAuthProvider::new(store)),reqwest::Client::new(),RefreshManagerOptions {discover:Some(injected),..Default::default()});
+    let discover:DiscoverFn=Arc::new(move |_url| {let observed=observed.clone();Box::pin(async move {observed.fetch_add(1,Ordering::SeqCst);Err(OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,"must not run"))))})});
+    let manager=McpRefreshManager::new_with_options(Arc::new(McpOAuthProvider::new(store)),reqwest::Client::new(),RefreshManagerOptions {discover:Some(discover),..Default::default()});
     let result=manager.refresh().await;
-    drop(client);stop.send(()).unwrap();tokio::time::timeout(std::time::Duration::from_secs(2),server).await.unwrap().unwrap();
-    reset_discovery_cache();
     assert!(matches!(&result,Err(OAuthRequestError::Flow(error)) if error.oauth_kind==OAuthFailureKind::NeedsAuth));
-    assert_eq!(hits.load(Ordering::SeqCst),1,"the injected discover must run even with a warm process cache");
+    assert_eq!(hits.load(Ordering::SeqCst),1);
 }

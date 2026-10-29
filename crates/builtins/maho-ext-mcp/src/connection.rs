@@ -32,7 +32,7 @@ pub struct ServerConnection {
     tools: broadcast::Sender<ServerConnectionToolsChangedEvent>,
     project_policy: Mutex<Option<crate::transport::ProjectPolicyResolver>>,
     auth: Mutex<Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>>,
-    step_up: Mutex<Option<Arc<dyn crate::transport_sdk::McpAuthStepUp>>>,
+    auth_challenge_handler: Mutex<Option<Arc<dyn crate::auth::challenge::McpAuthChallengeHandler>>>,
     elicitation_ui: Mutex<Option<Arc<dyn maho_ext_api::ExtensionUi>>>,
 }
 impl ServerConnection {
@@ -66,7 +66,7 @@ impl ServerConnection {
             tools,
             project_policy: Mutex::new(None),
             auth: Mutex::new(None),
-            step_up: Mutex::new(None),
+            auth_challenge_handler: Mutex::new(None),
             elicitation_ui: Mutex::new(None),
         })
     }
@@ -82,17 +82,20 @@ impl ServerConnection {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(refresh);
     }
+    pub fn set_auth_challenge_handler(
+        &self,
+        handler: Arc<dyn crate::auth::challenge::McpAuthChallengeHandler>,
+    ) {
+        *self
+            .auth_challenge_handler
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handler);
+    }
     pub fn set_elicitation_ui(&self, ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>) {
         *self
             .elicitation_ui
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = ui;
-    }
-    pub fn set_step_up(&self, step_up: Arc<dyn crate::transport_sdk::McpAuthStepUp>) {
-        *self
-            .step_up
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(step_up);
     }
     pub fn elicitation_ui(&self) -> Option<Arc<dyn maho_ext_api::ExtensionUi>> {
         self.elicitation_ui
@@ -277,8 +280,8 @@ impl ServerConnection {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .clone();
-                    transport.step_up = self
-                        .step_up
+                    transport.auth_challenge_handler = self
+                        .auth_challenge_handler
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .clone();

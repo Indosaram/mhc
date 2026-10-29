@@ -15,8 +15,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use maho_ext_api::{
     ComponentLogger, DeliverAs, EventBus, Extension, ExtensionApi, ExtensionSessionProfile, FlagType, FlagValue,
-    IdleInjectionCoordinator, LoadedExtension, SendMessageOptions, SourceInfo,
+    LoadedExtension, SendMessageOptions, SourceInfo,
 };
+use idle_injection::IdleInjectionCoordinator;
 
 use crate::coordinator::{Delivery, IdleInjectionDelivery, IdleInjectionMessage};
 use crate::logger::StderrLogger;

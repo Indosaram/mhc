@@ -18,10 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use indexmap::IndexMap;
-use maho_ext_api::{
-    CustomMessage, DeliverAs, IdleInjection, IdleInjectionCoordinator as IdleInjectionCoordinatorTrait,
-    IdleInjectionSource, JsonValue, MessageDeliveryReceipt, ToolContent,
-};
+use idle_injection::{IdleInjection, IdleInjectionCoordinator as IdleInjectionCoordinatorTrait, IdleInjectionSource};
+use maho_ext_api::{CustomMessage, DeliverAs, JsonValue, MessageDeliveryReceipt, ToolContent};
 
 use crate::scheduler::{DeferredScheduler, DeferredTask, TurnBarrier};
 
@@ -99,7 +97,7 @@ struct Inner {
     barrier: Arc<TurnBarrier>,
 }
 
-/// The concrete `IdleInjectionCoordinator` queue (`maho_ext_api::IdleInjectionCoordinator`).
+/// The concrete `IdleInjectionCoordinator` queue (`idle_injection::IdleInjectionCoordinator`).
 #[derive(Clone)]
 pub struct IdleInjectionQueue {
     inner: Arc<Inner>,

@@ -780,7 +780,7 @@ impl TaskComponent {
                             ExtensionEvent::AgentEnd { .. } => {
                                 // Upstream `queueMicrotask(() => coordinator.flushOnIdle())`: drain completions, team
                                 // mail and DAG summaries that arrived mid-turn on the idle edge, after this handler.
-                                if let Some(coordinator) = context.idle_coordinator.clone() {
+                                if let Some(coordinator) = idle_injection::from_slot(&context.idle_coordinator) {
                                     match &context.defer_macrotask {
                                         Some(defer) => defer(Box::new(move || {
                                             coordinator.flush_on_idle();

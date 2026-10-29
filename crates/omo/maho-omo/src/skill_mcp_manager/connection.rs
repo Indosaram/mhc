@@ -135,7 +135,7 @@ pub async fn get_or_create_client(
             .await?;
             if config.get("oauth").is_some() {
                 client
-                    .set_step_up(Arc::new(SkillStepUp {
+                    .set_auth_challenge_handler(Arc::new(SkillStepUp {
                         state: Arc::downgrade(&state),
                         policy: Arc::downgrade(&policy),
                         info: info.clone(),
@@ -237,8 +237,8 @@ struct SkillStepUp {
     config: std::sync::Mutex<Value>,
     key: String,
 }
-impl maho_ext_mcp::transport_sdk::McpAuthStepUp for SkillStepUp {
-    fn login(&self, required: Vec<String>) -> maho_ext_mcp::transport_sdk::AuthStepUpLoginFuture {
+impl maho_ext_mcp::auth::challenge::McpAuthChallengeHandler for SkillStepUp {
+    fn reauthorize(&self, required: Vec<String>) -> futures::future::BoxFuture<'_, Result<(), maho_ext_mcp::errors::McpError>> {
         let config = {
             let mut config = self
                 .config
@@ -253,7 +253,7 @@ impl maho_ext_mcp::transport_sdk::McpAuthStepUp for SkillStepUp {
                 })
                 .unwrap_or_default();
             config["oauth"]["scopes"] = serde_json::json!(
-                maho_ext_mcp::auth::step_up::merge_scopes(&scopes, &required)
+                super::oauth_compat::merge_scopes(&scopes, &required)
             );
             config.clone()
         };
@@ -270,7 +270,7 @@ impl maho_ext_mcp::transport_sdk::McpAuthStepUp for SkillStepUp {
                 })
         })
     }
-    fn reconnect(&self) -> maho_ext_mcp::transport_sdk::AuthStepUpReconnectFuture {
+    fn renew(&self) -> futures::future::BoxFuture<'_, Result<Arc<McpClient>, maho_ext_mcp::errors::McpError>> {
         let state = self.state.upgrade();
         let policy = self.policy.upgrade();
         let info = self.info.clone();

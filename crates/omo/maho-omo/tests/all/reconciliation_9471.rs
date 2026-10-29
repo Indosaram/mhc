@@ -5,7 +5,7 @@ use maho_omo::{Delivery, DeferredScheduler, IdleInjectionQueue, TurnBarrier};
 
 #[test]
 fn a_successful_delivery_reports_flushed() {
-    use maho_ext_api::{IdleInjectionCoordinator, IdleInjectionSource};
+    use idle_injection::{IdleInjectionCoordinator, IdleInjectionSource};
     let scheduler = DeferredScheduler::manual(TurnBarrier::new());
     let queue = IdleInjectionQueue::new(crate::support::DeliveryLog::new().delivery(), scheduler.clone(), scheduler);
     let flushed = Arc::new(AtomicUsize::new(0));
@@ -19,7 +19,7 @@ fn a_successful_delivery_reports_flushed() {
 
 #[test]
 fn a_failed_delivery_reports_failure_without_reporting_flushed() {
-    use maho_ext_api::{IdleInjectionCoordinator, IdleInjectionSource};
+    use idle_injection::{IdleInjectionCoordinator, IdleInjectionSource};
     let scheduler = DeferredScheduler::manual(TurnBarrier::new());
     let queue = IdleInjectionQueue::new(Arc::new(|_, _| Delivery::Failed("unavailable".to_owned())), scheduler.clone(), scheduler);
     let failures = Arc::new(AtomicUsize::new(0));

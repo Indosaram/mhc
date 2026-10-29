@@ -108,6 +108,7 @@ members = [
     "crates/omo/prompts-core",
     "crates/omo/memory-core",
     "crates/omo/utils",
+    "crates/omo/idle-injection",
     "crates/omo/omo-config-core",
     "crates/omo/lsp-core",
     "crates/omo/lsp-daemon",
@@ -133,11 +134,11 @@ members = [
     "crates/desktop/senpi-desktop-backend-win32",
     "crates/desktop/senpi-desktop-session",
     "crates/desktop/senpi-desktop-engine",
-    "crates/desktop/senpi-desktop-protocol",
-    "crates/desktop/senpi-desktop-prelude",
-    "crates/desktop/senpi-desktop-service",
-    "crates/desktop/senpi-desktop-run",
-    "crates/desktop/senpi-desktop-tool",
+    "crates/omo/senpi-desktop-protocol",
+    "crates/omo/senpi-desktop-prelude",
+    "crates/omo/senpi-desktop-service",
+    "crates/omo/senpi-desktop-run",
+    "crates/omo/senpi-desktop-tool",
     "crates/omo/components/maho-omo-agent-home",
     "crates/omo/components/maho-omo-onboarding",
     "crates/omo/components/maho-omo-feedback",
@@ -194,6 +195,7 @@ maho-model-core = { path = "crates/omo/model-core" }
 maho-prompts-core = { path = "crates/omo/prompts-core" }
 maho-memory-core = { path = "crates/omo/memory-core" }
 maho-utils = { path = "crates/omo/utils" }
+maho-omo-idle-injection = { path = "crates/omo/idle-injection" }
 maho-omo-config-core = { path = "crates/omo/omo-config-core" }
 maho-lsp-core = { path = "crates/omo/lsp-core" }
 maho-lsp-daemon = { path = "crates/omo/lsp-daemon" }
