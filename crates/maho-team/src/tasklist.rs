@@ -217,8 +217,14 @@ impl DirLock {
         let path = dir.join(".lock");
         let deadline = Instant::now() + LOCK_WAIT;
         loop {
-            if create_exclusive(&path, &std::process::id().to_string())? {
-                return Ok(Self { path });
+            match create_exclusive(&path, &std::process::id().to_string()) {
+                Ok(true) => return Ok(Self { path }),
+                Ok(false) => {}
+                // On Windows a lock file the previous holder just removed stays "delete pending"
+                // until its last handle closes, and creating it again in that window fails with
+                // PermissionDenied: the lock is still being released, so wait like for a held one.
+                Err(error) if cfg!(windows) && error.kind() == std::io::ErrorKind::PermissionDenied => {}
+                Err(error) => return Err(error),
             }
             if older_than(&path, STALE_LOCK) {
                 let _ = fs::remove_file(&path);
