@@ -164,7 +164,7 @@ async fn dynamic_client_registration_body_matches_the_pinned_shape() {
     for key in ["redirect_uris","grant_types","response_types","token_endpoint_auth_method","client_name"] { assert!(object.contains_key(key),"missing {key}"); }
     assert_eq!(body["grant_types"],json!(["authorization_code","refresh_token"]));
     assert_eq!(body["response_types"],json!(["code"]));
-    assert_eq!(body["client_name"],"oh-my-openagent");assert_eq!(body["token_endpoint_auth_method"],"none");assert!(body.get("scope").is_none());
+    assert_eq!(body["client_name"],"mhc");assert_eq!(body["token_endpoint_auth_method"],"none");assert!(body.get("scope").is_none());
     let authorization=begin.authorization_url.unwrap();
     let resource=authorization.query_pairs().find(|(key,_)|key=="resource").map(|(_,value)|value.into_owned());
     assert_eq!(resource.as_deref(),Some(format!("http://{address}").as_str()));

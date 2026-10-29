@@ -2,7 +2,7 @@
 name = "maho-senpi-desktop-prelude"
 version.workspace = true
 edition = "2021"
-license = "MIT"
+license = "LicenseRef-SUL-1.0"
 autotests = false
 
 [lib]
