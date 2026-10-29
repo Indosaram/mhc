@@ -279,6 +279,7 @@ fn run() -> Result<(), String> {
         println!("Imported {} entries into {}", copied.len(), to.display());
         return Ok(());
     }
+    #[cfg(feature = "omo")]
     if argv.first().is_some_and(|arg| arg == "senpi-install") {
         let action = argv
             .get(1)
@@ -990,6 +991,7 @@ fn omo_entry_unavailable(argv: &[String]) -> Option<i32> {
     let entry = argv.first().map(String::as_str)?;
     let name = match entry {
         "ulw-loop" => "mhc ulw-loop",
+        "senpi-install" => "mhc senpi-install",
         "--memory-supervisor" | "--child-bootstrap" => "the memory supervisor",
         _ => return None,
     };

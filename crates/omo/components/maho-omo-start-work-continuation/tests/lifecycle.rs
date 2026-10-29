@@ -1,5 +1,6 @@
 use crate::support;
 use std::sync::{Arc,Mutex};
+use idle_injection::{IdleInjection, IdleInjectionCoordinator, IdleInjectionSource};
 use maho_ext_api::*;
 #[derive(Default)] struct Actions(Mutex<Vec<CustomMessage>>);
 impl ExtensionActions for Actions {
@@ -242,7 +243,7 @@ async fn retired_coordinator_refuses_the_continuation_without_flushing() -> Resu
     let (api, actions, mut ctx) = register(root.path(), 8);
     let coordinator = Arc::new(Coordinator { accepted: false, ..Coordinator::default() });
     let logger = Arc::new(Logger::default());
-    ctx.idle_coordinator = Some(coordinator.clone());
+    ctx.idle_coordinator = Some(idle_injection::into_slot(coordinator.clone() as Arc<dyn IdleInjectionCoordinator>));
     ctx.logger = Some(logger.clone());
     end(&api, &ctx).await?;
     assert!(actions.0.lock().expect("messages").is_empty(), "a refused injection must not fall back to a direct send");
@@ -260,7 +261,7 @@ async fn accepted_coordinator_queues_and_schedules_a_flush() -> Result<(), Box<d
     write_work(root.path(), "## TODOs\n- [ ] 1. task\n")?;
     let (api, actions, mut ctx) = register(root.path(), 8);
     let coordinator = Arc::new(Coordinator { accepted: true, ..Coordinator::default() });
-    ctx.idle_coordinator = Some(coordinator.clone());
+    ctx.idle_coordinator = Some(idle_injection::into_slot(coordinator.clone() as Arc<dyn IdleInjectionCoordinator>));
     end(&api, &ctx).await?;
     assert_eq!(*coordinator.flushes.lock().expect("flushes"), 1, "an accepted injection schedules exactly one flush");
     let injections = coordinator.injections.lock().expect("injections");

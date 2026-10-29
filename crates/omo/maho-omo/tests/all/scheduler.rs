@@ -2,7 +2,7 @@ use std::future::Future;
 
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use std::time::Duration;
-use maho_ext_api::IdleInjectionSource;
+use idle_injection::IdleInjectionSource;
 use maho_omo::{DeferredScheduler, IdleInjectionQueue, TurnBarrier, runtime_macrotask, runtime_microtask};
 
 #[test]
@@ -118,7 +118,7 @@ async fn consecutive_producers_in_one_turn_deliver_one_batch() {
         result
     }), scheduler.clone(), scheduler);
     queue.run_in_turn(|| {
-        use maho_ext_api::IdleInjectionCoordinator;
+        use idle_injection::IdleInjectionCoordinator;
         queue.enqueue(crate::support::injection("ulw", IdleInjectionSource::UlwContinuation, "continue"));
         queue.schedule_flush();
         queue.enqueue(crate::support::injection("task", IdleInjectionSource::TaskCompletion, "complete"));

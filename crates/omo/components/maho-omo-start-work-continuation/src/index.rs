@@ -1,5 +1,6 @@
 use crate::agent_end_eligibility::read_agent_end_outcome;
 use crate::boulder_eligibility::{ContinuableWork, find_continuable_boulder_work_in};
+use idle_injection::{IdleInjection, IdleInjectionSource};
 use maho_ext_api::*;
 use std::sync::{Arc, Mutex};
 pub const ULW_EXECUTE_STEERING_REMINDER: &str = "<omo-senpi-ulw-execute>\nAn active ulw-execute work plan is present in this working directory.\nBefore continuing, read `.omo/boulder.json` and the active plan file to determine what remains; use the ledger and plan as the source of truth.\nContinue the current work with evidence-bound execution; do not start unrelated work until every top-level checkbox is `- [x]`.\n</omo-senpi-ulw-execute>";
@@ -153,7 +154,7 @@ fn deliver(
     runtime: &ExtensionRuntime,
     content: String,
 ) -> Result<(), ExtensionFailure> {
-    if let Some(coordinator) = &ctx.idle_coordinator {
+    if let Some(coordinator) = idle_injection::from_slot(&ctx.idle_coordinator) {
         let accepted = coordinator.enqueue(IdleInjection {
             key: CONTINUATION_INJECTION_KEY.into(),
             source: IdleInjectionSource::BoulderContinuation,

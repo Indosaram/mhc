@@ -108,6 +108,7 @@ members = [
     "crates/omo/prompts-core",
     "crates/omo/memory-core",
     "crates/omo/utils",
+    "crates/omo/idle-injection",
     "crates/omo/omo-config-core",
     "crates/omo/lsp-core",
     "crates/omo/lsp-daemon",
@@ -194,6 +195,7 @@ maho-model-core = { path = "crates/omo/model-core" }
 maho-prompts-core = { path = "crates/omo/prompts-core" }
 maho-memory-core = { path = "crates/omo/memory-core" }
 maho-utils = { path = "crates/omo/utils" }
+maho-omo-idle-injection = { path = "crates/omo/idle-injection" }
 maho-omo-config-core = { path = "crates/omo/omo-config-core" }
 maho-lsp-core = { path = "crates/omo/lsp-core" }
 maho-lsp-daemon = { path = "crates/omo/lsp-daemon" }

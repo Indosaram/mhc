@@ -1,0 +1,16 @@
+[package]
+name = "maho-omo-idle-injection"
+version.workspace = true
+edition.workspace = true
+license = "LicenseRef-SUL-1.0"
+publish.workspace = true
+
+[lib]
+name = "idle_injection"
+path = "src/lib.rs"
+
+[dependencies]
+maho-ext-api = { path = "../../maho-ext-api" }
+
+[lints]
+workspace = true

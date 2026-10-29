@@ -971,9 +971,9 @@ impl Extension for Task {
                         workpools.set_aggregate_port(Arc::new(move |message: senpi_task::workpool::aggregate::WorkpoolAggregateMessage, receipts: senpi_task::workpool::aggregate::WorkpoolAggregateReceipts| {
                             let ack = receipts.ack.clone();
                             let fail = receipts.fail.clone();
-                            let accepted = aggregate_coordinator.enqueue(maho_ext_api::IdleInjection {
+                            let accepted = aggregate_coordinator.enqueue(idle_injection::IdleInjection {
                                 key: format!("workpool-aggregate:{}:{}", message.pool_id, message.generation),
-                                source: maho_ext_api::IdleInjectionSource::WorkpoolAggregate,
+                                source: idle_injection::IdleInjectionSource::WorkpoolAggregate,
                                 custom_type: Some("workpool-aggregate".into()),
                                 content: serde_json::to_string(&message.results).map_err(|error| error.to_string())?,
                                 display: Some(false), passive: Some(false), details: Some({

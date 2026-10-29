@@ -1,26 +1,9 @@
 use serde_json::Value;
 use super::{token_store::McpStoredAuth,oauth_provider::REFRESH_LEEWAY_MS,oauth_errors::{OAuthFlowError,OAuthFailureKind}};
-use super::{oauth::{OAuthRequestError,OAuthServerInfo,request_tokens},oauth_provider::{McpOAuthProvider,OAuthTokens,merge_tokens_into_stored_auth,stored_auth_to_tokens}};
+use super::{oauth::{OAuthRequestError,OAuthServerInfo,request_tokens,add_resource_param,normalize_resource_url},oauth_provider::{McpOAuthProvider,OAuthTokens,merge_tokens_into_stored_auth,stored_auth_to_tokens}};
 use futures::FutureExt;
 use std::sync::Arc;
 type RefreshFuture=futures::future::Shared<futures::future::BoxFuture<'static,Result<OAuthTokens,OAuthRequestError>>>;
-static ONGOING_REFRESHES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, RefreshFuture>>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-
-struct RefreshEntryGuard(String);
-
-impl Drop for RefreshEntryGuard {
-    fn drop(&mut self) {
-        ONGOING_REFRESHES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.0);
-    }
-}
-
-pub fn is_refresh_in_progress(server_url: &str) -> bool {
-    ONGOING_REFRESHES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(server_url)
-}
-
-pub fn get_active_refresh_count() -> usize {
-    ONGOING_REFRESHES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
-}
 /// Injection seam for the refresh manager (upstream `RefreshManagerOptions`,
 /// `mcp/auth/oauth-refresh.ts:15`). The pinned constructor takes `fetchFn`, `maxRetries`,
 /// `retryDelayMs` and `discover`; this port keeps the transport client as the `fetchFn`
@@ -28,6 +11,13 @@ pub fn get_active_refresh_count() -> usize {
 pub type DiscoverFn=Arc<dyn Fn(&str)->futures::future::BoxFuture<'static,Result<OAuthServerInfo,OAuthRequestError>>+Send+Sync>;
 #[derive(Clone,Default)]
 pub struct RefreshManagerOptions { pub discover:Option<DiscoverFn>, pub max_retries:Option<usize>, pub retry_delay_ms:Option<u64> }
+static REFRESHES:std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String,(u64,RefreshFuture)>>>=std::sync::LazyLock::new(Default::default);
+static NEXT_REFRESH_ID:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(1);
+fn refreshes()->std::sync::MutexGuard<'static,std::collections::HashMap<String,(u64,RefreshFuture)>> {REFRESHES.lock().unwrap_or_else(std::sync::PoisonError::into_inner)}
+/// Whether a token refresh is currently running for this server URL (any manager in the process).
+pub fn is_refresh_in_progress(server_url:&str)->bool {refreshes().contains_key(server_url)}
+/// Number of token refreshes currently running in the process.
+pub fn active_refresh_count()->usize {refreshes().len()}
 pub struct McpRefreshManager {provider:Arc<McpOAuthProvider>,client:reqwest::Client,discover:Option<DiscoverFn>,pub max_retries:usize,pub retry_delay:std::time::Duration}
 impl McpRefreshManager {
     pub fn new(provider:Arc<McpOAuthProvider>,client:reqwest::Client)->Self {Self::new_with_options(provider,client,RefreshManagerOptions::default())}
@@ -40,41 +30,34 @@ impl McpRefreshManager {
         if !is_token_stale(record.as_ref(),now){return Ok(stored_auth_to_tokens(record.as_ref(),now));}
         self.refresh().await.map(Some)
     }
-    pub async fn refresh(&self)->Result<OAuthTokens,OAuthRequestError> {self.refresh_inner(false).await}
-    /// Pinned `oauth-handler.ts::handlePostRequestAuthError`: a rejected request refreshes even
-    /// when the stored token has not reached the leeway window, so this skips the staleness
-    /// short-circuit that `refresh` keeps.
-    pub async fn force_refresh(&self)->Result<OAuthTokens,OAuthRequestError> {self.refresh_inner(true).await}
-    async fn refresh_inner(&self,force:bool)->Result<OAuthTokens,OAuthRequestError> {
-        let shared = {
-            let mut flights = ONGOING_REFRESHES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let key = self.provider.store.server_url.clone();
-            if let Some(existing) = flights.get(&key) {
-                existing.clone()
-            } else {
-                let refresh = self.refresh_locked(force);
-                let (sender, receiver) = tokio::sync::oneshot::channel();
-                let shared = async move {
-                    receiver.await.map_err(|error| OAuthRequestError::Invalid(error.to_string()))?
-                }.boxed().shared();
-                flights.insert(key.clone(), shared.clone());
-                let guard = RefreshEntryGuard(key);
-                tokio::spawn(async move {
-                    let guard = guard;
-                    let result = refresh.await;
-                    drop(guard);
-                    if sender.send(result).is_err() {
-                        eprintln!("OAuth refresh completed after all callers disconnected");
-                    }
-                });
-                shared
+    pub fn provider(&self)->&Arc<McpOAuthProvider> {&self.provider}
+    pub async fn refresh(&self)->Result<OAuthTokens,OAuthRequestError> {self.coalesced(false).await}
+    /// Refreshes even when the stored token still looks fresh (used after the server rejected it).
+    pub async fn force_refresh(&self)->Result<OAuthTokens,OAuthRequestError> {self.coalesced(true).await}
+    async fn coalesced(&self,force:bool)->Result<OAuthTokens,OAuthRequestError> {
+        // One refresh per server URL across every manager in the process. The work runs in a
+        // spawned task so it survives the first caller being dropped, and removes its own entry.
+        let key=self.provider.store.server_url.clone();
+        let shared={
+            let mut map=refreshes();
+            match map.get(&key) {
+                Some((_,existing))=>existing.clone(),
+                None=>{
+                    let id=NEXT_REFRESH_ID.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
+                    let work=self.refresh_locked(force);let owner=key.clone();
+                    let handle=tokio::spawn(async move {
+                        let result=work.await;
+                        let mut map=refreshes();
+                        if map.get(&owner).is_some_and(|(current,_)|*current==id){map.remove(&owner);}
+                        result
+                    });
+                    let shared:RefreshFuture=async move {handle.await.unwrap_or_else(|error|Err(OAuthRequestError::Invalid(error.to_string())))}.boxed().shared();
+                    map.insert(key,(id,shared.clone()));shared
+                }
             }
         };
         shared.await
     }
-    /// Pinned `oauth-handler.ts::handleStepUpIfNeeded` -> `mergeScopes`: the challenge scopes are
-    /// unioned into the provider's requested scope set.
-    pub fn escalate_scopes(&self,required:&[String])->Vec<String> {self.provider.escalate_scopes(required)}
     fn refresh_locked(&self,force:bool)->futures::future::BoxFuture<'static,Result<OAuthTokens,OAuthRequestError>> {
         let provider=self.provider.clone();let client=self.client.clone();let max_retries=self.max_retries;let delay=self.retry_delay;let discover=self.discover.clone();
         async move {
@@ -86,8 +69,9 @@ impl McpRefreshManager {
                 let refresh=current.as_ref().and_then(|record|record.refresh_token.clone()).ok_or_else(||OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,format!("MCP server {} has no refresh token",store.server_name)))))?;
                 let info=match &discover {Some(discover)=>discover(&store.server_url).await?,None=>super::oauth::discover(&provider,&client).await?};
                 let information=provider.client_information()?.ok_or_else(||OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,format!("MCP server {} is not registered",store.server_name)))))?;
-                let resource=current.as_ref().and_then(|record|record.resource.clone()).unwrap_or_else(||provider.resource_indicator());
-                let form=vec![("grant_type".into(),"refresh_token".into()),("refresh_token".into(),refresh.clone()),("resource".into(),resource.clone())];
+                let resource=current.as_ref().and_then(|record|record.resource.clone()).unwrap_or_else(||normalize_resource_url(&store.server_url));
+                let mut form=vec![("grant_type".into(),"refresh_token".into()),("refresh_token".into(),refresh.clone())];
+                add_resource_param(&mut form,&resource);
                 for attempt in 0..=max_retries {
                     match request_tokens(&client,&info,&information,form.clone()).await {
                         Ok(tokens)=>{store.write_unlocked(Some(&merge_tokens_into_stored_auth(current.clone(),&tokens,&store.server_url,chrono::Utc::now().timestamp_millis() as f64)))?;return Ok(tokens);}
