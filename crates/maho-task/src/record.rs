@@ -33,6 +33,15 @@ impl TaskStatus {
     }
 }
 
+/// A message waiting for the task's next run (`docs/cleanroom/specs/task-control.md` §1.2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingMessage {
+    pub id: String,
+    pub text: String,
+    /// Milliseconds since the Unix epoch.
+    pub created_at: u64,
+}
+
 /// One delegated task.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskRecord {
@@ -77,6 +86,18 @@ pub struct TaskRecord {
     /// No generic background-result delivery (the group reports instead).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub quiet: bool,
+    /// The name the task was spawned with (its id may carry a `-2`, `-3` suffix).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Session that spawned the task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_session: Option<String>,
+    /// Root session of the owner (the owner itself for a top-level session).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_session: Option<String>,
+    /// Messages delivered by the next run (`task_send` while no live channel exists).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_messages: Vec<PendingMessage>,
 }
 
 /// Milliseconds since the Unix epoch.
@@ -231,6 +252,10 @@ pub(crate) fn sample(id: &str) -> TaskRecord {
         group: None,
         pane: None,
         quiet: false,
+        name: None,
+        owner_session: None,
+        root_session: None,
+        pending_messages: Vec::new(),
     }
 }
 

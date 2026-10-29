@@ -4,8 +4,3 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 status-level = "slow"
 final-status-level = "slow"
 
-# 2000 seeded three-device runs with a temp dir each: 200-230 s on Linux and Windows runners, so
-# the default 300 s kill sits inside its normal spread.
-[[profile.default.overrides]]
-filter = "package(maho-memory-core) & test(three_device_seeded_capture_model_converges_without_spliced_values)"
-slow-timeout = { period = "60s", terminate-after = 10 }

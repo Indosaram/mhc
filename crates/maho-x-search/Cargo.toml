@@ -1,0 +1,30 @@
+[package]
+name = "maho-x-search"
+description = "X (Twitter) post search for mhc's MIT profile: the deferred x_search tool over xAI's server-side X search (Responses API), registered only when an xAI credential is connected, plus a bundled x-search usage skill. Clean-room spec docs/cleanroom/specs/x-search.md."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+autotests = false
+
+[dependencies]
+maho-ai = { path = "../maho-ai" }
+maho-config = { path = "../maho-config" }
+maho-ext-api = { path = "../maho-ext-api" }
+regex.workspace = true
+reqwest = { workspace = true, features = ["rustls-tls"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+tokio = { workspace = true, features = ["macros", "time"] }
+
+[dev-dependencies]
+maho-core = { path = "../maho-core" }
+maho-ext-tool-search = { path = "../builtins/maho-ext-tool-search" }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time", "test-util"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

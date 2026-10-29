@@ -8,15 +8,20 @@
 //!   tmux or cmux pane and closes it when the task settles; headless when no multiplexer is
 //!   available.
 //!
-//! Behaviour spec: `docs/cleanroom/specs/team.md`.
+//! - [`tasklist`]: the shared team tasklist (work items with claims and dependencies) and its
+//!   `team_task_*` tools.
+//!
+//! Behaviour specs: `docs/cleanroom/specs/team.md`, `docs/cleanroom/specs/task-control.md` §4.
 pub mod mux;
 pub mod panes;
 pub mod settings;
+pub mod tasklist;
 pub mod team;
 pub mod tools;
 
 pub use mux::{CmuxBackend, PaneBackend, PaneHandle, PaneRequest, TmuxBackend, detect};
 pub use panes::PaneObserver;
 pub use settings::{MuxKind, PaneMode, PaneSettings, Placement, TeamLimits};
+pub use tasklist::{Item, ItemStatus, Refusal, Tasklist};
 pub use team::{MemberSpec, Team, TeamFile, TeamStatus, UPDATE_MESSAGE_TYPE};
 pub use tools::{TOOL_NAMES, TeamAddon};

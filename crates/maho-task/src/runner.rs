@@ -2,7 +2,7 @@
 //! non-interactive `mhc -p` process of the current executable, with its own session (so a later run
 //! of the same task resumes it), its final answer on stdout redirected to the task's output file
 //! and stderr to its log. Behavior spec: `docs/cleanroom/specs/task.md` §3.
-use crate::settings::{DEPTH_ENV, TASK_ID_ENV};
+use crate::settings::{DEPTH_ENV, ROOT_SESSION_ENV, TASK_ID_ENV};
 use std::ffi::OsString;
 use std::future::Future;
 use std::path::PathBuf;
@@ -55,6 +55,9 @@ pub struct RunSpec {
     pub output_path: PathBuf,
     pub log_path: PathBuf,
     pub sessions_dir: PathBuf,
+    /// Root session of the chain that started this run (passed to the child as
+    /// `MHC_TASK_ROOT_SESSION`).
+    pub root_session: Option<String>,
 }
 
 /// How a run ended.
@@ -180,6 +183,7 @@ impl TaskRunner for ProcessRunner {
                 .current_dir(&spec.cwd)
                 .env(DEPTH_ENV, spec.depth.to_string())
                 .env(TASK_ID_ENV, &spec.task_id)
+                .env(ROOT_SESSION_ENV, spec.root_session.as_deref().unwrap_or_default())
                 .stdin(Stdio::null())
                 .stdout(Stdio::from(stdout))
                 .stderr(Stdio::from(stderr))
@@ -233,6 +237,7 @@ mod tests {
             output_path: dir.join("T.md"),
             log_path: dir.join("T.log"),
             sessions_dir: dir.join("sessions"),
+            root_session: None,
         }
     }
 

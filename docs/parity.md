@@ -28,13 +28,10 @@ bun tools/golden/run.mjs --case <name>     # or --all
 
 renders `tools/golden/cases/*.json` with pinned senpi and writes `crates/<crate>/tests/golden/`. The
 Rust tests compare against those files and have no update mode. `tools/golden/faux-harness.mjs` and
-`faux-tui.mjs` run senpi (optionally with OmO via `--omo` and `$OMO_SRC`) on the faux provider in an
-isolated temporary `HOME`, as the reference side for event and pty comparisons.
+`faux-tui.mjs` run senpi on the faux provider in an isolated temporary `HOME`, as the reference side for event and pty comparisons.
 
 ## Other checks
 
-- `bun tools/check-omo-sites.mjs` verifies the `.omo` / `.maho` home-directory literals against
-  `tools/omo-sites.json`.
 - `tools/run-session2-residual-gate.mjs` runs a declared gate command set and
   `tools/verify-session2-residual.mjs` re-verifies its evidence.
 
@@ -42,4 +39,5 @@ isolated temporary `HOME`, as the reference side for event and pty comparisons.
 
 - [docs/divergences.md](divergences.md) — Intentional safety and privacy divergences from upstream
 - [docs/perf-divergences.md](perf-divergences.md) — Intentional performance divergences from upstream
+- [docs/MIT-PROFILE.md](MIT-PROFILE.md) — MIT-only licensing and how it is enforced
 

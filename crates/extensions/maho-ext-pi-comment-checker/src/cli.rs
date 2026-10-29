@@ -1,5 +1,3 @@
-#[cfg(feature = "omo-core")]
-use crate::checker::ResolveCommentCheckerBinaryInput;
 use crate::checker::HookInput;
 use std::{path::{Path, PathBuf}, process::Stdio, time::Duration};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
@@ -15,26 +13,9 @@ pub struct RunResult {
     pub stdout: Option<String>, pub stderr: Option<String>,
 }
 
-#[cfg(feature = "omo-core")]
-pub fn resolve_binary(source_path: &Path) -> Option<PathBuf> {
-    let exists = |path: &str| Path::new(path).exists();
-    let binary_name = if cfg!(windows) { "comment-checker.exe" } else { "comment-checker" };
-    let platform = if cfg!(windows) { "win32" } else if cfg!(target_os = "macos") { "darwin" } else { "linux" };
-    let arch = if cfg!(target_arch = "x86_64") { "x64" } else if cfg!(target_arch = "aarch64") { "arm64" } else { std::env::consts::ARCH };
-    for directory in source_path.parent().into_iter().flat_map(Path::ancestors) {
-        let package = directory.join("node_modules/@code-yeongyu/comment-checker");
-        if package.join("package.json").exists() {
-            let bundled = package.join("vendor").join(format!("{platform}-{arch}")).join(binary_name);
-            if bundled.exists() { return Some(bundled); }
-            break;
-        }
-    }
-    crate::checker::resolve_comment_checker_binary(&ResolveCommentCheckerBinaryInput { binary_name, cached_binary_path: None, exists_sync: &exists, import_meta_url: source_path.to_str(), package_name: None }).map(PathBuf::from)
-}
 
 /// The installed `@code-yeongyu/comment-checker` package nearest `source_path` (platform package,
 /// then `vendor/<platform-arch>`, then `bin/`), then `COMMENT_CHECKER_BINARY`/`PATH` fallbacks.
-#[cfg(not(feature = "omo-core"))]
 pub fn resolve_binary(source_path: &Path) -> Option<PathBuf> {
     let lookup = crate::checker::BinaryLookup::from_env(Some(source_path.to_owned()));
     crate::checker::resolve_binary(&lookup)
