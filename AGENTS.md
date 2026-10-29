@@ -31,7 +31,7 @@ crates/
 ├── vendor/              # maho-grep, maho-pty
 └── desktop/             # senpi-desktop-*: computer-use engine and platform backends
 tools/                   # parity audit, golden fixtures, packaging, QA drivers (bun)
-assets/                  # bundled skills (assets/skills + manifest.json), readme images
+assets/                  # omo-latest skill overlay, omo.schema.json, readme images
 ```
 
 ## WHERE TO LOOK
@@ -43,7 +43,7 @@ assets/                  # bundled skills (assets/skills + manifest.json), readm
 | Provider integrations | `crates/maho-ai/` | Anthropic, OpenAI, Bedrock, Gemini |
 | Terminal presentation | `crates/maho-interactive/` | ANSI differential renderer, streaming widgets |
 | Parity ledgers & goldens | `crates/*/parity.d/`, `tools/` | `docs/parity.md`, `tools/PARITY-FORMAT.md` |
-| Packaging | `tools/package-native.mjs` | skills from `assets/skills` (checked against its `manifest.json`); browser runtime via `tools/stage-omowright-runtime.mjs` |
+| Packaging | `tools/package-native.mjs` | `--skill-source latest` uses `assets/omo-latest` |
 
 ## PORT RULES & CONVENTIONS
 - senpi is upstream. Port file-for-file: one TS file maps to one Rust module, keeping names and order.
@@ -86,4 +86,4 @@ scripts/gh-verify.sh --no-wait   # print the run URL and return
 When the user asks to (re)install mhc, run `scripts/gh-install.sh` from the checkout to install. It snapshots HEAD plus local changes to a temporary `build/YYYY.MM.DD-N` branch, `.github/workflows/mhc-binary.yml` builds `cargo build --release -p maho-cli --bin mhc` with that version as `MHC_BUILD_VERSION`, and the script downloads the `mhc-linux-x86_64` artifact into `~/.local/share/mhc/mhc` (symlinked from `~/.local/bin/mhc`), checks `mhc --version`, and deletes the branch. N counts installs made that day. It blocks until the run finishes; run it in the background and wait on its exit. Linux x86_64 only; `scripts/install-dev.sh` is the local-build fallback, used only when the user asks for it.
 
 ## RELEASES
-Push a `v<version>` tag (e.g. `git tag v2026.10.18 && git push origin v2026.10.18`); `.github/workflows/release.yml` builds `mhc` and its sibling binaries (mhc-launcher, mhc-lsp, senpi-desktop-engine, mhc-git-bash, mhc-ast-grep) for linux-x86_64, macos-aarch64 and windows-x86_64 with `MHC_BUILD_VERSION=<version>`, materializes the omowright browser runtime, stages the self-contained directory with `tools/package-native.mjs`, verifies it, and publishes `mhc-<target>.tar.gz` (Windows: `mhc-windows-x86_64.zip`, `.exe` siblings) plus `.sha256` as a GitHub Release. Asset names carry no version so `releases/latest/download/mhc-<target>.tar.gz` always resolves; `install.sh` and `install.ps1` (the README one-liners) depend on that. Re-run for an existing tag with `gh workflow run release -f tag=<tag>` (assets are replaced).
+Push a `v<version>` tag (e.g. `git tag v2026.10.18 && git push origin v2026.10.18`); `.github/workflows/release.yml` builds `mhc` and its sibling binaries (ast-grep-mcp, lsp-daemon, omo-git-bash, senpi-desktop-engine) for linux-x86_64, macos-aarch64 and windows-x86_64 with `MHC_BUILD_VERSION=<version>`, materializes the omowright browser runtime, stages the self-contained directory with `tools/package-native.mjs --skill-source latest`, verifies it, and publishes `mhc-<target>.tar.gz` (Windows: `mhc-windows-x86_64.zip`, `.exe` siblings) plus `.sha256` as a GitHub Release. Asset names carry no version so `releases/latest/download/mhc-<target>.tar.gz` always resolves; `install.sh` and `install.ps1` (the README one-liners) depend on that. Re-run for an existing tag with `gh workflow run release -f tag=<tag>` (assets are replaced).
