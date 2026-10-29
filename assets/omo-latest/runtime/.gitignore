@@ -1,0 +1,7 @@
+# The `browser` skill's engine runtime is materialized at build time by
+# `assets/omo-latest/stage-omowright-runtime.mjs` (bundled `index.js` + `page-bundle.js` +
+# `manifest.json`) from the pinned `omowright` git dependency. The repository holds no committed
+# copy, exactly as upstream gitignores `packages/shared-skills/skills/browser/runtime/omowright/`.
+# `tools/package-native.mjs --skill-source latest` stages the materialized directory through the
+# explicit `--omowright-runtime <dir>` flag.
+browser/omowright/
