@@ -37,7 +37,8 @@ static DOUBLE_QUOTED:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock
 static URL_SPAN:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy(r#"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*://[^\s<>"'`]+"#));
 static NEGATED_INVOCATION:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy("(?i)\\b(?:do\\s+not|don['\u{2019}]t|dont|never)\\s+(?:load|use|run|invoke|start|trigger|arm|enable)\\b[^.;:!?\\n]*?(?=[.;:!?\\n]|\\s(?:but|then|instead|however)\\b|\\s[\u{2014}\u{2013}-]\\s|$)"));
 static FENCE_START:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy(r"(?m)^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)"));
-fn mask(region:&str)->String{region.chars().map(|c|if matches!(c,'\r'|'\n'){c}else{'\0'}).collect()}
+/// Byte-length preserving, so match offsets stay valid against both `visible` and the original `text`.
+fn mask(region:&str)->String{region.chars().map(|c|if matches!(c,'\r'|'\n'){c.to_string()}else{"\0".repeat(c.len_utf8())}).collect()}
 fn mask_all(text:&str,regex:&fancy_regex::Regex)->String{
     let mut out=String::with_capacity(text.len());let mut last=0;
     for found in regex.find_iter(text).flatten(){out.push_str(&text[last..found.start()]);out.push_str(&mask(found.as_str()));last=found.end();}

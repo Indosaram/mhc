@@ -24,7 +24,7 @@ pub use harness::env::windows_process_tree::{
 };
 
 pub use agent::{
-    Agent, AgentContinuationOptions, AgentListener, AgentOptions, AgentPromptInput,
+    Agent, AgentContinueError, AgentContinuationOptions, AgentListener, AgentOptions, AgentPromptInput,
     AgentSubscription, PartialAgentState, PrepareNextTurnWithContext,
     PrepareNextTurnWithoutContext, ShouldStopAfterTurnWithSignal, agent_event_sink,
     empty_failure_usage,
