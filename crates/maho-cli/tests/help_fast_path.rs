@@ -27,6 +27,7 @@ const ALL_SUBCOMMANDS: &[&str] = &[
     "import-omo",
     "schedule",
     "models discover",
+    "senpi-install",
     "mini",
 ];
 
