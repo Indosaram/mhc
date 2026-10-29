@@ -8717,6 +8717,17 @@ impl AgentSession {
         }
     }
 
+    /// senpi `_continueAgentAfterCurrentRun`: a continuation the agent refuses (another run took
+    /// over, or the transcript tail cannot be continued) ends the retry loop instead of the process.
+    fn settle_refused_continuation(&self, error: maho_agent::AgentContinueError) {
+        if error != maho_agent::AgentContinueError::AlreadyProcessing {
+            crate::output_guard::maho_write_stderr(&format!("continuation skipped: {error}\n"));
+        }
+        if self.agent.signal().is_none() {
+            self.clear_tool_barrier();
+        }
+    }
+
     async fn finish_provider_turn(&self) -> Result<(), String> {
         loop {
             let mut retry_owned_deferred_queue = false;
@@ -8745,7 +8756,11 @@ impl AgentSession {
                 }
                 return Ok(());
             }
-            Box::pin(self.agent.continue_with_queued_messages(Default::default())).await;
+            if let Err(error) =
+                Box::pin(self.agent.continue_with_queued_messages(Default::default())).await
+            {
+                return Ok(self.settle_refused_continuation(error));
+            }
         }
     }
 
@@ -8816,8 +8831,12 @@ impl AgentSession {
                 if exempt {
                     let has_deferred = self.flush_post_compaction_deferred_messages();
                     if has_deferred && !self.state().user_aborted {
-                        Box::pin(self.agent.continue_with_queued_messages(Default::default()))
-                            .await;
+                        if let Err(error) =
+                            Box::pin(self.agent.continue_with_queued_messages(Default::default()))
+                                .await
+                        {
+                            return Ok(self.settle_refused_continuation(error));
+                        }
                         continue;
                     }
                     return Ok(());
@@ -8939,14 +8958,16 @@ impl AgentSession {
                     self.agent.set_messages(messages);
                     self.state().message_revision += 1;
                 }
-                Box::pin(
-                    self.agent
-                        .continue_run(maho_agent::agent::AgentContinuationOptions {
-                            defer_queued_messages: Some(true),
-                            ..Default::default()
-                        }),
-                )
-                .await;
+                if let Err(error) = Box::pin(self.agent.continue_run(
+                    maho_agent::agent::AgentContinuationOptions {
+                        defer_queued_messages: Some(true),
+                        ..Default::default()
+                    },
+                ))
+                .await
+                {
+                    return Ok(self.settle_refused_continuation(error));
+                }
                 continue;
             }
             // senpi `retryAfterRequiredCompaction`: a run ended by a failed required compaction runs
@@ -8981,7 +9002,12 @@ impl AgentSession {
                         self.agent.set_messages(messages);
                         self.state().message_revision += 1;
                     }
-                    Box::pin(self.agent.continue_with_queued_messages(Default::default())).await;
+                    if let Err(error) =
+                        Box::pin(self.agent.continue_with_queued_messages(Default::default()))
+                            .await
+                    {
+                        return Ok(self.settle_refused_continuation(error));
+                    }
                     continue;
                 }
                 if self.agent.has_queued_messages()
@@ -9075,8 +9101,12 @@ impl AgentSession {
                     && self.consume_post_compaction_usage_exemption()
                 {
                     if self.flush_post_compaction_deferred_messages() {
-                        Box::pin(self.agent.continue_with_queued_messages(Default::default()))
-                            .await;
+                        if let Err(error) =
+                            Box::pin(self.agent.continue_with_queued_messages(Default::default()))
+                                .await
+                        {
+                            return Ok(self.settle_refused_continuation(error));
+                        }
                         continue;
                     }
                     return Ok(());
@@ -9542,18 +9572,21 @@ impl AgentSession {
             // large agent loop future. Keep ownership here so the watchdog still aborts and
             // awaits this same run rather than dropping it or detaching its completion.
             let mut continuation = Box::pin(self.agent.continue_run(plan.options));
-            if let Some(timeout) = plan.watchdog_timeout_ms {
+            let started = if let Some(timeout) = plan.watchdog_timeout_ms {
                 tokio::select! {
-                    _ = &mut continuation => {}
+                    started = &mut continuation => started,
                     _ = tokio::time::sleep(std::time::Duration::from_millis(timeout)) => {
                         self.agent.abort(Some(maho_agent::ProviderRetryWatchdogAbortError::new(
                             provider_retry_watchdog_abort_message(Some(timeout), self.agent.stream_start_timeout_ms()),
                         ).into_abort_reason()));
-                        continuation.await;
+                        continuation.await
                     }
                 }
             } else {
-                continuation.await;
+                continuation.await
+            };
+            if let Err(error) = started {
+                return Ok(self.settle_refused_continuation(error));
             }
         }
     }
@@ -15858,9 +15891,15 @@ impl AgentSession {
         self.hydrate_runtime_messages_for_run();
         self.agent
             .set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
-        self.agent
+        if let Err(error) = self
+            .agent
             .continue_with_queued_messages(Default::default())
-            .await;
+            .await
+        {
+            self.settle_refused_continuation(error);
+            self.agent_run_active.store(false, Ordering::SeqCst);
+            return Err(error.to_string());
+        }
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
         drop(_work);
@@ -31796,7 +31835,8 @@ mod tests {
         session
             .agent
             .continue_with_queued_messages(Default::default())
-            .await;
+            .await
+            .expect("continuation admitted");
         session
             .finish_provider_turn()
             .await
