@@ -1,0 +1,184 @@
+{
+  "home": "/tmp/host-qa-home-G1VRFw",
+  "socket": "/tmp/host-qa-home-G1VRFw/rpc.sock",
+  "agent": "/tmp/host-qa-home-G1VRFw/agent",
+  "steps": [
+    {
+      "step": "ensure",
+      "exitCode": 0,
+      "timedOut": false,
+      "streamsComplete": true,
+      "line": {
+        "socket": "/tmp/host-qa-home-G1VRFw/rpc.sock",
+        "pid": 2347159,
+        "instanceId": "63a20cdd-00cf-4594-bafe-1517cbbb80c8",
+        "generation": 0,
+        "engineVersion": "0.0.0",
+        "engineOrdinal": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "capabilities": [
+          "extension_events",
+          "custom_unsupported",
+          "generation_handoff"
+        ],
+        "launchProfileId": "d7e649f443589d51453f8f07d796e8c9900a953cd6ed32ccd564ff8571fb8eb7",
+        "upgradeable": false,
+        "action": "start",
+        "reused": false
+      },
+      "stderr": ""
+    },
+    {
+      "step": "status",
+      "exitCode": 0,
+      "timedOut": false,
+      "streamsComplete": true,
+      "line": {
+        "reachable": true,
+        "socket": "/tmp/host-qa-home-G1VRFw/rpc.sock",
+        "pid": 2347160,
+        "instanceId": "63a20cdd-00cf-4594-bafe-1517cbbb80c8",
+        "generation": 0,
+        "engineVersion": "0.0.0",
+        "capabilities": [
+          "extension_events",
+          "custom_unsupported",
+          "generation_handoff"
+        ],
+        "launchProfile": {
+          "profile_id": "d7e649f443589d51453f8f07d796e8c9900a953cd6ed32ccd564ff8571fb8eb7",
+          "core": {
+            "extensions": [],
+            "multi_session": true,
+            "session_runtime": "in-process"
+          }
+        },
+        "sessions": {
+          "total": 0,
+          "interactive": 0,
+          "worker": 0,
+          "retained": 0,
+          "foreign_attached": 0,
+          "foreign_retained": 0
+        },
+        "zombies": 0,
+        "rss_mb": 63,
+        "open_fds": 13,
+        "env_keys": [
+          "HOME",
+          "PATH",
+          "SENPI_RPC_HOST_EMPTY_EXIT_MS",
+          "SENPI_RPC_HOST_IDLE_EXIT_MS"
+        ],
+        "generations": [
+          {
+            "instanceId": "63a20cdd-00cf-4594-bafe-1517cbbb80c8",
+            "generation": 0,
+            "pid": 2347160,
+            "engineVersion": "0.0.0",
+            "rss_mb": 63,
+            "sessions": 0,
+            "current": true,
+            "alive": true
+          }
+        ]
+      },
+      "stderr": ""
+    },
+    {
+      "step": "handoff",
+      "exitCode": 0,
+      "timedOut": false,
+      "streamsComplete": true,
+      "line": {
+        "socket": "/tmp/host-qa-home-G1VRFw/rpc.sock",
+        "pid": 2347180,
+        "instanceId": "54c52688-34b0-4c0f-8017-b3957d93397f",
+        "generation": 0,
+        "engineVersion": "0.0.0",
+        "engineOrdinal": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "capabilities": [
+          "extension_events",
+          "custom_unsupported",
+          "generation_handoff"
+        ],
+        "launchProfileId": "d7e649f443589d51453f8f07d796e8c9900a953cd6ed32ccd564ff8571fb8eb7",
+        "upgradeable": false,
+        "action": "handoff",
+        "reused": false
+      },
+      "stderr": ""
+    },
+    {
+      "step": "stop",
+      "exitCode": 0,
+      "timedOut": false,
+      "streamsComplete": true,
+      "line": {
+        "action": "drained",
+        "socket": "/tmp/host-qa-home-G1VRFw/rpc.sock",
+        "pid": 2347180,
+        "sessions": {
+          "total": 0,
+          "interactive": 0,
+          "worker": 0,
+          "retained": 0,
+          "foreign_attached": 0,
+          "foreign_retained": 0
+        }
+      },
+      "stderr": ""
+    },
+    {
+      "step": "status-after-stop",
+      "exitCode": 3,
+      "timedOut": false,
+      "streamsComplete": true,
+      "line": {
+        "reachable": false,
+        "socket": "/tmp/host-qa-home-G1VRFw/rpc.sock",
+        "pid": null,
+        "instanceId": null,
+        "generation": null,
+        "engineVersion": null,
+        "capabilities": [],
+        "launchProfile": null,
+        "sessions": {
+          "total": 0,
+          "interactive": 0,
+          "worker": 0,
+          "retained": 0,
+          "foreign_attached": 0,
+          "foreign_retained": 0
+        },
+        "zombies": null,
+        "rss_mb": null,
+        "open_fds": null,
+        "env_keys": [
+          "HOME",
+          "PATH",
+          "SENPI_RPC_HOST_EMPTY_EXIT_MS",
+          "SENPI_RPC_HOST_IDLE_EXIT_MS"
+        ],
+        "generations": []
+      },
+      "stderr": ""
+    }
+  ],
+  "cleanup": {
+    "registrationGone": true,
+    "socketGone": true,
+    "homeRemoved": true
+  }
+}

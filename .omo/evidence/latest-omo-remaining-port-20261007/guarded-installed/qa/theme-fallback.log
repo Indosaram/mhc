@@ -1,0 +1,8 @@
+startup: idle editor prompt + offline footer
+held: working indicator + partial "offline " rendered before completion
+steer: queued line echoed while the turn stayed busy
+abort: Escape (app.interrupt) cleared the working indicator and returned the editor
+reply: "offline acceptance" rendered after a real typed prompt, idle
+resize: 120 -> 160 columns, overflow=false
+theme: fallback diagnostic observed=true
+quit: Ctrl+C x2 -> exit 0

@@ -1,0 +1,93 @@
+   Compiling maho-ext-ask-user v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-ask-user)
+    Finished `test` profile [unoptimized] target(s) in 5.09s
+────────────
+ Nextest run ID b7e41041-867b-48d0-91a3-6771619dc132 with nextest profile: default
+    Starting 50 tests across 11 binaries
+        PASS [   0.005s] ( 1/50) maho-ext-ask-user::format frame_parser_requires_sentinel_and_line_boundary
+        PASS [   0.006s] ( 2/50) maho-ext-ask-user render::tests::wait_aliases_and_tool_dispatch_are_exact
+        PASS [   0.006s] ( 3/50) maho-ext-ask-user registry::tests::pending_selection_preserves_insertion_order_not_request_id_order
+        PASS [   0.006s] ( 4/50) maho-ext-ask-user::format variant_machine_details
+        PASS [   0.006s] ( 5/50) maho-ext-ask-user registry::tests::detached_publication_enqueues_before_rebind_can_drain
+        PASS [   0.009s] ( 6/50) maho-ext-ask-user::family wire_family_uses_api_and_boundary_aware_id_not_provider
+        PASS [   0.006s] ( 7/50) maho-ext-ask-user::native_renderers loaded_question_tools_preserve_native_renderers_after_executor_registration
+        PASS [   0.005s] ( 8/50) maho-ext-ask-user::params claude_schema_requires_multi_select_but_not_options
+        PASS [   0.023s] ( 9/50) maho-ext-ask-user::native_question registered_abort_settles_and_unregisters_owned_question
+        PASS [   0.023s] (10/50) maho-ext-ask-user::native_question initial_ui_failure_cancels_without_model_injection_and_tears_down
+        PASS [   0.005s] (11/50) maho-ext-ask-user::params codex_schema_requires_wait_flag_and_bounded_choices
+        PASS [   0.005s] (12/50) maho-ext-ask-user::pending empty_submission_stays_pending_but_partial_answer_settles
+        PASS [   0.025s] (13/50) maho-ext-ask-user::native_question registered_async_question_delivers_one_settlement
+        PASS [   0.005s] (14/50) maho-ext-ask-user::pending progress_extends_idle_not_hard_cap
+        FAIL [   0.024s] (15/50) maho-ext-ask-user::native_question recovered_ui_failure_settles_orphaned_with_comment_and_tears_down
+  stdout ───
+
+    running 1 test
+    test recovered_ui_failure_settles_orphaned_with_comment_and_tears_down ... FAILED
+
+    failures:
+
+    failures:
+        recovered_ui_failure_settles_orphaned_with_comment_and_tears_down
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'recovered_ui_failure_settles_orphaned_with_comment_and_tears_down' (2407670) panicked at crates/builtins/maho-ext-ask-user/tests/native_question.rs:321:161:
+    recovered failure: "Asked event lost owning context or complete request"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+  Cancelling due to test failure: 11 tests still running
+        PASS [   0.008s] (16/50) maho-ext-ask-user::pending comment_submits_without_answers
+        PASS [   0.027s] (17/50) maho-ext-ask-user::native_question registered_shutdown_settles_and_unregisters_before_returning
+        PASS [   0.006s] (18/50) maho-ext-ask-user::pending timeout_preserves_draft_and_settles_once
+        PASS [   0.005s] (19/50) maho-ext-ask-user::pending_cases comment_only_leaves_both_questions_unanswered
+        PASS [   0.035s] (20/50) maho-ext-ask-user::native_question failed_persistence_leaves_no_pending_owner_or_notification
+        PASS [   0.031s] (21/50) maho-ext-ask-user::native_question registered_ui_empty_submission_preserves_response_and_retires_timer
+        PASS [   0.007s] (22/50) maho-ext-ask-user::pending_cases draft_selections_and_comment_survive_timeout
+        FAIL [   0.032s] (23/50) maho-ext-ask-user::native_question resumed_waiting_call_opens_original_request_without_duplicate_recovery
+  stdout ───
+
+    running 1 test
+    test resumed_waiting_call_opens_original_request_without_duplicate_recovery ... FAILED
+
+    failures:
+
+    failures:
+        resumed_waiting_call_opens_original_request_without_duplicate_recovery
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.03s
+
+  stderr ───
+
+    thread 'resumed_waiting_call_opens_original_request_without_duplicate_recovery' (2407673) panicked at crates/builtins/maho-ext-ask-user/tests/native_question.rs:318:153:
+    registered resume recovery: "Asked event lost owning context or complete request"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.114s] (24/50) maho-ext-ask-user::native_question detached_owner_rebinds_before_late_registered_publication
+        PASS [   0.112s] (25/50) maho-ext-ask-user::native_question registered_timeout_settles_once_and_unregisters_owned_question
+        FAIL [   0.124s] (26/50) maho-ext-ask-user::native_question detached_timeout_queues_outcome_once_on_new_registered_runner
+  stdout ───
+
+    running 1 test
+    test detached_timeout_queues_outcome_once_on_new_registered_runner ... FAILED
+
+    failures:
+
+    failures:
+        detached_timeout_queues_outcome_once_on_new_registered_runner
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.12s
+
+  stderr ───
+
+    thread 'detached_timeout_queues_outcome_once_on_new_registered_runner' (2407666) panicked at crates/builtins/maho-ext-ask-user/tests/native_question.rs:312:155:
+    registered reload timeout: "Settled event lost owning context or complete request/response"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.125s] 26/50 tests run: 23 passed, 3 failed, 0 skipped
+        FAIL [   0.024s] (15/50) maho-ext-ask-user::native_question recovered_ui_failure_settles_orphaned_with_comment_and_tears_down
+        FAIL [   0.032s] (23/50) maho-ext-ask-user::native_question resumed_waiting_call_opens_original_request_without_duplicate_recovery
+        FAIL [   0.124s] (26/50) maho-ext-ask-user::native_question detached_timeout_queues_outcome_once_on_new_registered_runner
+warning: 24/50 tests were not run due to test failure (run with --no-fail-fast to run all tests, or run with --max-fail)
+error: test run failed

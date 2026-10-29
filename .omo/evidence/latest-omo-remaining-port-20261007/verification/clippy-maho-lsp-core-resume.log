@@ -1,0 +1,24 @@
+    Checking zerovec v0.11.8
+    Checking futures-core v0.3.34
+    Checking futures-sink v0.3.34
+    Checking futures-channel v0.3.34
+    Checking tinystr v0.8.4
+    Checking potential_utf v0.1.4
+    Checking icu_locale_core v2.3.0
+    Checking icu_collections v2.3.0
+    Checking slab v0.4.12
+    Checking futures-util v0.3.34
+    Checking icu_provider v2.3.1
+    Checking icu_normalizer v2.3.0
+    Checking icu_properties v2.3.0
+    Checking idna_adapter v1.2.1
+    Checking serde_json v1.0.149
+    Checking futures-executor v0.3.34
+    Checking form_urlencoded v1.2.2
+    Checking idna v1.1.0
+    Checking tokio v1.52.3
+    Checking url v2.5.8
+    Checking maho-mcp-stdio-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/mcp-stdio-core)
+    Checking futures v0.3.34
+    Checking maho-lsp-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-core)
+    Finished `dev` profile [unoptimized] target(s) in 7.98s

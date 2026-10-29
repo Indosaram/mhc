@@ -1,0 +1,421 @@
+   Compiling tokio v1.52.3
+   Compiling serde_json v1.0.149
+   Compiling chrono v0.4.43
+   Compiling subtle v2.6.1
+   Compiling rustls v0.23.45
+   Compiling tokio-util v0.7.18
+   Compiling h2 v0.4.19
+   Compiling rustix v1.1.4
+   Compiling tower v0.5.3
+   Compiling nix v0.28.0
+   Compiling tokio-rustls v0.26.4
+   Compiling tower-http v0.6.8
+   Compiling hyper v1.8.1
+   Compiling hyper-util v0.1.20
+   Compiling hyper-rustls v0.27.7
+   Compiling reqwest v0.12.28
+   Compiling maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+   Compiling portable-pty v0.9.0
+   Compiling maho-omo-config-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/omo-config-core)
+   Compiling maho-utils v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/utils)
+   Compiling tempfile v3.27.0
+   Compiling crossterm v0.29.0
+   Compiling maho-pty v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/vendor/maho-pty)
+   Compiling maho-mcp-stdio-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/mcp-stdio-core)
+   Compiling maho-memory-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/memory-core)
+   Compiling maho-lsp-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-core)
+   Compiling maho-tui v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tui)
+   Compiling maho-tmux-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/tmux-core)
+   Compiling maho-model-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/model-core)
+   Compiling sha1 v0.10.6
+   Compiling maho-isolation-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/isolation-core)
+   Compiling maho-delegate-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/delegate-core)
+   Compiling maho-team-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/team-core)
+   Compiling maho-lsp-daemon v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-daemon)
+   Compiling maho-senpi-task v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/senpi-task)
+   Compiling maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+   Compiling maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+   Compiling maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+   Compiling maho-omo-lsp v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-lsp)
+   Compiling maho-omo-task v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-task)
+    Finished `test` profile [unoptimized] target(s) in 1m 14s
+────────────
+ Nextest run ID f09dd328-d9d0-46cc-92d4-fa2a0d4c0d87 with nextest profile: default
+    Starting 375 tests across 51 binaries
+        PASS [   0.006s] (  1/375) maho-omo-task worker::tests::cancellation_error_waits_for_worker_settlement
+        PASS [   0.006s] (  2/375) maho-omo-task::adapters capabilities_complete_surface_passes
+        PASS [   0.006s] (  3/375) maho-omo-task::adapters cancel_codec_keeps_reason
+        PASS [   0.007s] (  4/375) maho-omo-task::adapters capabilities_report_missing_in_source_order
+        PASS [   0.007s] (  5/375) maho-omo-task worker::tests::dropped_pending_future_cancels_and_joins_worker
+        PASS [   0.007s] (  6/375) maho-omo-task::adapters cancel_codec_rejects_nonstring_reason
+        PASS [   0.008s] (  7/375) maho-omo-task::adapters background_rows_respect_actual_width
+        PASS [   0.008s] (  8/375) maho-omo-task worker::tests::closed_receiver_joins_panicked_worker
+        PASS [   0.009s] (  9/375) maho-omo-task::adapters background_spinner_advances_with_clock
+        PASS [   0.009s] ( 10/375) maho-omo-task::adapters absent_liveness_details_use_fallback
+        PASS [   0.011s] ( 11/375) maho-omo-task usage_guidance::tests::session_start_refire_never_repeats_delivery
+        PASS [   0.011s] ( 12/375) maho-omo-task::adapters category_warning_empty_content_uses_fallback
+        PASS [   0.006s] ( 13/375) maho-omo-task::adapters dag_command_unknown_run_warns
+        PASS [   0.006s] ( 14/375) maho-omo-task::adapters dag_cycle_reports_diagnostics_without_creating_run
+        PASS [   0.009s] ( 15/375) maho-omo-task::adapters dag_both_targets_reject_before_run_creation
+        PASS [   0.010s] ( 16/375) maho-omo-task::adapters category_warning_sanitizes_content
+        PASS [   0.009s] ( 17/375) maho-omo-task::adapters dag_details_preserve_dependencies_and_critical_path
+        PASS [   0.009s] ( 18/375) maho-omo-task::adapters dag_foreign_session_cannot_read_run
+        PASS [   0.007s] ( 19/375) maho-omo-task::adapters dag_parameters_match_generated_upstream_schema
+        PASS [   0.011s] ( 20/375) maho-omo-task::adapters dag_command_without_session_is_empty
+        PASS [   0.008s] ( 21/375) maho-omo-task::adapters dag_missing_target_reject_before_run_creation
+        PASS [   0.013s] ( 22/375) maho-omo-task::adapters dag_attach_roundtrips_same_snapshot
+        PASS [   0.013s] ( 23/375) maho-omo-task::adapters dag_cancel_forwards_reason
+        PASS [   0.012s] ( 24/375) maho-omo-task::adapters dag_foreign_cancel_never_calls_scheduler
+        PASS [   0.007s] ( 25/375) maho-omo-task::adapters dag_rejects_category_with_model
+        PASS [   0.008s] ( 26/375) maho-omo-task::adapters dag_requires_definition_for_start
+        PASS [   0.008s] ( 27/375) maho-omo-task::adapters empty_completion_uses_fallback
+        PASS [   0.009s] ( 28/375) maho-omo-task::adapters dag_unknown_run_returns_not_found
+        PASS [   0.011s] ( 29/375) maho-omo-task::adapters dag_snapshot_roundtrips_owned_run
+        PASS [   0.008s] ( 30/375) maho-omo-task::adapters liveness_sanitizes_control_injection
+        PASS [   0.011s] ( 31/375) maho-omo-task::adapters dag_status_tracks_first_unsettled_wave
+        PASS [   0.007s] ( 32/375) maho-omo-task::adapters output_codec_accepts_tail_boundary
+        PASS [   0.007s] ( 33/375) maho-omo-task::adapters output_codec_rejects_oversize_tail
+        PASS [   0.010s] ( 34/375) maho-omo-task::adapters kill_option_preserves_multiword_identity
+        PASS [   0.011s] ( 35/375) maho-omo-task::adapters dag_wait_without_scheduler_returns_current_snapshot
+        PASS [   0.014s] ( 36/375) maho-omo-task::adapters dag_start_reuses_identical_definition
+        PASS [   0.006s] ( 37/375) maho-omo-task::adapters planner_explicit_model_never_reads_registry
+        PASS [   0.006s] ( 38/375) maho-omo-task::adapters planner_missing_registry_fails_closed
+        PASS [   0.012s] ( 39/375) maho-omo-task::adapters output_codec_rejects_invalid_mode
+        PASS [   0.005s] ( 40/375) maho-omo-task::adapters send_codec_keeps_plain_text
+        PASS [   0.007s] ( 41/375) maho-omo-task::adapters reload_empty_set_does_not_veto
+        PASS [   0.007s] ( 42/375) maho-omo-task::adapters reload_running_child_vetoes
+        PASS [   0.005s] ( 43/375) maho-omo-task::adapters suspended_row_overrides_running_label
+        PASS [   0.008s] ( 44/375) maho-omo-task::adapters send_codec_bounds_utf16_units
+        PASS [   0.007s] ( 45/375) maho-omo-task::adapters send_codec_rejects_foreign_identifier
+        PASS [   0.018s] ( 46/375) maho-omo-task::adapters dag_wait_passes_owned_session_to_injected_surface
+        PASS [   0.008s] ( 47/375) maho-omo-task::adapters task_list_all_includes_foreign_session
+        PASS [   0.010s] ( 48/375) maho-omo-task::adapters reload_terminal_child_does_not_veto
+        PASS [   0.006s] ( 49/375) maho-omo-task::adapters task_list_missing_session_fails_closed
+        PASS [   0.006s] ( 50/375) maho-omo-task::adapters terminal_tasks_leave_widget
+        PASS [   0.007s] ( 51/375) maho-omo-task::adapters task_summary_wins_over_description
+        PASS [   0.007s] ( 52/375) maho-omo-task::adapters widget_overflow_reports_remaining_tasks
+        PASS [   0.009s] ( 53/375) maho-omo-task::adapters task_list_scopes_current_session
+        PASS [   0.009s] ( 54/375) maho-omo-task::category_warning category_opt_in_overrides_global_suppression
+        PASS [   0.007s] ( 55/375) maho-omo-task::category_warning global_warning_suppression
+        PASS [   0.006s] ( 56/375) maho-omo-task::category_warning native_warning_delivery_notifies_when_captured_and_never_triggers_turn
+        PASS [   0.008s] ( 57/375) maho-omo-task::category_warning dead_chain_warns_once_per_session_category
+        PASS [   0.009s] ( 58/375) maho-omo-task::category_warning category_opt_out_overrides_default
+        PASS [   0.007s] ( 59/375) maho-omo-task::category_warning session_switch_allows_one_new_warning_without_mutating_error
+        PASS [   0.006s] ( 60/375) maho-omo-task::command_dispatch confirmed_multiword_choice_cancels_exact_task_id
+        PASS [   0.006s] ( 61/375) maho-omo-task::command_dispatch dismissed_choice_never_cancels
+        PASS [   0.007s] ( 62/375) maho-omo-task::command_dispatch declined_confirmation_never_cancels
+        PASS [   0.009s] ( 63/375) maho-omo-task::category_warning user_model_never_warns
+        PASS [   0.005s] ( 64/375) maho-omo-task::command_dispatch registration_exposes_both_commands
+        PASS [   0.011s] ( 65/375) maho-omo-task::category_warning plain_model_miss_never_warns
+        PASS [   0.005s] ( 66/375) maho-omo-task::command_dispatch terminal_only_set_does_not_open_selector
+        PASS [   0.006s] ( 67/375) maho-omo-task::command_dispatch selector_admits_exactly_the_source_cancellable_statuses
+        PASS [   0.011s] ( 68/375) maho-omo-task::completion_bridge background_policy_is_read_at_terminal_transition_not_store_creation
+        PASS [   0.010s] ( 69/375) maho-omo-task::completion_bridge replace_never_recursively_notifies
+        PASS [   0.013s] ( 70/375) maho-omo-task::completion_bridge applied_completion_notifies_and_calls_terminal_hook_once
+        PASS [   0.012s] ( 71/375) maho-omo-task::completion_bridge every_status_reaching_terminal_transition_observes_once_and_preserves_delivery_policy
+        PASS [   0.011s] ( 72/375) maho-omo-task::completion_bridge residency_transition_does_not_notify_terminal_again
+        PASS [   0.012s] ( 73/375) maho-omo-task::completion_bridge synchronous_completion_still_runs_liveness_hook_without_parent_push
+        PASS [   0.006s] ( 74/375) maho-omo-task::dag_activity accepted_child_tool_event_projects_exact_unsequenced_dag_activity
+        PASS [   0.014s] ( 75/375) maho-omo-task::dag_command_dispatch registered_dag_list_is_scoped_to_command_session
+        PASS [   0.007s] ( 76/375) maho-omo-task::dag_rpc_bridge activity_preserves_first_insertion_order_when_updated
+        PASS [   0.028s] ( 77/375) maho-omo-task::dag_command_dispatch registered_dag_detail_renders_diamond_waves_and_foreign_id_is_hidden
+        PASS [   0.009s] ( 78/375) maho-omo-task::dag_rpc_bridge configured_heartbeat_stops_after_live_run_becomes_terminal
+        PASS [   0.055s] ( 79/375) maho-omo-task::category_warning registered_engine_delivers_real_category_failure_without_starting_child
+        PASS [   0.043s] ( 80/375) maho-omo-task::component_recovery registered_send_observes_late_team_routing_and_propagates_resolver_failure
+        PASS [   0.010s] ( 81/375) maho-omo-task::dag_rpc_bridge detach_clears_all_timers_and_pending_activity
+        PASS [   0.047s] ( 82/375) maho-omo-task::component_recovery registered_owned_member_recovery_leaves_missing_marker_unacknowledged
+        PASS [   0.051s] ( 83/375) maho-omo-task::component_recovery registered_owned_member_recovery_acknowledges_actual_session_marker
+        PASS [   0.007s] ( 84/375) maho-omo-task::dag_rpc_bridge heartbeat_reports_last_delivered_sequence
+        PASS [   0.007s] ( 85/375) maho-omo-task::dag_rpc_bridge missing_parent_session_suppresses_snapshot_channel
+        PASS [   0.015s] ( 86/375) maho-omo-task::dag_rpc_bridge detached_activity_does_not_schedule_or_emit
+        PASS [   0.010s] ( 87/375) maho-omo-task::dag_rpc_bridge disposal_prevents_future_attachment
+        PASS [   0.010s] ( 88/375) maho-omo-task::dag_rpc_bridge ledger_dedupes_sequences_per_run
+        PASS [   0.051s] ( 89/375) maho-omo-task::component_recovery registered_start_redelivers_expired_completion_before_ttl_cleanup
+        PASS [   0.057s] ( 90/375) maho-omo-task::component_recovery registered_owned_member_expires_only_after_fixed_clock_advance
+        PASS [   0.007s] ( 91/375) maho-omo-task::dag_rpc_bridge reattach_resets_snapshot_fingerprint
+        PASS [   0.007s] ( 92/375) maho-omo-task::dag_rpc_bridge snapshot_burst_coalesces_without_absorbing_ledger_deltas
+        PASS [   0.008s] ( 93/375) maho-omo-task::dag_rpc_bridge telemetry_coalesces_latest_per_node
+        PASS [   0.010s] ( 94/375) maho-omo-task::dag_rpc_bridge snapshot_fingerprint_suppresses_duplicate_flush
+        PASS [   0.010s] ( 95/375) maho-omo-task::dag_rpc_bridge sync_subscribes_new_run_once_and_detach_releases_listener
+        PASS [   0.065s] ( 96/375) maho-omo-task::component_recovery registered_owned_member_recovery_leaves_wrong_epoch_marker_unacknowledged
+        PASS [   0.009s] ( 97/375) maho-omo-task::dag_rpc_handlers all_queries_reject_nonobjects
+        PASS [   0.010s] ( 98/375) maho-omo-task::dag_rpc_handlers all_run_scoped_queries_preserve_missing_and_foreign_errors
+        PASS [   0.009s] ( 99/375) maho-omo-task::dag_rpc_handlers history_excludes_prior_sequences
+        PASS [   0.009s] (100/375) maho-omo-task::dag_rpc_handlers history_known_event_filter_preserves_event
+        PASS [   0.008s] (101/375) maho-omo-task::dag_rpc_handlers invalid_event_types_rejected
+        PASS [   0.010s] (102/375) maho-omo-task::dag_rpc_handlers history_reads_real_creation_journal
+        PASS [   0.008s] (103/375) maho-omo-task::dag_rpc_handlers invalid_limits_rejected
+        PASS [   0.009s] (104/375) maho-omo-task::dag_rpc_handlers invalid_lanes_rejected
+        PASS [   0.010s] (105/375) maho-omo-task::dag_rpc_handlers invalid_run_identifiers_rejected
+        PASS [   0.013s] (106/375) maho-omo-task::dag_rpc_handlers history_unknown_event_types_are_valid_empty_filter
+        PASS [   0.010s] (107/375) maho-omo-task::dag_rpc_handlers list_clamps_limit
+        PASS [   0.011s] (108/375) maho-omo-task::dag_rpc_handlers invalid_sequences_rejected
+        PASS [   0.023s] (109/375) maho-omo-task::dag_rpc_handlers bounded_subscribe_page_walk_does_not_shift_when_journal_grows
+        PASS [   0.010s] (110/375) maho-omo-task::dag_rpc_handlers list_rejects_invalid_statuses
+        PASS [   0.008s] (111/375) maho-omo-task::dag_rpc_handlers snapshot_foreign_session_denied
+        PASS [   0.008s] (112/375) maho-omo-task::dag_rpc_handlers snapshot_returns_owned_run
+        PASS [   0.015s] (113/375) maho-omo-task::dag_rpc_handlers list_is_scoped_and_has_default_limit
+        PASS [   0.010s] (114/375) maho-omo-task::dag_rpc_handlers snapshot_missing_run_not_found
+        PASS [   0.014s] (115/375) maho-omo-task::dag_rpc_handlers list_without_session_is_empty
+        PASS [   0.009s] (116/375) maho-omo-task::dag_rpc_handlers snapshot_without_session_denied
+        PASS [   0.018s] (117/375) maho-omo-task::dag_rpc_handlers list_filters_statuses
+        PASS [   0.009s] (118/375) maho-omo-task::dag_rpc_handlers subscribe_freezes_history_at_snapshot_watermark
+        PASS [   0.018s] (119/375) maho-omo-task::dag_rpc_handlers registered_query_handlers_observe_live_session_scope
+        PASS [   0.007s] (120/375) maho-omo-task::dag_runtime_delivery empty_run_does_not_advance_delivery_cursor
+        PASS [   0.010s] (121/375) maho-omo-task::dag_rpc_handlers subscribe_honors_lower_through_sequence
+        PASS [   0.009s] (122/375) maho-omo-task::dag_rpc_handlers unreadable_journal_returns_history_unavailable_without_losing_snapshot
+        PASS [   0.009s] (123/375) maho-omo-task::dag_runtime_delivery scheduler_events_share_durable_cursor_and_route_per_run
+        PASS [   0.014s] (124/375) maho-omo-task::dag_runtime_skills shared_skill_loader_materializes_once_at_current_runtime_cwd
+        PASS [   0.009s] (125/375) maho-omo-task::dag_status_ui disposal_cancels_active_refresh_without_further_paint
+        PASS [   0.009s] (126/375) maho-omo-task::dag_status_ui headless_mode_produces_no_widget_or_refresh
+        PASS [   0.013s] (127/375) maho-omo-task::dag_snapshot_payload wire_payload_is_snake_case_with_absent_optional_node_fields
+        PASS [   0.011s] (128/375) maho-omo-task::dag_status_ui header_counts_come_from_current_node_states
+        PASS [   0.013s] (129/375) maho-omo-task::dag_status_ui latest_node_activity_replaces_prior_and_terminal_node_hides_it
+        PASS [   0.013s] (130/375) maho-omo-task::dag_status_ui live_run_renders_below_editor_and_reuses_refresh_timer
+        PASS [   0.009s] (131/375) maho-omo-task::dag_status_ui paused_run_preserves_skipped_and_cancelled_icons
+        PASS [   0.010s] (132/375) maho-omo-task::dag_status_ui pruned_run_clears_widget_on_next_refresh
+        PASS [   0.012s] (133/375) maho-omo-task::dag_status_ui node_transitions_advance_wave_and_preserve_routes
+        PASS [   0.008s] (134/375) maho-omo-task::dag_status_ui terminal_run_clears_widget_and_live_refresh
+        PASS [   0.108s] (135/375) maho-omo-task::dag_registered_lifecycle registered_rebind_restores_existing_live_child_subscription
+        PASS [   0.013s] (136/375) maho-omo-task::dag_status_ui pending_sync_debounces_and_disposal_prevents_render
+        PASS [   0.109s] (137/375) maho-omo-task::dag_registered_lifecycle registered_shutdown_clears_live_activity_and_all_bridge_timers
+        PASS [   0.014s] (138/375) maho-omo-task::dag_status_ui run_missing_between_list_and_snapshot_does_not_hide_surviving_run
+        PASS [   0.013s] (139/375) maho-omo-task::dag_status_ui scheduled_burst_renders_once_before_live_refresh
+        PASS [   0.011s] (140/375) maho-omo-task::dag_status_ui uncaptured_runtime_never_queries_dag_manager
+        PASS [   0.006s] (141/375) maho-omo-task::dag_wake idle_failure_delivers_structured_counts_without_streaming_flush
+        PASS [   0.010s] (142/375) maho-omo-task::dag_status_ui unknown_run_activity_never_appears_in_owned_widget
+        PASS [   0.006s] (143/375) maho-omo-task::dag_wake nonterminal_or_missing_counts_never_wakes
+        PASS [   0.007s] (144/375) maho-omo-task::dag_wake every_session_transition_buffers_terminal_until_matching_start_once
+        PASS [   0.006s] (145/375) maho-omo-task::dag_wake transition_buffer_keeps_first_insertion_order_and_latest_payload
+        PASS [   0.008s] (146/375) maho-omo-task::dag_wake streaming_terminal_schedules_coordinator_flush
+        PASS [   0.006s] (147/375) maho-omo-task::engine_runners builtin_agents_exist_without_overrides
+        PASS [   0.011s] (148/375) maho-omo-task::dag_wake_source missing_session_publishes_cleared_state
+        PASS [   0.009s] (149/375) maho-omo-task::dag_wake_source pending_run_reports_creation_time_and_name
+        PASS [   0.011s] (150/375) maho-omo-task::dag_wake_source multiple_live_runs_aggregate_and_terminal_runs_clear_channels
+        PASS [   0.123s] (151/375) maho-omo-task::dag_registered_lifecycle registered_terminal_node_releases_activity_while_peer_remains_live
+        PASS [   0.011s] (152/375) maho-omo-task::dag_wake_source pruned_run_does_not_hide_surviving_channel
+        PASS [   0.008s] (153/375) maho-omo-task::engine_runners factory_adds_one_to_parent_depth_limit
+        PASS [   0.009s] (154/375) maho-omo-task::engine_runners curated_execution_is_pinned_but_user_agent_remains_configurable
+        PASS [   0.013s] (155/375) maho-omo-task::dag_wake_source shutdown_clears_live_channels
+        PASS [   0.008s] (156/375) maho-omo-task::engine_runners factory_filters_memory_and_task_family_tools_before_child_creation
+        PASS [   0.007s] (157/375) maho-omo-task::engine_runners live_parent_tools_are_resolved_when_resuming_existing_session
+        PASS [   0.008s] (158/375) maho-omo-task::engine_runners model_overlay_preserves_builtin_prompt_and_tools
+        PASS [   0.012s] (159/375) maho-omo-task::engine_runners live_parent_tools_are_resolved_for_each_child_launch
+        PASS [   0.009s] (160/375) maho-omo-task::event_recovery session_start_releases_switch_transition_before_resumption
+        PASS [   0.010s] (161/375) maho-omo-task::engine_runners user_agent_is_appended_and_disabled_builtin_retains_disable_flag
+        PASS [   0.009s] (162/375) maho-omo-task::event_recovery session_switch_clears_ui_and_marks_transition
+        PASS [   0.012s] (163/375) maho-omo-task::event_recovery agent_end_acknowledges_liveness_with_captured_context
+        PASS [   0.010s] (164/375) maho-omo-task::event_recovery shutdown_unsubscribes_before_resumption_and_clears_ui
+        PASS [   0.008s] (165/375) maho-omo-task::event_recovery startup_mailbox_failure_is_best_effort_before_rpc_attach
+        PASS [   0.014s] (166/375) maho-omo-task::event_recovery persisted_terminal_is_reobserved_before_mailbox_and_rpc_on_restart
+        PASS [   0.011s] (167/375) maho-omo-task::event_registration dag_shutdown_pauses_before_task_teardown_then_disposes
+        PASS [   0.062s] (168/375) maho-omo-task::dag_snapshot_payload snapshot_cap_reports_only_actual_overflow
+        PASS [   0.006s] (169/375) maho-omo-task::host_timers dropping_host_cancels_pending_callbacks
+        PASS [   0.009s] (170/375) maho-omo-task::event_registration usage_guidance_is_hidden_and_delivered_once_per_session
+        PASS [   0.005s] (171/375) maho-omo-task::lead_message_sink direct_rejection_invokes_failure_callback_once_before_error_reporter
+        PASS [   0.010s] (172/375) maho-omo-task::event_registration disabled_usage_guidance_does_not_deliver
+        PASS [   0.008s] (173/375) maho-omo-task::lead_message_sink coordinator_enqueues_all_states_but_only_schedules_idle_and_streaming
+        PASS [   0.008s] (174/375) maho-omo-task::host_timers due_callback_fires_once_through_completion_signal
+        PASS [   0.012s] (175/375) maho-omo-task::event_registration dag_start_attaches_after_task_recovery_and_switch_detaches_after_task_capture
+        PASS [   0.011s] (176/375) maho-omo-task::host_timers clearing_timer_drops_callback_without_waiting_for_deadline
+        PASS [   0.006s] (177/375) maho-omo-task::lead_message_sink direct_team_message_is_hidden_steer_and_acknowledges_only_success
+        PASS [   0.007s] (178/375) maho-omo-task::lead_poller_lifecycle disappeared_ownership_shuts_down_even_when_team_id_stays
+        PASS [   0.007s] (179/375) maho-omo-task::lead_poller_lifecycle explicit_foreign_team_is_rejected
+        PASS [   0.007s] (180/375) maho-omo-task::lead_poller_lifecycle no_owned_team_has_no_default
+        PASS [   0.005s] (181/375) maho-omo-task::lead_poller_lifecycle one_owned_team_resolves_default
+        PASS [   0.008s] (182/375) maho-omo-task::lead_poller_lifecycle multiple_owned_teams_require_explicit_selection
+        PASS [   0.007s] (183/375) maho-omo-task::lead_poller_lifecycle shared_delivery_journal_reaches_factory_and_owned_poller_is_reused
+        PASS [   0.007s] (184/375) maho-omo-task::lead_poller_lifecycle suspended_lead_retains_poller_and_resumes_without_shutdown
+        PASS [   0.009s] (185/375) maho-omo-task::lead_poller_lifecycle shutdown_is_idempotent_and_prevents_future_ticks
+        PASS [   0.010s] (186/375) maho-omo-task::lead_poller_lifecycle no_session_file_prevents_polling
+        PASS [   0.009s] (187/375) maho-omo-task::lead_poller_lifecycle streaming_parent_can_poll
+        PASS [   0.007s] (188/375) maho-omo-task::lead_poller_lifecycle tick_polls_only_owned_teams
+        PASS [   0.009s] (189/375) maho-omo-task::lead_poller_lifecycle switching_sessions_stops_stale_poller
+        PASS [   0.007s] (190/375) maho-omo-task::lead_poller_lifecycle transitions_suppress_polling_and_resolution
+        PASS [   0.009s] (191/375) maho-omo-task::member_liveness completed_killed_resident_preserves_last_completed_state
+        PASS [   0.008s] (192/375) maho-omo-task::member_liveness direct_message_extracts_exact_delivery_key
+        PASS [   0.011s] (193/375) maho-omo-task::member_liveness abnormal_member_has_structured_liveness_details
+        PASS [   0.009s] (194/375) maho-omo-task::member_liveness deferred_liveness_rejection_retries_once_without_marking_delivery
+        PASS [   0.008s] (195/375) maho-omo-task::member_liveness failed_delivery_retries_exactly_to_configured_limit
+        PASS [   0.010s] (196/375) maho-omo-task::member_liveness durable_marker_binding_acknowledges_only_matching_status_and_epoch
+        PASS [   0.008s] (197/375) maho-omo-task::member_liveness foreign_key_prefix_is_not_acknowledged
+        PASS [   0.011s] (198/375) maho-omo-task::member_liveness killed_cancelled_member_reports_death
+        PASS [   0.018s] (199/375) maho-omo-task::lifecycle_adapters lifecycle_ports_preserve_admission_and_single_writer_residency
+        PASS [   0.008s] (200/375) maho-omo-task::member_liveness persistence_ack_waits_for_exact_jsonl_marker_and_clears_pending_epoch
+        PASS [   0.010s] (201/375) maho-omo-task::member_liveness ordinary_task_has_no_member_liveness
+        PASS [   0.013s] (202/375) maho-omo-task::member_liveness healthy_member_has_no_liveness_notification
+        PASS [   0.007s] (203/375) maho-omo-task::member_liveness session_marker_parser_ignores_invalid_json_and_other_entries
+        PASS [   0.009s] (204/375) maho-omo-task::member_liveness persisted_epoch_suppresses_redelivery
+        PASS [   0.007s] (205/375) maho-omo-task::member_liveness suspended_members_never_report_death
+        PASS [   0.010s] (206/375) maho-omo-task::member_liveness pending_delivery_is_deduplicated_by_task_epoch
+        PASS [   0.013s] (207/375) maho-omo-task::member_liveness owned_resident_error_notifies_but_suspended_and_foreign_members_do_not
+        PASS [   0.006s] (208/375) maho-omo-task::member_liveness wake_envelope_extracts_and_deduplicates_keys
+        PASS [   0.007s] (209/375) maho-omo-task::message_renderers category_renderer_uses_text_content_and_sanitizes_terminal_control
+        PASS [   0.005s] (210/375) maho-omo-task::message_renderers liveness_renderer_decodes_camel_case_details
+        PASS [   0.006s] (211/375) maho-omo-task::parent_notifier direct_fallback_preserves_hidden_renderer_channel_and_steers
+        PASS [   0.007s] (212/375) maho-omo-task::message_renderers registers_all_three_custom_message_types
+        PASS [   0.009s] (213/375) maho-omo-task::message_renderers completion_renderer_decodes_envelope_and_renders_at_each_width
+        PASS [   0.008s] (214/375) maho-omo-task::parent_notifier idle_parent_requests_soon_flush_after_enqueue
+        PASS [   0.009s] (215/375) maho-omo-task::parent_notifier direct_and_coordinated_delivery_settle_the_callback_exactly_once
+        PASS [   0.007s] (216/375) maho-omo-task::parent_notifier structured_completion_ids_form_stable_coordinator_key_and_preserve_details
+        PASS [   0.010s] (217/375) maho-omo-task::parent_notifier streaming_parent_schedules_coordinator_without_direct_delivery
+        PASS [   0.008s] (218/375) maho-omo-task::planner_effort builtin_agent_fails_closed_without_registry
+        PASS [   0.006s] (219/375) maho-omo-task::planner_effort explicit_builtin_agent_keeps_persona_without_registry
+        PASS [   0.007s] (220/375) maho-omo-task::planner_effort explicit_model_cannot_bypass_disabled_agent
+        PASS [   0.010s] (221/375) maho-omo-task::planner_effort entry_effort_wins_over_entry_variant
+        PASS [   0.011s] (222/375) maho-omo-task::planner_effort entry_effort_wins_over_agent_variant
+        PASS [   0.016s] (223/375) maho-omo-task::planner_effort disabled_agent_can_fall_back_to_same_named_category_without_explicit_override
+        PASS [   0.019s] (224/375) maho-omo-task::planner_effort category_preserves_safe_registry_display_name
+        PASS [   0.020s] (225/375) maho-omo-task::planner_effort category_effort_wins_public_variant_but_keeps_both_metadata_fields
+        PASS [   0.019s] (226/375) maho-omo-task::planner_effort category_rejects_registry_display_control_sequences
+        PASS [   0.011s] (227/375) maho-omo-task::planner_effort model_entry_effort_becomes_child_variant
+        PASS [   0.009s] (228/375) maho-omo-task::planner_effort plain_model_does_not_invent_variant
+        PASS [   0.024s] (229/375) maho-omo-task::planner_effort curated_agent_fallback_applies_its_reasoning_variant
+        PASS [   0.006s] (230/375) maho-omo-task::process_sweep parent_session_runs_sweep_once
+        PASS [   0.029s] (231/375) maho-omo-task::planner_effort category_display_name_uses_utf16_boundary_and_rejects_blank_names
+        PASS [   0.007s] (232/375) maho-omo-task::process_sweep panicking_sweep_is_logged_without_propagating
+        PASS [   0.010s] (233/375) maho-omo-task::process_sweep failed_sweep_reports_without_propagating
+        PASS [   0.006s] (234/375) maho-omo-task::process_sweep production_sweep_resolves_paired_daemon_override_before_running_families
+        PASS [   0.007s] (235/375) maho-omo-task::registration flags_default_enabled_and_preserve_explicit_host_override
+        PASS [   0.005s] (236/375) maho-omo-task::registration removed_team_wait_registers_hint_without_a_tool
+        PASS [   0.023s] (237/375) maho-omo-task::planner_effort variant_bearing_builtin_category_fallback_applies_variant
+        PASS [   0.014s] (238/375) maho-omo-task::process_sweep rpc_child_marker_skips_sweep_even_when_empty
+        PASS [   0.014s] (239/375) maho-omo-task::process_sweep session_start_returns_before_sweep_finishes_and_reports_failure
+        PASS [   0.027s] (240/375) maho-omo-task::planner_fallback unavailable_builtin_head_preserves_requested_head_and_remaining_rungs
+        PASS [   0.027s] (241/375) maho-omo-task::planner_fallback user_fallback_on_chain_rung_keeps_priority_without_duplicate_rung
+        PASS [   0.033s] (242/375) maho-omo-task::planner_effort unknown_target_and_dead_agent_chain_preserve_available_target_metadata
+        PASS [   0.010s] (243/375) maho-omo-task::resumption_channels background_and_terminal_records_skip_ownership_and_empty_event_bus_is_safe
+        PASS [   0.012s] (244/375) maho-omo-task::renderer_goldens registered_renderers_match_pinned_upstream_goldens
+        PASS [   0.008s] (245/375) maho-omo-task::resumption_channels missing_session_publishes_empty_start_and_shutdown
+        PASS [   0.016s] (246/375) maho-omo-task::residency_registry rpc_resident_termination_never_aborts_and_missing_port_rejects
+        PASS [   0.011s] (247/375) maho-omo-task::resumption_channels production_manager_resolves_owned_members_from_real_runtime
+        PASS [   0.008s] (248/375) maho-omo-task::resumption_channels publishes_only_count_changes_for_background_and_owned_nonterminal_tasks
+        PASS [   0.009s] (249/375) maho-omo-task::resumption_channels started_channel_preserves_task_identity_description_and_creation_timestamp
+        PASS [   0.007s] (250/375) maho-omo-task::resumption_queue owned_worker_delivers_changed_count_and_suppresses_unchanged_snapshot
+        PASS [   0.009s] (251/375) maho-omo-task::resumption_queue dropped_queued_operation_does_not_block_following_shutdown
+        PASS [   0.006s] (252/375) maho-omo-task::resumption_queue owned_worker_disposal_cancels_pending_resolution_and_joins_before_clear_returns
+        PASS [   0.039s] (253/375) maho-omo-task::planner_fallback configured_runtime_fallbacks_keep_requested_identity_and_ordered_effort
+        PASS [   0.015s] (254/375) maho-omo-task::resumption_channels terminal_owned_member_never_keeps_wake_channel_alive
+        PASS [   0.008s] (255/375) maho-omo-task::runtime_context capture_retains_exact_session_file
+        PASS [   0.009s] (256/375) maho-omo-task::resumption_queue shutdown_queues_after_pending_ownership_and_suppresses_changed_snapshot
+        PASS [   0.006s] (257/375) maho-omo-task::runtime_context transition_overrides_live_idle_facts_until_released
+        PASS [   0.008s] (258/375) maho-omo-task::runtime_context capture_uses_session_cwd_and_exact_registry
+        PASS [   0.009s] (259/375) maho-omo-task::session_transition_bridge transition_marking_preserves_reason_and_empty_release_is_idempotent
+        PASS [   0.012s] (260/375) maho-omo-task::session_transition_bridge buffered_completion_flushes_only_to_same_session
+        PASS [   0.035s] (261/375) maho-omo-task::skill_invocation_tracker expanded_plan_skill_records_human_choice
+        PASS [   0.036s] (262/375) maho-omo-task::skill_invocation_tracker failed_reads_do_not_arm_invocation
+        PASS [   0.041s] (263/375) maho-omo-task::skill_invocation_tracker extension_input_never_arms_human_gate
+        PASS [   0.038s] (264/375) maho-omo-task::skill_invocation_tracker injected_directive_cannot_arm_skill_request
+        PASS [   0.045s] (265/375) maho-omo-task::skill_invocation_tracker ordinary_upstream_inputs_and_empty_session_do_not_arm_gate
+        PASS [   0.045s] (266/375) maho-omo-task::skill_invocation_tracker own_words_after_expanded_skill_block_still_arm_request
+        PASS [   0.048s] (267/375) maho-omo-task::skill_invocation_tracker ordinary_work_requests_do_not_arm_gate
+        PASS [   0.032s] (268/375) maho-omo-task::skill_invocation_tracker plan_touches_are_counted_and_sorted_by_recency
+        PASS [   0.041s] (269/375) maho-omo-task::skill_invocation_tracker patch_paths_deduplicated_per_event
+        PASS [   0.036s] (270/375) maho-omo-task::skill_invocation_tracker read_skill_arms_invoked_not_requested
+        PASS [   0.049s] (271/375) maho-omo-task::skill_invocation_tracker planning_noun_without_request_does_not_arm_gate
+        PASS [   0.042s] (272/375) maho-omo-task::skill_invocation_tracker registered_expanded_start_work_forbids_review_after_human_plan_request
+        PASS [   0.052s] (273/375) maho-omo-task::skill_invocation_tracker registered_events_capture_input_tool_result_and_shutdown
+        PASS [   0.038s] (274/375) maho-omo-task::skill_invocation_tracker shutdown_clears_only_matching_session
+        PASS [   0.111s] (275/375) maho-omo-task::skill_invocation_tracker injected_blocks_and_extension_expansions_cannot_manufacture_request
+        PASS [   0.039s] (276/375) maho-omo-task::skill_invocation_tracker slash_skill_records_both_channels
+        PASS [   0.050s] (277/375) maho-omo-task::skill_invocation_tracker skill_reads_preserve_windows_names_and_exclude_other_tools
+        PASS [   0.042s] (278/375) maho-omo-task::skill_invocation_tracker spawn_policy_reads_current_tracked_gate_and_plan_state
+        PASS [   0.015s] (279/375) maho-omo-task::status_goldens task_rows_match_pinned_upstream_status_goldens
+        PASS [   0.009s] (280/375) maho-omo-task::status_ui live_refresh_reuses_existing_timer_and_stops_when_terminal
+        PASS [   0.044s] (281/375) maho-omo-task::skill_invocation_tracker truncated_unrelated_block_does_not_arm_plan_from_body
+        PASS [   0.007s] (282/375) maho-omo-task::status_ui multiple_rows_are_scoped_and_sanitize_controls_without_losing_wide_text
+        PASS [   0.006s] (283/375) maho-omo-task::status_ui production_widget_uses_terminal_width_and_keeps_activity_and_elapsed
+        PASS [   0.014s] (284/375) maho-omo-task::status_ui live_solo_and_process_member_render_cost_before_tps_without_cache_rate
+        PASS [   0.009s] (285/375) maho-omo-task::status_ui repeated_schedule_coalesces_to_one_render
+        PASS [   0.009s] (286/375) maho-omo-task::status_ui rpc_mode_does_not_render_widget
+        PASS [   0.051s] (287/375) maho-omo-task::skill_invocation_tracker unrelated_expanded_skill_body_cannot_arm_plan
+        PASS [   0.011s] (288/375) maho-omo-task::status_ui static_widget_uses_below_editor_without_animation_timer
+        PASS [   0.007s] (289/375) maho-omo-task::status_ui terminal_set_clears_widget
+        PASS [   0.008s] (290/375) maho-omo-task::status_ui subscribes_before_debounce_and_dispose_removes_listener_and_timer
+        PASS [   0.042s] (291/375) maho-omo-task::skill_invocation_tracker windows_plan_path_normalizes_and_failed_touch_is_not_counted
+        PASS [   0.062s] (292/375) maho-omo-task::skill_invocation_tracker unrelated_reads_and_failed_plan_writes_do_not_create_state
+        PASS [   0.006s] (293/375) maho-omo-task::store_mutation_observer committed_tombstone_and_expunge_both_notify
+        PASS [   0.007s] (294/375) maho-omo-task::store_mutation_observer failed_save_does_not_notify
+        PASS [   0.007s] (295/375) maho-omo-task::store_mutation_observer missing_tombstone_does_not_notify
+        PASS [   0.014s] (296/375) maho-omo-task::status_ui two_live_children_render_latest_activity_independently
+        PASS [   0.011s] (297/375) maho-omo-task::status_ui uncaptured_runtime_never_queries_manager
+        PASS [   0.007s] (298/375) maho-omo-task::store_mutation_observer reads_and_event_appends_do_not_notify
+        PASS [   0.009s] (299/375) maho-omo-task::store_mutation_observer remove_notifies_even_when_already_missing
+        PASS [   0.011s] (300/375) maho-omo-task::store_mutation_observer retained_tombstone_does_not_notify
+        PASS [   0.013s] (301/375) maho-omo-task::store_mutation_observer save_and_replace_notify_after_persistence
+        PASS [   0.010s] (302/375) maho-omo-task::task_rpc_bridge all_controls_fail_closed_when_detached
+        PASS [   0.013s] (303/375) maho-omo-task::store_mutation_observer unchanged_mutation_still_notifies
+        PASS [   0.007s] (304/375) maho-omo-task::task_rpc_bridge attached_control_parses_before_manager_access
+        PASS [   0.015s] (305/375) maho-omo-task::store_mutation_observer transition_notifies_after_record_is_committed
+        PASS [   0.186s] (306/375) maho-omo-task::skill_invocation_tracker own_words_plan_requests_arm_requires_channel_only
+        PASS [   0.008s] (307/375) maho-omo-task::task_rpc_bridge attached_empty_session_emits_once_per_fingerprint
+        PASS [   0.007s] (308/375) maho-omo-task::task_rpc_bridge detached_control_is_unavailable_before_parsing
+        PASS [   0.009s] (309/375) maho-omo-task::task_rpc_bridge foreign_task_send_is_indistinguishable_from_missing
+        PASS [   0.008s] (310/375) maho-omo-task::task_rpc_bridge registered_output_reads_owned_record_and_invalid_controls_preserve_state
+        PASS [   0.010s] (311/375) maho-omo-task::task_rpc_bridge reattach_emits_new_consumer_snapshot
+        PASS [   0.013s] (312/375) maho-omo-task::task_rpc_bridge missing_session_emits_no_snapshot
+        PASS [   0.013s] (313/375) maho-omo-task::task_rpc_bridge disposal_prevents_reattach_and_control
+        PASS [   0.011s] (314/375) maho-omo-task::task_rpc_bridge registers_three_control_handlers
+        PASS [   0.016s] (315/375) maho-omo-task::task_rpc_bridge every_foreign_control_returns_generic_not_found
+        PASS [   0.006s] (316/375) maho-omo-task::task_rpc_parsers every_control_rejects_invalid_task_identity_and_nonobject_requests
+        PASS [   0.008s] (317/375) maho-omo-task::task_rpc_parsers cancellation_reason_uses_utf16_limit_without_trimming_valid_text
+        PASS [   0.009s] (318/375) maho-omo-task::task_rpc_parsers optional_control_fields_remain_optional_and_reject_wrong_types
+        PASS [   0.014s] (319/375) maho-omo-task::task_rpc_bridge terminal_snapshot_uses_durable_run_stats
+        PASS [   0.007s] (320/375) maho-omo-task::task_rpc_parsers output_accepts_integral_decimal_and_exponent_json_counts
+        PASS [   0.010s] (321/375) maho-omo-task::task_rpc_parsers output_rejects_every_invalid_tail_count_and_explicit_null_mode
+        PASS [   0.175s] (322/375) maho-omo-task::skill_invocation_tracker remaining_upstream_own_words_requests_arm_request_without_invocation
+        PASS [   0.013s] (323/375) maho-omo-task::task_rpc_parsers send_preserves_text_and_enforces_utf16_boundaries
+        PASS [   0.007s] (324/375) maho-omo-task::task_rpc_snapshot live_progress_projects_all_optional_fields_including_zero
+        PASS [   0.012s] (325/375) maho-omo-task::task_rpc_snapshot invalid_output_arguments_remain_machine_readable
+        PASS [   0.014s] (326/375) maho-omo-task::task_rpc_snapshot absent_optional_snapshot_fields_are_not_invented
+        PASS [   0.165s] (327/375) maho-omo-task::skill_invocation_tracker request_tokens_use_javascript_ascii_word_boundaries
+        PASS [   0.012s] (328/375) maho-omo-task::task_rpc_snapshot missing_task_output_does_not_disclose_known_tasks
+        PASS [   0.008s] (329/375) maho-omo-task::task_rpc_snapshot snapshots_preserve_full_durable_stats_and_prefer_live_stats_when_supplied
+        PASS [   0.042s] (330/375) maho-omo-task::task_rpc_live registered_controls_and_live_progress_release_bridge_subscriptions_on_cancel
+        PASS [   0.020s] (331/375) maho-omo-task::task_rpc_snapshot output_snapshot_bounds_lineage_and_loss_breadcrumbs_without_discarding_pid
+        PASS [   0.013s] (332/375) maho-omo-task::task_rpc_snapshot task_snapshot_child_identity_is_bounded
+        PASS [   0.019s] (333/375) maho-omo-task::task_rpc_snapshot transcript_exact_utf16_boundary_retains_mode_source_and_no_truncation
+        PASS [   0.013s] (334/375) maho-omo-task::task_rpc_snapshot transcript_output_bounds_utf16_and_preserves_existing_truncation
+        PASS [   0.062s] (335/375) maho-omo-task::task_rpc_bridge snapshot_cap_retains_newest_live_records_in_stable_order
+        PASS [   0.014s] (336/375) maho-omo-task::task_skill_loader resolved_plugin_directory_uses_existing_filesystem_loader
+        PASS [   0.031s] (337/375) maho-omo-task::task_rpc_snapshot task_snapshot_bounds_text_and_sets_truncation_flags
+        PASS [   0.041s] (338/375) maho-omo-task::task_rpc_snapshot task_snapshot_bounds_every_text_field_without_flagging_exact_boundary
+        PASS [   0.023s] (339/375) maho-omo-task::task_skill_loader canonical_agent_skill_wins_over_packaged_collision
+        PASS [   0.053s] (340/375) maho-omo-task::task_rpc_snapshot output_snapshot_bounds_complete_text_and_model_matrix
+        PASS [   0.024s] (341/375) maho-omo-task::team_query_registered registrar_publishes_the_two_read_only_query_tools
+        PASS [   0.019s] (342/375) maho-omo-task::team_query_registered team_status_projects_the_run_aggregate
+        PASS [   0.084s] (343/375) maho-omo-task::task_rpc_bridge snapshot_cap_keeps_live_tasks_before_recent_terminals
+        PASS [   0.026s] (344/375) maho-omo-task::team_query_registered team_list_filters_nonempty_project_and_user_scopes
+        PASS [   0.019s] (345/375) maho-omo-task::team_query_registered team_list_reports_active_and_not_started_entries
+        PASS [   0.023s] (346/375) maho-omo-task::team_query_registered team_list_prefers_the_project_spec_over_the_same_named_user_spec
+        PASS [   0.017s] (347/375) maho-omo-task::team_query_registered team_status_rejects_an_unknown_run
+        PASS [   0.025s] (348/375) maho-omo-task::team_service absent_lead_session_rejects_team_creation_before_launch
+        PASS [   0.014s] (349/375) maho-omo-task::team_service mapped_recipient_receives_message_and_correlation_event
+        PASS [   0.017s] (350/375) maho-omo-task::team_service malformed_delete_id_rejected_before_runtime_access
+        PASS [   0.020s] (351/375) maho-omo-task::team_service curated_read_only_agent_rejected_before_member_launch
+        PASS [   0.020s] (352/375) maho-omo-task::team_service foreign_session_cannot_read_or_mutate_tasklist
+        PASS [   0.020s] (353/375) maho-omo-task::team_service rejected_member_start_preserves_code_and_does_not_activate_team
+        PASS [   0.019s] (354/375) maho-omo-task::team_service shutdown_errors_preserve_native_machine_codes
+        PASS [   0.026s] (355/375) maho-omo-task::team_service all_scoped_methods_reject_foreign_session_before_side_effects
+        PASS [   0.020s] (356/375) maho-omo-task::team_service shutdown_request_rejection_and_approval_persist_through_service
+        PASS [   0.010s] (357/375) maho-omo-task::team_service task_claim_defaults_to_lead_and_filter_reads_persisted_owner
+        PASS [   0.014s] (358/375) maho-omo-task::team_service task_create_list_get_share_real_persisted_state
+        PASS [   0.013s] (359/375) maho-omo-task::team_service unknown_canonical_delete_succeeds_but_uppercase_fails_shape_guard
+        PASS [   0.016s] (360/375) maho-omo-task::team_service team_listing_preserves_owner_and_scope
+        PASS [   0.020s] (361/375) maho-omo-task::team_service successful_member_creation_persists_active_team_and_member_map
+        PASS [   0.013s] (362/375) maho-omo-task::team_service uncaptured_session_can_read_existing_team
+        PASS [   0.014s] (363/375) maho-omo-task::team_service_support curated_agent_rejected_before_team_creation
+        PASS [   0.018s] (364/375) maho-omo-task::team_service unmapped_active_member_delivery_does_not_invent_correlation_event
+        PASS [   0.007s] (365/375) maho-omo-task::team_service_support member_vocabulary_includes_defaults_and_custom_categories
+        PASS [   0.018s] (366/375) maho-omo-task::team_service_support canonical_run_id_accepts_only_lowercase_v4_uuid
+        PASS [   0.021s] (367/375) maho-omo-task::team_service unknown_named_team_preserves_spec_error_without_starting_members
+        PASS [   0.013s] (368/375) maho-omo-task::team_service_support inline_spec_wins_over_named_lookup
+        PASS [   0.009s] (369/375) maho-omo-task::team_service_support unknown_name_lists_sorted_declared_and_broken_teams
+        PASS [   0.012s] (370/375) maho-omo-task::team_service_support missing_request_is_invalid_spec
+        PASS [   0.013s] (371/375) maho-omo-task::team_service_support known_broken_name_returns_recorded_spec_error
+        PASS [   0.008s] (372/375) maho-omo-task::team_service_support unnamed_inline_spec_uses_inline_team_name
+        PASS [   0.381s] (373/375) maho-omo-task::production_composition registered_component_executes_native_runtime_and_releases_resources
+        PASS [   1.418s] (374/375) maho-omo-task::dag_viewer_client viewer_catchup_recovers_dropped_live_event_without_duplicates
+        PASS [   4.555s] (375/375) maho-omo-task::dag_runtime_delivery durable_pages_deliver_in_order_once_and_continue_after_bad_subscriber
+────────────
+     Summary [   4.693s] 375 tests run: 375 passed, 0 skipped

@@ -1,0 +1,47 @@
+   Compiling parking_lot_core v0.9.12
+   Compiling uuid v1.20.0
+   Compiling parking_lot v0.12.5
+   Compiling mio v1.2.0
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling tokio v1.52.3
+   Compiling maho-omo-config-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/omo-config-core)
+   Compiling nix v0.28.0
+   Compiling tempfile v3.27.0
+   Compiling maho-utils v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/utils)
+   Compiling maho-comment-checker-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/comment-checker-core)
+    Finished `test` profile [unoptimized] target(s) in 7.68s
+────────────
+ Nextest run ID 1b3dc8ce-1f49-4984-8c1b-1faf21f89ca2 with nextest profile: default
+    Starting 30 tests across 4 binaries
+        PASS [   0.005s] ( 1/30) maho-comment-checker-core::apply_patch_edits array_metadata_details_are_accepted_by_legacy_record_guard
+        PASS [   0.005s] ( 2/30) maho-comment-checker-core::apply_patch_edits get_string_returns_first_string_valued_key
+        PASS [   0.005s] ( 3/30) maho-comment-checker-core::apply_patch_edits parse_drops_sections_without_added_lines_and_ignores_orphan_lines
+        PASS [   0.005s] ( 4/30) maho-comment-checker-core::apply_patch_edits extract_returns_empty_without_metadata_or_patch
+        PASS [   0.005s] ( 5/30) maho-comment-checker-core::apply_patch_edits extract_falls_back_to_patch_argument_keys_in_order
+        PASS [   0.005s] ( 6/30) maho-comment-checker-core::apply_patch_edits metadata_files_empty_for_non_record_details
+        PASS [   0.007s] ( 7/30) maho-comment-checker-core::apply_patch_edits metadata_files_read_from_direct_files_key
+        PASS [   0.007s] ( 8/30) maho-comment-checker-core::apply_patch_edits metadata_files_fall_back_to_result_then_metadata
+        PASS [   0.007s] ( 9/30) maho-comment-checker-core::apply_patch_edits extract_prefers_metadata_uses_move_path_and_drops_deletes_case_insensitively
+        PASS [   0.007s] (10/30) maho-comment-checker-core::apply_patch_edits parse_add_update_move_and_delete_sections
+        PASS [   0.008s] (11/30) maho-comment-checker-core::apply_patch_edits make_accumulator_starts_empty
+        PASS [   0.008s] (12/30) maho-comment-checker-core::apply_patch_edits join_patch_lines_appends_trailing_newline_unless_empty
+        PASS [   0.005s] (13/30) maho-comment-checker-core::apply_patch_edits read_metadata_files_skips_incomplete_entries_and_keeps_optional_fields
+        PASS [   0.005s] (14/30) maho-comment-checker-core::runner resolve_prefers_existing_cached_path
+        PASS [   0.005s] (15/30) maho-comment-checker-core::runner resolve_returns_none_for_unresolvable_import_meta_url
+        PASS [   0.005s] (16/30) maho-comment-checker-core::runner resolve_finds_binary_through_node_modules_ancestors_of_file_url
+        PASS [   0.006s] (17/30) maho-comment-checker-core::apply_patch_edits parse_keeps_empty_added_lines_and_hunk_headers_are_skipped
+        PASS [   0.005s] (18/30) maho-comment-checker-core::runner run_other_exit_codes_and_exit_errors_return_empty
+        PASS [   0.005s] (19/30) maho-comment-checker-core::runner run_omits_prompt_args_without_custom_prompt
+        PASS [   0.007s] (20/30) maho-comment-checker-core::runner resolve_honours_custom_package_name_and_missing_binary
+        PASS [   0.005s] (21/30) maho-comment-checker-core::runner run_propagates_spawn_failure
+        PASS [   0.006s] (22/30) maho-comment-checker-core::runner resolve_returns_none_without_import_meta_url_when_cache_is_stale
+        PASS [   0.006s] (23/30) maho-comment-checker-core::runner run_pipes_hook_json_and_passes_check_and_prompt_args
+        PASS [   0.007s] (24/30) maho-comment-checker-core::runner run_exit_two_reports_comments_with_crlf_normalised_stderr
+        PASS [   0.005s] (25/30) maho-comment-checker-core::runner run_returns_empty_without_spawning_when_binary_missing
+        PASS [   0.006s] (26/30) maho-comment-checker-core::runner run_timeout_sends_sigterm_and_returns_empty
+        PASS [   0.007s] (27/30) maho-comment-checker-core::runner_process real_checker_receives_hook_json_and_reports_exit_two
+        PASS [   0.007s] (28/30) maho-comment-checker-core::runner_process real_checker_receives_the_check_and_prompt_arguments
+        PASS [   0.105s] (29/30) maho-comment-checker-core::runner_process real_checker_drains_large_stderr_without_deadlock
+        PASS [   0.207s] (30/30) maho-comment-checker-core::runner_process real_checker_timeout_sends_sigterm_and_reaps_the_child
+────────────
+     Summary [   0.220s] 30 tests run: 30 passed, 0 skipped

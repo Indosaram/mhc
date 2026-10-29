@@ -1,0 +1,2212 @@
+{
+  "schema": "remaining-port-row-targets/v1",
+  "rows": [
+    {
+      "id": "RU-02",
+      "target": "crates/omo/boulder-state"
+    },
+    {
+      "id": "RU-03a",
+      "target": "crates/maho-cli"
+    },
+    {
+      "id": "RU-03b",
+      "target": "crates/maho-cli"
+    },
+    {
+      "id": "RU-03c",
+      "target": "crates/maho-rpc"
+    },
+    {
+      "id": "RU-04",
+      "target": "crates/omo/components/maho-omo-task"
+    },
+    {
+      "id": "RU-05",
+      "target": "crates/omo/senpi-task"
+    },
+    {
+      "id": "sc-gap:comment-checker-core:0",
+      "target": "crates/omo/comment-checker-core"
+    },
+    {
+      "id": "sc-gap:comment-checker-core:1",
+      "target": "crates/omo/comment-checker-core"
+    },
+    {
+      "id": "sc-gap:comment-checker-core:2",
+      "target": "crates/omo/comment-checker-core"
+    },
+    {
+      "id": "sc-gap:git-bash-mcp:0",
+      "target": "crates/omo/utils"
+    },
+    {
+      "id": "sc-gap:mcp-client-core:0",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "sc-gap:mcp-client-core:1",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "sc-gap:mcp-client-core:2",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "sc-gap:rules-engine:0",
+      "target": "crates/builtins/maho-ext-rules"
+    },
+    {
+      "id": "sc-susgap:lsp-core:0",
+      "target": "crates/omo/lsp-core"
+    },
+    {
+      "id": "sc-susgap:lsp-daemon:0",
+      "target": "crates/omo/lsp-daemon"
+    },
+    {
+      "id": "sc-susgap:mcp-client-core:0",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "sc-susgap:mcp-client-core:1",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "sc-susgap:model-core:0",
+      "target": "crates/omo/model-core"
+    },
+    {
+      "id": "sc-susgap:prompts-core:0",
+      "target": "crates/builtins/maho-ext-prompt-preset"
+    },
+    {
+      "id": "sc-susgap:rules-engine:0",
+      "target": "crates/builtins/maho-ext-rules"
+    },
+    {
+      "id": "sc-susgap:skills-loader-core:0",
+      "target": "crates/omo/components/maho-omo-bundled-skills"
+    },
+    {
+      "id": "sc-susgap:skills-loader-core:1",
+      "target": "crates/omo/components/maho-omo-bundled-skills"
+    },
+    {
+      "id": "sc-susgap:skills-loader-core:2",
+      "target": "crates/omo/components/maho-omo-skill-commands"
+    },
+    {
+      "id": "sc-susgap:skills-loader-core:3",
+      "target": "crates/omo/components/maho-omo-skill-commands"
+    },
+    {
+      "id": "sc-susgap:telemetry-core:0",
+      "target": "crates/omo/telemetry-core"
+    },
+    {
+      "id": "sc-susgap:utils:0",
+      "target": "crates/omo/utils"
+    },
+    {
+      "id": "sc:agents-md-core:0",
+      "target": "crates/builtins/maho-ext-nested-agents-md"
+    },
+    {
+      "id": "sc:agents-md-core:1",
+      "target": "crates/builtins/maho-ext-nested-agents-md"
+    },
+    {
+      "id": "sc:agents-md-core:2",
+      "target": "crates/builtins/maho-ext-nested-agents-md"
+    },
+    {
+      "id": "sc:agents-md-core:3",
+      "target": "crates/builtins/maho-ext-nested-agents-md"
+    },
+    {
+      "id": "sc:agents-md-core:4",
+      "target": "crates/builtins/maho-ext-nested-agents-md"
+    },
+    {
+      "id": "sc:agents-md-core:5",
+      "target": "crates/builtins/maho-ext-nested-agents-md"
+    },
+    {
+      "id": "sc:ast-grep-mcp:0",
+      "target": "crates/omo/ast-grep-mcp"
+    },
+    {
+      "id": "sc:ast-grep-mcp:1",
+      "target": "crates/omo/ast-grep-mcp"
+    },
+    {
+      "id": "sc:ast-grep-mcp:2",
+      "target": "crates/omo/ast-grep-mcp"
+    },
+    {
+      "id": "sc:ast-grep-mcp:3",
+      "target": "crates/omo/ast-grep-mcp"
+    },
+    {
+      "id": "sc:ast-grep-mcp:4",
+      "target": "crates/omo/ast-grep-mcp"
+    },
+    {
+      "id": "sc:comment-checker-core:0",
+      "target": "crates/omo/comment-checker-core"
+    },
+    {
+      "id": "sc:comment-checker-core:1",
+      "target": "crates/omo/comment-checker-core"
+    },
+    {
+      "id": "sc:comment-checker-core:2",
+      "target": "crates/omo/comment-checker-core"
+    },
+    {
+      "id": "sc:comment-checker-core:3",
+      "target": "crates/omo/comment-checker-core"
+    },
+    {
+      "id": "sc:comment-checker-core:4",
+      "target": "crates/omo/comment-checker-core"
+    },
+    {
+      "id": "sc:comment-checker-core:5",
+      "target": "crates/omo/comment-checker-core"
+    },
+    {
+      "id": "sc:git-bash-mcp:0",
+      "target": "crates/omo/utils"
+    },
+    {
+      "id": "sc:git-bash-mcp:1",
+      "target": "crates/omo/utils"
+    },
+    {
+      "id": "sc:git-bash-mcp:2",
+      "target": "crates/omo/utils"
+    },
+    {
+      "id": "sc:lsp-core:0",
+      "target": "crates/omo/lsp-core"
+    },
+    {
+      "id": "sc:lsp-core:1",
+      "target": "crates/omo/lsp-core"
+    },
+    {
+      "id": "sc:lsp-core:2",
+      "target": "crates/omo/lsp-core"
+    },
+    {
+      "id": "sc:lsp-core:3",
+      "target": "crates/omo/lsp-core"
+    },
+    {
+      "id": "sc:lsp-core:4",
+      "target": "crates/omo/lsp-core"
+    },
+    {
+      "id": "sc:lsp-core:5",
+      "target": "crates/omo/lsp-core"
+    },
+    {
+      "id": "sc:lsp-daemon:0",
+      "target": "crates/omo/lsp-daemon"
+    },
+    {
+      "id": "sc:lsp-daemon:1",
+      "target": "crates/omo/lsp-daemon"
+    },
+    {
+      "id": "sc:lsp-daemon:2",
+      "target": "crates/omo/lsp-daemon"
+    },
+    {
+      "id": "sc:lsp-daemon:3",
+      "target": "crates/omo/lsp-daemon"
+    },
+    {
+      "id": "sc:lsp-daemon:4",
+      "target": "crates/omo/lsp-daemon"
+    },
+    {
+      "id": "sc:lsp-daemon:5",
+      "target": "crates/omo/lsp-daemon"
+    },
+    {
+      "id": "sc:lsp-daemon:6",
+      "target": "crates/omo/lsp-daemon"
+    },
+    {
+      "id": "sc:lsp-tools-mcp:0",
+      "target": "crates/omo/lsp-core"
+    },
+    {
+      "id": "sc:lsp-tools-mcp:1",
+      "target": "crates/omo/lsp-core"
+    },
+    {
+      "id": "sc:mcp-client-core:0",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "sc:mcp-client-core:1",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "sc:mcp-client-core:10",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "sc:mcp-client-core:11",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "sc:mcp-client-core:2",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "sc:mcp-client-core:3",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "sc:mcp-client-core:4",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "sc:mcp-client-core:5",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "sc:mcp-client-core:6",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "sc:mcp-client-core:7",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "sc:mcp-client-core:8",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "sc:mcp-client-core:9",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "sc:mcp-stdio-core:0",
+      "target": "crates/omo/mcp-stdio-core"
+    },
+    {
+      "id": "sc:mcp-stdio-core:1",
+      "target": "crates/omo/mcp-stdio-core"
+    },
+    {
+      "id": "sc:mcp-stdio-core:2",
+      "target": "crates/omo/mcp-stdio-core"
+    },
+    {
+      "id": "sc:mcp-stdio-core:3",
+      "target": "crates/omo/mcp-stdio-core"
+    },
+    {
+      "id": "sc:model-core:0",
+      "target": "crates/omo/model-core"
+    },
+    {
+      "id": "sc:model-core:1",
+      "target": "crates/omo/model-core"
+    },
+    {
+      "id": "sc:model-core:2",
+      "target": "crates/omo/model-core"
+    },
+    {
+      "id": "sc:model-core:3",
+      "target": "crates/omo/model-core"
+    },
+    {
+      "id": "sc:model-core:4",
+      "target": "crates/omo/model-core"
+    },
+    {
+      "id": "sc:model-core:5",
+      "target": "crates/omo/model-core"
+    },
+    {
+      "id": "sc:model-core:6",
+      "target": "crates/omo/model-core"
+    },
+    {
+      "id": "sc:model-core:7",
+      "target": "crates/omo/model-core"
+    },
+    {
+      "id": "sc:prompts-core:0",
+      "target": "crates/builtins/maho-ext-prompt-preset"
+    },
+    {
+      "id": "sc:prompts-core:1",
+      "target": "crates/builtins/maho-ext-prompt-preset"
+    },
+    {
+      "id": "sc:prompts-core:2",
+      "target": "crates/builtins/maho-ext-prompt-preset"
+    },
+    {
+      "id": "sc:prompts-core:3",
+      "target": "crates/builtins/maho-ext-prompt-preset"
+    },
+    {
+      "id": "sc:prompts-core:4",
+      "target": "crates/builtins/maho-ext-prompt-preset"
+    },
+    {
+      "id": "sc:rules-engine:0",
+      "target": "crates/builtins/maho-ext-rules"
+    },
+    {
+      "id": "sc:rules-engine:1",
+      "target": "crates/builtins/maho-ext-rules"
+    },
+    {
+      "id": "sc:rules-engine:2",
+      "target": "crates/builtins/maho-ext-rules"
+    },
+    {
+      "id": "sc:rules-engine:3",
+      "target": "crates/builtins/maho-ext-rules"
+    },
+    {
+      "id": "sc:rules-engine:4",
+      "target": "crates/builtins/maho-ext-rules"
+    },
+    {
+      "id": "sc:rules-engine:5",
+      "target": "crates/builtins/maho-ext-rules"
+    },
+    {
+      "id": "sc:skills-loader-core:0",
+      "target": "crates/omo/components/maho-omo-bundled-skills"
+    },
+    {
+      "id": "sc:skills-loader-core:1",
+      "target": "crates/omo/components/maho-omo-bundled-skills"
+    },
+    {
+      "id": "sc:skills-loader-core:2",
+      "target": "crates/omo/components/maho-omo-skill-commands"
+    },
+    {
+      "id": "sc:skills-loader-core:3",
+      "target": "crates/omo/components/maho-omo-skill-commands"
+    },
+    {
+      "id": "sc:skills-loader-core:4",
+      "target": "crates/omo/components/maho-omo-skill-commands"
+    },
+    {
+      "id": "sc:telemetry-core:0",
+      "target": "crates/omo/telemetry-core"
+    },
+    {
+      "id": "sc:telemetry-core:1",
+      "target": "crates/omo/telemetry-core"
+    },
+    {
+      "id": "sc:telemetry-core:2",
+      "target": "crates/omo/telemetry-core"
+    },
+    {
+      "id": "sc:telemetry-core:3",
+      "target": "crates/omo/telemetry-core"
+    },
+    {
+      "id": "sc:telemetry-core:4",
+      "target": "crates/omo/telemetry-core"
+    },
+    {
+      "id": "sc:utils:0",
+      "target": "crates/omo/utils"
+    },
+    {
+      "id": "mc-opt:config:L21",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L22",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L23",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L24",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L25",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L26",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L27",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L28",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L29",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L30",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L31",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L32",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L33",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L34",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L35",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L36",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L37",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L38",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L39",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L40",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L41",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L42",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:config:L43",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:memory:L59",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:memory:L60",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:memory:L61",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:memory:L62",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:memory:L63",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:memory:L64",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:memory:L65",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:memory:L66",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:memory:L67",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:memory:L68",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:memory:L69",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:memory:L70",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:memory:L71",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:memory:L72",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:schema-file:L100",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:schema-file:L101",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:schema-file:L102",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc-opt:schema-file:L103",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc-opt:schema-file:L104",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc-opt:schema-file:L105",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc-opt:schema-file:L106",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc-opt:schema-file:L107",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc-opt:schema-file:L108",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc-opt:schema-file:L109",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:schema-file:L90",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:schema-file:L91",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:schema-file:L92",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:schema-file:L93",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:schema-file:L94",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:schema-file:L95",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:schema-file:L96",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:schema-file:L97",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:schema-file:L98",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc-opt:schema-file:L99",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc:B1",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B10",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc:B11",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc:B12",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B13",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc:B14",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc:B15",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc:B16",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B17",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B18",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B19",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B2",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B20",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B21",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc:B22",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B23",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B24",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B25",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc:B26",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B27",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "mc:B28",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B29",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B3",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B30",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B32",
+      "target": "crates/omo/git-bash-mcp"
+    },
+    {
+      "id": "mc:B4",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B40",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B41",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B42",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B43",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B44",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B45",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B46",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B47",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B48",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B49",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B5",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B50",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B51",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B52",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B53",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B54",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B55",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B56",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B57",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B58",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B59",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B6",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B60",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:B7",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B72",
+      "target": "crates/maho-cli"
+    },
+    {
+      "id": "mc:B8",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:B9",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "mc:N1",
+      "target": "crates/omo/components/maho-omo-config-resolution"
+    },
+    {
+      "id": "mc:N2",
+      "target": "crates/omo/components/maho-omo-config-startup"
+    },
+    {
+      "id": "mc:N3",
+      "target": "crates/omo/components/maho-omo-config-watch"
+    },
+    {
+      "id": "mc:N4",
+      "target": "crates/omo/config-migration"
+    },
+    {
+      "id": "mc:N7",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "mc:N8",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T114:L118",
+      "target": "crates/omo/maho-omo"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T114:L119",
+      "target": "crates/omo/maho-omo"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T171:L174",
+      "target": "crates/omo/components/maho-omo-config-watch"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T171:L175",
+      "target": "crates/omo/config-migration"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T171:L179",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T22:L25",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T22:L27",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T22:L28",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T22:L34",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T22:L40",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T22:L41",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T22:L46",
+      "target": "crates/omo/components/maho-omo-memory"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T22:L47",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T22:L48",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T22:L50",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T22:L52",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T69:L74",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T69:L75",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T69:L82",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T69:L83",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/01-feature-matrix.md:T69:L86",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/02-schema-options.md:T20:L22",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/02-schema-options.md:T20:L23",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/02-schema-options.md:T20:L26",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/02-schema-options.md:T20:L30",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/02-schema-options.md:T20:L31",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/02-schema-options.md:T20:L34",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/02-schema-options.md:T20:L35",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/02-schema-options.md:T58:L67",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/02-schema-options.md:T58:L70",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/02-schema-options.md:T89:L102",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/02-schema-options.md:T89:L103",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "md:memory-config/02-schema-options.md:T89:L104",
+      "target": "crates/omo/omo-config-core"
+    },
+    {
+      "id": "if:E:L102",
+      "target": "crates/maho-interactive"
+    },
+    {
+      "id": "if:E:L123",
+      "target": "crates/maho-interactive"
+    },
+    {
+      "id": "if:X:L76",
+      "target": "crates/maho-interactive"
+    },
+    {
+      "id": "md:interfaces/CROSSREF-user-integration-reachability.md:T74:L76",
+      "target": "crates/maho-interactive"
+    },
+    {
+      "id": "md:interfaces/TRACK-E-interactive-ui.md:T101:L102",
+      "target": "crates/maho-interactive"
+    },
+    {
+      "id": "md:interfaces/TRACK-E-interactive-ui.md:T117:L123",
+      "target": "crates/maho-interactive"
+    },
+    {
+      "id": "if:E:L103",
+      "target": "crates/maho-interactive"
+    },
+    {
+      "id": "md:interfaces/TRACK-E-interactive-ui.md:T101:L103",
+      "target": "crates/maho-interactive"
+    },
+    {
+      "id": "if:E:L104",
+      "target": "crates/builtins/maho-ext-ask-user"
+    },
+    {
+      "id": "md:interfaces/TRACK-E-interactive-ui.md:T101:L104",
+      "target": "crates/builtins/maho-ext-ask-user"
+    },
+    {
+      "id": "if:E:L105",
+      "target": "crates/maho-cli"
+    },
+    {
+      "id": "md:interfaces/TRACK-E-interactive-ui.md:T101:L105",
+      "target": "crates/maho-cli"
+    },
+    {
+      "id": "if:E:L119",
+      "target": "crates/omo/senpi-task"
+    },
+    {
+      "id": "md:interfaces/TRACK-E-interactive-ui.md:T117:L119",
+      "target": "crates/omo/senpi-task"
+    },
+    {
+      "id": "if:E:L120",
+      "target": "crates/omo/team-core"
+    },
+    {
+      "id": "md:interfaces/TRACK-E-interactive-ui.md:T117:L120",
+      "target": "crates/omo/team-core"
+    },
+    {
+      "id": "if:E:L121",
+      "target": "crates/omo/team-core"
+    },
+    {
+      "id": "md:interfaces/TRACK-E-interactive-ui.md:T117:L121",
+      "target": "crates/omo/team-core"
+    },
+    {
+      "id": "if:G:L38",
+      "target": "scripts/AGENTS.md"
+    },
+    {
+      "id": "inv:top:scripts",
+      "target": "scripts/AGENTS.md"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P765",
+      "target": "scripts/AGENTS.md"
+    },
+    {
+      "id": "if:G:L49",
+      "target": ".github/workflows/ci.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P800",
+      "target": ".github/workflows/ci.yml"
+    },
+    {
+      "id": "if:G:L51",
+      "target": ".github/FUNDING.yml"
+    },
+    {
+      "id": "inv:top:github",
+      "target": ".github/FUNDING.yml"
+    },
+    {
+      "id": "lo:L32",
+      "target": ".github/FUNDING.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P773",
+      "target": ".github/FUNDING.yml"
+    },
+    {
+      "id": "if:G:L62",
+      "target": "test-env.ts"
+    },
+    {
+      "id": "inv:top:test-env-ts",
+      "target": "test-env.ts"
+    },
+    {
+      "id": "if:G:L63",
+      "target": "Cargo.toml"
+    },
+    {
+      "id": "if:G:L64",
+      "target": "LICENSES/MIT.txt"
+    },
+    {
+      "id": "if:G:L71",
+      "target": "tools/check-omo-sites.mjs"
+    },
+    {
+      "id": "if:G:L72",
+      "target": "tools/parity-audit.mjs"
+    },
+    {
+      "id": "if:G:L73",
+      "target": "LICENSES/MIT.txt"
+    },
+    {
+      "id": "if:G:L74",
+      "target": "README.md"
+    },
+    {
+      "id": "if:G:L85",
+      "target": "Cargo.toml"
+    },
+    {
+      "id": "inv:top:cargo-toml",
+      "target": "Cargo.toml"
+    },
+    {
+      "id": "if:X:L30",
+      "target": "packages/omo-senpi/src/components/formatter/formatter.test.ts"
+    },
+    {
+      "id": "md:interfaces/CROSSREF-user-integration-reachability.md:T26:L30",
+      "target": "packages/omo-senpi/src/components/formatter/formatter.test.ts"
+    },
+    {
+      "id": "if:X:L31",
+      "target": "packages/omo-senpi/src/components/gateway/AGENTS.md"
+    },
+    {
+      "id": "md:interfaces/CROSSREF-user-integration-reachability.md:T26:L31",
+      "target": "packages/omo-senpi/src/components/gateway/AGENTS.md"
+    },
+    {
+      "id": "if:X:L32",
+      "target": "packages/omo-senpi/src/components/post-mutation/post-mutation.test.ts"
+    },
+    {
+      "id": "md:interfaces/CROSSREF-user-integration-reachability.md:T26:L32",
+      "target": "packages/omo-senpi/src/components/post-mutation/post-mutation.test.ts"
+    },
+    {
+      "id": "if:X:L34",
+      "target": "packages/omo-senpi/src/components/x-search/AGENTS.md"
+    },
+    {
+      "id": "md:interfaces/CROSSREF-user-integration-reachability.md:T26:L34",
+      "target": "packages/omo-senpi/src/components/x-search/AGENTS.md"
+    },
+    {
+      "id": "if:X:L40",
+      "target": "crates/omo/components/maho-omo-bundled-skills"
+    },
+    {
+      "id": "md:interfaces/CROSSREF-user-integration-reachability.md:T26:L40",
+      "target": "crates/omo/components/maho-omo-bundled-skills"
+    },
+    {
+      "id": "if:X:L52",
+      "target": "crates/omo/lsp-core"
+    },
+    {
+      "id": "md:interfaces/CROSSREF-user-integration-reachability.md:T51:L52",
+      "target": "crates/omo/lsp-core"
+    },
+    {
+      "id": "if:X:L53",
+      "target": "crates/omo/ast-grep-mcp"
+    },
+    {
+      "id": "md:interfaces/CROSSREF-user-integration-reachability.md:T51:L53",
+      "target": "crates/omo/ast-grep-mcp"
+    },
+    {
+      "id": "if:X:L54",
+      "target": "crates/omo/mcp-stdio-core"
+    },
+    {
+      "id": "md:interfaces/CROSSREF-user-integration-reachability.md:T51:L54",
+      "target": "crates/omo/mcp-stdio-core"
+    },
+    {
+      "id": "if:X:L57",
+      "target": "crates/omo/git-bash-mcp"
+    },
+    {
+      "id": "md:interfaces/CROSSREF-user-integration-reachability.md:T51:L57",
+      "target": "crates/omo/git-bash-mcp"
+    },
+    {
+      "id": "if:X:L58",
+      "target": "crates/builtins/maho-ext-terminal"
+    },
+    {
+      "id": "md:interfaces/CROSSREF-user-integration-reachability.md:T51:L58",
+      "target": "crates/builtins/maho-ext-terminal"
+    },
+    {
+      "id": "if:X:L59",
+      "target": "crates/builtins/maho-ext-websearch"
+    },
+    {
+      "id": "md:interfaces/CROSSREF-user-integration-reachability.md:T51:L59",
+      "target": "crates/builtins/maho-ext-websearch"
+    },
+    {
+      "id": "if:X:L66",
+      "target": "crates/maho-cli"
+    },
+    {
+      "id": "md:interfaces/CROSSREF-user-integration-reachability.md:T65:L66",
+      "target": "crates/maho-cli"
+    },
+    {
+      "id": "if:X:L68",
+      "target": "assets/omo.schema.json"
+    },
+    {
+      "id": "inv:schema:1",
+      "target": "assets/omo.schema.json"
+    },
+    {
+      "id": "lo:L30",
+      "target": "assets/omo.schema.json"
+    },
+    {
+      "id": "md:interfaces/CROSSREF-user-integration-reachability.md:T65:L68",
+      "target": "assets/omo.schema.json"
+    },
+    {
+      "id": "if:X:L78",
+      "target": "crates/omo/lsp-core"
+    },
+    {
+      "id": "md:interfaces/CROSSREF-user-integration-reachability.md:T74:L78",
+      "target": "crates/omo/lsp-core"
+    },
+    {
+      "id": "inv:agents:agents",
+      "target": ".agents/AGENTS.md"
+    },
+    {
+      "id": "inv:top:agents",
+      "target": ".agents/AGENTS.md"
+    },
+    {
+      "id": "lo:L34",
+      "target": ".agents/AGENTS.md"
+    },
+    {
+      "id": "mc:H20",
+      "target": ".agents/AGENTS.md"
+    },
+    {
+      "id": "inv:agents:claude",
+      "target": ".claude/settings.json"
+    },
+    {
+      "id": "lo:L36",
+      "target": ".claude/settings.json"
+    },
+    {
+      "id": "mc:H22",
+      "target": ".claude/settings.json"
+    },
+    {
+      "id": "inv:agents:omo",
+      "target": ".omo/init-deep.json"
+    },
+    {
+      "id": "lo:L37",
+      "target": ".omo/init-deep.json"
+    },
+    {
+      "id": "mc:H23",
+      "target": ".omo/init-deep.json"
+    },
+    {
+      "id": "inv:it:omo-codex",
+      "target": "crates/omo/maho-omo"
+    },
+    {
+      "id": "inv:pkg:omo-codex",
+      "target": "crates/omo/maho-omo"
+    },
+    {
+      "id": "inv:it:omo-native",
+      "target": "crates/omo/maho-omo"
+    },
+    {
+      "id": "inv:pkg:omo-native",
+      "target": "crates/omo/maho-omo"
+    },
+    {
+      "id": "inv:it:omo-senpi",
+      "target": "crates/omo/maho-omo"
+    },
+    {
+      "id": "inv:pkg:omo-senpi",
+      "target": "crates/omo/maho-omo"
+    },
+    {
+      "id": "inv:layer:0",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "inv:layer:1",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "inv:layer:2",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "inv:layer:3",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "inv:layer:4",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "inv:track:E",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "inv:track:F",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "inv:track:G",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "inv:track:H",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/COMPARISON-TRACKS.md:B24",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/COMPARISON-TRACKS.md:B29",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/COMPARISON-TRACKS.md:T12:L17",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/COMPARISON-TRACKS.md:T12:L18",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/COMPARISON-TRACKS.md:T12:L19",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/COMPARISON-TRACKS.md:T12:L20",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/README.md:B11",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/README.md:B13",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/README.md:B27",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/README.md:B28",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/README.md:B29",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/README.md:B8",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/README.md:T19:L20",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/README.md:T19:L21",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/README.md:T19:L22",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/README.md:T19:L23",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:B70",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:B74",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T28:L29",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T28:L30",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T28:L31",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T28:L32",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T28:L33",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T28:L34",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T28:L35",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T28:L36",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T48:L49",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T48:L50",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T48:L51",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T83:L84",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T83:L85",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T83:L86",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T83:L87",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T83:L88",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T9:L10",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T9:L11",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T9:L12",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T9:L13",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T9:L14",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T9:L15",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T9:L16",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T9:L17",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T9:L18",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:T9:L19",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:B60",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:B61",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:B63",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:T15:L16",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:T15:L17",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:T15:L18",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:T15:L19",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:T15:L20",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:T15:L21",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:T26:L27",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:T26:L28",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:T26:L29",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:T26:L30",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:T26:L31",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:T26:L32",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:T51:L52",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:T51:L55",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/README.md:T51:L56",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/TRACK-E-interactive-ui.md:B27",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/TRACK-E-interactive-ui.md:B30",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:T14:L15",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:T14:L16",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:T14:L17",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:T14:L18",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:T14:L19",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:T14:L20",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:T14:L21",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:T14:L22",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:T14:L23",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:T14:L24",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "orig-file:baseline/COMPARISON-TRACKS.md",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "orig-file:baseline/README.md",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "orig-file:baseline/UPSTREAM-BASELINE.md",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "orig-file:baseline/file-inventory.txt",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "orig-file:baseline/inventory.json",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "orig-file:interfaces/CROSSREF-user-integration-reachability.md",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "orig-file:interfaces/README.md",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "orig-file:interfaces/TRACK-E-interactive-ui.md",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "orig-file:interfaces/coverage-source-files.md",
+      "target": "inv:layer:0"
+    },
+    {
+      "id": "inv:pkg:agents-md-core",
+      "target": "crates/builtins/maho-ext-nested-agents-md"
+    },
+    {
+      "id": "inv:pkg:ast-grep-mcp",
+      "target": "crates/omo/ast-grep-mcp"
+    },
+    {
+      "id": "inv:pkg:boulder-state",
+      "target": "crates/omo/boulder-state"
+    },
+    {
+      "id": "inv:pkg:comment-checker-core",
+      "target": "crates/omo/comment-checker-core"
+    },
+    {
+      "id": "inv:pkg:delegate-core",
+      "target": "crates/omo/delegate-core"
+    },
+    {
+      "id": "inv:pkg:get-worker",
+      "target": "crates/omo/get-worker"
+    },
+    {
+      "id": "inv:pkg:git-bash-mcp",
+      "target": "crates/omo/git-bash-mcp"
+    },
+    {
+      "id": "inv:pkg:isolation-core",
+      "target": "crates/omo/isolation-core"
+    },
+    {
+      "id": "inv:pkg:lsp-core",
+      "target": "crates/omo/lsp-core"
+    },
+    {
+      "id": "inv:pkg:lsp-daemon",
+      "target": "crates/omo/lsp-daemon"
+    },
+    {
+      "id": "inv:pkg:lsp-tools-mcp",
+      "target": "crates/omo/components/maho-omo-lsp"
+    },
+    {
+      "id": "inv:pkg:mcp-client-core",
+      "target": "crates/builtins/maho-ext-mcp"
+    },
+    {
+      "id": "inv:pkg:mcp-stdio-core",
+      "target": "crates/omo/mcp-stdio-core"
+    },
+    {
+      "id": "inv:pkg:memory-core",
+      "target": "crates/omo/memory-core"
+    },
+    {
+      "id": "inv:pkg:model-core",
+      "target": "crates/omo/model-core"
+    },
+    {
+      "id": "inv:pkg:omo-config-core",
+      "target": "crates/omo/maho-omo"
+    },
+    {
+      "id": "inv:pkg:prompts-core",
+      "target": "crates/builtins/maho-ext-prompt-preset"
+    },
+    {
+      "id": "inv:pkg:rules-engine",
+      "target": "crates/builtins/maho-ext-rules"
+    },
+    {
+      "id": "inv:pkg:senpi-task",
+      "target": "crates/omo/senpi-task"
+    },
+    {
+      "id": "inv:pkg:shared-skills",
+      "target": "crates/omo/components/maho-omo-bundled-skills"
+    },
+    {
+      "id": "sc-cov:pkg:shared-skills",
+      "target": "crates/omo/components/maho-omo-bundled-skills"
+    },
+    {
+      "id": "inv:pkg:skills-loader-core",
+      "target": "crates/omo/components/maho-omo-bundled-skills"
+    },
+    {
+      "id": "inv:pkg:team-core",
+      "target": "crates/omo/team-core"
+    },
+    {
+      "id": "inv:pkg:telemetry-core",
+      "target": "crates/omo/telemetry-core"
+    },
+    {
+      "id": "inv:pkg:tmux-core",
+      "target": "crates/omo/tmux-core"
+    },
+    {
+      "id": "inv:pkg:utils",
+      "target": "crates/omo/utils"
+    },
+    {
+      "id": "inv:submodule:0",
+      "target": ".gitmodules"
+    },
+    {
+      "id": "inv:submodule:1",
+      "target": ".gitmodules"
+    },
+    {
+      "id": "inv:submodule:2",
+      "target": ".gitmodules"
+    },
+    {
+      "id": "inv:submodule:3",
+      "target": ".gitmodules"
+    },
+    {
+      "id": "inv:top:agents-md",
+      "target": "AGENTS.md"
+    },
+    {
+      "id": "inv:top:assets",
+      "target": "assets/AGENTS.md"
+    },
+    {
+      "id": "inv:top:bin",
+      "target": "bin/AGENTS.md"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P753",
+      "target": "bin/AGENTS.md"
+    },
+    {
+      "id": "inv:top:bun-lock",
+      "target": "bun.lock"
+    },
+    {
+      "id": "inv:top:bun-test-d-ts",
+      "target": "bun-test.d.ts"
+    },
+    {
+      "id": "inv:top:bunfig-root-toml",
+      "target": "bunfig.root.toml"
+    },
+    {
+      "id": "inv:top:bunfig-toml",
+      "target": "bunfig.toml"
+    },
+    {
+      "id": "inv:top:bunfig-win2-parallel-toml",
+      "target": "bunfig.win2.parallel.toml"
+    },
+    {
+      "id": "inv:top:bunfig-win2-parallel-windows-toml",
+      "target": "bunfig.win2.parallel.windows.toml"
+    },
+    {
+      "id": "inv:top:bunfig-win2-toml",
+      "target": "bunfig.win2.toml"
+    },
+    {
+      "id": "inv:top:cargo-lock",
+      "target": "Cargo.lock"
+    },
+    {
+      "id": "inv:top:changelog-md",
+      "target": "CHANGELOG.md"
+    },
+    {
+      "id": "inv:top:changes-md",
+      "target": "changes.md"
+    },
+    {
+      "id": "inv:top:cla-md",
+      "target": "CLA.md"
+    },
+    {
+      "id": "inv:top:codex",
+      "target": ".codex/setup.sh"
+    },
+    {
+      "id": "inv:top:contributing-md",
+      "target": "CONTRIBUTING.md"
+    },
+    {
+      "id": "inv:top:cursor",
+      "target": ".cursor/environment.json"
+    },
+    {
+      "id": "inv:top:devcontainer",
+      "target": ".devcontainer/README.md"
+    },
+    {
+      "id": "inv:top:docs",
+      "target": "docs/AGENTS.md"
+    },
+    {
+      "id": "inv:top:env-example",
+      "target": ".env.example"
+    },
+    {
+      "id": "inv:top:gitattributes",
+      "target": ".gitattributes"
+    },
+    {
+      "id": "inv:top:gitignore",
+      "target": ".gitignore"
+    },
+    {
+      "id": "inv:top:gitmodules",
+      "target": ".gitmodules"
+    },
+    {
+      "id": "inv:top:license-md",
+      "target": "LICENSE.md"
+    },
+    {
+      "id": "inv:top:omo",
+      "target": ".omo/fixtures/releases.json"
+    },
+    {
+      "id": "inv:top:packages",
+      "target": "packages/AGENTS.md"
+    },
+    {
+      "id": "inv:top:postinstall-test-ts",
+      "target": "postinstall.test.ts"
+    },
+    {
+      "id": "inv:top:readme-ja-md",
+      "target": "README.ja.md"
+    },
+    {
+      "id": "inv:top:readme-ko-md",
+      "target": "README.ko.md"
+    },
+    {
+      "id": "inv:top:readme-md",
+      "target": "README.md"
+    },
+    {
+      "id": "inv:top:readme-ru-md",
+      "target": "README.ru.md"
+    },
+    {
+      "id": "inv:top:readme-zh-cn-md",
+      "target": "README.zh-cn.md"
+    },
+    {
+      "id": "inv:top:roadmap-md",
+      "target": "ROADMAP.md"
+    },
+    {
+      "id": "inv:top:rust-toolchain-toml",
+      "target": "rust-toolchain.toml"
+    },
+    {
+      "id": "inv:top:script",
+      "target": "script/AGENTS.md"
+    },
+    {
+      "id": "lo:L27",
+      "target": "script/AGENTS.md"
+    },
+    {
+      "id": "inv:top:test-hermetic-home-ts",
+      "target": "test-hermetic-home.ts"
+    },
+    {
+      "id": "inv:top:test-setup-ts",
+      "target": "test-setup.ts"
+    },
+    {
+      "id": "inv:top:test-support",
+      "target": "test-support/remove-tree.test.ts"
+    },
+    {
+      "id": "inv:top:tests",
+      "target": "tests/AGENTS.md"
+    },
+    {
+      "id": "inv:top:third-party-notices-md",
+      "target": "THIRD-PARTY-NOTICES.md"
+    },
+    {
+      "id": "inv:top:tsconfig-json",
+      "target": "tsconfig.json"
+    },
+    {
+      "id": "lo:L33",
+      "target": ".devcontainer/devcontainer.json"
+    },
+    {
+      "id": "mc:H14",
+      "target": ".gitmodules"
+    },
+    {
+      "id": "md:baseline/UPSTREAM-BASELINE.md:B65",
+      "target": "md:baseline/UPSTREAM-BASELINE.md:B65"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P760",
+      "target": "bin/version-mismatch.test.ts"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P767",
+      "target": "scripts/check-third-party-notices.test.mjs"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P768",
+      "target": "scripts/third-party-notice-requirements.mjs"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P774",
+      "target": ".github/ISSUE_TEMPLATE/bug_report.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P775",
+      "target": ".github/ISSUE_TEMPLATE/config.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P776",
+      "target": ".github/ISSUE_TEMPLATE/feature_request.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P777",
+      "target": ".github/ISSUE_TEMPLATE/general.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P778",
+      "target": ".github/ISSUE_TEMPLATE/lazycodex_bug_report.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P779",
+      "target": ".github/assets/building-in-public.png"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P780",
+      "target": ".github/assets/elestyle.jpg"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P781",
+      "target": ".github/assets/google.jpg"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P782",
+      "target": ".github/assets/hephaestus.png"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P783",
+      "target": ".github/assets/hero.jpg"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P784",
+      "target": ".github/assets/indent.jpg"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P785",
+      "target": ".github/assets/microsoft.jpg"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P786",
+      "target": ".github/assets/omo-herdr-dag.png"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P787",
+      "target": ".github/assets/omo-icon-light.svg"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P788",
+      "target": ".github/assets/omo-logo.png"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P789",
+      "target": ".github/assets/omo.png"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P790",
+      "target": ".github/assets/opengateway-logo.svg"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P791",
+      "target": ".github/assets/orchestrator-atlas.png"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P792",
+      "target": ".github/assets/sisyphus.png"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P793",
+      "target": ".github/assets/sisyphuslabs.png"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P794",
+      "target": ".github/pull_request_template.md"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P796",
+      "target": ".github/scripts/omo-bun-executable.entitlements"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P797",
+      "target": ".github/scripts/windows-ci-telemetry.ps1"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P798",
+      "target": ".github/scripts/write-job-summary.sh"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P799",
+      "target": ".github/workflows/bot-merge.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P801",
+      "target": ".github/workflows/cla.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P802",
+      "target": ".github/workflows/compiled-worker.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P806",
+      "target": ".github/workflows/get-worker-ci.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P807",
+      "target": ".github/workflows/get-worker-deploy.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P809",
+      "target": ".github/workflows/isolation-linux-fs.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P810",
+      "target": ".github/workflows/lint-workflows.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P812",
+      "target": ".github/workflows/npm-dist-tag-rollback.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P813",
+      "target": ".github/workflows/package-labels.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P816",
+      "target": ".github/workflows/refresh-model-capabilities.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P817",
+      "target": ".github/workflows/review-claims.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P818",
+      "target": ".github/workflows/sisyphus-agent.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P819",
+      "target": ".github/workflows/stats.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P820",
+      "target": ".github/workflows/web-ci.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P821",
+      "target": ".github/workflows/web-deploy.yml"
+    },
+    {
+      "id": "md:interfaces/coverage-source-files.md:P822",
+      "target": ".github/workflows/windows-flake-soak.yml"
+    }
+  ],
+  "total": 551,
+  "targets": 141,
+  "matrix_mismatches": 0
+}

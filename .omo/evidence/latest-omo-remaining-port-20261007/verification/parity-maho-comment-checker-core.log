@@ -1,0 +1,2 @@
+FAIL maho-comment-checker-core: 1 problem(s)
+  crates/omo/comment-checker-core/parity.d/1003.md:13: test count "7 (tests/runner.rs) + 4 (tests/runner_process.rs)" is not a number

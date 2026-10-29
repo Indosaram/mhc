@@ -1,0 +1,47 @@
+   Compiling maho-config-migration v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/config-migration)
+    Finished `test` profile [unoptimized] target(s) in 1.24s
+────────────
+ Nextest run ID b5c71f03-d16e-4f68-94ea-a239cff14480 with nextest profile: default
+    Starting 40 tests across 4 binaries
+        PASS [   0.005s] ( 1/40) maho-config-migration path_win32::tests::win32_operations_match_node_semantics
+        PASS [   0.005s] ( 2/40) maho-config-migration::discovery wsl_windows_xdg_path_keeps_the_mounted_active_profile_root
+        PASS [   0.006s] ( 3/40) maho-config-migration deep_diff::tests::deep_difference_keeps_only_changed_leaves
+        PASS [   0.006s] ( 4/40) maho-config-migration::discovery non_windows_host_keeps_default_xdg_and_tauri_source_paths_unchanged
+        PASS [   0.006s] ( 5/40) maho-config-migration::discovery posix_path_operations_on_a_windows_host_discover_xdg_appdata_and_tauri_roots_once
+        PASS [   0.006s] ( 6/40) maho-config-migration::plans canonical_legacy_fixture_matches_expected_output_for_rules_one_through_eight
+        PASS [   0.006s] ( 7/40) maho-config-migration::plans canonical_reasoning_outranking_legacy_keys_is_reported_as_the_winner
+        PASS [   0.007s] ( 8/40) maho-config-migration migration_plans::tests::encode_uri_component_matches_javascript_reserved_set
+        PASS [   0.007s] ( 9/40) maho-config-migration::discovery symlinked_profile_directory_is_discovered_through_its_real_path
+        PASS [   0.007s] (10/40) maho-config-migration::discovery win32_trailing_separators_and_casing_keep_the_active_profile_canonical
+        PASS [   0.007s] (11/40) maho-config-migration::discovery injected_windows_short_path_expands_through_realpath_to_the_canonical_source
+        PASS [   0.008s] (12/40) maho-config-migration::discovery custom_active_profile_default_tauri_and_walked_project_roots_are_deduplicated_and_separated_from_config_jsonc
+        PASS [   0.005s] (13/40) maho-config-migration::plans since_pin_plans_are_registered_for_an_existing_omo_target
+        PASS [   0.007s] (14/40) maho-config-migration::plans harness_native_rename_plan_rewrites_an_existing_target_through_the_engine
+        PASS [   0.007s] (15/40) maho-config-migration::plans executor_with_a_false_predicate_creates_no_directories_or_files
+        PASS [   0.005s] (16/40) maho-config-migration::transforms category_deep_split_migration_id_stays_the_shipped_value
+        PASS [   0.006s] (17/40) maho-config-migration::transforms category_deep_split_leaves_a_clean_document_untouched
+        PASS [   0.007s] (18/40) maho-config-migration::plans typed_harness_blocks_and_profiles_recurse_while_opencode_rewrites_only_known_keys
+        PASS [   0.009s] (19/40) maho-config-migration::plans category_deep_split_plan_rewrites_an_existing_target_through_the_engine
+        PASS [   0.007s] (20/40) maho-config-migration::transforms category_deep_split_keeps_the_canonical_entry_and_reports_the_drop
+        PASS [   0.008s] (21/40) maho-config-migration::plans since_pin_plans_skip_a_clean_target_without_writing
+        PASS [   0.009s] (22/40) maho-config-migration::plans overlapping_omo_and_senpi_blocks_report_the_conflict_in_preview_and_migration
+        PASS [   0.012s] (23/40) maho-config-migration::plans existing_user_omo_config_runs_dry_run_backup_journal_and_marker_through_the_engine
+        PASS [   0.005s] (24/40) maho-config-migration::transforms harness_native_rename_leaves_a_clean_document_untouched
+        PASS [   0.005s] (25/40) maho-config-migration::transforms config_jsonc_with_both_omo_and_senpi_emits_native_and_reports_the_overlap
+        PASS [   0.005s] (26/40) maho-config-migration::transforms harness_native_rename_migration_id_stays_a_stable_dated_value
+        PASS [   0.006s] (27/40) maho-config-migration::transforms harness_native_rename_renames_the_legacy_block_and_keeps_every_value
+        PASS [   0.005s] (28/40) maho-config-migration::transforms identical_profile_subtree_and_reverted_migration_sidecar_keep_only_the_delta_and_user_left_value
+        PASS [   0.008s] (29/40) maho-config-migration::transforms category_deep_split_renames_every_reference_and_reports_it
+        PASS [   0.005s] (30/40) maho-config-migration::transforms legacy_config_keys_are_rewritten_to_their_current_omo_equivalents
+        PASS [   0.014s] (31/40) maho-config-migration::plans user_profile_config_jsonc_project_and_sidecar_fixtures_keep_distinct_markers_and_exact_backups
+        PASS [   0.005s] (32/40) maho-config-migration::transforms subscription_provider_rename_canonicalizes_every_legacy_id
+        PASS [   0.008s] (33/40) maho-config-migration::transforms harness_native_rename_keeps_the_canonical_block_and_reports_the_drop
+        PASS [   0.004s] (34/40) maho-config-migration::transforms subscription_provider_rename_carries_unrelated_keys_through_verbatim
+        PASS [   0.004s] (35/40) maho-config-migration::transforms subscription_provider_rename_diagnostics_name_the_path_and_both_ids
+        PASS [   0.004s] (36/40) maho-config-migration::transforms subscription_provider_rename_gates_on_the_legacy_ids
+        PASS [   0.005s] (37/40) maho-config-migration::transforms subscription_provider_rename_leaves_the_metered_api_key_lanes_alone
+        PASS [   0.008s] (38/40) maho-config-migration::transforms root_profile_config_jsonc_and_project_sources_produce_golden_documents_that_parse_through_the_schema
+        PASS [   0.004s] (39/40) maho-config-migration::transforms subscription_provider_rename_migration_id_stays_the_recorded_value
+        PASS [   0.004s] (40/40) maho-config-migration::transforms subscription_provider_rename_renames_a_legacy_id_used_as_a_key
+────────────
+     Summary [   0.024s] 40 tests run: 40 passed, 0 skipped

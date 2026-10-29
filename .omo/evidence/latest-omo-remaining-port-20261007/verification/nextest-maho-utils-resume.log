@@ -1,0 +1,385 @@
+   Compiling syn v2.0.117
+   Compiling smallvec v1.15.1
+   Compiling parking_lot_core v0.9.12
+   Compiling parking_lot v0.12.5
+   Compiling serde_derive v1.0.228
+   Compiling tokio-macros v2.7.0
+   Compiling tokio v1.52.3
+   Compiling serde v1.0.228
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling maho-omo-config-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/omo-config-core)
+   Compiling maho-utils v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/utils)
+    Finished `test` profile [unoptimized] target(s) in 12.74s
+────────────
+ Nextest run ID 7ca93de0-017a-44ab-ba31-b8f6f44cee41 with nextest profile: default
+    Starting 368 tests across 20 binaries
+        PASS [   0.006s] (  1/368) maho-utils::ast_grep contract_every_probe_throwing_is_not_found
+        PASS [   0.006s] (  2/368) maho-utils::ast_grep cache_dropped_when_revalidation_probe_fails
+        PASS [   0.006s] (  3/368) maho-utils::ast_grep cache_hit_skips_reprobe
+        PASS [   0.004s] (  4/368) maho-utils::ast_grep failure_message_mentions_ast_grep
+        PASS [   0.005s] (  5/368) maho-utils::ast_grep failure_hints_per_platform
+        PASS [   0.003s] (  6/368) maho-utils::ast_grep install_script_nonzero_exit_is_failure
+        PASS [   0.004s] (  7/368) maho-utils::ast_grep install_script_targets_runtime_slug_dir
+        PASS [   0.005s] (  8/368) maho-utils::ast_grep install_script_timeout_kills_child
+        PASS [   0.026s] (  9/368) maho-utils::ast_grep contract_package_dir_activates_skill_bin_tier
+        PASS [   0.026s] ( 10/368) maho-utils::ast_grep contract_broken_override_alone_is_not_found
+        PASS [   0.004s] ( 11/368) maho-utils::ast_grep install_script_windows_falls_back_to_powershell_exe
+        PASS [   0.027s] ( 12/368) maho-utils::ast_grep contract_non_executable_candidate_is_rejected
+        PASS [   0.028s] ( 13/368) maho-utils::ast_grep contract_name_grants_no_exemption
+        PASS [   0.029s] ( 14/368) maho-utils::ast_grep contract_revalidation_rejects_binary_that_lost_exec_bit
+        PASS [   0.004s] ( 15/368) maho-utils::ast_grep manifest_slugs_binary_names_and_pins
+        PASS [   0.025s] ( 16/368) maho-utils::ast_grep find_sg_binary_compat_returns_plain_path_or_none
+        PASS [   0.004s] ( 17/368) maho-utils::ast_grep probe_failure_falls_through_to_next_tier
+        PASS [   0.005s] ( 18/368) maho-utils::ast_grep probe_garbage_candidates_never_resolve
+        PASS [   0.004s] ( 19/368) maho-utils::ast_grep provision_bad_sha_leaves_no_binary
+        PASS [   0.004s] ( 20/368) maho-utils::ast_grep provision_downloads_verifies_and_writes_sg
+        PASS [   0.004s] ( 21/368) maho-utils::ast_grep provision_keeps_writes_inside_target_dir
+        PASS [   0.004s] ( 22/368) maho-utils::ast_grep provision_network_failure_is_actionable
+        PASS [   0.004s] ( 23/368) maho-utils::ast_grep resolver_falls_back_to_sg_alias_on_darwin
+        PASS [   0.004s] ( 24/368) maho-utils::ast_grep resolver_prefers_ast_grep_over_linux_setgroups
+        PASS [   0.003s] ( 25/368) maho-utils::ast_grep resolver_prefers_ast_grep_over_sg_on_darwin
+        PASS [   0.004s] ( 26/368) maho-utils::ast_grep resolver_prefers_ast_grep_over_sg_on_win32
+        PASS [   0.004s] ( 27/368) maho-utils::ast_grep resolver_prefers_env_override
+        PASS [   0.046s] ( 28/368) maho-utils::ast_grep contract_runtime_location_grants_no_exemption
+        PASS [   0.047s] ( 29/368) maho-utils::ast_grep contract_broken_override_loses_to_path
+        PASS [   0.048s] ( 30/368) maho-utils::ast_grep cache_invalidated_when_binary_disappears
+        PASS [   0.004s] ( 31/368) maho-utils::ast_grep resolver_returns_none_when_nothing_resolves
+        PASS [   0.004s] ( 32/368) maho-utils::ast_grep resolver_runtime_dir_before_path
+        PASS [   0.004s] ( 33/368) maho-utils::ast_grep tiers_codex_home_runtime
+        PASS [   0.004s] ( 34/368) maho-utils::ast_grep tiers_env_override_wins_and_probes_once
+        PASS [   0.024s] ( 35/368) maho-utils::ast_grep probe_contains_real_setgroups_failure_and_continues
+        PASS [   0.004s] ( 36/368) maho-utils::ast_grep tiers_home_runtime_slug_dir
+        PASS [   0.004s] ( 37/368) maho-utils::ast_grep tiers_homebrew_last
+        PASS [   0.004s] ( 38/368) maho-utils::ast_grep tiers_linuxbrew_only_on_linux
+        PASS [   0.004s] ( 39/368) maho-utils::ast_grep tiers_skill_bin_before_path
+        PASS [   0.004s] ( 40/368) maho-utils::ast_grep tiers_package_bin_covers_sg_alias
+        PASS [   0.024s] ( 41/368) maho-utils::ast_grep probe_rejects_setgroups_impostor_alone
+        PASS [   0.004s] ( 42/368) maho-utils::ast_grep win32_candidates_use_exe_suffix
+        PASS [   0.004s] ( 43/368) maho-utils::codegraph_env build_codegraph_child_env_filters_secrets
+        PASS [   0.004s] ( 44/368) maho-utils::codegraph_env build_codegraph_env_defaults_to_daemon_on
+        PASS [   0.004s] ( 45/368) maho-utils::codegraph_env build_codegraph_env_omits_daemon_when_enabled
+        PASS [   0.004s] ( 46/368) maho-utils::codegraph_env build_codegraph_node_skip_hint_formatting
+        PASS [   0.004s] ( 47/368) maho-utils::codegraph_env codegraph_child_env_forwards_daemon_idle_timeout
+        PASS [   0.024s] ( 48/368) maho-utils::ast_grep resolver_default_probe_discards_child_stderr
+        PASS [   0.005s] ( 49/368) maho-utils::codegraph_env codegraph_no_daemon_precedence_defaults_to_unset
+        PASS [   0.004s] ( 50/368) maho-utils::codegraph_env codegraph_no_daemon_precedence_honors_ambient_escape_hatch
+        PASS [   0.005s] ( 51/368) maho-utils::codegraph_env codegraph_no_daemon_precedence_keeps_daemon_off
+        PASS [   0.004s] ( 52/368) maho-utils::codegraph_env codegraph_provision_manifest_contract
+        PASS [   0.005s] ( 53/368) maho-utils::codegraph_env evaluate_codegraph_node_support_matrix
+        PASS [   0.005s] ( 54/368) maho-utils::codegraph_env codegraph_no_daemon_precedence_omits_when_enabled
+        PASS [   0.006s] ( 55/368) maho-utils::codegraph_env should_exclude_codegraph_project_relative_custom_roots
+        PASS [   0.007s] ( 56/368) maho-utils::codegraph_env should_exclude_codegraph_project_default_and_omo_state
+        PASS [   0.008s] ( 57/368) maho-utils::codegraph_env should_exclude_codegraph_project_custom_roots
+        PASS [   0.005s] ( 58/368) maho-utils::codegraph_provision provision_fails_gracefully_on_checksum_mismatch
+        PASS [   0.005s] ( 59/368) maho-utils::codegraph_provision provision_retains_previous_runtime_when_upgrade_archive_corrupt
+        PASS [   0.005s] ( 60/368) maho-utils::codegraph_provision provision_uses_default_manifest_when_no_override
+        PASS [   0.005s] ( 61/368) maho-utils::codegraph_resolve guidance_built_points_to_omo_global_store
+        PASS [   0.045s] ( 62/368) maho-utils::ast_grep probe_rejects_non_ast_grep_override
+        PASS [   0.014s] ( 63/368) maho-utils::codegraph_provision provision_extracts_verified_archive_and_installs_binary
+        PASS [   0.017s] ( 64/368) maho-utils::codegraph_provision provision_extracts_npm_tgz_and_installs_cmd
+        PASS [   0.015s] ( 65/368) maho-utils::codegraph_provision provision_marker_makes_calls_idempotent
+        PASS [   0.005s] ( 66/368) maho-utils::codegraph_resolve guidance_escapes_markdown_control_chars
+        PASS [   0.006s] ( 67/368) maho-utils::codegraph_resolve guidance_non_codegraph_tool_ignored
+        PASS [   0.005s] ( 68/368) maho-utils::codegraph_resolve guidance_not_indexed_non_codegraph_tool_ignored
+        PASS [   0.013s] ( 69/368) maho-utils::codegraph_resolve guidance_no_project_loaded_extracted
+        PASS [   0.024s] ( 70/368) maho-utils::codegraph_provision provision_replaces_stale_runtime_version
+        PASS [   0.011s] ( 71/368) maho-utils::codegraph_resolve guidance_not_indexed_extracted
+        PASS [   0.005s] ( 72/368) maho-utils::codegraph_resolve resolve_command_bundled_package
+        PASS [   0.018s] ( 73/368) maho-utils::codegraph_resolve guidance_decorated_status_output_extracted
+        PASS [   0.010s] ( 74/368) maho-utils::codegraph_resolve guidance_uninitialized_project_extracted
+        PASS [   0.005s] ( 75/368) maho-utils::codegraph_resolve resolve_command_bundled_selects_node22_on_path
+        PASS [   0.004s] ( 76/368) maho-utils::codegraph_resolve resolve_command_invalid_omo_codegraph_bin_unavailable
+        PASS [   0.005s] ( 77/368) maho-utils::codegraph_resolve resolve_command_invalid_codegraph_bin_unavailable
+        PASS [   0.006s] ( 78/368) maho-utils::codegraph_resolve resolve_command_bundled_with_codegraph_node_bin_override
+        PASS [   0.023s] ( 79/368) maho-utils::codegraph_resolve guidance_cwd_fallback
+        PASS [   0.006s] ( 80/368) maho-utils::codegraph_resolve resolve_command_managed_runtime_external_rejected
+        PASS [   0.005s] ( 81/368) maho-utils::codegraph_resolve resolve_command_managed_runtime_pinned_accepted
+        PASS [   0.004s] ( 82/368) maho-utils::codegraph_resolve resolve_command_prefers_omo_codegraph_bin
+        PASS [   0.005s] ( 83/368) maho-utils::codegraph_resolve resolve_command_managed_runtime_stale_ignored
+        PASS [   0.019s] ( 84/368) maho-utils::codegraph_resolve guidance_status_output_extracted
+        PASS [   0.005s] ( 85/368) maho-utils::codegraph_resolve resolve_command_returns_path_tier_when_missing
+        PASS [   0.005s] ( 86/368) maho-utils::codegraph_resolve resolve_node_runtime_configured_node_bin
+        PASS [   0.005s] ( 87/368) maho-utils::codegraph_resolve resolve_command_uses_provisioned_before_path
+        PASS [   0.005s] ( 88/368) maho-utils::codegraph_resolve resolve_node_support_unsupported_node26
+        PASS [   0.005s] ( 89/368) maho-utils::codegraph_resolve resolve_node_runtime_selects_homebrew_keg
+        PASS [   0.034s] ( 90/368) maho-utils::codegraph_provision provision_serializes_concurrent_calls_with_a_per_host_lock
+        PASS [   0.004s] ( 91/368) maho-utils::codegraph_resolve resolve_node_support_with_node22_on_path
+        PASS [   0.005s] ( 92/368) maho-utils::codegraph_workspace daemon_lock_parsing_variants
+        PASS [   0.006s] ( 93/368) maho-utils::codegraph_workspace ensure_codegraph_gitignored_empty_git_dir
+        PASS [   0.005s] ( 94/368) maho-utils::codegraph_workspace ensure_codegraph_gitignored_non_git
+        PASS [   0.006s] ( 95/368) maho-utils::codegraph_workspace evaluate_daemon_staleness_states
+        PASS [   0.005s] ( 96/368) maho-utils::codegraph_workspace prepare_workspace_creates_global_project_store_and_symlink
+        PASS [   0.005s] ( 97/368) maho-utils::codegraph_workspace prepare_workspace_falls_back_for_wrong_target_symlink
+        PASS [   0.005s] ( 98/368) maho-utils::codegraph_workspace prepare_workspace_preserves_existing_in_project
+        PASS [   0.011s] ( 99/368) maho-utils::codegraph_workspace ensure_codegraph_gitignored_nested_git_dir_rejected
+        PASS [   0.005s] (100/368) maho-utils::codegraph_workspace prepare_workspace_falls_back_when_symlink_fails
+        PASS [   0.005s] (101/368) maho-utils::codegraph_workspace prune_dead_project_stores_ignores_malformed_metadata
+        PASS [   0.005s] (102/368) maho-utils::codegraph_workspace prune_dead_project_stores_ignores_unreadable_cache
+        PASS [   0.005s] (103/368) maho-utils::codegraph_workspace prune_store_least_recently_used
+        PASS [   0.014s] (104/368) maho-utils::codegraph_workspace ensure_codegraph_gitignored_nested_gitdir_pointer_rejected
+        PASS [   0.005s] (105/368) maho-utils::codegraph_workspace sanitize_base_formats_names
+        PASS [   0.005s] (106/368) maho-utils::codegraph_workspace prune_store_missing_sources
+        PASS [   0.005s] (107/368) maho-utils::config_files detect_config_file_prefers_jsonc_then_json_then_none
+        PASS [   0.006s] (108/368) maho-utils::config_files detect_plugin_config_file_cases
+        PASS [   0.005s] (109/368) maho-utils::config_files detect_plugin_config_file_memoizes_until_cleared
+        PASS [   0.017s] (110/368) maho-utils::codegraph_workspace ensure_codegraph_gitignored_standard_repo
+        PASS [   0.005s] (111/368) maho-utils::config_files detect_plugin_config_file_none_when_empty
+        PASS [   0.007s] (112/368) maho-utils::config_files frontmatter_complex_arrays_and_nested_objects
+        PASS [   0.006s] (113/368) maho-utils::config_files frontmatter_edge_cases
+        PASS [   0.006s] (114/368) maho-utils::config_files frontmatter_mixed_content
+        PASS [   0.007s] (115/368) maho-utils::config_files frontmatter_simple_and_boolean_values
+        PASS [   0.005s] (116/368) maho-utils::config_files parse_jsonc_complex_config
+        PASS [   0.004s] (117/368) maho-utils::config_files parse_jsonc_rejects_invalid_input
+        PASS [   0.005s] (118/368) maho-utils::config_files parse_jsonc_accepts_comments_trailing_commas_and_bom
+        PASS [   0.007s] (119/368) maho-utils::config_files frontmatter_tolerates_extra_fields
+        PASS [   0.005s] (120/368) maho-utils::config_files parse_jsonc_safe_reports_data_or_errors
+        PASS [   0.005s] (121/368) maho-utils::config_files read_jsonc_file_cases
+        PASS [   0.005s] (122/368) maho-utils::config_files resolve_xdg_data_dir_cases
+        PASS [   0.005s] (123/368) maho-utils::config_files validate_omo_config_accepts_supported_overrides
+        PASS [   0.028s] (124/368) maho-utils::codegraph_workspace ensure_codegraph_gitignored_linked_worktree
+        PASS [   0.006s] (125/368) maho-utils::config_files symlink_resolution_and_existence
+        PASS [   0.005s] (126/368) maho-utils::config_files validate_omo_config_rejections
+        PASS [   0.005s] (127/368) maho-utils::migration agent_name_map_parenthesized_aliases
+        PASS [   0.005s] (128/368) maho-utils::config_files write_file_atomically_behaviour
+        PASS [   0.005s] (129/368) maho-utils::migration applied_migrations_round_trip
+        PASS [   0.005s] (130/368) maho-utils::migration migrate_agent_names_rewrites_parenthesized_aliases
+        PASS [   0.005s] (131/368) maho-utils::migration migrate_config_creates_backup_when_content_changes
+        PASS [   0.005s] (132/368) maho-utils::migration migrate_config_leaves_config_without_lsp_alone
+        PASS [   0.005s] (133/368) maho-utils::migration migrate_config_preserves_migrations_field_when_sidecar_write_fails
+        PASS [   0.005s] (134/368) maho-utils::migration migrate_config_skips_backup_when_content_is_identical
+        PASS [   0.005s] (135/368) maho-utils::migration migrate_config_treats_applied_migrations_as_history
+        PASS [   0.005s] (136/368) maho-utils::migration migrate_config_removes_obsolete_lsp_key
+        PASS [   0.005s] (137/368) maho-utils::migration migrate_config_skips_sidecar_when_config_write_fails_and_retries_later
+        PASS [   0.005s] (138/368) maho-utils::migration migrate_config_writes_config_before_sidecar
+        PASS [   0.005s] (139/368) maho-utils::migration read_applied_migrations_empty_without_sidecar
+        PASS [   0.005s] (140/368) maho-utils::migration read_applied_migrations_ignores_non_string_entries
+        PASS [   0.005s] (141/368) maho-utils::migration read_applied_migrations_reads_well_formed_sidecar
+        PASS [   0.004s] (142/368) maho-utils::migration sidecar_path_appends_suffix
+        PASS [   0.005s] (143/368) maho-utils::migration read_applied_migrations_tolerates_bad_payloads
+        PASS [   0.004s] (144/368) maho-utils::migration write_applied_migrations_creates_parent_directories
+        PASS [   0.005s] (145/368) maho-utils::migration write_applied_migrations_creates_sidecar
+        PASS [   0.005s] (146/368) maho-utils::migration write_applied_migrations_sorts_entries
+        PASS [   0.006s] (147/368) maho-utils::process_sweep ambient_codegraph_install_dir_is_not_trusted
+        PASS [   0.006s] (148/368) maho-utils::process_sweep daemon_outside_owned_roots_is_ignored
+        PASS [   0.006s] (149/368) maho-utils::process_sweep daemon_with_live_parent_is_not_a_candidate
+        PASS [   0.005s] (150/368) maho-utils::process_sweep default_home_roots_include_claude_omo_install
+        PASS [   0.006s] (151/368) maho-utils::process_sweep daemon_with_unparseable_lock_is_spared_and_logged
+        PASS [   0.007s] (152/368) maho-utils::process_sweep daemon_with_mismatched_lock_pid_is_killed_as_stale
+        PASS [   0.007s] (153/368) maho-utils::process_sweep daemon_token_alongside_mcp_is_never_a_proxy
+        PASS [   0.008s] (154/368) maho-utils::process_sweep daemon_without_lockfile_is_killed_as_stale
+        PASS [   0.008s] (155/368) maho-utils::process_sweep detached_provisioned_daemon_classification_is_intact
+        PASS [   0.005s] (156/368) maho-utils::process_sweep dry_run_against_live_daemon_lists_it_as_spared
+        PASS [   0.005s] (157/368) maho-utils::process_sweep force_bypasses_throttle_and_refreshes_stamp
+        PASS [   0.005s] (158/368) maho-utils::process_sweep fresh_daemon_stamp_without_force_checks_workers_once
+        PASS [   0.007s] (159/368) maho-utils::process_sweep detached_upstream_daemon_extracts_project_root
+        PASS [   0.007s] (160/368) maho-utils::process_sweep dry_run_reports_candidates_without_killing
+        PASS [   0.006s] (161/368) maho-utils::process_sweep generic_daemon_argv_without_owner_ping_is_spared
+        PASS [   0.007s] (162/368) maho-utils::process_sweep fresh_daemon_stamp_still_reaps_orphaned_workers
+        PASS [   0.007s] (163/368) maho-utils::process_sweep identity_change_after_term_never_escalates_to_kill
+        PASS [   0.006s] (164/368) maho-utils::process_sweep legacy_plain_pid_lock_spares_daemon
+        PASS [   0.005s] (165/368) maho-utils::process_sweep linux_cmdline_mcp_proxy_shape_fails
+        PASS [   0.007s] (166/368) maho-utils::process_sweep linux_cmdline_node_cli_daemon_attests
+        PASS [   0.008s] (167/368) maho-utils::process_sweep live_daemon_lock_spares_daemon_while_worker_dies
+        PASS [   0.006s] (168/368) maho-utils::process_sweep lock_at_initialized_ancestor_spares_daemon
+        PASS [   0.008s] (169/368) maho-utils::process_sweep live_daemon_with_matching_lock_is_spared_and_logged
+        PASS [   0.007s] (170/368) maho-utils::process_sweep live_worker_family_is_not_condemned
+        PASS [   0.006s] (171/368) maho-utils::process_sweep older_version_daemon_with_matching_lock_is_spared
+        PASS [   0.007s] (172/368) maho-utils::process_sweep non_version_entries_in_base_dir_are_ignored
+        PASS [   0.006s] (173/368) maho-utils::process_sweep only_sisyphuslabs_plugin_cache_is_trusted
+        PASS [   0.009s] (174/368) maho-utils::process_sweep mcp_token_of_unrelated_cli_is_ignored
+        PASS [   0.005s] (175/368) maho-utils::process_sweep owner_ping_request_matches_daemon_wire_protocol
+        PASS [   0.012s] (176/368) maho-utils::process_sweep macos_ps_command_line_attestation
+        PASS [   0.007s] (177/368) maho-utils::process_sweep orphaned_npm_shim_selects_whole_worker_family
+        PASS [   0.008s] (178/368) maho-utils::process_sweep orphaned_owned_codegraph_commands_ppid_one_and_dead_parent
+        PASS [   0.005s] (179/368) maho-utils::process_sweep owner_target_points_at_daemon_auth_token_file
+        PASS [   0.008s] (180/368) maho-utils::process_sweep owned_root_in_a_different_argument_is_ignored
+        PASS [   0.006s] (181/368) maho-utils::process_sweep owner_ping_round_trips_over_a_unix_socket
+        PASS [   0.006s] (182/368) maho-utils::process_sweep posix_ps_table_preserves_pid_ppid_and_command
+        PASS [   0.005s] (183/368) maho-utils::process_sweep proxy_family_is_throttled_independently
+        PASS [   0.007s] (184/368) maho-utils::process_sweep provisioned_launcher_and_bundle_are_daemon_shaped
+        PASS [   0.009s] (185/368) maho-utils::process_sweep posix_table_each_family_selects_exactly_its_own_zombies
+        PASS [   0.006s] (186/368) maho-utils::process_sweep quoted_path_with_spaces_is_extracted
+        PASS [   0.007s] (187/368) maho-utils::process_sweep proxy_sweep_kills_only_orphan_and_writes_family_stamp
+        PASS [   0.007s] (188/368) maho-utils::process_sweep quoted_real_world_posix_workers_are_matched
+        PASS [   0.008s] (189/368) maho-utils::process_sweep sibling_path_sharing_root_prefix_is_ignored
+        PASS [   0.008s] (190/368) maho-utils::process_sweep serve_wrapper_mentioned_only_as_data_is_ignored
+        PASS [   0.007s] (191/368) maho-utils::process_sweep stale_attested_daemon_is_killed_and_current_is_left_alone
+        PASS [   0.005s] (192/368) maho-utils::process_sweep unchanged_owner_with_authenticated_ping_is_proven
+        PASS [   0.005s] (193/368) maho-utils::process_sweep unknown_current_version_skips_conservatively
+        PASS [   0.008s] (194/368) maho-utils::process_sweep stale_version_failing_attestation_is_spared_as_recycled_pid
+        PASS [   0.005s] (195/368) maho-utils::process_sweep unreadable_linux_cmdline_fails_closed
+        PASS [   0.007s] (196/368) maho-utils::process_sweep stale_version_with_dead_owner_has_nothing_to_kill
+        PASS [   0.008s] (197/368) maho-utils::process_sweep stale_version_on_windows_is_spared
+        PASS [   0.005s] (198/368) maho-utils::process_sweep windows_cli_attestation_always_fails_closed
+        PASS [   0.007s] (199/368) maho-utils::process_sweep upstream_serve_without_path_stays_plain_upstream
+        PASS [   0.009s] (200/368) maho-utils::process_sweep upstream_package_path_as_data_argument_is_ignored
+        PASS [   0.007s] (201/368) maho-utils::process_sweep windows_owned_root_uses_platform_resolution
+        PASS [   0.005s] (202/368) maho-utils::process_sweep windows_process_table_parses_array_and_single_object
+        PASS [   0.008s] (203/368) maho-utils::process_sweep windows_platform_and_provisioned_workers_are_matched
+        PASS [   0.007s] (204/368) maho-utils::process_sweep zombie_surviving_term_is_escalated_to_kill
+        PASS [   0.007s] (205/368) maho-utils::process_sweep windows_standalone_daemon_preserves_raw_path
+        PASS [   0.005s] (206/368) maho-utils::processes bun_which_constrains_lookup
+        PASS [   0.008s] (207/368) maho-utils::process_sweep windows_table_shapes_are_selected_per_family
+        PASS [   0.005s] (208/368) maho-utils::processes default_hostname_probe_targets_loopback
+        PASS [   0.005s] (209/368) maho-utils::processes default_probe_ignores_port_held_on_another_interface
+        PASS [   0.005s] (210/368) maho-utils::processes default_server_port_is_4096
+        PASS [   0.004s] (211/368) maho-utils::processes get_available_server_port_prefers_then_autoselects
+        PASS [   0.006s] (212/368) maho-utils::processes find_available_port_errors_when_all_attempts_blocked
+        PASS [   0.005s] (213/368) maho-utils::processes format_file_changes_groups_and_notepad
+        PASS [   0.005s] (214/368) maho-utils::processes find_available_port_skips_blocked_ports
+        PASS [   0.006s] (215/368) maho-utils::processes find_available_port_returns_start_when_free
+        PASS [   0.005s] (216/368) maho-utils::processes git_bash_env_override_wins
+        PASS [   0.005s] (217/368) maho-utils::processes git_bash_missing_env_override_stops_probing
+        PASS [   0.005s] (218/368) maho-utils::processes git_bash_not_required_off_windows
+        PASS [   0.005s] (219/368) maho-utils::processes git_bash_program_files_has_priority
+        PASS [   0.005s] (220/368) maho-utils::processes git_bash_skips_windows_launchers_on_path
+        PASS [   0.007s] (221/368) maho-utils::processes hook_allowed_env_vars_scrub_the_child_environment
+        PASS [   0.009s] (222/368) maho-utils::processes hook_env_export_survives_even_when_command_disables_substitution
+        PASS [   0.007s] (223/368) maho-utils::processes hook_without_allowlist_inherits_full_env
+        PASS [   0.005s] (224/368) maho-utils::processes logger_reset_restores_default_path
+        PASS [   0.010s] (225/368) maho-utils::processes hook_plugin_root_is_exported_and_substituted
+        PASS [   0.005s] (226/368) maho-utils::processes logger_swallows_unserializable_data
+        PASS [   0.008s] (227/368) maho-utils::processes logger_flush_writes_timestamped_json_line
+        PASS [   0.005s] (228/368) maho-utils::processes numstat_parses_with_status_map
+        PASS [   0.023s] (229/368) maho-utils::processes collect_git_diff_stats_uses_argv_and_counts_untracked_lines
+        PASS [   0.005s] (230/368) maho-utils::processes porcelain_output_maps_paths
+        PASS [   0.005s] (231/368) maho-utils::processes porcelain_line_cases
+        PASS [   0.005s] (232/368) maho-utils::processes port_probe_releases_the_socket_immediately
+        PASS [   0.005s] (233/368) maho-utils::processes port_released_is_available_and_bound_is_not
+        PASS [   0.005s] (234/368) maho-utils::processes product_identity_derives_or_preserves_accepted_names
+        PASS [   0.004s] (235/368) maho-utils::processes runtime_file_round_trips
+        PASS [   0.006s] (236/368) maho-utils::processes recovered_spawn_cancellation::signal_less_spawn_preserves_stdout_and_stderr
+        PASS [   0.006s] (237/368) maho-utils::processes recovered_spawn_cancellation::synchronous_spawn_ignores_an_aborted_signal
+        PASS [   0.007s] (238/368) maho-utils::processes recovered_spawn_cancellation::wait_with_output_observes_cancellation_after_child_readiness
+        PASS [   0.004s] (239/368) maho-utils::processes spawn_rejects_empty_command
+        PASS [   0.006s] (240/368) maho-utils::processes spawn_pipes_stdout_and_stderr_and_reports_exit_code
+        PASS [   0.005s] (241/368) maho-utils::processes spawn_with_ignored_stdio_yields_empty_streams
+        PASS [   0.006s] (242/368) maho-utils::processes spawn_sync_preserves_nonzero_exit_and_stderr
+        PASS [   0.006s] (243/368) maho-utils::prompt_async_gate test_async_dispatch_holds_session_reservation_sync_mode_defers
+        PASS [   0.026s] (244/368) maho-utils::processes hook_timeout_returns_124_instead_of_hanging
+        PASS [   0.006s] (245/368) maho-utils::prompt_async_gate test_async_mode_uses_prompt_async
+        PASS [   0.005s] (246/368) maho-utils::prompt_async_gate test_dispatch_hold_expired_next_prompt_accepted
+        PASS [   0.005s] (247/368) maho-utils::prompt_async_gate test_default_dispatch_hold_keeps_session_reserved
+        PASS [   0.006s] (248/368) maho-utils::prompt_async_gate test_peer_message_hold_unrelated_release_leaves_session_reserved
+        PASS [   0.004s] (249/368) maho-utils::prompt_async_gate test_sdk_messages_receiver_state_preserved
+        PASS [   0.006s] (250/368) maho-utils::prompt_async_gate test_route_family_hold_released_by_same_family_abort
+        PASS [   0.005s] (251/368) maho-utils::prompt_async_gate test_sdk_prompt_async_receiver_state_preserved
+        PASS [   0.009s] (252/368) maho-utils::prompt_async_gate test_dispatch_timeout_releases_reservation_for_next_caller
+        PASS [   0.005s] (253/368) maho-utils::prompt_async_gate test_sync_mode_uses_prompt
+        PASS [   0.016s] (254/368) maho-utils::prompt_async_gate test_concurrent_prompt_async_calls_only_one_accepted
+        PASS [   0.005s] (255/368) maho-utils::prompt_async_gate_dedupe test_dedupe_keys_are_stable_across_equivalent_structures
+        PASS [   0.008s] (256/368) maho-utils::prompt_async_gate_dedupe test_continuation_prompts_differ_by_route_metadata_coalesce_intent_duplicates
+        PASS [   0.007s] (257/368) maho-utils::prompt_async_gate_dedupe test_distinct_semantic_prompt_follows_broad_hold_dispatches
+        PASS [   0.006s] (258/368) maho-utils::prompt_async_gate_dedupe test_failed_attempted_dispatch_released_retries_inside_semantic_window
+        PASS [   0.008s] (259/368) maho-utils::prompt_async_gate_dedupe test_distinct_long_prompts_same_prefix_length_dispatches
+        PASS [   0.005s] (260/368) maho-utils::prompt_async_gate_dedupe test_prompt_async_rejects_retry_after_post_dispatch_hold_coalesces
+        PASS [   0.006s] (261/368) maho-utils::prompt_async_gate_dedupe test_same_semantic_prompt_different_object_key_order_coalesced
+        PASS [   0.006s] (262/368) maho-utils::prompt_async_gate_dedupe test_same_semantic_prompt_returns_after_broad_hold_coalesced
+        PASS [   0.005s] (263/368) maho-utils::prompt_async_gate_pending test_answered_question_tool_completed_not_blocked
+        PASS [   0.041s] (264/368) maho-utils::processes process_tree_overflow_fails_without_partial_text
+        PASS [   0.007s] (265/368) maho-utils::prompt_async_gate_pending test_actively_waiting_assistant_behind_noreply_tail_blocks
+        PASS [   0.006s] (266/368) maho-utils::prompt_async_gate_pending test_completed_assistant_followed_by_noreply_tail_not_blocked
+        PASS [   0.009s] (267/368) maho-utils::prompt_async_gate_dedupe test_synthetic_internal_prompts_without_continuation_metadata_remain_distinct
+        PASS [   0.007s] (268/368) maho-utils::prompt_async_gate_pending test_completed_assistant_followed_by_orphaned_reply_required_internal_wake_admitted
+        PASS [   0.006s] (269/368) maho-utils::prompt_async_gate_pending test_completed_assistant_followed_by_stacked_noreply_tails_not_blocked
+        PASS [   0.006s] (270/368) maho-utils::prompt_async_gate_pending test_completed_assistant_question_has_no_real_user_answer_no_prompt
+        PASS [   0.005s] (271/368) maho-utils::prompt_async_gate_pending test_internal_continuation_gets_only_empty_unknown_assistant_turn_blocks
+        PASS [   0.005s] (272/368) maho-utils::prompt_async_gate_pending test_completed_assistant_question_tool_no_real_user_answer_blocks
+        PASS [   0.005s] (273/368) maho-utils::prompt_async_gate_pending test_internal_continuation_receives_assistant_text_not_blocked
+        PASS [   0.005s] (274/368) maho-utils::prompt_async_gate_pending test_metadata_empty_unknown_assistant_turn_blocks
+        PASS [   0.005s] (275/368) maho-utils::prompt_async_gate_pending test_metadata_completed_tool_calls_assistant_turn_blocks
+        PASS [   0.007s] (276/368) maho-utils::prompt_async_gate_pending test_internal_wake_follows_unanswered_question_does_not_count_as_answer
+        PASS [   0.007s] (277/368) maho-utils::prompt_async_gate_pending test_real_user_answer_follows_question_not_blocked
+        PASS [   0.008s] (278/368) maho-utils::prompt_async_gate_pending test_opencode_ask_user_question_tool_field_no_real_user_answer_blocks
+        PASS [   0.009s] (279/368) maho-utils::prompt_async_gate_pending test_opencode_question_tool_field_no_real_user_answer_blocks
+        PASS [   0.009s] (280/368) maho-utils::prompt_async_gate_pending test_reply_expecting_internal_tail_behind_noreply_tail_admitted
+        PASS [   0.007s] (281/368) maho-utils::prompt_async_gate_queue test_busy_status_no_prompt_sent
+        PASS [   0.058s] (282/368) maho-utils::processes process_tree_preserves_utf8_split_across_writes
+        PASS [   0.011s] (283/368) maho-utils::prompt_async_gate_queue test_busy_session_queues_and_sends_after_idle
+        PASS [   0.010s] (284/368) maho-utils::prompt_async_gate_queue test_duplicate_queued_prompts_coalesce_when_idle
+        PASS [   0.009s] (285/368) maho-utils::prompt_async_gate_queue test_queued_prompts_preserve_fifo_order_after_release
+        PASS [   0.006s] (286/368) maho-utils::prompt_async_gate_queue_turns test_assistant_boolean_finish_true_treated_as_terminal
+        PASS [   0.006s] (287/368) maho-utils::prompt_async_gate_queue_turns test_assistant_error_turn_completed_with_no_parts_treated_as_terminal
+        PASS [   0.008s] (288/368) maho-utils::prompt_async_gate_queue test_stateful_route_defers_when_hold_active
+        PASS [   0.010s] (289/368) maho-utils::prompt_async_gate_queue test_stateful_route_defer_does_not_cut_ahead_of_waiting_queue
+        PASS [   0.006s] (290/368) maho-utils::prompt_async_gate_queue_turns test_assistant_running_tool_call_part_no_prompt_sent
+        PASS [   0.006s] (291/368) maho-utils::prompt_async_gate_queue_turns test_assistant_streaming_without_finish_reason_no_prompt_sent
+        PASS [   0.006s] (292/368) maho-utils::prompt_async_gate_queue_turns test_assistant_time_completed_treated_as_terminal
+        PASS [   0.005s] (293/368) maho-utils::prompt_async_gate_queue_turns test_assistant_waiting_on_tools_no_prompt_sent
+        PASS [   0.006s] (294/368) maho-utils::prompt_async_gate_queue_turns test_assistant_unknown_finish_no_prompt_sent
+        PASS [   0.005s] (295/368) maho-utils::prompt_async_gate_queue_turns test_tool_calls_finish_without_pending_part_state_no_prompt_sent
+        PASS [   0.007s] (296/368) maho-utils::prompt_async_gate_queue_turns test_mixed_real_user_tail_follows_assistant_waiting_on_tools_prompt_sent
+        PASS [   0.007s] (297/368) maho-utils::prompt_async_gate_queue_turns test_synthetic_user_tail_follows_assistant_waiting_on_tools_no_prompt
+        PASS [   0.008s] (298/368) maho-utils::prompt_async_gate_queue_turns test_internal_user_tail_follows_assistant_waiting_on_tools_no_prompt
+        PASS [   0.005s] (299/368) maho-utils::prompt_async_gate_queue_turns test_tool_state_check_disabled_prompt_sent
+        PASS [   0.006s] (300/368) maho-utils::prompt_async_gate_reservations test_bare_model_suggestion_retry_is_transient
+        PASS [   0.005s] (301/368) maho-utils::prompt_async_gate_reservations test_does_not_match_foreign_source_when_supersede_is_off
+        PASS [   0.007s] (302/368) maho-utils::prompt_async_gate_reservations test_check_status_false_and_check_tool_state_false_never_invoked
+        PASS [   0.007s] (303/368) maho-utils::prompt_async_gate_reservations test_dispatch_hold_active_second_dispatch_coalesced
+        PASS [   0.004s] (304/368) maho-utils::prompt_async_gate_reservations test_matches_when_supersede_is_on_for_transient_retry
+        PASS [   0.007s] (305/368) maho-utils::prompt_async_gate_reservations test_fake_client_status_messages_prompt_async_all_invoked
+        PASS [   0.006s] (306/368) maho-utils::prompt_async_gate_reservations test_model_suggestion_retry_variant_is_transient
+        PASS [   0.006s] (307/368) maho-utils::prompt_async_gate_reservations test_prompt_async_rejects_result_is_failed_dispatch_attempted_ambiguous
+        PASS [   0.005s] (308/368) maho-utils::prompt_async_gate_reservations test_session_reserved_by_transient_retry_cleared_with_supersede
+        PASS [   0.005s] (309/368) maho-utils::prompt_async_gate_reservations test_unrelated_owner_is_not_transient
+        PASS [   0.005s] (310/368) maho-utils::prompt_async_gate_reservations test_session_reserved_by_transient_retry_survives_without_supersede
+        PASS [   0.006s] (311/368) maho-utils::prompt_async_gate_reservations test_user_prompt_reservation_preserved_with_supersede
+        PASS [   0.007s] (312/368) maho-utils::prompt_async_gate_reservations test_session_status_busy_returns_active_prompt_not_called
+        PASS [   0.006s] (313/368) maho-utils::prompt_async_gate_reservations test_user_prompt_reservation_with_supersede_is_not_matched
+        PASS [   0.007s] (314/368) maho-utils::prompt_async_gate_routes test_async_prompt_rejects_object_form_session_path_retries_with_string
+        PASS [   0.007s] (315/368) maho-utils::prompt_async_gate_routes test_latest_message_fetch_throws_no_prompt_sent
+        PASS [   0.006s] (316/368) maho-utils::prompt_async_gate_routes test_prompt_async_rejects_post_dispatch_hold_blocks_duplicate
+        PASS [   0.006s] (317/368) maho-utils::prompt_async_gate_routes test_prompt_rejects_with_got_undefined_retries_with_string_form
+        PASS [   0.005s] (318/368) maho-utils::prompt_async_gate_routes test_sdk_prompt_receiver_state_preserved
+        PASS [   0.012s] (319/368) maho-utils::prompt_async_gate_routes test_latest_message_fetch_hangs_no_prompt_sent
+        PASS [   0.007s] (320/368) maho-utils::prompt_async_gate_routes test_sibling_route_strict_family_prefix_does_not_clear_sibling
+        PASS [   0.005s] (321/368) maho-utils::prompt_async_gate_routes test_sync_prompt_default_dispatch_hold_keeps_session_reserved
+        PASS [   0.005s] (322/368) maho-utils::prompt_async_gate_routes test_sync_prompt_rejects_object_form_session_path_retries_with_string
+        PASS [   0.005s] (323/368) maho-utils::root_helpers archive_accepts_contained_entries
+        PASS [   0.004s] (324/368) maho-utils::root_helpers archive_rejects_escaping_hard_link_target
+        PASS [   0.005s] (325/368) maho-utils::root_helpers archive_rejects_absolute_and_traversal_paths
+        PASS [   0.004s] (326/368) maho-utils::root_helpers classify_path_environment_cases
+        PASS [   0.004s] (327/368) maho-utils::root_helpers deep_merge_basic_and_array_cases
+        PASS [   0.005s] (328/368) maho-utils::root_helpers archive_rejects_escaping_symlink_target
+        PASS [   0.005s] (329/368) maho-utils::root_helpers deep_merge_does_not_mutate_base
+        PASS [   0.004s] (330/368) maho-utils::root_helpers deep_merge_edge_cases
+        PASS [   0.004s] (331/368) maho-utils::root_helpers deep_merge_keeps_base_value_for_keys_absent_from_override
+        PASS [   0.005s] (332/368) maho-utils::root_helpers deep_merge_ignores_prototype_pollution_keys
+        PASS [   0.016s] (333/368) maho-utils::prompt_async_gate_routes test_two_sync_prompt_calls_race_only_one_accepted
+        PASS [   0.008s] (334/368) maho-utils::root_helpers deep_merge_returns_override_past_max_depth
+        PASS [   0.005s] (335/368) maho-utils::root_helpers describe_path_classification_labels
+        PASS [   0.006s] (336/368) maho-utils::root_helpers expand_env_in_object_drops_unsafe_keys
+        PASS [   0.006s] (337/368) maho-utils::root_helpers expand_env_blocked_variable_uses_fallback_and_reports
+        PASS [   0.007s] (338/368) maho-utils::root_helpers expand_env_in_object_recurses
+        PASS [   0.005s] (339/368) maho-utils::root_helpers format_duration_human_cases
+        PASS [   0.005s] (340/368) maho-utils::root_helpers is_plain_object_accepts_objects
+        PASS [   0.007s] (341/368) maho-utils::root_helpers expand_env_keeps_command_looking_values_inert
+        PASS [   0.005s] (342/368) maho-utils::root_helpers is_plain_object_rejects_non_objects
+        PASS [   0.005s] (343/368) maho-utils::root_helpers merge_unique_strings_case_insensitive_keeps_first_casing
+        PASS [   0.005s] (344/368) maho-utils::root_helpers merge_unique_strings_preserves_first_occurrence_order
+        PASS [   0.005s] (345/368) maho-utils::root_helpers parse_config_sections_ignores_unsafe_keys
+        PASS [   0.005s] (346/368) maho-utils::root_helpers parse_config_sections_keeps_valid_sections_and_reports_invalid
+        PASS [   0.005s] (347/368) maho-utils::root_helpers replace_tool_args_patch_cases
+        PASS [   0.005s] (348/368) maho-utils::root_helpers replace_tool_args_patches_a_copy
+        PASS [   0.005s] (349/368) maho-utils::root_helpers record_guards_differ_on_arrays
+        PASS [   0.005s] (350/368) maho-utils::root_helpers transform_tool_name_cases
+        PASS [   0.006s] (351/368) maho-utils::spawn_cancellation a_later_abort_preserves_repeated_cached_exit
+        PASS [   0.005s] (352/368) maho-utils::spawn_cancellation an_already_aborted_signal_terminates_the_spawned_child
+        PASS [   0.007s] (353/368) maho-utils::spawn_cancellation a_shared_signal_cancels_each_owned_child
+        PASS [   0.006s] (354/368) maho-utils::spawn_cancellation abort_terminates_a_blocked_child_without_explicit_kill
+        PASS [   0.006s] (355/368) maho-utils::spawn_cancellation abort_cancels_a_child_while_exited_owns_the_wait
+        PASS [   0.006s] (356/368) maho-utils::spawn_cancellation explicit_kill_cleans_a_child_that_traps_abort_sigterm
+        PASS [   0.005s] (357/368) maho-utils::zip_entry_listing powershell_line_keeps_tab_path_for_traversal_check
+        PASS [   0.006s] (358/368) maho-utils::zip_entry_listing zipinfo_line_preserves_trailing_whitespace
+        PASS [   0.010s] (359/368) maho-utils::zip_entry_listing tar_listing_fails_closed_on_one_unparsed_line
+        PASS [   0.011s] (360/368) maho-utils::zip_entry_listing tar_listing_fails_closed_with_counts
+        PASS [   0.011s] (361/368) maho-utils::zip_entry_listing tar_listing_rejects_fully_unparsed_output
+        PASS [   0.057s] (362/368) maho-utils::prompt_async_gate_routes test_session_status_hangs_forever_dispatches_after_timeout
+        PASS [   0.057s] (363/368) maho-utils::prompt_async_gate_routes test_session_status_never_resolves_times_out_and_dispatches
+        PASS [   0.058s] (364/368) maho-utils::zip_entry_listing zip_listing_with_python_reads_real_archive
+        PASS [   1.009s] (365/368) maho-utils::ast_grep install_script_child_ignoring_termination_fails_instead_of_hanging
+        PASS [   1.122s] (366/368) maho-utils::processes process_tree_timeout_kills_sigterm_resistant_grandchild
+        PASS [   5.044s] (367/368) maho-utils::ast_grep contract_hanging_probe_is_bounded_and_skipped
+        PASS [   5.022s] (368/368) maho-utils::ast_grep probe_hang_is_bounded_and_reports_not_found
+────────────
+     Summary [   5.050s] 368 tests run: 368 passed, 0 skipped

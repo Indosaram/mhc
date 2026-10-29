@@ -1,0 +1,169 @@
+   Compiling maho-memory-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/memory-core)
+   Compiling maho-isolation-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/isolation-core)
+    Finished `test` profile [unoptimized] target(s) in 6.27s
+────────────
+ Nextest run ID f9c78861-950d-400c-b0e0-2a0fbabe05de with nextest profile: default
+    Starting 161 tests across 2 binaries
+        PASS [   0.005s] (  1/161) maho-isolation-core::parity backend::orders_candidates_on_linux
+        PASS [   0.005s] (  2/161) maho-isolation-core::parity backends_apfs::clonefile_errno_is_read_before_strerror_and_classifies_exdev_versus_eexist
+        PASS [   0.005s] (  3/161) maho-isolation-core::parity backends_apfs::apfs_loader_failures_other_than_a_missing_module_propagate
+        PASS [   0.005s] (  4/161) maho-isolation-core::parity backends_block_clone::native_refs_binding_uses_the_actual_fsctl_opcode_handle_structure_and_eof_calls
+        PASS [   0.007s] (  5/161) maho-isolation-core::parity backend::puts_preferred_first_without_duplicating_it
+        PASS [   0.007s] (  6/161) maho-isolation-core::parity backend::orders_candidates_on_darwin
+        PASS [   0.007s] (  7/161) maho-isolation-core::parity backends_apfs::apfs_treats_a_missing_native_module_as_unavailable
+        PASS [   0.007s] (  8/161) maho-isolation-core::parity backend::distinguishes_unavailable_from_other_failures
+        PASS [   0.008s] (  9/161) maho-isolation-core::parity backend::orders_candidates_on_win32
+        PASS [   0.009s] ( 10/161) maho-isolation-core::parity backend::orders_candidates_on_freebsd
+        PASS [   0.005s] ( 11/161) maho-isolation-core::parity backends_block_clone::refs_probe_treats_absent_native_ffi_as_unavailable_but_propagates_other_loader_errors
+        PASS [   0.005s] ( 12/161) maho-isolation-core::parity backends_block_clone::native_refs_errors_preserve_classification_and_close_both_handles
+        PASS [   0.005s] ( 13/161) maho-isolation-core::parity backends_block_clone::refs_probe_loads_ffi_only_on_a_matching_filesystem_and_rejects_cross_volume_targets
+        PASS [   0.011s] ( 14/161) maho-isolation-core::parity backends_apfs::ensure_removes_stale_snapshot_locks_before_the_git_consistency_probe
+        PASS [   0.005s] ( 15/161) maho-isolation-core::parity backends_fs_integration::fs_integration_btrfs_publication_cow_parity_and_teardown
+        PASS [   0.006s] ( 16/161) maho-isolation-core::parity backends_copy_tree::copy_tree_does_not_descend_into_its_own_destination_when_it_lives_inside_the_source
+        PASS [   0.008s] ( 17/161) maho-isolation-core::parity backends_block_clone::refs_probe_rejects_a_different_target_volume_before_loading_native_symbols
+        PASS [   0.005s] ( 18/161) maho-isolation-core::parity backends_fs_integration::fs_integration_ext4_probe_rejects_eopnotsupp
+        PASS [   0.014s] ( 19/161) maho-isolation-core::parity backends_apfs::apfs_clones_many_files_cow_skips_special_entries_and_never_follows_entry_symlinks
+        PASS [   0.007s] ( 20/161) maho-isolation-core::parity backends_block_clone::refs_tiny_files_and_unaligned_tails_use_plain_copy_without_changing_the_source
+        PASS [   0.005s] ( 21/161) maho-isolation-core::parity backends_fs_integration::fs_integration_reflink_publication_cow_parity_and_teardown
+        PASS [   0.009s] ( 22/161) maho-isolation-core::parity backends_copy_budget::copy_budget_enforces_free_space_plus_ten_percent_and_the_default_2_gib_during_traversal
+        PASS [   0.006s] ( 23/161) maho-isolation-core::parity backends_fs_integration::fs_integration_rcopy_publication_cow_parity_and_teardown
+        PASS [   0.007s] ( 24/161) maho-isolation-core::parity backends_fs_integration::fs_integration_zfs_clone_publication_cow_and_restart_safe_teardown
+        PASS [   0.009s] ( 25/161) maho-isolation-core::parity backends_fs_integration::fs_integration_overlayfs_publication_and_teardown
+        PASS [   0.007s] ( 26/161) maho-isolation-core::parity backends_platform::btrfs_probe_propagates_unexpected_subvolume_show_failures
+        PASS [   0.006s] ( 27/161) maho-isolation-core::parity backends_platform::btrfs_probe_rejects_a_base_directory_on_a_different_btrfs_filesystem
+        PASS [   0.008s] ( 28/161) maho-isolation-core::parity backends_platform::btrfs_checks_binary_and_subvolume_then_snapshots_and_deletes_with_argv
+        PASS [   0.006s] ( 29/161) maho-isolation-core::parity backends_platform::btrfs_probe_trusts_the_filesystem_uuid_over_subvolume_st_dev
+        PASS [   0.007s] ( 30/161) maho-isolation-core::parity backends_platform::btrfs_probe_treats_unprivileged_b_tree_search_as_inconclusive_and_lets_start_snapshot
+        PASS [   0.005s] ( 31/161) maho-isolation-core::parity backends_platform::cp_unsupported_stderr_with_exit_two_remains_a_generic_error
+        PASS [   0.005s] ( 32/161) maho-isolation-core::parity backends_platform::missing_cp_probe_cannot_leave_the_fallback_tier_enabled
+        PASS [   0.008s] ( 33/161) maho-isolation-core::parity backends_platform::btrfs_probe_still_classifies_not_a_subvolume_as_unavailable
+        PASS [   0.006s] ( 34/161) maho-isolation-core::parity backends_platform::overlay_unmount_failure_retries_three_times_and_leaves_the_source_untouched
+        PASS [   0.008s] ( 35/161) maho-isolation-core::parity backends_platform::btrfs_snapshots_a_subvolume_whose_st_dev_differs_from_the_parent_directory
+        PASS [   0.005s] ( 36/161) maho-isolation-core::parity backends_platform::overlayfs_mount_capability_failures_fall_through_as_unavailable
+        PASS [   0.009s] ( 37/161) maho-isolation-core::parity backends_platform::overlay_relocates_by_unmount_parent_rename_and_remount_with_new_upper_and_work_paths
+        PASS [   0.005s] ( 38/161) maho-isolation-core::parity backends_platform::refs_probe_classifies_fsutil_failures_as_unavailable_so_the_walk_can_fall_through
+        PASS [   0.006s] ( 39/161) maho-isolation-core::parity backends_platform::reflink_ffi_unavailable_selects_cp_argv_and_classifies_only_unsupported_failures
+        PASS [   0.006s] ( 40/161) maho-isolation-core::parity backends_platform::overlayfs_unexpected_mount_failures_remain_hard_errors
+        PASS [   0.006s] ( 41/161) maho-isolation-core::parity backends_platform::refs_duplicate_extents_uses_aligned_range_allocated_eof_and_closes_native_handles
+        PASS [   0.007s] ( 42/161) maho-isolation-core::parity backends_platform::zfs_clone_failure_leaves_a_snapshot_marker_that_restart_safe_stop_reclaims
+        PASS [   0.010s] ( 43/161) maho-isolation-core::parity backends_platform::reflink_probe_rejects_eopnotsupp_and_disables_start
+        PASS [   0.006s] ( 44/161) maho-isolation-core::parity backends_platform::zfs_snapshot_permission_failures_fall_through_as_unavailable
+        PASS [   0.010s] ( 45/161) maho-isolation-core::parity backends_platform::zfs_failed_relocation_restores_the_source_parent_and_marker_identity
+        PASS [   0.012s] ( 46/161) maho-isolation-core::parity backends_platform::refs_probe_rejects_non_windows_missing_binary_and_wrong_filesystem
+        PASS [   0.007s] ( 47/161) maho-isolation-core::parity backends_platform::zfs_unexpected_snapshot_failures_remain_hard_errors
+        PASS [   0.007s] ( 48/161) maho-isolation-core::parity backends_rcopy::rcopy_plain_copy_preserves_symlinks_refuses_existing_destinations_and_enforces_byte_ceiling
+        PASS [   0.009s] ( 49/161) maho-isolation-core::parity backends_platform::zfs_list_failures_other_than_missing_pools_propagate_from_the_probe
+        PASS [   0.011s] ( 50/161) maho-isolation-core::parity backends_platform::zfs_dataset_root_probe_snapshot_clone_relocation_and_restart_safe_stop
+        PASS [   0.006s] ( 51/161) maho-isolation-core::parity backends_reflink::failed_probe_disables_direct_start_rather_than_retrying_an_unsupported_ioctl
+        PASS [   0.006s] ( 52/161) maho-isolation-core::parity backends_reflink::first_mid_walk_eopnotsupp_aborts_and_removes_all_partial_output
+        PASS [   0.010s] ( 53/161) maho-isolation-core::parity backends_rcopy_nested::rcopy_plain_copy_does_not_descend_into_its_own_destination
+        PASS [   0.008s] ( 54/161) maho-isolation-core::parity backends_reflink::ficlone_walks_fd_pairs_preserves_metadata_and_symlinks_and_isolates_writes
+        PASS [   0.006s] ( 55/161) maho-isolation-core::parity backends_reflink::probe_rejects_a_different_target_device_without_loading_ffi
+        PASS [   0.033s] ( 56/161) maho-isolation-core::parity backends_git_fixture::fixture_commits_leave_no_detached_maintenance_process_behind
+        PASS [   0.005s] ( 57/161) maho-isolation-core::parity base_dir::chooses_the_home_directory_on_the_same_device
+        PASS [   0.008s] ( 58/161) maho-isolation-core::parity backends_reflink_context::reflink_probing_without_a_context_stays_read_only_instead_of_writing_into_the_source
+        PASS [   0.005s] ( 59/161) maho-isolation-core::parity base_dir::chooses_the_mount_root_on_a_different_writable_device
+        PASS [   0.007s] ( 60/161) maho-isolation-core::parity backends_reflink_context::reflink_probing_writes_only_inside_the_supplied_context_base_directory
+        PASS [   0.011s] ( 61/161) maho-isolation-core::parity backends_reflink::reflink_byte_ceiling_aborts_before_cloning_oversized_input
+        PASS [   0.012s] ( 62/161) maho-isolation-core::parity backends_reflink::reflink_walk_skips_sockets_and_fifos_rather_than_opening_them
+        PASS [   0.006s] ( 63/161) maho-isolation-core::parity base_dir::different_task_ids_get_different_paths_without_interpolating_the_id
+        PASS [   0.005s] ( 64/161) maho-isolation-core::parity base_dir::falls_back_home_cross_device_when_a_subvolume_root_has_no_writable_ancestor
+        PASS [   0.006s] ( 65/161) maho-isolation-core::parity base_dir::never_places_the_base_directory_inside_a_subvolume_style_repository_root
+        PASS [   0.007s] ( 66/161) maho-isolation-core::parity base_dir::flags_cross_device_home_fallback_when_volume_is_not_writable
+        PASS [   0.006s] ( 67/161) maho-isolation-core::parity ensure::a_probing_backend_whose_cli_fails_falls_through_instead_of_aborting_the_walk
+        PASS [   0.006s] ( 68/161) maho-isolation-core::parity ensure::all_unavailable_yields_a_typed_error
+        PASS [   0.007s] ( 69/161) maho-isolation-core::parity ensure::cleanup_stops_before_removing_the_tree
+        PASS [   0.009s] ( 70/161) maho-isolation-core::parity ensure::another_ensure_cannot_remove_an_in_flight_creating_directory
+        PASS [   0.006s] ( 71/161) maho-isolation-core::parity ensure::generic_probe_error_propagates_without_falling_through
+        PASS [   0.006s] ( 72/161) maho-isolation-core::parity ensure::generic_start_error_propagates_and_removes_the_creating_directory
+        PASS [   0.008s] ( 73/161) maho-isolation-core::parity ensure::fall_through_leaves_no_creating_directory_behind
+        PASS [   0.033s] ( 74/161) maho-isolation-core::parity backends_rcopy_nested::rcopy_teardown_proceeds_when_the_registration_is_already_gone
+        PASS [   0.007s] ( 75/161) maho-isolation-core::parity ensure::publication_and_retention_route_through_the_backend_relocation_hook
+        PASS [   0.006s] ( 76/161) maho-isolation-core::parity ensure::retention_renames_the_complete_tree_and_stores_the_reason
+        PASS [   0.006s] ( 77/161) maho-isolation-core::parity ensure::stop_failure_preserves_the_tree_instead_of_recursively_removing_a_mount
+        PASS [   0.006s] ( 78/161) maho-isolation-core::parity ensure::unavailable_probe_skips_start_and_falls_through
+        PASS [   0.036s] ( 79/161) maho-isolation-core::parity backends_rcopy_nested::rcopy_teardown_fails_closed_when_worktree_removal_fails_for_a_live_registration
+        PASS [   0.008s] ( 80/161) maho-isolation-core::parity ensure::unavailable_start_falls_through_and_preserves_the_reason
+        PASS [   0.007s] ( 81/161) maho-isolation-core::parity ensure::writes_marker_before_start_and_publishes_only_a_complete_directory
+        PASS [   0.020s] ( 82/161) maho-isolation-core::parity ensure::git_snapshot_inconsistency_after_retry_is_a_hard_failure_not_a_fallback_signal
+        PASS [   0.056s] ( 83/161) maho-isolation-core::parity backends_rcopy::rcopy_seeds_staged_unstaged_and_nul_delimited_untracked_files_without_ignored_files
+        PASS [   0.054s] ( 84/161) maho-isolation-core::parity backends_rcopy_nested::rcopy_seeds_an_untracked_embedded_repository_including_its_git_metadata
+        PASS [   0.031s] ( 85/161) maho-isolation-core::parity git_baseline::git_failures_retain_command_exit_code_and_stderr
+        PASS [   0.036s] ( 86/161) maho-isolation-core::parity git_baseline::a_timed_out_baseline_read_retries_once_with_a_fresh_process_and_completes
+        PASS [   0.051s] ( 87/161) maho-isolation-core::parity ensure::retry_restores_ownership_after_a_mount_backend_removes_its_whole_base
+        PASS [   0.040s] ( 88/161) maho-isolation-core::parity git_baseline::staged_and_unstaged_rendered_output_obey_the_cap
+        PASS [   0.038s] ( 89/161) maho-isolation-core::parity git_baseline::untracked_content_over_an_injected_1_kib_cap_is_refused_before_rendering
+        PASS [   0.124s] ( 90/161) maho-isolation-core::parity backends_rcopy_nested::delta_capture_refuses_a_baseline_nested_repository_missing_from_the_isolation
+        PASS [   0.033s] ( 91/161) maho-isolation-core::parity git_command::a_budget_breach_on_a_still_streaming_child_preserves_the_typed_limit_error
+        PASS [   0.006s] ( 92/161) maho-isolation-core::parity git_command::a_git_terminated_by_a_signal_is_a_failure_never_a_zero_exit
+        PASS [   0.014s] ( 93/161) maho-isolation-core::parity git_command::a_budget_breach_tears_down_the_writer_even_when_the_alias_shell_survives_its_child
+        PASS [   0.099s] ( 94/161) maho-isolation-core::parity git_baseline::binary_untracked_patch_applies_byte_for_byte
+        PASS [   0.008s] ( 95/161) maho-isolation-core::parity git_command::a_missing_git_binary_is_typed_unavailable_not_a_generic_spawn_failure
+        PASS [   0.106s] ( 96/161) maho-isolation-core::parity git_baseline::clean_baseline_delta_includes_tracked_additions_modifications_deletions_and_untracked_files
+        PASS [   0.103s] ( 97/161) maho-isolation-core::parity git_baseline::ignored_child_files_never_enter_the_delta
+        PASS [   0.101s] ( 98/161) maho-isolation-core::parity git_baseline::spaces_quotes_and_unicode_paths_round_trip_through_patches_and_parsing
+        PASS [   0.117s] ( 99/161) maho-isolation-core::parity git_baseline::parent_staged_unstaged_and_untracked_wip_is_excluded
+        PASS [   0.021s] (100/161) maho-isolation-core::parity git_detach::deeply_nested_file_form_gitdir_pointers_are_still_rewritten
+        PASS [   0.029s] (101/161) maho-isolation-core::parity git_detach::admin_directories_outside_the_common_worktrees_area_are_never_deleted
+        PASS [   0.022s] (102/161) maho-isolation-core::parity git_detach::directory_metadata_rejects_external_symlinks_beneath_mutation_targets
+        PASS [   0.109s] (103/161) maho-isolation-core::parity git_baseline::two_child_commits_and_remaining_wip_are_represented_without_child_objects_in_parent
+        PASS [   0.186s] (104/161) maho-isolation-core::parity backends_rcopy_nested::rcopy_isolation_round_trips_edits_to_an_untracked_embedded_repository
+        PASS [   0.040s] (105/161) maho-isolation-core::parity git_detach::copied_linked_metadata_never_deletes_the_source_worktree_admin
+        PASS [   0.144s] (106/161) maho-isolation-core::parity git_baseline::nested_repository_delta_is_separate_and_node_modules_is_excluded
+        PASS [   0.005s] (107/161) maho-isolation-core::parity index::public_surface_exposes_the_whole_isolation_lifecycle_from_the_crate_root
+        PASS [   0.028s] (108/161) maho-isolation-core::parity git_detach::directory_metadata_removes_nested_locks_and_worktree_bare_configuration_and_absent_is_no_git
+        PASS [   0.079s] (109/161) maho-isolation-core::parity git_command::a_git_process_that_never_exits_is_terminated_at_its_command_deadline
+        PASS [   0.044s] (110/161) maho-isolation-core::parity git_detach::nested_directory_form_git_metadata_is_sanitized_for_absolute_worktree_targets
+        PASS [   0.152s] (111/161) maho-isolation-core::parity git_baseline::submodules_are_excluded_from_nested_discovery
+        PASS [   0.054s] (112/161) maho-isolation-core::parity git_detach::linked_worktree_detach_uses_private_metadata_and_alternates_and_removes_own_registration
+        PASS [   0.078s] (113/161) maho-isolation-core::parity git_detach::ensure_retries_one_inconsistent_clone_detaches_before_publication_then_refuses_repeated_corruption
+        PASS [   0.115s] (114/161) maho-isolation-core::parity git_detach::nested_relative_submodule_metadata_remains_functional_and_external_metadata_rewrites_or_fails_closed
+        PASS [   0.123s] (115/161) maho-isolation-core::parity merge::apply_false_retains_artifacts_without_parent_changes_or_task_branch
+        PASS [   0.165s] (116/161) maho-isolation-core::parity merge::branch_conflict_aborts_entire_range_and_keeps_recoverable_branch
+        PASS [   0.130s] (117/161) maho-isolation-core::parity merge::concurrent_patch_merges_serialize_acquire_release
+        PASS [   0.170s] (118/161) maho-isolation-core::parity merge::branch_trailing_leftovers_use_callback_without_changing_child_or_parent_wip
+        PASS [   0.196s] (119/161) maho-isolation-core::parity merge::branch_stashes_parent_wip_and_restores_byte_identically
+        PASS [   0.099s] (120/161) maho-isolation-core::parity merge::empty_delta_writes_no_changes_summary
+        PASS [   0.227s] (121/161) maho-isolation-core::parity merge::clean_branch_preserves_two_child_commits_merges_onto_parent_head_and_deletes_branch
+        PASS [   0.223s] (122/161) maho-isolation-core::parity merge::concurrent_branch_merges_serialize_acquire_release
+        PASS [   0.095s] (123/161) maho-isolation-core::parity merge::malformed_patch_reports_not_applied_without_touching_parent
+        PASS [   0.206s] (124/161) maho-isolation-core::parity merge::dirty_baseline_overlapping_commit_fails_with_typed_commit_identity_and_retained_branch
+        PASS [   0.130s] (125/161) maho-isolation-core::parity merge::moved_context_fails_closed_atomically_retaining_patch_and_git_conflict
+        PASS [   0.192s] (126/161) maho-isolation-core::parity merge::linked_parent_uses_common_git_directory_lock
+        PASS [   0.017s] (127/161) maho-isolation-core::parity merge_containment::nested_path_rejects_paths_that_escape_the_root_through_symlinked_components
+        PASS [   0.008s] (128/161) maho-isolation-core::parity merge_containment::write_artifacts_refuses_artifact_destinations_redirected_by_a_pre_existing_symlink
+        PASS [   0.132s] (129/161) maho-isolation-core::parity merge::patch_applies_child_changes_and_writes_readable_artifacts_and_summary
+        PASS [   0.320s] (130/161) maho-isolation-core::parity merge::dirty_baseline_filters_user_wip_out_of_each_child_commit
+        PASS [   0.191s] (131/161) maho-isolation-core::parity merge::nested_failure_keeps_successful_root_and_identifies_partial_result
+        PASS [   0.009s] (132/161) maho-isolation-core::parity owner::dead_host_is_dead
+        PASS [   0.007s] (133/161) maho-isolation-core::parity owner::foreign_host_is_never_probed
+        PASS [   0.006s] (134/161) maho-isolation-core::parity owner::host_session_alive_with_dead_host_returns_live
+        PASS [   0.006s] (135/161) maho-isolation-core::parity owner::host_session_dead_with_dead_host_returns_dead
+        PASS [   0.006s] (136/161) maho-isolation-core::parity owner::host_session_unknown_with_dead_host_returns_unknown
+        PASS [   0.006s] (137/161) maho-isolation-core::parity owner::live_process_child_preserves_a_dead_host_tree
+        PASS [   0.005s] (138/161) maho-isolation-core::parity owner::malformed_old_marker_obeys_the_grace_period
+        PASS [   0.006s] (139/161) maho-isolation-core::parity owner::malformed_young_marker_obeys_the_grace_period
+        PASS [   0.006s] (140/161) maho-isolation-core::parity owner::missing_host_session_probe_is_unknown_never_dead
+        PASS [   0.005s] (141/161) maho-isolation-core::parity owner::missing_marker_is_only_reclaimable_after_grace
+        PASS [   0.005s] (142/161) maho-isolation-core::parity owner::old_creating_directory_with_alive_owner_stays_creating
+        PASS [   0.005s] (143/161) maho-isolation-core::parity owner::old_creating_directory_with_dead_owner_becomes_reclaimable
+        PASS [   0.006s] (144/161) maho-isolation-core::parity owner::records_host_and_child_identities_separately
+        PASS [   0.005s] (145/161) maho-isolation-core::parity owner::retained_directory_is_never_probed
+        PASS [   0.006s] (146/161) maho-isolation-core::parity owner::recycled_host_start_identity_is_passed_to_the_probe_and_rejected
+        PASS [   0.006s] (147/161) maho-isolation-core::parity owner::young_creating_directory_with_dead_owner_stays_creating
+        PASS [   0.008s] (148/161) maho-isolation-core::parity owner::unknown_pid_ownership_wins_over_old_age
+        PASS [   0.176s] (149/161) maho-isolation-core::parity merge::root_failure_leaves_nested_repo_untouched
+        PASS [   0.165s] (150/161) maho-isolation-core::parity merge::same_delta_twice_is_already_applied
+        PASS [   0.007s] (151/161) maho-isolation-core::parity sweep::sweep_keeps_dead_trees_when_backend_teardown_fails
+        PASS [   0.007s] (152/161) maho-isolation-core::parity sweep::sweep_reports_nothing_for_a_root_that_does_not_exist
+        PASS [   0.007s] (153/161) maho-isolation-core::parity sweep::sweep_stops_dead_backends_and_retains_live_foreign_unknown_retained_and_skips_symlinks
+        PASS [   0.086s] (154/161) maho-isolation-core::parity merge_stash::a_created_stash_is_restored_by_identity_leaving_later_entries_alone
+        PASS [   0.228s] (155/161) maho-isolation-core::parity merge::nested_patches_land_after_root_and_preserve_staged_nested_wip
+        PASS [   0.133s] (156/161) maho-isolation-core::parity merge_containment::nested_merge_refuses_a_nested_repository_path_replaced_by_an_external_symlink
+        PASS [   0.184s] (157/161) maho-isolation-core::parity merge::stash_restore_collision_reports_warning_and_never_drops_users_stash
+        PASS [   0.113s] (158/161) maho-isolation-core::parity merge_stash::a_no_op_stash_push_neither_creates_nor_pops_the_users_stash
+        PASS [   0.217s] (159/161) maho-isolation-core::parity merge::same_root_and_nested_delta_twice_does_not_create_spurious_nested_failure
+        PASS [   2.008s] (160/161) maho-isolation-core::parity git_command::input_written_to_a_child_that_dies_before_reading_rejects_instead_of_crashing
+        PASS [   2.009s] (161/161) maho-isolation-core::parity git_command::input_written_to_a_child_whose_survivors_hold_its_pipes_settles_before_the_survivor_exits
+────────────
+     Summary [   2.178s] 161 tests run: 161 passed, 0 skipped

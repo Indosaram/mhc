@@ -5,7 +5,7 @@
 **Branch:** main
 
 ## OVERVIEW
-Rust native port of senpi (maho), MIT-licensed. File-for-file translation preserving senpi ANSI terminal component model, differential renderer, and agent runtime. Config is shared with omo on disk (`~/.omo/agent`, `~/.omo/omo.jsonc`); env vars keep the `MAHO_` prefix (`crates/maho-core/src/brand.rs` `standalone_brand_profile`). User docs: `README.md` (zh), `README.en.md`, `docs/` (cli, configuration, parity), `CONTRIBUTING.md`.
+Rust native port of senpi + oh-my-openagent (maho). File-for-file translation preserving senpi ANSI terminal component model, differential renderer, and agent runtime. Config is shared with omo on disk (`~/.omo/agent`, `~/.omo/omo.jsonc`); env vars keep the `MAHO_` prefix (`crates/maho-core/src/brand.rs` `standalone_brand_profile`). User docs: `README.md` (zh), `README.en.md`, `docs/` (cli, configuration, parity), `CONTRIBUTING.md`.
 
 ## STRUCTURE
 ```
@@ -29,7 +29,14 @@ crates/
 ├── builtins/            # 43 builtin extensions (maho-ext-*)
 ├── extensions/          # 14 native ports of user extensions (see PINS.md)
 ├── vendor/              # maho-grep, maho-pty
-└── desktop/             # senpi-desktop-*: computer-use engine and platform backends
+├── desktop/             # senpi-desktop-*: computer-use engine and platform backends (MIT)
+└── omo/                 # oh-my-openagent port (SUL-1.0)
+    ├── maho-omo/        # omo composition root: registers the components
+    ├── components/      # 33 omo feature components (maho-omo-*: task, memory, lsp, ultrawork, ...)
+    ├── senpi-task/      # Multi-agent DAG workflow runner, supervisor, category dispatch
+    ├── memory-core/     # Git-backed persistent memory filesystem, identity profiles
+    ├── omo-config-core/ # omo.json(c) schema, loader, migrations
+    └── ...              # *-core libraries, boulder-state, get-worker, utils; sibling binaries lsp-daemon, ast-grep-mcp, git-bash-mcp
 tools/                   # parity audit, golden fixtures, packaging, QA drivers (bun)
 assets/                  # omo-latest skill overlay, omo.schema.json, readme images
 ```
@@ -39,9 +46,12 @@ assets/                  # omo-latest skill overlay, omo.schema.json, readme ima
 |------|----------|-------|
 | CLI commands & flags | `crates/maho-cli/` | `src/main.rs` dispatch, `src/cli/help.txt` |
 | Config paths, settings, auth | `crates/maho-core/` | `config.rs`, `brand.rs`, `settings_manager.rs`, `auth_storage.rs` |
+| omo config (agents/categories) | `crates/omo/omo-config-core/` | `loader/paths.rs` resolves `~/.omo/omo.jsonc` + project `.omo/` |
 | Agent loop & harness | `crates/maho-agent/` | Event stream parsing, tool execution |
 | Provider integrations | `crates/maho-ai/` | Anthropic, OpenAI, Bedrock, Gemini |
 | Terminal presentation | `crates/maho-interactive/` | ANSI differential renderer, streaming widgets |
+| Background tasks & DAG | `crates/omo/senpi-task/` | Task supervisor, dependency scheduling |
+| Memory & identity | `crates/omo/memory-core/` | Markdown block store, git auto-commit |
 | Parity ledgers & goldens | `crates/*/parity.d/`, `tools/` | `docs/parity.md`, `tools/PARITY-FORMAT.md` |
 | Packaging | `tools/package-native.mjs` | `--skill-source latest` uses `assets/omo-latest` |
 
@@ -50,7 +60,6 @@ assets/                  # omo-latest skill overlay, omo.schema.json, readme ima
 - Rendering uses senpi's string/ANSI component model and differential renderer (crossterm for raw mode/IO; no ratatui).
 - Workspace lints set `unsafe_code = "forbid"`; a crate that needs unsafe (Win32/FFI) sets `unsafe_code = "deny"` and allows it locally with a SAFETY comment.
 - Native Rust port must not delegate core agent behavior to external JS `omo` CLI.
-- MIT only: never copy, port or paraphrase SUL-1.0 (oh-my-openagent) sources; new features follow the clean-room process in `docs/cleanroom/specs/README.md`.
 - safety/privacy divergences: keep them, see docs/divergences.md.
 
 ## ANTI-PATTERNS (THIS PROJECT)

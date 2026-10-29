@@ -1,0 +1,13 @@
+maho_core_nextest=1090 passed, 0 failed, 0 skipped
+maho_cli_stderr_nextest=406 passed, 0 failed, 0 skipped
+combined_interactive_ask_user_config_nextest=437 passed, 0 failed, 0 skipped
+cli_parity=PASS 141 files
+core_parity=PASS 69 files
+interactive_parity=PASS 29 files
+workspace_metadata=exit 0
+git_submodule_status=exit 0
+home_path_inventory=exit 0; COMP baseline unchanged
+resource_headroom=39 GiB filesystem available; compact target 19 GiB
+stderr_boundary_clippy=pending
+stderr_boundary_build=pending
+installed_surface=pending

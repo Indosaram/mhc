@@ -1,0 +1,445 @@
+    Checking libc v0.2.186
+    Checking memchr v2.8.3
+    Checking log v0.4.34
+    Checking smallvec v1.15.1
+    Checking scopeguard v1.2.0
+    Checking foldhash v0.2.0
+    Checking serde_core v1.0.228
+    Checking getrandom v0.2.17
+    Checking parking_lot_core v0.9.12
+    Checking lock_api v0.4.14
+    Checking typenum v1.20.0
+    Checking parking_lot v0.12.5
+    Checking hashbrown v0.17.1
+    Checking stable_deref_trait v1.2.1
+    Checking generic-array v0.14.7
+    Checking indexmap v2.14.0
+    Checking subtle v2.6.1
+    Checking pin-project-lite v0.2.16
+    Checking rand_core v0.6.4
+    Checking bytes v1.12.1
+    Checking crypto-common v0.1.7
+    Checking errno v0.3.14
+    Checking signal-hook-registry v1.4.8
+    Checking zerofrom v0.1.6
+    Checking num-traits v0.2.19
+    Checking mio v1.2.0
+    Checking serde v1.0.228
+    Checking yoke v0.8.3
+    Checking zerovec v0.11.8
+    Checking socket2 v0.6.3
+    Checking writeable v0.6.4
+    Checking futures-core v0.3.34
+    Checking tokio v1.52.3
+    Checking aho-corasick v1.1.4
+    Checking regex-syntax v0.8.11
+    Checking regex-automata v0.4.18
+    Checking serde_json v1.0.149
+    Checking tinystr v0.8.4
+    Checking litemap v0.8.1
+    Checking cpufeatures v0.2.17
+    Checking simd-adler32 v0.3.8
+    Checking icu_locale_core v2.3.0
+    Checking potential_utf v0.1.4
+    Checking zerotrie v0.2.5
+    Checking block-buffer v0.10.4
+    Checking once_cell v1.21.4
+    Checking digest v0.10.7
+    Checking icu_provider v2.3.1
+    Checking crc32fast v1.5.0
+    Checking futures-sink v0.3.34
+    Checking adler2 v2.0.1
+    Checking zeroize v1.8.2
+    Checking utf8_iter v1.0.4
+    Checking miniz_oxide v0.8.9
+    Checking icu_collections v2.3.0
+    Checking futures-channel v0.3.34
+    Checking slab v0.4.12
+    Checking futures-io v0.3.34
+    Checking futures-task v0.3.34
+    Checking flate2 v1.1.8
+    Checking futures-util v0.3.34
+    Checking getrandom v0.3.4
+    Checking percent-encoding v2.3.2
+    Checking icu_normalizer_data v2.3.0
+    Checking icu_properties_data v2.3.0
+    Checking http v1.4.0
+    Checking bit-vec v0.8.0
+    Checking write16 v1.0.0
+    Checking utf16_iter v1.0.5
+    Checking bit-set v0.8.0
+    Checking icu_normalizer v2.3.0
+    Checking icu_properties v2.3.0
+    Checking thiserror v2.0.18
+    Checking form_urlencoded v1.2.2
+    Checking tracing-core v0.1.36
+    Checking tracing v0.1.44
+    Checking idna_adapter v1.2.1
+    Checking regex v1.12.3
+    Checking iana-time-zone v0.1.65
+    Checking ryu v1.0.22
+    Checking chrono v0.4.43
+    Checking idna v1.1.0
+    Checking http-body v1.0.1
+    Checking rustls-pki-types v1.14.0
+    Checking sha2 v0.10.9
+    Checking option-ext v0.2.0
+    Checking hex v0.4.3
+    Checking dirs-sys v0.5.0
+    Checking url v2.5.8
+    Checking httparse v1.10.1
+    Checking aws-lc-sys v0.45.0
+    Checking fancy-regex v0.16.2
+    Checking uuid v1.20.0
+    Checking untrusted v0.9.0
+    Checking fnv v1.0.7
+    Checking tower-service v0.3.3
+    Checking ring v0.17.14
+    Checking aws-lc-rs v1.18.1
+    Checking dirs v6.0.0
+    Checking tokio-util v0.7.18
+    Checking unsafe-libyaml v0.2.11
+    Checking atomic-waker v1.1.2
+    Checking try-lock v0.2.5
+    Checking h2 v0.4.19
+    Checking want v0.3.1
+    Checking serde_yaml v0.9.34+deprecated
+    Checking rustls-webpki v0.103.15
+    Checking sync_wrapper v1.0.2
+    Checking httpdate v1.0.3
+    Checking pin-utils v0.1.0
+    Checking jiff v0.2.23
+    Checking tower-layer v0.3.3
+    Checking hyper v1.8.1
+    Checking rustls v0.23.45
+    Checking ipnet v2.11.0
+    Checking bytemuck v1.25.2
+    Checking base64 v0.22.1
+    Checking hyper-util v0.1.20
+    Checking crossbeam-utils v0.8.23
+    Checking tower v0.5.3
+    Checking http-body-util v0.1.3
+    Checking tinyvec_macros v0.1.1
+    Checking weezl v0.1.12
+    Checking tinyvec v1.10.0
+    Checking crossbeam-epoch v0.9.21
+    Checking tokio-rustls v0.26.4
+    Checking derive_more v2.1.1
+    Checking webpki-roots v1.0.5
+    Checking futures-executor v0.3.34
+    Checking fdeflate v0.3.7
+    Checking bstr v1.13.1
+    Checking color_quant v1.1.0
+    Checking same-file v1.0.6
+    Checking iri-string v0.7.10
+    Checking linux-raw-sys v0.12.1
+    Checking rustix v1.1.4
+    Checking tower-http v0.6.8
+    Checking walkdir v2.5.0
+    Checking futures v0.3.34
+    Checking hyper-rustls v0.27.7
+    Checking crossbeam-deque v0.8.8
+    Checking unicode-normalization v0.1.25
+    Checking unicode-general-category v1.1.0
+    Checking serde_urlencoded v0.7.1
+    Checking either v1.18.0
+    Checking thiserror v1.0.69
+    Checking multiversion v0.9.0
+    Checking zstd-sys v2.1.0+zstd.1.5.7
+    Checking tree-sitter-language v0.1.8
+    Checking anyhow v1.0.104
+    Checking simdutf8 v0.1.5
+    Checking unicode-segmentation v1.13.3
+    Checking core_detect v1.0.0
+    Checking minimal-lexical v0.2.1
+    Checking encoding_rs v0.8.41
+    Checking nom v7.1.3
+    Checking zstd-safe v7.3.0
+    Checking icu_locale_fallback_data v2.3.0
+   Compiling maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+    Checking reqwest v0.12.28
+    Checking globset v0.4.20
+    Checking grep-matcher v0.1.9
+    Checking ignore v0.4.33
+    Checking icu_locale_fallback v2.3.0
+    Checking nix v0.28.0
+    Checking zstd v0.13.3
+    Checking eventsource-stream v0.2.3
+    Checking rayon-core v1.13.0
+    Checking signal-hook v0.3.18
+    Checking encoding_rs_io v0.1.8
+    Checking filedescriptor v0.8.3
+    Checking prost v0.14.4
+    Checking serial2 v0.2.37
+    Checking memmap2 v0.9.11
+    Checking quick-error v2.0.1
+    Checking shell-words v1.1.1
+    Checking byteorder-lite v0.1.0
+    Checking unicode-width v0.2.1
+    Checking downcast-rs v1.2.1
+    Checking zune-core v0.5.3
+    Checking pxfm v0.1.30
+    Checking streaming-iterator v0.1.9
+    Checking tree-sitter v0.25.10
+    Checking zune-jpeg v0.5.15
+    Checking portable-pty v0.9.0
+    Checking image-webp v0.2.4
+    Checking moxcms v0.8.1
+    Checking grep-searcher v0.1.17
+    Checking signal-hook-mio v0.2.5
+    Checking rayon v1.12.0
+    Checking tree-sitter-javascript v0.25.0
+    Checking tree-sitter-typescript v0.23.2
+    Checking icu_segmenter_data v2.3.0
+    Checking getrandom v0.4.2
+    Checking grep-regex v0.1.14
+    Checking gif v0.14.2
+    Checking png v0.18.1
+    Checking tempfile v3.27.0
+    Checking image v0.25.10
+    Checking maho-grep v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/vendor/maho-grep)
+    Checking icu_segmenter v2.3.0
+    Checking crossterm v0.29.0
+    Checking maho-pty v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/vendor/maho-pty)
+    Checking maho-tui v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tui)
+    Checking semver v1.0.27
+    Checking icu_collator_data v2.3.0
+    Checking icu_collator v2.3.1
+    Checking powerfmt v0.2.0
+    Checking num-conv v0.2.2
+    Checking time-core v0.1.9
+    Checking deranged v0.5.8
+    Checking time v0.3.55
+    Checking maho-omo-config-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/omo-config-core)
+    Checking libsqlite3-sys v0.38.2
+    Checking hashlink v0.12.2
+    Checking quick-xml v0.42.0
+    Checking base64 v0.23.1
+    Checking fallible-streaming-iterator v0.1.9
+    Checking linked-hash-map v0.5.6
+    Checking fallible-iterator v0.3.0
+    Checking rusqlite v0.40.2
+    Checking yaml-rust v0.4.5
+    Checking plist v1.10.1
+    Checking bincode v1.3.3
+    Checking siphasher v1.0.4
+    Checking syntect v5.3.0
+    Checking maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+    Checking maho-utils v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/utils)
+    Checking phf_shared v0.13.1
+    Checking phf v0.13.1
+    Checking sha1 v0.10.6
+    Checking new_debug_unreachable v1.0.6
+    Checking zerocopy v0.8.37
+    Checking precomputed-hash v0.1.1
+    Checking ppv-lite86 v0.2.21
+    Checking maho-model-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/model-core)
+    Checking regress v0.12.0
+    Checking maho-memory-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/memory-core)
+    Checking maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+    Checking maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+    Checking string_cache v0.9.0
+    Checking maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+    Checking maho-ext-ask-user v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-ask-user)
+    Checking maho-tmux-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/tmux-core)
+    Checking maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+    Checking maho-omo-config-resolution v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-resolution)
+    Checking filetime v0.2.27
+    Checking dtoa v1.0.11
+    Checking dtoa-short v0.3.5
+    Checking maho-isolation-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/isolation-core)
+    Checking maho-team-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/team-core)
+    Checking web_atoms v0.2.6
+    Checking maho-delegate-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/delegate-core)
+    Checking tendril v0.5.1
+    Checking maho-senpi-task v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/senpi-task)
+    Checking maho-rpc v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-rpc)
+    Checking rand_core v0.9.5
+    Checking num-integer v0.1.47
+    Checking servo_arc v0.4.3
+    Checking rustc-hash v2.1.1
+    Checking rand_chacha v0.9.0
+    Checking getrandom v0.1.16
+    Checking const-oid v0.9.6
+    Checking der v0.7.10
+    Checking rand_core v0.5.1
+    Checking rand v0.9.3
+    Checking maho-interactive v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-interactive)
+    Checking inotify-sys v0.1.8
+    Checking num-bigint v0.4.8
+    Checking safe_arch v0.7.4
+    Checking maho-mcp-stdio-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/mcp-stdio-core)
+    Checking approx v0.5.1
+    Checking num-complex v0.4.6
+    Checking inout v0.1.4
+    Checking openssl-probe v0.2.1
+    Checking rustls-native-certs v0.8.4
+    Checking cssparser v0.37.0
+    Checking cipher v0.4.4
+    Checking maho-lsp-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-core)
+    Checking wide v0.7.33
+    Checking maho-ext-gpt-apply-patch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-gpt-apply-patch)
+    Checking maho-ext-builtin-loose v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-builtin-loose)
+    Checking num-rational v0.4.2
+    Checking inotify v0.11.5
+    Checking rand_chacha v0.2.2
+    Checking spki v0.7.3
+    Checking markup5ever v0.39.0
+    Checking maho-omo-ultrawork v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-ultrawork)
+    Checking gethostname v1.1.0
+    Checking notify-types v2.1.0
+    Checking universal-hash v0.5.1
+    Checking mime v0.3.17
+    Checking jpeg-decoder v0.3.2
+    Checking bitflags v1.3.2
+    Checking opaque-debug v0.3.1
+    Checking ttf-parser v0.15.2
+    Checking maho-omo-agent-home v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-agent-home)
+    Checking rawpointer v0.2.1
+    Checking sys-locale v0.3.2
+    Checking maho-telemetry-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/telemetry-core)
+    Checking matrixmultiply v0.3.11
+    Checking tiff v0.9.1
+    Checking owned_ttf_parser v0.15.2
+    Checking polyval v0.6.2
+    Checking png v0.17.16
+    Checking axum-core v0.5.6
+    Checking cssparser v0.36.0
+    Checking notify v8.2.0
+    Checking html5ever v0.39.0
+    Checking rand v0.7.3
+    Checking simba v0.7.3
+    Checking pkcs8 v0.10.2
+    Checking selectors v0.38.0
+    Checking maho-lsp-daemon v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-daemon)
+    Checking rustls-platform-verifier v0.6.2
+    Checking num-iter v0.1.46
+    Checking maho-omo-fallback-architect v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-fallback-architect)
+    Checking markup5ever v0.38.0
+    Checking phf_shared v0.11.3
+    Checking gif v0.13.3
+    Checking maho-boulder-state v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/boulder-state)
+    Checking serde_path_to_error v0.1.20
+    Checking nom v8.0.0
+    Checking custom_derive v0.1.7
+    Checking bumpalo v3.19.1
+    Checking data-encoding v2.11.1
+    Checking signature v2.2.0
+    Checking matchit v0.8.4
+    Checking arrayvec v0.7.8
+    Checking ab_glyph_rasterizer v0.1.10
+    Checking byteorder v1.5.0
+    Checking utf-8 v0.7.6
+    Checking tungstenite v0.28.0
+    Checking dom_query v0.28.0
+    Checking image v0.24.9
+    Checking rusttype v0.9.3
+    Checking vte v0.15.0
+    Checking axum v0.8.9
+    Checking ed25519 v2.2.3
+    Checking zopfli v0.8.3
+    Checking conv v0.3.3
+    Checking curve25519-dalek v4.1.3
+    Checking maho-omo-start-work-continuation v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-start-work-continuation)
+    Checking nalgebra v0.30.1
+    Checking phf v0.11.3
+    Checking html5ever v0.38.0
+    Checking num v0.4.3
+    Checking reqwest v0.13.2
+    Checking maho-omo-lsp v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-lsp)
+    Checking rand_distr v0.2.2
+    Checking selectors v0.36.1
+    Checking ghash v0.5.1
+    Checking maho-omo-telemetry v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-telemetry)
+    Checking maho-ext-tool-search v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-tool-search)
+    Checking maho-ext-todotools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-todotools)
+    Checking aes v0.8.4
+    Checking ctr v0.9.2
+    Checking maho-omo-bundled-skills v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-bundled-skills)
+    Checking maho-omo-onboarding v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-onboarding)
+    Checking maho-comment-checker-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/comment-checker-core)
+    Checking maho-config-migration v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/config-migration)
+    Checking itertools v0.10.5
+    Checking hmac v0.12.1
+    Checking aead v0.5.2
+    Checking html-escape v0.2.15
+    Checking gjson v0.8.1
+    Checking flagset v0.4.7
+    Checking imageproc v0.23.1
+    Checking dom_smoothie v0.18.2
+    Checking aes-gcm v0.10.3
+    Checking hkdf v0.12.4
+    Checking maho-omo-comment-checker v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-comment-checker)
+    Checking maho-omo-config-startup v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-startup)
+    Checking maho-omo-skill-commands v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-skill-commands)
+    Checking maho-omo-init-deep-advisor v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-init-deep-advisor)
+    Checking maho-ext-goal v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-goal)
+    Checking maho-ext-mcp v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-mcp)
+    Checking dom_query v0.27.0
+    Checking maho-omo-task v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-task)
+    Checking palette v0.6.1
+    Checking ed25519-dalek v2.2.0
+    Checking maho-omo-ulw-loop v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-ulw-loop)
+    Checking zip v2.4.2
+    Checking vt100 v0.16.2
+    Checking tokio-tungstenite v0.28.0
+    Checking maho-omo-memory v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-memory)
+    Checking maho-omo-config-watch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-watch)
+    Checking maho-omo-todo-fanout-reminder v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-todo-fanout-reminder)
+    Checking maho-ext-anthropic-subscription v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-anthropic-subscription)
+    Checking maho-ext-compaction v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-compaction)
+    Checking maho-omo-model-profile v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-model-profile)
+    Checking maho-omo-git-master v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-git-master)
+    Checking maho-omo-native-badge v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-native-badge)
+    Checking maho-omo-mass-ulw v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-mass-ulw)
+    Checking maho-ext-rule-activation v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-rule-activation)
+    Checking maho-omo-ast-grep v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-ast-grep)
+    Checking maho-ext-anthropic-bash v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-anthropic-bash)
+    Checking maho-omo-builtin-mcps v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-builtin-mcps)
+    Checking maho-ext-imagegen v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-imagegen)
+    Checking instant v0.1.13
+    Checking perlin2d v0.2.6
+    Checking base64 v0.13.1
+    Checking maho-omo v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/maho-omo)
+    Checking photon-rs v0.3.3
+    Checking maho-ext-openai-image-gen v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-openai-image-gen)
+    Checking maho-ext-bash-timeout v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-bash-timeout)
+    Checking maho-ext-rules v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-rules)
+    Checking maho-ext-btw v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-btw)
+    Checking maho-ext-cursor-cli-oauth v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-cursor-cli-oauth)
+    Checking maho-server v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-server)
+    Checking maho-ext-pi-ast-grep v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-pi-ast-grep)
+    Checking maho-ext-terminal v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-terminal)
+    Checking maho-ext-omo-zcode-oauth v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-omo-zcode-oauth)
+    Checking maho-ext-webfetch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-webfetch)
+    Checking maho-ext-pi-webfetch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-pi-webfetch)
+    Checking maho-ext-websearch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-websearch)
+    Checking maho-ext-config-reload v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-config-reload)
+    Checking maho-ext-herdr v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-herdr)
+    Checking maho-ext-account v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-account)
+    Checking maho-ext-permission-system v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-permission-system)
+    Checking maho-ext-help v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-help)
+    Checking maho-ext-look-at v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-look-at)
+    Checking maho-ext-history-search v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-history-search)
+    Checking maho-ext-llama v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-llama)
+    Checking maho-ext-herdr-agent-state v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-herdr-agent-state)
+    Checking maho-ext-loop v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-loop)
+    Checking maho-ext-model-fallback v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-model-fallback)
+    Checking maho-ext-prompt-preset v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-prompt-preset)
+    Checking maho-ext-cache-keepalive v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-cache-keepalive)
+    Checking maho-ext-recommended-models v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-recommended-models)
+    Checking maho-ext-hooks v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-hooks)
+    Checking maho-codemode v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-codemode)
+    Checking maho-ext-loop-guard v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-loop-guard)
+    Checking maho-ext-video-in v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-video-in)
+    Checking maho-ext-orca-titlebar-spinner v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-orca-titlebar-spinner)
+    Checking maho-ext-pi-nested-agents-md v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-pi-nested-agents-md)
+    Checking maho-ext-orca-agent-status v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-orca-agent-status)
+    Checking maho-ext-anthropic-web-search v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-anthropic-web-search)
+    Checking maho-ext-ttsr v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-ttsr)
+    Checking maho-ext-ferryx-agent-state v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-ferryx-agent-state)
+    Checking maho-ext-nested-agents-md v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-nested-agents-md)
+    Checking maho-ext-openai-web-search v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-openai-web-search)
+    Checking maho-ext-tool-pair-guard v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-tool-pair-guard)
+    Checking maho-cli v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-cli)
+    Finished `dev` profile [unoptimized] target(s) in 2m 31s

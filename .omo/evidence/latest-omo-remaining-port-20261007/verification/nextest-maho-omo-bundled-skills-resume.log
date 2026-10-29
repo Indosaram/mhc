@@ -1,0 +1,31 @@
+   Compiling reqwest v0.12.28
+   Compiling chrono v0.4.43
+   Compiling maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+   Compiling maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+   Compiling maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+   Compiling maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+   Compiling maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+   Compiling maho-omo-bundled-skills v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-bundled-skills)
+    Finished `test` profile [unoptimized] target(s) in 36.59s
+────────────
+ Nextest run ID ff17178c-3641-4795-b71c-d16a6efc7783 with nextest profile: default
+    Starting 17 tests across 3 binaries
+        PASS [   0.005s] ( 1/17) maho-omo-bundled-skills::contributed_skill given_a_discover_event_when_the_cwd_is_read_then_a_set_cwd_is_returned_and_an_empty_one_is_absent
+        PASS [   0.006s] ( 2/17) maho-omo-bundled-skills::resources_discover given_a_set_env_skills_root_that_is_missing_when_resolved_then_it_stays_authoritative_over_a_packaged_candidate
+        PASS [   0.006s] ( 3/17) maho-omo-bundled-skills::contributed_skill given_our_own_copy_is_already_loaded_when_resolved_then_it_stays_contributed
+        PASS [   0.006s] ( 4/17) maho-omo-bundled-skills::contributed_skill given_disabled_skills_hides_the_name_when_resolved_then_the_skill_is_disabled
+        PASS [   0.007s] ( 5/17) maho-omo-bundled-skills::contributed_skill given_a_loaded_skill_command_without_a_source_path_when_resolved_then_it_yields_without_an_owner
+        PASS [   0.007s] ( 6/17) maho-omo-bundled-skills::resources_discover given_a_bundled_skills_directory_when_discovery_runs_then_every_skill_md_is_contributed_with_system_scope
+        PASS [   0.007s] ( 7/17) maho-omo-bundled-skills::contributed_skill given_a_same_name_skill_is_loaded_from_elsewhere_when_resolved_then_it_yields_the_owner_path
+        PASS [   0.008s] ( 8/17) maho-omo-bundled-skills::resources_discover given_a_missing_skills_directory_when_discovery_runs_then_nothing_is_contributed_and_the_error_is_reported
+        PASS [   0.008s] ( 9/17) maho-omo-bundled-skills::contributed_skill given_a_host_command_when_mapped_then_name_description_source_and_path_are_carried
+        PASS [   0.008s] (10/17) maho-omo-bundled-skills::contributed_skill given_a_host_without_get_commands_when_resolved_then_the_skill_is_contributed
+        PASS [   0.009s] (11/17) maho-omo-bundled-skills::resources_discover given_an_edited_denylist_when_a_reload_discovers_again_then_the_new_config_is_read
+        PASS [   0.005s] (12/17) maho-omo-bundled-skills::resources_discover given_an_env_skills_root_when_it_exists_then_it_outranks_the_packaged_candidates
+        PASS [   0.005s] (13/17) maho-omo-bundled-skills::resources_discover given_only_the_dev_copy_when_the_skills_root_resolves_then_it_is_used
+        PASS [   0.005s] (14/17) maho-omo-bundled-skills::resources_discover given_no_candidate_exists_when_the_skills_root_resolves_then_it_is_absent
+        PASS [   0.004s] (15/17) maho-omo-bundled-skills::resources_discover given_packaged_and_source_copies_when_the_skills_root_resolves_then_the_packaged_copy_wins
+        PASS [   0.007s] (16/17) maho-omo-bundled-skills::resources_discover given_disabled_skills_names_a_bundled_skill_when_discovery_runs_then_it_is_absent_and_reported
+        PASS [   0.015s] (17/17) maho-omo-bundled-skills::contributed_skill given_no_skill_command_for_the_name_when_resolved_then_the_skill_is_contributed
+────────────
+     Summary [   0.016s] 17 tests run: 17 passed, 0 skipped

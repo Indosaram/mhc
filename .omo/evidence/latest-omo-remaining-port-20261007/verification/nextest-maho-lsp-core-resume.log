@@ -1,0 +1,139 @@
+   Compiling syn v3.0.3
+   Compiling futures-core v0.3.34
+   Compiling futures-sink v0.3.34
+   Compiling futures-channel v0.3.34
+   Compiling slab v0.4.12
+   Compiling form_urlencoded v1.2.2
+   Compiling serde_json v1.0.149
+   Compiling tokio v1.52.3
+   Compiling zerovec-derive v0.11.6
+   Compiling zerovec v0.11.8
+   Compiling tinystr v0.8.4
+   Compiling icu_locale_core v2.3.0
+   Compiling potential_utf v0.1.4
+   Compiling icu_provider v2.3.1
+   Compiling icu_collections v2.3.0
+   Compiling futures-macro v0.3.34
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling futures-util v0.3.34
+   Compiling idna_adapter v1.2.1
+   Compiling idna v1.1.0
+   Compiling url v2.5.8
+   Compiling maho-mcp-stdio-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/mcp-stdio-core)
+   Compiling futures-executor v0.3.34
+   Compiling futures v0.3.34
+   Compiling maho-lsp-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-core)
+    Finished `test` profile [unoptimized] target(s) in 12.03s
+────────────
+ Nextest run ID ed93481f-b327-4f19-add6-c6002dd849d6 with nextest profile: default
+    Starting 107 tests across 7 binaries
+        PASS [   0.005s] (  1/107) maho-lsp-core lsp::cleanup_errors::tests::injected_logger_receives_normal_diagnostic_without_environment_gate
+        PASS [   0.006s] (  2/107) maho-lsp-core lsp::client_wrapper::tests::relative_file_inside_cwd_resolves_marker_workspace_inside_cwd
+        PASS [   0.006s] (  3/107) maho-lsp-core lsp::client_wrapper::tests::absolute_alias_path_through_outside_symlink_preserves_lexical_suffix
+        PASS [   0.006s] (  4/107) maho-lsp-core lsp::json_rpc_connection::tests::dispose_rejects_pending_requests
+        PASS [   0.006s] (  5/107) maho-lsp-core lsp::directory_diagnostics::tests::abort_after_first_file_schedules_no_later_file
+        PASS [   0.008s] (  6/107) maho-lsp-core lsp::client_wrapper::tests::missing_parent_directories_without_markers_use_existing_directory
+        PASS [   0.009s] (  7/107) maho-lsp-core lsp::directory_diagnostics::tests::bounded_concurrency_keeps_file_failures_structured
+        PASS [   0.009s] (  8/107) maho-lsp-core lsp::directory_diagnostics::tests::aborting_cold_acquisition_settles_and_cleans_up_before_startup_releases
+        PASS [   0.009s] (  9/107) maho-lsp-core lsp::json_rpc_connection::tests::given_active_request_when_signal_aborts_then_cancel_uses_same_id_and_late_responses_are_ignored
+        PASS [   0.009s] ( 10/107) maho-lsp-core lsp::client_wrapper::tests::rename_through_outside_symlink_rejects_before_client_acquisition
+        PASS [   0.009s] ( 11/107) maho-lsp-core lsp::client_wrapper::tests::symlink_inside_cwd_pointing_outside_keeps_lexical_read_path_and_cwd_root
+        PASS [   0.006s] ( 12/107) maho-lsp-core lsp::json_rpc_connection::tests::unknown_server_request_gets_method_not_found_and_error_responses_carry_the_code
+        PASS [   0.006s] ( 13/107) maho-lsp-core lsp::process::tests::spawn_process_rejects_invalid_cwd
+        PASS [   0.006s] ( 14/107) maho-lsp-core lsp::process::tests::validate_cwd_reports_missing_and_non_directory_paths
+        PASS [   0.014s] ( 15/107) maho-lsp-core lsp::client_wrapper::tests::absolute_file_outside_cwd_rejects_before_workspace_inference
+        PASS [   0.008s] ( 16/107) maho-lsp-core lsp::process::tests::create_spawn_command_passes_unix_commands_through_and_wraps_windows_shims
+        PASS [   0.005s] ( 17/107) maho-lsp-core lsp::utils::tests::rust_analyzer_sysroot_error_returns_repair_guidance_via_missing_dependency
+        PASS [   0.010s] ( 18/107) maho-lsp-core lsp::process_signal_cleanup::tests::terminate_signal_runs_cleanup_until_guard_is_dropped
+        PASS [   0.008s] ( 19/107) maho-lsp-core lsp::workspace_document_state::tests::given_more_closed_file_mutations_than_one_batch_when_synchronized_then_every_notification_stays_bounded
+        PASS [   0.010s] ( 20/107) maho-lsp-core lsp::utils::tests::rust_src_component_conflict_returns_repair_guidance
+        PASS [   0.008s] ( 21/107) maho-lsp-core lsp::workspace_edit::tests::adversarial_annotations_and_mixed_representations_are_rejected
+        PASS [   0.010s] ( 22/107) maho-lsp-core lsp::workspace_document_state::tests::given_changed_closed_files_when_synchronized_then_sends_bounded_changed_watched_file_notifications
+        PASS [   0.007s] ( 23/107) maho-lsp-core lsp::workspace_edit::tests::adversarial_invalid_ranges_and_options_retain_operation_index
+        PASS [   0.012s] ( 24/107) maho-lsp-core lsp::utils::tests::existing_dependency_messages_are_preserved
+        PASS [   0.008s] ( 25/107) maho-lsp-core lsp::workspace_edit::tests::adversarial_malformed_and_decorated_uris_are_rejected
+        PASS [   0.007s] ( 26/107) maho-lsp-core lsp::workspace_edit::tests::adversarial_symlink_to_outside_file_is_rejected
+        PASS [   0.013s] ( 27/107) maho-lsp-core lsp::utils::tests::unrelated_process_exits_return_none
+        PASS [   0.009s] ( 28/107) maho-lsp-core lsp::workspace_edit::tests::adversarial_outside_target_touches_nothing
+        PASS [   0.008s] ( 29/107) maho-lsp-core lsp::workspace_edit::tests::characterization_empty_edit_is_successful_noop
+        PASS [   0.006s] ( 30/107) maho-lsp-core lsp::workspace_edit::tests::characterization_valid_text_edit_result_is_compatible
+        PASS [   0.008s] ( 31/107) maho-lsp-core lsp::workspace_edit::tests::characterization_missing_edit_failure_is_explicit
+        PASS [   0.006s] ( 32/107) maho-lsp-core lsp::workspace_edit::tests::commit_injected_write_failure_reports_real_io_failure
+        PASS [   0.006s] ( 33/107) maho-lsp-core lsp::workspace_edit::tests::commit_repeated_pre_gate_interruptions_leave_snapshot_untouched
+        PASS [   0.006s] ( 34/107) maho-lsp-core lsp::workspace_edit::tests::commit_stale_file_snapshot_preserves_newer_bytes
+        PASS [   0.008s] ( 35/107) maho-lsp-core lsp::workspace_edit::tests::commit_cancellation_before_commit_mutates_nothing
+        PASS [   0.006s] ( 36/107) maho-lsp-core lsp::workspace_edit::tests::options_create_ignore_if_exists_preserves_bytes
+        PASS [   0.008s] ( 37/107) maho-lsp-core lsp::workspace_edit::tests::commit_cancellation_after_first_write_finishes_all_operations_once
+        PASS [   0.011s] ( 38/107) maho-lsp-core lsp::workspace_edit::tests::characterization_resource_rename_reports_destination
+        PASS [   0.009s] ( 39/107) maho-lsp-core lsp::workspace_edit::tests::contract_evidence_concurrent_outcomes_share_canonical_hash
+        PASS [   0.006s] ( 40/107) maho-lsp-core lsp::workspace_edit::tests::options_recursive_delete_removes_subtree
+        PASS [   0.007s] ( 41/107) maho-lsp-core lsp::workspace_edit::tests::options_delete_ignore_if_not_exists_is_noop
+        PASS [   0.010s] ( 42/107) maho-lsp-core lsp::workspace_edit::tests::contract_evidence_sanitizes_paths_and_preserves_other_reasons
+        PASS [   0.007s] ( 43/107) maho-lsp-core lsp::workspace_edit::tests::options_rename_overwrite_replaces_destination
+        PASS [   0.007s] ( 44/107) maho-lsp-core lsp::workspace_edit::tests::prevalidation_create_then_invalid_edit_creates_nothing
+        PASS [   0.006s] ( 45/107) maho-lsp-core lsp::workspace_edit::tests::prevalidation_range_beyond_snapshot_fails_without_mutation
+        PASS [   0.006s] ( 46/107) maho-lsp-core mcp::tests::initialize_response_keeps_exact_server_info_and_capabilities
+        PASS [   0.010s] ( 47/107) maho-lsp-core lsp::workspace_edit::tests::options_rename_ignore_if_exists_preserves_both
+        PASS [   0.008s] ( 48/107) maho-lsp-core lsp::workspace_edit::tests::prevalidation_identical_non_empty_edits_commit_once
+        PASS [   0.008s] ( 49/107) maho-lsp-core lsp::workspace_edit::tests::prevalidation_overlap_blocks_all_files
+        PASS [   0.010s] ( 50/107) maho-lsp-core lsp::workspace_edit::tests::prevalidation_rename_then_edit_uses_virtual_state
+        PASS [   0.006s] ( 51/107) maho-lsp-core missing_dependency_result::tests::not_configured_lookup_includes_structured_availability_and_typed_config_paths
+        PASS [   0.012s] ( 52/107) maho-lsp-core lsp::workspace_edit::tests::prevalidation_equal_position_insertions_keep_declared_order
+        PASS [   0.007s] ( 53/107) maho-lsp-core post_edit::orchestration::tests::duplicate_paths_are_processed_once_and_blocks_stay_ordered
+        PASS [   0.011s] ( 54/107) maho-lsp-core missing_dependency_result::tests::not_installed_lookup_includes_install_decision_availability
+        PASS [   0.009s] ( 55/107) maho-lsp-core post_edit::orchestration::tests::only_structured_not_configured_is_cached_until_reset
+        PASS [   0.010s] ( 56/107) maho-lsp-core post_edit::orchestration::tests::concurrency_is_bounded_to_four_and_failures_isolate
+        PASS [   0.009s] ( 57/107) maho-lsp-core post_edit::orchestration::tests::non_not_configured_failures_always_retry
+        PASS [   0.006s] ( 58/107) maho-lsp-core request_context::tests::exact_typed_context_canonicalizes_cwd_and_preserves_typed_paths
+        PASS [   0.014s] ( 59/107) maho-lsp-core mcp::tests::protocol_dispatch_covers_invalid_ping_notification_list_and_unknown_method
+        PASS [   0.006s] ( 60/107) maho-lsp-core request_context::tests::no_active_context_returns_typed_unavailable_error
+        PASS [   0.014s] ( 61/107) maho-lsp-core mcp::tests::malformed_stdio_line_yields_parse_error_with_parser_data
+        PASS [   0.009s] ( 62/107) maho-lsp-core post_edit::orchestration::tests::rendered_not_configured_text_is_not_cached
+        PASS [   0.007s] ( 63/107) maho-lsp-core request_context::tests::missing_standard_project_config_inside_cwd_is_accepted_with_intended_suffix
+        PASS [   0.010s] ( 64/107) maho-lsp-core request_context::tests::equivalent_macos_var_spelling_canonicalizes_to_one_identity
+        PASS [   0.007s] ( 65/107) maho-lsp-core request_context::tests::project_path_outside_cwd_rejects_before_config_loading
+        PASS [   0.007s] ( 66/107) maho-lsp-core request_context::tests::symlink_project_config_escaping_cwd_is_rejected
+        PASS [   0.008s] ( 67/107) maho-lsp-core request_context::tests::standalone_mcp_env_resolves_exact_defaults_and_relative_paths
+        PASS [   0.006s] ( 68/107) maho-lsp-core tools::tests::public_eight_tool_schemas_are_pinned_in_order
+        PASS [   0.006s] ( 69/107) maho-lsp-core tools::tests::non_object_tool_arguments_coerce_to_empty_record
+        PASS [   0.007s] ( 70/107) maho-lsp-core tools::tests::install_decision_rejects_invalid_decision_before_touching_state
+        PASS [   0.008s] ( 71/107) maho-lsp-core tools::tests::directory_without_source_files_reports_no_files
+        PASS [   0.009s] ( 72/107) maho-lsp-core tools::tests::legacy_aliases_are_callable_but_not_listed
+        PASS [   0.008s] ( 73/107) maho-lsp-core tools::tests::unknown_tool_and_missing_parameters_reject_with_exact_messages
+        PASS [   0.010s] ( 74/107) maho-lsp-core request_context::tests::unknown_field_rejects_before_lookup
+        PASS [   0.008s] ( 75/107) maho-lsp-core tools::tests::workspace_symbols_without_query_reports_missing_query_without_error_flag
+        PASS [   0.013s] ( 76/107) maho-lsp-core::client_diagnostics_concurrency concurrent_cold_diagnostics_open_once_and_both_receive_current_publish
+        PASS [   0.009s] ( 77/107) maho-lsp-core::client_diagnostics_freshness unchanged_pull_report_for_same_result_id_reuses_cached_items
+        PASS [   0.008s] ( 78/107) maho-lsp-core::workspace_apply_edit different_rename_result_reports_conflict_without_second_mutation
+        PASS [   0.007s] ( 79/107) maho-lsp-core::workspace_apply_edit mismatched_document_version_rejects_mutation_truthfully
+        PASS [   0.008s] ( 80/107) maho-lsp-core::workspace_apply_edit real_commit_io_failure_reports_failure_in_protocol_and_rename_result
+        PASS [   0.008s] ( 81/107) maho-lsp-core::workspace_apply_edit server_applied_edit_returned_again_by_rename_reuses_one_write
+        PASS [   0.031s] ( 82/107) maho-lsp-core::client_diagnostics_freshness post_change_versionless_publish_waits_for_quiescence_and_is_returned
+        PASS [   0.008s] ( 83/107) maho-lsp-core::workspace_apply_edit server_applied_edit_with_null_rename_result_reuses_recorded_result
+        PASS [   0.009s] ( 84/107) maho-lsp-core::workspace_apply_edit two_versioned_server_edits_apply_sequentially_with_synchronized_version
+        PASS [   0.008s] ( 85/107) maho-lsp-core::workspace_apply_edit_lease cancellation_after_commit_gate_reports_one_late_abort_mutation
+        PASS [   0.008s] ( 86/107) maho-lsp-core::workspace_apply_edit_lease concurrent_server_applies_commit_once_and_reject_the_other
+        PASS [   0.007s] ( 87/107) maho-lsp-core::workspace_apply_edit_lease direct_rename_edit_without_server_apply_is_applied_once
+        PASS [   0.010s] ( 88/107) maho-lsp-core::workspace_apply_edit_lease lease_backed_and_bare_clients_advertise_apply_edit_honestly
+        PASS [   0.030s] ( 89/107) maho-lsp-core::workspace_apply_edit_lease cancellation_before_delayed_server_apply_mutates_nothing
+        PASS [   0.008s] ( 90/107) maho-lsp-core::workspace_apply_edit_lease repeated_server_apply_is_rejected_as_already_handled
+        PASS [   0.071s] ( 91/107) maho-lsp-core::client_diagnostics_freshness never_publishing_push_server_resolves_clean_after_full_freshness_window
+        PASS [   0.007s] ( 92/107) maho-lsp-core::workspace_apply_edit_sync closed_edited_file_emits_one_changed_watched_file_event
+        PASS [   0.071s] ( 93/107) maho-lsp-core::client_diagnostics_freshness timed_out_pull_request_sends_cancel_for_its_request_id
+        PASS [   0.008s] ( 94/107) maho-lsp-core::workspace_apply_edit_sync new_closed_file_create_emits_one_created_watched_file_event
+        PASS [   0.008s] ( 95/107) maho-lsp-core::workspace_apply_edit_sync open_edited_document_sends_did_change_before_did_save_with_next_version
+        PASS [   0.018s] ( 96/107) maho-lsp-core::workspace_apply_edit_lease unscoped_server_apply_edit_is_rejected
+        PASS [   0.007s] ( 97/107) maho-lsp-core::workspace_apply_edit_sync open_file_deletion_closes_document_state
+        PASS [   0.008s] ( 98/107) maho-lsp-core::workspace_apply_edit_sync open_file_overwritten_by_create_resets_state_via_close_and_open
+        PASS [   0.007s] ( 99/107) maho-lsp-core::workspace_apply_edit_sync open_file_resource_rename_moves_document_state
+        PASS [   0.158s] (100/107) maho-lsp-core::workspace_apply_edit_lease held_rename_lease_rejects_second_rename_without_request
+        PASS [   0.212s] (101/107) maho-lsp-core::client_diagnostics_freshness pull_overtaken_by_local_change_restarts_and_resolves_current_version
+        PASS [   0.238s] (102/107) maho-lsp-core::client_diagnostics_freshness stale_and_future_publish_versions_do_not_satisfy_current_version
+        PASS [   0.317s] (103/107) maho-lsp-core::client_diagnostics_freshness pre_generation_versionless_publish_is_ignored_for_newer_version
+        PASS [   0.511s] (104/107) maho-lsp-core::client_diagnostics_freshness explicitly_unsupported_pull_falls_back_to_matching_push_publish
+        PASS [   0.511s] (105/107) maho-lsp-core::client_diagnostics_freshness pull_server_closing_instead_of_answering_is_not_reported_clean
+        PASS [   0.509s] (106/107) maho-lsp-core::client_diagnostics_freshness unsupported_later_pull_on_unchanged_document_returns_current_cached_pull
+        PASS [   0.512s] (107/107) maho-lsp-core::client_diagnostics_freshness unsupported_later_pull_after_change_does_not_return_stale_cached_pull
+────────────
+     Summary [   0.567s] 107 tests run: 107 passed, 0 skipped

@@ -1,0 +1,3491 @@
+{
+  "schema": "omo-non-crate-interfaces-reconciliation-v1",
+  "total_rows": 227,
+  "total_targets": 104,
+  "verdicts": {
+    "confirmed": 225,
+    "needs_fix": 2,
+    "inconclusive": 0
+  },
+  "findings": [
+    {
+      "target": "assets/help/doctor.schema.json",
+      "verdict": "needs-fix",
+      "concrete_gap": "assets/help/doctor.schema.json claimed as current path exists in ledger but file is absent from native tree and has neither native producer nor native consumer."
+    },
+    {
+      "target": "tools/check-omo-sites.mjs",
+      "verdict": "needs-fix",
+      "concrete_gap": "Stale baseline verifier finding: check-omo-sites.mjs exits 1 due to 4 unlisted native additions; requires extending baseline inventory without weakening existing baseline expectations."
+    }
+  ],
+  "rows": [
+    {
+      "row_id": "if:G:L38",
+      "target": "scripts/AGENTS.md",
+      "contract_citation": "interfaces/TRACK-G-packaging.md:L38",
+      "native_consumer": "Agent context indexing",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "scripts/AGENTS.md file exists in repository",
+        "audit/interfaces.json: retained as verification_only documentation"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:scripts",
+      "target": "scripts/AGENTS.md",
+      "contract_citation": "baseline/inventory.json:inv:top:scripts",
+      "native_consumer": "Agent context indexing",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "scripts/AGENTS.md file exists in repository",
+        "audit/interfaces.json: retained as verification_only documentation"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P765",
+      "target": "scripts/AGENTS.md",
+      "contract_citation": "interfaces/coverage-source-files.md:P765",
+      "native_consumer": "Agent context indexing",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "scripts/AGENTS.md file exists in repository",
+        "audit/interfaces.json: retained as verification_only documentation"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "if:G:L49",
+      "target": ".github/workflows/ci.yml",
+      "contract_citation": "interfaces/TRACK-G-packaging.md:L49",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/ci.yml file exists in repository",
+        "audit/interfaces.json: retained as verification_only workflow definition"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P800",
+      "target": ".github/workflows/ci.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P800",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/ci.yml file exists in repository",
+        "audit/interfaces.json: retained as verification_only workflow definition"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "if:G:L51",
+      "target": ".github/FUNDING.yml",
+      "contract_citation": "interfaces/TRACK-G-packaging.md:L51",
+      "native_consumer": "GitHub repository funding metadata display",
+      "verification_kind": "repo_metadata_check",
+      "evidence_citations": [
+        ".github/FUNDING.yml file exists in repository root",
+        "audit/interfaces.json: retained as verification_only repo metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:github",
+      "target": ".github/FUNDING.yml",
+      "contract_citation": "baseline/inventory.json:inv:top:github",
+      "native_consumer": "GitHub repository funding metadata display",
+      "verification_kind": "repo_metadata_check",
+      "evidence_citations": [
+        ".github/FUNDING.yml file exists in repository root",
+        "audit/interfaces.json: retained as verification_only repo metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "lo:L32",
+      "target": ".github/FUNDING.yml",
+      "contract_citation": "shared-core/LEFTOVERS-ROUTING.md:L32",
+      "native_consumer": "GitHub repository funding metadata display",
+      "verification_kind": "repo_metadata_check",
+      "evidence_citations": [
+        ".github/FUNDING.yml file exists in repository root",
+        "audit/interfaces.json: retained as verification_only repo metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P773",
+      "target": ".github/FUNDING.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P773",
+      "native_consumer": "GitHub repository funding metadata display",
+      "verification_kind": "repo_metadata_check",
+      "evidence_citations": [
+        ".github/FUNDING.yml file exists in repository root",
+        "audit/interfaces.json: retained as verification_only repo metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "if:G:L62",
+      "target": "test-env.ts",
+      "contract_citation": "interfaces/TRACK-G-packaging.md:L62",
+      "native_consumer": "Bun / test environment setup harness",
+      "verification_kind": "test_environment_harness_check",
+      "evidence_citations": [
+        "test-env.ts file exists in repository root",
+        "audit/interfaces.json: test harness environment file"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:test-env-ts",
+      "target": "test-env.ts",
+      "contract_citation": "baseline/inventory.json:inv:top:test-env-ts",
+      "native_consumer": "Bun / test environment setup harness",
+      "verification_kind": "test_environment_harness_check",
+      "evidence_citations": [
+        "test-env.ts file exists in repository root",
+        "audit/interfaces.json: test harness environment file"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "if:G:L63",
+      "target": "Cargo.toml",
+      "contract_citation": "interfaces/TRACK-G-packaging.md:L63",
+      "native_consumer": "cargo / rustc workspace builder",
+      "verification_kind": "workspace_manifest_audit",
+      "evidence_citations": [
+        "Cargo.toml workspace root manifest exists",
+        "defines workspace members, dependencies, and lints configuration"
+      ],
+      "verdict": "confirmed",
+      "required_command": "cargo metadata --no-deps --format-version 1",
+      "concrete_gap": null
+    },
+    {
+      "row_id": "if:G:L64",
+      "target": "LICENSES/MIT.txt",
+      "contract_citation": "interfaces/TRACK-G-packaging.md:L64",
+      "native_consumer": "License audit / cargo-about / distribution packager",
+      "verification_kind": "license_compliance_check",
+      "evidence_citations": [
+        "LICENSES/MIT.txt file exists in repository",
+        "AGENTS.md Port rules: senpi-derived crates are license = MIT (LICENSES/MIT.txt)"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "if:G:L71",
+      "target": "tools/check-omo-sites.mjs",
+      "contract_citation": "interfaces/TRACK-G-packaging.md:L71",
+      "native_consumer": "tools/check-omo-sites.mjs",
+      "verification_kind": "parity_verifier_execution",
+      "evidence_citations": [
+        "tools/check-omo-sites.mjs:L71",
+        "tools/omo-sites.json: comp_commit 93b78ac1cc8d488d124da7ed1d19f678e93fb0fd, keep 17 / rename 17",
+        "verifier execution against COMP pin fails exit 1: upstream total 34 correct; native keep 22 vs baseline 17, rename 17 correct",
+        "four unlisted newly added source files: senpi-task/src/team/registry.rs (1), team/storage.rs (1), tools/task/plan_review_contract.rs (1), isolation/runtime.rs (2, including comment literal)",
+        "isolation sweep_roots deliberately keeps HOME/.omo/wt matching producer source identity (runtime.rs:198-208)"
+      ],
+      "verdict": "needs-fix",
+      "required_command": "bun tools/check-omo-sites.mjs --root .",
+      "concrete_gap": "Stale baseline verifier finding: check-omo-sites.mjs exits 1 due to 4 unlisted native additions; requires extending baseline inventory without weakening existing baseline expectations."
+    },
+    {
+      "row_id": "if:G:L72",
+      "target": "tools/parity-audit.mjs",
+      "contract_citation": "interfaces/TRACK-G-packaging.md:L72",
+      "native_consumer": "tools/parity-audit.mjs",
+      "verification_kind": "parity_audit_tool",
+      "evidence_citations": [
+        "tools/parity-audit.mjs:L72",
+        "tools/PARITY-FORMAT.md specification",
+        "parity audit script exists and validates parity fragments across crates"
+      ],
+      "verdict": "confirmed",
+      "required_command": "bun tools/parity-audit.mjs --crate maho-cli",
+      "concrete_gap": null
+    },
+    {
+      "row_id": "if:G:L73",
+      "target": "LICENSES/MIT.txt",
+      "contract_citation": "interfaces/TRACK-G-packaging.md:L73",
+      "native_consumer": "License audit / cargo-about / distribution packager",
+      "verification_kind": "license_compliance_check",
+      "evidence_citations": [
+        "LICENSES/MIT.txt file exists in repository",
+        "AGENTS.md Port rules: senpi-derived crates are license = MIT (LICENSES/MIT.txt)"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "if:G:L74",
+      "target": "README.md",
+      "contract_citation": "interfaces/TRACK-G-packaging.md:L74",
+      "native_consumer": "Repository documentation",
+      "verification_kind": "documentation_check",
+      "evidence_citations": [
+        "README.md file exists in repository root",
+        "audit/interfaces.json: retained as verification_only documentation"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "if:G:L85",
+      "target": "Cargo.toml",
+      "contract_citation": "interfaces/TRACK-G-packaging.md:L85",
+      "native_consumer": "cargo / rustc workspace builder",
+      "verification_kind": "workspace_manifest_audit",
+      "evidence_citations": [
+        "Cargo.toml workspace root manifest exists",
+        "defines workspace members, dependencies, and lints configuration"
+      ],
+      "verdict": "confirmed",
+      "required_command": "cargo metadata --no-deps --format-version 1",
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:cargo-toml",
+      "target": "Cargo.toml",
+      "contract_citation": "baseline/inventory.json:inv:top:cargo-toml",
+      "native_consumer": "cargo / rustc workspace builder",
+      "verification_kind": "workspace_manifest_audit",
+      "evidence_citations": [
+        "Cargo.toml workspace root manifest exists",
+        "defines workspace members, dependencies, and lints configuration"
+      ],
+      "verdict": "confirmed",
+      "required_command": "cargo metadata --no-deps --format-version 1",
+      "concrete_gap": null
+    },
+    {
+      "row_id": "if:X:L30",
+      "target": "packages/omo-senpi/src/components/formatter/formatter.test.ts",
+      "contract_citation": "interfaces/CROSSREF-user-integration-reachability.md:L30",
+      "native_consumer": "Upstream test reference / parity source comparison",
+      "verification_kind": "crossref_parity_mapping_check",
+      "evidence_citations": [
+        "packages/omo-senpi/src/components/formatter/formatter.test.ts (upstream test file reference)",
+        "audit/interfaces.json: cross-reference user integration reachability"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/CROSSREF-user-integration-reachability.md:T26:L30",
+      "target": "packages/omo-senpi/src/components/formatter/formatter.test.ts",
+      "contract_citation": "interfaces/CROSSREF-user-integration-reachability.md:T26/L30",
+      "native_consumer": "Upstream test reference / parity source comparison",
+      "verification_kind": "crossref_parity_mapping_check",
+      "evidence_citations": [
+        "packages/omo-senpi/src/components/formatter/formatter.test.ts (upstream test file reference)",
+        "audit/interfaces.json: cross-reference user integration reachability"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "if:X:L31",
+      "target": "packages/omo-senpi/src/components/gateway/AGENTS.md",
+      "contract_citation": "interfaces/CROSSREF-user-integration-reachability.md:L31",
+      "native_consumer": "Upstream test reference / parity source comparison",
+      "verification_kind": "crossref_parity_mapping_check",
+      "evidence_citations": [
+        "packages/omo-senpi/src/components/gateway/AGENTS.md (upstream test file reference)",
+        "audit/interfaces.json: cross-reference user integration reachability"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/CROSSREF-user-integration-reachability.md:T26:L31",
+      "target": "packages/omo-senpi/src/components/gateway/AGENTS.md",
+      "contract_citation": "interfaces/CROSSREF-user-integration-reachability.md:T26/L31",
+      "native_consumer": "Upstream test reference / parity source comparison",
+      "verification_kind": "crossref_parity_mapping_check",
+      "evidence_citations": [
+        "packages/omo-senpi/src/components/gateway/AGENTS.md (upstream test file reference)",
+        "audit/interfaces.json: cross-reference user integration reachability"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "if:X:L32",
+      "target": "packages/omo-senpi/src/components/post-mutation/post-mutation.test.ts",
+      "contract_citation": "interfaces/CROSSREF-user-integration-reachability.md:L32",
+      "native_consumer": "Upstream test reference / parity source comparison",
+      "verification_kind": "crossref_parity_mapping_check",
+      "evidence_citations": [
+        "packages/omo-senpi/src/components/post-mutation/post-mutation.test.ts (upstream test file reference)",
+        "audit/interfaces.json: cross-reference user integration reachability"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/CROSSREF-user-integration-reachability.md:T26:L32",
+      "target": "packages/omo-senpi/src/components/post-mutation/post-mutation.test.ts",
+      "contract_citation": "interfaces/CROSSREF-user-integration-reachability.md:T26/L32",
+      "native_consumer": "Upstream test reference / parity source comparison",
+      "verification_kind": "crossref_parity_mapping_check",
+      "evidence_citations": [
+        "packages/omo-senpi/src/components/post-mutation/post-mutation.test.ts (upstream test file reference)",
+        "audit/interfaces.json: cross-reference user integration reachability"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "if:X:L34",
+      "target": "packages/omo-senpi/src/components/x-search/AGENTS.md",
+      "contract_citation": "interfaces/CROSSREF-user-integration-reachability.md:L34",
+      "native_consumer": "Upstream test reference / parity source comparison",
+      "verification_kind": "crossref_parity_mapping_check",
+      "evidence_citations": [
+        "packages/omo-senpi/src/components/x-search/AGENTS.md (upstream test file reference)",
+        "audit/interfaces.json: cross-reference user integration reachability"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/CROSSREF-user-integration-reachability.md:T26:L34",
+      "target": "packages/omo-senpi/src/components/x-search/AGENTS.md",
+      "contract_citation": "interfaces/CROSSREF-user-integration-reachability.md:T26/L34",
+      "native_consumer": "Upstream test reference / parity source comparison",
+      "verification_kind": "crossref_parity_mapping_check",
+      "evidence_citations": [
+        "packages/omo-senpi/src/components/x-search/AGENTS.md (upstream test file reference)",
+        "audit/interfaces.json: cross-reference user integration reachability"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "if:X:L68",
+      "target": "assets/omo.schema.json",
+      "contract_citation": "interfaces/CROSSREF-user-integration-reachability.md:L68",
+      "native_consumer": "crates/omo/components/maho-omo-config-core (example omo_schema) & tools/package-native.mjs",
+      "verification_kind": "schema_projection_check",
+      "evidence_citations": [
+        "assets/omo.schema.json (committed JSON Schema draft-07)",
+        "crates/omo/components/maho-omo-config-core/examples/omo_schema.rs (native schema producer)",
+        "tools/omo-schema.mjs (--check compares committed schema with cargo run --example omo_schema)",
+        "bun tools/omo-schema.mjs --self-test passed 10/10"
+      ],
+      "verdict": "confirmed",
+      "required_command": "bun tools/omo-schema.mjs --check",
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:schema:1",
+      "target": "assets/omo.schema.json",
+      "contract_citation": "baseline/inventory.json:inv:schema:1",
+      "native_consumer": "crates/omo/components/maho-omo-config-core (example omo_schema) & tools/package-native.mjs",
+      "verification_kind": "schema_projection_check",
+      "evidence_citations": [
+        "assets/omo.schema.json (committed JSON Schema draft-07)",
+        "crates/omo/components/maho-omo-config-core/examples/omo_schema.rs (native schema producer)",
+        "tools/omo-schema.mjs (--check compares committed schema with cargo run --example omo_schema)",
+        "bun tools/omo-schema.mjs --self-test passed 10/10"
+      ],
+      "verdict": "confirmed",
+      "required_command": "bun tools/omo-schema.mjs --check",
+      "concrete_gap": null
+    },
+    {
+      "row_id": "lo:L30",
+      "target": "assets/omo.schema.json",
+      "contract_citation": "shared-core/LEFTOVERS-ROUTING.md:L30",
+      "native_consumer": "crates/omo/components/maho-omo-config-core (example omo_schema) & tools/package-native.mjs",
+      "verification_kind": "schema_projection_check",
+      "evidence_citations": [
+        "assets/omo.schema.json (committed JSON Schema draft-07)",
+        "crates/omo/components/maho-omo-config-core/examples/omo_schema.rs (native schema producer)",
+        "tools/omo-schema.mjs (--check compares committed schema with cargo run --example omo_schema)",
+        "bun tools/omo-schema.mjs --self-test passed 10/10"
+      ],
+      "verdict": "confirmed",
+      "required_command": "bun tools/omo-schema.mjs --check",
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/CROSSREF-user-integration-reachability.md:T65:L68",
+      "target": "assets/omo.schema.json",
+      "contract_citation": "interfaces/CROSSREF-user-integration-reachability.md:T65/L68",
+      "native_consumer": "crates/omo/components/maho-omo-config-core (example omo_schema) & tools/package-native.mjs",
+      "verification_kind": "schema_projection_check",
+      "evidence_citations": [
+        "assets/omo.schema.json (committed JSON Schema draft-07)",
+        "crates/omo/components/maho-omo-config-core/examples/omo_schema.rs (native schema producer)",
+        "tools/omo-schema.mjs (--check compares committed schema with cargo run --example omo_schema)",
+        "bun tools/omo-schema.mjs --self-test passed 10/10"
+      ],
+      "verdict": "confirmed",
+      "required_command": "bun tools/omo-schema.mjs --check",
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:agents:agents",
+      "target": ".agents/AGENTS.md",
+      "contract_citation": "baseline/inventory.json:inv:agents:agents",
+      "native_consumer": "Agent context indexing / maho-ext-nested-agents-md",
+      "verification_kind": "nested_agents_context_check",
+      "evidence_citations": [
+        ".agents/AGENTS.md file exists in repository",
+        "crates/builtins/maho-ext-nested-agents-md parses nested AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:agents",
+      "target": ".agents/AGENTS.md",
+      "contract_citation": "baseline/inventory.json:inv:top:agents",
+      "native_consumer": "Agent context indexing / maho-ext-nested-agents-md",
+      "verification_kind": "nested_agents_context_check",
+      "evidence_citations": [
+        ".agents/AGENTS.md file exists in repository",
+        "crates/builtins/maho-ext-nested-agents-md parses nested AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "lo:L34",
+      "target": ".agents/AGENTS.md",
+      "contract_citation": "shared-core/LEFTOVERS-ROUTING.md:L34",
+      "native_consumer": "Agent context indexing / maho-ext-nested-agents-md",
+      "verification_kind": "nested_agents_context_check",
+      "evidence_citations": [
+        ".agents/AGENTS.md file exists in repository",
+        "crates/builtins/maho-ext-nested-agents-md parses nested AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "mc:H20",
+      "target": ".agents/AGENTS.md",
+      "contract_citation": "memory-config/01-feature-matrix.md:H20",
+      "native_consumer": "Agent context indexing / maho-ext-nested-agents-md",
+      "verification_kind": "nested_agents_context_check",
+      "evidence_citations": [
+        ".agents/AGENTS.md file exists in repository",
+        "crates/builtins/maho-ext-nested-agents-md parses nested AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:agents:claude",
+      "target": ".claude/settings.json",
+      "contract_citation": "baseline/inventory.json:inv:agents:claude",
+      "native_consumer": "Claude IDE / settings reader",
+      "verification_kind": "developer_environment_metadata_check",
+      "evidence_citations": [
+        ".claude/settings.json file exists in repository",
+        "audit/interfaces.json: developer tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "lo:L36",
+      "target": ".claude/settings.json",
+      "contract_citation": "shared-core/LEFTOVERS-ROUTING.md:L36",
+      "native_consumer": "Claude IDE / settings reader",
+      "verification_kind": "developer_environment_metadata_check",
+      "evidence_citations": [
+        ".claude/settings.json file exists in repository",
+        "audit/interfaces.json: developer tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "mc:H22",
+      "target": ".claude/settings.json",
+      "contract_citation": "memory-config/01-feature-matrix.md:H22",
+      "native_consumer": "Claude IDE / settings reader",
+      "verification_kind": "developer_environment_metadata_check",
+      "evidence_citations": [
+        ".claude/settings.json file exists in repository",
+        "audit/interfaces.json: developer tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:agents:omo",
+      "target": ".omo/init-deep.json",
+      "contract_citation": "baseline/inventory.json:inv:agents:omo",
+      "native_consumer": "crates/omo/components/maho-omo-init-deep-advisor",
+      "verification_kind": "component_config_audit",
+      "evidence_citations": [
+        ".omo/init-deep.json file exists in repository",
+        "crates/omo/components/maho-omo-init-deep-advisor loads project init-deep configuration"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "lo:L37",
+      "target": ".omo/init-deep.json",
+      "contract_citation": "shared-core/LEFTOVERS-ROUTING.md:L37",
+      "native_consumer": "crates/omo/components/maho-omo-init-deep-advisor",
+      "verification_kind": "component_config_audit",
+      "evidence_citations": [
+        ".omo/init-deep.json file exists in repository",
+        "crates/omo/components/maho-omo-init-deep-advisor loads project init-deep configuration"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "mc:H23",
+      "target": ".omo/init-deep.json",
+      "contract_citation": "memory-config/01-feature-matrix.md:H23",
+      "native_consumer": "crates/omo/components/maho-omo-init-deep-advisor",
+      "verification_kind": "component_config_audit",
+      "evidence_citations": [
+        ".omo/init-deep.json file exists in repository",
+        "crates/omo/components/maho-omo-init-deep-advisor loads project init-deep configuration"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:layer:0",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/inventory.json:inv:layer:0",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/inventory.json:inv:layer:0",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:layer:1",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/inventory.json:inv:layer:1",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/inventory.json:inv:layer:1",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:layer:2",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/inventory.json:inv:layer:2",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/inventory.json:inv:layer:2",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:layer:3",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/inventory.json:inv:layer:3",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/inventory.json:inv:layer:3",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:layer:4",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/inventory.json:inv:layer:4",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/inventory.json:inv:layer:4",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:track:E",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/COMPARISON-TRACKS.md:track:E",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/COMPARISON-TRACKS.md:track:E",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:track:F",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/COMPARISON-TRACKS.md:track:F",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/COMPARISON-TRACKS.md:track:F",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:track:G",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/COMPARISON-TRACKS.md:track:G",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/COMPARISON-TRACKS.md:track:G",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:track:H",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/COMPARISON-TRACKS.md:track:H",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/COMPARISON-TRACKS.md:track:H",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/COMPARISON-TRACKS.md:B24",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/COMPARISON-TRACKS.md:B24",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/COMPARISON-TRACKS.md:B24",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/COMPARISON-TRACKS.md:B29",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/COMPARISON-TRACKS.md:B29",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/COMPARISON-TRACKS.md:B29",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/COMPARISON-TRACKS.md:T12:L17",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/COMPARISON-TRACKS.md:T12/L17",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/COMPARISON-TRACKS.md:T12/L17",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/COMPARISON-TRACKS.md:T12:L18",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/COMPARISON-TRACKS.md:T12/L18",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/COMPARISON-TRACKS.md:T12/L18",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/COMPARISON-TRACKS.md:T12:L19",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/COMPARISON-TRACKS.md:T12/L19",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/COMPARISON-TRACKS.md:T12/L19",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/COMPARISON-TRACKS.md:T12:L20",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/COMPARISON-TRACKS.md:T12/L20",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/COMPARISON-TRACKS.md:T12/L20",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/README.md:B11",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/README.md:B11",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/README.md:B11",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/README.md:B13",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/README.md:B13",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/README.md:B13",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/README.md:B27",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/README.md:B27",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/README.md:B27",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/README.md:B28",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/README.md:B28",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/README.md:B28",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/README.md:B29",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/README.md:B29",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/README.md:B29",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/README.md:B8",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/README.md:B8",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/README.md:B8",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/README.md:T19:L20",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/README.md:T19/L20",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/README.md:T19/L20",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/README.md:T19:L21",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/README.md:T19/L21",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/README.md:T19/L21",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/README.md:T19:L22",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/README.md:T19/L22",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/README.md:T19/L22",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/README.md:T19:L23",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/README.md:T19/L23",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/README.md:T19/L23",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:B70",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:B70",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:B70",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:B74",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:B74",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:B74",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T28:L29",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T28/L29",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T28/L29",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T28:L30",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T28/L30",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T28/L30",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T28:L31",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T28/L31",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T28/L31",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T28:L32",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T28/L32",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T28/L32",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T28:L33",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T28/L33",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T28/L33",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T28:L34",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T28/L34",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T28/L34",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T28:L35",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T28/L35",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T28/L35",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T28:L36",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T28/L36",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T28/L36",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T48:L49",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T48/L49",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T48/L49",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T48:L50",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T48/L50",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T48/L50",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T48:L51",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T48/L51",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T48/L51",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T83:L84",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T83/L84",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T83/L84",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T83:L85",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T83/L85",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T83/L85",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T83:L86",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T83/L86",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T83/L86",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T83:L87",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T83/L87",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T83/L87",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T83:L88",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T83/L88",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T83/L88",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T9:L10",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T9/L10",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T9/L10",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T9:L11",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T9/L11",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T9/L11",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T9:L12",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T9/L12",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T9/L12",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T9:L13",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T9/L13",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T9/L13",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T9:L14",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T9/L14",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T9/L14",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T9:L15",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T9/L15",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T9/L15",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T9:L16",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T9/L16",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T9/L16",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T9:L17",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T9/L17",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T9/L17",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T9:L18",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T9/L18",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T9/L18",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:T9:L19",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:T9/L19",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:T9/L19",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:B60",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:B60",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:B60",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:B61",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:B61",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:B61",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:B63",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:B63",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:B63",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:T15:L16",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:T15/L16",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:T15/L16",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:T15:L17",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:T15/L17",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:T15/L17",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:T15:L18",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:T15/L18",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:T15/L18",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:T15:L19",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:T15/L19",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:T15/L19",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:T15:L20",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:T15/L20",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:T15/L20",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:T15:L21",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:T15/L21",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:T15/L21",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:T26:L27",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:T26/L27",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:T26/L27",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:T26:L28",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:T26/L28",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:T26/L28",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:T26:L29",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:T26/L29",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:T26/L29",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:T26:L30",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:T26/L30",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:T26/L30",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:T26:L31",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:T26/L31",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:T26/L31",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:T26:L32",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:T26/L32",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:T26/L32",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:T51:L52",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:T51/L52",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:T51/L52",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:T51:L55",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:T51/L55",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:T51/L55",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/README.md:T51:L56",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:T51/L56",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:T51/L56",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/TRACK-E-interactive-ui.md:B27",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/TRACK-E-interactive-ui.md:B27",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/TRACK-E-interactive-ui.md:B27",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/TRACK-E-interactive-ui.md:B30",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/TRACK-E-interactive-ui.md:B30",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/TRACK-E-interactive-ui.md:B30",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:T14:L15",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/coverage-source-files.md:T14/L15",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/coverage-source-files.md:T14/L15",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:T14:L16",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/coverage-source-files.md:T14/L16",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/coverage-source-files.md:T14/L16",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:T14:L17",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/coverage-source-files.md:T14/L17",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/coverage-source-files.md:T14/L17",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:T14:L18",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/coverage-source-files.md:T14/L18",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/coverage-source-files.md:T14/L18",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:T14:L19",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/coverage-source-files.md:T14/L19",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/coverage-source-files.md:T14/L19",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:T14:L20",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/coverage-source-files.md:T14/L20",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/coverage-source-files.md:T14/L20",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:T14:L21",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/coverage-source-files.md:T14/L21",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/coverage-source-files.md:T14/L21",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:T14:L22",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/coverage-source-files.md:T14/L22",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/coverage-source-files.md:T14/L22",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:T14:L23",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/coverage-source-files.md:T14/L23",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/coverage-source-files.md:T14/L23",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:T14:L24",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/coverage-source-files.md:T14/L24",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/coverage-source-files.md:T14/L24",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "orig-file:baseline/COMPARISON-TRACKS.md",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/COMPARISON-TRACKS.md:baseline/COMPARISON-TRACKS.md",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/COMPARISON-TRACKS.md:baseline/COMPARISON-TRACKS.md",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "orig-file:baseline/README.md",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/README.md:baseline/README.md",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/README.md:baseline/README.md",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "orig-file:baseline/UPSTREAM-BASELINE.md",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:baseline/UPSTREAM-BASELINE.md",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/UPSTREAM-BASELINE.md:baseline/UPSTREAM-BASELINE.md",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "orig-file:baseline/file-inventory.txt",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/file-inventory.txt:baseline/file-inventory.txt",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/file-inventory.txt:baseline/file-inventory.txt",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "orig-file:baseline/inventory.json",
+      "target": "inv:layer:0",
+      "contract_citation": "baseline/inventory.json:baseline/inventory.json",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: baseline/inventory.json:baseline/inventory.json",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "orig-file:interfaces/CROSSREF-user-integration-reachability.md",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/CROSSREF-user-integration-reachability.md:interfaces/CROSSREF-user-integration-reachability.md",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/CROSSREF-user-integration-reachability.md:interfaces/CROSSREF-user-integration-reachability.md",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "orig-file:interfaces/README.md",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/README.md:interfaces/README.md",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/README.md:interfaces/README.md",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "orig-file:interfaces/TRACK-E-interactive-ui.md",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/TRACK-E-interactive-ui.md:interfaces/TRACK-E-interactive-ui.md",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/TRACK-E-interactive-ui.md:interfaces/TRACK-E-interactive-ui.md",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "orig-file:interfaces/coverage-source-files.md",
+      "target": "inv:layer:0",
+      "contract_citation": "interfaces/coverage-source-files.md:interfaces/coverage-source-files.md",
+      "native_consumer": null,
+      "verification_kind": "upstream_inventory_metadata_audit",
+      "evidence_citations": [
+        "contract reference: interfaces/coverage-source-files.md:interfaces/coverage-source-files.md",
+        "audit/interfaces.json: group interfaces-0107 (92 rows)",
+        "controlling contract: interfaces-domain contract §0 authoritative registry upstream baseline inventory",
+        "exact role: upstream repo tracking baseline, layer definitions (layer 0-4), and comparison tracks (tracks E, F, G, H)",
+        "native runtime role: native Rust binary has no runtime producer requirement for upstream inventory tracking files"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:schema:2",
+      "target": "assets/help/doctor.schema.json",
+      "contract_citation": "baseline/inventory.json:inv:schema:2",
+      "native_consumer": null,
+      "verification_kind": "schema_producer_consumer_audit",
+      "evidence_citations": [
+        "pinned upstream: assets/help/doctor.schema.json @ 455dee623c9b2f2d2f1e9e68bf7b72a878ee3f0b (generated by upstream script/build-help-schemas.ts)",
+        "current native checkout: assets/help/doctor.schema.json is absent",
+        "literal search in native codebase: 0 consumer matches in *.rs, *.mjs, or maho-cli doctor subcommands",
+        "final-ledger claim 'current path exists' is false"
+      ],
+      "verdict": "needs-fix",
+      "required_command": "bun script/build-help-schemas.ts or implement native help doctor schema projection in maho-cli",
+      "concrete_gap": "assets/help/doctor.schema.json claimed as current path exists in ledger but file is absent from native tree and has neither native producer nor native consumer."
+    },
+    {
+      "row_id": "inv:submodule:0",
+      "target": ".gitmodules",
+      "contract_citation": "baseline/inventory.json:inv:submodule:0",
+      "native_consumer": "git CLI / git submodule management",
+      "verification_kind": "vcs_submodule_configuration_check",
+      "evidence_citations": [
+        ".gitmodules file exists in repository root",
+        "audit/interfaces.json: submodule tracking rows inv:submodule:0..5"
+      ],
+      "verdict": "confirmed",
+      "required_command": "git submodule status",
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:submodule:1",
+      "target": ".gitmodules",
+      "contract_citation": "baseline/inventory.json:inv:submodule:1",
+      "native_consumer": "git CLI / git submodule management",
+      "verification_kind": "vcs_submodule_configuration_check",
+      "evidence_citations": [
+        ".gitmodules file exists in repository root",
+        "audit/interfaces.json: submodule tracking rows inv:submodule:0..5"
+      ],
+      "verdict": "confirmed",
+      "required_command": "git submodule status",
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:submodule:2",
+      "target": ".gitmodules",
+      "contract_citation": "baseline/inventory.json:inv:submodule:2",
+      "native_consumer": "git CLI / git submodule management",
+      "verification_kind": "vcs_submodule_configuration_check",
+      "evidence_citations": [
+        ".gitmodules file exists in repository root",
+        "audit/interfaces.json: submodule tracking rows inv:submodule:0..5"
+      ],
+      "verdict": "confirmed",
+      "required_command": "git submodule status",
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:submodule:3",
+      "target": ".gitmodules",
+      "contract_citation": "baseline/inventory.json:inv:submodule:3",
+      "native_consumer": "git CLI / git submodule management",
+      "verification_kind": "vcs_submodule_configuration_check",
+      "evidence_citations": [
+        ".gitmodules file exists in repository root",
+        "audit/interfaces.json: submodule tracking rows inv:submodule:0..5"
+      ],
+      "verdict": "confirmed",
+      "required_command": "git submodule status",
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:agents-md",
+      "target": "AGENTS.md",
+      "contract_citation": "baseline/inventory.json:inv:top:agents-md",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "AGENTS.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:assets",
+      "target": "assets/AGENTS.md",
+      "contract_citation": "baseline/inventory.json:inv:top:assets",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "assets/AGENTS.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:bin",
+      "target": "bin/AGENTS.md",
+      "contract_citation": "baseline/inventory.json:inv:top:bin",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "bin/AGENTS.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P753",
+      "target": "bin/AGENTS.md",
+      "contract_citation": "interfaces/coverage-source-files.md:P753",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "bin/AGENTS.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:bun-lock",
+      "target": "bun.lock",
+      "contract_citation": "baseline/inventory.json:inv:top:bun-lock",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        "bun.lock (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:bun-test-d-ts",
+      "target": "bun-test.d.ts",
+      "contract_citation": "baseline/inventory.json:inv:top:bun-test-d-ts",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        "bun-test.d.ts (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:bunfig-root-toml",
+      "target": "bunfig.root.toml",
+      "contract_citation": "baseline/inventory.json:inv:top:bunfig-root-toml",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        "bunfig.root.toml (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:bunfig-toml",
+      "target": "bunfig.toml",
+      "contract_citation": "baseline/inventory.json:inv:top:bunfig-toml",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        "bunfig.toml (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:bunfig-win2-parallel-toml",
+      "target": "bunfig.win2.parallel.toml",
+      "contract_citation": "baseline/inventory.json:inv:top:bunfig-win2-parallel-toml",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        "bunfig.win2.parallel.toml (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:bunfig-win2-parallel-windows-toml",
+      "target": "bunfig.win2.parallel.windows.toml",
+      "contract_citation": "baseline/inventory.json:inv:top:bunfig-win2-parallel-windows-toml",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        "bunfig.win2.parallel.windows.toml (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:bunfig-win2-toml",
+      "target": "bunfig.win2.toml",
+      "contract_citation": "baseline/inventory.json:inv:top:bunfig-win2-toml",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        "bunfig.win2.toml (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:cargo-lock",
+      "target": "Cargo.lock",
+      "contract_citation": "baseline/inventory.json:inv:top:cargo-lock",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        "Cargo.lock (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:changelog-md",
+      "target": "CHANGELOG.md",
+      "contract_citation": "baseline/inventory.json:inv:top:changelog-md",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "CHANGELOG.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:changes-md",
+      "target": "changes.md",
+      "contract_citation": "baseline/inventory.json:inv:top:changes-md",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "changes.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:cla-md",
+      "target": "CLA.md",
+      "contract_citation": "baseline/inventory.json:inv:top:cla-md",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "CLA.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:codex",
+      "target": ".codex/setup.sh",
+      "contract_citation": "baseline/inventory.json:inv:top:codex",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        ".codex/setup.sh (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:contributing-md",
+      "target": "CONTRIBUTING.md",
+      "contract_citation": "baseline/inventory.json:inv:top:contributing-md",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "CONTRIBUTING.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:cursor",
+      "target": ".cursor/environment.json",
+      "contract_citation": "baseline/inventory.json:inv:top:cursor",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        ".cursor/environment.json (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:devcontainer",
+      "target": ".devcontainer/README.md",
+      "contract_citation": "baseline/inventory.json:inv:top:devcontainer",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        ".devcontainer/README.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:docs",
+      "target": "docs/AGENTS.md",
+      "contract_citation": "baseline/inventory.json:inv:top:docs",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "docs/AGENTS.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:env-example",
+      "target": ".env.example",
+      "contract_citation": "baseline/inventory.json:inv:top:env-example",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        ".env.example (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:gitattributes",
+      "target": ".gitattributes",
+      "contract_citation": "baseline/inventory.json:inv:top:gitattributes",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        ".gitattributes (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:gitignore",
+      "target": ".gitignore",
+      "contract_citation": "baseline/inventory.json:inv:top:gitignore",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        ".gitignore (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:gitmodules",
+      "target": ".gitmodules",
+      "contract_citation": "baseline/inventory.json:inv:top:gitmodules",
+      "native_consumer": "git CLI / git submodule management",
+      "verification_kind": "vcs_submodule_configuration_check",
+      "evidence_citations": [
+        ".gitmodules file exists in repository root",
+        "audit/interfaces.json: submodule tracking rows inv:submodule:0..5"
+      ],
+      "verdict": "confirmed",
+      "required_command": "git submodule status",
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:license-md",
+      "target": "LICENSE.md",
+      "contract_citation": "baseline/inventory.json:inv:top:license-md",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "LICENSE.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:omo",
+      "target": ".omo/fixtures/releases.json",
+      "contract_citation": "baseline/inventory.json:inv:top:omo",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        ".omo/fixtures/releases.json (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:packages",
+      "target": "packages/AGENTS.md",
+      "contract_citation": "baseline/inventory.json:inv:top:packages",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "packages/AGENTS.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:postinstall-test-ts",
+      "target": "postinstall.test.ts",
+      "contract_citation": "baseline/inventory.json:inv:top:postinstall-test-ts",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        "postinstall.test.ts (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:readme-ja-md",
+      "target": "README.ja.md",
+      "contract_citation": "baseline/inventory.json:inv:top:readme-ja-md",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "README.ja.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:readme-ko-md",
+      "target": "README.ko.md",
+      "contract_citation": "baseline/inventory.json:inv:top:readme-ko-md",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "README.ko.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:readme-md",
+      "target": "README.md",
+      "contract_citation": "baseline/inventory.json:inv:top:readme-md",
+      "native_consumer": "Repository documentation",
+      "verification_kind": "documentation_check",
+      "evidence_citations": [
+        "README.md file exists in repository root",
+        "audit/interfaces.json: retained as verification_only documentation"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:readme-ru-md",
+      "target": "README.ru.md",
+      "contract_citation": "baseline/inventory.json:inv:top:readme-ru-md",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "README.ru.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:readme-zh-cn-md",
+      "target": "README.zh-cn.md",
+      "contract_citation": "baseline/inventory.json:inv:top:readme-zh-cn-md",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "README.zh-cn.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:roadmap-md",
+      "target": "ROADMAP.md",
+      "contract_citation": "baseline/inventory.json:inv:top:roadmap-md",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "ROADMAP.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:rust-toolchain-toml",
+      "target": "rust-toolchain.toml",
+      "contract_citation": "baseline/inventory.json:inv:top:rust-toolchain-toml",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        "rust-toolchain.toml (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:script",
+      "target": "script/AGENTS.md",
+      "contract_citation": "baseline/inventory.json:inv:top:script",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "script/AGENTS.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "lo:L27",
+      "target": "script/AGENTS.md",
+      "contract_citation": "shared-core/LEFTOVERS-ROUTING.md:L27",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "script/AGENTS.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:test-hermetic-home-ts",
+      "target": "test-hermetic-home.ts",
+      "contract_citation": "baseline/inventory.json:inv:top:test-hermetic-home-ts",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        "test-hermetic-home.ts (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:test-setup-ts",
+      "target": "test-setup.ts",
+      "contract_citation": "baseline/inventory.json:inv:top:test-setup-ts",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        "test-setup.ts (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:test-support",
+      "target": "test-support/remove-tree.test.ts",
+      "contract_citation": "baseline/inventory.json:inv:top:test-support",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        "test-support/remove-tree.test.ts (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:tests",
+      "target": "tests/AGENTS.md",
+      "contract_citation": "baseline/inventory.json:inv:top:tests",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "tests/AGENTS.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:third-party-notices-md",
+      "target": "THIRD-PARTY-NOTICES.md",
+      "contract_citation": "baseline/inventory.json:inv:top:third-party-notices-md",
+      "native_consumer": "Repository documentation / legal notices",
+      "verification_kind": "documentation_metadata_check",
+      "evidence_citations": [
+        "THIRD-PARTY-NOTICES.md (documentation and metadata file exists)",
+        "controlling contract: interfaces-domain contract §0 / AGENTS.md conventions"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "inv:top:tsconfig-json",
+      "target": "tsconfig.json",
+      "contract_citation": "baseline/inventory.json:inv:top:tsconfig-json",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        "tsconfig.json (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "lo:L33",
+      "target": ".devcontainer/devcontainer.json",
+      "contract_citation": "shared-core/LEFTOVERS-ROUTING.md:L33",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        ".devcontainer/devcontainer.json (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "mc:H14",
+      "target": ".gitmodules",
+      "contract_citation": "memory-config/01-feature-matrix.md:H14",
+      "native_consumer": "git CLI / git submodule management",
+      "verification_kind": "vcs_submodule_configuration_check",
+      "evidence_citations": [
+        ".gitmodules file exists in repository root",
+        "audit/interfaces.json: submodule tracking rows inv:submodule:0..5"
+      ],
+      "verdict": "confirmed",
+      "required_command": "git submodule status",
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:baseline/UPSTREAM-BASELINE.md:B65",
+      "target": "md:baseline/UPSTREAM-BASELINE.md:B65",
+      "contract_citation": "baseline/UPSTREAM-BASELINE.md:B65",
+      "native_consumer": "md:baseline/UPSTREAM-BASELINE.md:B65",
+      "verification_kind": "non_crate_target_check",
+      "evidence_citations": [
+        "md:baseline/UPSTREAM-BASELINE.md:B65 (path cited in final-ledger.json)"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P760",
+      "target": "bin/version-mismatch.test.ts",
+      "contract_citation": "interfaces/coverage-source-files.md:P760",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        "bin/version-mismatch.test.ts (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P767",
+      "target": "scripts/check-third-party-notices.test.mjs",
+      "contract_citation": "interfaces/coverage-source-files.md:P767",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        "scripts/check-third-party-notices.test.mjs (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P768",
+      "target": "scripts/third-party-notice-requirements.mjs",
+      "contract_citation": "interfaces/coverage-source-files.md:P768",
+      "native_consumer": "Build harness / tool configuration",
+      "verification_kind": "build_configuration_audit",
+      "evidence_citations": [
+        "scripts/third-party-notice-requirements.mjs (configuration/tool file exists in workspace)",
+        "audit/interfaces.json: build and tooling metadata"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P774",
+      "target": ".github/ISSUE_TEMPLATE/bug_report.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P774",
+      "native_consumer": "GitHub issue/PR tracker",
+      "verification_kind": "issue_template_check",
+      "evidence_citations": [
+        ".github/ISSUE_TEMPLATE/bug_report.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P775",
+      "target": ".github/ISSUE_TEMPLATE/config.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P775",
+      "native_consumer": "GitHub issue/PR tracker",
+      "verification_kind": "issue_template_check",
+      "evidence_citations": [
+        ".github/ISSUE_TEMPLATE/config.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P776",
+      "target": ".github/ISSUE_TEMPLATE/feature_request.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P776",
+      "native_consumer": "GitHub issue/PR tracker",
+      "verification_kind": "issue_template_check",
+      "evidence_citations": [
+        ".github/ISSUE_TEMPLATE/feature_request.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P777",
+      "target": ".github/ISSUE_TEMPLATE/general.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P777",
+      "native_consumer": "GitHub issue/PR tracker",
+      "verification_kind": "issue_template_check",
+      "evidence_citations": [
+        ".github/ISSUE_TEMPLATE/general.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P778",
+      "target": ".github/ISSUE_TEMPLATE/lazycodex_bug_report.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P778",
+      "native_consumer": "GitHub issue/PR tracker",
+      "verification_kind": "issue_template_check",
+      "evidence_citations": [
+        ".github/ISSUE_TEMPLATE/lazycodex_bug_report.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P779",
+      "target": ".github/assets/building-in-public.png",
+      "contract_citation": "interfaces/coverage-source-files.md:P779",
+      "native_consumer": "Repository documentation / README assets",
+      "verification_kind": "repo_asset_check",
+      "evidence_citations": [
+        ".github/assets/building-in-public.png (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P780",
+      "target": ".github/assets/elestyle.jpg",
+      "contract_citation": "interfaces/coverage-source-files.md:P780",
+      "native_consumer": "Repository documentation / README assets",
+      "verification_kind": "repo_asset_check",
+      "evidence_citations": [
+        ".github/assets/elestyle.jpg (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P781",
+      "target": ".github/assets/google.jpg",
+      "contract_citation": "interfaces/coverage-source-files.md:P781",
+      "native_consumer": "Repository documentation / README assets",
+      "verification_kind": "repo_asset_check",
+      "evidence_citations": [
+        ".github/assets/google.jpg (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P782",
+      "target": ".github/assets/hephaestus.png",
+      "contract_citation": "interfaces/coverage-source-files.md:P782",
+      "native_consumer": "Repository documentation / README assets",
+      "verification_kind": "repo_asset_check",
+      "evidence_citations": [
+        ".github/assets/hephaestus.png (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P783",
+      "target": ".github/assets/hero.jpg",
+      "contract_citation": "interfaces/coverage-source-files.md:P783",
+      "native_consumer": "Repository documentation / README assets",
+      "verification_kind": "repo_asset_check",
+      "evidence_citations": [
+        ".github/assets/hero.jpg (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P784",
+      "target": ".github/assets/indent.jpg",
+      "contract_citation": "interfaces/coverage-source-files.md:P784",
+      "native_consumer": "Repository documentation / README assets",
+      "verification_kind": "repo_asset_check",
+      "evidence_citations": [
+        ".github/assets/indent.jpg (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P785",
+      "target": ".github/assets/microsoft.jpg",
+      "contract_citation": "interfaces/coverage-source-files.md:P785",
+      "native_consumer": "Repository documentation / README assets",
+      "verification_kind": "repo_asset_check",
+      "evidence_citations": [
+        ".github/assets/microsoft.jpg (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P786",
+      "target": ".github/assets/omo-herdr-dag.png",
+      "contract_citation": "interfaces/coverage-source-files.md:P786",
+      "native_consumer": "Repository documentation / README assets",
+      "verification_kind": "repo_asset_check",
+      "evidence_citations": [
+        ".github/assets/omo-herdr-dag.png (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P787",
+      "target": ".github/assets/omo-icon-light.svg",
+      "contract_citation": "interfaces/coverage-source-files.md:P787",
+      "native_consumer": "Repository documentation / README assets",
+      "verification_kind": "repo_asset_check",
+      "evidence_citations": [
+        ".github/assets/omo-icon-light.svg (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P788",
+      "target": ".github/assets/omo-logo.png",
+      "contract_citation": "interfaces/coverage-source-files.md:P788",
+      "native_consumer": "Repository documentation / README assets",
+      "verification_kind": "repo_asset_check",
+      "evidence_citations": [
+        ".github/assets/omo-logo.png (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P789",
+      "target": ".github/assets/omo.png",
+      "contract_citation": "interfaces/coverage-source-files.md:P789",
+      "native_consumer": "Repository documentation / README assets",
+      "verification_kind": "repo_asset_check",
+      "evidence_citations": [
+        ".github/assets/omo.png (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P790",
+      "target": ".github/assets/opengateway-logo.svg",
+      "contract_citation": "interfaces/coverage-source-files.md:P790",
+      "native_consumer": "Repository documentation / README assets",
+      "verification_kind": "repo_asset_check",
+      "evidence_citations": [
+        ".github/assets/opengateway-logo.svg (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P791",
+      "target": ".github/assets/orchestrator-atlas.png",
+      "contract_citation": "interfaces/coverage-source-files.md:P791",
+      "native_consumer": "Repository documentation / README assets",
+      "verification_kind": "repo_asset_check",
+      "evidence_citations": [
+        ".github/assets/orchestrator-atlas.png (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P792",
+      "target": ".github/assets/sisyphus.png",
+      "contract_citation": "interfaces/coverage-source-files.md:P792",
+      "native_consumer": "Repository documentation / README assets",
+      "verification_kind": "repo_asset_check",
+      "evidence_citations": [
+        ".github/assets/sisyphus.png (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P793",
+      "target": ".github/assets/sisyphuslabs.png",
+      "contract_citation": "interfaces/coverage-source-files.md:P793",
+      "native_consumer": "Repository documentation / README assets",
+      "verification_kind": "repo_asset_check",
+      "evidence_citations": [
+        ".github/assets/sisyphuslabs.png (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P794",
+      "target": ".github/pull_request_template.md",
+      "contract_citation": "interfaces/coverage-source-files.md:P794",
+      "native_consumer": "GitHub issue/PR tracker",
+      "verification_kind": "issue_template_check",
+      "evidence_citations": [
+        ".github/pull_request_template.md (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P796",
+      "target": ".github/scripts/omo-bun-executable.entitlements",
+      "contract_citation": "interfaces/coverage-source-files.md:P796",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_script_check",
+      "evidence_citations": [
+        ".github/scripts/omo-bun-executable.entitlements (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P797",
+      "target": ".github/scripts/windows-ci-telemetry.ps1",
+      "contract_citation": "interfaces/coverage-source-files.md:P797",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_script_check",
+      "evidence_citations": [
+        ".github/scripts/windows-ci-telemetry.ps1 (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P798",
+      "target": ".github/scripts/write-job-summary.sh",
+      "contract_citation": "interfaces/coverage-source-files.md:P798",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_script_check",
+      "evidence_citations": [
+        ".github/scripts/write-job-summary.sh (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P799",
+      "target": ".github/workflows/bot-merge.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P799",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/bot-merge.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P801",
+      "target": ".github/workflows/cla.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P801",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/cla.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P802",
+      "target": ".github/workflows/compiled-worker.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P802",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/compiled-worker.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P806",
+      "target": ".github/workflows/get-worker-ci.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P806",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/get-worker-ci.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P807",
+      "target": ".github/workflows/get-worker-deploy.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P807",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/get-worker-deploy.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P809",
+      "target": ".github/workflows/isolation-linux-fs.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P809",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/isolation-linux-fs.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P810",
+      "target": ".github/workflows/lint-workflows.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P810",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/lint-workflows.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P812",
+      "target": ".github/workflows/npm-dist-tag-rollback.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P812",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/npm-dist-tag-rollback.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P813",
+      "target": ".github/workflows/package-labels.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P813",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/package-labels.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P816",
+      "target": ".github/workflows/refresh-model-capabilities.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P816",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/refresh-model-capabilities.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P817",
+      "target": ".github/workflows/review-claims.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P817",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/review-claims.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P818",
+      "target": ".github/workflows/sisyphus-agent.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P818",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/sisyphus-agent.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P819",
+      "target": ".github/workflows/stats.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P819",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/stats.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P820",
+      "target": ".github/workflows/web-ci.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P820",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/web-ci.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P821",
+      "target": ".github/workflows/web-deploy.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P821",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/web-deploy.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    },
+    {
+      "row_id": "md:interfaces/coverage-source-files.md:P822",
+      "target": ".github/workflows/windows-flake-soak.yml",
+      "contract_citation": "interfaces/coverage-source-files.md:P822",
+      "native_consumer": "GitHub Actions CI runner",
+      "verification_kind": "ci_workflow_check",
+      "evidence_citations": [
+        ".github/workflows/windows-flake-soak.yml (file presence verified in repository tree)",
+        "audit/interfaces.json: retained as verification_only repo metadata/workflow"
+      ],
+      "verdict": "confirmed",
+      "required_command": null,
+      "concrete_gap": null
+    }
+  ]
+}

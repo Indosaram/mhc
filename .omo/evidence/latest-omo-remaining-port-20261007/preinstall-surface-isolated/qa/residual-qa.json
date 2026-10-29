@@ -1,0 +1,27 @@
+{
+  "schema": "session2-residual-qa/v1",
+  "sha": null,
+  "binary": "/home/indo/.cargo-target/maho-code/remaining-maho-cli/debug/mhc",
+  "binary_sha256": "9d21883c01694e7deb1f63b95eb298c144bb86da935560a063df9d17e9afed0f",
+  "binary_actual_sha256": "9d21883c01694e7deb1f63b95eb298c144bb86da935560a063df9d17e9afed0f",
+  "staged_sha256": null,
+  "provenance_sha256": null,
+  "binary_mtime_ms": 1791421308023.7175,
+  "binary_matches_staged": false,
+  "binary_verified": false,
+  "scenarios": {
+    "tui": {
+      "status": "blocked",
+      "blocker": "tui: 80x24/regular(missing abort_cleared_busy,reply_after_prompt,working_indicator_absent_at_reply,resize_reflowed); 120x36/regular(missing abort_cleared_busy,reply_after_prompt,working_indicator_absent_at_reply,resize_reflowed); 200x50/regular(missing abort_cleared_busy,reply_after_prompt,working_indicator_absent_at_reply,resize_reflowed)",
+      "artifacts": [
+        "tui-80x24-regular",
+        "tui-80x24-fullscreen",
+        "tui-120x36-regular",
+        "tui-120x36-fullscreen",
+        "tui-200x50-regular",
+        "tui-200x50-fullscreen"
+      ],
+      "cleanup_ok": true
+    }
+  }
+}

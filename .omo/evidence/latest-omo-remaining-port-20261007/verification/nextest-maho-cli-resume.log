@@ -1,0 +1,925 @@
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.22
+   Compiling quote v1.0.45
+   Compiling libc v0.2.186
+   Compiling syn v2.0.117
+   Compiling cfg-if v1.0.4
+   Compiling memchr v2.8.3
+   Compiling log v0.4.34
+   Compiling syn v3.0.3
+   Compiling itoa v1.0.17
+   Compiling smallvec v1.15.1
+   Compiling equivalent v1.0.2
+   Compiling jobserver v0.1.35
+   Compiling scopeguard v1.2.0
+   Compiling shlex v1.3.0
+   Compiling find-msvc-tools v0.1.9
+   Compiling serde_core v1.0.228
+   Compiling cc v1.2.55
+   Compiling getrandom v0.2.17
+   Compiling foldhash v0.2.0
+   Compiling parking_lot_core v0.9.12
+   Compiling lock_api v0.4.14
+   Compiling typenum v1.20.0
+   Compiling parking_lot v0.12.5
+   Compiling hashbrown v0.17.1
+   Compiling version_check v0.9.5
+   Compiling generic-array v0.14.7
+   Compiling stable_deref_trait v1.2.1
+   Compiling autocfg v1.5.0
+   Compiling indexmap v2.14.0
+   Compiling synstructure v0.13.2
+   Compiling pin-project-lite v0.2.16
+   Compiling subtle v2.6.1
+   Compiling num-traits v0.2.19
+   Compiling rand_core v0.6.4
+   Compiling bytes v1.12.1
+   Compiling bitflags v2.13.1
+   Compiling fastrand v2.3.0
+   Compiling crypto-common v0.1.7
+   Compiling zerofrom-derive v0.1.6
+   Compiling errno v0.3.14
+   Compiling serde v1.0.228
+   Compiling zmij v1.0.19
+   Compiling zerofrom v0.1.6
+   Compiling signal-hook-registry v1.4.8
+   Compiling yoke-derive v0.8.2
+   Compiling serde_derive v1.0.228
+   Compiling mio v1.2.0
+   Compiling yoke v0.8.3
+   Compiling zerovec-derive v0.11.6
+   Compiling displaydoc v0.2.5
+   Compiling pkg-config v0.3.34
+   Compiling zerovec v0.11.8
+   Compiling tokio-macros v2.7.0
+   Compiling socket2 v0.6.3
+   Compiling writeable v0.6.4
+   Compiling futures-core v0.3.34
+   Compiling serde_json v1.0.149
+   Compiling tokio v1.52.3
+   Compiling aho-corasick v1.1.4
+   Compiling regex-syntax v0.8.11
+   Compiling regex-automata v0.4.18
+   Compiling tinystr v0.8.4
+   Compiling cpufeatures v0.2.17
+   Compiling simd-adler32 v0.3.8
+   Compiling crc32fast v1.5.0
+   Compiling litemap v0.8.1
+   Compiling potential_utf v0.1.4
+   Compiling icu_locale_core v2.3.0
+   Compiling zerotrie v0.2.5
+   Compiling block-buffer v0.10.4
+   Compiling once_cell v1.21.4
+   Compiling digest v0.10.7
+   Compiling icu_provider v2.3.1
+   Compiling utf8_iter v1.0.4
+   Compiling futures-sink v0.3.34
+   Compiling adler2 v2.0.1
+   Compiling zeroize v1.8.2
+   Compiling miniz_oxide v0.8.9
+   Compiling futures-channel v0.3.34
+   Compiling icu_collections v2.3.0
+   Compiling futures-macro v0.3.34
+   Compiling getrandom v0.3.4
+   Compiling slab v0.4.12
+   Compiling futures-io v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling flate2 v1.1.8
+   Compiling futures-util v0.3.34
+   Compiling icu_properties_data v2.3.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling percent-encoding v2.3.2
+   Compiling http v1.4.0
+   Compiling cmake v0.1.58
+   Compiling fs_extra v1.3.0
+   Compiling write16 v1.0.0
+   Compiling bit-vec v0.8.0
+   Compiling utf16_iter v1.0.5
+   Compiling thiserror v2.0.18
+   Compiling dunce v1.0.5
+   Compiling aws-lc-sys v0.45.0
+   Compiling bit-set v0.8.0
+   Compiling icu_normalizer v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling thiserror-impl v2.0.18
+   Compiling either v1.18.0
+   Compiling form_urlencoded v1.2.2
+   Compiling tracing-core v0.1.36
+   Compiling ring v0.17.14
+   Compiling tracing-attributes v0.1.31
+   Compiling tracing v0.1.44
+   Compiling idna_adapter v1.2.1
+   Compiling regex v1.12.3
+   Compiling iana-time-zone v0.1.65
+   Compiling aws-lc-rs v1.18.1
+   Compiling ryu v1.0.22
+   Compiling anyhow v1.0.104
+   Compiling httparse v1.10.1
+   Compiling chrono v0.4.43
+   Compiling idna v1.1.0
+   Compiling http-body v1.0.1
+   Compiling rustls-pki-types v1.14.0
+   Compiling sha2 v0.10.9
+   Compiling hex v0.4.3
+   Compiling option-ext v0.2.0
+   Compiling unicode-segmentation v1.13.3
+   Compiling dirs-sys v0.5.0
+   Compiling url v2.5.8
+   Compiling fancy-regex v0.16.2
+   Compiling uuid v1.20.0
+   Compiling untrusted v0.9.0
+   Compiling fnv v1.0.7
+   Compiling tower-service v0.3.3
+   Compiling dirs v6.0.0
+   Compiling tokio-util v0.7.18
+   Compiling rustversion v1.0.22
+   Compiling atomic-waker v1.1.2
+   Compiling unsafe-libyaml v0.2.11
+   Compiling try-lock v0.2.5
+   Compiling rustls v0.23.45
+   Compiling want v0.3.1
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling h2 v0.4.19
+   Compiling itertools v0.14.0
+   Compiling sync_wrapper v1.0.2
+   Compiling crossbeam-utils v0.8.23
+   Compiling tree-sitter-language v0.1.8
+   Compiling pin-utils v0.1.0
+   Compiling httpdate v1.0.3
+   Compiling jiff v0.2.23
+   Compiling tower-layer v0.3.3
+   Compiling hyper v1.8.1
+   Compiling prost-derive v0.14.4
+   Compiling convert_case v0.10.0
+   Compiling base64 v0.22.1
+   Compiling rustix v1.1.4
+   Compiling ipnet v2.11.0
+   Compiling bytemuck v1.25.2
+   Compiling crossbeam-epoch v0.9.21
+   Compiling hyper-util v0.1.20
+   Compiling derive_more-impl v2.1.1
+   Compiling tower v0.5.3
+   Compiling http-body-util v0.1.3
+   Compiling zstd-sys v2.1.0+zstd.1.5.7
+   Compiling unicode-general-category v1.1.0
+   Compiling linux-raw-sys v0.12.1
+   Compiling prettyplease v0.2.37
+   Compiling tinyvec_macros v0.1.1
+   Compiling weezl v0.1.12
+   Compiling crossbeam-deque v0.8.8
+   Compiling foldhash v0.1.5
+   Compiling hashbrown v0.15.5
+   Compiling tinyvec v1.10.0
+   Compiling prost v0.14.4
+   Compiling derive_more v2.1.1
+   Compiling webpki-roots v1.0.5
+   Compiling futures-executor v0.3.34
+   Compiling fdeflate v0.3.7
+   Compiling bstr v1.13.1
+   Compiling fixedbitset v0.5.7
+   Compiling iri-string v0.7.10
+   Compiling color_quant v1.1.0
+   Compiling same-file v1.0.6
+   Compiling thiserror v1.0.69
+   Compiling walkdir v2.5.0
+   Compiling tempfile v3.27.0
+   Compiling tower-http v0.6.8
+   Compiling petgraph v0.8.3
+   Compiling futures v0.3.34
+   Compiling prost-types v0.14.4
+   Compiling unicode-normalization v0.1.25
+   Compiling encoding_rs v0.8.41
+   Compiling multiversion-macros v0.9.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling thiserror-impl v1.0.69
+   Compiling icu_locale_fallback_data v2.3.0
+   Compiling zstd-safe v7.3.0
+   Compiling cfg_aliases v0.1.1
+   Compiling heck v0.5.0
+   Compiling multimap v0.10.1
+   Compiling prost-build v0.14.4
+   Compiling nix v0.28.0
+   Compiling multiversion v0.9.0
+   Compiling core_detect v1.0.0
+   Compiling minimal-lexical v0.2.1
+   Compiling simdutf8 v0.1.5
+   Compiling rayon-core v1.13.0
+   Compiling multiversion_no_op v1.0.0
+   Compiling signal-hook v0.3.18
+   Compiling nom v7.1.3
+   Compiling maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+   Compiling tree-sitter v0.25.10
+   Compiling globset v0.4.20
+   Compiling tree-sitter-typescript v0.23.2
+   Compiling tree-sitter-javascript v0.25.0
+   Compiling grep-matcher v0.1.9
+   Compiling getrandom v0.4.2
+   Compiling icu_segmenter_data v2.3.0
+   Compiling ignore v0.4.33
+   Compiling icu_locale_fallback v2.3.0
+   Compiling zstd v0.13.3
+   Compiling eventsource-stream v0.2.3
+   Compiling encoding_rs_io v0.1.8
+   Compiling filedescriptor v0.8.3
+   Compiling async-trait v0.1.92
+   Compiling serial2 v0.2.37
+   Compiling memmap2 v0.9.11
+   Compiling pxfm v0.1.30
+   Compiling unicode-width v0.2.1
+   Compiling quick-error v2.0.1
+   Compiling shell-words v1.1.1
+   Compiling litrs v1.0.0
+   Compiling downcast-rs v1.2.1
+   Compiling streaming-iterator v0.1.9
+   Compiling zune-core v0.5.3
+   Compiling byteorder-lite v0.1.0
+   Compiling image-webp v0.2.4
+   Compiling zune-jpeg v0.5.15
+   Compiling portable-pty v0.9.0
+   Compiling document-features v0.2.12
+   Compiling moxcms v0.8.1
+   Compiling grep-searcher v0.1.17
+   Compiling signal-hook-mio v0.2.5
+   Compiling rayon v1.12.0
+   Compiling rustls-webpki v0.103.15
+   Compiling grep-regex v0.1.14
+   Compiling gif v0.14.2
+   Compiling png v0.18.1
+   Compiling image v0.25.10
+   Compiling tokio-rustls v0.26.4
+   Compiling hyper-rustls v0.27.7
+   Compiling reqwest v0.12.28
+   Compiling maho-grep v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/vendor/maho-grep)
+   Compiling icu_segmenter v2.3.0
+   Compiling crossterm v0.29.0
+   Compiling maho-pty v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/vendor/maho-pty)
+   Compiling maho-tui v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tui)
+   Compiling semver v1.0.27
+   Compiling siphasher v1.0.4
+   Compiling icu_collator_data v2.3.0
+   Compiling phf_shared v0.13.1
+   Compiling vcpkg v0.2.15
+   Compiling libsqlite3-sys v0.38.2
+   Compiling icu_collator v2.3.1
+   Compiling phf_generator v0.13.1
+   Compiling num-conv v0.2.2
+   Compiling time-core v0.1.9
+   Compiling powerfmt v0.2.0
+   Compiling deranged v0.5.8
+   Compiling time v0.3.55
+   Compiling maho-omo-config-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/omo-config-core)
+   Compiling hashlink v0.12.2
+   Compiling quick-xml v0.42.0
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling fallible-iterator v0.3.0
+   Compiling linked-hash-map v0.5.6
+   Compiling base64 v0.23.1
+   Compiling plist v1.10.1
+   Compiling yaml-rust v0.4.5
+   Compiling rusqlite v0.40.2
+   Compiling bincode v1.3.3
+   Compiling syntect v5.3.0
+   Compiling phf_codegen v0.13.1
+   Compiling maho-utils v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/utils)
+   Compiling maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+   Compiling phf_macros v0.13.1
+   Compiling zerocopy v0.8.37
+   Compiling phf v0.13.1
+   Compiling sha1 v0.10.6
+   Compiling new_debug_unreachable v1.0.6
+   Compiling precomputed-hash v0.1.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling string_cache_codegen v0.6.1
+   Compiling maho-model-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/model-core)
+   Compiling regress v0.12.0
+   Compiling web_atoms v0.2.6
+   Compiling maho-memory-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/memory-core)
+   Compiling maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+   Compiling maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+   Compiling string_cache v0.9.0
+   Compiling maho-tmux-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/tmux-core)
+   Compiling maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+   Compiling maho-ext-ask-user v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-ask-user)
+   Compiling maho-omo-config-resolution v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-resolution)
+   Compiling maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+   Compiling filetime v0.2.27
+   Compiling dtoa v1.0.11
+   Compiling dtoa-short v0.3.5
+   Compiling maho-isolation-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/isolation-core)
+   Compiling maho-team-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/team-core)
+   Compiling maho-delegate-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/delegate-core)
+   Compiling tendril v0.5.1
+   Compiling maho-senpi-task v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/senpi-task)
+   Compiling maho-rpc v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-rpc)
+   Compiling getrandom v0.1.16
+   Compiling rand_core v0.9.5
+   Compiling num-integer v0.1.47
+   Compiling servo_arc v0.4.3
+   Compiling rustc-hash v2.1.1
+   Compiling inotify-sys v0.1.8
+   Compiling rand_chacha v0.9.0
+   Compiling paste v1.0.15
+   Compiling const-oid v0.9.6
+   Compiling der v0.7.10
+   Compiling rand v0.8.8
+   Compiling rand_core v0.5.1
+   Compiling maho-interactive v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-interactive)
+   Compiling rand v0.9.3
+   Compiling num-bigint v0.4.8
+   Compiling selectors v0.38.0
+   Compiling phf_shared v0.11.3
+   Compiling rustc_version v0.4.1
+   Compiling safe_arch v0.7.4
+   Compiling maho-mcp-stdio-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/mcp-stdio-core)
+   Compiling approx v0.5.1
+   Compiling num-complex v0.4.6
+   Compiling inout v0.1.4
+   Compiling matrixmultiply v0.3.11
+   Compiling cssparser-macros v0.7.1
+   Compiling openssl-probe v0.2.1
+   Compiling syn v1.0.109
+   Compiling rustls-native-certs v0.8.4
+   Compiling cssparser v0.37.0
+   Compiling cipher v0.4.4
+   Compiling maho-lsp-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-core)
+   Compiling maho-ext-gpt-apply-patch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-gpt-apply-patch)
+   Compiling wide v0.7.33
+   Compiling maho-ext-builtin-loose v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-builtin-loose)
+   Compiling curve25519-dalek v4.1.3
+   Compiling phf_generator v0.11.3
+   Compiling num-rational v0.4.2
+   Compiling inotify v0.11.5
+   Compiling toml v0.5.11
+   Compiling rand_chacha v0.2.2
+   Compiling spki v0.7.3
+   Compiling markup5ever v0.39.0
+   Compiling maho-omo-ultrawork v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-ultrawork)
+   Compiling selectors v0.36.1
+   Compiling gethostname v1.1.0
+   Compiling universal-hash v0.5.1
+   Compiling notify-types v2.1.0
+   Compiling cssparser-macros v0.6.1
+   Compiling rawpointer v0.2.1
+   Compiling bitflags v1.3.2
+   Compiling ttf-parser v0.15.2
+   Compiling jpeg-decoder v0.3.2
+   Compiling sys-locale v0.3.2
+   Compiling opaque-debug v0.3.1
+   Compiling maho-omo-agent-home v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-agent-home)
+   Compiling mime v0.3.17
+   Compiling axum-core v0.5.6
+   Compiling owned_ttf_parser v0.15.2
+   Compiling polyval v0.6.2
+   Compiling maho-telemetry-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/telemetry-core)
+   Compiling tiff v0.9.1
+   Compiling png v0.17.16
+   Compiling cssparser v0.36.0
+   Compiling notify v8.2.0
+   Compiling html5ever v0.39.0
+   Compiling find-crate v0.6.3
+   Compiling pkcs8 v0.10.2
+   Compiling simba v0.7.3
+   Compiling rand v0.7.3
+   Compiling phf_macros v0.11.3
+   Compiling maho-lsp-daemon v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-daemon)
+   Compiling rustls-platform-verifier v0.6.2
+   Compiling num-iter v0.1.46
+   Compiling maho-omo-fallback-architect v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-fallback-architect)
+   Compiling markup5ever v0.38.0
+   Compiling gif v0.13.3
+   Compiling maho-boulder-state v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/boulder-state)
+   Compiling serde_path_to_error v0.1.20
+   Compiling curve25519-dalek-derive v0.1.1
+   Compiling nom v8.0.0
+   Compiling byteorder v1.5.0
+   Compiling arrayvec v0.7.8
+   Compiling matchit v0.8.4
+   Compiling data-encoding v2.11.1
+   Compiling bumpalo v3.19.1
+   Compiling ab_glyph_rasterizer v0.1.10
+   Compiling signature v2.2.0
+   Compiling palette v0.6.1
+   Compiling utf-8 v0.7.6
+   Compiling custom_derive v0.1.7
+   Compiling zip v2.4.2
+   Compiling conv v0.3.3
+   Compiling dom_query v0.28.0
+   Compiling tungstenite v0.28.0
+   Compiling ed25519 v2.2.3
+   Compiling rusttype v0.9.3
+   Compiling zopfli v0.8.3
+   Compiling axum v0.8.9
+   Compiling vte v0.15.0
+   Compiling image v0.24.9
+   Compiling maho-omo-start-work-continuation v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-start-work-continuation)
+   Compiling palette_derive v0.6.1
+   Compiling html5ever v0.38.0
+   Compiling num v0.4.3
+   Compiling nalgebra v0.30.1
+   Compiling reqwest v0.13.2
+   Compiling maho-omo-lsp v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-lsp)
+   Compiling phf v0.11.3
+   Compiling rand_distr v0.2.2
+   Compiling maho-omo-telemetry v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-telemetry)
+   Compiling ghash v0.5.1
+   Compiling maho-ext-todotools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-todotools)
+   Compiling maho-ext-tool-search v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-tool-search)
+   Compiling aes v0.8.4
+   Compiling ctr v0.9.2
+   Compiling maho-omo-onboarding v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-onboarding)
+   Compiling maho-omo-bundled-skills v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-bundled-skills)
+   Compiling maho-comment-checker-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/comment-checker-core)
+   Compiling maho-config-migration v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/config-migration)
+   Compiling itertools v0.10.5
+   Compiling hmac v0.12.1
+   Compiling aead v0.5.2
+   Compiling flagset v0.4.7
+   Compiling html-escape v0.2.15
+   Compiling gjson v0.8.1
+   Compiling imageproc v0.23.1
+   Compiling dom_smoothie v0.18.2
+   Compiling aes-gcm v0.10.3
+   Compiling hkdf v0.12.4
+   Compiling maho-omo-config-startup v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-startup)
+   Compiling maho-omo-comment-checker v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-comment-checker)
+   Compiling maho-omo-skill-commands v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-skill-commands)
+   Compiling maho-omo-init-deep-advisor v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-init-deep-advisor)
+   Compiling maho-ext-goal v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-goal)
+   Compiling maho-ext-mcp v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-mcp)
+   Compiling dom_query v0.27.0
+   Compiling maho-omo-task v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-task)
+   Compiling maho-omo-ulw-loop v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-ulw-loop)
+   Compiling ed25519-dalek v2.2.0
+   Compiling vt100 v0.16.2
+   Compiling tokio-tungstenite v0.28.0
+   Compiling maho-omo-memory v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-memory)
+   Compiling maho-omo-config-watch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-watch)
+   Compiling maho-omo-todo-fanout-reminder v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-todo-fanout-reminder)
+   Compiling maho-ext-anthropic-subscription v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-anthropic-subscription)
+   Compiling maho-ext-compaction v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-compaction)
+   Compiling maho-omo-git-master v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-git-master)
+   Compiling maho-omo-model-profile v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-model-profile)
+   Compiling maho-ext-rule-activation v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-rule-activation)
+   Compiling maho-omo-builtin-mcps v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-builtin-mcps)
+   Compiling maho-omo-mass-ulw v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-mass-ulw)
+   Compiling maho-ext-imagegen v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-imagegen)
+   Compiling maho-omo-ast-grep v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-ast-grep)
+   Compiling maho-omo-native-badge v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-native-badge)
+   Compiling maho-ext-anthropic-bash v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-anthropic-bash)
+   Compiling instant v0.1.13
+   Compiling perlin2d v0.2.6
+   Compiling base64 v0.13.1
+   Compiling maho-ext-bash-timeout v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-bash-timeout)
+   Compiling photon-rs v0.3.3
+   Compiling maho-omo v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/maho-omo)
+   Compiling maho-ext-openai-image-gen v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-openai-image-gen)
+   Compiling maho-ext-rules v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-rules)
+   Compiling maho-ext-btw v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-btw)
+   Compiling maho-ext-cursor-cli-oauth v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-cursor-cli-oauth)
+   Compiling maho-ext-pi-ast-grep v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-pi-ast-grep)
+   Compiling maho-server v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-server)
+   Compiling maho-ext-terminal v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-terminal)
+   Compiling maho-ext-omo-zcode-oauth v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-omo-zcode-oauth)
+   Compiling maho-ext-webfetch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-webfetch)
+   Compiling maho-ext-pi-webfetch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-pi-webfetch)
+   Compiling maho-ext-websearch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-websearch)
+   Compiling maho-ext-config-reload v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-config-reload)
+   Compiling maho-ext-account v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-account)
+   Compiling maho-ext-herdr v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-herdr)
+   Compiling maho-ext-permission-system v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-permission-system)
+   Compiling maho-ext-history-search v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-history-search)
+   Compiling maho-ext-look-at v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-look-at)
+   Compiling maho-ext-help v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-help)
+   Compiling maho-ext-llama v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-llama)
+   Compiling maho-ext-herdr-agent-state v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-herdr-agent-state)
+   Compiling maho-ext-loop v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-loop)
+   Compiling maho-ext-recommended-models v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-recommended-models)
+   Compiling maho-ext-hooks v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-hooks)
+   Compiling maho-ext-cache-keepalive v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-cache-keepalive)
+   Compiling maho-ext-prompt-preset v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-prompt-preset)
+   Compiling maho-ext-model-fallback v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-model-fallback)
+   Compiling maho-ext-loop-guard v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-loop-guard)
+   Compiling maho-codemode v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-codemode)
+   Compiling maho-ext-nested-agents-md v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-nested-agents-md)
+   Compiling maho-ext-pi-nested-agents-md v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-pi-nested-agents-md)
+   Compiling maho-ext-ferryx-agent-state v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-ferryx-agent-state)
+   Compiling maho-ext-ttsr v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-ttsr)
+   Compiling maho-ext-video-in v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-video-in)
+   Compiling maho-ext-orca-agent-status v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-orca-agent-status)
+   Compiling maho-ext-orca-titlebar-spinner v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-orca-titlebar-spinner)
+   Compiling maho-ext-anthropic-web-search v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-anthropic-web-search)
+   Compiling maho-ext-openai-web-search v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-openai-web-search)
+   Compiling maho-ext-tool-pair-guard v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-tool-pair-guard)
+   Compiling maho-cli v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-cli)
+    Finished `test` profile [unoptimized] target(s) in 4m 53s
+────────────
+ Nextest run ID aa920e1c-25fb-477b-9bfa-128e6e32eb1d with nextest profile: default
+    Starting 406 tests across 70 binaries
+        PASS [   0.009s] (  1/406) maho-cli cli::kibitzer_budget::tests::a_max_counter_at_the_limit_refuses_without_overflow
+        PASS [   0.009s] (  2/406) maho-cli cli::kibitzer_child::settlement_tests::a_rejected_duplicate_start_does_not_shift_the_turn
+        PASS [   0.009s] (  3/406) maho-cli cli::kibitzer_child::settlement_tests::an_armed_receiver_resolves_at_the_final_boundary
+        PASS [   0.009s] (  4/406) maho-cli cli::kibitzer_child::settlement_tests::cancellation_captures_the_armed_receivers_and_suppresses_accumulation
+        PASS [   0.010s] (  5/406) maho-cli cli::kibitzer_budget::tests::reset_swaps_the_current_budget
+        PASS [   0.012s] (  6/406) maho-cli cli::kibitzer_child::settlement_tests::a_stale_failure_does_not_touch_a_newer_turn
+        PASS [   0.012s] (  7/406) maho-cli cli::kibitzer_child::settlement_tests::an_intermediate_terminal_does_not_resolve_before_publish
+        PASS [   0.012s] (  8/406) maho-cli cli::kibitzer_child::settlement_tests::an_explicit_trigger_error_resolves_the_armed_receiver
+        PASS [   0.013s] (  9/406) maho-cli cli::kibitzer_child::settlement_tests::a_stronger_outcome_is_never_overwritten_by_a_weaker_one
+        PASS [   0.016s] ( 10/406) maho-cli cli::kibitzer_budget::tests::a_zero_limit_refuses_every_charge
+        PASS [   0.020s] ( 11/406) maho-cli cli::interactive_entry::tests::startup_theme_settings_seam_reads_live_global_and_excludes_project
+        PASS [   0.012s] ( 12/406) maho-cli cli::memory_runtime::tests::component_is_the_retained_memory_list_entry
+        PASS [   0.012s] ( 13/406) maho-cli cli::kibitzer_child::settlement_tests::publish_resolves_a_queued_follow_up_at_the_current_logical_turn
+        PASS [   0.021s] ( 14/406) maho-cli cli::kibitzer_budget::tests::simultaneous_charges_admit_exactly_the_limit
+        PASS [   0.009s] ( 15/406) maho-cli cli::memory_runtime::tests::register_host_installs_the_palace_command
+        PASS [   0.012s] ( 16/406) maho-cli cli::memory_runtime::tests::options_reuse_one_component_wiring_and_retained_ports
+        PASS [   0.013s] ( 17/406) maho-cli cli::kibitzer_child::settlement_tests::one_publish_resolves_every_armed_receiver
+        PASS [   0.011s] ( 18/406) maho-cli cli::memory_runtime::tests::rejects_envelope_config
+        PASS [   0.014s] ( 19/406) maho-cli cli::memory_runtime::tests::palace_people_options_follow_the_resolved_memory_people_block
+        PASS [   0.009s] ( 20/406) maho-cli cli::recall_wiring::tests::given_a_free_machine_slot_when_admitted_through_the_production_adapter_then_the_real_lease_is_handed_over
+        PASS [   0.015s] ( 21/406) maho-cli cli::memory_runtime::tests::reads_live_resolved_settings_not_a_frozen_snapshot
+        PASS [   0.008s] ( 22/406) maho-cli experimental::mini::view::tests::projects_transcript_streaming_and_queues
+        PASS [   0.008s] ( 23/406) maho-cli import_omo::tests::forced_import_rejects_destination_links_before_writing
+        PASS [   0.009s] ( 24/406) maho-cli import_omo::tests::copies_config_and_nested_sessions_when_destination_is_empty
+        PASS [   0.009s] ( 25/406) maho-cli import_omo::tests::forced_import_replaces_hard_links_without_changing_external_files
+        PASS [   0.008s] ( 26/406) maho-cli import_omo::tests::overwrites_requested_files_when_force_is_set
+        PASS [   0.011s] ( 27/406) maho-cli cli::recall_wiring::tests::given_a_worker_that_produced_no_verdict_when_awaited_then_the_attempt_is_the_lock_domain_error
+        PASS [   0.011s] ( 28/406) maho-cli experimental::mini::view::tests::idle_snapshot_has_no_status
+        PASS [   0.010s] ( 29/406) maho-cli import_omo::tests::refuses_all_writes_when_any_entry_exists
+        PASS [   0.009s] ( 30/406) maho-cli import_omo::tests::rejects_overlapping_directories_before_copying
+        PASS [   0.008s] ( 31/406) maho-cli import_omo::tests::repeat_import_preserves_all_destination_hashes
+        PASS [   0.022s] ( 32/406) maho-cli cli::recall_wiring::tests::given_a_completed_worker_when_the_waiting_future_is_dropped_then_the_retained_verdict_is_dropped_and_the_lease_is_released
+        PASS [   0.008s] ( 33/406) maho-cli utils::clipboard_image::tests::native_errors_remain_errors
+        PASS [   0.006s] ( 34/406) maho-cli::app_server_entry only_the_app_server_verb_is_handled
+        PASS [   0.007s] ( 35/406) maho-cli::app_server_entry daemon_verbs_are_recognized_from_the_argument_vector
+        PASS [   0.009s] ( 36/406) maho-cli::ansi upstream_ris_does_not_leak_final_byte
+        PASS [   0.005s] ( 37/406) maho-cli::app_server_entry shutdown_escalates_from_graceful_to_forced
+        PASS [   0.011s] ( 38/406) maho-cli::ansi upstream_common_tool_output_sequences_are_removed
+        PASS [   0.009s] ( 39/406) maho-cli::ansi upstream_single_byte_escape_sequences_are_removed
+        PASS [   0.006s] ( 40/406) maho-cli::args accepts_all_thinking_levels
+        PASS [   0.012s] ( 41/406) maho-cli::app_server_entry listening_banner_matches_the_pinned_transport_lines
+        PASS [   0.005s] ( 42/406) maho-cli::args consumes_frontmatter_prompt_when_print_precedes_it
+        PASS [   0.015s] ( 43/406) maho-cli::ansi upstream_generated_compatibility_inputs_match_reference_regex
+        PASS [   0.006s] ( 44/406) maho-cli::args consumes_empty_search_when_list_models_is_followed_by_empty_argument
+        PASS [   0.007s] ( 45/406) maho-cli::args approval_override_uses_last_flag
+        PASS [   0.006s] ( 46/406) maho-cli::args invalid_thinking_reports_warning_when_value_is_unknown
+        PASS [   0.008s] ( 47/406) maho-cli::args grok_flag_requires_explicit_gate
+        PASS [   0.009s] ( 48/406) maho-cli::args comma_lists_drop_empty_tools_but_keep_empty_model_patterns
+        PASS [   0.029s] ( 49/406) maho-cli cli::recall_wiring::tests::given_a_waiting_future_dropped_while_the_worker_runs_then_the_produced_verdict_is_dropped_and_the_lease_is_released
+        PASS [   0.006s] ( 50/406) maho-cli::args legacy_provider_ids_are_rejected_when_typed
+        PASS [   0.006s] ( 51/406) maho-cli::args listen_remains_extension_flag_when_rpc_mode_is_not_yet_selected
+        PASS [   0.006s] ( 52/406) maho-cli::args malformed_runtime_does_not_consume_next_long_flag
+        PASS [   0.005s] ( 53/406) maho-cli::args name_normalization_rejects_whitespace_when_validated
+        PASS [   0.007s] ( 54/406) maho-cli::args missing_theme_does_not_consume_following_flag
+        PASS [   0.008s] ( 55/406) maho-cli::args missing_name_reports_error
+        PASS [   0.008s] ( 56/406) maho-cli::args missing_rpc_listener_preserves_following_flag
+        PASS [   0.006s] ( 57/406) maho-cli::args parses_auto_title_sessions_flag
+        PASS [   0.021s] ( 58/406) maho-cli::app_server_entry real_entry_rejects_an_unknown_app_server_option
+        PASS [   0.006s] ( 59/406) maho-cli::args parses_export_value
+        PASS [   0.006s] ( 60/406) maho-cli::args parses_continue_flag
+        PASS [   0.006s] ( 61/406) maho-cli::args parses_fork_value
+        PASS [   0.010s] ( 62/406) maho-cli::args parses_api_key_value
+        PASS [   0.005s] ( 63/406) maho-cli::args parses_help_flag
+        PASS [   0.010s] ( 64/406) maho-cli::args parses_c_flag
+        PASS [   0.006s] ( 65/406) maho-cli::args parses_model_value
+        PASS [   0.005s] ( 66/406) maho-cli::args parses_n_value
+        PASS [   0.005s] ( 67/406) maho-cli::args parses_multi_session_flag
+        PASS [   0.007s] ( 68/406) maho-cli::args parses_list_tips_flag
+        PASS [   0.009s] ( 69/406) maho-cli::args parses_h_flag
+        PASS [   0.005s] ( 70/406) maho-cli::args parses_name_value
+        PASS [   0.006s] ( 71/406) maho-cli::args parses_nc_flag
+        PASS [   0.029s] ( 72/406) maho-cli::app_server_entry real_entry_reports_a_usage_error_with_exit_code_two
+        PASS [   0.005s] ( 73/406) maho-cli::args parses_ne_flag
+        PASS [   0.008s] ( 74/406) maho-cli::args parses_nbt_flag
+        PASS [   0.006s] ( 75/406) maho-cli::args parses_no_builtin_tools_flag
+        PASS [   0.005s] ( 76/406) maho-cli::args parses_no_extensions_flag
+        PASS [   0.006s] ( 77/406) maho-cli::args parses_no_context_files_flag
+        PASS [   0.005s] ( 78/406) maho-cli::args parses_np_flag
+        PASS [   0.009s] ( 79/406) maho-cli::args parses_no_prompt_templates_flag
+        PASS [   0.008s] ( 80/406) maho-cli::args parses_no_themes_flag
+        PASS [   0.007s] ( 81/406) maho-cli::args parses_no_tools_flag
+        PASS [   0.009s] ( 82/406) maho-cli::args parses_no_session_flag
+        PASS [   0.008s] ( 83/406) maho-cli::args parses_no_skills_flag
+        PASS [   0.005s] ( 84/406) maho-cli::args parses_nt_flag
+        PASS [   0.007s] ( 85/406) maho-cli::args parses_ns_flag
+        PASS [   0.005s] ( 86/406) maho-cli::args parses_p_flag
+        PASS [   0.005s] ( 87/406) maho-cli::args parses_offline_flag
+        PASS [   0.006s] ( 88/406) maho-cli::args parses_print_flag
+        PASS [   0.006s] ( 89/406) maho-cli::args parses_provider_value
+        PASS [   0.006s] ( 90/406) maho-cli::args parses_session_dir_value
+        PASS [   0.006s] ( 91/406) maho-cli::args parses_resume_flag
+        PASS [   0.005s] ( 92/406) maho-cli::args parses_v_flag
+        PASS [   0.007s] ( 93/406) maho-cli::args parses_system_prompt_value
+        PASS [   0.007s] ( 94/406) maho-cli::args parses_session_id_value
+        PASS [   0.005s] ( 95/406) maho-cli::args parses_version_flag
+        PASS [   0.006s] ( 96/406) maho-cli::args parses_verbose_flag
+        PASS [   0.007s] ( 97/406) maho-cli::args parses_r_flag
+        PASS [   0.007s] ( 98/406) maho-cli::args parses_use_theme_value
+        PASS [   0.005s] ( 99/406) maho-cli::args preserves_options_when_print_precedes_provider
+        PASS [   0.009s] (100/406) maho-cli::args parses_session_value
+        PASS [   0.005s] (101/406) maho-cli::args repeated_resources_and_prompts_accumulate_when_given_multiple_times
+        PASS [   0.006s] (102/406) maho-cli::args runtime_defaults_to_in_process_when_socket_is_requested
+        PASS [   0.005s] (103/406) maho-cli::args separator_preserves_dash_messages_and_file_arguments
+        PASS [   0.006s] (104/406) maho-cli::args runtime_override_wins_when_socket_is_requested
+        PASS [   0.005s] (105/406) maho-cli::args unknown_values_preserve_equals_and_boolean_forms
+        PASS [   0.011s] (106/406) maho-cli::args parses_valid_output_modes
+        PASS [   0.007s] (107/406) maho-cli::args unknown_short_options_report_error
+        PASS [   0.011s] (108/406) maho-cli::changelog links_pin_versions_and_resolve_repository_paths
+        PASS [   0.010s] (109/406) maho-cli::child_process preaborted_signal_releases_pipes_and_observes_exit
+        PASS [   0.009s] (110/406) maho-cli::clipboard_image mime_selection_prefers_supported_formats_and_preserves_parameters
+        PASS [   0.010s] (111/406) maho-cli::child_process absent_pipes_wait_for_exit_without_reading
+        PASS [   0.013s] (112/406) maho-cli::changelog upstream_links_rewrite_package_relative_targets
+        PASS [   0.014s] (113/406) maho-cli::child_process drains_output_and_observes_real_exit
+        PASS [   0.018s] (114/406) maho-cli::changelog ignores_headers_inside_fences_and_invalid_dates
+        PASS [   0.015s] (115/406) maho-cli::changelog upstream_links_canonicalize_repositories_and_preserve_external_targets
+        PASS [   0.016s] (116/406) maho-cli::changelog upstream_new_entries_cap_calver_and_isolate_sources
+        PASS [   0.006s] (117/406) maho-cli::command_dispatch dispatches_subcommand_builder_and_action
+        PASS [   0.006s] (118/406) maho-cli::command_dispatch aggregates_parse_and_builder_errors_and_rejects_duplicate_registration
+        PASS [   0.021s] (119/406) maho-cli::changelog calver_revision_order_is_numeric_and_duplicates_are_removed
+        PASS [   0.021s] (120/406) maho-cli::changelog unreleased_resets_section_and_foreign_versions_are_excluded
+        PASS [   0.008s] (121/406) maho-cli::command_dispatch repeatable_options_keep_typed_values_in_order
+        PASS [   0.007s] (122/406) maho-cli::command_dispatch typed_options_reject_invalid_values_without_consuming_duplicate_slot
+        PASS [   0.007s] (123/406) maho-cli::config asset_override_requires_probe_and_falls_back_to_installation
+        PASS [   0.007s] (124/406) maho-cli::coordinator coordinator_messages_keep_machine_field_names
+        PASS [   0.009s] (125/406) maho-cli::coordinator coordinator_routes_control_messages_and_cleans_owned_sockets
+        PASS [   0.008s] (126/406) maho-cli::coordinator routing_drops_unknown_targets_and_limits_broadcast_to_server
+        PASS [   0.008s] (127/406) maho-cli::credentials api_key_round_trips_through_auth_json
+        PASS [   0.019s] (128/406) maho-cli::clipboard_image termux_returns_without_reading_desktop_clipboard
+        PASS [   0.007s] (129/406) maho-cli::credentials modify_returning_none_leaves_the_entry_unchanged
+        PASS [   0.008s] (130/406) maho-cli::credentials missing_entry_reads_none
+        PASS [   0.010s] (131/406) maho-cli::credentials delete_removes_the_entry
+        PASS [   0.014s] (132/406) maho-cli::coordinator public_proxy_and_connection_facade_follow_server_replacement
+        PASS [   0.010s] (133/406) maho-cli::credentials list_reports_metadata_without_secrets
+        PASS [   0.007s] (134/406) maho-cli::credentials stored_bytes_use_the_auth_json_shape
+        PASS [   0.007s] (135/406) maho-cli::credentials oauth_round_trips_with_extra_fields
+        PASS [   0.008s] (136/406) maho-cli::deferred_commands grok_gate_requires_explicit_truthy_value
+        PASS [   0.006s] (137/406) maho-cli::duration hour
+        PASS [   0.008s] (138/406) maho-cli::duration day
+        PASS [   0.006s] (139/406) maho-cli::duration last_minute
+        PASS [   0.007s] (140/406) maho-cli::duration last_hour
+        PASS [   0.008s] (141/406) maho-cli::deferred_commands resource_routes_accept_only_known_verbs
+        PASS [   0.006s] (142/406) maho-cli::duration minute
+        PASS [   0.006s] (143/406) maho-cli::duration negative
+        PASS [   0.005s] (144/406) maho-cli::duration second
+        PASS [   0.006s] (145/406) maho-cli::duration rounded_seconds
+        PASS [   0.007s] (146/406) maho-cli::duration milliseconds
+        PASS [   0.009s] (147/406) maho-cli::duration minute_seconds
+        PASS [   0.016s] (148/406) maho-cli::duration fractional_seconds
+        PASS [   0.029s] (149/406) maho-cli::coordinator_entry real_binary_coordinator_registers_peer_and_cleans_sockets_on_sigterm
+        PASS [   0.005s] (150/406) maho-cli::duration zero
+        PASS [   0.006s] (151/406) maho-cli::experimental_commands client_rejects_multiple_prompts_and_conflicting_auth
+        PASS [   0.007s] (152/406) maho-cli::experimental_commands client_rejects_conflicting_sessions_and_provider_without_model
+        PASS [   0.008s] (153/406) maho-cli::experimental_commands client_accepts_single_prompt_and_repeatable_plugins
+        PASS [   0.026s] (154/406) maho-cli::default_extensions concrete_default_factories_register_tools_and_commands
+        PASS [   0.007s] (155/406) maho-cli::experimental_commands server_accepts_identifier_and_model_but_not_prompts
+        PASS [   0.010s] (156/406) maho-cli::experimental_commands radius_requires_lowercase_v4_identity
+        PASS [   0.009s] (157/406) maho-cli::experimental_commands unix_addresses_decode_paths_and_reject_authorities
+        PASS [   0.010s] (158/406) maho-cli::extension_registry deferred_user_records_cover_the_unlinked_ports
+        PASS [   0.015s] (159/406) maho-cli::extension_registry assemble_extensions_tags_builtin_and_user_kinds
+        PASS [   0.015s] (160/406) maho-cli::extension_registry deferred_records_name_a_crate_and_a_requirement
+        PASS [   0.011s] (161/406) maho-cli::extension_registry linked_builtin_ids_keep_the_pinned_relative_order
+        PASS [   0.057s] (162/406) maho-cli::codemode_services configured_completion_callback_consumes_native_sdk_context
+        PASS [   0.015s] (163/406) maho-cli::extension_registry help_factory_registers_the_keybindings_command
+        PASS [   0.016s] (164/406) maho-cli::extension_registry inline_llama_factory_registers_the_llama_command
+        PASS [   0.018s] (165/406) maho-cli::extension_registry every_pinned_id_is_linked_or_recorded_as_deferred
+        PASS [   0.009s] (166/406) maho-cli::extension_registry pinned_builtin_order_matches_upstream
+        PASS [   0.020s] (167/406) maho-cli::extension_registry hooks_factory_registers_the_pinned_handlers_and_command
+        PASS [   0.007s] (168/406) maho-cli::file_processor reads_text_strips_bom_and_skips_empty_files
+        PASS [   0.006s] (169/406) maho-cli::fs_watch canonical_watch_path_does_not_touch_unix_filesystem
+        PASS [   0.021s] (170/406) maho-cli::extension_registry linked_factories_register_through_the_loader
+        PASS [   0.008s] (171/406) maho-cli::fs_watch missing_watch_path_reports_error_once
+        PASS [   0.014s] (172/406) maho-cli::file_processor processes_real_image_as_attachment
+        PASS [   0.005s] (173/406) maho-cli::git generic_git_urls_preserve_clone_address_and_separate_ref
+        PASS [   0.007s] (174/406) maho-cli::git generic_git_install_paths_reject_encoded_traversal_and_invalid_escapes
+        PASS [   0.009s] (175/406) maho-cli::generated_parity hosted_git_generated_reference_cases
+        PASS [   0.006s] (176/406) maho-cli::git hosted_shorthands_preserve_upstream_clone_address
+        PASS [   0.015s] (177/406) maho-cli::fs_watch directory_probe_opens_real_directory_and_rejects_missing_or_file
+        PASS [   0.013s] (178/406) maho-cli::fs_watch watcher_subscribes_before_write_and_delivers_filename
+        PASS [   0.022s] (179/406) maho-cli::extension_registry loop_guard_registers_the_pinned_notice_renderer
+        PASS [   0.007s] (180/406) maho-cli::git upstream_https_url
+        PASS [   0.007s] (181/406) maho-cli::git upstream_prefixed_host
+        PASS [   0.005s] (182/406) maho-cli::git upstream_prefixed_scp
+        PASS [   0.007s] (183/406) maho-cli::git upstream_protocol_ref
+        PASS [   0.008s] (184/406) maho-cli::git upstream_prefixed_scp_ref
+        PASS [   0.005s] (185/406) maho-cli::git upstream_ssh_url
+        PASS [   0.007s] (186/406) maho-cli::git upstream_unsafe_paths
+        PASS [   0.006s] (187/406) maho-cli::git upstream_user_repo_rejected
+        PASS [   0.007s] (188/406) maho-cli::git upstream_unprefixed_host_rejected
+        PASS [   0.006s] (189/406) maho-cli::hook_sources cli_and_additional_hook_paths_merge_into_the_pre_session_scope
+        PASS [   0.010s] (190/406) maho-cli::git upstream_unprefixed_scp_rejected
+        PASS [   0.010s] (191/406) maho-cli::help_fast_path no_extension_help_needs_no_cache_and_trust_override_wins
+        PASS [   0.010s] (192/406) maho-cli::help_fast_path plain_help_excludes_print_and_modes
+        PASS [   0.005s] (193/406) maho-cli::hook_sources settings_hook_paths_read_strings_and_objects_per_scope
+        PASS [   0.006s] (194/406) maho-cli::hook_sources runtime_hook_paths_append_without_duplicates
+        PASS [   0.010s] (195/406) maho-cli::hook_sources hook_paths_resolve_against_the_launch_cwd
+        PASS [   0.010s] (196/406) maho-cli::hook_sources hook_sources_use_the_real_agent_dir_and_default_paths
+        PASS [   0.005s] (197/406) maho-cli::host_command host_options_parse_and_last_policy_wins
+        PASS [   0.009s] (198/406) maho-cli::hook_sources merge_paths_dedupes_and_preserves_order
+        PASS [   0.007s] (199/406) maho-cli::host_command host_missing_or_invalid_policy_is_error
+        PASS [   0.014s] (200/406) maho-cli::host_runtime cli_paths_resolve_against_the_launch_cwd
+        PASS [   0.014s] (201/406) maho-cli::host_runtime fresh_session_reports_the_origin_its_model_came_from
+        PASS [   0.015s] (202/406) maho-cli::host_runtime launch_profile_maps_provider_model_thinking_and_auto_title
+        PASS [   0.023s] (203/406) maho-cli::host_runtime a_resumed_session_resolves_no_model_and_keeps_no_origin
+        PASS [   0.018s] (204/406) maho-cli::host_runtime launch_profile_omits_a_partial_creation_model
+        PASS [   0.023s] (205/406) maho-cli::host_runtime an_explicit_pair_outranks_a_scoped_selection
+        PASS [   0.024s] (206/406) maho-cli::host_runtime configuration_carries_the_parsed_session_directory
+        PASS [   0.027s] (207/406) maho-cli::host_runtime a_scoped_selection_outranks_the_settings_default_and_reports_the_scoped_origin
+        PASS [   0.011s] (208/406) maho-cli::image_convert invalid_image_bytes_fail_conversion
+        PASS [   0.009s] (209/406) maho-cli::image_process image_conversion_and_resize_produce_coordinate_hint
+        PASS [   0.014s] (210/406) maho-cli::image_convert jpeg_converts_to_decodable_png_with_original_dimensions
+        PASS [   0.008s] (211/406) maho-cli::image_process supported_mime_alias_and_disabled_resize_preserve_input
+        PASS [   0.014s] (212/406) maho-cli::image_convert png_passthrough_does_not_decode
+        PASS [   0.019s] (213/406) maho-cli::host_runtime metadata_launches_resolve_trust_as_a_print_run
+        PASS [   0.010s] (214/406) maho-cli::image_process unsupported_invalid_bytes_are_reported_as_omitted
+        PASS [   0.010s] (215/406) maho-cli::image_process upstream_converts_bmp_before_resize
+        PASS [   0.009s] (216/406) maho-cli::image_process upstream_converts_bmp_without_resize
+        PASS [   0.009s] (217/406) maho-cli::image_process upstream_detects_bmp_magic
+        PASS [   0.006s] (218/406) maho-cli::initial_message excludes_private_file_text_from_title
+        PASS [   0.011s] (219/406) maho-cli::image_resize returns_none_for_invalid_image_or_impossible_byte_budget
+        PASS [   0.005s] (220/406) maho-cli::initial_message merges_stdin_and_first_message
+        PASS [   0.005s] (221/406) maho-cli::initial_message titles_from_public_first_message
+        PASS [   0.010s] (222/406) maho-cli::initial_message combines_stdin_file_and_first_message
+        PASS [   0.006s] (223/406) maho-cli::initial_message uses_stdin_without_cli_message
+        PASS [   0.006s] (224/406) maho-cli::internal_process consumption_validates_role_before_removing_it
+        PASS [   0.007s] (225/406) maho-cli::internal_process explicit_legacy_directory_lane_wins_without_altering_unrelated_env
+        PASS [   0.018s] (226/406) maho-cli::image_resize preserves_small_images_and_resizes_real_png_without_mutating_input
+        PASS [   0.009s] (227/406) maho-cli::kibitzer_child an_empty_resource_set_is_a_child_with_no_tools_not_a_builtin_passthrough
+        PASS [   0.007s] (228/406) maho-cli::kibitzer_child the_sidecar_registry_order_is_the_pinned_five
+        PASS [   0.009s] (229/406) maho-cli::kibitzer_tools a_partial_tool_cap_override_preserves_the_other_defaults
+        PASS [   0.010s] (230/406) maho-cli::kibitzer_tools a_per_wake_reset_changes_what_the_tools_observe
+        PASS [   0.008s] (231/406) maho-cli::kibitzer_tools an_empty_recall_block_yields_the_pinned_defaults
+        PASS [   0.013s] (232/406) maho-cli::kibitzer_tools a_partial_event_cap_override_merges_per_field
+        PASS [   0.016s] (233/406) maho-cli::kibitzer_tools all_host_tools_share_the_session_slot_and_sessions_are_isolated
+        PASS [   0.013s] (234/406) maho-cli::kibitzer_tools grep_matches_a_regular_expression_and_rejects_an_invalid_one
+        PASS [   0.034s] (235/406) maho-cli::import_entry real_import_from_refuses_repeat_without_destination_changes
+        PASS [   0.007s] (236/406) maho-cli::kibitzer_tools read_rejects_a_path_outside_the_workspace
+        PASS [   0.012s] (237/406) maho-cli::kibitzer_tools grep_scan_ms_is_preserved_as_i64_up_to_its_maximum
+        PASS [   0.143s] (238/406) maho-cli::default_extensions assembled_factories_preserve_sdk_and_cli_extensions_once
+        PASS [   0.008s] (239/406) maho-cli::kibitzer_tools the_registry_is_the_three_cli_owned_names_in_order
+        PASS [   0.013s] (240/406) maho-cli::kibitzer_tools session_entries_pages_by_cursor_and_hides_memory_channels
+        PASS [   0.023s] (241/406) maho-cli::kibitzer_tools read_bounds_characters_and_redacts_secrets
+        PASS [   0.048s] (242/406) maho-cli::import_entry repeat_real_import_never_clobbers_destination_bytes
+        PASS [   0.011s] (243/406) maho-cli::management_http cancellation_prevents_any_request
+        PASS [   0.011s] (244/406) maho-cli::management_http retries_transient_status_immediately_and_returns_success
+        PASS [   0.008s] (245/406) maho-cli::migrations copies_brand_state_without_overwriting_or_copying_cache
+        PASS [   0.012s] (246/406) maho-cli::migrations brand_copy_preserves_symbolic_links_instead_of_dereferencing
+        PASS [   0.007s] (247/406) maho-cli::migrations first_run_moves_sessions_and_records_completed_scans
+        PASS [   0.007s] (248/406) maho-cli::migrations preserves_existing_files_when_merging_nested_legacy_config
+        PASS [   0.006s] (249/406) maho-cli::mini_entry presentation_accepts_only_continue_aliases
+        PASS [   0.007s] (250/406) maho-cli::migrations malformed_marker_runs_scans_when_schema_is_unknown
+        PASS [   0.008s] (251/406) maho-cli::migrations second_run_skips_scans_when_marker_is_present
+        PASS [   0.006s] (252/406) maho-cli::mini_entry server_entry_preserves_positional_contract
+        PASS [   0.023s] (253/406) maho-cli::lane38_process_boundary_probe role_consumption_does_not_leak_to_ordinary_descendants
+        PASS [   0.005s] (254/406) maho-cli::mini_entry worker_entry_preserves_optional_session_identity
+        PASS [   0.005s] (255/406) maho-cli::mini_presentation presentation_paths_keep_sessions_separate_from_regular_archive
+        PASS [   0.006s] (256/406) maho-cli::mini_presentation continuation_selects_latest_matching_cwd_and_last_timestamp_tie
+        PASS [   0.006s] (257/406) maho-cli::mini_protocol absent_account_fields_are_not_serialized
+        PASS [   0.005s] (258/406) maho-cli::mini_protocol auth_prompts_strip_signal_and_keep_wire_discriminant
+        PASS [   0.028s] (259/406) maho-cli::lane38_process_boundary_probe intentional_internal_spawns_keep_only_the_requested_role
+        PASS [   0.005s] (260/406) maho-cli::mini_protocol command_result_rejects_failure_without_error
+        PASS [   0.005s] (261/406) maho-cli::mini_protocol model_ref_wire_fields_match_upstream
+        PASS [   0.005s] (262/406) maho-cli::mini_protocol notices_keep_device_code_camelcase_fields
+        PASS [   0.008s] (263/406) maho-cli::mini_rpc caller_abort_reaches_inflight_service
+        PASS [   0.008s] (264/406) maho-cli::mini_rpc addressed_events_preserve_destination
+        PASS [   0.007s] (265/406) maho-cli::mini_rpc remote_service_calls_and_unknown_methods_use_real_frames
+        PASS [   0.009s] (266/406) maho-cli::mini_server child_exit_reaps_and_closes_the_worker_peer
+        PASS [   0.006s] (267/406) maho-cli::mini_server server_lists_real_repository_metadata_without_opening_agent_runtime
+        PASS [   0.009s] (268/406) maho-cli::mini_server process_worker_uses_json_pipes_and_closes_when_stopped
+        PASS [   0.010s] (269/406) maho-cli::mini_server routing_deduplicates_attaches_forwards_calls_and_addresses_worker_events
+        PASS [   0.012s] (270/406) maho-cli::mini_server failed_worker_description_cleans_the_spawned_child
+        PASS [   0.007s] (271/406) maho-cli::mini_server worker_opens_existing_session_by_id_and_creates_without_id
+        PASS [   0.007s] (272/406) maho-cli::mini_transport cancelling_receive_preserves_consumed_partial_frame
+        PASS [   0.006s] (273/406) maho-cli::mini_transport framed_transport_roundtrips_unicode_and_closes_once
+        PASS [   0.009s] (274/406) maho-cli::mini_session session_listing_uses_real_socket_and_closes_peer
+        PASS [   0.007s] (275/406) maho-cli::mini_transport socket_transport_uses_real_unix_socket
+        PASS [   0.008s] (276/406) maho-cli::mini_worker open_operations_reports_an_admitted_operation
+        PASS [   0.009s] (277/406) maho-cli::mini_worker wire_event_folds_through_the_shared_reducer
+        PASS [   0.050s] (278/406) maho-cli::mini_worker abort_without_an_operation_reports_it
+        PASS [   0.058s] (279/406) maho-cli::mini_worker models_login_rejects_an_unknown_provider
+        PASS [   0.057s] (280/406) maho-cli::mini_worker watch_pairs_a_snapshot_with_a_distinct_subscription
+        PASS [   0.059s] (281/406) maho-cli::mini_worker set_model_rejects_an_unknown_identity
+        PASS [   0.063s] (282/406) maho-cli::mini_worker navigate_tree_reports_an_unknown_target_through_the_facade
+        PASS [   0.015s] (283/406) maho-cli::multi_session_entry a_profile_session_path_and_durable_id_reach_the_session_manager
+        PASS [   0.074s] (284/406) maho-cli::mini_worker prompt_reports_the_admission_error_through_the_facade
+        PASS [   0.014s] (285/406) maho-cli::multi_session_entry models_narrowing_patterns_reach_the_rpc_configuration
+        PASS [   0.015s] (286/406) maho-cli::multi_session_entry a_profile_session_path_opens_that_session_with_the_profile_cwd
+        PASS [   0.013s] (287/406) maho-cli::multi_session_entry multi_session_rpc_arguments_build_an_rpc_configuration
+        PASS [   0.078s] (288/406) maho-cli::mini_worker unwatch_and_close_release_watch_subscriptions
+        PASS [   0.063s] (289/406) maho-cli::mini_worker worker_model_runtime_resolves_the_initial_model_from_the_agent_models_json
+        PASS [   0.006s] (290/406) maho-cli::package_commands config_route_preserves_help_priority_scope_and_last_trust_override
+        PASS [   0.006s] (291/406) maho-cli::package_commands remove_alias_accepts_project_scope
+        PASS [   0.007s] (292/406) maho-cli::package_commands list_rejects_local_flag
+        PASS [   0.008s] (293/406) maho-cli::package_commands resource_execution_persists_install_and_removal_in_callers_settings
+        PASS [   0.006s] (294/406) maho-cli::package_commands resource_update_rejects_conflicting_targets
+        PASS [   0.006s] (295/406) maho-cli::package_commands update_conflicts_keep_first_error_and_models_target
+        PASS [   0.006s] (296/406) maho-cli::package_commands update_target_precedence_preserves_positional_source
+        PASS [   0.006s] (297/406) maho-cli::paths normalization_can_disable_tilde_and_fold_all_unicode_spaces
+        PASS [   0.008s] (298/406) maho-cli::paths revision_contains_real_filesystem_identity
+        PASS [   0.005s] (299/406) maho-cli::project_trust mode_adapter_maps_app_server_to_print
+        PASS [   0.006s] (300/406) maho-cli::project_trust selector_is_called_only_for_interactive_ui
+        PASS [   0.007s] (301/406) maho-cli::radius_auth cancellation_is_checked_before_reading
+        PASS [   0.008s] (302/406) maho-cli::radius_auth explicit_tokens_trim_and_files_resolve_from_cwd
+        PASS [   0.008s] (303/406) maho-cli::radius_relay relay_frame_roundtrip_and_invalid_headers
+        PASS [   0.009s] (304/406) maho-cli::radius_relay relay_urls_replace_base_path_and_require_http
+        PASS [   0.010s] (305/406) maho-cli::shared_host a_computed_profile_reaches_the_loaded_extension
+        PASS [   0.006s] (306/406) maho-cli::shared_host session_profile_keeps_the_shared_host_off_for_a_classic_launch
+        PASS [   0.007s] (307/406) maho-cli::shared_host shared_host_constants_match_the_pinned_names
+        PASS [   0.006s] (308/406) maho-cli::shared_host shared_host_is_off_unless_interactive_and_opted_in
+        PASS [   0.006s] (309/406) maho-cli::shared_host socket_falls_back_to_the_agent_rpc_socket
+        PASS [   0.006s] (310/406) maho-cli::shared_host truthy_env_flag_matches_the_pinned_values
+        PASS [   0.005s] (311/406) maho-cli::shell classifies_shells_and_legacy_wsl_transport
+        PASS [   0.006s] (312/406) maho-cli::shell explicit_shell_resolution_checks_file_and_invocation
+        PASS [   0.006s] (313/406) maho-cli::shell sanitization_keeps_allowed_controls_and_unicode
+        PASS [   0.006s] (314/406) maho-cli::shell tracked_snapshots_are_independent
+        PASS [   0.005s] (315/406) maho-cli::shell upstream_sanitization_removes_disallowed_controls
+        PASS [   0.006s] (316/406) maho-cli::shell upstream_sanitization_removes_format_characters
+        PASS [   0.006s] (317/406) maho-cli::shell upstream_sanitization_returns_clean_ascii_unchanged
+        PASS [   0.006s] (318/406) maho-cli::startup auto_title_preserves_context_and_session_override_precedence
+        PASS [   0.007s] (319/406) maho-cli::startup mode_selection_respects_explicit_protocols_and_terminal_state
+        PASS [   0.010s] (320/406) maho-cli::startup prepared_message_uses_real_file_and_keeps_private_input_out_of_title
+        PASS [   0.008s] (321/406) maho-cli::startup session_creation_flags_reject_conflicts_and_unsafe_ids
+        PASS [   0.017s] (322/406) maho-cli::startup startup_theme_registry_loads_custom_resources_and_reports_fallbacks
+        PASS [   0.077s] (323/406) maho-cli::omo_mount for_parent_composes_retained_task_and_memory_components
+        PASS [   0.016s] (324/406) maho-cli::startup startup_theme_respects_terminal_background_and_auto_pairs
+        PASS [   0.012s] (325/406) maho-cli::startup_entry native_startup_registers_shipped_api_streams
+        PASS [   0.020s] (326/406) maho-cli::startup_entry real_entry_rejects_rpc_attachments_before_mode_dispatch
+        PASS [   0.008s] (327/406) maho-cli::startup_loading_indicator drop_restores_cursor_and_owns_timer_cleanup
+        PASS [   0.008s] (328/406) maho-cli::startup_loading_indicator first_frame_is_synchronous
+        PASS [   0.009s] (329/406) maho-cli::startup_loading_indicator grace_then_interval_advances_frames
+        PASS [   0.078s] (330/406) maho-cli::startup cli_model_selection_reports_the_origin_the_profile_gate_reads
+        PASS [   0.073s] (331/406) maho-cli::startup scoped_startup_model_and_tool_suppression_preserve_explicit_thinking_off
+        PASS [   0.044s] (332/406) maho-cli::startup_entry real_entry_rejects_session_conflicts_before_mode_dispatch
+        PASS [   0.006s] (333/406) maho-cli::startup_loading_indicator only_interactive_tty_without_help_engages
+        PASS [   0.006s] (334/406) maho-cli::startup_loading_indicator non_tty_is_inert
+        PASS [   0.005s] (335/406) maho-cli::startup_loading_indicator other_surface_writes_never_land_inside_the_frame
+        PASS [   0.005s] (336/406) maho-cli::startup_loading_indicator pause_suppresses_animation_and_resume_redraws
+        PASS [   0.005s] (337/406) maho-cli::startup_loading_indicator rejected_prompt_resumes
+        PASS [   0.006s] (338/406) maho-cli::startup_loading_indicator prompt_results_pass_through
+        PASS [   0.007s] (339/406) maho-cli::startup_loading_indicator phase_updates_before_timer
+        PASS [   0.005s] (340/406) maho-cli::startup_loading_indicator stop_during_grace_restores_cursor
+        PASS [   0.006s] (341/406) maho-cli::startup_loading_indicator stop_while_paused_emits_nothing
+        PASS [   0.007s] (342/406) maho-cli::startup_loading_indicator stop_is_idempotent
+        PASS [   0.006s] (343/406) maho-cli::startup_loading_indicator surface_writes_run_when_the_indicator_is_inert
+        PASS [   0.005s] (344/406) maho-cli::supervisor_route dispatch_declines_argv_that_merely_mentions_the_sentinel
+        PASS [   0.006s] (345/406) maho-cli::supervisor_route the_internal_route_flag_is_the_one_the_launcher_emits
+        PASS [   0.006s] (346/406) maho-cli::syntax_highlight upstream_renderer_decodes_emitted_html_entities
+        PASS [   0.008s] (347/406) maho-cli::syntax_highlight upstream_renderer_inherits_parent_for_unmapped_scope
+        PASS [   0.008s] (348/406) maho-cli::syntax_highlight upstream_renderer_formats_keyword_scope
+        PASS [   0.009s] (349/406) maho-cli::syntax_highlight upstream_renderer_keeps_parent_across_unscoped_span
+        PASS [   0.010s] (350/406) maho-cli::task_runners native_child_options_preserve_parent_handles_and_isolated_policy
+        PASS [   0.010s] (351/406) maho-cli::task_runners native_child_settings_forward_retry_policy_without_disk_settings
+        PASS [   0.011s] (352/406) maho-cli::task_runners native_child_settings_project_optional_retry_budgets_independently
+        PASS [   0.011s] (353/406) maho-cli::task_runners native_child_transcript_preserves_exact_locator_on_create_and_resume
+        PASS [   0.010s] (354/406) maho-cli::task_runners native_rpc_spawn_preserves_isolation_and_explicit_member_profile
+        PASS [   0.011s] (355/406) maho-cli::task_runners native_rpc_spawn_removes_inherited_member_identity
+        PASS [   0.051s] (356/406) maho-cli::task_runners child_registry_retains_native_credentials_and_retires_with_parent
+        PASS [   0.010s] (357/406) maho-cli::task_runners production_team_adapter_forwards_full_member_start_spec_to_manager
+        PASS [   0.063s] (358/406) maho-cli::task_runners converted_child_options_drive_native_provider_and_restore_exact_transcript
+        PASS [   0.010s] (359/406) maho-cli::task_runners resolved_omo_config_returns_a_live_resolved_root_not_an_envelope
+        PASS [   0.008s] (360/406) maho-cli::task_runners retired_parent_rejects_admission_before_catalog_probe
+        PASS [   0.081s] (361/406) maho-cli::task_runners native_shared_definition_cancels_an_entered_parent_tool
+        PASS [   0.041s] (362/406) maho-cli::task_runners shared_parent_tool_obeys_registered_admission_hooks
+        PASS [   0.007s] (363/406) maho-cli::tool_result_images buffer_base64_accepts_url_alphabet_noise_and_partial_groups
+        PASS [   0.007s] (364/406) maho-cli::task_runners team_bounds_use_configured_values_and_pinned_defaults
+        PASS [   0.006s] (365/406) maho-cli::tool_result_images unchanged_text_and_failed_images_borrow_original_content
+        PASS [   0.007s] (366/406) maho-cli::tool_result_images normalization_rewrites_image_and_appends_conversion_hint
+        PASS [   0.089s] (367/406) maho-cli::task_runners native_shared_definition_forwards_parent_tool_updates
+        PASS [   0.005s] (368/406) maho-cli::tool_search mcp_receives_the_canonical_shared_service
+        PASS [   0.005s] (369/406) maho-cli::tools_manager local_tool_wins_and_assets_follow_platform_architecture
+        PASS [   0.005s] (370/406) maho-cli::tools_manager offline_tool_lookup_emits_warning_without_network
+        PASS [   0.005s] (371/406) maho-cli::tools_manager release_redirect_parses_relative_and_absolute_tags
+        PASS [   0.005s] (372/406) maho-cli::tools_manager_path_probe upstream_directory_candidate_is_skipped
+        PASS [   0.004s] (373/406) maho-cli::tools_manager_path_probe upstream_empty_path_finds_nothing
+        PASS [   0.018s] (374/406) maho-cli::tools_manager archive_installs_nested_binary_and_removes_owned_artifacts
+        PASS [   0.005s] (375/406) maho-cli::tools_manager_path_probe upstream_executable_path_returns_command_name
+        PASS [   0.004s] (376/406) maho-cli::tools_manager_path_probe upstream_nonexecutable_file_is_not_accepted
+        PASS [   0.005s] (377/406) maho-cli::utilities auth_help_recognizes_help_before_kind_validation
+        PASS [   0.004s] (378/406) maho-cli::utilities auth_options_are_removed_from_provider_args
+        PASS [   0.009s] (379/406) maho-cli::utilities ansi_strips_color_and_osc_sequences
+        PASS [   0.005s] (380/406) maho-cli::utilities auth_rejects_flags_for_wrong_kind
+        PASS [   0.005s] (381/406) maho-cli::utilities bearer_minimum_expiry_is_in_milliseconds
+        PASS [   0.007s] (382/406) maho-cli::utilities clipboard_command_reads_and_enforces_maximum_without_desktop_access
+        PASS [   0.005s] (383/406) maho-cli::utilities clipboard_osc52_payload_is_bounded
+        PASS [   0.005s] (384/406) maho-cli::utilities exif_absent_preserves_pixels
+        PASS [   0.004s] (385/406) maho-cli::utilities html_decodes_named_and_numeric_prefix_entities
+        PASS [   0.005s] (386/406) maho-cli::utilities help_cache_invalidates_when_discovery_inputs_appear
+        PASS [   0.005s] (387/406) maho-cli::utilities open_free_resolution_applies_parent_after_symlink
+        PASS [   0.004s] (388/406) maho-cli::utilities option_parser_aggregates_duplicate_and_missing_value_errors
+        PASS [   0.005s] (389/406) maho-cli::utilities open_free_strict_resolution_rejects_symlink_loop
+        PASS [   0.004s] (390/406) maho-cli::utilities option_parser_preserves_repeatable_order
+        PASS [   0.004s] (391/406) maho-cli::utilities option_parser_stops_at_first_unknown_and_preserves_separator
+        PASS [   0.005s] (392/406) maho-cli::utilities sleep_cancels_on_signal
+        PASS [   0.006s] (393/406) maho-cli::utilities syntax_html_uses_innermost_scope_and_prefix_fallback
+        PASS [   0.005s] (394/406) maho-cli::version_check native_brand_without_registry_channel_does_not_advertise_engine_updates
+        PASS [   0.005s] (395/406) maho-cli::version_check registry_document_selects_channel_or_version_and_rejects_empty_values
+        PASS [   0.009s] (396/406) maho-cli::version_check calver_revisions_and_semver_prereleases_sort_correctly
+        PASS [   0.005s] (397/406) maho-cli::version_check upstream_nested_network_errors_preserve_unique_errno_details
+        PASS [   0.158s] (398/406) maho-cli::task_runners shared_definition_normalizes_arguments_once_through_child_sdk
+        PASS [   0.620s] (399/406) maho-cli::generated_parity image_generated_reference_cases
+        PASS [   2.329s] (400/406) maho-cli::multi_session_entry a_cli_built_host_answers_the_protocol_and_exits_on_its_empty_window
+        PASS [   2.645s] (401/406) maho-cli::host_runtime a_mounted_session_is_bound_to_the_per_runtime_cwd
+        PASS [   3.230s] (402/406) maho-cli::print_entry real_print_entry_streams_loopback_model_and_exits
+        PASS [   3.237s] (403/406) maho-cli::print_entry real_print_entry_suppresses_project_context_when_requested
+        PASS [   3.189s] (404/406) maho-cli::startup_entry real_rpc_entry_dispatches_message_query_and_preserves_correlation
+        PASS [   3.999s] (405/406) maho-cli::memory_recall_entry real_mount_recall_delivers_a_nudge_and_releases_its_wake_lease
+        PASS [   4.658s] (406/406) maho-cli::brand_startup flat_brand_startup_copies_engine_state_once
+────────────
+     Summary [   4.736s] 406 tests run: 406 passed, 0 skipped

@@ -1,0 +1,11 @@
+ok   a well-formed document validates
+ok   a non-JSON document is rejected
+ok   a wrong $id is rejected
+ok   an empty properties object is rejected
+ok   a non-object document is rejected
+ok   identical documents do not drift
+ok   a changed document drifts
+ok   the published asset path is assets/omo.schema.json
+ok   the committed asset exists
+ok   the committed asset is a valid published schema
+self-test: 10/10 passed

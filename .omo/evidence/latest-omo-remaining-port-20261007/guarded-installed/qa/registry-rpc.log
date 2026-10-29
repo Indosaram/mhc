@@ -1,0 +1,12 @@
+{
+  "frames": {
+    "response": true,
+    "reply": true,
+    "settled": true
+  },
+  "providerSawPrompt": true,
+  "replyText": "mini-loopback-transcript-ack"
+}
+maho-omo info: omo-senpi ulw-loop inactive; omo binary not found
+memory: Reflection orphan sweep failed: ReflectionSweepDetails { kind: None, target: None, detail: Some("fatal: cannot change to '/tmp/residual-registry-home-eJcYH7/.maho/memory/agents/residual-registry-home-ejcyh7-3bb62792/repo': No such file or directory") }
+maho-omo info: omo-senpi ulw-execute-continuation skipped {"reason":"not-continuable"}

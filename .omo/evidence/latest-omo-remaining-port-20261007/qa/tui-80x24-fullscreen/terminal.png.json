@@ -1,0 +1,15 @@
+{
+  "schema": "session2-residual-png/v1",
+  "cols": 80,
+  "rows": 24,
+  "cellW": 8,
+  "cellH": 16,
+  "width": 640,
+  "height": 384,
+  "renderer": "rsvg-convert",
+  "derived": true,
+  "colored": true,
+  "cellCount": 1920,
+  "pngSha256": "8fd36df340850429bf0d45d01869503f928650d427fbf7933eab542a6e0aec89",
+  "sourceSha256": "d44ea60c175216a0006193488bcf97b4c881129e8f758d64cbb1b41205dfa4a1"
+}
