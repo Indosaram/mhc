@@ -18,6 +18,7 @@ Commands:
   mhc doctor                    Run diagnostics on configuration, trust, and resources
   mhc import-omo [--from <dir>] [--force]
                                  Import config, auth, and sessions from OmO agent directory
+  mhc ulw-loop <command>        Manage ulw-loop goals, criteria, and evidence
   mhc schedule <command>        Schedule and manage background task executions
   mhc models discover           Discover available models from providers
   mhc senpi-install             Install or uninstall the Senpi companion plugin

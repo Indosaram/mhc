@@ -122,7 +122,7 @@ jobs:
             exit 1
           fi
           export MHC_BUILD_VERSION="$VER_A"
-          cargo build --release --locked -p maho-cli -p maho-senpi-desktop-engine --bins
+          cargo build --release --locked -p maho-cli -p maho-ast-grep-mcp -p maho-lsp-daemon -p maho-git-bash-mcp -p maho-senpi-desktop-engine --bins
           test "$(./target/release/mhc$EXE --version | tr -d '\r')" = "$VER_A"
           test -f "target/release/mhc-launcher$EXE"
           mkdir -p target/candidate-A target/candidate-B
@@ -224,7 +224,7 @@ jobs:
           name="mhc-${{ matrix.target }}"
           mkdir -p target/migration-A target/migration-B
           export MHC_BUILD_VERSION="$VER_A"
-          cargo build --release --locked -p maho-cli -p maho-senpi-desktop-engine --bins
+          cargo build --release --locked -p maho-cli -p maho-ast-grep-mcp -p maho-lsp-daemon -p maho-git-bash-mcp -p maho-senpi-desktop-engine --bins
           test "$(./target/release/mhc$EXE --version | tr -d '\r')" = "$VER_A"
           cp target/release/mhc$EXE target/migration-A/
           export MHC_BUILD_VERSION="$VER_B"

@@ -102,6 +102,27 @@ members = [
     "crates/extensions/maho-ext-orca-titlebar-spinner",
     "crates/extensions/maho-ext-herdr-agent-state",
     "crates/extensions/maho-ext-ferryx-agent-state",
+    "crates/omo/mcp-stdio-core",
+    "crates/omo/boulder-state",
+    "crates/omo/model-core",
+    "crates/omo/prompts-core",
+    "crates/omo/memory-core",
+    "crates/omo/utils",
+    "crates/omo/omo-config-core",
+    "crates/omo/lsp-core",
+    "crates/omo/lsp-daemon",
+    "crates/omo/comment-checker-core",
+    "crates/omo/claude-code-compat-core",
+    "crates/omo/delegate-core",
+    "crates/omo/telemetry-core",
+    "crates/omo/tmux-core",
+    "crates/omo/team-core",
+    "crates/omo/config-migration",
+    "crates/omo/ast-grep-mcp",
+    "crates/omo/git-bash-mcp",
+    "crates/omo/isolation-core",
+    "crates/omo/get-worker",
+    "crates/omo/senpi-task",
     "crates/desktop/senpi-desktop-core",
     "crates/desktop/senpi-desktop-safety",
     "crates/desktop/senpi-desktop-backend-fake",
@@ -117,6 +138,45 @@ members = [
     "crates/desktop/senpi-desktop-service",
     "crates/desktop/senpi-desktop-run",
     "crates/desktop/senpi-desktop-tool",
+    "crates/omo/components/maho-omo-agent-home",
+    "crates/omo/components/maho-omo-onboarding",
+    "crates/omo/components/maho-omo-feedback",
+    "crates/omo/components/maho-omo-mass-ulw",
+    "crates/omo/components/maho-omo-todo-fanout-reminder",
+    "crates/omo/components/maho-omo-ultrawork",
+    "crates/omo/components/maho-omo-ulw-loop",
+    "crates/omo/ulw-loop-core",
+    "crates/omo/components/maho-omo-start-work-continuation",
+    # RESERVED (todo 1008, run dag_34a6a24f): "crates/omo/components/maho-omo-git-master" is added here
+    # once its crate source and the config owner's resolve_omo_git_master_settings land.
+    "crates/omo/components/maho-omo-fallback-architect",
+    "crates/omo/components/maho-omo-comment-checker",
+    "crates/omo/components/maho-omo-config-resolution",
+    "crates/omo/components/maho-omo-config-startup",
+    "crates/omo/components/maho-omo-model-profile",
+    "crates/omo/components/maho-omo-bundled-skills",
+    "crates/omo/components/maho-omo-skill-commands",
+    "crates/omo/components/maho-omo-git-master",
+    "crates/omo/components/maho-omo-builtin-mcps",
+    "crates/omo/components/maho-omo-browser-bridge",
+    "crates/omo/components/maho-omo-desktop-toolkit",
+    "crates/omo/components/maho-omo-computer-use",
+    "crates/omo/components/maho-omo-x-search",
+    "crates/omo/components/maho-omo-gateway",
+    "crates/omo/components/maho-omo-formatter",
+    "crates/omo/components/maho-omo-post-mutation",
+    "crates/omo/components/maho-omo-skill-pointers",
+    "crates/omo/components/maho-omo-side-panel",
+    "crates/omo/components/maho-omo-question-gates",
+    "crates/omo/components/maho-omo-claim-receipt",
+    "crates/omo/components/maho-omo-config-watch",
+    "crates/omo/components/maho-omo-memory",
+    "crates/omo/components/maho-omo-task",
+    "crates/omo/components/maho-omo-telemetry",
+    "crates/omo/components/maho-omo-lsp",
+    "crates/omo/components/maho-omo-ast-grep",
+    "crates/omo/components/maho-omo-init-deep-advisor",
+    "crates/omo/maho-omo",
     "crates/vendor/maho-grep",
     "crates/vendor/maho-pty",
 ]
@@ -127,7 +187,26 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-# Third-party deps, pinned to COMP 93b78ac Cargo.lock versions.
+# Imported omo core crates (todo 2); package names are maho-<dir>, lib names unchanged.
+maho-mcp-stdio-core = { path = "crates/omo/mcp-stdio-core" }
+maho-boulder-state = { path = "crates/omo/boulder-state" }
+maho-model-core = { path = "crates/omo/model-core" }
+maho-prompts-core = { path = "crates/omo/prompts-core" }
+maho-memory-core = { path = "crates/omo/memory-core" }
+maho-utils = { path = "crates/omo/utils" }
+maho-omo-config-core = { path = "crates/omo/omo-config-core" }
+maho-lsp-core = { path = "crates/omo/lsp-core" }
+maho-lsp-daemon = { path = "crates/omo/lsp-daemon" }
+maho-comment-checker-core = { path = "crates/omo/comment-checker-core" }
+maho-delegate-core = { path = "crates/omo/delegate-core" }
+maho-telemetry-core = { path = "crates/omo/telemetry-core" }
+maho-tmux-core = { path = "crates/omo/tmux-core" }
+maho-team-core = { path = "crates/omo/team-core" }
+maho-config-migration = { path = "crates/omo/config-migration" }
+maho-ast-grep-mcp = { path = "crates/omo/ast-grep-mcp" }
+maho-isolation-core = { path = "crates/omo/isolation-core" }
+maho-senpi-task = { path = "crates/omo/senpi-task" }
+# Third-party deps of the imported crates, pinned to COMP 93b78ac Cargo.lock versions.
 base64 = "=0.22.1"
 chrono = { version = "=0.4.45", default-features = false }
 dirs = "=6.0.0"

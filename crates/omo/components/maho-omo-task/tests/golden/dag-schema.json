@@ -1,0 +1,122 @@
+{
+  "source": "77f3067f157a4f88e6d8ed48b3a6c338654402ed",
+  "parameters": {
+    "type": "object",
+    "required": [
+      "action"
+    ],
+    "properties": {
+      "action": {
+        "anyOf": [
+          {
+            "type": "string",
+            "const": "start"
+          },
+          {
+            "type": "string",
+            "const": "attach"
+          },
+          {
+            "type": "string",
+            "const": "snapshot"
+          },
+          {
+            "type": "string",
+            "const": "wait"
+          },
+          {
+            "type": "string",
+            "const": "cancel"
+          }
+        ],
+        "description": "start creates or reuses a run from a definition; attach re-binds to a live run; snapshot reads current state; wait blocks until the run settles; cancel stops it."
+      },
+      "definition": {
+        "type": "object",
+        "required": [
+          "key",
+          "name",
+          "nodes"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Stable idempotency key for this run within the session; re-starting with the same key and definition reuses the existing run."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable run name shown in status views."
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "prompt"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Node id, unique within the definition; referenced by dependsOn."
+                },
+                "prompt": {
+                  "type": "string",
+                  "description": "The instruction for this node's child task. MUST be written in English."
+                },
+                "label": {
+                  "type": "string",
+                  "description": "Short human label for this node."
+                },
+                "category": {
+                  "type": "string",
+                  "description": "Category name to route this node through. Mutually exclusive with subagent_type; required unless subagent_type is given."
+                },
+                "subagent_type": {
+                  "type": "string",
+                  "description": "Agent name to invoke directly (e.g. momus). Mutually exclusive with category; required unless category is given."
+                },
+                "model": {
+                  "type": "string",
+                  "description": "Explicit model override. Only valid with subagent_type; rejected alongside category, which takes its model from omo.json."
+                },
+                "dependsOn": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Ids of nodes that must finish before this one is scheduled. Ordering only: no output is substituted into this prompt."
+                },
+                "task_summary": {
+                  "type": "string",
+                  "description": "One-line summary of this node's work, shown in the run widget."
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Short human description of this node."
+                },
+                "load_skills": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Skill names whose SKILL.md content is prepended to this node's prompt."
+                }
+              }
+            },
+            "description": "The nodes of the graph. Each node targets EITHER a category OR a subagent_type."
+          }
+        },
+        "description": "Graph to run. Required for action=start, ignored otherwise."
+      },
+      "run_id": {
+        "type": "string",
+        "description": "Run id returned by start. Required for attach, snapshot, wait, and cancel."
+      },
+      "reason": {
+        "type": "string",
+        "description": "Optional human-readable reason recorded when cancelling a run."
+      }
+    }
+  }
+}

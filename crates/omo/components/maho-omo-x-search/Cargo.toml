@@ -1,0 +1,31 @@
+[package]
+name = "maho-omo-x-search"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "LicenseRef-SUL-1.0"
+autotests = false
+
+[lints]
+workspace = true
+
+[dependencies]
+dirs = { workspace = true }
+futures = { workspace = true }
+maho-ai = { path = "../../../maho-ai" }
+maho-ext-api = { path = "../../../maho-ext-api" }
+maho-omo-agent-home = { path = "../maho-omo-agent-home" }
+maho-omo-bundled-skills = { path = "../maho-omo-bundled-skills" }
+regex = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+tokio = { version = "=1.52.3", features = ["macros", "rt", "sync", "time"] }
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"
