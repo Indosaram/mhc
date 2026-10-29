@@ -2318,61 +2318,7 @@ pub trait ExtensionUi: Send + Sync {
     fn theme(&self) -> Theme;
 }
 
-/// One queued idle-edge injection (upstream `IdleInjection`, idle-injection-coordinator.ts).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// Upstream source set. The PINNED `idle-injection-coordinator.ts` (77f3067f1) carries the first six;
-/// `WorkpoolAggregate` and `Kibitzer` are LATEST additions (audit checkout 20261006), selected for the
-/// recall production integration and recorded as latest, NOT pinned parity.
-pub enum IdleInjectionSource {
-    TaskCompletion,
-    /// Latest (`workpool-aggregate`); ranked with `TaskCompletion`.
-    WorkpoolAggregate,
-    TeamMessage,
-    TeamLiveness,
-    BoulderContinuation,
-    UlwContinuation,
-    DagRun,
-    /// Latest (`kibitzer`); ranked last, always queued `passive`.
-    Kibitzer,
-}
-/// `onFlushed` callback: runs once per injection after a successful delivery.
-pub type IdleInjectionCallback = Arc<dyn Fn() + Send + Sync>;
-/// `onDeliveryFailed` callback: receives the delivery error message.
-pub type IdleInjectionFailureCallback = Arc<dyn Fn(&str) + Send + Sync>;
-#[derive(Clone)]
-pub struct IdleInjection {
-    pub key: String,
-    pub source: IdleInjectionSource,
-    pub custom_type: Option<String>,
-    pub content: String,
-    pub display: Option<bool>,
-    pub details: Option<JsonValue>,
-    /// LATEST addition (absent from the pinned TS): `passive?: boolean` rides a flush carrying at
-    /// least one non-passive entry and never causes a flush by itself. `None` = non-passive.
-    pub passive: Option<bool>,
-    pub on_flushed: Option<IdleInjectionCallback>,
-    pub on_delivery_failed: Option<IdleInjectionFailureCallback>,
-}
-/// The single idle-edge injection queue. The concrete implementation lives in the composition
-/// (`crates/omo/maho-omo`, todo 47); ext-api defines only the contract so `ExtensionContext` can
-/// carry it without depending on that crate. `None` means "no coordinator" and every consumer
-/// falls back to a direct send, matching upstream's optional `ComponentContext.idleCoordinator`.
-pub trait IdleInjectionCoordinator: Send + Sync {
-    /// Accept an injection into the batch window. Returns `false` when the coordinator is retired:
-    /// the queue is gone, the injection is NOT queued and gets no receipt, so the caller still owns
-    /// the notification and must fail it durably (upstream `enqueue(...): boolean`).
-    fn enqueue(&self, injection: IdleInjection) -> bool;
-    /// Retire the coordinator on session shutdown (upstream `retire()`): refuse further enqueues and
-    /// fail every still-queued injection through `on_delivery_failed`. A coordinator that is never
-    /// retired keeps this default no-op and always accepts.
-    fn retire(&self) {}
-    fn schedule_flush(&self);
-    fn flush_soon(&self);
-    fn flush_on_idle(&self) -> usize;
-    fn pending_count(&self) -> usize;
-    fn remove(&self, key: &str) -> bool;
-}
-/// Structured component logger (upstream `ComponentLogger`, omo-senpi extension/types.ts:40).
+/// Structured logger a host can hand to extensions.
 pub trait ComponentLogger: Send + Sync {
     fn info(&self, message: &str, details: Option<&JsonValue>);
     fn warn(&self, message: &str, details: Option<&JsonValue>);
@@ -2380,7 +2326,7 @@ pub trait ComponentLogger: Send + Sync {
 }
 /// Host-provided deferred scheduler (upstream `setTimeout(0)`): the host decides how the deferred
 /// task is scheduled and ordered. A `tokio::spawn`/`yield_now` is not by itself asserted equivalent
-/// to a JS macrotask; the concrete host (todo 47) must establish the ordering.
+/// to a JS macrotask; the concrete host must establish the ordering.
 pub type DeferredMacrotask = Arc<dyn Fn(Box<dyn FnOnce() + Send + 'static>) + Send + Sync>;
 
 /// Context actions are live host callbacks rather than frozen snapshots.
@@ -2410,11 +2356,12 @@ pub struct ExtensionContext {
     pub get_system_prompt_options_fn: Arc<dyn Fn() -> BuildSystemPromptOptions + Send + Sync>,
     pub registered_mcp_servers: Vec<RegisteredMcpServerDeclaration>,
     pub update_tool_hook_status: Option<ToolHookStatusUpdater>,
-    /// Idle-edge injection arbiter (todo 47). `None` = no coordinator; consumers send directly.
-    pub idle_coordinator: Option<Arc<dyn IdleInjectionCoordinator>>,
-    /// Structured component logger (todo 47). `None` = only `ctx.ui.notify`/`eprintln!` fallbacks.
+    /// Host-provided idle-edge injection queue. Opaque to the extension API: the host and the
+    /// components that use it agree on the concrete type. `None` = no queue; consumers send directly.
+    pub idle_coordinator: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    /// Structured component logger. `None` = only `ctx.ui.notify`/`eprintln!` fallbacks.
     pub logger: Option<Arc<dyn ComponentLogger>>,
-    /// Host deferred-macrotask scheduler (todo 47). `None` = no host macrotask entry point.
+    /// Host deferred-macrotask scheduler. `None` = no host macrotask entry point.
     pub defer_macrotask: Option<DeferredMacrotask>,
     /// Per-invocation compaction feedback signal, the port of upstream `createContext`'s
     /// `compactionSignal` closure variable: created fresh for every context so a signal begun in one

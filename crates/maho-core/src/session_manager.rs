@@ -78,7 +78,7 @@ fn is_valid_session_id(id: &str) -> bool {
 }
 
 /// The id a session file's name carries (`<timestamp>_<id>.jsonl`), when the name has that shape
-/// and the id is valid (oh-my-openagent#7471).
+/// and the id is valid.
 pub fn session_file_name_id(path: &str) -> Option<String> {
     let name = Path::new(path).file_name()?.to_str()?;
     let stem = name.strip_suffix(".jsonl")?;

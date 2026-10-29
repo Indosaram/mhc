@@ -1,0 +1,24 @@
+[package]
+name = "maho-feedback"
+description = "In-session feedback and bug reports for mhc's MIT profile: the /feedback and /bug commands, an inspectable redacted report draft (identity, environment, session transcript, recent log events, client crash/log additions, scrubbed configuration), the feedback prepare/submit RPCs, upload to the report intake or a private local save. Clean-room spec docs/cleanroom/specs/feedback.md."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-ext-api = { path = "../maho-ext-api" }
+maho-config = { path = "../maho-config" }
+serde_json.workspace = true
+jiff.workspace = true
+regex.workspace = true
+gethostname.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+reqwest = { workspace = true, features = ["rustls-tls"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+
+[lints]
+workspace = true

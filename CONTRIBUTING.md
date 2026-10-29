@@ -60,5 +60,5 @@ verified change per commit.
 
 `crates/omo/**` is under the Sustainable Use
 License 1.0 (permitting internal business use and non-commercial/personal use, free distribution for
-non-commercial purposes, with notices preserved); everything else (including `crates/desktop/senpi-desktop-*`, which ports senpi) is MIT. Contributions are accepted
+non-commercial purposes, with notices preserved); everything else (including `crates/desktop/senpi-desktop-*`, the desktop engine and platform backends, which port senpi) is MIT. Contributions are accepted
 under the license of the directory they touch. See [LICENSES/](LICENSES/).

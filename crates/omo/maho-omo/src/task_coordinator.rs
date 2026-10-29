@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use maho_ext_api::{IdleInjection, IdleInjectionCoordinator, IdleInjectionSource};
+use idle_injection::{IdleInjection, IdleInjectionCoordinator, IdleInjectionSource};
 use maho_omo_task::{lead_poller_lifecycle::LeadInjectionCoordinator, parent_notifier::CompletionCoordinator};
 use senpi_task::{completion::{DeliveryCallbacks, ParentNotifierMessage}, host::HostError, team::messaging::lead_poller_types::LeadInjection};
 

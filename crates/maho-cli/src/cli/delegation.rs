@@ -32,6 +32,10 @@ pub fn isolation(agent_dir: &std::path::Path) -> maho_isolation::TaskIsolation {
 /// The delegation extension for this process.
 pub fn extension() -> maho_task::TaskExtension {
     let agent_dir = PathBuf::from(maho_core::config::get_agent_dir());
+    let skill_roots: Vec<PathBuf> = std::iter::once(agent_dir.join("skills"))
+        .chain(maho_skills::bundled_skills_root())
+        .collect();
+    let workpool = maho_workpool::WorkpoolAddon { agent_dir: Some(agent_dir.clone()) };
     let runner = maho_task::ProcessRunner::current_exe()
         .unwrap_or_else(|_| maho_task::ProcessRunner::new("mhc"));
     let panes = super::team_view::pane_observer();
@@ -42,6 +46,10 @@ pub fn extension() -> maho_task::TaskExtension {
         available_models: Arc::new(available_models),
         observers: vec![Arc::clone(&panes) as Arc<dyn maho_task::TaskObserver>],
         hooks: maho_lsp::hooks::HookChain::default(),
-        addons: vec![Arc::new(super::team_view::addon(panes))],
+        addons: vec![
+            Arc::new(super::team_view::addon(panes)),
+            Arc::new(maho_workflow::WorkflowAddon { skill_roots }),
+            Arc::new(workpool),
+        ],
     }
 }

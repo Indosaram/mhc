@@ -3,12 +3,15 @@
 //! `task_cancel`, and the `/tasks` command. Background results are delivered back to the session
 //! as a follow-up message when they settle.
 use crate::agents::{DEFAULT_AGENT, Discovery, discover};
+use crate::control::{self, Caller, ContextUi, GatewaySteer, SteerChannel};
 use crate::isolation::{TaskObserver, WorkspaceIsolation};
 use crate::manager::{SettledCallback, SpawnRequest, TaskManager, TaskManagerOptions};
 use crate::models::{ModelContext, ModelRequest, category_description, category_names, choose_model};
 use crate::record::{StateDir, default_state_root};
 use crate::runner::{CancelToken, TaskRunner};
-use crate::settings::{TaskSettings, can_spawn_at_depth, current_depth};
+use crate::settings::{
+    TASK_ID_ENV, TaskSettings, can_spawn_at_depth, current_depth, current_root_session,
+};
 use crate::summary::status_line;
 use maho_ext_api::{
     CustomMessage, DeliverAs, Extension, ExtensionApi, NotificationType, SendMessageOptions,
@@ -22,7 +25,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 /// Tools this extension registers.
-pub const TOOL_NAMES: &[&str] = &["task", "task_output", "task_list", "task_resume", "task_cancel"];
+pub const TOOL_NAMES: &[&str] = &[
+    "task",
+    "task_output",
+    "task_list",
+    "task_resume",
+    "task_cancel",
+    "task_send",
+];
+/// The command that cancels a task interactively (task-control.md §3).
+pub const KILL_COMMAND: &str = "task-kill";
 /// `custom_type` of a delivered background result.
 pub const RESULT_MESSAGE_TYPE: &str = "task-result";
 
@@ -62,6 +74,40 @@ impl TaskScope {
     }
     pub fn session_id(&self) -> &str {
         &self.info.session_id
+    }
+    /// The calling session as seen by the task controls.
+    pub fn caller(&self) -> Caller {
+        caller(&self.info)
+    }
+    /// A scope outside a live session (embedding, tests): `session_id` calls from `cwd` with the
+    /// configuration `view`. Background results are not delivered anywhere.
+    pub fn detached(config: TaskExtension, cwd: PathBuf, session_id: &str, view: Value) -> Self {
+        let settings = TaskSettings::from_view(Some(&view));
+        let discovery = discover(&cwd, config.agent_dir.as_deref(), view.get("agents"));
+        let steer = steer_channel(config.agent_dir.as_deref(), &view);
+        let shared = Arc::new(Shared {
+            config,
+            cwd: cwd.clone(),
+            view,
+            settings,
+            discovery,
+            depth: current_depth(),
+            available: OnceLock::new(),
+            sender: None,
+            steer,
+        });
+        Self {
+            shared,
+            info: Arc::new(CallInfo {
+                cwd,
+                session_id: session_id.to_owned(),
+                parent_model: None,
+            }),
+        }
+    }
+    /// `task_send` (task-control.md §1) from this scope.
+    pub async fn send(&self, params: Value) -> Result<ToolResult, ToolError> {
+        run_send_tool(Arc::clone(&self.shared), params, (*self.info).clone()).await
     }
     pub fn cwd(&self) -> &Path {
         &self.info.cwd
@@ -134,6 +180,16 @@ pub trait TaskAddon: Send + Sync {
     fn commands(&self) -> Vec<AddonCommand> {
         Vec::new()
     }
+    /// Handles a `task_send` to `<group>/<member>` (or `<group>/*`); `None` = not this addon's.
+    fn route_message(
+        &self,
+        _scope: &TaskScope,
+        _group: &str,
+        _member: &str,
+        _message: &str,
+    ) -> Option<Result<ToolResult, String>> {
+        None
+    }
 }
 
 static MANAGERS: Mutex<Option<HashMap<PathBuf, Arc<TaskManager>>>> = Mutex::new(None);
@@ -153,6 +209,8 @@ struct Shared {
     depth: u32,
     available: OnceLock<Vec<String>>,
     sender: Option<Arc<ExtensionApi>>,
+    /// Steering channel into running children (task-control.md §1.1).
+    steer: Option<Arc<dyn SteerChannel>>,
 }
 
 impl Shared {
@@ -189,6 +247,7 @@ impl Shared {
                 })
             }))
         };
+        manager.set_steer_channel(self.steer.clone());
         if let Some(sender) = &self.sender {
             let sender = Arc::clone(sender);
             let callback: SettledCallback = Arc::new(move |record, text| {
@@ -297,7 +356,65 @@ fn spawn_request(
         group: None,
         pane: bool_param(item, "pane"),
         quiet: false,
+        owner_session: Some(info.session_id.clone()),
+        root_session: Some(current_root_session(&info.session_id)),
     })
+}
+
+/// The gateway steering channel of `<agent dir>/gateway` (or `$MAHO_GATEWAY_DIR`).
+fn steer_channel(agent_dir: Option<&Path>, view: &Value) -> Option<Arc<dyn SteerChannel>> {
+    let agent_dir = agent_dir?;
+    let env = |key: &str| std::env::var(key).ok();
+    Some(Arc::new(GatewaySteer {
+        store: maho_gateway::Store::new(maho_gateway::default_root(agent_dir, &env)),
+        enabled: maho_gateway::Settings::from_view(Some(view), &env).enabled,
+    }))
+}
+
+fn caller(info: &CallInfo) -> Caller {
+    Caller {
+        session_id: info.session_id.clone(),
+        root_session: current_root_session(&info.session_id),
+    }
+}
+
+fn outcome_result(outcome: control::Outcome) -> ToolResult {
+    let is_error = outcome.is_error().then_some(true);
+    ToolResult {
+        content: vec![ToolContent::text(outcome.text)],
+        details: Some(outcome.details),
+        structured_content: None,
+        is_error,
+    }
+}
+
+async fn run_send_tool(shared: Arc<Shared>, params: Value, info: CallInfo) -> Result<ToolResult, ToolError> {
+    let to = str_param(&params, "to").unwrap_or_default().to_owned();
+    let message = params.get("message").and_then(Value::as_str).unwrap_or_default().to_owned();
+    if to.is_empty() {
+        return Ok(outcome_result(control::Outcome {
+            kind: "invalid_arguments",
+            text: "Missing required parameter: to".into(),
+            details: json!({"kind": "invalid_arguments"}),
+        }));
+    }
+    let all_sessions = bool_param(&params, "all_sessions").unwrap_or(false);
+    if let Some((group, member)) = control::split_team_target(&to) {
+        if let Err(outcome) = control::check_message(&message) {
+            return Ok(outcome_result(outcome));
+        }
+        let scope = TaskScope {
+            shared: Arc::clone(&shared),
+            info: Arc::new(info.clone()),
+        };
+        for addon in &shared.config.addons {
+            if let Some(result) = addon.route_message(&scope, group, member, &message) {
+                return result.map_err(ToolError::Message);
+            }
+        }
+    }
+    let manager = shared.manager(&info.session_id);
+    Ok(outcome_result(control::send(&manager, &caller(&info), &to, &message, all_sessions)))
 }
 
 async fn run_task_tool(shared: Arc<Shared>, params: Value, info: CallInfo, cancel: CancelToken) -> Result<ToolResult, ToolError> {
@@ -463,6 +580,7 @@ impl TaskExtension {
             return None;
         }
         let discovery = discover(&api.cwd, self.agent_dir.as_deref(), loaded.view.get("agents"));
+        let steer = steer_channel(self.agent_dir.as_deref(), &loaded.view);
         Some(Arc::new(Shared {
             config: self.clone(),
             cwd: api.cwd.clone(),
@@ -471,6 +589,7 @@ impl TaskExtension {
             discovery,
             depth,
             available: OnceLock::new(),
+            steer,
             sender: Some(Arc::new(ExtensionApi::new(
                 api.registered.clone(),
                 api.profile.clone(),
@@ -531,13 +650,22 @@ fn definitions(shared: &Arc<Shared>) -> Vec<ToolDefinition> {
                 Ok(text_result(manager.result_text(&record.id).unwrap_or_default(), json!({"id": record.id})))
             }))),
         define(shared, "task_cancel", "Task Cancel",
-            "Stop a queued or running delegated task.".to_owned(),
-            id_schema(json!({})),
+            "Cancel a delegated task by id or name: a queued task never starts, a running child is stopped, an interrupted task is marked cancelled. Messages still queued for it are dropped. Cancel is final; task_send does not continue a cancelled task.".to_owned(),
+            id_schema(json!({"reason": {"type": "string", "description": "Why the task is cancelled (recorded as its error)"}})),
             Arc::new(|shared, params, info, _| Box::pin(async move {
                 let manager = shared.manager(&info.session_id);
                 let id = str_param(&params, "id").ok_or_else(|| ToolError::Message("Missing required parameter: id".into()))?;
-                Ok(text_result(manager.cancel(id), json!({"id": id})))
+                let outcome = control::cancel(&manager, &caller(&info), id, str_param(&params, "reason")).await;
+                Ok(outcome_result(outcome))
             }))),
+        define(shared, "task_send", "Task Send",
+            "Send a message to a delegated task (id or name) or a team member (`<team>/<member>`, `<team>/*`). A queued task gets it with its first run; a running child gets it in its current turn when it can be reached, otherwise as a follow-up run once the current run finishes; a finished, failed or interrupted task continues in its own session with the message. Cancelled tasks are not continued. Messages over 32 KiB are refused: write long content to a file and send its path.".to_owned(),
+            json!({"type": "object", "properties": {
+                "to": {"type": "string", "description": "Task id or name, or `<team>/<member>` / `<team>/*`"},
+                "message": {"type": "string", "description": "The message (at most 32 KiB)"},
+                "all_sessions": {"type": "boolean", "description": "Allow messaging a task spawned by another session"}
+            }, "required": ["to", "message"]}),
+            Arc::new(|shared, params, info, _| Box::pin(run_send_tool(shared, params, info)))),
     ]
     .into_iter()
     .chain(addon_definitions(shared))
@@ -564,8 +692,65 @@ fn addon_definitions(shared: &Arc<Shared>) -> Vec<ToolDefinition> {
     definitions
 }
 
+/// Starts the gateway inbox of a delegated run (task-control.md §1.1) at session start and
+/// removes its endpoint record at shutdown.
+fn register_delegated_inbox(api: &mut ExtensionApi) {
+    let Some(task_id) = std::env::var(TASK_ID_ENV).ok().filter(|id| !id.trim().is_empty()) else {
+        return;
+    };
+    let sender = Arc::new(ExtensionApi::new(
+        api.registered.clone(),
+        api.profile.clone(),
+        api.events.clone(),
+        api.runtime.clone(),
+    ));
+    let inbox: Arc<Mutex<Option<control::DelegatedInbox>>> = Arc::default();
+    let start_inbox = Arc::clone(&inbox);
+    api.on(
+        maho_ext_api::EventKind::SessionStart,
+        Arc::new(move |_event, ctx| {
+            let inbox = Arc::clone(&start_inbox);
+            let sender = Arc::clone(&sender);
+            let task_id = task_id.clone();
+            Box::pin(async move {
+                if control::delegated_receiver(ctx.mode, Some(task_id.as_str())) {
+                    let env = |key: &str| std::env::var(key).ok();
+                    let settings = maho_gateway::Settings::load(&ctx.cwd);
+                    if settings.enabled {
+                        let store = maho_gateway::Store::new(maho_gateway::default_root(&ctx.agent_dir, &env));
+                        let deliver: control::DeliverFn = Arc::new(move |message, options| {
+                            sender.send_message(message, options).map_err(|error| error.to_string())
+                        });
+                        match control::DelegatedInbox::start(
+                            store,
+                            ctx.session_manager.session_id(),
+                            &ctx.cwd.to_string_lossy(),
+                            settings.poll,
+                            deliver,
+                        ) {
+                            Ok(started) => *lock(&inbox) = Some(started),
+                            Err(error) => maho_ext_api::diagnostic(&format!(
+                                "task: cannot open the delegated-run inbox: {error}"
+                            )),
+                        }
+                    }
+                }
+                Ok(maho_ext_api::EventResult::None)
+            })
+        }),
+    );
+    api.on(
+        maho_ext_api::EventKind::SessionShutdown,
+        Arc::new(move |_event, _ctx| {
+            lock(&inbox).take();
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        }),
+    );
+}
+
 impl Extension for TaskExtension {
     fn register(&self, api: &mut ExtensionApi) {
+        register_delegated_inbox(api);
         let Some(shared) = self.shared(api) else {
             return;
         };
@@ -583,6 +768,24 @@ impl Extension for TaskExtension {
                 let manager = command_shared.manager(ctx.session_manager.session_id());
                 Box::pin(async move {
                     ctx.ui.notify(&list_text(&manager), NotificationType::Info);
+                    Ok(())
+                })
+            }),
+        );
+        let kill_shared = Arc::clone(&shared);
+        api.register_command(
+            KILL_COMMAND,
+            Some("Cancel one of this session's delegated tasks".to_owned()),
+            None,
+            Arc::new(move |_raw, ctx| {
+                let manager = kill_shared.manager(ctx.session_manager.session_id());
+                let session_id = ctx.session_manager.session_id().to_owned();
+                Box::pin(async move {
+                    let caller = Caller {
+                        root_session: current_root_session(&session_id),
+                        session_id,
+                    };
+                    control::task_kill(&manager, &caller, &ContextUi(ctx)).await;
                     Ok(())
                 })
             }),

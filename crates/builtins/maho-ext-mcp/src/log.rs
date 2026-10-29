@@ -1,33 +1,8 @@
-use std::{collections::{BTreeSet,VecDeque},io::Write,path::{Path,PathBuf},time::{Duration,Instant}};
+use std::{collections::{BTreeSet,VecDeque},io::Write,path::{Path,PathBuf}};
 use serde_json::{Value,json};
 use sha2::{Digest,Sha256};
 use fancy_regex::Regex;
 pub fn fingerprint_secret(secret:&str)->String {format!("{:x}",Sha256::digest(secret))[..8].into()}
-fn sensitive_query_key(key:&str)->bool {let lower=key.to_lowercase();lower.contains("key") || lower.contains("token") || lower.contains("secret")}
-/// Pinned `http-client.ts::redactUrl`: query params whose key contains `key`, `token` or
-/// `secret` become `***REDACTED***`; a value that is not a URL is returned unchanged.
-pub fn redact_url(value:&str)->String {
-    let Ok(mut url)=url::Url::parse(value) else{return value.to_owned();};
-    let pairs=url.query_pairs().map(|(key,value)|(key.into_owned(),value.into_owned())).collect::<Vec<_>>();
-    if pairs.is_empty(){return url.to_string();}
-    let mut serializer=url::form_urlencoded::Serializer::new(String::new());
-    for (key,value) in &pairs {serializer.append_pair(key,if sensitive_query_key(key){"***REDACTED***"}else{value.as_str()});}
-    url.set_query(Some(&serializer.finish()));
-    url.to_string()
-}
-/// Pinned `redactCleanupErrorMessage` URL pass: every `http(s)://...` token in the text is run
-/// through `redact_url`.
-pub fn redact_urls_in_text(text:&str)->String {
-    let mut output=String::new();let mut index=0;
-    while index<text.len() {
-        let rest=&text[index..];
-        if rest.starts_with("http://") || rest.starts_with("https://") {
-            let end=rest.find(|character:char|character.is_whitespace() || matches!(character,'"'|'\''|'<'|'>'|')'|'}'|']')).unwrap_or(rest.len());
-            output.push_str(&redact_url(&rest[..end]));index+=end;
-        }else if let Some(character)=rest.chars().next() {output.push(character);index+=character.len_utf8();}else{break;}
-    }
-    output
-}
 fn redaction(secret:&str,secrets:&mut BTreeSet<String>)->String {
     if !secret.is_empty() && !secret.starts_with("<redacted:"){secrets.insert(secret.into());}
     format!("<redacted:{}>",fingerprint_secret(secret))
@@ -38,9 +13,9 @@ static REDACTION_PATTERNS:std::sync::LazyLock<[Regex;4]>=std::sync::LazyLock::ne
     r"(?i)(\bBearer\s+)(?!<redacted:)([A-Za-z0-9._~+/=-]+)",
     r#"(?i)([?&][^=\s&"'<>]*(?:key|token|secret|password|client_secret|auth)[^=\s&"'<>]*=)([^&\s"'<>]+)"#,
     r#"(?i)((?:"|')?[^"'\s:=,{}]*(?:api[_-]?key|key|token|secret|password|client_secret|auth)[^"'\s:=,{}]*(?:"|')?\s*[:=]\s*(?:"|')?)([^"',\s}\]&]+)"#,
-].map(|pattern|Regex::new(pattern).expect("pinned redaction patterns are literals")));
-static AUTHORIZATION_PREFIX:std::sync::LazyLock<Regex>=std::sync::LazyLock::new(||Regex::new(r"(?i)\bAuthorization\b").expect("pinned authorization pattern is a literal"));
-static SENSITIVE_KEY:std::sync::LazyLock<Regex>=std::sync::LazyLock::new(||Regex::new(r"(?i)(?:^|[_-])(?:api[_-]?key|key|token|secret|password|client_secret|auth|authorization)(?:$|[_-])").expect("pinned sensitive-key pattern is a literal"));
+].map(|pattern|Regex::new(pattern).expect("redaction patterns are literals")));
+static AUTHORIZATION_PREFIX:std::sync::LazyLock<Regex>=std::sync::LazyLock::new(||Regex::new(r"(?i)\bAuthorization\b").expect("authorization pattern is a literal"));
+static SENSITIVE_KEY:std::sync::LazyLock<Regex>=std::sync::LazyLock::new(||Regex::new(r"(?i)(?:^|[_-])(?:api[_-]?key|key|token|secret|password|client_secret|auth|authorization)(?:$|[_-])").expect("sensitive-key pattern is a literal"));
 fn redact_text(text:&str,secrets:&mut BTreeSet<String>)->Result<String,Box<fancy_regex::Error>> {
     let mut text=text.to_owned();
     for (index,regex) in REDACTION_PATTERNS.iter().enumerate() {
@@ -73,17 +48,36 @@ fn redact_data(value:&Value,secrets:&mut BTreeSet<String>)->Result<Value,Box<fan
         _=>Ok(value.clone()),
     }
 }
+const REDACTED_VALUE:&str="***REDACTED***";
+/// Rewrites one URL: query parameters whose key contains `key`, `token` or `secret` (case-insensitive)
+/// get the value `***REDACTED***`; everything else is left byte-for-byte unchanged.
+pub fn redact_url(url:&str)->String {
+    let Some((head,rest))=url.split_once('?') else{return url.into();};
+    let (query,fragment)=match rest.split_once('#') {Some((query,fragment))=>(query,Some(fragment)),None=>(rest,None)};
+    let query=query.split('&').map(|pair|{
+        let Some((name,_))=pair.split_once('=') else{return pair.to_owned();};
+        let decoded=url::form_urlencoded::parse(name.as_bytes()).next().map_or_else(||name.to_owned(),|(key,_)|key.into_owned()).to_lowercase();
+        if ["key","token","secret"].iter().any(|word|decoded.contains(word)) {format!("{name}={REDACTED_VALUE}")}else{pair.to_owned()}
+    }).collect::<Vec<_>>().join("&");
+    match fragment {Some(fragment)=>format!("{head}?{query}#{fragment}"),None=>format!("{head}?{query}")}
+}
+static URL_TOKEN:std::sync::LazyLock<regex::Regex>=std::sync::LazyLock::new(||regex::Regex::new(r#"(?i)https?://[^\s"'<>)}\]]+"#).expect("url pattern is a literal"));
+/// Applies [`redact_url`] to every `http://` / `https://` token in `text`.
+pub fn redact_urls_in_text(text:&str)->String {URL_TOKEN.replace_all(text,|captures:&regex::Captures|redact_url(&captures[0])).into_owned()}
 pub fn map_mcp_log_level(level:&str)->(&'static str,u8) {
     match level {"emergency"=>("emergency",0),"alert"=>("alert",1),"critical"|"crit"=>("critical",2),"error"|"err"=>("error",3),"warning"|"warn"=>("warning",4),"notice"=>("notice",5),"debug"=>("debug",7),_=>("info",6)}
 }
-/// Pinned `log-file-rotation.ts::LOG_SINK_RETRY_MS` (5 s): a failed file sink is retried after this delay.
-const LOG_SINK_RETRY:Duration=Duration::from_secs(5);
-pub struct McpLogger {pub file_path:PathBuf,server:String,max_file_bytes:usize,ring:VecDeque<String>,file_sink_retry_at:Option<Instant>,file_mode_set:bool}
+pub struct McpLogger {pub file_path:PathBuf,server:String,max_file_bytes:usize,ring:VecDeque<String>,file_retry_at:Option<std::time::Instant>,file_mode_set:bool,clock:LogClock}
+/// How long the file sink stays skipped after a write failure.
+pub const FILE_SINK_RETRY_DELAY:std::time::Duration=std::time::Duration::from_secs(5);
+/// Monotonic time source; tests inject their own to drive the retry window without sleeping.
+pub type LogClock=std::sync::Arc<dyn Fn()->std::time::Instant+Send+Sync>;
 impl McpLogger {
     pub fn new(server:&str,log_dir:&Path,max_file_bytes:Option<usize>)->Result<Self,regex::Error> {
         let safe=regex::Regex::new(r"[^A-Za-z0-9._-]+")?.replace_all(server,"_");let safe=if safe.is_empty(){"server"}else{safe.as_ref()};
-        Ok(Self {file_path:log_dir.join(format!("{safe}.log")),server:server.into(),max_file_bytes:max_file_bytes.unwrap_or(1024*1024),ring:VecDeque::new(),file_sink_retry_at:None,file_mode_set:false})
+        Ok(Self {file_path:log_dir.join(format!("{safe}.log")),server:server.into(),max_file_bytes:max_file_bytes.unwrap_or(1024*1024),ring:VecDeque::new(),file_retry_at:None,file_mode_set:false,clock:std::sync::Arc::new(std::time::Instant::now)})
     }
+    pub fn set_clock(&mut self,clock:LogClock) {self.clock=clock;}
     pub fn get_ring_buffer(&self)->Vec<String> {self.ring.iter().cloned().collect()}
     fn push_ring(&mut self,line:String) {self.ring.push_back(line);while self.ring.len()>200{self.ring.pop_front();}}
     fn format_line(&self,level:&str,message:&str,data:Option<&Value>,channel:&str)->Result<String,Box<fancy_regex::Error>> {
@@ -96,13 +90,8 @@ impl McpLogger {
     }
     pub fn log(&mut self,level:&str,message:&str,data:Option<&Value>,channel:Option<&str>)->Result<(),Box<fancy_regex::Error>> {
         let line=self.format_line(level,message,data,channel.unwrap_or("server"))?;self.push_ring(line.clone());
-        if self.file_sink_retry_at.is_none_or(|retry_at|Instant::now()>=retry_at) {
-            self.file_sink_retry_at=None;
-            if self.write_file(&line).is_err() {
-                self.file_sink_retry_at=Some(Instant::now()+LOG_SINK_RETRY);
-                let warning=self.format_line("warning","file sink disabled after write failure",None,"file")?;self.push_ring(warning);
-            }
-        }
+        let now=(self.clock)();
+        if self.file_retry_at.is_none_or(|at|now>=at) && self.write_file(&line).is_err() {self.file_retry_at=Some(now+FILE_SINK_RETRY_DELAY);let warning=self.format_line("warning","file sink disabled after write failure",None,"file")?;self.push_ring(warning);}
         Ok(())
     }
     fn write_file(&mut self,line:&str)->std::io::Result<()> {

@@ -15,7 +15,7 @@ pub async fn create_http_client(
         format!(
             "MCP server {:?} has invalid URL: {}",
             info.server_name,
-            maho_ext_mcp::log::redact_url(url)
+            super::oauth_compat::redact_url(url)
         )
     })?;
     let headers = config
@@ -79,33 +79,20 @@ pub(super) async fn login(
     config: &Value,
     root: &std::path::Path,
 ) -> super::Result<()> {
-    use maho_ext_mcp::{
-        auth::commands_auth::{InteractiveLoginOptions, open_browser, run_interactive_login},
-        config_schema::{McpServerConfig, OAuthConfig},
-    };
+    use maho_ext_mcp::config_schema::{McpServerConfig, OAuthConfig, Transport};
     let oauth: OAuthConfig =
         serde_json::from_value(config["oauth"].clone()).map_err(|e| e.to_string())?;
     let server = McpServerConfig {
+        transport: Some(Transport::Http),
         url: config["url"].as_str().map(str::to_owned),
         oauth: Some(oauth),
         ..Default::default()
     };
-    let http = reqwest::Client::new();
-    run_interactive_login(
-        InteractiveLoginOptions {
-            name: &info.server_name,
-            config: &server,
-            agent_dir: root,
-            callback_url: None,
-            port: None,
-            force: true,
-            require_https: true,
-            client: &http,
-        },
-        |url| async move {
-            open_browser(url.as_str());
-            Ok(())
-        },
+    super::oauth_compat::forced_interactive_login(
+        &info.server_name,
+        &server,
+        root,
+        &reqwest::Client::new(),
     )
     .await
     .map_err(|e| e.to_string())

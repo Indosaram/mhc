@@ -25,9 +25,9 @@ impl KibitzerIdleCoordinator for CliKibitzerCoordinator {
     fn enqueue(&self, entry: KibitzerCoordinatorEntry) -> bool {
         let Some(runtime) = self.runtime.lock().unwrap_or_else(PoisonError::into_inner).clone() else { return false; };
         // Upstream kibitzer rank 6; `passive` rides a non-passive flush and never causes one.
-        maho_ext_api::IdleInjectionCoordinator::enqueue(&runtime.coordinator(), maho_ext_api::IdleInjection {
+        idle_injection::IdleInjectionCoordinator::enqueue(&runtime.coordinator(), idle_injection::IdleInjection {
             key: entry.key,
-            source: maho_ext_api::IdleInjectionSource::Kibitzer,
+            source: idle_injection::IdleInjectionSource::Kibitzer,
             custom_type: Some(entry.custom_type),
             content: entry.content,
             display: Some(false),
@@ -39,7 +39,7 @@ impl KibitzerIdleCoordinator for CliKibitzerCoordinator {
     }
     fn remove(&self, key: &str) {
         if let Some(runtime) = self.runtime.lock().unwrap_or_else(PoisonError::into_inner).clone() {
-            maho_ext_api::IdleInjectionCoordinator::remove(&runtime.coordinator(), key);
+            idle_injection::IdleInjectionCoordinator::remove(&runtime.coordinator(), key);
         }
     }
 }

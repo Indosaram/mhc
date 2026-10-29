@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use maho_ext_api::{IdleInjection, IdleInjectionCoordinator, IdleInjectionSource};
+use idle_injection::{IdleInjection, IdleInjectionCoordinator, IdleInjectionSource};
 use maho_omo_task::dag_wake::{create_dag_wake, DagWakeRun, DagWakeFailure, DAG_WAKE_MESSAGE_TYPE};
 use senpi_task::completion::ParentState;
 
