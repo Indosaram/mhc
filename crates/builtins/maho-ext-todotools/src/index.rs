@@ -1,14 +1,17 @@
 use serde_json::Value;
 use crate::todo_types::{TodoAsk,TodoPhase,TodoState};
 pub struct NativeTodotoolsExtension {pub actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,pub copy_markdown:crate::commands::CopyTodoMarkdown,pub widget_sender:tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>}
-struct NativeTodoAccessors {branch:std::sync::Mutex<Vec<Value>>,phases:std::sync::Mutex<Vec<TodoPhase>>,ask:std::sync::Mutex<Option<TodoAsk>>,surface:std::sync::Mutex<maho_ext_api::PromptSurface>,ui:std::sync::Mutex<Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>>,widget_sender:tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>}
+/// `session` is the live session handle from the latest turn's context, not a branch copy: senpi reads
+/// `ctx.sessionManager.getBranch()` when the todo tool runs, and `TurnStart` fires before the run's
+/// new user prompt is persisted, so a copy taken there misses the request the list is anchored to.
+struct NativeTodoAccessors {session:std::sync::Mutex<Option<std::sync::Arc<dyn maho_ext_api::SessionManager>>>,phases:std::sync::Mutex<Vec<TodoPhase>>,ask:std::sync::Mutex<Option<TodoAsk>>,surface:std::sync::Mutex<maho_ext_api::PromptSurface>,ui:std::sync::Mutex<Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>>,widget_sender:tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>}
 impl crate::tools_todo::TodoAccessors for NativeTodoAccessors {
     fn get_current_phases(&self)->Vec<TodoPhase>{self.phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()}
     fn set_current_phases(&self,phases:Vec<TodoPhase>){*self.phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=phases;}
     fn get_current_ask(&self)->Option<TodoAsk>{self.ask.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()}
     fn set_current_ask(&self,ask:Option<TodoAsk>){*self.ask.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=ask;}
     fn get_current_state(&self)->TodoState{TodoState{phases:self.get_current_phases(),ask:self.get_current_ask()}}
-    fn branch_entries(&self)->Vec<Value>{self.branch.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()}
+    fn branch_entries(&self)->Vec<Value>{let session=self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();session.map(|session|session.get_branch().into_iter().map(|entry|entry.data).collect()).unwrap_or_default()}
     fn prompt_surface(&self)->maho_ext_api::PromptSurface{*self.surface.lock().unwrap_or_else(std::sync::PoisonError::into_inner)}
     fn sync_widget(&self,_:&dyn maho_ext_api::ToolContext,completed:&[crate::todo_types::TodoCompletionTransition])->Result<(),maho_ext_api::ExtensionFailure>{
         if let Some(ui)=self.ui.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref(){ui.set_widget("todo-sidebar",crate::todo_widget_component::widget_content(&self.phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner),completed,self.widget_sender.clone()),Default::default());}Ok(())
@@ -16,10 +19,10 @@ impl crate::tools_todo::TodoAccessors for NativeTodoAccessors {
 }
 impl maho_ext_api::Extension for NativeTodotoolsExtension {
     fn register(&self,api:&mut maho_ext_api::ExtensionApi){
-        let accessors=std::sync::Arc::new(NativeTodoAccessors {branch:Default::default(),phases:Default::default(),ask:Default::default(),surface:Default::default(),ui:Default::default(),widget_sender:self.widget_sender.clone()});
+        let accessors=std::sync::Arc::new(NativeTodoAccessors {session:Default::default(),phases:Default::default(),ask:Default::default(),surface:Default::default(),ui:Default::default(),widget_sender:self.widget_sender.clone()});
         for event in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::SessionTree]{let captured=accessors.clone();api.on(event,std::sync::Arc::new(move |_,ctx|{let captured=captured.clone();Box::pin(async move {*captured.ui.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=ctx.has_ui.then(||ctx.ui.clone());Ok(maho_ext_api::EventResult::None)})}));}
         {let captured=accessors.clone();api.on(maho_ext_api::EventKind::TurnStart,std::sync::Arc::new(move |_,ctx|{let captured=captured.clone();Box::pin(async move {
-            *captured.branch.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=ctx.session_manager.get_branch().into_iter().map(|entry|entry.data).collect();
+            *captured.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(ctx.session_manager.clone());
             *captured.surface.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=ctx.get_system_prompt_options().surface;
             Ok(maho_ext_api::EventResult::None)
         })}));}
@@ -167,5 +170,27 @@ mod tests {
         assert!(matches!(prompt_hook_result(&maho_ext_api::ExtensionEvent::SessionAbort),maho_ext_api::EventResult::None));
     }
     #[test] fn native_updates_skip_explicit_ops_and_nonassistant_messages() { let message=serde_json::json!({"role":"assistant","content":[{"type":"toolCall","name":"todo","arguments":{"todos":[]}},{"type":"toolCall","name":"todo","arguments":{"op":"view","todos":[]}}]}); assert_eq!(native_todo_updates(&message),vec![vec![]]); assert!(native_todo_updates(&serde_json::json!({"role":"user","content":message["content"]})).is_empty()); }
+    struct LiveBranch(std::sync::Mutex<Vec<maho_ext_api::SessionEntry>>);
+    impl maho_ext_api::ToolSessionManager for LiveBranch { fn session_id(&self)->&str { "s" } fn session_file(&self)->Option<&std::path::Path> { None } }
+    impl maho_ext_api::SessionManager for LiveBranch {
+        fn get_entries(&self)->Vec<maho_ext_api::SessionEntry> { self.get_branch() }
+        fn get_branch(&self)->Vec<maho_ext_api::SessionEntry> { self.0.lock().unwrap().clone() }
+        fn get_leaf_id(&self)->Option<String> { None }
+        fn get_session_name(&self)->Option<String> { None }
+    }
+    fn session_entry(id:&str,kind:&str,data:Value)->maho_ext_api::SessionEntry { maho_ext_api::SessionEntry{id:id.into(),parent_id:None,timestamp:String::new(),kind:kind.into(),data} }
+    fn user_entry(id:&str,text:&str)->maho_ext_api::SessionEntry { session_entry(id,"message",serde_json::json!({"type":"message","id":id,"message":{"role":"user","content":text}})) }
+    #[test] fn list_ask_sees_the_prompt_persisted_after_turn_start() {
+        use crate::tools_todo::TodoAccessors;
+        // Given: a todo state already exists and the accessor holds the session from TurnStart, before the new prompt lands.
+        let state=session_entry("t1","custom",serde_json::json!({"type":"custom","customType":crate::todo_types::TODO_STATE_ENTRY_TYPE,"data":{"schema":"v2","phases":[]}}));
+        let session=std::sync::Arc::new(LiveBranch(std::sync::Mutex::new(vec![user_entry("m1","Earlier request"),state])));
+        let accessors=NativeTodoAccessors{session:std::sync::Mutex::new(Some(session.clone())),phases:Default::default(),ask:Default::default(),surface:Default::default(),ui:Default::default(),widget_sender:tokio::sync::mpsc::unbounded_channel().0};
+        // When: the run's prompt is persisted after TurnStart and the todo tool then creates a list.
+        session.0.lock().unwrap().push(user_entry("m2","Current request"));
+        let ask=crate::todo_storage::capture_list_ask(&accessors.branch_entries(),None).unwrap();
+        // Then: the Ask anchors to the current request, not the previous one.
+        assert_eq!((ask.entry_id.as_str(),ask.text.as_str()),("m2","Current request"));
+    }
     #[test] fn empty_op_is_not_an_explicit_operation() { assert_eq!(native_todo_updates(&serde_json::json!({"role":"assistant","content":[{"type":"toolCall","name":"todo","arguments":{"op":"","todos":[]}}]})),vec![vec![]]); }
 }
