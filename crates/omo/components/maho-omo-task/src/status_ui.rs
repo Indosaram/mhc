@@ -1,10 +1,8 @@
 use crate::{
     runtime_context::TaskRuntimeContext,
-    status_row_format::{background_widget_rows, build_widget_rows, is_terminal},
+    status_row_format::{is_terminal, task_footer_status},
 };
-use maho_ext_api::{
-    ExtensionMode, ExtensionUi, ExtensionWidgetOptions, WidgetContent, WidgetPlacement,
-};
+use maho_ext_api::{ExtensionMode, ExtensionUi, ExtensionWidgetOptions};
 use senpi_task::{
     manager::{
         TaskManager,
@@ -199,40 +197,30 @@ impl TaskStatusUi {
             self.clear_live_refresh();
             return;
         };
-        let (records, activity) = {
-            let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            (state.records.clone(), state.activity.clone())
-        };
-        // DAG node tasks are spawned in the background but already render in the omo-dag widget.
+        let records = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .records
+            .clone();
+        // DAG node tasks are spawned in the background but already count in the omo-dag status.
         let background: Vec<_> = records
             .iter()
             .filter(|record| record.owner.is_none() && self.manager.was_background(&record.task_id))
             .cloned()
             .collect();
-        let rows = if self.manager.has_background_surface() {
-            background_widget_rows(
-                &background,
-                &activity,
-                (self.now)(),
-                &|id| self.manager.run_stats_snapshot(id),
-                (self.terminal_width)(),
-            )
+        let shown = if self.manager.has_background_surface() {
+            &background
         } else {
-            build_widget_rows(&records)
+            &records
         };
-        if rows.is_empty() {
+        ui.set_widget(UI_KEY, None, ExtensionWidgetOptions::default());
+        let Some(status) = task_footer_status(shown) else {
             self.clear_live_refresh();
-            ui.set_widget(UI_KEY, None, ExtensionWidgetOptions::default());
+            ui.set_status(UI_KEY, None);
             return;
-        }
-        ui.set_widget(
-            UI_KEY,
-            Some(WidgetContent::Lines(rows)),
-            ExtensionWidgetOptions {
-                placement: WidgetPlacement::BelowEditor,
-                actions: None,
-            },
-        );
+        };
+        ui.set_status(UI_KEY, Some(&status));
         if self.manager.has_background_surface()
             && background.iter().any(|record| !is_terminal(record.status))
         {

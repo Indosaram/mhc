@@ -14,14 +14,31 @@ fn record_status_target(record: &TaskRecord) -> String {
     let target = format_status_target(&StatusTargetInput { category: record.category.as_deref(), agent_type: record.agent_type.as_deref(), resolved_model: record.resolved_model.as_ref(), model: Some(&record.model), fallback_count: record.fallback_attempts.as_ref().map(|items| u64::try_from(items.len()).unwrap_or(u64::MAX)) }).unwrap_or_else(|| "task".into());
     senpi_task::status_line::format_parent_model_fallback(record).map_or_else(|| target.clone(), |fallback| format!("{target} · {fallback}"))
 }
-pub fn format_task_row(record: &TaskRecord) -> String {
+pub fn format_task_row(record: &TaskRecord, stats: Option<&TaskRunStats>) -> String {
     let identity = task_identity(record);
     let mut parts = vec![identity.clone()];
     if identity != normalize_renderer_text(&record.task_id) { parts.push(format!("({})", normalize_renderer_text(&record.task_id))); }
     parts.extend([record_status_target(record), format!("mode:{}", normalize_renderer_text(&record.execution_mode)), format!("status:{}", status_label(record))]);
     if let Some(pid) = record.pid { parts.push(format!("pid:{pid}")); }
     if let Some(progress) = optional_renderer_text(record.final_response.as_deref()) { parts.push(format!("progress:{}", excerpt_renderer_text(&progress, Some(60)))); }
+    if let Some(stats) = stats {
+        parts.push(format!("turn {}{}", stats.turns, tool_count_suffix(stats.tool_calls)));
+        if let Some(spend) = format_live_spend(stats.cost_usd.filter(|cost| *cost > 0.0)) { parts.push(spend); }
+        if let Some(tps) = stats.tokens_per_second { parts.push(format!("{tps:.0} tok/s")); }
+        let seconds = stats.runtime_ms / 1000;
+        let elapsed = if seconds < 60 { format!("{seconds}s") } else if seconds < 3600 { format!("{}m {}s", seconds / 60, seconds % 60) } else { format!("{}h {}m", seconds / 3600, (seconds % 3600) / 60) };
+        parts.push(format!("elapsed:{elapsed}"));
+    }
     parts.join(" ")
+}
+/// Footer status text: live subagents, plus the failed ones still in view. Details live in /tasks.
+pub fn task_footer_status(records: &[TaskRecord]) -> Option<String> {
+    let live = records.iter().filter(|record| !is_terminal(record.status)).count();
+    let failed = records.iter().filter(|record| matches!(record.status, TaskStatus::Error | TaskStatus::Lost)).count();
+    let mut parts = Vec::new();
+    if live > 0 { parts.push(format!("{live} subagent{}", if live == 1 { "" } else { "s" })); }
+    if failed > 0 { parts.push(format!("{failed} failed")); }
+    (!parts.is_empty()).then(|| parts.join(" "))
 }
 pub fn build_widget_rows(records: &[TaskRecord]) -> Vec<String> {
     let active: Vec<_> = records.iter().filter(|record| !is_terminal(record.status)).collect();

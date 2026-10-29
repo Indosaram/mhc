@@ -1,8 +1,8 @@
 use crate::{
-    dag_status_row_format::run_rows_with_options, runtime_context::TaskRuntimeContext,
+    dag_status_row_format::dag_footer_status, runtime_context::TaskRuntimeContext,
     status_ui::StatusUiTimers,
 };
-use maho_ext_api::{ExtensionMode, ExtensionWidgetOptions, WidgetContent, WidgetPlacement};
+use maho_ext_api::{ExtensionMode, ExtensionWidgetOptions};
 use senpi_task::dag::{manager::DagRunSummary, types::DagRunSnapshot};
 use std::{
     collections::BTreeMap,
@@ -10,8 +10,6 @@ use std::{
 };
 
 pub const DAG_STATUS_UI_KEY: &str = "omo-dag";
-type TerminalWidth = Arc<dyn Fn() -> Option<usize> + Send + Sync>;
-type StatusClock = Arc<dyn Fn() -> i64 + Send + Sync>;
 type StatusLogger = Arc<dyn Fn(&str, &str) + Send + Sync>;
 pub trait DagStatusUiManager: Send + Sync {
     fn list(&self, session: &str) -> Vec<DagRunSummary>;
@@ -28,8 +26,6 @@ pub struct DagStatusUi {
     manager: Arc<dyn DagStatusUiManager>,
     runtime: Arc<Mutex<TaskRuntimeContext>>,
     timers: Arc<dyn StatusUiTimers>,
-    terminal_width: Option<TerminalWidth>,
-    now: Option<StatusClock>,
     logger: Option<StatusLogger>,
     state: Mutex<State>,
 }
@@ -39,22 +35,18 @@ impl DagStatusUi {
         runtime: Arc<Mutex<TaskRuntimeContext>>,
         timers: Arc<dyn StatusUiTimers>,
     ) -> Arc<Self> {
-        Self::with_options(manager, runtime, timers, None, None, None)
+        Self::with_options(manager, runtime, timers, None)
     }
     pub fn with_options(
         manager: Arc<dyn DagStatusUiManager>,
         runtime: Arc<Mutex<TaskRuntimeContext>>,
         timers: Arc<dyn StatusUiTimers>,
-        terminal_width: Option<TerminalWidth>,
-        now: Option<StatusClock>,
         logger: Option<StatusLogger>,
     ) -> Arc<Self> {
         Arc::new(Self {
             manager,
             runtime,
             timers,
-            terminal_width,
-            now,
             logger,
             state: Mutex::new(State::default()),
         })
@@ -116,39 +108,14 @@ impl DagStatusUi {
         } else {
             Vec::new()
         };
-        let rows = {
+        let status = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            let width = self
-                .terminal_width
-                .as_ref()
-                .and_then(|width| width())
-                .or_else(|| {
-                    use maho_tui::terminal::Terminal as _;
-                    Some(usize::from(
-                        maho_tui::terminal::ProcessTerminal::default().columns(),
-                    ))
-                });
-            let now = self
-                .now
-                .as_ref()
-                .map_or_else(|| chrono::Utc::now().timestamp_millis(), |now| now());
-            let options = crate::dag_status_row_format::DagRunRowsOptions {
-                max_width: width,
-                now: Some(now),
-                is_process_alive: None,
-            };
-            let rows: Vec<_> = runs
-                .iter()
-                .flat_map(|run| {
-                    run_rows_with_options(run, state.activity.get(&run.run_id), Some(&options))
-                })
-                .collect();
             state
                 .activity
                 .retain(|id, _| runs.iter().any(|run| &run.run_id == id));
-            rows
+            dag_footer_status(&runs)
         };
-        let live_count = if rows.is_empty() {
+        let live_count = if status.is_none() {
             session.as_deref().map_or(0, |session| {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     self.manager.list(session)
@@ -161,34 +128,26 @@ impl DagStatusUi {
         } else {
             0
         };
-        if rows.is_empty() && live_count > 0 {
-            ui.set_widget(
+        if status.is_none() && live_count > 0 {
+            ui.set_status(
                 DAG_STATUS_UI_KEY,
-                Some(WidgetContent::Lines(vec![format!(
-                    "◌ tracking {live_count} dag run{}",
+                Some(&format!(
+                    "dag tracking {live_count} run{}",
                     if live_count == 1 { "" } else { "s" }
-                )])),
-                ExtensionWidgetOptions {
-                    placement: WidgetPlacement::BelowEditor,
-                    actions: None,
-                },
+                )),
             );
+            ui.set_widget(DAG_STATUS_UI_KEY, None, ExtensionWidgetOptions::default());
             self.schedule_live_refresh();
             return;
         }
-        if rows.is_empty() {
+        let Some(status) = status else {
             self.clear_live_refresh();
             ui.set_widget(DAG_STATUS_UI_KEY, None, ExtensionWidgetOptions::default());
+            ui.set_status(DAG_STATUS_UI_KEY, None);
             return;
-        }
-        ui.set_widget(
-            DAG_STATUS_UI_KEY,
-            Some(WidgetContent::Lines(rows)),
-            ExtensionWidgetOptions {
-                placement: WidgetPlacement::BelowEditor,
-                actions: None,
-            },
-        );
+        };
+        ui.set_status(DAG_STATUS_UI_KEY, Some(&status));
+        ui.set_widget(DAG_STATUS_UI_KEY, None, ExtensionWidgetOptions::default());
         if runs.iter().any(|run| !run.status.is_terminal()) {
             self.schedule_live_refresh();
         } else {

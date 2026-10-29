@@ -16,8 +16,8 @@ fn display_path_falls_back_to_absolute_for_cwd_root_ancestor_sibling_and_relativ
 
 #[test]
 fn theme_foreground_supports_reporter_palette_colors() {
- let theme = maho_ext_api::Theme { colors: std::collections::BTreeMap::from([("accent".into(), "<accent>".into()), ("dim".into(), "<dim>".into()), ("warning".into(), "<warning>".into())]), ..Default::default() };
+ let theme = maho_ext_api::Theme { colors: std::collections::BTreeMap::from([("accent".into(), "<accent>".into()), ("muted".into(), "<muted>".into()), ("warning".into(), "<warning>".into())]), ..Default::default() };
  assert_eq!(theme.fg("accent", "Nested Context:"), "<accent>Nested Context:\u{1b}[39m");
- assert_eq!(theme.fg("dim", "🤖 1"), "<dim>🤖 1\u{1b}[39m");
- assert_eq!(theme.fg("warning", " ⚠️"), "<warning> ⚠️\u{1b}[39m");
+ assert_eq!(theme.fg("muted", "AGENTS.md 1"), "<muted>AGENTS.md 1\u{1b}[39m");
+ assert_eq!(theme.fg("warning", " ⚠ failed"), "<warning> ⚠ failed\u{1b}[39m");
 }
