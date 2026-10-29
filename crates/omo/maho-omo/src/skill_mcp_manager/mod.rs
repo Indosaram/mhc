@@ -7,6 +7,7 @@ pub mod environment_grant_policy;
 pub mod http_client;
 pub mod index;
 pub mod manager;
+pub mod oauth_compat;
 pub mod policy_connection;
 pub mod project_env_policy;
 pub mod stdio_client;

@@ -10,6 +10,7 @@ autotests = false
 claude-code-compat-core = { path = "../../claude-code-compat-core" }
 senpi-task = { package = "maho-senpi-task", path = "../../senpi-task" }
 maho-ext-api = { path = "../../../maho-ext-api" }
+maho-omo-idle-injection = { path = "../../idle-injection" }
 maho-tui = { path = "../../../maho-tui" }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"

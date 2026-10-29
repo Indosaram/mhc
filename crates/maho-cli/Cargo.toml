@@ -15,6 +15,7 @@ default = ["omo"]
 omo = [
     "dep:maho-omo",
     "dep:maho-omo-task",
+    "dep:maho-omo-idle-injection",
     "dep:maho-omo-config-resolution",
     "dep:maho-omo-config-core",
     "dep:maho-omo-memory",
@@ -112,6 +113,7 @@ maho-onboarding = { path = "../maho-onboarding" }
 maho-context-files = { path = "../maho-context-files" }
 rpassword = "=7.5.4"
 maho-omo-task = { path = "../omo/components/maho-omo-task", optional = true }
+maho-omo-idle-injection = { path = "../omo/idle-injection", optional = true }
 maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }
 maho-ext-hooks = { path = "../builtins/maho-ext-hooks", default-features = false }
 maho-ext-relocate-session = { path = "../builtins/maho-ext-relocate-session" }

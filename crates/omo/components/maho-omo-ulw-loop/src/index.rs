@@ -1,4 +1,5 @@
 use crate::omo_command::run_omo_status;
+use idle_injection::{IdleInjection, IdleInjectionSource};
 use maho_ext_api::*;
 use maho_omo_start_work_continuation::agent_end_eligibility::read_agent_end_outcome;
 use std::sync::{Arc, Mutex};
@@ -314,7 +315,7 @@ impl Extension for UlwLoopComponent {
                     state.consecutive += 1;
                     drop(state);
 
-                    if let Some(coordinator) = &ctx.idle_coordinator {
+                    if let Some(coordinator) = idle_injection::from_slot(&ctx.idle_coordinator) {
                         coordinator.enqueue(IdleInjection {
                             key: ULW_CONTINUATION_INJECTION_KEY.into(),
                             source: IdleInjectionSource::UlwContinuation,

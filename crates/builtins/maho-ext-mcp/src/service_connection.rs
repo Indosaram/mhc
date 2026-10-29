@@ -116,23 +116,24 @@ fn create_session_connection(
     if let Some(policy) = crate::transport::project_policy(config_hash) {
         connection.set_project_policy(policy);
     }
+    if plan.provider.is_some()
+        && config.oauth.as_ref().and_then(|oauth| oauth.flow.as_ref())
+            != Some(&crate::config_schema::OAuthFlow::ClientCredentials)
+    {
+        connection.set_auth_challenge_handler(Arc::new(
+            crate::auth::challenge_login::InteractiveChallengeHandler::for_server(
+                name,
+                &config,
+                agent_dir,
+                Arc::downgrade(&connection),
+            ),
+        ));
+    }
     if shared.is_none()
         && let Some(refresh) = refresh
     {
         connection.set_auth(refresh);
     }
-    // Service-owned interactive step-up (pinned `handleStepUpIfNeeded` -> `provider.login()` plus
-    // `withOperationRetry` -> `forceReconnect`): the transport performs the real re-login through
-    // `commands_auth::run_interactive_login` and the real reconnect through `ServerConnection::renew`.
-    let step_up: Arc<dyn crate::transport_sdk::McpAuthStepUp> =
-        Arc::new(crate::auth::step_up_login::McpInteractiveStepUp::new(
-            name,
-            &config,
-            agent_dir,
-            config.oauth.as_ref().and_then(|oauth| oauth.callback_port),
-            Arc::downgrade(&connection),
-        ));
-    connection.set_step_up(step_up);
     let entry = Arc::new(tokio::sync::Mutex::new(McpConnectionEntry {
         key: key.into(),
         name: name.into(),

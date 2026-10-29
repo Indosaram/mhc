@@ -14,6 +14,9 @@ Full text: `LICENSES/MIT.txt`
 
 Applies to `crates/omo/**`, which ports
 [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent).
+Also applies to the `maho-cli` source files compiled only with its `omo` cargo feature
+(`#[cfg(feature = "omo")]` modules in `crates/maho-cli/src/cli/mod.rs` and
+`crates/maho-cli/src/lib.rs`), which port the host side of oh-my-openagent.
 Full text: `LICENSES/SUL-1.0.md`
 
 The SUL-1.0 portions may be used, copied, modified, and used to prepare derivative works

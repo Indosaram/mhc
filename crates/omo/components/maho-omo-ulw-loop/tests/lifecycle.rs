@@ -1,4 +1,5 @@
 use crate::support;
+use idle_injection::{IdleInjection, IdleInjectionCoordinator, IdleInjectionSource};
 use maho_ext_api::*;
 use std::sync::{Arc, Mutex};
 #[tokio::test]
@@ -617,7 +618,7 @@ fn coordinator_harness(
 async fn coordinator_routes_the_continuation_instead_of_a_direct_message() {
     let (api, actions, coordinator) = coordinator_harness(Some(active_runner()));
     let mut ctx = support::context();
-    ctx.idle_coordinator = Some(Arc::clone(&coordinator) as Arc<dyn IdleInjectionCoordinator>);
+    ctx.idle_coordinator = Some(idle_injection::into_slot(Arc::clone(&coordinator) as Arc<dyn IdleInjectionCoordinator>));
     let mut event = ExtensionEvent::AgentEnd {
         messages: support::finished_turn(),
         aborted: Some(false),
@@ -668,7 +669,7 @@ async fn queued_completion_and_continuation_share_one_coordinator_queue() {
         on_delivery_failed: None,
     });
     let mut ctx = support::context();
-    ctx.idle_coordinator = Some(Arc::clone(&coordinator) as Arc<dyn IdleInjectionCoordinator>);
+    ctx.idle_coordinator = Some(idle_injection::into_slot(Arc::clone(&coordinator) as Arc<dyn IdleInjectionCoordinator>));
     let mut event = ExtensionEvent::AgentEnd {
         messages: support::finished_turn(),
         aborted: Some(false),
@@ -744,7 +745,7 @@ async fn active_boulder_defers_without_enqueuing_a_continuation()
     let coordinator = Arc::new(RecordingCoordinator::default());
     let mut ctx = support::context();
     ctx.cwd = root.path().into();
-    ctx.idle_coordinator = Some(Arc::clone(&coordinator) as Arc<dyn IdleInjectionCoordinator>);
+    ctx.idle_coordinator = Some(idle_injection::into_slot(Arc::clone(&coordinator) as Arc<dyn IdleInjectionCoordinator>));
     let mut event = ExtensionEvent::AgentEnd {
         messages: support::finished_turn(),
         aborted: Some(false),

@@ -1,12 +1,11 @@
 pub mod oauth_errors;
 pub mod token_store;
 pub mod oauth_provider;
-pub mod resource_indicator;
 pub mod context;
 pub mod callback;
 pub mod oauth;
 pub mod oauth_refresh;
-pub mod step_up;
-pub mod step_up_login;
 pub mod commands_auth;
 pub mod commands_auth_dispatch;
+pub mod challenge;
+pub mod challenge_login;
