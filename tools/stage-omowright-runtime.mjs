@@ -1,33 +1,40 @@
 #!/usr/bin/env node
-// Materialize the `browser` skill's engine runtime (the bundled omowright library).
+// Materialize the `browser` skill's engine runtime into the repository-owned latest overlay.
 //
-//   node tools/stage-omowright-runtime.mjs --source <omowright checkout> [--target <dir>]
-//   node tools/stage-omowright-runtime.mjs --check --source <omowright checkout>
+//   node assets/omo-latest/stage-omowright-runtime.mjs --source <omowright checkout> [--target <dir>]
+//   node assets/omo-latest/stage-omowright-runtime.mjs --check --source <omowright checkout>
 //
 // Upstream (`packages/shared-skills/stage-omowright-runtime.mjs` at `455dee62…`) bundles the root
 // `omowright` devDependency into `skills/browser/runtime/omowright/`: one self-contained ESM entry,
 // the page bundle it reads at import time, and a manifest carrying the source version, the source
-// digest and each staged file's sha256. The directory is a build output; this repository holds no
-// committed copy (the default target `assets/skills/runtime/browser/omowright` is gitignored).
+// digest and each staged file's sha256. The directory is gitignored upstream and shipped through the
+// skill's `.npmignore`; this repository holds no committed copy either (see
+// `assets/omo-latest/runtime/.gitignore`).
 //
-// The materialized directory is what `bun tools/package-native.mjs --omowright-runtime <dir>` stages
-// beside the `browser` skill. Its manifest is the runtime's identity proof: `package-native` refuses a
-// runtime whose recorded `commit` is not the commit `assets/skills/manifest.json` declares, so a
-// foreign or stale runtime cannot be staged silently.
+// The materialized directory is what `bun tools/package-native.mjs --skill-source latest
+// --omowright-runtime <dir>` stages beside the `browser` skill. Its manifest is the runtime's
+// identity proof: `package-native` refuses a runtime whose recorded `commit` is not the commit the
+// overlay declares, so a foreign or stale runtime cannot be staged silently.
 //
 // Immutable identity: the source checkout must be the pinned omowright revision. `--identity <40hex>`
-// defaults to the `browserRuntime.dependency.commit` recorded in `assets/skills/manifest.json`, and the
-// checkout's `git rev-parse HEAD` must equal it. Nothing here is downloaded: the operator supplies the
-// checkout (e.g. a direct clone of the pinned commit).
+// defaults to the `browserRuntime.dependency.commit` recorded in `assets/omo-latest/manifest.json`,
+// and the checkout's `git rev-parse HEAD` must equal it. Nothing here is downloaded: the operator
+// supplies the checkout (e.g. the `node_modules/omowright` git dependency of a pinned oh-my-openagent
+// checkout, or a direct clone of the pinned commit).
+//
+// This is packaging of upstream skill content only. It adds no desktop/browser implementation, no
+// engine authorization and no extension bridge: the bundled file is the same upstream library
+// upstream ships, and `dec-a-02` (browsers, engines, permission protocol) stays an owner choice.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { access, copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const skillsRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "assets", "skills");
-const skillsManifestPath = join(skillsRoot, "manifest.json");
-const defaultTargetDir = join(skillsRoot, "runtime", "browser", "omowright");
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const overlayRoot = scriptDir;
+const overlayManifestPath = join(overlayRoot, "manifest.json");
+const defaultTargetDir = join(overlayRoot, "runtime", "browser", "omowright");
 
 /** The runtime files the staged package must carry, in the order upstream stages them. */
 export const STAGED_FILES = Object.freeze(["index.js", "page-bundle.js", "manifest.json"]);
@@ -39,12 +46,12 @@ export const SOURCE_DIGEST_ENTRIES = Object.freeze(["package.json", "src/index.j
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 
 function usage() {
-	console.log(`usage: node tools/stage-omowright-runtime.mjs --source <omowright checkout> [--target <dir>] [--identity <40-hex commit>] [--bun <path>]
-       node tools/stage-omowright-runtime.mjs --check --source <omowright checkout> [--target <dir>] [--identity <40-hex commit>]
+	console.log(`usage: node assets/omo-latest/stage-omowright-runtime.mjs --source <omowright checkout> [--target <dir>] [--identity <40-hex commit>] [--bun <path>]
+       node assets/omo-latest/stage-omowright-runtime.mjs --check --source <omowright checkout> [--target <dir>] [--identity <40-hex commit>]
 
   --source <dir>     the omowright package checkout to bundle (or $OMO_OMOWRIGHT_SOURCE)
-  --target <dir>     where the materialized runtime is written (default: assets/skills/runtime/browser/omowright)
-  --identity <commit>  the immutable omowright commit the source must be at (default: browserRuntime.dependency.commit in assets/skills/manifest.json)
+  --target <dir>     where the materialized runtime is written (default: <overlay>/runtime/browser/omowright)
+  --identity <commit>  the immutable omowright commit the source must be at (default: the overlay manifest's browserRuntime.dependency.commit)
   --bun <path>       the bun executable used for bun build (or $BUN; default: bun)
   --check            freshness gate: fail when the staged runtime does not match the source`);
 }
@@ -90,12 +97,12 @@ function gitHead(directory) {
 	return COMMIT_PATTERN.test(sha) ? sha : null;
 }
 
-/** The declared omowright commit, read from assets/skills/manifest.json. */
-async function declaredIdentityCommit() {
-	const manifest = JSON.parse(await readFile(skillsManifestPath, "utf8"));
+/** The overlay's declared omowright commit, read from the machine-consumed overlay manifest. */
+async function overlayIdentityCommit() {
+	const manifest = JSON.parse(await readFile(overlayManifestPath, "utf8"));
 	const commit = manifest?.browserRuntime?.dependency?.commit;
 	if (typeof commit !== "string" || !COMMIT_PATTERN.test(commit)) {
-		throw new Error(`skills manifest does not declare browserRuntime.dependency.commit: ${skillsManifestPath}`);
+		throw new Error(`overlay manifest does not declare browserRuntime.dependency.commit: ${overlayManifestPath}`);
 	}
 	return commit;
 }
@@ -111,7 +118,7 @@ function bundle({ sourceRoot, outFile, bunExecutable }) {
 }
 
 async function resolveIdentity(explicit) {
-	const identity = explicit ?? (await declaredIdentityCommit());
+	const identity = explicit ?? (await overlayIdentityCommit());
 	if (!COMMIT_PATTERN.test(identity)) throw new Error(`--identity must be a full 40-hex commit (found ${JSON.stringify(identity)})`);
 	return identity;
 }

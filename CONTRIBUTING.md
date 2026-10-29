@@ -20,7 +20,7 @@ live in [AGENTS.md](AGENTS.md) and the per-crate `AGENTS.md` files.
 cargo check --workspace
 cargo clippy -p <crate> --all-targets -- -D warnings
 cargo nextest run -p <crate>
-cargo build --workspace --bins --release     # mhc, mhc-launcher, mhc-lsp, mhc-git-bash, mhc-ast-grep, ...
+cargo build --workspace --bins --release     # mhc, ast-grep-mcp, lsp-daemon, ...
 ```
 
 The workspace lints (`unsafe_code = "forbid"`, `clippy::unwrap_used = "deny"`, ...) are set in the
@@ -40,8 +40,7 @@ and installs a release `mhc` there (see [AGENTS.md](AGENTS.md)).
 
 ## Packaging and QA
 
-- `bun tools/package-native.mjs --binary target/release/mhc --omowright-runtime <dir> --output dist/mhc`
-  stages an install (materialize the runtime with `node tools/stage-omowright-runtime.mjs`),
+- `bun tools/package-native.mjs --binary target/release/mhc --output dist/mhc` stages an install,
   `--verify-only dist/mhc` checks it against its manifest (see the README).
 - `tools/hg-v-*.mjs`, `tools/residual-qa.mjs` and `tools/qa/` are
   real-surface acceptance drivers against a built binary with an isolated `HOME`; each documents its

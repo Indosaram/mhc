@@ -25,13 +25,10 @@ struct Manifest {
     schema_version: u32,
     executables: Vec<Entry>,
     licenses: Vec<Entry>,
+    schema: Entry,
     skills: Collection,
+    conditional_skills: Collection,
 }
-
-/// Executables every package carries.
-const REQUIRED_EXECUTABLES: [&str; 2] = ["mhc", "mhc-launcher"];
-/// Sibling executables a package may carry beside `mhc` (tools/package-native.mjs `SIBLINGS`).
-const SIBLING_EXECUTABLES: [&str; 4] = ["mhc-lsp", "senpi-desktop-engine", "mhc-git-bash", "mhc-ast-grep"];
 
 pub fn relative_path(value: &str) -> Result<PathBuf, String> {
     if value.is_empty() || value.contains(['\\', ':', '\0']) {
@@ -102,22 +99,17 @@ pub fn validate(root: &Path) -> Result<(), String> {
         return Err("unsupported or incomplete package manifest".into());
     }
     let suffix = std::env::consts::EXE_SUFFIX;
-    for name in REQUIRED_EXECUTABLES {
+    for name in ["mhc", "mhc-launcher", "ast-grep-mcp", "lsp-daemon", "omo-git-bash", "senpi-desktop-engine"] {
         let expected = format!("{name}{suffix}");
         if !manifest.executables.iter().any(|entry| entry.path == expected) {
             return Err(format!("package missing executable {expected}"));
         }
     }
-    for entry in &manifest.executables {
-        let known = REQUIRED_EXECUTABLES.iter().chain(&SIBLING_EXECUTABLES)
-            .any(|name| entry.path == format!("{name}{suffix}"));
-        if !known {
-            return Err(format!("package lists unknown executable {}", entry.path));
-        }
-    }
     let mut expected = BTreeSet::from([PathBuf::from("manifest.json")]);
     let canonical_root = fs::canonicalize(root).map_err(|e| e.to_string())?;
-    let entries = manifest.executables.iter().chain(&manifest.licenses).chain(&manifest.skills.files);
+    let entries = manifest.executables.iter().chain(&manifest.licenses)
+        .chain(std::iter::once(&manifest.schema)).chain(&manifest.skills.files)
+        .chain(&manifest.conditional_skills.files);
     for entry in entries {
         let relative = relative_path(&entry.path)?;
         if !expected.insert(relative.clone()) {
@@ -169,14 +161,16 @@ mod tests {
                 "path": name, "sha256": sha256(&path)?, "size": 16, "mode": "644"
             }))
         };
-        let executables = REQUIRED_EXECUTABLES.iter().chain(&SIBLING_EXECUTABLES)
-            .map(|name| write(&format!("{name}{}", std::env::consts::EXE_SUFFIX)))
+        let executables = ["mhc", "mhc-launcher", "ast-grep-mcp", "lsp-daemon", "omo-git-bash", "senpi-desktop-engine"]
+            .into_iter().map(|name| write(&format!("{name}{}", std::env::consts::EXE_SUFFIX)))
             .collect::<Result<Vec<_>, _>>()?;
         let manifest = serde_json::json!({
             "schemaVersion": 1,
             "executables": executables,
             "licenses": [write("licenses/LICENSE")?],
-            "skills": { "files": [write("skills/browser/SKILL.md")?] }
+            "schema": write("omo.schema.json")?,
+            "skills": { "files": [write("skills/browser/SKILL.md")?] },
+            "conditionalSkills": { "files": [] }
         });
         fs::write(root.join("manifest.json"), serde_json::to_vec(&manifest)?)?;
         Ok(())
@@ -188,49 +182,6 @@ mod tests {
         fixture(root.path())?;
         validate(root.path())?;
         fs::write(root.path().join("skills/browser/SKILL.md"), b"modified content")?;
-        assert!(validate(root.path()).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn requires_payload_and_launcher_but_not_siblings() -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        fixture(root.path())?;
-        let manifest_path = root.path().join("manifest.json");
-        let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(&manifest_path)?)?;
-        let executables = manifest["executables"].as_array_mut().ok_or("executables")?;
-        let sibling = format!("mhc-ast-grep{}", std::env::consts::EXE_SUFFIX);
-        executables.retain(|entry| entry["path"] != sibling.as_str());
-        fs::write(&manifest_path, serde_json::to_vec(&manifest)?)?;
-        fs::remove_file(root.path().join(&sibling))?;
-        validate(root.path())?;
-
-        let launcher = format!("mhc-launcher{}", std::env::consts::EXE_SUFFIX);
-        let executables = manifest["executables"].as_array_mut().ok_or("executables")?;
-        executables.retain(|entry| entry["path"] != launcher.as_str());
-        fs::write(&manifest_path, serde_json::to_vec(&manifest)?)?;
-        fs::remove_file(root.path().join(&launcher))?;
-        assert!(validate(root.path()).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_unknown_executables() -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        fixture(root.path())?;
-        let manifest_path = root.path().join("manifest.json");
-        let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(&manifest_path)?)?;
-        let name = format!("lsp-daemon{}", std::env::consts::EXE_SUFFIX);
-        fs::write(root.path().join(&name), b"packaged content")?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(root.path().join(&name), fs::Permissions::from_mode(0o644))?;
-        }
-        let digest = sha256(&root.path().join(&name))?;
-        let entry = serde_json::json!({ "path": name, "sha256": digest, "size": 16, "mode": "644" });
-        manifest["executables"].as_array_mut().ok_or("executables")?.push(entry);
-        fs::write(&manifest_path, serde_json::to_vec(&manifest)?)?;
         assert!(validate(root.path()).is_err());
         Ok(())
     }
