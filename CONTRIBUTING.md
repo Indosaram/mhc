@@ -20,7 +20,7 @@ live in [AGENTS.md](AGENTS.md) and the per-crate `AGENTS.md` files.
 cargo check --workspace
 cargo clippy -p <crate> --all-targets -- -D warnings
 cargo nextest run -p <crate>
-cargo build --workspace --bins --release     # mhc, ast-grep-mcp, lsp-daemon, ...
+cargo build --workspace --bins --release     # mhc, mhc-launcher, mhc-lsp, mhc-git-bash, mhc-ast-grep, ...
 ```
 
 The workspace lints (`unsafe_code = "forbid"`, `clippy::unwrap_used = "deny"`, ...) are set in the
@@ -40,16 +40,12 @@ and installs a release `mhc` there (see [AGENTS.md](AGENTS.md)).
 
 ## Packaging and QA
 
-- `bun tools/package-native.mjs --binary target/release/mhc --output dist/mhc` stages an install,
+- `bun tools/package-native.mjs --binary target/release/mhc --omowright-runtime <dir> --output dist/mhc`
+  stages an install (materialize the runtime with `node tools/stage-omowright-runtime.mjs`),
   `--verify-only dist/mhc` checks it against its manifest (see the README).
-- `tools/hg-v-*.mjs`, `tools/latest-omo-*-qa.mjs`, `tools/residual-qa.mjs` and `tools/qa/` are
+- `tools/hg-v-*.mjs`, `tools/residual-qa.mjs` and `tools/qa/` are
   real-surface acceptance drivers against a built binary with an isolated `HOME`; each documents its
   usage in the file header.
-- `bun tools/omo-schema.mjs --check` verifies the published `assets/omo.schema.json`.
-- TUI visual QA: the builtin skills (`ultrawork`, `visual-qa`, `ulw-loop`, `ulw-execute`) refer to
-  `script/qa/web-terminal-visual-qa.mjs`. That script lives in the oh-my-openagent checkout, not in
-  this repository (the skills under `assets/omo-latest` are byte-exact upstream copies), so run it as
-  `bun "$OMO_SRC/script/qa/web-terminal-visual-qa.mjs" --title <surface> --command <cmd> --evidence-dir <dir>`.
 
 ## Commits
 
@@ -58,7 +54,5 @@ verified change per commit.
 
 ## License
 
-`crates/omo/**` is under the Sustainable Use
-License 1.0 (permitting internal business use and non-commercial/personal use, free distribution for
-non-commercial purposes, with notices preserved); everything else (including `crates/desktop/senpi-desktop-*`, which ports senpi) is MIT. Contributions are accepted
-under the license of the directory they touch. See [LICENSES/](LICENSES/).
+The repository is MIT. Contributions are accepted under the MIT License; third-party components
+keep their own licenses (see [LICENSE](LICENSE)).

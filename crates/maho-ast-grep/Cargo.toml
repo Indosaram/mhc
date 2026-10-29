@@ -1,0 +1,26 @@
+[package]
+name = "maho-ast-grep"
+description = "Structural code search, rewrite and rule scan tools for mhc, served over stdio MCP by the mhc-ast-grep sibling binary on top of the external ast-grep program, plus the extension that declares the server on the MCP client."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-ext-api = { path = "../maho-ext-api" }
+serde_json = { workspace = true, features = ["preserve_order"] }
+tokio = { workspace = true, features = ["rt", "macros", "io-util", "io-std", "process", "time", "sync"] }
+
+[target.'cfg(windows)'.dependencies]
+winsafe = { version = "=0.0.29", default-features = false, features = ["kernel"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util", "io-std", "process", "time", "sync"] }
+
+[[bin]]
+name = "mhc-ast-grep"
+path = "src/bin/mhc-ast-grep.rs"
+
+[lints]
+workspace = true

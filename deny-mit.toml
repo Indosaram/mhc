@@ -1,10 +1,9 @@
-# cargo-deny license policy for the MIT build profile of the `mhc` binary (docs/MIT-PROFILE.md):
+# cargo-deny license policy for the MIT build of mhc (docs/MIT-PROFILE.md), over every workspace member:
 #
-#   cargo deny --manifest-path crates/maho-cli/Cargo.toml --no-default-features check --config deny-mit.toml licenses
-#   cargo deny --manifest-path crates/desktop/senpi-desktop-engine/Cargo.toml check --config deny-mit.toml licenses
+#   cargo deny --workspace --config deny-mit.toml check licenses
 #
-# Same allowlist as deny.toml minus LicenseRef-SUL-1.0, and workspace crates are checked too:
-# `[licenses.private] ignore` stays off, so a linked SUL crate (or one without a license) fails.
+# Same allowlist as deny.toml, and workspace crates are checked too: `[licenses.private] ignore`
+# stays off, so a linked workspace crate without an allowed license fails.
 
 [graph]
 targets = []

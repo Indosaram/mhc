@@ -7,8 +7,9 @@ and then answers in text, and checks that:
 - basic chat works (the final text reaches stdout, exit 0);
 - builtin tools are offered (read, write, edit, and the shell: `bash` or the terminal's `bash_*`
   tools) and run (the file is written);
-- no omo tool is offered (team_*, memory, workpool, ...); the MIT LSP tools (`maho-lsp`) and the MIT
-  delegation tools (`maho-task`: task, task_output, task_list, task_resume, task_cancel) are required;
+- no omo tool is offered (omo_*, x_search, ...); the MIT LSP tools (`maho-lsp`), the MIT delegation
+  tools (`maho-task`: task, task_output, task_list, task_resume, task_cancel, task_send), the team
+  tasklist (`maho-team`: team_task_*) and `workpool` (`maho-workpool`) are required;
 - the `task` tool delegates: a child `mhc -p` process answers through the same loopback model and
   its result comes back to the parent as a completed `<task-result>`;
 - isolated delegation (`maho-isolation`): in a git repository a `task` call with `isolated: true`
@@ -85,9 +86,11 @@ REQUIRED_TOOLS = {"read", "write", "edit"}
 # Tools the omo port registers; none may appear in the MIT profile.
 OMO_TOOL_PREFIXES = ("task", "team_", "workpool", "memory", "x_search", "omo_")
 # MIT replacements that are expected in the MIT profile.
-MIT_TASK_TOOLS = {"task", "task_output", "task_list", "task_resume", "task_cancel"}
+MIT_TASK_TOOLS = {"task", "task_output", "task_list", "task_resume", "task_cancel", "task_send"}
 MIT_GIT_TOOLS = {"git_overview", "git_file_diff", "git_hunk", "recent_commits"}
-MIT_TEAM_TOOLS = {"team_create", "team_members", "team_message", "team_wait", "team_stop"}
+MIT_TEAM_TOOLS = {"team_create", "team_members", "team_message", "team_wait", "team_stop",
+                  "team_task_create", "team_task_get", "team_task_list", "team_task_update"}
+MIT_WORKPOOL_TOOLS = {"workpool"}
 TEAM_MARKER = "mit-profile-team-ok"
 ISOLATED_FILE = "isolated-smoke.txt"
 ISOLATED_CONTENT = "written by an isolated child"
@@ -1107,7 +1110,7 @@ def main() -> int:
             return fail(f"no shell tool offered (offered: {sorted(offered)})")
         omo = sorted(name for name in offered
                      if name.startswith(OMO_TOOL_PREFIXES)
-                     and name not in MIT_TASK_TOOLS | MIT_MEMORY_TOOLS | MIT_TEAM_TOOLS)
+                     and name not in MIT_TASK_TOOLS | MIT_MEMORY_TOOLS | MIT_TEAM_TOOLS | MIT_WORKPOOL_TOOLS)
         browser_missing = MIT_BROWSER_TOOLS - offered
         if browser_missing:
             return fail(f"MIT browser tools not offered: {sorted(browser_missing)} (offered: {sorted(offered)})")
@@ -1119,6 +1122,9 @@ def main() -> int:
         task_missing = MIT_TASK_TOOLS - offered
         if task_missing:
             return fail(f"MIT task tools not offered: {sorted(task_missing)} (offered: {sorted(offered)})")
+        workpool_missing = MIT_WORKPOOL_TOOLS - offered
+        if workpool_missing:
+            return fail(f"MIT workpool tool not offered (offered: {sorted(offered)})")
         team_missing = MIT_TEAM_TOOLS - offered
         if team_missing:
             return fail(f"MIT team tools not offered: {sorted(team_missing)} (offered: {sorted(offered)})")

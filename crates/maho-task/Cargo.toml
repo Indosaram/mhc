@@ -12,6 +12,8 @@ maho-model-select = { path = "../maho-model-select" }
 # Only the post-mutation hook interface (`maho_lsp::hooks`); no LSP client is linked from here.
 maho-lsp = { path = "../maho-lsp" }
 maho-ext-api = { path = "../maho-ext-api" }
+# Steering channel and delegated-run inbox (task-control.md §1.1).
+maho-gateway = { path = "../maho-gateway" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_yaml.workspace = true
