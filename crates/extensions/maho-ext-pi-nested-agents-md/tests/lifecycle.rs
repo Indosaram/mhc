@@ -465,6 +465,7 @@ fn themed_ui() -> Arc<Ui> {
     let theme = Theme {
         colors: [
             ("dim".to_owned(), "\u{1b}[2m".to_owned()),
+            ("muted".to_owned(), "\u{1b}[2m".to_owned()),
             ("accent".to_owned(), "\u{1b}[36m".to_owned()),
             ("warning".to_owned(), "\u{1b}[33m".to_owned()),
         ]
@@ -478,7 +479,7 @@ fn themed_ui() -> Arc<Ui> {
     })
 }
 #[tokio::test]
-async fn themed_dim_status_count_after_injection() {
+async fn themed_muted_status_count_after_injection() {
     let (tree, mut runner) = fixture();
     let ui = themed_ui();
     let mut context = runner.create_context().unwrap();
@@ -488,7 +489,7 @@ async fn themed_dim_status_count_after_injection() {
     content(&mut runner, read_event(tree.path())).await.unwrap();
     assert_eq!(
         ui.status.lock().unwrap().as_deref(),
-        Some("\u{1b}[2m🤖 1\u{1b}[39m")
+        Some("\u{1b}[2mAGENTS.md 1\u{1b}[39m")
     );
 }
 #[tokio::test]

@@ -12,5 +12,5 @@ pub const SESSION_TIPS: &[TipDefinition] = &[
     TipDefinition { id: "session-info", bindings: &[], requires_command: None, render: |_k| "Use /session to see the session file, id, message count, tokens, and cost.".to_string() },
     TipDefinition { id: "export-share", bindings: &[], requires_command: None, render: |_k| "Use /export to write the session to HTML or JSONL, or /share to upload it as a private gist link.".to_string() },
     TipDefinition { id: "compact-command", bindings: &[], requires_command: None, render: |_k| "Use /compact to compact context now, or /compact <prompt> to tell the summarizer what to keep.".to_string() },
-    TipDefinition { id: "auto-compaction", bindings: &[], requires_command: None, render: |_k| "Auto-compaction is on by default - the (auto) marker in the footer shows it; tune it with compaction.* in settings.json.".to_string() },
+    TipDefinition { id: "auto-compaction", bindings: &[], requires_command: None, render: |_k| "Auto-compaction is on by default - the footer shows \"manual\" next to ctx when it is off; tune it with compaction.* in settings.json.".to_string() },
 ];

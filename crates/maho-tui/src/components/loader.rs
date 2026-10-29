@@ -173,21 +173,24 @@ impl Loader {
     }
 
     /// Fire any due indicator/message timers and return whether a render was requested
-    /// (senpi's `ui.requestRender()` calls inside the `setInterval` callbacks).
+    /// (senpi's `ui.requestRender()` calls inside the `setInterval` callbacks). Every interval
+    /// that elapsed since the last tick advances one frame, so a sparse caller stays on time.
     pub fn tick(&mut self, now_ms: u64) -> bool {
         if !self.running {
             return false;
         }
         let mut requested = false;
-        if self.next_indicator_due_ms.is_some_and(|due| due <= now_ms) {
-            self.current_frame = (self.current_frame + 1) % self.frames.len().max(1);
+        if let Some(due) = self.next_indicator_due_ms.filter(|&due| due <= now_ms) {
+            let steps = (now_ms - due) / self.interval_ms + 1;
+            self.current_frame = (self.current_frame + steps as usize) % self.frames.len().max(1);
+            self.next_indicator_due_ms = Some(due + steps * self.interval_ms);
             self.update_display(now_ms);
-            self.next_indicator_due_ms = Some(now_ms + self.interval_ms);
             requested = true;
         }
-        if self.next_message_due_ms.is_some_and(|due| due <= now_ms) {
+        if let Some(due) = self.next_message_due_ms.filter(|&due| due <= now_ms) {
+            let steps = (now_ms - due) / self.message_interval_ms + 1;
+            self.next_message_due_ms = Some(due + steps * self.message_interval_ms);
             self.update_display(now_ms);
-            self.next_message_due_ms = Some(now_ms + self.message_interval_ms);
             requested = true;
         }
         requested
@@ -207,5 +210,35 @@ impl Component for Loader {
         let mut lines = vec![String::new()];
         lines.extend(self.text.render(width));
         lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::rc::Rc;
+
+    fn loader_at_zero() -> Loader {
+        Loader::new(Rc::new(|s| s.to_string()), Rc::new(|s| s.to_string()), "loading", None, 0)
+    }
+
+    #[test]
+    fn tick_catches_up_every_due_frame() {
+        // A loader rebuilt on each render is ticked once, long after its start; it must land on
+        // the frame for the elapsed time, not on the second frame.
+        let mut loader = loader_at_zero();
+        assert!(loader.tick(250));
+        assert_eq!(loader.current_frame, 3);
+        assert!(loader.render(40).concat().contains('\u{2838}'));
+    }
+
+    #[test]
+    fn tick_advances_one_frame_per_interval() {
+        let mut loader = loader_at_zero();
+        assert!(loader.tick(80));
+        assert_eq!(loader.current_frame, 1);
+        assert!(!loader.tick(100));
+        assert!(loader.tick(160));
+        assert_eq!(loader.current_frame, 2);
     }
 }

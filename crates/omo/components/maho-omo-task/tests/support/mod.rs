@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use maho_ext_api::*;
-use std::{path::Path,sync::{Arc,Mutex}};
+use std::{collections::BTreeMap,path::Path,sync::{Arc,Mutex}};
 struct Session;
 impl ToolSessionManager for Session { fn session_id(&self)->&str { "session" } fn session_file(&self)->Option<&Path> { None } }
 impl SessionManager for Session { fn get_entries(&self)->Vec<SessionEntry> { vec![] } fn get_branch(&self)->Vec<SessionEntry> { vec![] } fn get_leaf_id(&self)->Option<String> { None } fn get_session_name(&self)->Option<String> { None } }
@@ -33,13 +33,26 @@ pub struct Ui {
     pub confirmed:bool,
     pub selections:Mutex<Vec<Vec<String>>>,
     pub notifications:Mutex<Vec<String>>,
+    pub statuses:Mutex<BTreeMap<String,String>>,
+    /// Every set_status call in order, so a status that was later cleared is still observable.
+    pub status_log:Mutex<Vec<(String,Option<String>)>>,
     pub widgets:Mutex<Vec<(Option<WidgetContent>,WidgetPlacement)>>,
 }
 impl ExtensionUi for Ui {
     fn select<'a>(&'a self,_:&'a str,options:&'a [String],_:ExtensionUiDialogOptions)->UiFuture<'a,Option<String>> { self.selections.lock().expect("selections").push(options.to_vec()); Box::pin(async move { self.select_first.then(|| options.first().cloned()).flatten() }) }
     fn confirm<'a>(&'a self,_:&'a str,_:&'a str,_:ExtensionUiDialogOptions)->UiFuture<'a,bool> { Box::pin(async move { self.confirmed }) }
     fn input<'a>(&'a self,_:&'a str,_:Option<&'a str>,_:ExtensionUiDialogOptions)->UiFuture<'a,Option<String>> { Box::pin(async { None }) }
-    fn notify(&self,message:&str,_:NotificationType) { self.notifications.lock().expect("notifications").push(message.to_owned()); } fn set_status(&self,_:&str,_:Option<&str>) {} fn set_widget(&self,_:&str,content:Option<WidgetContent>,options:ExtensionWidgetOptions) { self.widgets.lock().expect("widgets").push((content,options.placement)); }
+    fn notify(&self,message:&str,_:NotificationType) { self.notifications.lock().expect("notifications").push(message.to_owned()); }
+    fn set_status(&self,key:&str,text:Option<&str>) {
+        self.status_log.lock().expect("status log").push((key.to_owned(),text.map(str::to_owned)));
+        let mut statuses = self.statuses.lock().expect("statuses");
+        if let Some(text) = text {
+            statuses.insert(key.to_owned(),text.to_owned());
+        } else {
+            statuses.remove(key);
+        }
+    }
+    fn set_widget(&self,_:&str,content:Option<WidgetContent>,options:ExtensionWidgetOptions) { self.widgets.lock().expect("widgets").push((content,options.placement)); }
     fn set_header(&self,_:Option<ComponentFactory>) {} fn set_footer(&self,_:Option<ComponentFactory>) {} fn set_title(&self,_:&str) {} fn paste_to_editor(&self,_:&str) {} fn set_editor_text(&self,_:&str) {} fn get_editor_text(&self)->String { String::new() }
     fn custom(&self,_:ComponentFactory,_:CustomUiOptions)->ExtensionFuture<'_,JsonValue> { Box::pin(async { Err(ExtensionFailure::new("no UI")) }) }
     fn theme(&self)->Theme { Theme::default() }
