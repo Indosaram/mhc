@@ -2,7 +2,7 @@
 name = "maho-senpi-desktop-run"
 version.workspace = true
 edition.workspace = true
-license = "MIT"
+license = "LicenseRef-SUL-1.0"
 
 [lib]
 name = "senpi_desktop_run"
@@ -14,7 +14,7 @@ chrono = { workspace = true, features = ["clock"] }
 maho-ai = { path = "../../maho-ai", version = "=0.0.0" }
 maho-codemode = { path = "../../maho-codemode", version = "=0.0.0" }
 maho-ext-api = { path = "../../maho-ext-api", version = "=0.0.0" }
-senpi-desktop-core = { package = "maho-senpi-desktop-core", path = "../senpi-desktop-core" }
+senpi-desktop-core = { package = "maho-senpi-desktop-core", path = "../../desktop/senpi-desktop-core" }
 senpi-desktop-protocol = { package = "maho-senpi-desktop-protocol", path = "../senpi-desktop-protocol" }
 senpi-desktop-service = { package = "maho-senpi-desktop-service", path = "../senpi-desktop-service" }
 serde = { workspace = true, features = ["derive"] }

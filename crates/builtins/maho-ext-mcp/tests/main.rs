@@ -41,18 +41,8 @@ pub mod notifications;
 pub mod oauth;
 #[path = "oauth_client_auth.rs"]
 pub mod oauth_client_auth;
-#[path = "oauth_discovery_cache.rs"]
-pub mod oauth_discovery_cache;
 #[path = "oauth_flow.rs"]
 pub mod oauth_flow;
-#[path = "oauth_step_up.rs"]
-pub mod oauth_step_up;
-#[path = "oauth_step_up_interactive.rs"]
-pub mod oauth_step_up_interactive;
-#[path = "oauth_step_up_trace.rs"]
-pub mod oauth_step_up_trace;
-#[path = "oauth_transport_hardening.rs"]
-pub mod oauth_transport_hardening;
 #[path = "output_guard.rs"]
 pub mod output_guard;
 #[path = "policy_cache.rs"]
@@ -67,8 +57,6 @@ pub mod proxy;
 pub mod reconnect;
 #[path = "register.rs"]
 pub mod register;
-#[path = "registered_command_auth.rs"]
-pub mod registered_command_auth;
 #[path = "registration.rs"]
 pub mod registration;
 #[path = "resources.rs"]
@@ -95,8 +83,6 @@ pub mod sharing_policy;
 pub mod skills;
 #[path = "startup_race.rs"]
 pub mod startup_race;
-#[path = "stdio_environment.rs"]
-pub mod stdio_environment;
 #[path = "tier_b.rs"]
 pub mod tier_b;
 #[path = "transport.rs"]
@@ -104,6 +90,29 @@ pub mod transport;
 #[path = "wrap.rs"]
 pub mod wrap;
 
+#[path = "transport_step_up.rs"]
+pub mod transport_step_up;
+#[path = "transport_refresh_rejection.rs"]
+pub mod transport_refresh_rejection;
+#[path = "transport_redaction.rs"]
+pub mod transport_redaction;
+#[path = "stdio_env_filter.rs"]
+pub mod stdio_env_filter;
+#[path = "log_sink_retry.rs"]
+pub mod log_sink_retry;
+#[path = "challenge_login.rs"]
+pub mod challenge_login;
+
 // Helpers several test modules share, declared once so each file compiles once.
 #[path = "support/mod.rs"]
 pub mod support;
+#[path = "auth_resource.rs"]
+pub mod auth_resource;
+#[path = "auth_discovery.rs"]
+pub mod auth_discovery;
+#[path = "auth_https.rs"]
+pub mod auth_https;
+#[path = "auth_challenge_parse.rs"]
+pub mod auth_challenge_parse;
+#[path = "auth_refresh_coalescing.rs"]
+pub mod auth_refresh_coalescing;

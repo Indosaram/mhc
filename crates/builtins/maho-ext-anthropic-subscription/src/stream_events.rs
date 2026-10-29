@@ -24,7 +24,7 @@ impl StreamEventContext {
             partial_json: BTreeMap::new(),
         }
     }
-    /// Turn identity (oh-my-openagent#10547): the first non-empty Anthropic message id wins on every lane.
+    /// Turn identity: the first non-empty Anthropic message id wins on every lane.
     pub fn note_response_id(&mut self, id: Option<&str>) {
         if self.output.response_id.is_none() {
             self.output.response_id = id.filter(|id| !id.is_empty()).map(str::to_owned);

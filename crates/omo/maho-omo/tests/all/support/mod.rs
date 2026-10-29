@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
-use maho_ext_api::{DeliverAs, EventBus, Extension, ExtensionApi, ExtensionRuntime, ExtensionSessionProfile, FlagValue, IdleInjection, IdleInjectionSource, LoadedExtension, SourceInfo, ToolDefinition};
+use idle_injection::{IdleInjection, IdleInjectionSource};
+use maho_ext_api::{DeliverAs, EventBus, Extension, ExtensionApi, ExtensionRuntime, ExtensionSessionProfile, FlagValue, LoadedExtension, SourceInfo, ToolDefinition};
 use maho_omo::{DeferredScheduler, Delivery, IdleInjectionDelivery, IdleInjectionMessage, IdleInjectionQueue, TurnBarrier};
 pub struct FakeComponent {
     register: Box<dyn Fn(&mut ExtensionApi) + Send + Sync>,

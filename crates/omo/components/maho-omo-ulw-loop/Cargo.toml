@@ -11,6 +11,7 @@ ulw-loop-core = { path = "../../ulw-loop-core" }
 tokio = { version = "=1.52.3", features = ["process", "time", "io-util"] }
 serde_json = "=1.0.149"
 maho-ext-api = { path = "../../../maho-ext-api" }
+maho-omo-idle-injection = { path = "../../idle-injection" }
 maho-omo-start-work-continuation = { path = "../maho-omo-start-work-continuation" }
 
 [dev-dependencies]

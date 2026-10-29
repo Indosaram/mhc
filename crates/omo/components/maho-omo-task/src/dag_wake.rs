@@ -1,5 +1,5 @@
 use std::{collections::BTreeMap, sync::Arc};
-use maho_ext_api::{IdleInjection, IdleInjectionCoordinator, IdleInjectionSource};
+use idle_injection::{IdleInjection, IdleInjectionCoordinator, IdleInjectionSource};
 use serde_json::{Value, json};
 use senpi_task::{completion::ParentState, dag::types::{DagNodeCounts, DagRunEventPayload}};
 

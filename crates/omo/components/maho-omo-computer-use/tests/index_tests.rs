@@ -39,9 +39,7 @@ fn fake_engine_child() -> maho_omo_computer_use::runtime_loader::EngineChildFact
         .expect("crates/omo/components parent")
         .parent()
         .expect("crates/omo parent")
-        .parent()
-        .expect("crates parent")
-        .join("desktop/senpi-desktop-service/tests/fixtures/fake_engine.py");
+        .join("senpi-desktop-service/tests/fixtures/fake_engine.py");
     Arc::new(move |_| {
         let p = fake_engine_path.clone();
         senpi_desktop_service::child::engine_child_factory(Some(

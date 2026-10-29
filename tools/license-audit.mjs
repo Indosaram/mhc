@@ -146,8 +146,9 @@ export function auditCrates(repoRoot) {
 		}
 	}
 
-	// crates/desktop/** holds the MIT senpi-desktop-* ports (moved out of crates/omo so path-based
-	// SUL checks over crates/omo stay exact).
+	// crates/desktop/** holds the MIT senpi-desktop-* ports of senpi's Rust engine (moved out of
+	// crates/omo so path-based SUL checks over crates/omo stay exact). The computer-use tool layer
+	// (senpi-desktop-{protocol,prelude,service,run,tool}) ports omo packages and lives in crates/omo.
 	const desktopDir = join(cratesDir, "desktop");
 	if (existsSync(desktopDir)) {
 		const desktopCargoFiles = collectFiles(desktopDir, (_, name) => name === "Cargo.toml");
@@ -300,15 +301,15 @@ export async function runSelfTest() {
 
 		// Fixture 3: senpi-desktop crate with non-MIT license fails
 		const badDesktopRepo = join(testDir, "bad-desktop-repo");
-		mkdirSync(join(badDesktopRepo, "crates/desktop/senpi-desktop-tool"), { recursive: true });
+		mkdirSync(join(badDesktopRepo, "crates/desktop/senpi-desktop-core"), { recursive: true });
 		writeFileSync(
-			join(badDesktopRepo, "crates/desktop/senpi-desktop-tool/Cargo.toml"),
-			`[package]\nname = "senpi-desktop-tool"\nversion = "0.1.0"\nlicense = "LicenseRef-SUL-1.0"\n`
+			join(badDesktopRepo, "crates/desktop/senpi-desktop-core/Cargo.toml"),
+			`[package]\nname = "senpi-desktop-core"\nversion = "0.1.0"\nlicense = "LicenseRef-SUL-1.0"\n`
 		);
 		const badDesktopErrors = auditCrates(badDesktopRepo);
 		check(
 			"senpi-desktop crate with SUL license fails",
-			badDesktopErrors.length > 0 && badDesktopErrors.some((e) => e.includes("senpi-desktop-tool") && e.includes("MIT"))
+			badDesktopErrors.length > 0 && badDesktopErrors.some((e) => e.includes("senpi-desktop-core") && e.includes("MIT"))
 		);
 
 		// Fixture 4: Bundled Apache-2.0 notice missing from Cargo license fails naming crate

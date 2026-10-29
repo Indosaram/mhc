@@ -1,5 +1,4 @@
 use super::oauth_errors::{OAuthFailureKind,OAuthFlowError};
-use futures::FutureExt;
 use super::{oauth_provider::{McpOAuthProvider,OAuthTokens,ProviderError,CredentialScope},oauth_refresh::assert_s256_supported};
 use serde_json::Value;
 use sha2::{Digest,Sha256};
@@ -20,148 +19,131 @@ impl From<reqwest::Error> for OAuthRequestError {fn from(error:reqwest::Error)->
 impl From<super::token_store::TokenStoreError> for OAuthRequestError {fn from(error:super::token_store::TokenStoreError)->Self {Self::Store(std::sync::Arc::new(error))}}
 impl From<ProviderError> for OAuthRequestError {fn from(error:ProviderError)->Self {Self::Provider(std::sync::Arc::new(error))}}
 impl From<serde_json::Error> for OAuthRequestError {fn from(error:serde_json::Error)->Self {Self::Json(std::sync::Arc::new(error))}}
-#[derive(Clone,serde::Serialize,serde::Deserialize)]
+#[derive(Clone,Debug,serde::Serialize,serde::Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct OAuthServerInfo {pub authorization_server_url:String,pub authorization_server_metadata:Value,pub resource_metadata:Value}
-/// Pinned `discovery.ts::discoveryCache`: the process-local, never-persisted metadata cache.
-static DISCOVERY_CACHE:std::sync::LazyLock<std::sync::Mutex<std::collections::BTreeMap<String,OAuthServerInfo>>> = std::sync::LazyLock::new(||std::sync::Mutex::new(std::collections::BTreeMap::new()));
-/// Pinned `discovery.ts::pendingDiscovery`: in-flight coalescing, keyed like `discoveryCache`.
-static PENDING_DISCOVERY:std::sync::LazyLock<std::sync::Mutex<std::collections::BTreeMap<String,PendingDiscovery>>> = std::sync::LazyLock::new(||std::sync::Mutex::new(std::collections::BTreeMap::new()));
-/// Monotonic identity for a registered in-flight discovery, so a settled caller removes only the
-/// entry it created and never a newer one for the same key.
-static NEXT_DISCOVERY_ID:std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-type SharedDiscovery = futures::future::Shared<futures::future::BoxFuture<'static,Result<OAuthServerInfo,OAuthRequestError>>>;
-struct PendingDiscovery {id:u64,future:SharedDiscovery}
-/// Pinned `discovery.ts::discoverOAuthServerMetadata`: the resource URL is validated with
-/// `parseHttpsUrl` on every call, then the walk is served from the process-local cache or the
-/// in-flight `pendingDiscovery` coalescing, and a success is cached.
+type InfoFuture=futures::future::Shared<futures::future::BoxFuture<'static,Result<OAuthServerInfo,OAuthRequestError>>>;
+static DISCOVERY_CACHE:std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String,OAuthServerInfo>>>=std::sync::LazyLock::new(Default::default);
+static DISCOVERY_INFLIGHT:std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String,(u64,InfoFuture)>>>=std::sync::LazyLock::new(Default::default);
+static NEXT_FLIGHT_ID:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(1);
+fn locked<T>(mutex:&std::sync::Mutex<T>)->std::sync::MutexGuard<'_,T> {mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)}
+/// RFC 8707 resource value: query and fragment dropped, one trailing `/` removed.
+pub fn normalize_resource_url(server_url:&str)->String {
+    let Ok(mut url)=url::Url::parse(server_url) else{return server_url.to_owned();};
+    url.set_query(None);url.set_fragment(None);
+    let mut text=url.to_string();
+    if text.ends_with('/'){text.pop();}
+    text
+}
+/// Sets `resource` on a form: replaces the first occurrence in place, drops later duplicates, else appends.
+pub fn add_resource_param(form:&mut Vec<(String,String)>,resource:&str) {
+    let mut seen=false;
+    form.retain_mut(|(key,value)|{
+        if key!="resource"{return true;}
+        if seen{return false;}
+        seen=true;*value=resource.to_owned();true
+    });
+    if !seen{form.push(("resource".into(),resource.into()));}
+}
+/// Clears the process-wide discovery cache and the in-flight table.
+pub fn reset_discovery_cache() {locked(&DISCOVERY_CACHE).clear();locked(&DISCOVERY_INFLIGHT).clear();}
+fn check_https(url:&str,label:&str)->Result<(),OAuthRequestError> {
+    match url::Url::parse(url) {Ok(parsed) if parsed.scheme()=="https"=>Ok(()),_=>Err(OAuthRequestError::Invalid(format!("{label} must use https")))}
+}
+/// Enforces the https rule on the server URL, issuer and every endpoint of discovered metadata.
+pub fn validate_info_https(server_url:&str,info:&OAuthServerInfo)->Result<(),OAuthRequestError> {
+    check_https(server_url,"Resource server URL")?;
+    check_https(&info.authorization_server_url,"Authorization server URL")?;
+    for field in ["authorization_endpoint","token_endpoint","registration_endpoint"] {
+        if let Some(endpoint)=info.authorization_server_metadata.get(field).and_then(Value::as_str) {check_https(endpoint,field)?;}
+    }
+    Ok(())
+}
 pub async fn discover(provider:&McpOAuthProvider,client:&reqwest::Client)->Result<OAuthServerInfo,OAuthRequestError> {
-    let resource_key=parse_https_url(&provider.store.server_url,"Resource server URL",provider.require_https)?.to_string();
-    discover_cached(&resource_key,provider.require_https,client).await
-}
-/// The pinned cache body (`discoveryCache` hit, else the shared `pendingDiscovery` promise, else
-/// start the walk and register it), with the pinned `finally` clearing the pending entry.
-async fn discover_cached(resource_key:&str,require_https:bool,client:&reqwest::Client)->Result<OAuthServerInfo,OAuthRequestError> {
-    if let Some(cached)=DISCOVERY_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(resource_key).cloned() {return Ok(cached);}
-    let (id,shared)={
-        let mut pending=PENDING_DISCOVERY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let existing=pending.get(resource_key).map(|entry|(entry.id,entry.future.clone()));
-        match existing {Some(pair)=>pair,None=>{
-            let id=NEXT_DISCOVERY_ID.fetch_add(1,std::sync::atomic::Ordering::Relaxed);let key=resource_key.to_owned();let client=client.clone();
-            let future:SharedDiscovery=async move {discover_uncached(&key,require_https,&client).await}.boxed().shared();
-            pending.insert(resource_key.to_owned(),PendingDiscovery {id,future:future.clone()});(id,future)}}
-    };
-    let result=shared.await;
-    {let mut pending=PENDING_DISCOVERY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if pending.get(resource_key).is_some_and(|current|current.id==id) {pending.remove(resource_key);}}
-    if let Ok(info)=&result {DISCOVERY_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(resource_key.to_owned(),info.clone());}
-    result
-}
-/// Pinned `discovery.ts::resetDiscoveryCache`.
-pub fn reset_discovery_cache() {DISCOVERY_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();PENDING_DISCOVERY.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();}
-// `/.well-known/oauth-protected-resource` (RFC 9728) then
-// `/.well-known/oauth-authorization-server` (RFC 8414, with the origin retry),
-// mirroring the pinned `discoverOAuthServerMetadata` + `fetchAuthorizationServerMetadata`.
-// The pinned `parseHttpsUrl` gate is enforced by `discover` through `provider.require_https`
-// (production `true`); the deterministic loopback HTTP fixtures set that seam `false` explicitly.
-async fn discover_uncached(resource_key:&str,require_https:bool,client:&reqwest::Client)->Result<OAuthServerInfo,OAuthRequestError> {
-    let resource_url=url::Url::parse(resource_key)?;
-    let metadata_url=well_known_url(&resource_url,"/.well-known/oauth-protected-resource")?;
-    match fetch_metadata(client,&metadata_url).await? {
-        MetadataFetch::Ok(metadata)=>{
-            let issuer=parse_authorization_servers(&metadata).into_iter().next()
-                .ok_or_else(||OAuthRequestError::Invalid("OAuth protected resource metadata missing authorization_servers".into()))?;
-            fetch_authorization_server_metadata(client,&issuer,&metadata,require_https).await
-        }
-        MetadataFetch::Failed(404)=>fetch_authorization_server_metadata(client,resource_key,&Value::Null,require_https).await,
-        MetadataFetch::Failed(status)=>Err(OAuthRequestError::Invalid(format!("OAuth protected resource metadata fetch failed ({status})"))),
+    let server_url=provider.store.server_url.clone();
+    let key=normalize_resource_url(&server_url);
+    let cached=locked(&DISCOVERY_CACHE).get(&key).cloned();
+    if let Some(info)=cached {
+        if provider.require_https{validate_info_https(&server_url,&info)?;}
+        return Ok(info);
     }
-}
-
-/// `new URL(path, base)`: an absolute well-known path resolved against the URL's origin.
-fn well_known_url(base:&url::Url,path:&str)->Result<url::Url,url::ParseError> {
-    let mut url=base.clone();url.set_path(path);url.set_query(None);url.set_fragment(None);Ok(url)
-}
-
-enum MetadataFetch {Ok(Value),Failed(u16)}
-
-async fn fetch_metadata(client:&reqwest::Client,url:&url::Url)->Result<MetadataFetch,OAuthRequestError> {
-    let response=client.get(url.clone()).header("accept","application/json").send().await?;
-    if !response.status().is_success(){return Ok(MetadataFetch::Failed(response.status().as_u16()));}
-    match response.json::<Value>().await {
-        Ok(Value::Null)|Err(_)=>Err(OAuthRequestError::Invalid("OAuth metadata response is not valid JSON".into())),
-        Ok(value)=>Ok(MetadataFetch::Ok(value)),
-    }
-}
-
-fn parse_authorization_servers(metadata:&Value)->Vec<String> {
-    metadata.get("authorization_servers").and_then(Value::as_array)
-        .map(|servers|servers.iter().filter_map(Value::as_str).filter(|server|!server.is_empty()).map(str::to_owned).collect())
-        .unwrap_or_default()
-}
-
-async fn fetch_authorization_server_metadata(client:&reqwest::Client,issuer:&str,resource_metadata:&Value,require_https:bool)->Result<OAuthServerInfo,OAuthRequestError> {
-    let issuer_url=parse_https_url(issuer,"Authorization server URL",require_https)?;
-    let issuer_path=issuer_url.path().trim_end_matches('/').to_owned();
-    let metadata_url=well_known_url(&issuer_url,&format!("/.well-known/oauth-authorization-server{issuer_path}"))?;
-    let authorization=match fetch_metadata(client,&metadata_url).await? {
-        MetadataFetch::Ok(json)=>json,
-        MetadataFetch::Failed(status)=>{
-            if status==404 && !issuer_path.is_empty() {
-                let root_url=well_known_url(&issuer_url,"/.well-known/oauth-authorization-server")?;
-                if let MetadataFetch::Ok(root)=fetch_metadata(client,&root_url).await? {root}
-                else {return Err(OAuthRequestError::Invalid("OAuth authorization server metadata not found".into()));}
-            } else if status==404 {
-                return Err(OAuthRequestError::Invalid("OAuth authorization server metadata not found".into()));
-            } else {
-                return Err(OAuthRequestError::Invalid(format!("OAuth authorization server metadata fetch failed ({status})")));
+    let shared={
+        let mut inflight=locked(&DISCOVERY_INFLIGHT);
+        match inflight.get(&key) {
+            Some((_,existing))=>existing.clone(),
+            None=>{
+                let id=NEXT_FLIGHT_ID.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
+                let (fetch_url,require,http,flight_key)=(server_url.clone(),provider.require_https,client.clone(),key.clone());
+                let shared:InfoFuture=futures::FutureExt::shared(futures::FutureExt::boxed(async move {
+                    let result=discover_fetch(fetch_url,require,http).await;
+                    if let Ok(info)=&result {locked(&DISCOVERY_CACHE).insert(flight_key.clone(),info.clone());}
+                    let mut inflight=locked(&DISCOVERY_INFLIGHT);
+                    if inflight.get(&flight_key).is_some_and(|(current,_)|*current==id){inflight.remove(&flight_key);}
+                    result
+                }));
+                inflight.insert(key,(id,shared.clone()));shared
             }
         }
     };
-    let authorization=parse_metadata_fields(&authorization,require_https)?;
-    Ok(OAuthServerInfo {authorization_server_url:issuer_url.to_string(),authorization_server_metadata:authorization,resource_metadata:resource_metadata.clone()})
+    let info=shared.await?;
+    if provider.require_https{validate_info_https(&server_url,&info)?;}
+    Ok(info)
 }
-
-/// Pinned `discovery.ts::parseHttpsUrl`: the production OAuth URL validator. `require_https` is
-/// `true` in production; only the deterministic loopback HTTP fixtures set it `false`.
-pub fn parse_https_url(value:&str,label:&str,require_https:bool)->Result<url::Url,OAuthRequestError> {
-    let parsed=url::Url::parse(value)?;
-    if require_https && parsed.scheme()!="https" {return Err(OAuthRequestError::Invalid(format!("{label} must use https")));}
-    Ok(parsed)
+async fn get_metadata(client:&reqwest::Client,url:url::Url)->Result<reqwest::Response,OAuthRequestError> {
+    Ok(client.get(url).header("accept","application/json").header("mcp-protocol-version","2025-11-25").send().await?)
 }
-
-/// Pinned `discovery.ts::parseMetadataFields`: the three endpoint URLs are validated with
-/// `parseHttpsUrl` and stored in their `URL.toString()` normal form.
-pub fn parse_metadata_fields(metadata:&Value,require_https:bool)->Result<Value,OAuthRequestError> {
-    let authorization=parse_https_url(read_string_field(metadata,"authorization_endpoint")?,"authorization_endpoint",require_https)?;
-    let token=parse_https_url(read_string_field(metadata,"token_endpoint")?,"token_endpoint",require_https)?;
-    let mut normalized=metadata.clone();
-    normalized["authorization_endpoint"]=Value::String(authorization.to_string());
-    normalized["token_endpoint"]=Value::String(token.to_string());
-    if let Some(registration)=metadata.get("registration_endpoint").and_then(Value::as_str).filter(|value|!value.is_empty()) {
-        normalized["registration_endpoint"]=Value::String(parse_https_url(registration,"registration_endpoint",require_https)?.to_string());
+async fn read_metadata(response:reqwest::Response,what:&str)->Result<Value,OAuthRequestError> {
+    let text=response.text().await?;
+    serde_json::from_str::<Value>(&text).ok().filter(|value|!value.is_null()).ok_or_else(||OAuthRequestError::Invalid(format!("{what} is not valid JSON")))
+}
+async fn discover_fetch(server_url:String,require_https:bool,client:reqwest::Client)->Result<OAuthServerInfo,OAuthRequestError> {
+    let resource=url::Url::parse(&server_url)?;
+    if require_https{check_https(&server_url,"Resource server URL")?;}
+    let mut metadata_url=resource.clone();metadata_url.set_path("/.well-known/oauth-protected-resource");metadata_url.set_query(None);metadata_url.set_fragment(None);
+    let response=get_metadata(&client,metadata_url).await?;
+    let status=response.status();
+    let (issuer,resource_metadata)=if status.is_success() {
+        let value=read_metadata(response,"Protected resource metadata").await?;
+        let issuer=value.get("authorization_servers").and_then(Value::as_array).and_then(|servers|servers.iter().filter_map(Value::as_str).find(|server|!server.is_empty())).map(str::to_owned)
+            .ok_or_else(||OAuthRequestError::Invalid("Protected resource metadata lacks authorization_servers".into()))?;
+        (issuer,value)
+    } else if status.as_u16()==404 {(server_url.clone(),Value::Null)}
+    else {return Err(OAuthRequestError::Invalid(format!("Protected resource metadata request failed with status {}",status.as_u16())));};
+    let issuer_url=url::Url::parse(&issuer)?;
+    if require_https{check_https(&issuer,"Authorization server URL")?;}
+    let mut base=issuer_url.clone();base.set_query(None);base.set_fragment(None);
+    let path=issuer_url.path().trim_end_matches('/').to_owned();
+    let mut paths=vec![format!("/.well-known/oauth-authorization-server{path}")];
+    if !path.is_empty(){paths.push("/.well-known/oauth-authorization-server".into());}
+    let mut found=None;
+    for (index,candidate) in paths.iter().enumerate() {
+        let mut url=base.clone();url.set_path(candidate);
+        let response=get_metadata(&client,url).await?;
+        let status=response.status();
+        if status.is_success(){found=Some(read_metadata(response,"Authorization server metadata").await?);break;}
+        if status.as_u16()==404 {
+            if index+1<paths.len(){continue;}
+            return Err(OAuthRequestError::Invalid("Authorization server metadata not found".into()));
+        }
+        return Err(OAuthRequestError::Invalid(format!("Authorization server metadata request failed with status {}",status.as_u16())));
     }
-    Ok(normalized)
-}
-
-fn read_string_field<'a>(source:&'a Value,field:&str)->Result<&'a str,OAuthRequestError> {
-    source.get(field).and_then(Value::as_str).filter(|value|!value.is_empty())
-        .ok_or_else(||OAuthRequestError::Invalid(format!("OAuth metadata missing {field}")))
+    let mut authorization=found.ok_or_else(||OAuthRequestError::Invalid("Authorization server metadata not found".into()))?;
+    for field in ["authorization_endpoint","token_endpoint"] {
+        if authorization.get(field).and_then(Value::as_str).is_none_or(str::is_empty){return Err(OAuthRequestError::Invalid(format!("Authorization server metadata is missing {field}")));}
+    }
+    for field in ["authorization_endpoint","token_endpoint","registration_endpoint"] {
+        let Some(endpoint)=authorization.get(field).and_then(Value::as_str).filter(|value|!value.is_empty()).map(str::to_owned) else{continue;};
+        let parsed=url::Url::parse(&endpoint)?;
+        if require_https&&parsed.scheme()!="https"{return Err(OAuthRequestError::Invalid(format!("{field} must use https")));}
+        authorization[field]=Value::String(parsed.to_string());
+    }
+    Ok(OAuthServerInfo {authorization_server_url:issuer,authorization_server_metadata:authorization,resource_metadata})
 }
 pub struct BeginAuthResult {pub authorized:bool,pub authorization_url:Option<url::Url>}
-/// Pinned `provider.ts::login()` always runs the authorization-code redirect. The `/mcp auth-start`
-/// entry keeps the idempotent stored-token short-circuit; the pinned step-up re-login
-/// (`oauth-handler.ts::handleStepUpIfNeeded` -> `provider.login()`) must not, so it routes through
-/// `begin_authorization_forced`.
-pub async fn begin_authorization(provider:&mut McpOAuthProvider,client:&reqwest::Client)->Result<BeginAuthResult,OAuthRequestError> {
-    begin_authorization_with(provider,client,false).await
-}
-/// Pinned `provider.ts::login()` re-login: run the authorization flow even when a stored token is
-/// still fresh, so the escalated scopes actually reach the authorization server.
-pub async fn begin_authorization_forced(provider:&mut McpOAuthProvider,client:&reqwest::Client)->Result<BeginAuthResult,OAuthRequestError> {
-    begin_authorization_with(provider,client,true).await
-}
-async fn begin_authorization_with(provider:&mut McpOAuthProvider,client:&reqwest::Client,force:bool)->Result<BeginAuthResult,OAuthRequestError> {
+pub async fn begin_authorization(provider:&mut McpOAuthProvider,client:&reqwest::Client)->Result<BeginAuthResult,OAuthRequestError> {begin_authorization_inner(provider,client,false).await}
+/// Like `begin_authorization` but never short-circuits on stored tokens.
+pub async fn begin_authorization_forced(provider:&mut McpOAuthProvider,client:&reqwest::Client)->Result<BeginAuthResult,OAuthRequestError> {begin_authorization_inner(provider,client,true).await}
+async fn begin_authorization_inner(provider:&mut McpOAuthProvider,client:&reqwest::Client,force:bool)->Result<BeginAuthResult,OAuthRequestError> {
     let info=discover(provider,client).await?;
     assert_s256_supported(Some(&info.authorization_server_metadata),&provider.store.server_name).map_err(OAuthRequestError::Flow)?;
     if !force && provider.tokens(chrono::Utc::now().timestamp_millis() as f64)?.is_some(){return Ok(BeginAuthResult {authorized:true,authorization_url:None});}
@@ -180,10 +162,9 @@ async fn begin_authorization_with(provider:&mut McpOAuthProvider,client:&reqwest
     let state=provider.state().map_err(|error|OAuthRequestError::Invalid(error.to_string()))?;
     let endpoint=info.authorization_server_metadata.get("authorization_endpoint").and_then(Value::as_str).ok_or_else(||OAuthRequestError::Invalid("OAuth metadata has no authorization endpoint".into()))?;
     let mut authorization=url::Url::parse(endpoint)?;
-    let resource=provider.resource_indicator();
-    {let mut query=authorization.query_pairs_mut();query.append_pair("response_type","code").append_pair("client_id",client_id).append_pair("code_challenge_method","S256").append_pair("code_challenge",&challenge).append_pair("state",&state).append_pair("resource",&resource);
+    {let mut query=authorization.query_pairs_mut();query.append_pair("response_type","code").append_pair("client_id",client_id).append_pair("code_challenge_method","S256").append_pair("code_challenge",&challenge).append_pair("state",&state).append_pair("resource",&normalize_resource_url(&provider.store.server_url));
         if let Some(redirect)=&provider.redirect_url {query.append_pair("redirect_uri",redirect);}
-        let scopes=provider.effective_scopes();if !scopes.is_empty() {query.append_pair("scope",&scopes.join(" "));}}
+        if let Some(scopes)=provider.effective_scopes() {query.append_pair("scope",&scopes.join(" "));}}
     provider.redirect_to_authorization(authorization.clone()).await?;Ok(BeginAuthResult {authorized:false,authorization_url:Some(authorization)})
 }
 pub async fn complete_authorization(provider:&mut McpOAuthProvider,redirect:&str,client:&reqwest::Client)->Result<(),OAuthRequestError> {
@@ -195,7 +176,7 @@ pub async fn finish_authorization(provider:&McpOAuthProvider,code:&str,client:&r
     let info=discover(provider,client).await?;
     let client_info=provider.client_information()?.ok_or_else(||OAuthRequestError::Invalid("OAuth client is not registered".into()))?;
     let mut form=vec![("grant_type".into(),"authorization_code".into()),("code".into(),code.into()),("code_verifier".into(),provider.code_verifier()?)];
-    super::resource_indicator::add_resource_to_params(&mut form, &provider.resource_indicator());
+    add_resource_param(&mut form,&normalize_resource_url(&provider.store.server_url));
     if let Some(redirect)=&provider.redirect_url {form.push(("redirect_uri".into(),redirect.clone()));}
     match request_tokens(client,&info,&client_info,form).await {
         Ok(tokens)=>{provider.save_tokens(&tokens,chrono::Utc::now().timestamp_millis() as f64)?;Ok(())}
@@ -243,8 +224,9 @@ pub async fn request_tokens(client:&reqwest::Client,info:&OAuthServerInfo,client
 }
 pub async fn client_credentials_grant(provider:&McpOAuthProvider,client:&reqwest::Client)->Result<(),OAuthRequestError> {
     let info=discover(provider,client).await?;let information=provider.client_information()?.ok_or_else(||OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,format!("MCP server {} client_credentials requires a clientId.",provider.store.server_name)))))?;
-    let mut form=vec![("grant_type".into(),"client_credentials".into()),("resource".into(),provider.resource_indicator())];
-    let scopes=provider.effective_scopes();if !scopes.is_empty() {form.push(("scope".into(),scopes.join(" ")));}
+    let mut form=vec![("grant_type".into(),"client_credentials".into())];
+    if let Some(scopes)=provider.effective_scopes() {form.push(("scope".into(),scopes.join(" ")));}
+    add_resource_param(&mut form,&normalize_resource_url(&provider.store.server_url));
     let tokens=request_tokens(client,&info,&information,form).await?;provider.save_tokens(&tokens,chrono::Utc::now().timestamp_millis() as f64)?;Ok(())
 }
 pub fn logout(provider:&McpOAuthProvider)->Result<(),OAuthRequestError> {provider.store.clear()?;Ok(())}
