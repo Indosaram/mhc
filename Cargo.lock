@@ -3531,6 +3531,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-approval-gates"
+version = "0.0.0"
+dependencies = [
+ "maho-agent",
+ "maho-ai",
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-ask-user",
+ "maho-ext-host",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "maho-ast-grep"
+version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "winsafe",
+]
+
+[[package]]
 name = "maho-ast-grep-mcp"
 version = "0.0.0"
 dependencies = [
@@ -3595,6 +3621,8 @@ dependencies = [
  "maho-agent",
  "maho-agent-home",
  "maho-ai",
+ "maho-approval-gates",
+ "maho-ast-grep",
  "maho-browser",
  "maho-chord",
  "maho-codemode",
@@ -3660,8 +3688,11 @@ dependencies = [
  "maho-ext-video-in",
  "maho-ext-webfetch",
  "maho-ext-websearch",
+ "maho-feedback",
+ "maho-format",
  "maho-gateway",
  "maho-git",
+ "maho-git-bash",
  "maho-interactive",
  "maho-isolation",
  "maho-lsp",
@@ -3681,6 +3712,7 @@ dependencies = [
  "maho-process-env",
  "maho-rpc",
  "maho-senpi-task",
+ "maho-side-panel",
  "maho-skills",
  "maho-task",
  "maho-team",
@@ -3689,6 +3721,9 @@ dependencies = [
  "maho-tool-child",
  "maho-tools",
  "maho-tui",
+ "maho-workflow",
+ "maho-workpool",
+ "maho-x-search",
  "minisign",
  "minisign-verify",
  "nix 0.28.0",
@@ -4209,7 +4244,7 @@ name = "maho-ext-hooks"
 version = "0.0.0"
 dependencies = [
  "chrono",
- "claude-code-compat-core",
+ "dirs",
  "fancy-regex",
  "futures",
  "maho-core",
@@ -4837,6 +4872,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-feedback"
+version = "0.0.0"
+dependencies = [
+ "gethostname",
+ "jiff",
+ "maho-config",
+ "maho-ext-api",
+ "regex",
+ "reqwest 0.12.28",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "maho-format"
+version = "0.0.0"
+dependencies = [
+ "maho-config",
+ "maho-ext-api",
+ "maho-lsp",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "maho-gateway"
 version = "0.0.0"
 dependencies = [
@@ -4870,6 +4933,17 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "maho-git-bash"
+version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "winsafe",
 ]
 
 [[package]]
@@ -6098,6 +6172,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-side-panel"
+version = "0.0.0"
+dependencies = [
+ "maho-config",
+ "maho-ext-api",
+ "maho-tui",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "maho-skills"
 version = "0.0.0"
 dependencies = [
@@ -6122,6 +6208,7 @@ version = "0.0.0"
 dependencies = [
  "maho-config",
  "maho-ext-api",
+ "maho-gateway",
  "maho-lsp",
  "maho-model-select",
  "nix 0.28.0",
@@ -6328,6 +6415,52 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "maho-workflow"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "maho-ext-api",
+ "maho-skills",
+ "maho-task",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "maho-workpool"
+version = "0.0.0"
+dependencies = [
+ "maho-config",
+ "maho-ext-api",
+ "maho-task",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "maho-x-search"
+version = "0.0.0"
+dependencies = [
+ "maho-ai",
+ "maho-config",
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-tool-search",
+ "regex",
+ "reqwest 0.12.28",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

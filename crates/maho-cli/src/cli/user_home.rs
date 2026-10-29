@@ -33,6 +33,6 @@ mod tests {
             home.agent_dir(),
             std::path::Path::new(&maho_core::config::get_agent_dir())
         );
-        assert!(home.root().ends_with(".omo"));
+        assert_eq!(home.root().file_name(), Some(std::ffi::OsStr::new(".omo")));
     }
 }
