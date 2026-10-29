@@ -1,0 +1,21 @@
+[package]
+name = "maho-side-panel"
+description = "Read-only status side panel for mhc's interactive TUI: session, goal, context, usage, delegated tasks, recent tool calls, changed files, memory and location, with OSC 8 detail links, a diff viewer and /side-panel-diff. Clean-room spec docs/cleanroom/specs/side-panel.md."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-ext-api = { path = "../maho-ext-api" }
+maho-tui = { path = "../maho-tui" }
+maho-config = { path = "../maho-config" }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "time"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "time", "macros", "test-util", "sync"] }
+
+[lints]
+workspace = true

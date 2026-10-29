@@ -120,20 +120,47 @@ pub fn mit_config_factories() -> Vec<NativeExtensionFactory> {
         ),
         factory("model-profile", maho_model_select::ModelProfileExtension),
         factory(
+            "format",
+            maho_format::FormatExtension::from_env(Some(std::path::PathBuf::from(
+                maho_core::config::get_agent_dir(),
+            ))),
+        ),
+        factory(
             "lsp",
             maho_lsp::extension::LspExtension::from_env(Some(std::path::PathBuf::from(
                 maho_core::config::get_agent_dir(),
             ))),
         ),
         factory("task", super::delegation::extension()),
+        factory(
+            "workpool",
+            maho_workpool::WorkerExtension {
+                agent_dir: std::path::PathBuf::from(maho_core::config::get_agent_dir()),
+                tasks: Some(super::delegation::extension()),
+            },
+        ),
         factory("memory", super::long_term_memory::extension()),
         factory("browser", super::browser_automation::extension()),
         factory("telemetry", super::usage_stats::extension()),
         factory("git", super::git_tools::extension()),
         factory("skills", super::skill_library::extension()),
         factory("mcp-builtins", super::builtin_mcp::extension()),
+        factory("git-bash", maho_git_bash::GitBashMcpExtension),
+        factory("ast-grep", maho_ast_grep::AstGrepExtension),
         factory("gateway", super::session_gateway::extension()),
         factory("context-files", super::project_context::extension()),
+        factory("approval-gates", maho_approval_gates::ApprovalGates),
+        factory("side-panel", maho_side_panel::SidePanelExtension::default()),
+        factory(
+            "feedback",
+            maho_feedback::FeedbackExtension::with_product_version(
+                option_env!("MHC_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+            ),
+        ),
+        factory(
+            "x-search",
+            maho_x_search::XSearchExtension::new(maho_core::config::get_agent_dir()),
+        ),
     ]
 }
 
@@ -944,9 +971,9 @@ impl Extension for Task {
                         workpools.set_aggregate_port(Arc::new(move |message: senpi_task::workpool::aggregate::WorkpoolAggregateMessage, receipts: senpi_task::workpool::aggregate::WorkpoolAggregateReceipts| {
                             let ack = receipts.ack.clone();
                             let fail = receipts.fail.clone();
-                            let accepted = aggregate_coordinator.enqueue(maho_ext_api::IdleInjection {
+                            let accepted = aggregate_coordinator.enqueue(idle_injection::IdleInjection {
                                 key: format!("workpool-aggregate:{}:{}", message.pool_id, message.generation),
-                                source: maho_ext_api::IdleInjectionSource::WorkpoolAggregate,
+                                source: idle_injection::IdleInjectionSource::WorkpoolAggregate,
                                 custom_type: Some("workpool-aggregate".into()),
                                 content: serde_json::to_string(&message.results).map_err(|error| error.to_string())?,
                                 display: Some(false), passive: Some(false), details: Some({
@@ -1282,16 +1309,24 @@ mod mit_tests {
                 "<builtin:config-notices>",
                 "<builtin:config-hot-reload>",
                 "<builtin:model-profile>",
+                "<builtin:format>",
                 "<builtin:lsp>",
                 "<builtin:task>",
+                "<builtin:workpool>",
                 "<builtin:memory>",
                 "<builtin:browser>",
                 "<builtin:telemetry>",
                 "<builtin:git>",
                 "<builtin:skills>",
                 "<builtin:mcp-builtins>",
+                "<builtin:git-bash>",
+                "<builtin:ast-grep>",
                 "<builtin:gateway>",
-                "<builtin:context-files>"
+                "<builtin:context-files>",
+                "<builtin:approval-gates>",
+                "<builtin:side-panel>",
+                "<builtin:feedback>",
+                "<builtin:x-search>"
             ]
         );
     }

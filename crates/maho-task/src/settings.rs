@@ -7,6 +7,9 @@ use std::time::Duration;
 pub const DEPTH_ENV: &str = "MHC_TASK_DEPTH";
 /// Environment variable carrying a child's task id.
 pub const TASK_ID_ENV: &str = "MHC_TASK_ID";
+/// Environment variable carrying the root session of a delegated run (the top-level session that
+/// started the chain of tasks).
+pub const ROOT_SESSION_ENV: &str = "MHC_TASK_ROOT_SESSION";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskSettings {
@@ -90,6 +93,16 @@ pub fn current_depth() -> u32 {
         .ok()
         .and_then(|value| value.trim().parse().ok())
         .unwrap_or(0)
+}
+
+/// The root session of the session `own` running in this process: [`ROOT_SESSION_ENV`] when this
+/// process is a delegated run, else `own` itself.
+pub fn current_root_session(own: &str) -> String {
+    std::env::var(ROOT_SESSION_ENV)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| own.to_owned())
 }
 
 /// Whether a session at `depth` may still spawn children (oh-my-pi `canSpawnAtDepth`).

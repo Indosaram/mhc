@@ -1,6 +1,7 @@
 pub type OnDeliveryFailedCallback = Option<Arc<dyn Fn(&[String], String) + Send + Sync>>;
 use std::sync::Arc;
-use maho_ext_api::{CustomMessage, DeliverAs, ExtensionActions, IdleInjection, IdleInjectionSource, SendMessageOptions, ToolContent};
+use idle_injection::{IdleInjection, IdleInjectionSource};
+use maho_ext_api::{CustomMessage, DeliverAs, ExtensionActions, SendMessageOptions, ToolContent};
 use senpi_task::{completion::{DeliveryCallbacks, ParentNotifier, ParentNotifierMessage, build_completion_message}, host::HostError, pause::ports::{RunRef, RunRefKind}};
 
 /// The senpi-task completion custom-message type; the component registers a renderer for it.

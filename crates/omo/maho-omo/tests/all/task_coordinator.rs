@@ -1,5 +1,5 @@
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
-use maho_ext_api::{IdleInjectionCoordinator, IdleInjectionSource};
+use idle_injection::{IdleInjectionCoordinator, IdleInjectionSource};
 use maho_omo::TaskCoordinator;
 use maho_omo_task::{lead_poller_lifecycle::LeadInjectionCoordinator, parent_notifier::CompletionCoordinator};
 use senpi_task::{completion::ParentNotifierMessage, team::messaging::lead_poller_types::LeadInjection};

@@ -61,18 +61,15 @@ pub fn create_mcp_transport_spec(
                     format!("MCP server {server} stdio command is required"),
                 )
             })?;
-        // Pinned `env-cleaner.ts::createCleanMcpEnvironment`: the ambient environment minus
-        // `EXCLUDED_ENV_PATTERNS`, then the server's declared env overlaid unfiltered. The host
-        // session environment is this port's `process.env` (`index.rs` passes `std::env::vars()`).
-        let clean_env = crate::env_cleaner::create_clean_mcp_environment_from(
-            &env.cloned().unwrap_or_default(),
-            &config.env.clone().unwrap_or_default(),
-        );
+        let mut merged = env
+            .map(crate::stdio_env::filter_host_env)
+            .unwrap_or_default();
+        merged.extend(config.env.clone().unwrap_or_default());
         return Ok(McpTransportSpec::Stdio {
             command: command.clone(),
             args: config.args.clone().unwrap_or_default(),
             cwd: config.cwd.clone(),
-            env: clean_env,
+            env: merged,
         });
     }
     let url = config
@@ -129,10 +126,8 @@ pub struct McpTransportConnection {
     logger: Arc<Mutex<McpLogger>>,
     client: tokio::sync::OnceCell<Arc<McpClient>>,
     pub auth: Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>,
+    pub auth_challenge_handler: Option<Arc<dyn crate::auth::challenge::McpAuthChallengeHandler>>,
     pub elicitation_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
-    /// The service-owned interactive step-up handler (pinned `handleStepUpIfNeeded` re-login +
-    /// `forceReconnect`), bound by `ServerConnection::open_connection`.
-    pub step_up: Option<Arc<dyn crate::transport_sdk::McpAuthStepUp>>,
     server_requests: Mutex<Option<tokio::task::JoinHandle<()>>>,
     shutdown: tokio::sync::Mutex<bool>,
 }
@@ -153,7 +148,7 @@ pub fn create_mcp_transport(
         logger,
         client: tokio::sync::OnceCell::new(),
         auth: None,
-        step_up: None,
+        auth_challenge_handler: None,
         elicitation_ui: None,
         server_requests: Mutex::new(None),
         shutdown: tokio::sync::Mutex::new(false),
@@ -166,7 +161,7 @@ impl McpTransportConnection {
             let mut spec =
                 create_mcp_transport_spec(&self.server_name, &current.config, Some(&current.env))?;
             if let McpTransportSpec::Stdio { env, .. } = &mut spec {
-                *env = current.env;
+                *env = crate::stdio_env::filter_host_env(&current.env);
                 env.extend(current.config.env.unwrap_or_default());
             }
             Ok(spec)
@@ -203,8 +198,8 @@ impl McpTransportConnection {
                 if let Some(auth) = &self.auth {
                     client.set_auth(auth.clone()).await;
                 }
-                if let Some(step_up) = &self.step_up {
-                    client.set_step_up(step_up.clone()).await;
+                if let Some(handler) = &self.auth_challenge_handler {
+                    client.set_auth_challenge_handler(handler.clone()).await;
                 }
                 *self
                     .server_requests

@@ -1,4 +1,5 @@
 use crate::support;
+use idle_injection::{IdleInjection, IdleInjectionCoordinator};
 use maho_ext_api::*;
 use maho_omo_task::{
     component::TaskComponent,
@@ -350,7 +351,7 @@ async fn registered_agent_end_defers_idle_flush_past_the_handler() {
     let queued = deferred.clone();
     let mut context = support::context();
     context.cwd = root.path().into();
-    context.idle_coordinator = Some(flushes.clone() as Arc<dyn IdleInjectionCoordinator>);
+    context.idle_coordinator = Some(idle_injection::into_slot(flushes.clone() as Arc<dyn IdleInjectionCoordinator>));
     context.defer_macrotask = Some(Arc::new(move |task: Box<dyn FnOnce() + Send>| {
         queued.lock().expect("deferred").push(task)
     }));

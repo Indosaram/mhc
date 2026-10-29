@@ -707,33 +707,10 @@ impl McpService {
         let port = oauth
             .filter(|oauth| oauth.client_id.is_some() && oauth.client_metadata_url.is_none())
             .and_then(|oauth| oauth.callback_port);
-        let config = config.ok_or_else(|| {
-            crate::errors::McpError::new(
-                crate::errors::McpErrorKind::Auth,
-                format!("Unknown MCP server: {name}"),
-            )
-        })?;
-        let agent_dir = self.agent_dir.clone().ok_or_else(|| {
-            crate::errors::McpError::new(
-                crate::errors::McpErrorKind::Auth,
-                "MCP session is not attached",
-            )
-        })?;
-        let callback_url = self
-            .config
-            .as_ref()
-            .and_then(|config| config.settings.oauth_callback_url.clone());
-        crate::auth::commands_auth::run_interactive_login(
-            crate::auth::commands_auth::InteractiveLoginOptions {
-                name,
-                config,
-                agent_dir: &agent_dir,
-                callback_url: callback_url.as_deref(),
-                port,
-                force: false,
-                require_https: true,
-                client: &reqwest::Client::new(),
-            },
+        crate::auth::commands_auth::run_loopback_auth(
+            provider,
+            port,
+            &reqwest::Client::new(),
             on_authorization,
         )
         .await?;

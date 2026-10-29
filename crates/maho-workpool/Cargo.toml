@@ -1,0 +1,23 @@
+[package]
+name = "maho-workpool"
+description = "Keyed durable work pools for mhc's delegated tasks: the `workpool` tool (create/push/close/inspect/cancel/yield), fresh and keep-alive workers on maho-task, per-key yields, one aggregate per pool generation, restart and pause handling (clean-room spec docs/cleanroom/specs/workpool.md)."
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[dependencies]
+maho-config = { path = "../maho-config" }
+maho-ext-api = { path = "../maho-ext-api" }
+maho-task = { path = "../maho-task" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+
+[lints]
+workspace = true

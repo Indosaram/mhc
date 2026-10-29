@@ -35,7 +35,9 @@ Everything outside the omo port:
 - builtin extensions under `crates/builtins` (MCP, hooks, codemode, websearch/webfetch, todo,
   compaction, goal, rules, permission system, ...) and the native user ports under
   `crates/extensions` (`pi-comment-checker` uses the MIT `maho-comment-checker` crate here);
-- `crates/desktop/senpi-desktop-*` (MIT; moved out of `crates/omo` so that path checks are exact).
+- `crates/desktop/senpi-desktop-*` (MIT engine and platform backends; moved out of `crates/omo` so that
+  path checks are exact). The computer-use tool layer (`senpi-desktop-{protocol,prelude,service,run,tool}`)
+  ports omo packages and lives in `crates/omo` (SUL-1.0).
 
 ## Clean-room replacements (Phase 1)
 
@@ -311,13 +313,12 @@ The MIT profile mounts these from MIT crates written from the specs in `docs/cle
 | bundled omo skills (`OMO_SENPI_SKILLS_ROOT`) and the omo skill tools/commands | not registered (MIT `<builtin:skills>` provides the bundled root via `MAHO_SKILLS_ROOT` or `skills/` beside the executable, `disabled_skills`, the `skill` tool and `/skill`) |
 | `builtin:task-member` (`--extension builtin:task-member`) | unknown native extension error |
 | Claude Code plugin hooks (`maho-ext-hooks` feature `claude-plugins`) | not discovered; `~/.claude/settings.json` and project `.claude/settings*.json` hooks still load |
-| `mhc ulw-loop`, `--memory-supervisor`, `--child-bootstrap` | print "not available in this build", exit 1 (`--omo-memory-mcp` now starts the MIT memory MCP server) |
+| `mhc ulw-loop`, `mhc senpi-install`, `--memory-supervisor`, `--child-bootstrap` | print "not available in this build", exit 1 (`--omo-memory-mcp` now starts the MIT memory MCP server) |
 
 The gated `maho-cli` modules are marked `#[cfg(feature = "omo")]` in `crates/maho-cli/src/cli/mod.rs`
-and `src/main.rs`. They are MIT-labelled files that port the host side of the omo packages, so they
-leave the MIT profile along with the SUL crates. Phase 1+ rewrites what should come back (task,
-memory, LSP, config) from MIT sources or clean-room specs. OmO-original features (ultrawork,
-mass-ulw, persona prompts) are removed, not ported.
+and `src/main.rs`. They port the host side of the omo packages, so they are SUL-1.0 (see
+`LICENSE`) and leave the MIT profile along with the SUL crates. The default build keeps every omo
+feature; the MIT profile replaces the general ones from MIT sources or clean-room specs.
 
 ## How it is enforced (CI job `mit-profile`)
 
