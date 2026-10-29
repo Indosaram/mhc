@@ -13193,6 +13193,7 @@ impl InteractiveMode {
         crate::components::footer::FooterSnapshot {
             cwd: self.host_cwd(),
             home: std::env::var("HOME").ok(),
+            branch: self.footer_data.git_branch(),
             session_name: self.host_session_name(),
             cache_read: cache_read as f64,
             cache_write: cache_write as f64,
